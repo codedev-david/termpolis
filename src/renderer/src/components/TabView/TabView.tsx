@@ -14,7 +14,7 @@ export function TabView() {
   }
 
   return (
-    <div className="w-full h-full">
+    <div className="relative w-full h-full">
       {terminals.map(t => (
         <TerminalPane
           key={t.id}

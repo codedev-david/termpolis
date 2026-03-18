@@ -73,7 +73,8 @@ export function TerminalPane({ terminalId, terminalName, isVisible }: Props) {
   return (
     <div
       ref={containerRef}
-      style={{ display: isVisible ? 'flex' : 'none', width: '100%', height: '100%', padding: 4 }}
+      className="absolute inset-0"
+      style={{ visibility: isVisible ? 'visible' : 'hidden', padding: 4 }}
     />
   )
 }
