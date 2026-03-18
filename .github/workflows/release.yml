@@ -32,11 +32,15 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Rebuild native modules for Electron
-        run: npx electron-rebuild
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
 
-      - name: Build and package
-        run: npm run package
+      - name: Build app
+        run: npx electron-vite build
+
+      - name: Package
+        run: npx electron-builder --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

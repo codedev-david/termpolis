@@ -63,7 +63,6 @@
     "@vitest/coverage-v8": "^4.1.0",
     "electron": "^30.5.1",
     "electron-builder": "^24.13.3",
-    "electron-rebuild": "^3.2.9",
     "electron-vite": "^2.3.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
