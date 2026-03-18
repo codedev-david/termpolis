@@ -18,6 +18,8 @@ interface TerminalStore {
   setShowSettings: (show: boolean) => void
   setDefaultShell: (shell: ShellType) => void
   addWorkspace: (name: string) => void
+  renameWorkspace: (id: string, name: string) => void
+  updateWorkspace: (id: string) => void
   removeWorkspace: (id: string) => void
 }
 
@@ -64,6 +66,17 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       name,
       terminals: s.terminals.map(({ name, color, shellType }) => ({ name, color, shellType })),
     }],
+  })),
+
+  renameWorkspace: (id, name) => set(s => ({
+    workspaces: s.workspaces.map(w => w.id === id ? { ...w, name } : w),
+  })),
+
+  updateWorkspace: (id) => set(s => ({
+    workspaces: s.workspaces.map(w => w.id === id
+      ? { ...w, terminals: s.terminals.map(({ name, color, shellType }) => ({ name, color, shellType })) }
+      : w
+    ),
   })),
 
   removeWorkspace: (id) => set(s => ({

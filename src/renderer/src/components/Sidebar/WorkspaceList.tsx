@@ -4,9 +4,11 @@ import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 
 export function WorkspaceList() {
-  const { workspaces, addWorkspace, removeWorkspace, terminals } = useTerminalStore()
+  const { workspaces, addWorkspace, renameWorkspace, updateWorkspace, removeWorkspace, terminals } = useTerminalStore()
   const [saving, setSaving] = useState(false)
   const [wsName, setWsName] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
 
   const handleActivate = async (wsId: string) => {
     const ws = workspaces.find(w => w.id === wsId)
@@ -34,23 +36,64 @@ export function WorkspaceList() {
     })
   }
 
+  const startRename = (e: React.MouseEvent, ws: { id: string; name: string }) => {
+    e.stopPropagation()
+    setEditingId(ws.id)
+    setEditName(ws.name)
+  }
+
+  const commitRename = () => {
+    if (editingId && editName.trim()) {
+      renameWorkspace(editingId, editName.trim())
+    }
+    setEditingId(null)
+  }
+
   return (
     <div className="border-b border-[#3c3c3c]">
       {workspaces.length > 0 && (
         <div className="px-3 py-1 text-xs text-[#6b7280] uppercase tracking-wider">Workspaces</div>
       )}
       {workspaces.map(ws => (
-        <div
-          key={ws.id}
-          className="flex items-center gap-1 px-3 py-1 hover:bg-[#2a2d2e] group cursor-pointer"
-          onClick={() => handleActivate(ws.id)}
-        >
-          <span className="flex-1 text-xs truncate">{ws.name}</span>
-          <button
-            onClick={e => { e.stopPropagation(); removeWorkspace(ws.id) }}
-            className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-xs"
-            aria-label={`Delete ${ws.name}`}
-          >✕</button>
+        <div key={ws.id}>
+          {editingId === ws.id ? (
+            <div className="px-2 py-1 flex gap-1">
+              <input
+                autoFocus
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') commitRename()
+                  if (e.key === 'Escape') setEditingId(null)
+                }}
+                onBlur={commitRename}
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-0.5 text-xs focus:outline-none flex-1 min-w-0"
+              />
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-1 px-3 py-1 hover:bg-[#2a2d2e] group cursor-pointer"
+              onClick={() => handleActivate(ws.id)}
+            >
+              <span className="flex-1 text-xs truncate">{ws.name}</span>
+              <button
+                onClick={e => { e.stopPropagation(); updateWorkspace(ws.id) }}
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-[#4FC3F7] text-xs px-0.5"
+                aria-label={`Update ${ws.name}`}
+                title="Update with current terminals"
+              >↻</button>
+              <button
+                onClick={e => startRename(e, ws)}
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-xs px-0.5"
+                aria-label={`Rename ${ws.name}`}
+              >✎</button>
+              <button
+                onClick={e => { e.stopPropagation(); removeWorkspace(ws.id) }}
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-xs px-0.5"
+                aria-label={`Delete ${ws.name}`}
+              >✕</button>
+            </div>
+          )}
         </div>
       ))}
       {saving ? (
