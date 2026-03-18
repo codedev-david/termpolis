@@ -8,14 +8,23 @@ const COLOR_SWATCHES = [
 interface Props {
   name: string
   color: string
+  anchorEl: HTMLElement | null
   onSave: (opts: { name: string; color: string }) => void
   onClose: () => void
 }
 
-export function TabPopover({ name, color, onSave, onClose }: Props) {
+export function TabPopover({ name, color, anchorEl, onSave, onClose }: Props) {
   const [editName, setEditName] = useState(name)
   const [editColor, setEditColor] = useState(color)
   const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  useEffect(() => {
+    if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect()
+      setPos({ top: rect.top, left: rect.right + 4 })
+    }
+  }, [anchorEl])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -28,7 +37,8 @@ export function TabPopover({ name, color, onSave, onClose }: Props) {
   return (
     <div
       ref={ref}
-      className="absolute left-full top-0 ml-1 z-50 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-xl p-4 w-56 flex flex-col gap-3"
+      style={{ position: 'fixed', top: pos.top, left: pos.left }}
+      className="z-50 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-xl p-4 w-56 flex flex-col gap-3"
     >
       <input
         value={editName}

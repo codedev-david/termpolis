@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { TabPopover } from '../TabPopover/TabPopover'
 import type { TerminalSession } from '../../types'
 
@@ -16,9 +17,11 @@ interface Props {
 
 export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: Props) {
   const [popoverOpen, setPopoverOpen] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
 
   return (
     <div
+      ref={rowRef}
       className={`relative flex items-center gap-2 px-3 py-2 cursor-pointer select-none group ${isActive ? 'bg-[#37373d]' : 'hover:bg-[#2a2d2e]'}`}
       style={{ borderLeft: `3px solid ${terminal.color}` }}
       onClick={onClick}
@@ -38,13 +41,15 @@ export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: 
         className="text-[#6b7280] hover:text-white text-xs px-1"
         aria-label={`Close ${terminal.name}`}
       >✕</button>
-      {popoverOpen && (
+      {popoverOpen && createPortal(
         <TabPopover
           name={terminal.name}
           color={terminal.color}
+          anchorEl={rowRef.current}
           onSave={patch => { onUpdate(patch); setPopoverOpen(false) }}
           onClose={() => setPopoverOpen(false)}
-        />
+        />,
+        document.body
       )}
     </div>
   )
