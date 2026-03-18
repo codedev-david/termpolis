@@ -1,0 +1,62 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="120" fill="#04080D"/>
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#paint0_linear)"/>
+
+  <path d="M120 384V250C120 238.954 128.954 230 140 230H176C187.046 230 196 238.954 196 250V384H120Z" fill="#0E1821" stroke="#FF6A3D" stroke-width="10"/>
+  <path d="M220 384V170C220 158.954 228.954 150 240 150H272C283.046 150 292 158.954 292 170V384H220Z" fill="#101C26" stroke="#F3C24D" stroke-width="10"/>
+  <path d="M316 384V212C316 200.954 324.954 192 336 192H372C383.046 192 392 200.954 392 212V384H316Z" fill="#0F1B25" stroke="#59A8FF" stroke-width="10"/>
+
+  <rect x="136" y="254" width="44" height="14" rx="7" fill="#EAF6FF"/>
+  <rect x="236" y="176" width="40" height="14" rx="7" fill="#EAF6FF"/>
+  <rect x="332" y="216" width="44" height="14" rx="7" fill="#EAF6FF"/>
+
+  <rect x="136" y="286" width="30" height="12" rx="6" fill="#8FAEC6"/>
+  <rect x="236" y="208" width="56" height="12" rx="6" fill="#8FAEC6"/>
+  <rect x="332" y="248" width="28" height="12" rx="6" fill="#8FAEC6"/>
+
+  <path d="M158 230V110" stroke="#FF6A3D" stroke-width="12" stroke-linecap="square"/>
+  <path d="M256 150V92" stroke="#F3C24D" stroke-width="12" stroke-linecap="square"/>
+  <path d="M354 192V126" stroke="#59A8FF" stroke-width="12" stroke-linecap="square"/>
+
+  <rect x="142" y="88" width="32" height="32" rx="6" fill="#FF6A3D"/>
+  <rect x="240" y="66" width="32" height="32" rx="6" fill="#F3C24D"/>
+  <rect x="338" y="104" width="32" height="32" rx="6" fill="#59A8FF"/>
+
+  <path d="M96 408H416" stroke="#162532" stroke-width="12" stroke-linecap="square"/>
+  <path d="M158 408V442" stroke="#162532" stroke-width="12" stroke-linecap="square"/>
+  <path d="M256 408V442" stroke="#162532" stroke-width="12" stroke-linecap="square"/>
+  <path d="M354 408V442" stroke="#162532" stroke-width="12" stroke-linecap="square"/>
+
+  <path d="M174 112H240" stroke="url(#paint1_linear)" stroke-width="8" stroke-linecap="square"/>
+  <path d="M272 96H338" stroke="url(#paint2_linear)" stroke-width="8" stroke-linecap="square"/>
+  <path d="M158 312H256" stroke="url(#paint3_linear)" stroke-width="8" stroke-linecap="square"/>
+  <path d="M256 300H354" stroke="url(#paint4_linear)" stroke-width="8" stroke-linecap="square"/>
+
+  <rect x="68" y="68" width="24" height="24" rx="4" fill="#162532"/>
+  <rect x="420" y="68" width="24" height="24" rx="4" fill="#162532"/>
+  <rect x="68" y="420" width="24" height="24" rx="4" fill="#162532"/>
+  <rect x="420" y="420" width="24" height="24" rx="4" fill="#162532"/>
+
+  <defs>
+    <linearGradient id="paint0_linear" x1="256" y1="24" x2="256" y2="488" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A121A"/>
+      <stop offset="1" stop-color="#050A10"/>
+    </linearGradient>
+    <linearGradient id="paint1_linear" x1="174" y1="112" x2="240" y2="112" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6A3D"/>
+      <stop offset="1" stop-color="#F3C24D"/>
+    </linearGradient>
+    <linearGradient id="paint2_linear" x1="272" y1="96" x2="338" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F3C24D"/>
+      <stop offset="1" stop-color="#59A8FF"/>
+    </linearGradient>
+    <linearGradient id="paint3_linear" x1="158" y1="312" x2="256" y2="312" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6A3D"/>
+      <stop offset="1" stop-color="#F3C24D"/>
+    </linearGradient>
+    <linearGradient id="paint4_linear" x1="256" y1="300" x2="354" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F3C24D"/>
+      <stop offset="1" stop-color="#59A8FF"/>
+    </linearGradient>
+  </defs>
+</svg>
