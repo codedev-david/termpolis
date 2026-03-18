@@ -11,32 +11,34 @@ import { useTerminalStore } from './store/terminalStore'
 export default function App() {
   const { viewMode, showSettings, terminals, workspaces } = useTerminalStore()
   const [historyOpen, setHistoryOpen] = useState(false)
-  const restored = useRef(false)
+  const started = useRef(false)
+  const loaded = useRef(false)
 
   // Restore session on mount (guard against StrictMode double-fire)
   useEffect(() => {
-    if (restored.current) return
-    restored.current = true
+    if (started.current) return
+    started.current = true
     window.termpolis.loadSession().then(res => {
-      if (!res.success || !res.data) return
-      const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
-      // Set state all at once, then spawn ptys
-      useTerminalStore.setState({
-        terminals: saved,
-        workspaces,
-        defaultShell: ds,
-        viewMode: vm,
-        activeTerminalId: saved[0]?.id ?? null,
-      })
-      saved.forEach(t => {
-        window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
-      })
+      if (res.success && res.data) {
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
+        useTerminalStore.setState({
+          terminals: saved,
+          workspaces,
+          defaultShell: ds,
+          viewMode: vm,
+          activeTerminalId: saved[0]?.id ?? null,
+        })
+        saved.forEach(t => {
+          window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
+        })
+      }
+      loaded.current = true
     })
   }, [])
 
-  // Persist session on terminal or workspace changes (skip initial empty state)
+  // Persist session on terminal or workspace changes (skip until restore completes)
   useEffect(() => {
-    if (!restored.current) return
+    if (!loaded.current) return
     const state = useTerminalStore.getState()
     window.termpolis.saveSession({
       terminals: state.terminals,
