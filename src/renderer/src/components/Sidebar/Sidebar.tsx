@@ -45,7 +45,13 @@ export function Sidebar() {
           className={`flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d]' : ''}`}
         >⚙ Settings</button>
         <button
-          onClick={toggleViewMode}
+          onClick={() => {
+            toggleViewMode()
+            setShowSettings(false)
+            if (!activeTerminalId && terminals.length > 0) {
+              setActiveTerminal(terminals[0].id)
+            }
+          }}
           className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
         >{viewMode === 'tabs' ? '⊞ Grid View' : '☰ Tab View'}</button>
       </div>
