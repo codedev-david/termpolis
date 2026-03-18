@@ -1,25 +1,31 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import { homedir } from 'os'
+import { detectAvailableShells } from './shellDetector'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll } from './terminalManager'
+import { loadSession, saveSession } from './sessionStore'
+import { appendCommand, searchHistory } from './historyStore'
+import { readConfigFile, writeConfigFile } from './configFileManager'
+import type { SessionData } from './types'
 
-function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+function ok<T>(data?: T) { return { success: true, data } }
+function err(error: string) { return { success: false, error } }
+
+let mainWindow: BrowserWindow | null = null
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    show: false,
-    autoHideMenuBar: true,
+    minWidth: 600,
+    minHeight: 400,
+    backgroundColor: '#1e1e1e',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
-    }
-  })
-
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
-
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -27,18 +33,78 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  mainWindow.on('closed', () => { mainWindow = null })
 }
 
-app.whenReady().then(() => {
-  createWindow()
-
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
+// IPC Handlers
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd }) => {
+  try {
+    const shells = await detectAvailableShells()
+    const shell = shells.find(s => s.type === shellType) ?? shells[0]
+    if (!shell) return err('No shell available')
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('timeout')), 5000)
+      try {
+        spawnTerminal(id, shell.executable, cwd, (data) => {
+          mainWindow?.webContents.send('terminal:data', id, data)
+        })
+        clearTimeout(timeout)
+        resolve()
+      } catch (e) {
+        clearTimeout(timeout)
+        reject(e)
+      }
+    })
+    return ok()
+  } catch (e: any) {
+    return err(e.message ?? 'Failed to create terminal')
   }
 })
+
+ipcMain.handle('terminal:kill', async (_, { id }) => {
+  try { killTerminal(id); return ok() }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.on('terminal:write', (_, { id, data }) => writeToTerminal(id, data))
+ipcMain.on('terminal:resize', (_, { id, cols, rows }) => resizeTerminal(id, cols, rows))
+
+ipcMain.handle('shell:available', async () => {
+  try { return ok(await detectAvailableShells()) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('config:read', async (_, { filePath }) => {
+  try { return ok(readConfigFile(filePath)) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('config:write', async (_, { filePath, content }) => {
+  try { writeConfigFile(filePath, content); return ok() }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.on('history:append', (_, { terminalId, terminalName, command }) => {
+  try { appendCommand(terminalId, terminalName ?? terminalId, command) } catch {}
+})
+
+ipcMain.handle('history:search', async (_, { query }) => {
+  try { return ok(searchHistory(query)) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('fs:homedir', () => ok(homedir()))
+
+ipcMain.handle('session:load', async () => {
+  try { return ok(loadSession()) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.on('session:save', (_, data: SessionData) => {
+  try { saveSession(data) } catch {}
+})
+
+app.whenReady().then(createWindow)
+app.on('window-all-closed', () => { killAll(); if (process.platform !== 'darwin') app.quit() })
+app.on('activate', () => { if (!mainWindow) createWindow() })
