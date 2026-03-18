@@ -107,5 +107,9 @@ ipcMain.on('session:save', (_, data: SessionData) => {
 })
 
 app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
-app.on('window-all-closed', () => { killAll(); if (process.platform !== 'darwin') app.quit() })
+app.on('before-quit', () => { killAll() })
+app.on('window-all-closed', () => {
+  killAll()
+  if (process.platform !== 'darwin') app.quit()
+})
 app.on('activate', () => { if (!mainWindow) createWindow() })

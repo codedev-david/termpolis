@@ -37,6 +37,7 @@ export function killTerminal(id: string): void {
   const proc = processes.get(id)
   if (proc) {
     try { proc.pty.kill() } catch {}
+    try { proc.pty.pid && process.kill(proc.pty.pid) } catch {}
     processes.delete(id)
   }
 }
