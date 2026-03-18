@@ -61,5 +61,10 @@ export interface TermpolisAPI {
 declare global {
   interface Window {
     termpolis: TermpolisAPI
+    windowControls: {
+      minimize: () => void
+      maximize: () => void
+      close: () => void
+    }
   }
 }

@@ -17,11 +17,24 @@
   "build": {
     "appId": "com.termpolis.app",
     "productName": "Termpolis",
-    "directories": { "output": "dist-electron-builder" },
-    "files": ["out/**/*"],
-    "win": { "target": "nsis", "icon": "assets/icon.ico" },
-    "mac": { "target": "dmg", "icon": "assets/icon.icns" },
-    "linux": { "target": "AppImage", "icon": "assets/icon.png" }
+    "directories": {
+      "output": "dist-electron-builder"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -48,13 +61,14 @@
     "@typescript-eslint/parser": "^7.1.1",
     "@vitejs/plugin-react": "^4.2.1",
     "@vitest/coverage-v8": "^4.1.0",
-    "electron": "^30.0.1",
+    "electron": "^30.5.1",
     "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "jsdom": "^29.0.0",
+    "sharp": "^0.34.5",
     "typescript": "^5.2.2",
     "vite": "^5.1.6",
     "vitest": "^4.1.0"

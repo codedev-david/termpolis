@@ -23,6 +23,7 @@ function createWindow() {
     title: 'Termpolis',
     icon: nativeImage.createFromPath(iconPath),
     backgroundColor: '#1e1e1e',
+    frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -107,6 +108,13 @@ ipcMain.handle('session:load', async () => {
 ipcMain.on('session:save', (_, data: SessionData) => {
   try { saveSession(data) } catch {}
 })
+
+ipcMain.on('window:minimize', () => mainWindow?.minimize())
+ipcMain.on('window:maximize', () => {
+  if (mainWindow?.isMaximized()) mainWindow.unmaximize()
+  else mainWindow?.maximize()
+})
+ipcMain.on('window:close', () => mainWindow?.close())
 
 app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
 app.on('before-quit', () => { killAll() })

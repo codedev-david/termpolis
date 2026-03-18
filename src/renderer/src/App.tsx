@@ -4,6 +4,7 @@ import { TabView } from './components/TabView/TabView'
 import { GridView } from './components/GridView/GridView'
 import { SettingsPane } from './components/SettingsPane/SettingsPane'
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
+import { TitleBar } from './components/TitleBar/TitleBar'
 import { useTerminalStore } from './store/terminalStore'
 
 export default function App() {
@@ -53,11 +54,14 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-[#1e1e1e] text-[#d4d4d4] overflow-hidden">
-      <Sidebar />
-      <main className="flex-1 overflow-hidden">
-        {renderMain()}
-      </main>
+    <div className="flex flex-col h-screen bg-[#1e1e1e] text-[#d4d4d4] overflow-hidden">
+      <TitleBar />
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
+        <main className="flex-1 overflow-hidden">
+          {renderMain()}
+        </main>
+      </div>
       {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
     </div>
   )
