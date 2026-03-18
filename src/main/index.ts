@@ -19,6 +19,7 @@ function createWindow() {
     height: 800,
     minWidth: 600,
     minHeight: 400,
+    title: 'Termpolis',
     backgroundColor: '#1e1e1e',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -34,6 +35,7 @@ function createWindow() {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
+  mainWindow.webContents.openDevTools()
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
