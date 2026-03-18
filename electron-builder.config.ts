@@ -6,7 +6,7 @@ const config: Configuration = {
   directories: { output: 'dist-electron-builder' },
   files: ['out/**/*'],
   win: { target: 'nsis', icon: 'assets/icon.ico' },
-  mac: { target: 'dmg', icon: 'assets/icon.icns' },
+  mac: { target: 'dmg', icon: 'assets/icon.png' },
   linux: { target: 'AppImage', icon: 'assets/icon.png' },
 }
 

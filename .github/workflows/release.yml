@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -25,14 +26,19 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm install
 
+      - name: Rebuild native modules for Electron
+        run: npx electron-rebuild
+
       - name: Build and package
         run: npm run package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2
@@ -42,3 +48,4 @@ jobs:
             dist-electron-builder/*.dmg
             dist-electron-builder/*.AppImage
             dist-electron-builder/*.exe.blockmap
+            dist-electron-builder/*.zip
