@@ -54,5 +54,3 @@ jobs:
             dist-electron-builder/*.exe
             dist-electron-builder/*.dmg
             dist-electron-builder/*.AppImage
-            dist-electron-builder/*.exe.blockmap
-            dist-electron-builder/*.zip
