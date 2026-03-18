@@ -1181,7 +1181,6 @@ import { GridView } from './components/GridView/GridView'
 import { SettingsPane } from './components/SettingsPane/SettingsPane'
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
 import { useTerminalStore } from './store/terminalStore'
-import { homedir } from 'os'
 
 export default function App() {
   const { viewMode, showSettings, terminals, addTerminal, removeTerminal, defaultShell } = useTerminalStore()
@@ -2060,7 +2059,6 @@ npx vitest run tests/components/WorkspaceList.test.tsx
 import React, { useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
-import { homedir } from 'os'
 
 export function WorkspaceList() {
   const { workspaces, addWorkspace, removeWorkspace, terminals } = useTerminalStore()
@@ -2190,7 +2188,8 @@ export function SettingsPane() {
     window.termpolis.getHomedir().then(res => {
       if (!res.success || !res.data) return
       const home = res.data
-      const sep = home.includes('/') ? '/' : '\\'
+      // Detect path separator: Windows paths start with a drive letter (e.g. C:\)
+      const sep = /^[A-Za-z]:\\/.test(home) ? '\\' : '/'
       const files = CONFIG_FILE_NAMES.map(name => ({ label: name, path: `${home}${sep}${name}` }))
       setConfigFiles(files)
       setActiveFile(files[0].path)
