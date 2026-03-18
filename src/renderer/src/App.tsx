@@ -9,7 +9,7 @@ import { StatusBar } from './components/StatusBar/StatusBar'
 import { useTerminalStore } from './store/terminalStore'
 
 export default function App() {
-  const { viewMode, showSettings, terminals } = useTerminalStore()
+  const { viewMode, showSettings, terminals, workspaces } = useTerminalStore()
   const [historyOpen, setHistoryOpen] = useState(false)
   const restored = useRef(false)
 
@@ -34,7 +34,7 @@ export default function App() {
     })
   }, [])
 
-  // Persist session on terminal list changes (skip initial empty state)
+  // Persist session on terminal or workspace changes (skip initial empty state)
   useEffect(() => {
     if (!restored.current) return
     const state = useTerminalStore.getState()
@@ -44,7 +44,7 @@ export default function App() {
       defaultShell: state.defaultShell,
       viewMode: state.viewMode,
     })
-  }, [terminals])
+  }, [terminals, workspaces])
 
   // Global keyboard shortcut for history search
   useEffect(() => {
