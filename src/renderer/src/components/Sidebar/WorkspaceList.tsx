@@ -11,12 +11,27 @@ export function WorkspaceList() {
   const handleActivate = async (wsId: string) => {
     const ws = workspaces.find(w => w.id === wsId)
     if (!ws) return
+
+    // Kill all existing terminals first
+    const current = useTerminalStore.getState().terminals
+    for (const t of current) {
+      window.termpolis.killTerminal(t.id)
+    }
+    useTerminalStore.setState({ terminals: [], activeTerminalId: null })
+
+    // Spawn workspace terminals
     const cwd = await getHomedir()
+    const newTerminals = []
     for (const t of ws.terminals) {
       const id = uuid()
       await window.termpolis.createTerminal(id, t.shellType as any, cwd)
-      useTerminalStore.getState().addTerminal({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd })
+      newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd })
     }
+    useTerminalStore.setState({
+      terminals: newTerminals,
+      activeTerminalId: newTerminals[0]?.id ?? null,
+      showSettings: false,
+    })
   }
 
   return (
