@@ -120,6 +120,10 @@ app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
 app.on('before-quit', () => { killAll() })
 app.on('window-all-closed', () => {
   killAll()
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    app.quit()
+    // Force exit if quit doesn't complete within 1 second
+    setTimeout(() => process.exit(0), 1000)
+  }
 })
 app.on('activate', () => { if (!mainWindow) createWindow() })
