@@ -16,6 +16,9 @@ out/
 .DS_Store
 Thumbs.db
 
+# Testing screenshots
+ui_testing/
+
 # Editor
 .vscode/
 *.suo
