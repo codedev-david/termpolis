@@ -1,35 +1,64 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React, { useEffect, useState } from 'react'
+import { Sidebar } from './components/Sidebar/Sidebar'
+import { TabView } from './components/TabView/TabView'
+import { GridView } from './components/GridView/GridView'
+import { SettingsPane } from './components/SettingsPane/SettingsPane'
+import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
+import { useTerminalStore } from './store/terminalStore'
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const { viewMode, showSettings, terminals } = useTerminalStore()
+  const [historyOpen, setHistoryOpen] = useState(false)
+
+  // Restore session on mount
+  useEffect(() => {
+    window.termpolis.loadSession().then(res => {
+      if (!res.success || !res.data) return
+      const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
+      useTerminalStore.setState({ workspaces, defaultShell: ds, viewMode: vm })
+      saved.forEach(t => {
+        useTerminalStore.getState().addTerminal(t)
+        window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
+      })
+    })
+  }, [])
+
+  // Persist session on terminal list changes
+  useEffect(() => {
+    const state = useTerminalStore.getState()
+    window.termpolis.saveSession({
+      terminals: state.terminals,
+      workspaces: state.workspaces,
+      defaultShell: state.defaultShell,
+      viewMode: state.viewMode,
+    })
+  }, [terminals])
+
+  // Global keyboard shortcut for history search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'H') {
+        e.preventDefault()
+        setHistoryOpen(v => !v)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  const renderMain = () => {
+    if (showSettings) return <SettingsPane />
+    if (viewMode === 'grid') return <GridView />
+    return <TabView />
+  }
 
   return (
-    <>
-      <div>
-        <a href="https://vitejs.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    <div className="flex h-screen bg-[#1e1e1e] text-[#d4d4d4] overflow-hidden">
+      <Sidebar />
+      <main className="flex-1 overflow-hidden">
+        {renderMain()}
+      </main>
+      {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
+    </div>
   )
 }
-
-export default App
