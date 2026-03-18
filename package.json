@@ -1,7 +1,9 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Cross-platform terminal manager with tabs, grid view, workspaces, and shell config editing",
+  "author": "codedev-david",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
