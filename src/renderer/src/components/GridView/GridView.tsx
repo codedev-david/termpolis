@@ -44,7 +44,7 @@ export function GridView() {
               aria-label={`Close ${t.name}`}
             >✕</button>
           </div>
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 overflow-hidden relative">
             <TerminalPane terminalId={t.id} terminalName={t.name} isVisible={true} />
           </div>
         </div>
