@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
 import { GridView } from './components/GridView/GridView'
@@ -11,22 +11,32 @@ import { useTerminalStore } from './store/terminalStore'
 export default function App() {
   const { viewMode, showSettings, terminals } = useTerminalStore()
   const [historyOpen, setHistoryOpen] = useState(false)
+  const restored = useRef(false)
 
-  // Restore session on mount
+  // Restore session on mount (guard against StrictMode double-fire)
   useEffect(() => {
+    if (restored.current) return
+    restored.current = true
     window.termpolis.loadSession().then(res => {
       if (!res.success || !res.data) return
       const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
-      useTerminalStore.setState({ workspaces, defaultShell: ds, viewMode: vm })
+      // Set state all at once, then spawn ptys
+      useTerminalStore.setState({
+        terminals: saved,
+        workspaces,
+        defaultShell: ds,
+        viewMode: vm,
+        activeTerminalId: saved[0]?.id ?? null,
+      })
       saved.forEach(t => {
-        useTerminalStore.getState().addTerminal(t)
         window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
       })
     })
   }, [])
 
-  // Persist session on terminal list changes
+  // Persist session on terminal list changes (skip initial empty state)
   useEffect(() => {
+    if (!restored.current) return
     const state = useTerminalStore.getState()
     window.termpolis.saveSession({
       terminals: state.terminals,
