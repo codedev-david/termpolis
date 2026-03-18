@@ -116,6 +116,12 @@ ipcMain.on('window:maximize', () => {
 })
 ipcMain.on('window:close', () => mainWindow?.close())
 
+// Suppress node-pty async errors (e.g. resize on dead pty) that can't be try-caught
+process.on('uncaughtException', (err) => {
+  if (err.message?.includes('pty that has already exited')) return
+  console.error('Uncaught exception:', err)
+})
+
 app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
 app.on('before-quit', () => { killAll() })
 app.on('window-all-closed', () => {
