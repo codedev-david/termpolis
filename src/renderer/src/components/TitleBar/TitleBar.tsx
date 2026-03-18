@@ -1,4 +1,5 @@
 import React from 'react'
+import logoSvg from '/logo-termpolis.svg?url'
 
 export function TitleBar() {
   return (
@@ -7,7 +8,7 @@ export function TitleBar() {
       style={{ WebkitAppRegion: 'drag', height: 40 } as React.CSSProperties}
     >
       <div className="flex items-center gap-2 pl-3">
-        <img src="/logo-termpolis.svg" alt="Termpolis" className="w-6 h-6" />
+        <img src={logoSvg} alt="Termpolis" className="w-6 h-6" />
         <span className="text-lg font-bold tracking-wide text-[#e0e0e0]">Termpolis</span>
       </div>
       <div className="flex" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
