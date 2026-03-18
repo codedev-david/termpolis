@@ -40,6 +40,8 @@ termpolis/
 │   ├── index.css                         # Tailwind directives + global styles
 │   ├── store/
 │   │   └── terminalStore.ts             # Zustand store (all UI state)
+│   ├── lib/
+│   │   └── homedir.ts                   # shared homedir promise (IPC, cached)
 │   ├── types/
 │   │   └── index.ts                     # shared TS types
 │   └── components/
@@ -1150,6 +1152,37 @@ git commit -m "feat: implement Zustand store with terminal, workspace, and view 
 
 ---
 
+## Task 9.5: Shared Homedir Utility (Renderer)
+
+**Files:**
+- Create: `src/lib/homedir.ts`
+
+Node.js `homedir()` is unavailable in the renderer. This module fetches the home directory once via IPC and exports a promise so any component can `await getHomedir()` without each making its own IPC call.
+
+- [ ] **Step 1: Create `src/lib/homedir.ts`**
+
+```ts
+// Fetches homedir from main process once and caches the result.
+// Import this instead of using 'os'.homedir() — that API is unavailable in the renderer.
+let cached: string | null = null
+
+export async function getHomedir(): Promise<string> {
+  if (cached !== null) return cached
+  const res = await window.termpolis.getHomedir()
+  cached = (res.success && res.data) ? res.data : '~'
+  return cached
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add src/lib/homedir.ts
+git commit -m "feat: add shared homedir utility for renderer (IPC-backed)"
+```
+
+---
+
 ## Task 10: App Layout
 
 **Files:**
@@ -1895,12 +1928,9 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalTab } from './TerminalTab'
 import { AddTerminalModal } from './AddTerminalModal'
 import { WorkspaceList } from './WorkspaceList'
+import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
-
-// homedir is not available in renderer (no nodeIntegration). Fetch once via IPC.
-let cachedHomedir = '~'
-window.termpolis.getHomedir().then(res => { if (res.success && res.data) cachedHomedir = res.data })
 
 export function Sidebar() {
   const {
@@ -1920,7 +1950,7 @@ export function Sidebar() {
 
   const handleCreate = async (opts: { name: string; shellType: any; color: string }) => {
     const id = uuid()
-    const cwd = cachedHomedir
+    const cwd = await getHomedir()
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) return alert(`Failed to open terminal: ${res.error}`)
     addTerminal({ id, name: opts.name, color: opts.color, shellType: opts.shellType, cwd })
@@ -2058,6 +2088,7 @@ npx vitest run tests/components/WorkspaceList.test.tsx
 ```tsx
 import React, { useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
+import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 
 export function WorkspaceList() {
@@ -2068,9 +2099,9 @@ export function WorkspaceList() {
   const handleActivate = async (wsId: string) => {
     const ws = workspaces.find(w => w.id === wsId)
     if (!ws) return
+    const cwd = await getHomedir()
     for (const t of ws.terminals) {
       const id = uuid()
-      const cwd = cachedHomedir
       await window.termpolis.createTerminal(id, t.shellType as any, cwd)
       useTerminalStore.getState().addTerminal({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd })
     }
