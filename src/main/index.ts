@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
 import { detectAvailableShells } from './shellDetector'
@@ -14,12 +14,14 @@ function err(error: string) { return { success: false, error } }
 let mainWindow: BrowserWindow | null = null
 
 function createWindow() {
+  const iconPath = join(__dirname, '../../assets/logo-termpolis.png')
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 600,
     minHeight: 400,
     title: 'Termpolis',
+    icon: nativeImage.createFromPath(iconPath),
     backgroundColor: '#1e1e1e',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
