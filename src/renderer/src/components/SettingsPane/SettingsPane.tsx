@@ -3,12 +3,29 @@ import Editor from '@monaco-editor/react'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellInfo, ShellType } from '../../types'
 
-const CONFIG_FILE_NAMES = ['.bashrc', '.bash_profile', '.zshrc']
+function getConfigFiles(home: string): { label: string; path: string; lang: string }[] {
+  const isWin = /^[A-Za-z]:\\/.test(home)
+  const sep = isWin ? '\\' : '/'
+  const files: { label: string; path: string; lang: string }[] = []
+
+  if (isWin) {
+    files.push(
+      { label: 'PS7 Profile', path: `${home}${sep}Documents${sep}PowerShell${sep}Microsoft.PowerShell_profile.ps1`, lang: 'powershell' },
+      { label: 'PS5 Profile', path: `${home}${sep}Documents${sep}WindowsPowerShell${sep}Microsoft.PowerShell_profile.ps1`, lang: 'powershell' },
+    )
+  }
+  files.push(
+    { label: '.bashrc', path: `${home}${sep}.bashrc`, lang: 'shell' },
+    { label: '.bash_profile', path: `${home}${sep}.bash_profile`, lang: 'shell' },
+    { label: '.zshrc', path: `${home}${sep}.zshrc`, lang: 'shell' },
+  )
+  return files
+}
 
 export function SettingsPane() {
   const { defaultShell, setDefaultShell } = useTerminalStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
-  const [configFiles, setConfigFiles] = useState<{ label: string; path: string }[]>([])
+  const [configFiles, setConfigFiles] = useState<{ label: string; path: string; lang: string }[]>([])
   const [activeFile, setActiveFile] = useState('')
   const [fileContents, setFileContents] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -20,9 +37,7 @@ export function SettingsPane() {
     })
     window.termpolis.getHomedir().then(res => {
       if (!res.success || !res.data) return
-      const home = res.data
-      const sep = /^[A-Za-z]:\\/.test(home) ? '\\' : '/'
-      const files = CONFIG_FILE_NAMES.map(name => ({ label: name, path: `${home}${sep}${name}` }))
+      const files = getConfigFiles(res.data)
       setConfigFiles(files)
       setActiveFile(files[0].path)
       files.forEach(f => {
@@ -68,7 +83,7 @@ export function SettingsPane() {
           {activeFile && (
             <Editor
               height="100%"
-              language="shell"
+              language={configFiles.find(f => f.path === activeFile)?.lang ?? 'shell'}
               theme="vs-dark"
               value={fileContents[activeFile] ?? ''}
               onChange={val => setFileContents(prev => ({ ...prev, [activeFile]: val ?? '' }))}
