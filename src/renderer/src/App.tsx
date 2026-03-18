@@ -5,6 +5,7 @@ import { GridView } from './components/GridView/GridView'
 import { SettingsPane } from './components/SettingsPane/SettingsPane'
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
 import { TitleBar } from './components/TitleBar/TitleBar'
+import { StatusBar } from './components/StatusBar/StatusBar'
 import { useTerminalStore } from './store/terminalStore'
 
 export default function App() {
@@ -62,6 +63,7 @@ export default function App() {
           {renderMain()}
         </main>
       </div>
+      <StatusBar />
       {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
     </div>
   )
