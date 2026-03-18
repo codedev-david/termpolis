@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "Cross-platform terminal manager with tabs, grid view, workspaces, and shell config editing",
-  "author": "codedev-david",
+  "author": "Termpolis",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
@@ -27,7 +27,14 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "publisherName": "Termpolis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
     },
     "mac": {
       "target": "dmg",
