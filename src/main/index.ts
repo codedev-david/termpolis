@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
 import { detectAvailableShells } from './shellDetector'
@@ -105,6 +105,6 @@ ipcMain.on('session:save', (_, data: SessionData) => {
   try { saveSession(data) } catch {}
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
 app.on('window-all-closed', () => { killAll(); if (process.platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
