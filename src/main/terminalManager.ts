@@ -29,6 +29,7 @@ export function spawnTerminal(
   })
 
   proc.onData(onData)
+  proc.onExit(() => { processes.delete(id) })
   processes.set(id, { pty: proc })
 }
 
@@ -41,11 +42,11 @@ export function killTerminal(id: string): void {
 }
 
 export function writeToTerminal(id: string, data: string): void {
-  processes.get(id)?.pty.write(data)
+  try { processes.get(id)?.pty.write(data) } catch {}
 }
 
 export function resizeTerminal(id: string, cols: number, rows: number): void {
-  processes.get(id)?.pty.resize(cols, rows)
+  try { processes.get(id)?.pty.resize(cols, rows) } catch {}
 }
 
 export function killAll(): void {

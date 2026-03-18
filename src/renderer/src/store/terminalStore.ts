@@ -26,7 +26,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   workspaces: [],
   activeTerminalId: null,
   viewMode: 'tabs',
-  defaultShell: 'bash',
+  defaultShell: navigator.platform.startsWith('Win') ? 'powershell' : navigator.platform.startsWith('Mac') ? 'zsh' : 'bash',
   showSettings: false,
 
   addTerminal: (t) => set(s => ({
