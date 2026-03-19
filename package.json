@@ -31,11 +31,8 @@
       "publisherName": "Termpolis"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
       "perMachine": false,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
       "shortcutName": "Termpolis"
     },
     "mac": {
