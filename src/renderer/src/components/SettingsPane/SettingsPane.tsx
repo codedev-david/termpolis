@@ -86,7 +86,8 @@ export function SettingsPane() {
         </button>
       </div>
       <KeybindingsSettings />
-      <div className="flex flex-col gap-2 flex-1 min-h-0">
+      <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>
+        <label className="text-sm font-medium">Shell Config Files</label>
         <div className="flex gap-1 border-b border-[#3c3c3c] pb-1">
           {configFiles.map(f => (
             <button
@@ -96,7 +97,7 @@ export function SettingsPane() {
             >{f.label}</button>
           ))}
         </div>
-        <div className="flex-1 min-h-0 border border-[#3c3c3c] rounded overflow-hidden">
+        <div className="border border-[#3c3c3c] rounded overflow-hidden" style={{ height: 300 }}>
           {activeFile && (
             <Editor
               height="100%"
