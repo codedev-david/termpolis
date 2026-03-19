@@ -10,6 +10,20 @@
 
 This spec covers a significant feature expansion for Termpolis, adding terminal customization, intelligent auto-completion, command correction, output export, performance hardening, full Unicode support, and bundled CLI tools.
 
+## Migration / Backwards Compatibility
+
+The `TerminalSession` interface gains three new fields: `fontSize`, `theme`, `fontFamily`. Existing persisted sessions (via `sessionStore.ts`) will not contain these fields. On session load, apply defaults for any missing fields:
+
+```typescript
+const defaults = { fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' }
+const session = { ...defaults, ...loadedSession }
+```
+
+Additionally:
+- **`updateTerminal` in Zustand store** — currently constrains patches to `Partial<Pick<TerminalSession, 'name' | 'color'>>`. Must be widened to `Partial<Omit<TerminalSession, 'id'>>` to support editing fontSize, theme, and fontFamily post-creation.
+- **`onCreate` callback in AddTerminalModal** — currently passes `{ name, shellType, color }`. Must be extended to include `fontSize`, `theme`, and `fontFamily`.
+- **Workspace snapshot functions** — `addWorkspace` and `updateWorkspace` in the store destructure only `{ name, color, shellType }`. Must be updated to also capture `fontSize`, `theme`, and `fontFamily` when saving workspace templates.
+
 ## Features
 
 ### 1. Font Size Selector in Add Terminal Modal
@@ -45,14 +59,14 @@ This spec covers a significant feature expansion for Termpolis, adding terminal 
 | `dracula` | Dracula | `#282a36` | `#f8f8f2` | Popular dark theme |
 | `nord` | Nord | `#2e3440` | `#d8dee9` | Arctic color palette |
 
-Each theme definition includes full ANSI 16-color palette + cursor + selection colors.
+Each theme definition includes full ANSI 16-color palette + cursor + selection colors. Theme palettes will be sourced from their canonical definitions (e.g., draculatheme.com, nordtheme.com, ethanschoonover.com/solarized). Full palette values will be defined in `terminalThemes.ts` at implementation time using these authoritative sources.
 
 **Data model change:**
 - `TerminalSession` gains `theme: string` field (default: `'dark'`)
 
 **UI:**
 - Pill-style selector in `AddTerminalModal` showing actual bg/fg colors as preview
-- Live mini-terminal preview at bottom of modal updates with theme + font size changes
+- Live preview at bottom of modal: a styled `<div>` (not an xterm.js instance) rendering 3 lines of sample terminal text (`user@host:~/projects$ git status` etc.) using the selected theme's colors and the selected font size/family. Updates instantly on any change. Approximately 80px tall.
 - Theme also editable post-creation via `TabPopover`
 - Accent color (tab border) remains independent from terminal theme
 
@@ -79,7 +93,7 @@ User types → Keystroke Interceptor → Input Parser → Completion Engine → 
 ```
 
 **Completion sources (priority order):**
-1. **Bundled completion specs** — JSON definitions for ~300 common commands (git, docker, npm, kubectl, aws, python, cargo, etc.). Sourced from the withfig/autocomplete project (MIT). Each spec defines: command name, description, subcommands, options (flags with descriptions), and argument types.
+1. **Bundled completion specs** — JSON definitions for ~300 common commands (git, docker, npm, kubectl, aws, python, cargo, etc.). Sourced from the withfig/autocomplete project (MIT). The Fig specs are TypeScript — a build-time conversion script (`scripts/convert-fig-specs.ts`) will extract a curated subset (~300 most common commands) and convert them to a simplified JSON format. Estimated bundle size: ~500KB compressed. Specs can be updated by re-running the conversion script against a newer Fig checkout. Each spec defines: command name, description, subcommands, options (flags with descriptions), and argument types.
 2. **Shell-native completions** — PATH-discovered commands, file/directory paths, environment variables, shell aliases. Resolved via IPC to main process.
 3. **Command history** — previously used commands from `historyStore`, ranked by frequency.
 
@@ -95,6 +109,18 @@ User types → Keystroke Interceptor → Input Parser → Completion Engine → 
 - Arrow keys navigate, Tab accepts, Esc dismisses
 - Continues filtering as user types — non-blocking, never intercepts normal input
 - Footer shows keyboard hints: `↑↓ navigate · Tab accept · Esc dismiss`
+- **Ctrl+Space** manually triggers the dropdown at any time (even if auto-trigger hasn't fired)
+- Global toggle in settings to enable/disable autocomplete entirely
+
+**Input interception strategy:**
+- The completion system reads the current input from the existing `inputBufferRef` in `TerminalPane` (already tracks keystrokes between Enter presses)
+- When the dropdown is **not visible**, all keystrokes pass through to the PTY normally
+- When the dropdown **is visible**:
+  - **Tab** is intercepted (not sent to PTY) — inserts the selected completion
+  - **Arrow Up/Down** are intercepted — navigate the dropdown
+  - **Esc** is intercepted — closes the dropdown
+  - **All other keys** (letters, numbers, symbols, Enter, Backspace) pass through to the PTY normally and also update the dropdown filter
+- This is an observe-and-intercept-selectively model: the input buffer is observed on every keystroke, but only navigation/accept keys are intercepted when the dropdown is open
 
 **Data model:**
 - Specs stored in `src/renderer/src/completions/specs/` as JSON, loaded lazily per command
@@ -118,9 +144,21 @@ User types → Keystroke Interceptor → Input Parser → Completion Engine → 
 
 **What:** When a command fails, detect the error pattern and show an inline suggestion banner with the corrected command.
 
-**Detection:** After each command, monitor PTY output for:
-- Non-zero exit code (tracked via shell prompt detection or `$?` monitoring)
-- Error keywords in recent output (stderr patterns)
+**Detection strategy — shell integration markers:**
+
+The correction system needs to know when a command has finished and whether it failed. We use the VS Code terminal shell integration approach: inject a shell hook that emits an OSC escape sequence after each command completes.
+
+- **Bash:** Inject via `PROMPT_COMMAND` — append `PROMPT_COMMAND='printf "\e]633;E;$?\a"'` to the PTY environment
+- **Zsh:** Inject via `precmd` hook — `precmd() { printf "\e]633;E;$?\a" }`
+- **PowerShell:** Inject via `prompt` function — `function prompt { "$([char]27)]633;E;$LASTEXITCODE$([char]7)" + (original prompt) }`
+
+The marker `\e]633;E;<exit_code>\a` is parsed by `TerminalPane`. When exit code is non-zero, the correction engine examines the recent PTY output buffer for error patterns.
+
+**Supported shells:** bash, zsh, PowerShell. Git Bash uses bash hooks. CMD is not supported for auto-fix (no reliable hook mechanism).
+
+**Fallback:** If shell integration injection fails (e.g., user overrides PROMPT_COMMAND), the system falls back to pattern-matching only — scanning recent output for known error strings without exit code awareness. This still catches most cases (e.g., "command not found", "Permission denied") but may produce false positives.
+
+**Error pattern matching:** After detecting a non-zero exit code (or error pattern in fallback mode), scan recent output for:
 
 **Correction rules (~50-100 patterns):**
 
@@ -158,7 +196,7 @@ User types → Keystroke Interceptor → Input Parser → Completion Engine → 
 
 2. **Scrollback buffer limit** — Set xterm.js `scrollback` option to 10,000 lines per terminal (default). Prevents unbounded memory growth. Configurable in settings.
 
-3. **Viewport-aware rendering** — Terminals scrolled off-screen in grid view get reduced render priority. Data is still queued (no data loss) but DOM rendering is deferred until the terminal scrolls back into view. Uses `IntersectionObserver`.
+3. **Viewport-aware rendering** — Terminals scrolled off-screen in grid view get reduced render priority. `term.write()` is still called normally (terminal state stays in sync with PTY), but the xterm.js renderer is paused for off-screen terminals via the WebGL addon's render pause capability. When the terminal scrolls back into view (detected via `IntersectionObserver`), the renderer resumes and the terminal is already up to date since `term.write()` was never paused — only the visual rendering was deferred.
 
 4. **WebGL renderer** — Use `@xterm/addon-webgl` for GPU-accelerated terminal rendering. Falls back to canvas renderer if WebGL is unavailable. Significant performance improvement when rendering multiple terminals simultaneously.
 
@@ -210,7 +248,7 @@ User types → Keystroke Interceptor → Input Parser → Completion Engine → 
 - Reads lines from `terminal.buffer.active` (xterm.js API)
 
 **New IPC channel:**
-- `terminal:export` — receives `{ content: string, defaultFilename: string }`, opens save dialog, writes file
+- `terminal:export` — receives `{ content: string, defaultFilename: string }`, opens save dialog, writes file. Note: with 10,000-line scrollback, content may be several MB. Electron IPC handles this fine for typical scrollback sizes; no streaming needed.
 
 **Implementation:**
 - Add save icon button to terminal headers in `GridView` and `TabView`
@@ -229,7 +267,7 @@ User types → Keystroke Interceptor → Input Parser → Completion Engine → 
 |------|------|---------|-------|
 | jq | ~1.5MB | MIT | JSON processor |
 | yq | ~5MB | MIT | YAML/XML/TOML processor |
-| curl | ~3MB | MIT-like | Only bundled as fallback if not detected in system PATH |
+| curl | ~3MB | curl license (MIT-adjacent, permissive) | Only bundled as fallback if not detected in system PATH |
 
 **Implementation:**
 - Static binaries stored in `resources/tools/{platform}/` (win32, darwin, linux)
@@ -279,6 +317,40 @@ interface TerminalSession {
 | `completion:path-commands` | invoke | List PATH commands |
 | `completion:env-vars` | invoke | List environment variables |
 | `terminal:export` | invoke | Save dialog + write file |
+
+**TypeScript signatures for TermpolisAPI:**
+
+```typescript
+// Added to TermpolisAPI in src/renderer/src/types/index.ts
+completionPathEntries: (dirPath: string) => Promise<{ success: boolean; data?: { name: string; isDir: boolean }[]; error?: string }>
+completionPathCommands: () => Promise<{ success: boolean; data?: string[]; error?: string }>
+completionEnvVars: () => Promise<{ success: boolean; data?: Record<string, string>; error?: string }>
+exportTerminal: (opts: { content: string; defaultFilename: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>
+```
+
+**Cross-platform notes for `completion:path-commands`:**
+- **Windows:** Scan directories in `%PATH%` for files with extensions `.exe`, `.cmd`, `.bat`, `.ps1`, `.com`
+- **macOS/Linux:** Scan directories in `$PATH` for files with execute permission bit set
+- Cache results on first call, invalidate on terminal creation (PATH may change between sessions)
+
+## Addon Compatibility
+
+- `@xterm/addon-fit` and `@xterm/addon-webgl` are compatible and commonly used together. Initialize order: create Terminal → load WebGL addon → load Fit addon → open terminal → fit.
+- `@xterm/addon-unicode11` is independent and can be loaded at any point after Terminal creation.
+- `@xterm/addon-web-links` (already in dependencies but unused) can be loaded alongside all of the above.
+
+## Testing Strategy
+
+| Feature | Test Type | What to Test |
+|---------|-----------|-------------|
+| Completion engine | Unit | Token parsing, spec matching, result ranking, edge cases (empty input, special chars) |
+| Correction rules | Unit | Each rule as pure function: input command + output string → expected fix or null |
+| ANSI stripping | Unit | Strip codes from sample output, preserve plain text |
+| Theme definitions | Unit | All 7 themes have required ITheme fields (16 ANSI colors, bg, fg, cursor, selection) |
+| Session migration | Unit | Loading old sessions without new fields applies defaults correctly |
+| Export | Integration | Buffer extraction → ANSI strip → file write round-trip |
+| Autocomplete UI | Integration | Dropdown renders, filters, accepts, dismisses correctly |
+| Grid performance | Manual | Open 6+ terminals, run `yes` or `find /` in several, verify no UI freezing |
 
 ## New Components
 
