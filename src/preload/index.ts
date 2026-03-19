@@ -43,6 +43,9 @@ const api: TermpolisAPI = {
 
   saveSession: (data) =>
     ipcRenderer.send('session:save', data),
+
+  exportTerminal: (opts) =>
+    ipcRenderer.invoke('terminal:export', opts),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

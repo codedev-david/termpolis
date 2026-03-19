@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
+import { writeFileSync } from 'fs'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll } from './terminalManager'
 import { loadSession, saveSession } from './sessionStore'
@@ -107,6 +108,18 @@ ipcMain.handle('session:load', async () => {
 
 ipcMain.on('session:save', (_, data: SessionData) => {
   try { saveSession(data) } catch {}
+})
+
+ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
+  try {
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      defaultPath: defaultFilename,
+      filters: [{ name: 'Text Files', extensions: ['txt'] }],
+    })
+    if (result.canceled || !result.filePath) return ok()
+    writeFileSync(result.filePath, content, 'utf-8')
+    return ok({ filePath: result.filePath })
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.on('window:minimize', () => mainWindow?.minimize())
