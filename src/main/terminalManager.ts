@@ -36,7 +36,7 @@ export function spawnTerminal(
     process.platform
   )
   const existingPath = process.env.PATH || process.env.Path || ''
-  const needsBundled = !isCommandAvailable('jq') || !isCommandAvailable('yq') || !isCommandAvailable('curl')
+  const needsBundled = !isCommandAvailable('jq') || !isCommandAvailable('yq') || !isCommandAvailable('curl') || !isCommandAvailable('nano')
   const env = needsBundled
     ? { ...process.env, PATH: `${toolsDir}${process.platform === 'win32' ? ';' : ':'}${existingPath}` } as Record<string, string>
     : { ...process.env } as Record<string, string>

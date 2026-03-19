@@ -61,6 +61,26 @@ else
 fi
 rm -rf "$CURL_TMP"
 
+# ── nano (Windows only — pre-installed on macOS/Linux) ──
+echo "==> Downloading nano for Windows..."
+
+NANO_VERSION=$(curl -sI https://github.com/okibcn/nano-for-windows/releases/latest | grep -i '^location:' | sed 's|.*/tag/||;s/\r//')
+echo "    nano: $NANO_VERSION"
+
+NANO_URL="https://github.com/okibcn/nano-for-windows/releases/download/${NANO_VERSION}/nano-for-windows_${NANO_VERSION}_win64.zip"
+NANO_TMP=$(mktemp -d)
+
+curl -sL "$NANO_URL" -o "$NANO_TMP/nano.zip"
+unzip -q -o "$NANO_TMP/nano.zip" -d "$NANO_TMP"
+NANO_EXE=$(find "$NANO_TMP" -name "nano.exe" -type f | head -1)
+if [ -n "$NANO_EXE" ]; then
+  cp "$NANO_EXE" "$TOOLS_DIR/win32/nano.exe"
+  echo "    done"
+else
+  echo "    WARNING: nano.exe not found in archive, skipping"
+fi
+rm -rf "$NANO_TMP"
+
 # ── Summary ─────────────────────────────────────────
 echo ""
 echo "==> Bundled tools:"
