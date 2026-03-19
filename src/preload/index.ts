@@ -56,8 +56,8 @@ const api: TermpolisAPI = {
   completionEnvVars: () =>
     ipcRenderer.invoke('completion:env-vars'),
 
-  getTerminalStatus: (cwd) =>
-    ipcRenderer.invoke('terminal:status', { cwd }),
+  getTerminalStatus: (terminalId, fallbackCwd) =>
+    ipcRenderer.invoke('terminal:status', { terminalId, fallbackCwd }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

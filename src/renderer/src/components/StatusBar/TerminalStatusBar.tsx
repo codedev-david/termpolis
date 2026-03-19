@@ -9,14 +9,16 @@ interface Props {
 
 export function TerminalStatusBar({ terminalId, shellType, cwd }: Props) {
   const [gitBranch, setGitBranch] = useState('')
+  const [currentCwd, setCurrentCwd] = useState(cwd)
 
   useEffect(() => {
     let disposed = false
 
     const fetchStatus = async () => {
       try {
-        const res = await window.termpolis.getTerminalStatus(cwd)
+        const res = await window.termpolis.getTerminalStatus(terminalId, cwd)
         if (!disposed && res.success && res.data) {
+          if (res.data.cwd) setCurrentCwd(res.data.cwd)
           setGitBranch(res.data.gitBranch)
         }
       } catch {}
@@ -29,7 +31,7 @@ export function TerminalStatusBar({ terminalId, shellType, cwd }: Props) {
       disposed = true
       clearInterval(interval)
     }
-  }, [cwd])
+  }, [terminalId, cwd])
 
   const shellLabel: Record<ShellType, string> = {
     bash: 'Bash',
@@ -45,9 +47,9 @@ export function TerminalStatusBar({ terminalId, shellType, cwd }: Props) {
         <i className="fa-solid fa-terminal text-[10px]"></i>
         {shellLabel[shellType] ?? shellType}
       </span>
-      <span className="flex items-center gap-1 truncate min-w-0" title={`Working directory: ${cwd}`}>
+      <span className="flex items-center gap-1 truncate min-w-0" title={`Working directory: ${currentCwd}`}>
         <i className="fa-solid fa-folder text-[10px] shrink-0"></i>
-        <span className="truncate">{cwd}</span>
+        <span className="truncate">{currentCwd}</span>
       </span>
       {gitBranch && (
         <span className="flex items-center gap-1 shrink-0" title={`Git branch: ${gitBranch}`}>

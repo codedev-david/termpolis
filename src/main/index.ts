@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd } from './terminalManager'
 import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
@@ -139,11 +139,16 @@ ipcMain.handle('completion:env-vars', async () => {
   catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('terminal:status', async (_, { cwd }) => {
+ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
   try {
+    // Try to get the real CWD from the PTY process
+    const liveCwd = getTerminalCwd(terminalId)
+    const cwd = liveCwd || fallbackCwd
     let gitBranch = ''
     try {
-      gitBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim()
+      gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+        cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000, windowsHide: true
+      }).toString().trim()
     } catch {}
     return ok({ cwd, gitBranch })
   } catch (e: any) { return err(e.message) }
