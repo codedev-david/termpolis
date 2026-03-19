@@ -45,7 +45,7 @@ export function GridView() {
             >✕</button>
           </div>
           <div className="flex-1 overflow-hidden relative">
-            <TerminalPane terminalId={t.id} terminalName={t.name} isVisible={true} />
+            <TerminalPane terminalId={t.id} terminalName={t.name} isVisible={true} fontSize={t.fontSize} theme={t.theme} fontFamily={t.fontFamily} />
           </div>
         </div>
       ))}

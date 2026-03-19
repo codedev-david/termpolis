@@ -21,6 +21,9 @@ export function TabView() {
           terminalId={t.id}
           terminalName={t.name}
           isVisible={t.id === activeTerminalId}
+          fontSize={t.fontSize}
+          theme={t.theme}
+          fontFamily={t.fontFamily}
         />
       ))}
     </div>
