@@ -53,9 +53,9 @@ export function Sidebar() {
       <aside className="w-10 shrink-0 flex flex-col items-center bg-[#252526] border-r border-[#3c3c3c] h-full py-2">
         <button
           onClick={() => setCollapsed(false)}
-          className="text-[#6b7280] hover:text-white text-sm px-1 py-1 rounded hover:bg-[#37373d]"
+          className="text-[#6b7280] hover:text-white px-2 py-3 rounded hover:bg-[#37373d]"
           title="Expand sidebar"
-        >&#x00BB;</button>
+        ><i className="fa-solid fa-chevron-right text-lg"></i></button>
       </aside>
     )
   }
@@ -70,9 +70,9 @@ export function Sidebar() {
           >⚙ Settings</button>
           <button
             onClick={() => setCollapsed(true)}
-            className="text-[#6b7280] hover:text-white text-sm px-2 py-2 rounded hover:bg-[#37373d]"
+            className="text-[#6b7280] hover:text-white px-2 py-2 rounded hover:bg-[#37373d]"
             title="Collapse sidebar"
-          >&#x00AB;</button>
+          ><i className="fa-solid fa-chevron-left text-lg"></i></button>
         </div>
         <button
           onClick={() => {
