@@ -17,6 +17,7 @@ export function Sidebar() {
 
   const [showAddModal, setShowAddModal] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
+  const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
     window.termpolis.getAvailableShells().then(res => {
@@ -47,13 +48,32 @@ export function Sidebar() {
     removeTerminal(id)
   }
 
+  if (collapsed) {
+    return (
+      <aside className="w-10 shrink-0 flex flex-col items-center bg-[#252526] border-r border-[#3c3c3c] h-full py-2">
+        <button
+          onClick={() => setCollapsed(false)}
+          className="text-[#6b7280] hover:text-white text-sm px-1 py-1 rounded hover:bg-[#37373d]"
+          title="Expand sidebar"
+        >&#x00BB;</button>
+      </aside>
+    )
+  }
+
   return (
     <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full">
       <div className="flex flex-col gap-1 p-2 border-b border-[#3c3c3c]">
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className={`flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d]' : ''}`}
-        >⚙ Settings</button>
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className={`flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] flex-1 ${showSettings ? 'bg-[#37373d]' : ''}`}
+          >⚙ Settings</button>
+          <button
+            onClick={() => setCollapsed(true)}
+            className="text-[#6b7280] hover:text-white text-sm px-2 py-2 rounded hover:bg-[#37373d]"
+            title="Collapse sidebar"
+          >&#x00AB;</button>
+        </div>
         <button
           onClick={() => {
             toggleViewMode()
@@ -66,6 +86,7 @@ export function Sidebar() {
         >{viewMode === 'tabs' ? '⊞ Grid View' : '☰ Tab View'}</button>
       </div>
       <WorkspaceList />
+      <div className="border-t border-[#3c3c3c]"></div>
       <div className="flex-1 overflow-y-auto">
         {terminals.map(t => (
           <TerminalTab

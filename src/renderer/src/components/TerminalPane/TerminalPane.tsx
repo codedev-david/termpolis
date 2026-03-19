@@ -88,7 +88,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
           const rect = containerRef.current.getBoundingClientRect()
           setDropdownPosition({
             x: rect.left + 20,
-            y: rect.bottom - 200,
+            y: rect.top + 40,
           })
         }
       } else {
@@ -245,7 +245,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
                 const rect = containerRef.current.getBoundingClientRect()
                 setDropdownPosition({
                   x: rect.left + 20,
-                  y: rect.bottom - 200,
+                  y: rect.top + 40,
                 })
               }
             }
@@ -365,7 +365,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
                 const rect = containerRef.current.getBoundingClientRect()
                 setDropdownPosition({
                   x: rect.left + 20,
-                  y: rect.bottom - 200,
+                  y: rect.top + 40,
                 })
               }
             } else {

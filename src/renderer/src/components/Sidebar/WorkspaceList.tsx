@@ -118,7 +118,7 @@ export function WorkspaceList() {
         <button
           onClick={() => { setSaving(true); setWsName('') }}
           disabled={terminals.length === 0}
-          className="w-full text-left text-xs text-[#6b7280] hover:text-[#d4d4d4] px-3 py-1 disabled:opacity-40"
+          className="w-full text-left text-sm text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
         >+ Save Workspace</button>
       )}
     </div>
