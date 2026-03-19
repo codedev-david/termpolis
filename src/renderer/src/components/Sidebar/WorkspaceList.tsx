@@ -22,13 +22,14 @@ export function WorkspaceList() {
     }
     useTerminalStore.setState({ terminals: [], activeTerminalId: null })
 
-    // Spawn workspace terminals
-    const cwd = await getHomedir()
+    // Spawn workspace terminals (use saved cwd, fall back to home)
+    const homedir = await getHomedir()
     const newTerminals = []
     for (const t of ws.terminals) {
       const id = uuid()
+      const cwd = t.cwd || homedir
       await window.termpolis.createTerminal(id, t.shellType as any, cwd)
-      newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd })
+      newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily })
     }
     useTerminalStore.setState({
       terminals: newTerminals,

@@ -22,7 +22,7 @@ export interface TerminalSession {
 export interface Workspace {
   id: string
   name: string
-  terminals: Omit<TerminalSession, 'id' | 'cwd'>[]
+  terminals: Omit<TerminalSession, 'id'>[]
 }
 
 export interface SessionData {

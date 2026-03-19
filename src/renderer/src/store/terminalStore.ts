@@ -67,7 +67,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     workspaces: [...s.workspaces, {
       id: uuid(),
       name,
-      terminals: s.terminals.map(({ id, cwd, ...rest }) => rest),
+      terminals: s.terminals.map(({ id, ...rest }) => rest),
     }],
   })),
 
@@ -77,7 +77,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   updateWorkspace: (id) => set(s => ({
     workspaces: s.workspaces.map(w => w.id === id
-      ? { ...w, terminals: s.terminals.map(({ id, cwd, ...rest }) => rest) }
+      ? { ...w, terminals: s.terminals.map(({ id, ...rest }) => rest) }
       : w
     ),
   })),
