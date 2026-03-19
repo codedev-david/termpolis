@@ -27,13 +27,8 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico",
+      "icon": "assets/icon.png",
       "publisherName": "Termpolis"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "shortcutName": "Termpolis"
     },
     "mac": {
       "target": "dmg",
