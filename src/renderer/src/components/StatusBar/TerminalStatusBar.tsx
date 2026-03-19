@@ -5,12 +5,13 @@ interface Props {
   terminalId: string
   shellType: ShellType
   cwd: string
+  parsedBranch?: string | null
 }
 
-export function TerminalStatusBar({ terminalId, shellType, cwd }: Props) {
-  const [gitBranch, setGitBranch] = useState('')
-  const [currentCwd, setCurrentCwd] = useState(cwd)
+export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch }: Props) {
+  const [ipcBranch, setIpcBranch] = useState('')
 
+  // IPC-based git branch lookup as fallback (works on macOS/Linux with live cwd)
   useEffect(() => {
     let disposed = false
 
@@ -18,20 +19,22 @@ export function TerminalStatusBar({ terminalId, shellType, cwd }: Props) {
       try {
         const res = await window.termpolis.getTerminalStatus(terminalId, cwd)
         if (!disposed && res.success && res.data) {
-          if (res.data.cwd) setCurrentCwd(res.data.cwd)
-          setGitBranch(res.data.gitBranch)
+          setIpcBranch(res.data.gitBranch)
         }
       } catch {}
     }
 
     fetchStatus()
 
-    const interval = setInterval(fetchStatus, 3000)
+    const interval = setInterval(fetchStatus, 5000)
     return () => {
       disposed = true
       clearInterval(interval)
     }
   }, [terminalId, cwd])
+
+  // Prefer prompt-parsed branch (works on all platforms), fall back to IPC
+  const gitBranch = parsedBranch || ipcBranch
 
   const shellLabel: Record<ShellType, string> = {
     bash: 'Bash',
@@ -47,9 +50,9 @@ export function TerminalStatusBar({ terminalId, shellType, cwd }: Props) {
         <i className="fa-solid fa-terminal text-[10px]"></i>
         {shellLabel[shellType] ?? shellType}
       </span>
-      <span className="flex items-center gap-1 truncate min-w-0" title={`Working directory: ${currentCwd}`}>
+      <span className="flex items-center gap-1 truncate min-w-0" title={`Working directory: ${cwd}`}>
         <i className="fa-solid fa-folder text-[10px] shrink-0"></i>
-        <span className="truncate">{currentCwd}</span>
+        <span className="truncate">{cwd}</span>
       </span>
       {gitBranch && (
         <span className="flex items-center gap-1 shrink-0" title={`Git branch: ${gitBranch}`}>

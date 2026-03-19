@@ -12,6 +12,7 @@ import { getSuggestion } from '../../corrections/correctionEngine'
 import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
+import { parsePromptFromOutput } from '../../lib/promptParser'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
@@ -53,6 +54,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [fixSuggestion, setFixSuggestion] = useState<string | null>(null)
   const fixSuggestionRef = useRef<string | null>(null)
   const outputBufferRef = useRef('')
+  const [parsedCwd, setParsedCwd] = useState<string | null>(null)
+  const [parsedBranch, setParsedBranch] = useState<string | null>(null)
   const lastCommandRef = useRef('')
 
   // Refs for use inside onData callback (avoids stale closures)
@@ -417,6 +420,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         outputBufferRef.current = outputBufferRef.current.slice(-4096)
       }
 
+      // Parse prompt for cwd and git branch (works on all platforms by reading terminal output)
+      const stripped = outputBufferRef.current.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      const promptInfo = parsePromptFromOutput(stripped, shellType)
+      if (promptInfo.cwd && !disposed) setParsedCwd(promptInfo.cwd)
+      if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
+
       // Watch for OSC 633 exit code marker (if shell integration is enabled)
       const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)
       if (oscMatch) {
@@ -587,7 +596,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           />
         )}
       </div>
-      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={cwd} />
+      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} />
     </div>
   )
 }
