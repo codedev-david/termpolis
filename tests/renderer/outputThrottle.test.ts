@@ -37,4 +37,32 @@ describe('createOutputThrottle', () => {
     expect(writeFn).toHaveBeenCalledTimes(2)
     expect(writeFn).toHaveBeenLastCalledWith('second')
   })
+
+  it('splits large output into 64KB chunks across frames', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    // Write 150KB of data
+    const bigData = 'x'.repeat(150 * 1024)
+    throttled(bigData)
+
+    // Drain rAF callbacks round by round (each flush may schedule another)
+    function drainOne() {
+      const cbs = [...rafCallbacks]
+      rafCallbacks = []
+      cbs.forEach(cb => cb())
+    }
+
+    // First frame: flushes 64KB
+    drainOne()
+    expect(writeFn).toHaveBeenCalledTimes(1)
+    expect(writeFn.mock.calls[0][0].length).toBe(65536)
+    // Second frame: flushes another 64KB
+    drainOne()
+    expect(writeFn).toHaveBeenCalledTimes(2)
+    expect(writeFn.mock.calls[1][0].length).toBe(65536)
+    // Third frame: flushes remaining ~19KB
+    drainOne()
+    expect(writeFn).toHaveBeenCalledTimes(3)
+    expect(writeFn.mock.calls[2][0].length).toBe(150 * 1024 - 65536 * 2)
+  })
 })
