@@ -486,7 +486,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     >
       <div
         ref={containerRef}
-        className="flex-1 relative"
+        className="flex-1 relative min-h-0 overflow-hidden"
         style={{ padding: 4 }}
         onContextMenu={handleContextMenu}
       >

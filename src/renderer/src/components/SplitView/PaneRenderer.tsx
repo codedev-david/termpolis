@@ -111,7 +111,7 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
         >&#x2715;</button>
       </div>
       {/* Terminal */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 min-h-0 overflow-hidden relative">
         <TerminalPane
           terminalId={terminal.id}
           terminalName={terminal.name}
