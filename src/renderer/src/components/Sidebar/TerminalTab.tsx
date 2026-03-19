@@ -45,6 +45,9 @@ export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: 
         <TabPopover
           name={terminal.name}
           color={terminal.color}
+          fontSize={terminal.fontSize}
+          theme={terminal.theme}
+          fontFamily={terminal.fontFamily}
           anchorEl={rowRef.current}
           onSave={patch => { onUpdate(patch); setPopoverOpen(false) }}
           onClose={() => setPopoverOpen(false)}
