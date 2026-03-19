@@ -1,7 +1,49 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { TerminalSession, Workspace, ViewMode, ShellType } from '../types'
+import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
+
+// ---- Pane tree helpers ----
+
+export function buildPaneTree(terminalIds: string[]): PaneNode | null {
+  if (terminalIds.length === 0) return null
+  if (terminalIds.length === 1) return { type: 'terminal', terminalId: terminalIds[0] }
+  // Stack terminals vertically in a balanced binary tree
+  const mid = Math.ceil(terminalIds.length / 2)
+  const left = buildPaneTree(terminalIds.slice(0, mid))
+  const right = buildPaneTree(terminalIds.slice(mid))
+  if (!left) return right
+  if (!right) return left
+  return { type: 'split', direction: 'horizontal', ratio: 0.5, children: [left, right] }
+}
+
+function findAndReplace(node: PaneNode, terminalId: string, replacement: PaneNode): PaneNode | null {
+  if (node.type === 'terminal') {
+    return node.terminalId === terminalId ? replacement : null
+  }
+  const leftResult = findAndReplace(node.children[0], terminalId, replacement)
+  if (leftResult) return { ...node, children: [leftResult, node.children[1]] }
+  const rightResult = findAndReplace(node.children[1], terminalId, replacement)
+  if (rightResult) return { ...node, children: [node.children[0], rightResult] }
+  return null
+}
+
+function removeFromTree(node: PaneNode, terminalId: string): PaneNode | null {
+  if (node.type === 'terminal') {
+    return node.terminalId === terminalId ? null : node
+  }
+  const leftResult = removeFromTree(node.children[0], terminalId)
+  const rightResult = removeFromTree(node.children[1], terminalId)
+  if (!leftResult && !rightResult) return null
+  if (!leftResult) return rightResult
+  if (!rightResult) return leftResult
+  return { ...node, children: [leftResult, rightResult] }
+}
+
+function findRightmostLeaf(node: PaneNode): string | null {
+  if (node.type === 'terminal') return node.terminalId
+  return findRightmostLeaf(node.children[1])
+}
 
 interface TerminalStore {
   terminals: TerminalSession[]
@@ -13,6 +55,7 @@ interface TerminalStore {
   autocompleteEnabled: boolean
   sidebarCollapsed: boolean
   keybindings: KeybindingMap
+  paneTree: PaneNode | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -29,6 +72,9 @@ interface TerminalStore {
   setSidebarCollapsed: (collapsed: boolean) => void
   setKeybinding: (action: keyof KeybindingMap, binding: string) => void
   resetKeybindings: () => void
+  setPaneTree: (tree: PaneNode | null) => void
+  splitTerminal: (terminalId: string, direction: 'horizontal' | 'vertical', newTerminalId: string) => void
+  removePaneTerminal: (terminalId: string) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -41,19 +87,44 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   autocompleteEnabled: true,
   sidebarCollapsed: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },
+  paneTree: null,
 
-  addTerminal: (t) => set(s => ({
-    terminals: [...s.terminals, t],
-    activeTerminalId: t.id,
-    showSettings: false,
-  })),
+  addTerminal: (t) => set(s => {
+    const newTerminals = [...s.terminals, t]
+    let newTree = s.paneTree
+    if (s.viewMode === 'split') {
+      const newLeaf: PaneNode = { type: 'terminal', terminalId: t.id }
+      if (!newTree) {
+        newTree = newLeaf
+      } else {
+        // Append as a vertical split to the rightmost leaf
+        const rightmost = findRightmostLeaf(newTree)
+        if (rightmost) {
+          const replacement: PaneNode = {
+            type: 'split',
+            direction: 'horizontal',
+            ratio: 0.5,
+            children: [{ type: 'terminal', terminalId: rightmost }, newLeaf],
+          }
+          newTree = findAndReplace(newTree, rightmost, replacement) || newTree
+        }
+      }
+    }
+    return {
+      terminals: newTerminals,
+      activeTerminalId: t.id,
+      showSettings: false,
+      paneTree: newTree,
+    }
+  }),
 
   removeTerminal: (id) => set(s => {
     const remaining = s.terminals.filter(t => t.id !== id)
     const nextActive = s.activeTerminalId === id
       ? (remaining[remaining.length - 1]?.id ?? null)
       : s.activeTerminalId
-    return { terminals: remaining, activeTerminalId: nextActive }
+    const newTree = s.paneTree ? removeFromTree(s.paneTree, id) : null
+    return { terminals: remaining, activeTerminalId: nextActive, paneTree: newTree }
   }),
 
   updateTerminal: (id, patch) => set(s => ({
@@ -62,7 +133,14 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   setActiveTerminal: (id) => set({ activeTerminalId: id, showSettings: false }),
 
-  toggleViewMode: () => set(s => ({ viewMode: s.viewMode === 'tabs' ? 'grid' : 'tabs' })),
+  toggleViewMode: () => set(s => {
+    const newMode: ViewMode = s.viewMode === 'tabs' ? 'split' : 'tabs'
+    let newTree = s.paneTree
+    if (newMode === 'split' && !newTree) {
+      newTree = buildPaneTree(s.terminals.map(t => t.id))
+    }
+    return { viewMode: newMode, paneTree: newTree }
+  }),
 
   setShowSettings: (show) => set(s => ({
     showSettings: show,
@@ -103,4 +181,27 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   })),
 
   resetKeybindings: () => set({ keybindings: { ...DEFAULT_KEYBINDINGS } }),
+
+  setPaneTree: (tree) => set({ paneTree: tree }),
+
+  splitTerminal: (terminalId, direction, newTerminalId) => set(s => {
+    if (!s.paneTree) return {}
+    const replacement: PaneNode = {
+      type: 'split',
+      direction,
+      ratio: 0.5,
+      children: [
+        { type: 'terminal', terminalId },
+        { type: 'terminal', terminalId: newTerminalId },
+      ],
+    }
+    const newTree = findAndReplace(s.paneTree, terminalId, replacement)
+    return { paneTree: newTree || s.paneTree, activeTerminalId: newTerminalId }
+  }),
+
+  removePaneTerminal: (terminalId) => set(s => {
+    if (!s.paneTree) return {}
+    const newTree = removeFromTree(s.paneTree, terminalId)
+    return { paneTree: newTree }
+  }),
 }))

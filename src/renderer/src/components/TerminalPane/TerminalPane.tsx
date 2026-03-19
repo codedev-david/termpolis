@@ -26,6 +26,8 @@ interface Props {
   theme: string
   fontFamily: string
   onTerminalReady?: (term: any) => void
+  onSplitRight?: () => void
+  onSplitDown?: () => void
 }
 
 interface ContextMenuState {
@@ -34,7 +36,7 @@ interface ContextMenuState {
   y: number
 }
 
-export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady }: Props) {
+export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -536,6 +538,33 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             >
               Export Visible Output...
             </button>
+            {(onSplitRight || onSplitDown) && (
+              <>
+                <div className="border-t border-[#454545] my-1"></div>
+                {onSplitRight && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+                    onClick={() => {
+                      onSplitRight()
+                      setContextMenu({ visible: false, x: 0, y: 0 })
+                    }}
+                  >
+                    Split Right<span className="float-right text-[#666]">Ctrl+Shift+R</span>
+                  </button>
+                )}
+                {onSplitDown && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+                    onClick={() => {
+                      onSplitDown()
+                      setContextMenu({ visible: false, x: 0, y: 0 })
+                    }}
+                  >
+                    Split Down<span className="float-right text-[#666]">Ctrl+Shift+D</span>
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
         {dropdownVisible && (

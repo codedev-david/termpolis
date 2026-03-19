@@ -34,7 +34,7 @@ export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   prevTerminal: 'Previous Terminal',
   toggleAutocomplete: 'Trigger Autocomplete',
   toggleSidebar: 'Toggle Sidebar',
-  toggleGrid: 'Toggle Grid View',
+  toggleGrid: 'Toggle Split View',
 }
 
 // Check if a KeyboardEvent matches a keybinding string like "Ctrl+Shift+H"

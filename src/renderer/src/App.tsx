@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
-import { GridView } from './components/GridView/GridView'
+import { SplitView } from './components/SplitView/SplitView'
 import { SettingsPane } from './components/SettingsPane/SettingsPane'
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { AddTerminalModal } from './components/Sidebar/AddTerminalModal'
-import { useTerminalStore } from './store/terminalStore'
+import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { matchesKeybinding, DEFAULT_KEYBINDINGS } from './lib/keybindings'
 import { getHomedir } from './lib/homedir'
 import { TERMINAL_DEFAULTS } from './lib/terminalDefaults'
@@ -35,13 +35,16 @@ export default function App() {
       if (res.success && res.data) {
         const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
+        // Migrate old 'grid' viewMode to 'split'
+        const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
         useTerminalStore.setState({
           terminals: saved,
           workspaces,
           defaultShell: ds,
-          viewMode: vm,
+          viewMode: resolvedVm,
           activeTerminalId: saved[0]?.id ?? null,
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
+          paneTree: resolvedVm === 'split' ? buildPaneTree(saved.map(t => t.id)) : null,
         })
         saved.forEach(t => {
           window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
@@ -158,7 +161,7 @@ export default function App() {
 
   const renderMain = () => {
     if (showSettings) return <SettingsPane />
-    if (viewMode === 'grid') return <GridView />
+    if (viewMode === 'split') return <SplitView />
     return <TabView />
   }
 

@@ -27,6 +27,8 @@ export function loadSession(): SessionData {
   try {
     const raw = readFileSync(path, 'utf-8')
     const parsed = { ...DEFAULT_SESSION, ...JSON.parse(raw) }
+    // Migrate old 'grid' viewMode to 'split'
+    if (parsed.viewMode === 'grid') parsed.viewMode = 'split'
     parsed.terminals = parsed.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
     parsed.workspaces = parsed.workspaces.map((w: any) => ({
       ...w,

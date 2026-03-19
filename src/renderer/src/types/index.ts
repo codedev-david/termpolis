@@ -1,6 +1,10 @@
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
-export type ViewMode = 'tabs' | 'grid'
+export type ViewMode = 'tabs' | 'split'
+
+export type PaneNode =
+  | { type: 'terminal'; terminalId: string }
+  | { type: 'split'; direction: 'horizontal' | 'vertical'; ratio: number; children: [PaneNode, PaneNode] }
 
 export interface ShellInfo {
   type: ShellType

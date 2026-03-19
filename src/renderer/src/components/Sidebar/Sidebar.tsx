@@ -83,7 +83,7 @@ export function Sidebar() {
             }
           }}
           className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
-        >{viewMode === 'tabs' ? '⊞ Grid View' : '☰ Tab View'}</button>
+        >{viewMode === 'tabs' ? '⊞ Split View' : '☰ Tab View'}</button>
       </div>
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>

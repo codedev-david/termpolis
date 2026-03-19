@@ -1,6 +1,6 @@
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
-export type ViewMode = 'tabs' | 'grid'
+export type ViewMode = 'tabs' | 'split'
 
 export interface ShellInfo {
   type: ShellType
