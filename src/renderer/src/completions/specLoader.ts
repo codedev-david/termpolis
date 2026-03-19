@@ -11,9 +11,15 @@ export interface CompletionOption {
 }
 
 const specCache = new Map<string, CompletionSpec | null>()
+const MAX_CACHE_SIZE = 100
 
 export async function loadSpec(command: string): Promise<CompletionSpec | null> {
   if (specCache.has(command)) return specCache.get(command)!
+  // Evict oldest entry if cache is full
+  if (specCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = specCache.keys().next().value
+    if (firstKey !== undefined) specCache.delete(firstKey)
+  }
   try {
     const mod = await import(`./specs/${command}.json`)
     const spec = mod.default as CompletionSpec

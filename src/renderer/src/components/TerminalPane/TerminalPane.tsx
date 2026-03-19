@@ -184,6 +184,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
 
   useEffect(() => {
     if (!containerRef.current) return
+    let disposed = false
 
     // 1. Create Terminal instance
     const term = new Terminal({
@@ -237,6 +238,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
         const input = inputBufferRef.current
         if (input.length > 0) {
           getCompletions(input).then(results => {
+            if (disposed) return
             if (results.length > 0) {
               setSuggestions(results)
               setSelectedIndex(0)
@@ -335,6 +337,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
         // Re-filter completions after backspace
         if (autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
           getCompletions(inputBufferRef.current).then(results => {
+            if (disposed) return
             if (results.length > 0) {
               setSuggestions(results)
               setSelectedIndex(0)
@@ -357,6 +360,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
         // Trigger completions if autocomplete is enabled and input has 2+ chars
         if (autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
           getCompletions(inputBufferRef.current).then(results => {
+            if (disposed) return
             if (results.length > 0) {
               setSuggestions(results)
               setSelectedIndex(0)
@@ -398,6 +402,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
+            if (disposed) return
             if (suggestion) setFixSuggestion(suggestion)
           }).catch(() => {})
         }
@@ -411,6 +416,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
+            if (disposed) return
             if (suggestion) setFixSuggestion(suggestion)
           }).catch(() => {})
         }
@@ -424,6 +430,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
     ro.observe(containerRef.current)
 
     return () => {
+      disposed = true
       unsub()
       ro.disconnect()
       term.dispose()
