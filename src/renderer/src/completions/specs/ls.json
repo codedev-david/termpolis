@@ -1,0 +1,20 @@
+{
+  "name": "ls",
+  "description": "List directory contents",
+  "subcommands": [],
+  "options": [
+    { "name": ["-l"], "description": "Use long listing format" },
+    { "name": ["-a", "--all"], "description": "Show hidden files (starting with .)" },
+    { "name": ["-h", "--human-readable"], "description": "Print sizes in human-readable form" },
+    { "name": ["-R", "--recursive"], "description": "List subdirectories recursively" },
+    { "name": ["-t"], "description": "Sort by modification time" },
+    { "name": ["-S"], "description": "Sort by file size, largest first" },
+    { "name": ["-r", "--reverse"], "description": "Reverse sort order" },
+    { "name": ["--color"], "description": "Colorize the output" },
+    { "name": ["-1"], "description": "List one file per line" },
+    { "name": ["-d", "--directory"], "description": "List directories, not contents" },
+    { "name": ["-i", "--inode"], "description": "Print inode number of each file" },
+    { "name": ["-F", "--classify"], "description": "Append indicator to entries" },
+    { "name": ["-A", "--almost-all"], "description": "Show hidden files, but not . or .." }
+  ]
+}

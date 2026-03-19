@@ -1,0 +1,10 @@
+{
+  "name": "mkdir",
+  "description": "Make directories",
+  "subcommands": [],
+  "options": [
+    { "name": ["-p", "--parents"], "description": "Create parent dirs as needed" },
+    { "name": ["-v", "--verbose"], "description": "Print message for each created dir" },
+    { "name": ["-m", "--mode"], "description": "Set file permission mode (e.g. 755)" }
+  ]
+}

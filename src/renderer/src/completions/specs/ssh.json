@@ -1,0 +1,22 @@
+{
+  "name": "ssh",
+  "description": "OpenSSH remote login client",
+  "subcommands": [],
+  "options": [
+    { "name": ["-i"], "description": "Identity file (private key)" },
+    { "name": ["-p"], "description": "Port to connect to on remote host" },
+    { "name": ["-L"], "description": "Local port forwarding" },
+    { "name": ["-R"], "description": "Remote port forwarding" },
+    { "name": ["-D"], "description": "Dynamic (SOCKS) port forwarding" },
+    { "name": ["-N"], "description": "Do not execute remote command" },
+    { "name": ["-f"], "description": "Go to background before command" },
+    { "name": ["-v"], "description": "Verbose mode (repeat for more)" },
+    { "name": ["-o"], "description": "Set option in config format" },
+    { "name": ["-T"], "description": "Disable pseudo-terminal allocation" },
+    { "name": ["-t"], "description": "Force pseudo-terminal allocation" },
+    { "name": ["-A"], "description": "Enable agent forwarding" },
+    { "name": ["-X"], "description": "Enable X11 forwarding" },
+    { "name": ["-C"], "description": "Enable compression" },
+    { "name": ["-q"], "description": "Quiet mode" }
+  ]
+}

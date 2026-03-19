@@ -1,0 +1,74 @@
+{
+  "name": "pip",
+  "description": "Python package installer",
+  "subcommands": [
+    {
+      "name": "install",
+      "description": "Install packages",
+      "options": [
+        { "name": ["-r", "--requirement"], "description": "Install from requirements file" },
+        { "name": ["-U", "--upgrade"], "description": "Upgrade to latest version" },
+        { "name": ["--no-deps"], "description": "Do not install dependencies" },
+        { "name": ["--user"], "description": "Install into user site-packages" },
+        { "name": ["-e", "--editable"], "description": "Install in editable/dev mode" },
+        { "name": ["--index-url", "-i"], "description": "Use alternate package index URL" },
+        { "name": ["--no-cache-dir"], "description": "Disable the cache" }
+      ]
+    },
+    {
+      "name": "uninstall",
+      "description": "Uninstall packages",
+      "options": [
+        { "name": ["-y", "--yes"], "description": "Skip confirmation prompt" },
+        { "name": ["-r", "--requirement"], "description": "Uninstall packages from file" }
+      ]
+    },
+    {
+      "name": "list",
+      "description": "List installed packages",
+      "options": [
+        { "name": ["-o", "--outdated"], "description": "List outdated packages" },
+        { "name": ["-u", "--uptodate"], "description": "List up-to-date packages" },
+        { "name": ["--format"], "description": "Output format: columns/freeze/json" }
+      ]
+    },
+    {
+      "name": "show",
+      "description": "Show info about installed packages",
+      "options": [
+        { "name": ["-f", "--files"], "description": "Show package file list" },
+        { "name": ["-v", "--verbose"], "description": "Show additional metadata" }
+      ]
+    },
+    {
+      "name": "freeze",
+      "description": "Output installed packages in requirements format",
+      "options": [
+        { "name": ["-r", "--requirement"], "description": "Use order from requirements file" },
+        { "name": ["--local"], "description": "Only include virtualenv packages" }
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Search PyPI for packages",
+      "options": [
+        { "name": ["-i", "--index"], "description": "Base URL of Python Package Index" }
+      ]
+    },
+    {
+      "name": "download",
+      "description": "Download packages",
+      "options": [
+        { "name": ["-r", "--requirement"], "description": "Download from requirements file" },
+        { "name": ["-d", "--dest"], "description": "Directory to save packages in" },
+        { "name": ["--platform"], "description": "Only download for this platform" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["--version", "-V"], "description": "Print pip version" },
+    { "name": ["--help", "-h"], "description": "Show help" },
+    { "name": ["--verbose", "-v"], "description": "Give more output" },
+    { "name": ["--quiet", "-q"], "description": "Give less output" }
+  ]
+}

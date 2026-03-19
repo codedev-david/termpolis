@@ -1,0 +1,128 @@
+{
+  "name": "docker",
+  "description": "Container runtime and toolchain",
+  "subcommands": [
+    {
+      "name": "run",
+      "description": "Run a command in a new container",
+      "options": [
+        { "name": ["-d", "--detach"], "description": "Run container in background" },
+        { "name": ["-it"], "description": "Interactive with TTY" },
+        { "name": ["--rm"], "description": "Remove container when it exits" },
+        { "name": ["-p", "--publish"], "description": "Publish container port to host" },
+        { "name": ["-v", "--volume"], "description": "Bind mount a volume" },
+        { "name": ["-e", "--env"], "description": "Set environment variable" },
+        { "name": ["--name"], "description": "Assign a name to the container" },
+        { "name": ["--network"], "description": "Connect to a network" },
+        { "name": ["--restart"], "description": "Set restart policy" }
+      ]
+    },
+    {
+      "name": "build",
+      "description": "Build an image from a Dockerfile",
+      "options": [
+        { "name": ["-t", "--tag"], "description": "Name and optionally tag the image" },
+        { "name": ["-f", "--file"], "description": "Path to Dockerfile" },
+        { "name": ["--no-cache"], "description": "Do not use cache when building" },
+        { "name": ["--platform"], "description": "Set target platform" },
+        { "name": ["--build-arg"], "description": "Set build-time variable" },
+        { "name": ["--target"], "description": "Set target build stage" }
+      ]
+    },
+    {
+      "name": "ps",
+      "description": "List containers",
+      "options": [
+        { "name": ["-a", "--all"], "description": "Show all containers (incl. stopped)" },
+        { "name": ["-q", "--quiet"], "description": "Only display container IDs" },
+        { "name": ["-s", "--size"], "description": "Display total file sizes" },
+        { "name": ["--format"], "description": "Format output using a template" }
+      ]
+    },
+    {
+      "name": "images",
+      "description": "List images",
+      "options": [
+        { "name": ["-a", "--all"], "description": "Show all images" },
+        { "name": ["-q", "--quiet"], "description": "Only show image IDs" },
+        { "name": ["--format"], "description": "Format output using a template" }
+      ]
+    },
+    {
+      "name": "pull",
+      "description": "Pull an image or repository from a registry",
+      "options": [
+        { "name": ["-a", "--all-tags"], "description": "Download all tagged images" },
+        { "name": ["--platform"], "description": "Set platform if multi-platform" }
+      ]
+    },
+    {
+      "name": "push",
+      "description": "Push an image to a registry",
+      "options": [
+        { "name": ["-a", "--all-tags"], "description": "Push all tagged images" }
+      ]
+    },
+    {
+      "name": "exec",
+      "description": "Run a command in a running container",
+      "options": [
+        { "name": ["-it"], "description": "Interactive with TTY" },
+        { "name": ["-d", "--detach"], "description": "Run in background" },
+        { "name": ["-e", "--env"], "description": "Set environment variable" },
+        { "name": ["-u", "--user"], "description": "Run as this user" },
+        { "name": ["-w", "--workdir"], "description": "Set working directory" }
+      ]
+    },
+    {
+      "name": "stop",
+      "description": "Stop one or more running containers",
+      "options": [
+        { "name": ["-t", "--time"], "description": "Seconds to wait before killing" }
+      ]
+    },
+    {
+      "name": "rm",
+      "description": "Remove one or more containers",
+      "options": [
+        { "name": ["-f", "--force"], "description": "Force remove running container" },
+        { "name": ["-v", "--volumes"], "description": "Remove associated volumes" }
+      ]
+    },
+    {
+      "name": "rmi",
+      "description": "Remove one or more images",
+      "options": [
+        { "name": ["-f", "--force"], "description": "Force remove image" }
+      ]
+    },
+    {
+      "name": "logs",
+      "description": "Fetch the logs of a container",
+      "options": [
+        { "name": ["-f", "--follow"], "description": "Follow log output" },
+        { "name": ["--tail"], "description": "Number of lines from end of logs" },
+        { "name": ["-t", "--timestamps"], "description": "Show timestamps" },
+        { "name": ["--since"], "description": "Show logs since timestamp" }
+      ]
+    },
+    {
+      "name": "compose",
+      "description": "Define and run multi-container apps",
+      "options": [
+        { "name": ["up"], "description": "Create and start containers" },
+        { "name": ["down"], "description": "Stop and remove containers" },
+        { "name": ["build"], "description": "Build or rebuild services" },
+        { "name": ["logs"], "description": "View output from containers" },
+        { "name": ["ps"], "description": "List containers" },
+        { "name": ["restart"], "description": "Restart services" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["--version"], "description": "Print Docker version" },
+    { "name": ["--help"], "description": "Show help" },
+    { "name": ["-H", "--host"], "description": "Daemon socket to connect to" },
+    { "name": ["--context"], "description": "Name of the Docker context to use" }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "name": "yarn",
+  "description": "Fast, reliable Node package manager",
+  "subcommands": [
+    {
+      "name": "add",
+      "description": "Add a package to dependencies",
+      "options": [
+        { "name": ["-D", "--dev"], "description": "Add to devDependencies" },
+        { "name": ["-P", "--peer"], "description": "Add to peerDependencies" },
+        { "name": ["-O", "--optional"], "description": "Add to optionalDependencies" },
+        { "name": ["-E", "--exact"], "description": "Install exact version" },
+        { "name": ["-T", "--tilde"], "description": "Install with tilde range" }
+      ]
+    },
+    {
+      "name": "remove",
+      "description": "Remove a package from dependencies",
+      "options": []
+    },
+    {
+      "name": "install",
+      "description": "Install all dependencies",
+      "options": [
+        { "name": ["--frozen-lockfile"], "description": "Fail if lockfile needs updating" },
+        { "name": ["--no-lockfile"], "description": "Do not read or generate lockfile" },
+        { "name": ["--force"], "description": "Force reinstall all packages" },
+        { "name": ["--production"], "description": "Skip devDependencies" }
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run a script from package.json",
+      "options": []
+    },
+    {
+      "name": "build",
+      "description": "Run the build script",
+      "options": []
+    },
+    {
+      "name": "test",
+      "description": "Run the test script",
+      "options": []
+    },
+    {
+      "name": "init",
+      "description": "Create a new package.json file",
+      "options": [
+        { "name": ["-y", "--yes"], "description": "Skip prompts, use defaults" }
+      ]
+    },
+    {
+      "name": "upgrade",
+      "description": "Upgrade packages to latest versions",
+      "options": [
+        { "name": ["--latest"], "description": "Ignore version range in package.json" }
+      ]
+    },
+    {
+      "name": "why",
+      "description": "Show why a package is installed",
+      "options": []
+    },
+    {
+      "name": "info",
+      "description": "Show information about a package",
+      "options": [
+        { "name": ["--json"], "description": "Output info as JSON" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["--version", "-v"], "description": "Print yarn version" },
+    { "name": ["--help", "-h"], "description": "Show help" },
+    { "name": ["--silent"], "description": "Skip yarn console logs" },
+    { "name": ["--cwd"], "description": "Working directory to use" }
+  ]
+}

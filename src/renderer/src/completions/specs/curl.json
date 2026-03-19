@@ -1,0 +1,27 @@
+{
+  "name": "curl",
+  "description": "Transfer data from or to a server",
+  "subcommands": [],
+  "options": [
+    { "name": ["-X", "--request"], "description": "HTTP method to use (GET, POST, etc.)" },
+    { "name": ["-H", "--header"], "description": "Pass custom header to server" },
+    { "name": ["-d", "--data"], "description": "Send POST data" },
+    { "name": ["--data-raw"], "description": "Send raw POST data (no @file)" },
+    { "name": ["-o", "--output"], "description": "Write output to file" },
+    { "name": ["-O", "--remote-name"], "description": "Save with remote filename" },
+    { "name": ["-L", "--location"], "description": "Follow redirects" },
+    { "name": ["-s", "--silent"], "description": "Silent mode, no progress output" },
+    { "name": ["-v", "--verbose"], "description": "Make operation more talkative" },
+    { "name": ["-k", "--insecure"], "description": "Allow insecure TLS connections" },
+    { "name": ["-u", "--user"], "description": "Set user and password for auth" },
+    { "name": ["-b", "--cookie"], "description": "Send cookies from string or file" },
+    { "name": ["-c", "--cookie-jar"], "description": "Save cookies to file after transfer" },
+    { "name": ["-I", "--head"], "description": "Fetch headers only (HEAD request)" },
+    { "name": ["-F", "--form"], "description": "Send multipart form data" },
+    { "name": ["--url"], "description": "Set the URL to work with" },
+    { "name": ["-A", "--user-agent"], "description": "Set the user agent string" },
+    { "name": ["--compressed"], "description": "Request compressed response" },
+    { "name": ["--connect-timeout"], "description": "Set max connect time in seconds" },
+    { "name": ["-m", "--max-time"], "description": "Set max total time in seconds" }
+  ]
+}

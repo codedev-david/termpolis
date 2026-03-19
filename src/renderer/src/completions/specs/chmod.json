@@ -1,0 +1,11 @@
+{
+  "name": "chmod",
+  "description": "Change file mode bits (permissions)",
+  "subcommands": [],
+  "options": [
+    { "name": ["-R", "--recursive"], "description": "Change permissions recursively" },
+    { "name": ["-v", "--verbose"], "description": "Report each file processed" },
+    { "name": ["-c", "--changes"], "description": "Report only when change is made" },
+    { "name": ["--reference"], "description": "Use permissions from reference file" }
+  ]
+}

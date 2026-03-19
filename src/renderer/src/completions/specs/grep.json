@@ -1,0 +1,23 @@
+{
+  "name": "grep",
+  "description": "Search text using patterns",
+  "subcommands": [],
+  "options": [
+    { "name": ["-r", "-R", "--recursive"], "description": "Recursively search directories" },
+    { "name": ["-i", "--ignore-case"], "description": "Case-insensitive matching" },
+    { "name": ["-n", "--line-number"], "description": "Show line numbers with output" },
+    { "name": ["-l", "--files-with-matches"], "description": "Print only file names with match" },
+    { "name": ["-c", "--count"], "description": "Print count of matching lines" },
+    { "name": ["-v", "--invert-match"], "description": "Select non-matching lines" },
+    { "name": ["-E", "--extended-regexp"], "description": "Use extended regular expressions" },
+    { "name": ["-P", "--perl-regexp"], "description": "Use Perl-compatible regexps" },
+    { "name": ["--include"], "description": "Search only matching filenames" },
+    { "name": ["--exclude"], "description": "Skip files matching pattern" },
+    { "name": ["-A"], "description": "Print N lines after match" },
+    { "name": ["-B"], "description": "Print N lines before match" },
+    { "name": ["-C"], "description": "Print N lines around match" },
+    { "name": ["-w", "--word-regexp"], "description": "Match whole words only" },
+    { "name": ["-q", "--quiet"], "description": "Suppress normal output" },
+    { "name": ["-o", "--only-matching"], "description": "Print only matched parts" }
+  ]
+}

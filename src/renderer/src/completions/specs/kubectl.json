@@ -1,0 +1,112 @@
+{
+  "name": "kubectl",
+  "description": "Kubernetes command-line tool",
+  "subcommands": [
+    {
+      "name": "get",
+      "description": "Display one or many resources",
+      "options": [
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["-o", "--output"], "description": "Output format (json/yaml/wide)" },
+        { "name": ["-A", "--all-namespaces"], "description": "All namespaces" },
+        { "name": ["--watch", "-w"], "description": "Watch for changes" },
+        { "name": ["-l", "--selector"], "description": "Label selector to filter" },
+        { "name": ["--no-headers"], "description": "Omit header row from output" }
+      ]
+    },
+    {
+      "name": "apply",
+      "description": "Apply a configuration to a resource",
+      "options": [
+        { "name": ["-f", "--filename"], "description": "Filename or directory to apply" },
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["--dry-run"], "description": "Dry run without applying" },
+        { "name": ["-k", "--kustomize"], "description": "Apply kustomization directory" },
+        { "name": ["--force"], "description": "Force apply, replacing resource" }
+      ]
+    },
+    {
+      "name": "delete",
+      "description": "Delete resources by file or type/name",
+      "options": [
+        { "name": ["-f", "--filename"], "description": "Filename to delete resources from" },
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["--grace-period"], "description": "Seconds to wait before delete" },
+        { "name": ["--force"], "description": "Force immediate deletion" },
+        { "name": ["--all"], "description": "Delete all resources of type" }
+      ]
+    },
+    {
+      "name": "describe",
+      "description": "Show details of a specific resource",
+      "options": [
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["-l", "--selector"], "description": "Label selector to filter" },
+        { "name": ["-A", "--all-namespaces"], "description": "All namespaces" }
+      ]
+    },
+    {
+      "name": "logs",
+      "description": "Print logs from a container in a pod",
+      "options": [
+        { "name": ["-f", "--follow"], "description": "Stream logs in real time" },
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["--tail"], "description": "Number of recent log lines" },
+        { "name": ["-c", "--container"], "description": "Print logs of this container" },
+        { "name": ["--previous", "-p"], "description": "Print logs from previous container" },
+        { "name": ["--since"], "description": "Show logs since duration" }
+      ]
+    },
+    {
+      "name": "exec",
+      "description": "Execute a command in a container",
+      "options": [
+        { "name": ["-it"], "description": "Interactive with TTY" },
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["-c", "--container"], "description": "Target container name" }
+      ]
+    },
+    {
+      "name": "create",
+      "description": "Create a resource from a file or stdin",
+      "options": [
+        { "name": ["-f", "--filename"], "description": "File to create resource from" },
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["--dry-run"], "description": "Dry run without creating" }
+      ]
+    },
+    {
+      "name": "scale",
+      "description": "Set a new size for a deployment",
+      "options": [
+        { "name": ["--replicas"], "description": "Number of replicas to set" },
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" }
+      ]
+    },
+    {
+      "name": "rollout",
+      "description": "Manage rollouts of a resource",
+      "options": [
+        { "name": ["status"], "description": "Show status of rollout" },
+        { "name": ["undo"], "description": "Undo a previous rollout" },
+        { "name": ["restart"], "description": "Restart a resource rollout" },
+        { "name": ["history"], "description": "View rollout history" }
+      ]
+    },
+    {
+      "name": "port-forward",
+      "description": "Forward local port to a pod",
+      "options": [
+        { "name": ["-n", "--namespace"], "description": "Specify namespace" },
+        { "name": ["--address"], "description": "Address to listen on" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["--version"], "description": "Print kubectl version" },
+    { "name": ["--help"], "description": "Show help" },
+    { "name": ["--kubeconfig"], "description": "Path to kubeconfig file" },
+    { "name": ["--context"], "description": "Name of kubeconfig context to use" },
+    { "name": ["-n", "--namespace"], "description": "Specify namespace" }
+  ]
+}

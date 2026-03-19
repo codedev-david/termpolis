@@ -1,0 +1,101 @@
+{
+  "name": "npm",
+  "description": "Node package manager",
+  "subcommands": [
+    {
+      "name": "install",
+      "description": "Install a package",
+      "options": [
+        { "name": ["-g", "--global"], "description": "Install package globally" },
+        { "name": ["--save-dev", "-D"], "description": "Save as devDependency" },
+        { "name": ["--save-exact", "-E"], "description": "Save exact version" },
+        { "name": ["--no-save"], "description": "Do not save to package.json" },
+        { "name": ["--legacy-peer-deps"], "description": "Ignore peer dependency conflicts" },
+        { "name": ["--force"], "description": "Force reinstall" }
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run a script defined in package.json",
+      "options": [
+        { "name": ["--silent"], "description": "Suppress npm log output" },
+        { "name": ["--if-present"], "description": "Do not error if script missing" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run the test script",
+      "options": [
+        { "name": ["--silent"], "description": "Suppress npm log output" }
+      ]
+    },
+    {
+      "name": "start",
+      "description": "Run the start script",
+      "options": []
+    },
+    {
+      "name": "build",
+      "description": "Run the build script",
+      "options": []
+    },
+    {
+      "name": "init",
+      "description": "Create a new package.json file",
+      "options": [
+        { "name": ["-y", "--yes"], "description": "Skip prompts, use defaults" }
+      ]
+    },
+    {
+      "name": "publish",
+      "description": "Publish a package to the registry",
+      "options": [
+        { "name": ["--access"], "description": "Set package access level" },
+        { "name": ["--tag"], "description": "Publish with a dist-tag" },
+        { "name": ["--dry-run"], "description": "Simulate publish without uploading" }
+      ]
+    },
+    {
+      "name": "uninstall",
+      "description": "Remove a package",
+      "options": [
+        { "name": ["-g", "--global"], "description": "Remove global package" },
+        { "name": ["--save-dev"], "description": "Remove from devDependencies" }
+      ]
+    },
+    {
+      "name": "update",
+      "description": "Update packages to latest versions",
+      "options": [
+        { "name": ["-g", "--global"], "description": "Update global packages" }
+      ]
+    },
+    {
+      "name": "list",
+      "description": "List installed packages",
+      "options": [
+        { "name": ["-g", "--global"], "description": "List global packages" },
+        { "name": ["--depth"], "description": "Max depth of dependency tree" },
+        { "name": ["--json"], "description": "Output as JSON" }
+      ]
+    },
+    {
+      "name": "audit",
+      "description": "Run a security audit",
+      "options": [
+        { "name": ["fix"], "description": "Automatically fix vulnerabilities" },
+        { "name": ["--json"], "description": "Output as JSON" }
+      ]
+    },
+    {
+      "name": "ci",
+      "description": "Clean install from package-lock.json",
+      "options": []
+    }
+  ],
+  "options": [
+    { "name": ["--version", "-v"], "description": "Print npm version" },
+    { "name": ["--help", "-h"], "description": "Show help" },
+    { "name": ["--loglevel"], "description": "Set log level" }
+  ]
+}
