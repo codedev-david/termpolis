@@ -9,6 +9,7 @@ interface TerminalStore {
   viewMode: ViewMode
   defaultShell: ShellType
   showSettings: boolean
+  autocompleteEnabled: boolean
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -21,6 +22,7 @@ interface TerminalStore {
   renameWorkspace: (id: string, name: string) => void
   updateWorkspace: (id: string) => void
   removeWorkspace: (id: string) => void
+  setAutocompleteEnabled: (enabled: boolean) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -30,6 +32,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   viewMode: 'tabs',
   defaultShell: navigator.platform.startsWith('Win') ? 'powershell' : navigator.platform.startsWith('Mac') ? 'zsh' : 'bash',
   showSettings: false,
+  autocompleteEnabled: true,
 
   addTerminal: (t) => set(s => ({
     terminals: [...s.terminals, t],
@@ -82,4 +85,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   removeWorkspace: (id) => set(s => ({
     workspaces: s.workspaces.filter(w => w.id !== id),
   })),
+
+  setAutocompleteEnabled: (enabled) => set({ autocompleteEnabled: enabled }),
 }))
