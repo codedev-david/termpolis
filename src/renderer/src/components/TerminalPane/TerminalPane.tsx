@@ -202,20 +202,22 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
     term.open(containerRef.current)
 
     // 4. Load WebGL addon (requires DOM attachment)
-    try {
-      const webglAddon = new WebglAddon()
-      webglAddon.onContextLoss(() => {
-        webglAddon.dispose()
-      })
-      term.loadAddon(webglAddon)
-    } catch {
-      // WebGL not available — falls back to canvas renderer automatically
-    }
+    // Disabled for now — canvas renderer is stable; WebGL can cause blank screens
+    // on some systems. Re-enable when xterm.js WebGL addon is more robust.
+    // try {
+    //   const webglAddon = new WebglAddon()
+    //   webglAddon.onContextLoss(() => webglAddon.dispose())
+    //   term.loadAddon(webglAddon)
+    // } catch {}
 
     // 5. Load Unicode11 addon
-    const unicode11 = new Unicode11Addon()
-    term.loadAddon(unicode11)
-    term.unicode.activeVersion = '11'
+    try {
+      const unicode11 = new Unicode11Addon()
+      term.loadAddon(unicode11)
+      term.unicode.activeVersion = '11'
+    } catch {
+      // Unicode11 addon failed — continue with default Unicode handling
+    }
 
     // 6. Fit
     fitAddon.fit()
@@ -225,16 +227,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
 
     onTerminalReady?.(term)
 
-    // Inject shell integration markers (OSC 633) to detect exit codes
-    setTimeout(() => {
-      if (shellType === 'bash' || shellType === 'gitbash') {
-        window.termpolis.writeToTerminal(terminalId, 'PROMPT_COMMAND=\'printf "\\e]633;E;$?\\a"\'\n')
-      } else if (shellType === 'zsh') {
-        window.termpolis.writeToTerminal(terminalId, 'precmd() { printf "\\e]633;E;$?\\a" }\n')
-      } else if (shellType === 'powershell') {
-        window.termpolis.writeToTerminal(terminalId, 'function prompt { "$([char]27)]633;E;$LASTEXITCODE$([char]7)" + (Get-Location).Path + "> " }\n')
-      }
-    }, 500)
+    // Shell integration markers disabled — the visible injection pollutes the
+    // terminal output. Command auto-fix uses pattern-matching fallback instead
+    // (scanning output for "command not found", "Permission denied", etc.).
 
     term.onData((data) => {
       // Ctrl+Space: manually trigger completions
@@ -395,11 +390,24 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
         outputBufferRef.current = outputBufferRef.current.slice(-4096)
       }
 
-      // Watch for OSC 633 exit code marker: \x1b]633;E;<exitCode>\x07
+      // Watch for OSC 633 exit code marker (if shell integration is enabled)
       const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)
       if (oscMatch) {
         const exitCode = parseInt(oscMatch[1], 10)
         if (exitCode !== 0 && lastCommandRef.current) {
+          const cmd = lastCommandRef.current
+          const output = outputBufferRef.current
+          getSuggestion(cmd, output).then(suggestion => {
+            if (suggestion) setFixSuggestion(suggestion)
+          }).catch(() => {})
+        }
+      }
+
+      // Pattern-matching fallback: detect common error patterns in output
+      // (works without shell integration markers)
+      if (lastCommandRef.current && !fixSuggestionRef.current) {
+        const errorPatterns = /command not found|not recognized|is not a .* command|Permission denied|EACCES|No such file or directory/i
+        if (errorPatterns.test(data)) {
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
