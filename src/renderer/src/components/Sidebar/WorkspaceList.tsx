@@ -9,6 +9,7 @@ export function WorkspaceList() {
   const [wsName, setWsName] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
+  const [showInfo, setShowInfo] = useState(false)
 
   const handleActivate = async (wsId: string) => {
     const ws = workspaces.find(w => w.id === wsId)
@@ -51,8 +52,55 @@ export function WorkspaceList() {
 
   return (
     <div className="border-b border-[#3c3c3c]">
-      {workspaces.length > 0 && (
-        <div className="px-3 py-1 text-xs text-[#6b7280] uppercase tracking-wider">Workspaces</div>
+      <div className="px-3 py-1.5 flex items-center justify-between">
+        <span className="text-xs text-[#6b7280] uppercase tracking-wider">Workspaces</span>
+        <button
+          onClick={() => setShowInfo(true)}
+          className="text-[#6b7280] hover:text-[#4FC3F7]"
+          title="What are workspaces?"
+        ><i className="fa-solid fa-circle-info text-xs"></i></button>
+      </div>
+      {showInfo && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#252526] rounded-lg p-6 w-96 shadow-xl flex flex-col gap-4 border border-[#3c3c3c]">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <i className="fa-solid fa-layer-group text-[#4FC3F7]"></i>
+                Workspaces
+              </h2>
+              <button
+                onClick={() => setShowInfo(false)}
+                className="text-[#6b7280] hover:text-white text-lg px-1"
+              >&times;</button>
+            </div>
+            <p className="text-sm text-[#d4d4d4] leading-relaxed">
+              Workspaces let you <strong>save and restore groups of terminals</strong> with a single click.
+              Think of them as snapshots of your terminal layout.
+            </p>
+            <div className="text-sm text-[#999] flex flex-col gap-2">
+              <div className="flex items-start gap-2">
+                <i className="fa-solid fa-bookmark text-[#A5D6A7] mt-0.5"></i>
+                <span><strong>Save</strong> — captures all your current terminals (names, shells, colors, themes) into a workspace.</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <i className="fa-solid fa-rotate-right text-[#4FC3F7] mt-0.5"></i>
+                <span><strong>Restore</strong> — click a workspace to close current terminals and reopen the saved set.</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <i className="fa-solid fa-arrows-rotate text-[#FFE082] mt-0.5"></i>
+                <span><strong>Update</strong> — overwrite a workspace with your current terminal setup.</span>
+              </div>
+            </div>
+            <p className="text-xs text-[#6b7280]">
+              Great for switching between projects — e.g. a "Frontend" workspace with
+              Node + build terminals, and a "Backend" workspace with API + database terminals.
+            </p>
+            <button
+              onClick={() => setShowInfo(false)}
+              className="self-end px-4 py-1.5 text-sm rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
+            >Got it</button>
+          </div>
+        </div>
       )}
       {workspaces.map(ws => (
         <div key={ws.id}>
