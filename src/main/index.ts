@@ -167,14 +167,30 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err)
 })
 
-app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
-app.on('before-quit', () => { killAll() })
-app.on('window-all-closed', () => {
-  killAll()
-  if (process.platform !== 'darwin') {
-    app.quit()
-    // Force exit if quit doesn't complete within 1 second
-    setTimeout(() => process.exit(0), 1000)
-  }
-})
-app.on('activate', () => { if (!mainWindow) createWindow() })
+// Single instance lock — prevent multiple Termpolis windows from corrupting session data
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  // Another instance is already running — quit immediately
+  app.quit()
+} else {
+  // When a second instance tries to launch, focus the existing window
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+
+  app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
+  app.on('before-quit', () => { killAll() })
+  app.on('window-all-closed', () => {
+    killAll()
+    if (process.platform !== 'darwin') {
+      app.quit()
+      // Force exit if quit doesn't complete within 1 second
+      setTimeout(() => process.exit(0), 1000)
+    }
+  })
+  app.on('activate', () => { if (!mainWindow) createWindow() })
+}
