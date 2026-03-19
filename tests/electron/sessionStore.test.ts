@@ -29,6 +29,12 @@ describe('loadSession', () => {
     const result = loadSession()
     expect(result.defaultShell).toBe('zsh')
     expect(result.terminals).toHaveLength(1)
+    // Migration should apply defaults to old terminals missing new fields
+    expect(result.terminals[0]).toMatchObject({
+      fontSize: 14,
+      theme: 'dark',
+      fontFamily: 'Consolas, "Courier New", monospace',
+    })
   })
 
   it('returns default session when file is corrupt JSON', () => {

@@ -14,6 +14,9 @@ export interface TerminalSession {
   color: string
   shellType: ShellType
   cwd: string
+  fontSize: number
+  theme: string
+  fontFamily: string
 }
 
 export interface Workspace {

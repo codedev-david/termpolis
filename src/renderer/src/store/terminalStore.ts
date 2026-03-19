@@ -12,7 +12,7 @@ interface TerminalStore {
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
-  updateTerminal: (id: string, patch: Partial<Pick<TerminalSession, 'name' | 'color'>>) => void
+  updateTerminal: (id: string, patch: Partial<Omit<TerminalSession, 'id'>>) => void
   setActiveTerminal: (id: string | null) => void
   toggleViewMode: () => void
   setShowSettings: (show: boolean) => void
@@ -64,7 +64,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     workspaces: [...s.workspaces, {
       id: uuid(),
       name,
-      terminals: s.terminals.map(({ name, color, shellType }) => ({ name, color, shellType })),
+      terminals: s.terminals.map(({ name, color, shellType, fontSize, theme, fontFamily }) => ({ name, color, shellType, fontSize, theme, fontFamily })),
     }],
   })),
 
@@ -74,7 +74,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   updateWorkspace: (id) => set(s => ({
     workspaces: s.workspaces.map(w => w.id === id
-      ? { ...w, terminals: s.terminals.map(({ name, color, shellType }) => ({ name, color, shellType })) }
+      ? { ...w, terminals: s.terminals.map(({ name, color, shellType, fontSize, theme, fontFamily }) => ({ name, color, shellType, fontSize, theme, fontFamily })) }
       : w
     ),
   })),

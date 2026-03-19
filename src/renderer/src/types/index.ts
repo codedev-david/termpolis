@@ -14,6 +14,9 @@ export interface TerminalSession {
   color: string
   shellType: ShellType
   cwd: string
+  fontSize: number
+  theme: string
+  fontFamily: string
 }
 
 export interface Workspace {
@@ -56,6 +59,10 @@ export interface TermpolisAPI {
   getHomedir: () => Promise<IpcResponse<string>>
   loadSession: () => Promise<IpcResponse<SessionData>>
   saveSession: (data: SessionData) => void
+  completionPathEntries: (dirPath: string) => Promise<IpcResponse<{ name: string; isDir: boolean }[]>>
+  completionPathCommands: () => Promise<IpcResponse<string[]>>
+  completionEnvVars: () => Promise<IpcResponse<Record<string, string>>>
+  exportTerminal: (opts: { content: string; defaultFilename: string }) => Promise<IpcResponse<{ filePath: string }>>
 }
 
 declare global {

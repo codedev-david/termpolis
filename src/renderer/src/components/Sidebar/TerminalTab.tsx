@@ -12,7 +12,7 @@ interface Props {
   isActive: boolean
   onClick: () => void
   onClose: () => void
-  onUpdate: (patch: { name: string; color: string }) => void
+  onUpdate: (patch: Partial<Omit<TerminalSession, 'id'>>) => void
 }
 
 export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: Props) {

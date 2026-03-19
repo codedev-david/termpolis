@@ -20,15 +20,17 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
+        const TERMINAL_DEFAULTS = { fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' }
         const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
+        const migrated = saved.map(t => ({ ...TERMINAL_DEFAULTS, ...t }))
         useTerminalStore.setState({
-          terminals: saved,
+          terminals: migrated,
           workspaces,
           defaultShell: ds,
           viewMode: vm,
-          activeTerminalId: saved[0]?.id ?? null,
+          activeTerminalId: migrated[0]?.id ?? null,
         })
-        saved.forEach(t => {
+        migrated.forEach(t => {
           window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
         })
       }

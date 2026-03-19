@@ -23,12 +23,23 @@ export function Sidebar() {
     })
   }, [])
 
-  const handleCreate = async (opts: { name: string; shellType: any; color: string }) => {
+  const TERMINAL_DEFAULTS = { fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' }
+
+  const handleCreate = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()
     const cwd = await getHomedir()
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) { alert(`Failed to open terminal: ${res.error}`); return }
-    addTerminal({ id, name: opts.name, color: opts.color, shellType: opts.shellType, cwd })
+    addTerminal({
+      id,
+      name: opts.name,
+      color: opts.color,
+      shellType: opts.shellType,
+      cwd,
+      fontSize: opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
+      theme: opts.theme ?? TERMINAL_DEFAULTS.theme,
+      fontFamily: opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
+    })
     setShowAddModal(false)
   }
 
