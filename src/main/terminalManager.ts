@@ -81,29 +81,19 @@ export function getTerminalPid(id: string): number | null {
 }
 
 export function getTerminalCwd(id: string): string | null {
+  // Windows: no reliable way to get a child process's working directory
+  // without shell integration. Return null to use the fallback cwd.
+  if (process.platform === 'win32') return null
+
   const pid = getTerminalPid(id)
   if (!pid) return null
   try {
-    if (process.platform === 'win32') {
-      // Get the child process of the PTY (the actual shell) and its cwd
-      const result = execSync(
-        `powershell -NoProfile -Command "` +
-        `$child = Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' -EA SilentlyContinue | Select -First 1; ` +
-        `if ($child) { ` +
-        `  $handle = [System.Diagnostics.Process]::GetProcessById($child.ProcessId); ` +
-        `  if ($handle -and $handle.MainModule) { Split-Path $handle.MainModule.FileName -Parent } ` +
-        `}"`,
-        { stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }
-      ).toString().trim()
-      return result || null
-    } else {
-      // Linux: /proc/PID/cwd, macOS: lsof
-      const cwd = execSync(
-        `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`,
-        { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }
-      ).toString().trim()
-      return cwd || null
-    }
+    // Linux: /proc/PID/cwd, macOS: lsof
+    const cwd = execSync(
+      `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`,
+      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }
+    ).toString().trim()
+    return cwd || null
   } catch {
     return null
   }
