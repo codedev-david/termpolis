@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import type { TerminalSession, Workspace, ViewMode, ShellType } from '../types'
+import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 
 interface TerminalStore {
   terminals: TerminalSession[]
@@ -10,6 +11,8 @@ interface TerminalStore {
   defaultShell: ShellType
   showSettings: boolean
   autocompleteEnabled: boolean
+  sidebarCollapsed: boolean
+  keybindings: KeybindingMap
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -23,6 +26,9 @@ interface TerminalStore {
   updateWorkspace: (id: string) => void
   removeWorkspace: (id: string) => void
   setAutocompleteEnabled: (enabled: boolean) => void
+  setSidebarCollapsed: (collapsed: boolean) => void
+  setKeybinding: (action: keyof KeybindingMap, binding: string) => void
+  resetKeybindings: () => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -33,6 +39,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   defaultShell: navigator.platform.startsWith('Win') ? 'powershell' : navigator.platform.startsWith('Mac') ? 'zsh' : 'bash',
   showSettings: false,
   autocompleteEnabled: true,
+  sidebarCollapsed: false,
+  keybindings: { ...DEFAULT_KEYBINDINGS },
 
   addTerminal: (t) => set(s => ({
     terminals: [...s.terminals, t],
@@ -87,4 +95,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   })),
 
   setAutocompleteEnabled: (enabled) => set({ autocompleteEnabled: enabled }),
+
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+
+  setKeybinding: (action, binding) => set(s => ({
+    keybindings: { ...s.keybindings, [action]: binding },
+  })),
+
+  resetKeybindings: () => set({ keybindings: { ...DEFAULT_KEYBINDINGS } }),
 }))

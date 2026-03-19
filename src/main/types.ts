@@ -30,6 +30,7 @@ export interface SessionData {
   workspaces: Workspace[]
   defaultShell: ShellType
   viewMode: ViewMode
+  keybindings?: Record<string, string>
 }
 
 export interface HistoryEntry {

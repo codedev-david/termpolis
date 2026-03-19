@@ -13,11 +13,11 @@ export function Sidebar() {
     terminals, activeTerminalId, viewMode, showSettings, defaultShell,
     addTerminal, removeTerminal, updateTerminal,
     setActiveTerminal, toggleViewMode, setShowSettings,
+    sidebarCollapsed, setSidebarCollapsed,
   } = useTerminalStore()
 
   const [showAddModal, setShowAddModal] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
-  const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
     window.termpolis.getAvailableShells().then(res => {
@@ -48,11 +48,11 @@ export function Sidebar() {
     removeTerminal(id)
   }
 
-  if (collapsed) {
+  if (sidebarCollapsed) {
     return (
       <aside className="w-10 shrink-0 flex flex-col items-center bg-[#252526] border-r border-[#3c3c3c] h-full py-2">
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => setSidebarCollapsed(false)}
           className="text-[#6b7280] hover:text-white px-2 py-3 rounded hover:bg-[#37373d]"
           title="Expand sidebar"
         ><i className="fa-solid fa-chevron-right text-lg"></i></button>
@@ -69,7 +69,7 @@ export function Sidebar() {
             className={`flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] flex-1 ${showSettings ? 'bg-[#37373d]' : ''}`}
           >⚙ Settings</button>
           <button
-            onClick={() => setCollapsed(true)}
+            onClick={() => setSidebarCollapsed(true)}
             className="text-[#6b7280] hover:text-white px-2 py-2 rounded hover:bg-[#37373d]"
             title="Collapse sidebar"
           ><i className="fa-solid fa-chevron-left text-lg"></i></button>

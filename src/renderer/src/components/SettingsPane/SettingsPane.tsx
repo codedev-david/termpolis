@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellInfo, ShellType } from '../../types'
+import { KeybindingsSettings } from './KeybindingsSettings'
 
 function getConfigFiles(home: string): { label: string; path: string; lang: string }[] {
   const isWin = /^[A-Za-z]:\\/.test(home)
@@ -84,6 +85,7 @@ export function SettingsPane() {
           />
         </button>
       </div>
+      <KeybindingsSettings />
       <div className="flex flex-col gap-2 flex-1 min-h-0">
         <div className="flex gap-1 border-b border-[#3c3c3c] pb-1">
           {configFiles.map(f => (
