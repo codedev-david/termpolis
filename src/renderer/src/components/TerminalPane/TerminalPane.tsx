@@ -7,13 +7,17 @@ import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename } from '../../lib/exportTerminal'
 import { getCompletions, type CompletionResult } from '../../completions/completionEngine'
+import { getSuggestion } from '../../corrections/correctionEngine'
 import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
+import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { useTerminalStore } from '../../store/terminalStore'
+import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
 
 interface Props {
   terminalId: string
   terminalName: string
+  shellType: ShellType
   isVisible: boolean
   fontSize: number
   theme: string
@@ -27,7 +31,7 @@ interface ContextMenuState {
   y: number
 }
 
-export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, theme, fontFamily, onTerminalReady }: Props) {
+export function TerminalPane({ terminalId, terminalName, shellType, isVisible, fontSize, theme, fontFamily, onTerminalReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -40,6 +44,12 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
   const [dropdownPosition, setDropdownPosition] = useState({ x: 0, y: 0 })
   const [dropdownVisible, setDropdownVisible] = useState(false)
 
+  // Command fix banner state
+  const [fixSuggestion, setFixSuggestion] = useState<string | null>(null)
+  const fixSuggestionRef = useRef<string | null>(null)
+  const outputBufferRef = useRef('')
+  const lastCommandRef = useRef('')
+
   // Refs for use inside onData callback (avoids stale closures)
   const suggestionsRef = useRef<CompletionResult[]>([])
   const selectedIndexRef = useRef(0)
@@ -50,6 +60,7 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
   suggestionsRef.current = suggestions
   selectedIndexRef.current = selectedIndex
   dropdownVisibleRef.current = dropdownVisible
+  fixSuggestionRef.current = fixSuggestion
 
   // Sync autocomplete setting from store
   const autocompleteEnabled = useTerminalStore(s => s.autocompleteEnabled)
@@ -214,6 +225,17 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
 
     onTerminalReady?.(term)
 
+    // Inject shell integration markers (OSC 633) to detect exit codes
+    setTimeout(() => {
+      if (shellType === 'bash' || shellType === 'gitbash') {
+        window.termpolis.writeToTerminal(terminalId, 'PROMPT_COMMAND=\'printf "\\e]633;E;$?\\a"\'\n')
+      } else if (shellType === 'zsh') {
+        window.termpolis.writeToTerminal(terminalId, 'precmd() { printf "\\e]633;E;$?\\a" }\n')
+      } else if (shellType === 'powershell') {
+        window.termpolis.writeToTerminal(terminalId, 'function prompt { "$([char]27)]633;E;$LASTEXITCODE$([char]7)" + (Get-Location).Path + "> " }\n')
+      }
+    }, 500)
+
     term.onData((data) => {
       // Ctrl+Space: manually trigger completions
       if (data === '\x00') {
@@ -303,8 +325,12 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
       // Update input buffer
       if (data === '\r') {
         const cmd = inputBufferRef.current.trim()
-        if (cmd) window.termpolis.appendHistory(terminalId, terminalName, cmd)
+        if (cmd) {
+          window.termpolis.appendHistory(terminalId, terminalName, cmd)
+          lastCommandRef.current = cmd
+        }
         inputBufferRef.current = ''
+        outputBufferRef.current = ''
         // Dismiss dropdown on Enter
         setSuggestions([])
         setSelectedIndex(0)
@@ -331,6 +357,8 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
         }
       } else if (!data.startsWith('\x1b')) {
         inputBufferRef.current += data
+        // Dismiss fix banner when user starts typing a new command
+        if (fixSuggestionRef.current) setFixSuggestion(null)
         // Trigger completions if autocomplete is enabled and input has 2+ chars
         if (autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
           getCompletions(inputBufferRef.current).then(results => {
@@ -358,7 +386,27 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
     const throttledWrite = createOutputThrottle((data) => term.write(data))
 
     const unsub = window.termpolis.onTerminalData((id, data) => {
-      if (id === terminalId) throttledWrite(data)
+      if (id !== terminalId) return
+      throttledWrite(data)
+
+      // Buffer recent output (keep last 4KB to avoid memory bloat)
+      outputBufferRef.current += data
+      if (outputBufferRef.current.length > 4096) {
+        outputBufferRef.current = outputBufferRef.current.slice(-4096)
+      }
+
+      // Watch for OSC 633 exit code marker: \x1b]633;E;<exitCode>\x07
+      const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)
+      if (oscMatch) {
+        const exitCode = parseInt(oscMatch[1], 10)
+        if (exitCode !== 0 && lastCommandRef.current) {
+          const cmd = lastCommandRef.current
+          const output = outputBufferRef.current
+          getSuggestion(cmd, output).then(suggestion => {
+            if (suggestion) setFixSuggestion(suggestion)
+          }).catch(() => {})
+        }
+      }
     })
 
     const ro = new ResizeObserver(() => {
@@ -426,6 +474,16 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
           position={dropdownPosition}
           onAccept={acceptSuggestion}
           onDismiss={dismissDropdown}
+        />
+      )}
+      {fixSuggestion && (
+        <CommandFixBanner
+          suggestion={fixSuggestion}
+          onAccept={() => {
+            window.termpolis.writeToTerminal(terminalId, fixSuggestion + '\r')
+            setFixSuggestion(null)
+          }}
+          onDismiss={() => setFixSuggestion(null)}
         />
       )}
     </div>

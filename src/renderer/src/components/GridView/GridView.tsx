@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalPane } from '../TerminalPane/TerminalPane'
 import { extractBuffer, generateFilename } from '../../lib/exportTerminal'
+import type { ShellType } from '../../types'
 
 function getGridStyle(count: number): React.CSSProperties {
   if (count === 1) return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' }
@@ -21,7 +22,7 @@ function TerminalCard({
   total,
   onRemove,
 }: {
-  t: { id: string; name: string; color: string; fontSize: number; theme: string; fontFamily: string }
+  t: { id: string; name: string; color: string; shellType: ShellType; fontSize: number; theme: string; fontFamily: string }
   index: number
   total: number
   onRemove: (id: string) => void
@@ -86,6 +87,7 @@ function TerminalCard({
         <TerminalPane
           terminalId={t.id}
           terminalName={t.name}
+          shellType={t.shellType}
           isVisible={isInViewport}
           fontSize={t.fontSize}
           theme={t.theme}
