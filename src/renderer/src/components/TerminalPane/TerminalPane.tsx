@@ -3,6 +3,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename } from '../../lib/exportTerminal'
@@ -220,7 +221,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
       // Unicode11 addon failed — continue with default Unicode handling
     }
 
-    // 6. Fit
+    // 6. Load Web Links addon (clickable URLs)
+    try {
+      const webLinksAddon = new WebLinksAddon()
+      term.loadAddon(webLinksAddon)
+    } catch {}
+
+    // 7. Fit
     fitAddon.fit()
 
     termRef.current = term
@@ -228,9 +235,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
 
     onTerminalReady?.(term)
 
-    // Shell integration markers disabled — the visible injection pollutes the
-    // terminal output. Command auto-fix uses pattern-matching fallback instead
-    // (scanning output for "command not found", "Permission denied", etc.).
+    // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste)
+    const keyHandler = term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') {
+        const selection = term.getSelection()
+        if (selection) navigator.clipboard.writeText(selection)
+        return false // prevent terminal from processing
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
+        navigator.clipboard.readText().then(text => {
+          if (text) window.termpolis.writeToTerminal(terminalId, text)
+        })
+        return false
+      }
+      return true // let terminal handle all other keys
+    })
 
     term.onData((data) => {
       // Ctrl+Space: manually trigger completions
@@ -468,6 +487,37 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
           className="fixed z-50 bg-[#2d2d2d] border border-[#454545] rounded shadow-lg py-1 min-w-[200px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+            onClick={() => {
+              const selection = termRef.current?.getSelection()
+              if (selection) navigator.clipboard.writeText(selection)
+              setContextMenu({ visible: false, x: 0, y: 0 })
+            }}
+          >
+            Copy<span className="float-right text-[#666]">Ctrl+Shift+C</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+            onClick={() => {
+              navigator.clipboard.readText().then(text => {
+                if (text) window.termpolis.writeToTerminal(terminalId, text)
+              })
+              setContextMenu({ visible: false, x: 0, y: 0 })
+            }}
+          >
+            Paste<span className="float-right text-[#666]">Ctrl+Shift+V</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+            onClick={() => {
+              termRef.current?.selectAll()
+              setContextMenu({ visible: false, x: 0, y: 0 })
+            }}
+          >
+            Select All
+          </button>
+          <div className="border-t border-[#454545] my-1"></div>
           <button
             className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
             onClick={() => handleExport('full')}
