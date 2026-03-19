@@ -6,6 +6,7 @@ import { WorkspaceList } from './WorkspaceList'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
+import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 
 export function Sidebar() {
   const {
@@ -22,8 +23,6 @@ export function Sidebar() {
       if (res.success && res.data) setAvailableShells(res.data)
     })
   }, [])
-
-  const TERMINAL_DEFAULTS = { fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' }
 
   const handleCreate = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()

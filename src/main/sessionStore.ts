@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { SessionData } from './types'
 
+// Keep in sync with src/renderer/src/lib/terminalDefaults.ts
 const TERMINAL_DEFAULTS = {
   fontSize: 14,
   theme: 'dark',

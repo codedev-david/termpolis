@@ -20,17 +20,16 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const TERMINAL_DEFAULTS = { fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' }
         const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
-        const migrated = saved.map(t => ({ ...TERMINAL_DEFAULTS, ...t }))
+        // Migration defaults already applied by sessionStore.loadSession in main process
         useTerminalStore.setState({
-          terminals: migrated,
+          terminals: saved,
           workspaces,
           defaultShell: ds,
           viewMode: vm,
-          activeTerminalId: migrated[0]?.id ?? null,
+          activeTerminalId: saved[0]?.id ?? null,
         })
-        migrated.forEach(t => {
+        saved.forEach(t => {
           window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
         })
       }
