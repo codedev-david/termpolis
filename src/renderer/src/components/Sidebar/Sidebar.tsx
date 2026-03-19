@@ -87,6 +87,7 @@ export function Sidebar() {
       </div>
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
+      <div className="px-3 py-1.5 text-xs text-[#6b7280] uppercase tracking-wider">Terminals</div>
       <div className="flex-1 overflow-y-auto">
         {terminals.map(t => (
           <TerminalTab

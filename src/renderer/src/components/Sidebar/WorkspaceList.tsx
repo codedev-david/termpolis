@@ -72,24 +72,24 @@ export function WorkspaceList() {
             </div>
           ) : (
             <div
-              className="flex items-center gap-1 px-3 py-1 hover:bg-[#2a2d2e] group cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-2 hover:bg-[#2a2d2e] group cursor-pointer"
               onClick={() => handleActivate(ws.id)}
             >
-              <span className="flex-1 text-xs truncate">{ws.name}</span>
+              <span className="flex-1 text-sm truncate">{ws.name}</span>
               <button
                 onClick={e => { e.stopPropagation(); updateWorkspace(ws.id) }}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-[#4FC3F7] text-xs px-0.5"
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-[#4FC3F7] text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Update ${ws.name}`}
                 title="Update with current terminals"
               >↻</button>
               <button
                 onClick={e => startRename(e, ws)}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-xs px-0.5"
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Rename ${ws.name}`}
               >✎</button>
               <button
                 onClick={e => { e.stopPropagation(); removeWorkspace(ws.id) }}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-xs px-0.5"
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Delete ${ws.name}`}
               >✕</button>
             </div>
