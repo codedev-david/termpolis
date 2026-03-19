@@ -41,6 +41,7 @@ jobs:
 
       - name: Download bundled CLI tools
         run: bash scripts/download-tools.sh
+        continue-on-error: true
 
       - name: Build app
         run: npx electron-vite build

@@ -23,7 +23,7 @@ function checkBundledToolsNeeded(): boolean {
       return true
     } catch { return false }
   }
-  bundledToolsNeeded = !check('jq') || !check('yq') || !check('curl') || !check('nano')
+  bundledToolsNeeded = !check('jq') || !check('yq') || !check('nano')
   return bundledToolsNeeded
 }
 
