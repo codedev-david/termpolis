@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
 import { SplitView } from './components/SplitView/SplitView'
-import { SettingsPane } from './components/SettingsPane/SettingsPane'
+const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane').then(m => ({ default: m.SettingsPane })))
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
@@ -46,13 +46,13 @@ export default function App() {
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.map(t => t.id)) : null,
         })
-        saved.forEach(t => {
-          window.termpolis.createTerminal(t.id, t.shellType, t.cwd)
-        })
+        // Spawn all terminals in parallel for faster startup
+        Promise.all(saved.map(t => window.termpolis.createTerminal(t.id, t.shellType, t.cwd)))
       }
       loaded.current = true
     })
 
+    // Load available shells in parallel with session restore
     window.termpolis.getAvailableShells().then(res => {
       if (res.success && res.data) setAvailableShells(res.data)
     })
@@ -160,7 +160,7 @@ export default function App() {
   }
 
   const renderMain = () => {
-    if (showSettings) return <SettingsPane />
+    if (showSettings) return <Suspense fallback={<div className="flex items-center justify-center h-full text-[#6b7280]">Loading settings...</div>}><SettingsPane /></Suspense>
     if (viewMode === 'split') return <SplitView />
     return <TabView />
   }

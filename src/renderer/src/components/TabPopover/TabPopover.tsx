@@ -9,7 +9,6 @@ const COLOR_SWATCHES = [
 const FONT_FAMILY_OPTIONS = [
   { label: 'Consolas', value: 'Consolas, "Courier New", monospace' },
   { label: 'JetBrains Mono', value: 'JetBrains Mono, monospace' },
-  { label: 'JetBrains Mono Nerd Font', value: 'JetBrainsMono Nerd Font, monospace' },
 ]
 
 interface Props {

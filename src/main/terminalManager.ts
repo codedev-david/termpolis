@@ -12,11 +12,19 @@ interface PtyProcess {
 
 const processes = new Map<string, PtyProcess>()
 
-function isCommandAvailable(cmd: string): boolean {
-  try {
-    execSync(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`, { stdio: 'ignore' })
-    return true
-  } catch { return false }
+// Cache tool availability check — run once, reuse for all terminal spawns
+let bundledToolsNeeded: boolean | null = null
+
+function checkBundledToolsNeeded(): boolean {
+  if (bundledToolsNeeded !== null) return bundledToolsNeeded
+  const check = (cmd: string) => {
+    try {
+      execSync(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`, { stdio: 'ignore', timeout: 2000, windowsHide: true })
+      return true
+    } catch { return false }
+  }
+  bundledToolsNeeded = !check('jq') || !check('yq') || !check('curl') || !check('nano')
+  return bundledToolsNeeded
 }
 
 export function spawnTerminal(
@@ -36,7 +44,7 @@ export function spawnTerminal(
     process.platform
   )
   const existingPath = process.env.PATH || process.env.Path || ''
-  const needsBundled = !isCommandAvailable('jq') || !isCommandAvailable('yq') || !isCommandAvailable('curl') || !isCommandAvailable('nano')
+  const needsBundled = checkBundledToolsNeeded()
   const env = needsBundled
     ? { ...process.env, PATH: `${toolsDir}${process.platform === 'win32' ? ';' : ':'}${existingPath}` } as Record<string, string>
     : { ...process.env } as Record<string, string>
