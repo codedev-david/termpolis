@@ -1,0 +1,17 @@
+{
+  "name": "python",
+  "description": "Python interpreter",
+  "subcommands": [],
+  "options": [
+    { "name": ["--version", "-V"], "description": "Print Python version and exit" },
+    { "name": ["-c"], "description": "Execute program passed as string" },
+    { "name": ["-m"], "description": "Run library module as script" },
+    { "name": ["-i"], "description": "Inspect interactively after script" },
+    { "name": ["-u"], "description": "Unbuffered stdout and stderr" },
+    { "name": ["-v"], "description": "Verbose (trace import statements)" },
+    { "name": ["-O"], "description": "Optimize: remove asserts" },
+    { "name": ["-W"], "description": "Warning control" },
+    { "name": ["-x"], "description": "Skip first line of source" },
+    { "name": ["--help"], "description": "Show help message" }
+  ]
+}

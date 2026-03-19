@@ -1,0 +1,6 @@
+{
+  "name": "cd",
+  "description": "Change the current working directory",
+  "subcommands": [],
+  "options": []
+}

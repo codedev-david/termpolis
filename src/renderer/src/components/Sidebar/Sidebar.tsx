@@ -6,6 +6,7 @@ import { WorkspaceList } from './WorkspaceList'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
+import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 
 export function Sidebar() {
   const {
@@ -23,12 +24,21 @@ export function Sidebar() {
     })
   }, [])
 
-  const handleCreate = async (opts: { name: string; shellType: any; color: string }) => {
+  const handleCreate = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()
     const cwd = await getHomedir()
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) { alert(`Failed to open terminal: ${res.error}`); return }
-    addTerminal({ id, name: opts.name, color: opts.color, shellType: opts.shellType, cwd })
+    addTerminal({
+      id,
+      name: opts.name,
+      color: opts.color,
+      shellType: opts.shellType,
+      cwd,
+      fontSize: opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
+      theme: opts.theme ?? TERMINAL_DEFAULTS.theme,
+      fontFamily: opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
+    })
     setShowAddModal(false)
   }
 

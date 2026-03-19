@@ -23,7 +23,7 @@ function getConfigFiles(home: string): { label: string; path: string; lang: stri
 }
 
 export function SettingsPane() {
-  const { defaultShell, setDefaultShell } = useTerminalStore()
+  const { defaultShell, setDefaultShell, autocompleteEnabled, setAutocompleteEnabled } = useTerminalStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [configFiles, setConfigFiles] = useState<{ label: string; path: string; lang: string }[]>([])
   const [activeFile, setActiveFile] = useState('')
@@ -68,6 +68,21 @@ export function SettingsPane() {
         >
           {shells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
         </select>
+      </div>
+      <div className="flex items-center gap-3">
+        <label className="text-sm font-medium">Enable Autocomplete</label>
+        <button
+          onClick={() => setAutocompleteEnabled(!autocompleteEnabled)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+            autocompleteEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              autocompleteEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
       </div>
       <div className="flex flex-col gap-2 flex-1 min-h-0">
         <div className="flex gap-1 border-b border-[#3c3c3c] pb-1">

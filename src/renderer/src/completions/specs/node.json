@@ -1,0 +1,19 @@
+{
+  "name": "node",
+  "description": "JavaScript runtime built on V8",
+  "subcommands": [],
+  "options": [
+    { "name": ["--version", "-v"], "description": "Print Node.js version" },
+    { "name": ["--eval", "-e"], "description": "Evaluate script argument" },
+    { "name": ["--print", "-p"], "description": "Evaluate and print result" },
+    { "name": ["--check", "-c"], "description": "Syntax check without executing" },
+    { "name": ["--inspect"], "description": "Activate inspector on host:port" },
+    { "name": ["--inspect-brk"], "description": "Break before first statement" },
+    { "name": ["--require", "-r"], "description": "Require module before main" },
+    { "name": ["--input-type"], "description": "Set type for --eval or stdin" },
+    { "name": ["--no-warnings"], "description": "Silence process warnings" },
+    { "name": ["--experimental-vm-modules"], "description": "Enable VM module support" },
+    { "name": ["--max-old-space-size"], "description": "Set V8 max old space in MB" },
+    { "name": ["--watch"], "description": "Restart process on file change" }
+  ]
+}

@@ -23,3 +23,4 @@ ui_testing/
 .vscode/
 *.suo
 *.user
+.superpowers/

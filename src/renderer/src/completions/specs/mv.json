@@ -1,0 +1,13 @@
+{
+  "name": "mv",
+  "description": "Move (rename) files",
+  "subcommands": [],
+  "options": [
+    { "name": ["-v", "--verbose"], "description": "Explain what is being done" },
+    { "name": ["-i", "--interactive"], "description": "Prompt before overwriting" },
+    { "name": ["-f", "--force"], "description": "Do not prompt before overwriting" },
+    { "name": ["-n", "--no-clobber"], "description": "Do not overwrite existing files" },
+    { "name": ["-u", "--update"], "description": "Move only newer or missing files" },
+    { "name": ["--backup"], "description": "Make a backup of each destination" }
+  ]
+}

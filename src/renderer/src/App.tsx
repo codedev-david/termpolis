@@ -21,6 +21,7 @@ export default function App() {
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
         const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm } = res.data
+        // Migration defaults already applied by sessionStore.loadSession in main process
         useTerminalStore.setState({
           terminals: saved,
           workspaces,

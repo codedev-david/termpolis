@@ -1,11 +1,13 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
+import { writeFileSync } from 'fs'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll } from './terminalManager'
 import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
+import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import type { SessionData } from './types'
 
 function ok<T>(data?: T) { return { success: true, data } }
@@ -107,6 +109,33 @@ ipcMain.handle('session:load', async () => {
 
 ipcMain.on('session:save', (_, data: SessionData) => {
   try { saveSession(data) } catch {}
+})
+
+ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
+  try {
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      defaultPath: defaultFilename,
+      filters: [{ name: 'Text Files', extensions: ['txt'] }],
+    })
+    if (result.canceled || !result.filePath) return ok()
+    writeFileSync(result.filePath, content, 'utf-8')
+    return ok({ filePath: result.filePath })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('completion:path-entries', async (_, { dirPath }) => {
+  try { return ok(listPathEntries(dirPath)) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('completion:path-commands', async () => {
+  try { return ok(listPathCommands()) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('completion:env-vars', async () => {
+  try { return ok(listEnvVars()) }
+  catch (e: any) { return err(e.message) }
 })
 
 ipcMain.on('window:minimize', () => mainWindow?.minimize())

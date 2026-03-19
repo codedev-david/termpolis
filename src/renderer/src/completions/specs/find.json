@@ -1,0 +1,23 @@
+{
+  "name": "find",
+  "description": "Search for files in a directory hierarchy",
+  "subcommands": [],
+  "options": [
+    { "name": ["-name"], "description": "Search by file name pattern" },
+    { "name": ["-iname"], "description": "Case-insensitive name search" },
+    { "name": ["-type"], "description": "Filter by type: f=file, d=dir, l=link" },
+    { "name": ["-size"], "description": "Filter by size (e.g. +1M, -500k)" },
+    { "name": ["-mtime"], "description": "Filter by modification time in days" },
+    { "name": ["-atime"], "description": "Filter by access time in days" },
+    { "name": ["-exec"], "description": "Execute command on each found file" },
+    { "name": ["-print"], "description": "Print full file name (default)" },
+    { "name": ["-maxdepth"], "description": "Max directory depth to descend" },
+    { "name": ["-mindepth"], "description": "Min directory depth to process" },
+    { "name": ["-not", "!"], "description": "Negate the following expression" },
+    { "name": ["-and", "-a"], "description": "Logical AND of expressions" },
+    { "name": ["-or", "-o"], "description": "Logical OR of expressions" },
+    { "name": ["-perm"], "description": "Filter by file permissions" },
+    { "name": ["-user"], "description": "Filter by file owner" },
+    { "name": ["-delete"], "description": "Delete each matching file" }
+  ]
+}

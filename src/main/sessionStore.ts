@@ -3,6 +3,13 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { SessionData } from './types'
 
+// Keep in sync with src/renderer/src/lib/terminalDefaults.ts
+const TERMINAL_DEFAULTS = {
+  fontSize: 14,
+  theme: 'dark',
+  fontFamily: 'Consolas, "Courier New", monospace',
+}
+
 const DEFAULT_SESSION: SessionData = {
   terminals: [],
   workspaces: [],
@@ -19,7 +26,13 @@ export function loadSession(): SessionData {
   if (!existsSync(path)) return { ...DEFAULT_SESSION }
   try {
     const raw = readFileSync(path, 'utf-8')
-    return { ...DEFAULT_SESSION, ...JSON.parse(raw) }
+    const parsed = { ...DEFAULT_SESSION, ...JSON.parse(raw) }
+    parsed.terminals = parsed.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
+    parsed.workspaces = parsed.workspaces.map((w: any) => ({
+      ...w,
+      terminals: w.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
+    }))
+    return parsed
   } catch {
     return { ...DEFAULT_SESSION }
   }

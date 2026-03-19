@@ -1,0 +1,14 @@
+{
+  "name": "cat",
+  "description": "Concatenate files and print to stdout",
+  "subcommands": [],
+  "options": [
+    { "name": ["-n", "--number"], "description": "Number all output lines" },
+    { "name": ["-b", "--number-nonblank"], "description": "Number non-empty output lines" },
+    { "name": ["-s", "--squeeze-blank"], "description": "Suppress repeated empty lines" },
+    { "name": ["-E", "--show-ends"], "description": "Display $ at end of each line" },
+    { "name": ["-T", "--show-tabs"], "description": "Display TAB characters as ^I" },
+    { "name": ["-v", "--show-nonprinting"], "description": "Use ^ and M- notation for non-print" },
+    { "name": ["-A", "--show-all"], "description": "Equivalent to -vET" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "rm",
+  "description": "Remove files or directories",
+  "subcommands": [],
+  "options": [
+    { "name": ["-r", "-R", "--recursive"], "description": "Remove directories recursively" },
+    { "name": ["-f", "--force"], "description": "Never prompt, ignore nonexistent" },
+    { "name": ["-i"], "description": "Prompt before each removal" },
+    { "name": ["-I"], "description": "Prompt once if removing many files" },
+    { "name": ["-v", "--verbose"], "description": "Explain what is being done" },
+    { "name": ["--no-preserve-root"], "description": "Do not treat / specially" }
+  ]
+}

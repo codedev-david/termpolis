@@ -1,6 +1,9 @@
 import * as pty from 'node-pty'
 import { homedir } from 'os'
 import { existsSync } from 'fs'
+import { join } from 'path'
+import { execSync } from 'child_process'
+import { app } from 'electron'
 import type { ShellType } from './types'
 
 interface PtyProcess {
@@ -8,6 +11,13 @@ interface PtyProcess {
 }
 
 const processes = new Map<string, PtyProcess>()
+
+function isCommandAvailable(cmd: string): boolean {
+  try {
+    execSync(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`, { stdio: 'ignore' })
+    return true
+  } catch { return false }
+}
 
 export function spawnTerminal(
   id: string,
@@ -20,12 +30,23 @@ export function spawnTerminal(
     catch { return homedir() }
   })()
 
+  const toolsDir = join(
+    app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'),
+    'tools',
+    process.platform
+  )
+  const existingPath = process.env.PATH || process.env.Path || ''
+  const needsBundled = !isCommandAvailable('jq') || !isCommandAvailable('yq') || !isCommandAvailable('curl')
+  const env = needsBundled
+    ? { ...process.env, PATH: `${toolsDir}${process.platform === 'win32' ? ';' : ':'}${existingPath}` } as Record<string, string>
+    : { ...process.env } as Record<string, string>
+
   const proc = pty.spawn(executable, getShellArgs(executable), {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
     cwd: resolvedCwd,
-    env: { ...process.env } as Record<string, string>,
+    env,
   })
 
   proc.onData(onData)

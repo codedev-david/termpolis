@@ -12,7 +12,7 @@ interface Props {
   isActive: boolean
   onClick: () => void
   onClose: () => void
-  onUpdate: (patch: { name: string; color: string }) => void
+  onUpdate: (patch: Partial<Omit<TerminalSession, 'id'>>) => void
 }
 
 export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: Props) {
@@ -45,6 +45,9 @@ export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: 
         <TabPopover
           name={terminal.name}
           color={terminal.color}
+          fontSize={terminal.fontSize}
+          theme={terminal.theme}
+          fontFamily={terminal.fontFamily}
           anchorEl={rowRef.current}
           onSave={patch => { onUpdate(patch); setPopoverOpen(false) }}
           onClose={() => setPopoverOpen(false)}

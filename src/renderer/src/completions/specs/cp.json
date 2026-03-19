@@ -1,0 +1,16 @@
+{
+  "name": "cp",
+  "description": "Copy files and directories",
+  "subcommands": [],
+  "options": [
+    { "name": ["-r", "-R", "--recursive"], "description": "Copy directories recursively" },
+    { "name": ["-v", "--verbose"], "description": "Explain what is being done" },
+    { "name": ["-i", "--interactive"], "description": "Prompt before overwriting" },
+    { "name": ["-p", "--preserve"], "description": "Preserve file attributes" },
+    { "name": ["-a", "--archive"], "description": "Archive mode: same as -dpR" },
+    { "name": ["-f", "--force"], "description": "Force copy, no prompts" },
+    { "name": ["-n", "--no-clobber"], "description": "Do not overwrite existing files" },
+    { "name": ["-u", "--update"], "description": "Copy only newer or missing files" },
+    { "name": ["--backup"], "description": "Make a backup of each destination" }
+  ]
+}
