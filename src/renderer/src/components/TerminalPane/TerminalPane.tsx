@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { getTheme } from '../../themes/terminalThemes'
+import { createOutputThrottle } from '../../lib/outputThrottle'
 import 'xterm/css/xterm.css'
 
 interface Props {
@@ -75,8 +76,10 @@ export function TerminalPane({ terminalId, terminalName, isVisible, fontSize, th
       }
     })
 
+    const throttledWrite = createOutputThrottle((data) => term.write(data))
+
     const unsub = window.termpolis.onTerminalData((id, data) => {
-      if (id === terminalId) term.write(data)
+      if (id === terminalId) throttledWrite(data)
     })
 
     const ro = new ResizeObserver(() => {
