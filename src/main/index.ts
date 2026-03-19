@@ -7,6 +7,7 @@ import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll }
 import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
+import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import type { SessionData } from './types'
 
 function ok<T>(data?: T) { return { success: true, data } }
@@ -120,6 +121,21 @@ ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
     writeFileSync(result.filePath, content, 'utf-8')
     return ok({ filePath: result.filePath })
   } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('completion:path-entries', async (_, { dirPath }) => {
+  try { return ok(listPathEntries(dirPath)) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('completion:path-commands', async () => {
+  try { return ok(listPathCommands()) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('completion:env-vars', async () => {
+  try { return ok(listEnvVars()) }
+  catch (e: any) { return err(e.message) }
 })
 
 ipcMain.on('window:minimize', () => mainWindow?.minimize())

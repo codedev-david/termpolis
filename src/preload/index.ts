@@ -46,6 +46,15 @@ const api: TermpolisAPI = {
 
   exportTerminal: (opts) =>
     ipcRenderer.invoke('terminal:export', opts),
+
+  completionPathEntries: (dirPath) =>
+    ipcRenderer.invoke('completion:path-entries', { dirPath }),
+
+  completionPathCommands: () =>
+    ipcRenderer.invoke('completion:path-commands'),
+
+  completionEnvVars: () =>
+    ipcRenderer.invoke('completion:env-vars'),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)
