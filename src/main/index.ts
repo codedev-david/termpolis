@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage } from 'electron
 import { join } from 'path'
 import { homedir } from 'os'
 import { writeFileSync } from 'fs'
+import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll } from './terminalManager'
 import { loadSession, saveSession } from './sessionStore'
@@ -136,6 +137,16 @@ ipcMain.handle('completion:path-commands', async () => {
 ipcMain.handle('completion:env-vars', async () => {
   try { return ok(listEnvVars()) }
   catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('terminal:status', async (_, { cwd }) => {
+  try {
+    let gitBranch = ''
+    try {
+      gitBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim()
+    } catch {}
+    return ok({ cwd, gitBranch })
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.on('window:minimize', () => mainWindow?.minimize())

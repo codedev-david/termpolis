@@ -21,6 +21,7 @@ export function TabView() {
           terminalId={t.id}
           terminalName={t.name}
           shellType={t.shellType}
+          cwd={t.cwd}
           isVisible={t.id === activeTerminalId}
           fontSize={t.fontSize}
           theme={t.theme}

@@ -22,7 +22,7 @@ function TerminalCard({
   total,
   onRemove,
 }: {
-  t: { id: string; name: string; color: string; shellType: ShellType; fontSize: number; theme: string; fontFamily: string }
+  t: { id: string; name: string; color: string; shellType: ShellType; cwd: string; fontSize: number; theme: string; fontFamily: string }
   index: number
   total: number
   onRemove: (id: string) => void
@@ -88,6 +88,7 @@ function TerminalCard({
           terminalId={t.id}
           terminalName={t.name}
           shellType={t.shellType}
+          cwd={t.cwd}
           isVisible={isInViewport}
           fontSize={t.fontSize}
           theme={t.theme}

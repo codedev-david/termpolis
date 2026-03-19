@@ -11,6 +11,7 @@ import { getCompletions, type CompletionResult } from '../../completions/complet
 import { getSuggestion } from '../../corrections/correctionEngine'
 import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
+import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
@@ -19,6 +20,7 @@ interface Props {
   terminalId: string
   terminalName: string
   shellType: ShellType
+  cwd: string
   isVisible: boolean
   fontSize: number
   theme: string
@@ -32,7 +34,7 @@ interface ContextMenuState {
   y: number
 }
 
-export function TerminalPane({ terminalId, terminalName, shellType, isVisible, fontSize, theme, fontFamily, onTerminalReady }: Props) {
+export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -477,80 +479,86 @@ export function TerminalPane({ terminalId, terminalName, shellType, isVisible, f
 
   return (
     <div
-      ref={containerRef}
-      className="absolute inset-0"
-      style={{ visibility: isVisible ? 'visible' : 'hidden', padding: 4 }}
-      onContextMenu={handleContextMenu}
+      className="absolute inset-0 flex flex-col"
+      style={{ visibility: isVisible ? 'visible' : 'hidden' }}
     >
-      {contextMenu.visible && (
-        <div
-          className="fixed z-50 bg-[#2d2d2d] border border-[#454545] rounded shadow-lg py-1 min-w-[200px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
-            onClick={() => {
-              const selection = termRef.current?.getSelection()
-              if (selection) navigator.clipboard.writeText(selection)
-              setContextMenu({ visible: false, x: 0, y: 0 })
+      <div
+        ref={containerRef}
+        className="flex-1 relative"
+        style={{ padding: 4 }}
+        onContextMenu={handleContextMenu}
+      >
+        {contextMenu.visible && (
+          <div
+            className="fixed z-50 bg-[#2d2d2d] border border-[#454545] rounded shadow-lg py-1 min-w-[200px]"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                const selection = termRef.current?.getSelection()
+                if (selection) navigator.clipboard.writeText(selection)
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+            >
+              Copy<span className="float-right text-[#666]">Ctrl+Shift+C</span>
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                navigator.clipboard.readText().then(text => {
+                  if (text) window.termpolis.writeToTerminal(terminalId, text)
+                })
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+            >
+              Paste<span className="float-right text-[#666]">Ctrl+Shift+V</span>
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                termRef.current?.selectAll()
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+            >
+              Select All
+            </button>
+            <div className="border-t border-[#454545] my-1"></div>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => handleExport('full')}
+            >
+              Export Full Scrollback...
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => handleExport('visible')}
+            >
+              Export Visible Output...
+            </button>
+          </div>
+        )}
+        {dropdownVisible && (
+          <CompletionDropdown
+            suggestions={suggestions}
+            selectedIndex={selectedIndex}
+            position={dropdownPosition}
+            onAccept={acceptSuggestion}
+            onDismiss={dismissDropdown}
+          />
+        )}
+        {fixSuggestion && (
+          <CommandFixBanner
+            suggestion={fixSuggestion}
+            onAccept={() => {
+              window.termpolis.writeToTerminal(terminalId, fixSuggestion + '\r')
+              setFixSuggestion(null)
             }}
-          >
-            Copy<span className="float-right text-[#666]">Ctrl+Shift+C</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
-            onClick={() => {
-              navigator.clipboard.readText().then(text => {
-                if (text) window.termpolis.writeToTerminal(terminalId, text)
-              })
-              setContextMenu({ visible: false, x: 0, y: 0 })
-            }}
-          >
-            Paste<span className="float-right text-[#666]">Ctrl+Shift+V</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
-            onClick={() => {
-              termRef.current?.selectAll()
-              setContextMenu({ visible: false, x: 0, y: 0 })
-            }}
-          >
-            Select All
-          </button>
-          <div className="border-t border-[#454545] my-1"></div>
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
-            onClick={() => handleExport('full')}
-          >
-            Export Full Scrollback...
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
-            onClick={() => handleExport('visible')}
-          >
-            Export Visible Output...
-          </button>
-        </div>
-      )}
-      {dropdownVisible && (
-        <CompletionDropdown
-          suggestions={suggestions}
-          selectedIndex={selectedIndex}
-          position={dropdownPosition}
-          onAccept={acceptSuggestion}
-          onDismiss={dismissDropdown}
-        />
-      )}
-      {fixSuggestion && (
-        <CommandFixBanner
-          suggestion={fixSuggestion}
-          onAccept={() => {
-            window.termpolis.writeToTerminal(terminalId, fixSuggestion + '\r')
-            setFixSuggestion(null)
-          }}
-          onDismiss={() => setFixSuggestion(null)}
-        />
-      )}
+            onDismiss={() => setFixSuggestion(null)}
+          />
+        )}
+      </div>
+      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={cwd} />
     </div>
   )
 }

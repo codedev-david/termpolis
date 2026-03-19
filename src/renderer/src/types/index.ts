@@ -63,6 +63,7 @@ export interface TermpolisAPI {
   completionPathCommands: () => Promise<IpcResponse<string[]>>
   completionEnvVars: () => Promise<IpcResponse<Record<string, string>>>
   exportTerminal: (opts: { content: string; defaultFilename: string }) => Promise<IpcResponse<{ filePath: string }>>
+  getTerminalStatus: (cwd: string) => Promise<IpcResponse<{ cwd: string; gitBranch: string }>>
 }
 
 declare global {
