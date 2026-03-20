@@ -67,8 +67,8 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full" style={{ transition: 'width 200ms ease' }}>
-      <div className="flex items-center gap-1 p-2 border-b border-[#3c3c3c]">
+    <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full overflow-hidden" style={{ transition: 'width 200ms ease' }}>
+      <div className="flex items-center gap-1 p-2 border-b border-[#3c3c3c] overflow-hidden">
         <button
           onClick={() => setShowSettings(!showSettings)}
           title="Settings"
