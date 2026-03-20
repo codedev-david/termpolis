@@ -5,6 +5,10 @@
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "type": "module",
+  "bin": {
+    "termpolis-cli": "src/mcp-adapter/termpolis-cli.js",
+    "termpolis-mcp": "src/mcp-adapter/stdio-adapter.js"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

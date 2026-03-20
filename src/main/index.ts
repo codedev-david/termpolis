@@ -270,6 +270,23 @@ if (!gotTheLock) {
     require('fs').writeFileSync(tokenPath, getMcpAuthToken(), { encoding: 'utf-8', mode: 0o600 })
     console.log(`MCP token written to: ${tokenPath}`)
 
+    // Write a Claude MCP config snippet so users can easily integrate with Claude Code
+    const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
+    const adapterPath = app.isPackaged
+      ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.js')
+      : join(__dirname, '../../src/mcp-adapter/stdio-adapter.js')
+    const mcpConfig = {
+      mcpServers: {
+        termpolis: {
+          command: 'node',
+          args: [adapterPath],
+        }
+      }
+    }
+    require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+    console.log(`Claude MCP config written to: ${mcpConfigPath}`)
+    console.log(`To use: copy the contents into your .mcp.json or Claude Code MCP settings`)
+
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
     globalShortcut.register('Super+Shift+T', () => {
       if (mainWindow) {
