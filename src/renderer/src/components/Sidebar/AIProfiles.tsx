@@ -123,10 +123,11 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       theme: TERMINAL_DEFAULTS.theme,
       fontFamily: TERMINAL_DEFAULTS.fontFamily,
     })
-    // Wait for shell init, then send the command
+    // Wait for shell to fully initialize before sending command
+    // Git Bash on Windows can take 1-2 seconds to show the prompt
     setTimeout(() => {
       window.termpolis.writeToTerminal(id, profile.command + '\r')
-    }, 500)
+    }, 1500)
   }
 
   const handleAddProfile = (profile: AIProfile) => {

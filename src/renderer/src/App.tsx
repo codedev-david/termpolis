@@ -316,7 +316,7 @@ export default function App() {
         const res = await window.termpolis.createTerminal(cId, shellType, cCwd)
         if (res.success) {
           addTerminal({ id: cId, name: claudeProfile.name, color: claudeProfile.color, shellType, cwd: cCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-          setTimeout(() => window.termpolis.writeToTerminal(cId, claudeProfile.command + '\r'), 500)
+          setTimeout(() => window.termpolis.writeToTerminal(cId, claudeProfile.command + '\r'), 1500)
         }
         break
       }
@@ -328,7 +328,7 @@ export default function App() {
         const res = await window.termpolis.createTerminal(xId, shellType, xCwd)
         if (res.success) {
           addTerminal({ id: xId, name: codexProfile.name, color: codexProfile.color, shellType, cwd: xCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-          setTimeout(() => window.termpolis.writeToTerminal(xId, codexProfile.command + '\r'), 500)
+          setTimeout(() => window.termpolis.writeToTerminal(xId, codexProfile.command + '\r'), 1500)
         }
         break
       }
@@ -340,7 +340,7 @@ export default function App() {
         const gRes = await window.termpolis.createTerminal(gId, gShellType, gCwd)
         if (gRes.success) {
           addTerminal({ id: gId, name: geminiProfile.name, color: geminiProfile.color, shellType: gShellType, cwd: gCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-          setTimeout(() => window.termpolis.writeToTerminal(gId, geminiProfile.command + '\r'), 500)
+          setTimeout(() => window.termpolis.writeToTerminal(gId, geminiProfile.command + '\r'), 1500)
         }
         break
       }
@@ -368,7 +368,7 @@ export default function App() {
     const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (res.success) {
       addTerminal({ id, name: 'Claude Code', color: '#D97706', shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-      setTimeout(() => window.termpolis.writeToTerminal(id, 'claude\r'), 500)
+      setTimeout(() => window.termpolis.writeToTerminal(id, 'claude\r'), 1500)
     }
   }
 
