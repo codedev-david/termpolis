@@ -94,12 +94,15 @@ An AI-native, cross-platform terminal manager built with Electron. Split panes, 
 - **jq**, **yq**, and **nano** — bundled and available in every terminal, even if not installed on your system
 - Latest versions downloaded automatically on each build
 
-### Performance
+### Performance & Reliability
 - **Output throttling** — rAF-based batching with 64KB per-frame rate limit prevents UI freezing from heavy output
 - **10,000-line scrollback buffer** per terminal (prevents unbounded memory growth)
 - **Viewport-aware rendering** — off-screen terminals in split view get deferred rendering
 - **Lazy-loaded settings** — Monaco editor and settings pane load on demand, not at startup
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
+- **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
+- **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
+- **164 automated tests** — 89 unit (Vitest) + 75 E2E (Playwright) with 55 screenshots
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -256,10 +259,10 @@ npm run dev
 npm test
 ```
 
-121 total tests:
+164 total tests:
 - `npm test` — 89 unit tests (Vitest)
-- `npx playwright test` — 32 E2E tests (Playwright, launches the actual Electron app)
-- E2E tests capture 25 screenshots automatically in `e2e/screenshots/`
+- `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
+- E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
 
 ## Building from Source
 
