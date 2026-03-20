@@ -1,14 +1,18 @@
 import React, { useEffect, useState } from 'react'
 import type { ShellType } from '../../types'
+import type { AgentInfo } from '../../lib/agentDetector'
+import { formatTokens, type CostInfo } from '../../lib/costTracker'
 
 interface Props {
   terminalId: string
   shellType: ShellType
   cwd: string
   parsedBranch?: string | null
+  agent?: AgentInfo | null
+  costInfo?: CostInfo | null
 }
 
-export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch }: Props) {
+export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, agent, costInfo }: Props) {
   const [ipcBranch, setIpcBranch] = useState('')
 
   // IPC-based git branch lookup as fallback (works on macOS/Linux with live cwd)
@@ -46,6 +50,25 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch }: 
 
   return (
     <div className="flex items-center gap-3 px-2 py-0.5 bg-[#007acc] text-white text-[11px] shrink-0 select-none overflow-hidden">
+      {agent && (
+        <span
+          className="flex items-center gap-1 shrink-0 rounded px-1.5 py-px text-[10px] font-medium"
+          style={{ backgroundColor: agent.color, color: '#fff' }}
+          title={`AI Agent: ${agent.name}`}
+        >
+          <i className={`${agent.icon} text-[10px]`}></i>
+          {agent.name}
+        </span>
+      )}
+      {agent && costInfo && costInfo.estimatedCost > 0 && (
+        <span className="flex items-center gap-1 shrink-0" title={`Estimated cost: $${costInfo.estimatedCost.toFixed(2)}${costInfo.tokensIn ? ` (${costInfo.tokensIn.toLocaleString()} tokens)` : ''}`}>
+          <i className="fa-solid fa-dollar-sign text-[10px]"></i>
+          ${costInfo.estimatedCost.toFixed(2)}
+          {costInfo.tokensIn > 0 && (
+            <span className="opacity-75">({formatTokens(costInfo.tokensIn)} tokens)</span>
+          )}
+        </span>
+      )}
       <span className="flex items-center gap-1 shrink-0" title="Shell">
         <i className="fa-solid fa-terminal text-[10px]"></i>
         {shellLabel[shellType] ?? shellType}

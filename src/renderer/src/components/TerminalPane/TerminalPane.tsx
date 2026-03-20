@@ -13,6 +13,8 @@ import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
+import { detectAgent, type AgentInfo } from '../../lib/agentDetector'
+import { parseCostFromOutput, type CostInfo } from '../../lib/costTracker'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
@@ -57,6 +59,17 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [parsedCwd, setParsedCwd] = useState<string | null>(null)
   const [parsedBranch, setParsedBranch] = useState<string | null>(null)
   const lastCommandRef = useRef('')
+
+  // Agent detection state
+  const [detectedAgent, setDetectedAgent] = useState<AgentInfo | null>(null)
+  const agentDetectedRef = useRef(false)
+  const agentScanBytesRef = useRef(0)
+  const AGENT_SCAN_LIMIT = 2048
+
+  // Cost tracking state
+  const [costInfo, setCostInfo] = useState<CostInfo | null>(null)
+  const costScanCounterRef = useRef(0)
+  const COST_SCAN_INTERVAL = 5 // scan every 5th output chunk
 
   // Refs for use inside onData callback (avoids stale closures)
   const suggestionsRef = useRef<CompletionResult[]>([])
@@ -426,6 +439,32 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (promptInfo.cwd && !disposed) setParsedCwd(promptInfo.cwd)
       if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
 
+      // Agent detection: scan first ~2KB of output then stop
+      if (!agentDetectedRef.current && agentScanBytesRef.current < AGENT_SCAN_LIMIT) {
+        agentScanBytesRef.current += data.length
+        const agent = detectAgent(stripped)
+        if (agent) {
+          agentDetectedRef.current = true
+          if (!disposed) setDetectedAgent(agent)
+        }
+      }
+
+      // Cost tracking: scan periodically when an agent is active
+      if (agentDetectedRef.current) {
+        costScanCounterRef.current++
+        if (costScanCounterRef.current % COST_SCAN_INTERVAL === 0) {
+          const parsed = parseCostFromOutput(stripped)
+          if (parsed && !disposed) {
+            setCostInfo(prev => ({
+              tokensIn: parsed.tokensIn ?? prev?.tokensIn ?? 0,
+              tokensOut: parsed.tokensOut ?? prev?.tokensOut ?? 0,
+              estimatedCost: parsed.estimatedCost ?? prev?.estimatedCost ?? 0,
+              lastUpdated: parsed.lastUpdated ?? Date.now(),
+            }))
+          }
+        }
+      }
+
       // Watch for OSC 633 exit code marker (if shell integration is enabled)
       const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)
       if (oscMatch) {
@@ -607,7 +646,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           />
         )}
       </div>
-      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} />
+      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={detectedAgent} costInfo={costInfo} />
     </div>
   )
 }
