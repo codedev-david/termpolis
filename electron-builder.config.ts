@@ -5,6 +5,9 @@ const config: Configuration = {
   productName: 'Termpolis',
   directories: { output: 'dist-electron-builder' },
   files: ['out/**/*'],
+  extraResources: [
+    { from: 'src/mcp-adapter', to: 'mcp-adapter', filter: ['**/*.js'] },
+  ],
   win: {
     target: 'nsis',
     icon: 'assets/icon.ico',
