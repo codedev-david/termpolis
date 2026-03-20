@@ -163,10 +163,17 @@ Termpolis takes security seriously, especially with AI agent integration.
 - **No remote code execution** — no `eval()`, no remote module loading, no `webSecurity` bypasses
 - **Bundled tools verified** — jq, yq, and nano downloaded from official GitHub releases only
 
+### No Plugin System — By Design
+- Termpolis intentionally does **not** have a plugin or extension system
+- Third-party plugins are a major attack surface — they run with full app permissions, can access terminals, read output, and execute commands
+- Every feature in Termpolis is built-in, auditable, and ships with the app
+- If you need custom behavior, fork the repo — the codebase is open source and well-documented
+
 ### What Users Should Know
 - Terminal sessions run with your user permissions — same as any terminal application
 - AI agents launched through profiles (Claude Code, Codex, etc.) have the same access as if you ran them manually
 - The MCP token rotates on every app restart — a compromised token becomes invalid when you close the app
+- No telemetry, no analytics, no cloud accounts — everything stays on your machine
 
 ## Quick Start
 
