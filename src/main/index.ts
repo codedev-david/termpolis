@@ -473,6 +473,27 @@ if (!gotTheLock) {
       }, null, 2))
       require('fs').writeFileSync(join(cacheDir, '.mcp.json'), mcpContent)
       console.log('Termpolis plugin cached at:', cacheDir)
+
+      // Register in marketplace.json manifest (required for Claude to discover the plugin)
+      const marketplaceJsonPath = join(localMarketplace, '.claude-plugin', 'marketplace.json')
+      if (require('fs').existsSync(marketplaceJsonPath)) {
+        const manifest = JSON.parse(require('fs').readFileSync(marketplaceJsonPath, 'utf-8'))
+        if (manifest.plugins && !manifest.plugins.some((p: any) => p.name === 'termpolis')) {
+          manifest.plugins.push({
+            name: 'termpolis',
+            description: 'AI-native terminal manager MCP server. Create terminals, run commands, read output, manage split panes, and coordinate multi-agent swarms.',
+            version: '1.0.0',
+            author: { name: 'Termpolis' },
+            source: './plugins/termpolis',
+            category: 'development',
+            strict: false,
+          })
+          const tmpManifest = marketplaceJsonPath + '.tmp'
+          require('fs').writeFileSync(tmpManifest, JSON.stringify(manifest, null, 2), 'utf-8')
+          require('fs').renameSync(tmpManifest, marketplaceJsonPath)
+          console.log('Registered Termpolis in marketplace.json manifest')
+        }
+      }
     } catch (e) {
       console.log('Could not register Claude Code plugin (non-fatal):', (e as any).message)
     }
