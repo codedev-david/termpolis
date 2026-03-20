@@ -3,6 +3,8 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalTab } from './TerminalTab'
 import { AddTerminalModal } from './AddTerminalModal'
 import { WorkspaceList } from './WorkspaceList'
+import { AIProfiles } from './AIProfiles'
+import { PromptTemplates } from '../PromptTemplates/PromptTemplates'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -17,6 +19,7 @@ export function Sidebar() {
   } = useTerminalStore()
 
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showPrompts, setShowPrompts] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
 
   useEffect(() => {
@@ -84,7 +87,13 @@ export function Sidebar() {
           }}
           className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
         >{viewMode === 'tabs' ? '⊞ Split View' : '☰ Tab View'}</button>
+        <button
+          onClick={() => setShowPrompts(true)}
+          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
+        ><i className="fa-solid fa-message text-xs"></i> Prompts</button>
       </div>
+      <AIProfiles availableShells={availableShells} />
+      <div className="border-t border-[#3c3c3c]"></div>
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
       <div className="px-3 py-1.5 text-xs text-[#6b7280] uppercase tracking-wider">Terminals</div>
@@ -116,6 +125,7 @@ export function Sidebar() {
           onCancel={() => setShowAddModal(false)}
         />
       )}
+      {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
     </aside>
   )
 }

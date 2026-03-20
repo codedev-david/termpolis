@@ -29,12 +29,31 @@ export interface Workspace {
   terminals: Omit<TerminalSession, 'id'>[]
 }
 
+export interface AIProfile {
+  id: string
+  name: string
+  icon: string
+  command: string
+  shell: string
+  color: string
+}
+
+export interface PromptTemplate {
+  id: string
+  name: string
+  text: string
+  icon: string
+  isCustom?: boolean
+}
+
 export interface SessionData {
   terminals: TerminalSession[]
   workspaces: Workspace[]
   defaultShell: ShellType
   viewMode: ViewMode
   keybindings?: Record<string, string>
+  aiProfiles?: AIProfile[]
+  promptTemplates?: PromptTemplate[]
 }
 
 export interface HistoryEntry {

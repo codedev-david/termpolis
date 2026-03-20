@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode } from '../types'
+import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 
 // ---- Pane tree helpers ----
@@ -56,6 +56,8 @@ interface TerminalStore {
   sidebarCollapsed: boolean
   keybindings: KeybindingMap
   paneTree: PaneNode | null
+  aiProfiles: AIProfile[]
+  promptTemplates: PromptTemplate[]
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -75,6 +77,10 @@ interface TerminalStore {
   setPaneTree: (tree: PaneNode | null) => void
   splitTerminal: (terminalId: string, direction: 'horizontal' | 'vertical', newTerminalId: string) => void
   removePaneTerminal: (terminalId: string) => void
+  addAIProfile: (profile: AIProfile) => void
+  removeAIProfile: (id: string) => void
+  addPromptTemplate: (template: PromptTemplate) => void
+  removePromptTemplate: (id: string) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -88,6 +94,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   sidebarCollapsed: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },
   paneTree: null,
+  aiProfiles: [],
+  promptTemplates: [],
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -204,4 +212,20 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const newTree = removeFromTree(s.paneTree, terminalId)
     return { paneTree: newTree }
   }),
+
+  addAIProfile: (profile) => set(s => ({
+    aiProfiles: [...s.aiProfiles, profile],
+  })),
+
+  removeAIProfile: (id) => set(s => ({
+    aiProfiles: s.aiProfiles.filter(p => p.id !== id),
+  })),
+
+  addPromptTemplate: (template) => set(s => ({
+    promptTemplates: [...s.promptTemplates, template],
+  })),
+
+  removePromptTemplate: (id) => set(s => ({
+    promptTemplates: s.promptTemplates.filter(t => t.id !== id),
+  })),
 }))

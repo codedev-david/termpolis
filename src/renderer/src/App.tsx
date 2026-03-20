@@ -4,6 +4,7 @@ import { TabView } from './components/TabView/TabView'
 import { SplitView } from './components/SplitView/SplitView'
 const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane').then(m => ({ default: m.SettingsPane })))
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
+import { PromptTemplates } from './components/PromptTemplates/PromptTemplates'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { AddTerminalModal } from './components/Sidebar/AddTerminalModal'
@@ -17,11 +18,12 @@ import type { ShellInfo } from './types'
 export default function App() {
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
-    defaultShell, keybindings,
+    defaultShell, keybindings, aiProfiles, promptTemplates,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
   } = useTerminalStore()
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [showPrompts, setShowPrompts] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const started = useRef(false)
@@ -33,7 +35,7 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb } = res.data
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, aiProfiles: ap, promptTemplates: pt } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
         // Migrate old 'grid' viewMode to 'split'
         const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
@@ -44,6 +46,8 @@ export default function App() {
           viewMode: resolvedVm,
           activeTerminalId: saved[0]?.id ?? null,
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
+          aiProfiles: ap ?? [],
+          promptTemplates: pt ?? [],
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.map(t => t.id)) : null,
         })
         // Spawn all terminals in parallel for faster startup
@@ -68,8 +72,10 @@ export default function App() {
       defaultShell: state.defaultShell,
       viewMode: state.viewMode,
       keybindings: state.keybindings,
+      aiProfiles: state.aiProfiles,
+      promptTemplates: state.promptTemplates,
     })
-  }, [terminals, workspaces, keybindings])
+  }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates])
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -136,6 +142,13 @@ export default function App() {
         return
       }
 
+      // Ctrl+Shift+P to toggle prompt templates
+      if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+        e.preventDefault()
+        setShowPrompts(v => !v)
+        return
+      }
+
       // Alt+1 through Alt+9 to jump to terminal by index
       if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
@@ -196,6 +209,7 @@ export default function App() {
       </div>
       <StatusBar />
       {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
+      {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
       {showAddModal && (
         <AddTerminalModal
           shells={availableShells}
