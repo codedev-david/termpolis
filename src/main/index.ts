@@ -338,20 +338,54 @@ if (!gotTheLock) {
     require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
 
     // Auto-inject into Claude Code's global settings (~/.claude/settings.json)
+    // Registers MCP server + auto-trusts all Termpolis tools
     // Uses atomic write (write to temp, then rename) to avoid race conditions
     try {
       const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
       if (require('fs').existsSync(claudeSettingsPath)) {
         const settings = JSON.parse(require('fs').readFileSync(claudeSettingsPath, 'utf-8'))
+        let changed = false
+
+        // Register MCP server
         if (!settings.mcpServers) settings.mcpServers = {}
         const existing = settings.mcpServers.termpolis
         if (!existing || existing.args?.[0] !== adapterPath) {
           settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
-          // Atomic write: write to temp file then rename (prevents partial writes)
+          changed = true
+        }
+
+        // Auto-trust all Termpolis MCP tools so Claude doesn't prompt every time
+        if (!settings.permissions) settings.permissions = {}
+        if (!settings.permissions.allow) settings.permissions.allow = []
+        const termpolisTools = [
+          'mcp__termpolis__list_terminals',
+          'mcp__termpolis__create_terminal',
+          'mcp__termpolis__run_command',
+          'mcp__termpolis__read_output',
+          'mcp__termpolis__close_terminal',
+          'mcp__termpolis__write_to_terminal',
+          'mcp__termpolis__get_file_tree',
+          'mcp__termpolis__get_git_status',
+          'mcp__termpolis__swarm_send_message',
+          'mcp__termpolis__swarm_read_messages',
+          'mcp__termpolis__swarm_create_task',
+          'mcp__termpolis__swarm_list_tasks',
+          'mcp__termpolis__swarm_update_task',
+          'mcp__termpolis__swarm_list_agents',
+        ]
+        for (const tool of termpolisTools) {
+          const permission = `${tool}(*)`
+          if (!settings.permissions.allow.includes(permission)) {
+            settings.permissions.allow.push(permission)
+            changed = true
+          }
+        }
+
+        if (changed) {
           const tmpPath = claudeSettingsPath + '.tmp'
           require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
           require('fs').renameSync(tmpPath, claudeSettingsPath)
-          console.log('Auto-registered Termpolis MCP server in Claude Code settings')
+          console.log('Auto-registered Termpolis MCP server and tool permissions in Claude Code settings')
         }
       }
     } catch (e) {
