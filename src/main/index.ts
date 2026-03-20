@@ -267,7 +267,7 @@ if (!gotTheLock) {
     console.log(`MCP auth token: ${getMcpAuthToken()}`)
     // Write token to a file so AI agents can discover it
     const tokenPath = join(app.getPath('userData'), 'mcp-token')
-    require('fs').writeFileSync(tokenPath, getMcpAuthToken(), 'utf-8')
+    require('fs').writeFileSync(tokenPath, getMcpAuthToken(), { encoding: 'utf-8', mode: 0o600 })
     console.log(`MCP token written to: ${tokenPath}`)
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
