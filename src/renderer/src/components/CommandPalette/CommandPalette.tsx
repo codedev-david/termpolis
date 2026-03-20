@@ -25,6 +25,7 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /show\s*(prompts?|templates?)/i, action: 'show_prompts', label: 'Show Prompts', description: 'Open prompt templates', icon: 'fa-solid fa-message' },
   { pattern: /launch\s*claude/i, action: 'launch_claude', label: 'Launch Claude', description: 'Launch Claude Code AI agent', icon: 'fa-solid fa-robot' },
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
+  { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },
   { pattern: /run\s+(.+)/i, action: 'run_command', capture: true, label: 'Run Command', description: 'Execute a command in active terminal', icon: 'fa-solid fa-terminal' },
   { pattern: /go\s*to\s*terminal\s*(\d)/i, action: 'goto_terminal', capture: true, label: 'Go to Terminal', description: 'Switch to terminal by number', icon: 'fa-solid fa-arrow-right' },
 ]

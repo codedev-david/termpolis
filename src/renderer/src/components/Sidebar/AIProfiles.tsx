@@ -8,6 +8,7 @@ import type { AIProfile, ShellInfo, ShellType } from '../../types'
 const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
+  { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
   { id: 'aider', name: 'Aider', icon: 'fa-solid fa-code', command: 'aider', shell: 'bash', color: '#8B5CF6' },
   { id: 'copilot', name: 'GitHub Copilot', icon: 'fa-brands fa-github', command: 'gh copilot', shell: 'bash', color: '#6366F1' },
 ]

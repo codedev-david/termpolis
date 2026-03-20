@@ -315,6 +315,18 @@ export default function App() {
         }
         break
       }
+      case 'launch_gemini': {
+        const geminiProfile = { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' }
+        const gId = uuid()
+        const gCwd = await getHomedir()
+        const gShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
+        const gRes = await window.termpolis.createTerminal(gId, gShellType, gCwd)
+        if (gRes.success) {
+          addTerminal({ id: gId, name: geminiProfile.name, color: geminiProfile.color, shellType: gShellType, cwd: gCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
+          setTimeout(() => window.termpolis.writeToTerminal(gId, geminiProfile.command + '\r'), 500)
+        }
+        break
+      }
       case 'run_command':
         if (captured && state.activeTerminalId) {
           window.termpolis.writeToTerminal(state.activeTerminalId, captured + '\r')

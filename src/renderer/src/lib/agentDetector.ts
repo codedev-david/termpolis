@@ -7,6 +7,7 @@ export interface AgentInfo {
 const AI_AGENT_PATTERNS = [
   { name: 'Claude Code', pattern: /claude|anthropic/i, icon: 'fa-solid fa-robot', color: '#D97706' },
   { name: 'Codex', pattern: /codex|openai/i, icon: 'fa-solid fa-microchip', color: '#10B981' },
+  { name: 'Gemini CLI', pattern: /gemini|google ai/i, icon: 'fa-brands fa-google', color: '#4285F4' },
   { name: 'Aider', pattern: /aider/i, icon: 'fa-solid fa-code', color: '#8B5CF6' },
   { name: 'GitHub Copilot', pattern: /copilot/i, icon: 'fa-brands fa-github', color: '#6366F1' },
 ]
