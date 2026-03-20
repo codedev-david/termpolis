@@ -123,12 +123,50 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 | `get_file_tree` | List files and directories at a path |
 | `get_git_status` | Get git status, branch, and recent commits |
 
-### Health Check
+### Authentication
+
+The MCP server requires a Bearer token on all endpoints except `/health`. A random token is generated on each app launch and written to:
+
+| Platform | Token file |
+|----------|-----------|
+| Windows | `%APPDATA%\termpolis\mcp-token` |
+| macOS | `~/Library/Application Support/termpolis/mcp-token` |
+| Linux | `~/.config/termpolis/mcp-token` |
+
+```bash
+# Read token and make an authenticated request
+TOKEN=$(cat ~/.config/termpolis/mcp-token)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:9315/mcp \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
+### Health Check (no auth required)
 
 ```bash
 curl http://localhost:9315/health
-# {"status":"ok","name":"termpolis-mcp","version":"1.0.0","tools":8}
+# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":8,"auth":"required"}
 ```
+
+## Security
+
+Termpolis takes security seriously, especially with AI agent integration.
+
+### MCP Server Security
+- **Localhost only** — bound to `127.0.0.1`, never exposed to the network
+- **Auth token required** — random 256-bit token generated on each app launch, required via `Authorization: Bearer` header on all endpoints except health check
+- **CORS restricted** — no wildcard origins, preventing browser-based CSRF attacks
+- **Token file permissions** — `600` (owner read/write only) on macOS/Linux; per-user `%APPDATA%` on Windows
+
+### Application Security
+- **Single-instance lock** — prevents session data corruption from multiple windows
+- **Context isolation** — Electron's `contextIsolation: true` with `nodeIntegration: false`, all main process access via secure `contextBridge`
+- **No remote code execution** — no `eval()`, no remote module loading, no `webSecurity` bypasses
+- **Bundled tools verified** — jq, yq, and nano downloaded from official GitHub releases only
+
+### What Users Should Know
+- Terminal sessions run with your user permissions — same as any terminal application
+- AI agents launched through profiles (Claude Code, Codex, etc.) have the same access as if you ran them manually
+- The MCP token rotates on every app restart — a compromised token becomes invalid when you close the app
 
 ## Quick Start
 
