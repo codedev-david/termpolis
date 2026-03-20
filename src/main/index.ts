@@ -438,12 +438,12 @@ if (!gotTheLock) {
       }
 
       // Enable the plugin in Claude Code settings
+      let marketplaceName = 'local-plugins'
       if (require('fs').existsSync(join(homedir(), '.claude', 'settings.json'))) {
         const settings = JSON.parse(require('fs').readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'))
         if (!settings.enabledPlugins) settings.enabledPlugins = {}
 
         // Detect local marketplace name from settings
-        let marketplaceName = 'local-plugins'
         if (settings.extraKnownMarketplaces) {
           for (const [name, config] of Object.entries(settings.extraKnownMarketplaces as Record<string, any>)) {
             if (config?.source?.path?.includes('local-marketplace')) {
