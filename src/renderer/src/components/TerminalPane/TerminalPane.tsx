@@ -7,23 +7,23 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename } from '../../lib/exportTerminal'
-import { createSessionRecorder, appendEntry, formatRecording, generateRecordingFilename, type SessionRecording } from '../../lib/sessionRecorder'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
-import { getCompletions, type CompletionResult } from '../../completions/completionEngine'
+import { getCompletions } from '../../completions/completionEngine'
 import { getSuggestion } from '../../corrections/correctionEngine'
 import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
-import { detectAgent, type AgentInfo } from '../../lib/agentDetector'
-import { parseCostFromOutput, type CostInfo } from '../../lib/costTracker'
-import { parseConversation } from '../../lib/conversationParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { AgentHandoffBanner } from '../AgentHandoff/AgentHandoffBanner'
 import { AgentHandoffModal } from '../AgentHandoff/AgentHandoffModal'
-import { captureHandoffContext, formatHandoffPrompt, type HandoffContext } from '../../lib/contextCapture'
 import { useTerminalStore } from '../../store/terminalStore'
+import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
+import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
+import { useAgentDetection } from '../../hooks/useAgentDetection'
+import { useSessionRecording } from '../../hooks/useSessionRecording'
+import { useContextLimit } from '../../hooks/useContextLimit'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
 
@@ -54,12 +54,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const inputBufferRef = useRef('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
 
-  // Completion state
-  const [suggestions, setSuggestions] = useState<CompletionResult[]>([])
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const [dropdownPosition, setDropdownPosition] = useState({ x: 0, y: 0 })
-  const [dropdownVisible, setDropdownVisible] = useState(false)
-
   // Command fix banner state
   const [fixSuggestion, setFixSuggestion] = useState<string | null>(null)
   const fixSuggestionRef = useRef<string | null>(null)
@@ -67,26 +61,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [parsedCwd, setParsedCwd] = useState<string | null>(null)
   const [parsedBranch, setParsedBranch] = useState<string | null>(null)
   const lastCommandRef = useRef('')
-
-  // Agent detection state
-  const [detectedAgent, setDetectedAgent] = useState<AgentInfo | null>(null)
-  const agentDetectedRef = useRef(false)
-  const agentScanBytesRef = useRef(0)
-  const AGENT_SCAN_LIMIT = 2048
-
-  // Cost tracking state
-  const [costInfo, setCostInfo] = useState<CostInfo | null>(null)
-  const costScanCounterRef = useRef(0)
-  const COST_SCAN_INTERVAL = 5 // scan every 5th output chunk
-
-  // Conversation parsing state
-  const conversationParsedCountRef = useRef(0)
-  const CONVERSATION_PARSE_INTERVAL = 10 // parse every 10th output chunk when agent active
-
-  // Session recording state
-  const [isRecording, setIsRecording] = useState(false)
-  const isRecordingRef = useRef(false)
-  const recordingRef = useRef<SessionRecording | null>(null)
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -96,94 +70,24 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [showDiffViewer, setShowDiffViewer] = useState(false)
   const diffDetectedRef = useRef(false)
 
-  // Agent handoff state
-  const [contextLimitReached, setContextLimitReached] = useState(false)
-  const contextLimitFiredRef = useRef(false)
-  const [handoffContext, setHandoffContext] = useState<HandoffContext | null>(null)
-  const [showHandoffModal, setShowHandoffModal] = useState(false)
+  // Throttle ref for prompt parsing
+  const lastPromptParseRef = useRef(0)
 
-  // Refs for use inside onData callback (avoids stale closures)
-  const suggestionsRef = useRef<CompletionResult[]>([])
-  const selectedIndexRef = useRef(0)
-  const dropdownVisibleRef = useRef(false)
-  const autocompleteEnabledRef = useRef(true)
-
-  // Keep refs in sync with state
-  suggestionsRef.current = suggestions
-  selectedIndexRef.current = selectedIndex
-  dropdownVisibleRef.current = dropdownVisible
+  // Keep fixSuggestionRef in sync
   fixSuggestionRef.current = fixSuggestion
-  isRecordingRef.current = isRecording
 
-  // Sync autocomplete setting from store
-  const autocompleteEnabled = useTerminalStore(s => s.autocompleteEnabled)
-  autocompleteEnabledRef.current = autocompleteEnabled
-
-  const dismissDropdown = useCallback(() => {
-    setSuggestions([])
-    setSelectedIndex(0)
-    setDropdownVisible(false)
-  }, [])
-
-  const triggerCompletions = useCallback(async (input: string) => {
-    if (input.length < 2) {
-      dismissDropdown()
-      return
-    }
-    try {
-      const results = await getCompletions(input)
-      if (results.length > 0) {
-        setSuggestions(results)
-        setSelectedIndex(0)
-        setDropdownVisible(true)
-        // Position near bottom-left of terminal container
-        if (containerRef.current) {
-          const rect = containerRef.current.getBoundingClientRect()
-          setDropdownPosition({
-            x: rect.left + 20,
-            y: rect.top + 40,
-          })
-        }
-      } else {
-        dismissDropdown()
-      }
-    } catch {
-      dismissDropdown()
-    }
-  }, [dismissDropdown])
-
-  const acceptSuggestion = useCallback((suggestion: CompletionResult) => {
-    const input = inputBufferRef.current
-    // Calculate what to insert: the suggestion text minus what's already typed
-    // For full-command history suggestions, replace the entire input
-    let textToInsert: string
-    if (suggestion.source === 'history') {
-      // Erase current input and type the full command
-      const eraseCount = input.length
-      const eraseChars = '\u007f'.repeat(eraseCount)
-      textToInsert = eraseChars + suggestion.text
-    } else {
-      // Find common prefix and insert the rest
-      const parts = input.split(/\s+/)
-      const lastPart = parts[parts.length - 1] || ''
-      if (suggestion.text.startsWith(lastPart)) {
-        textToInsert = suggestion.text.slice(lastPart.length)
-      } else {
-        textToInsert = suggestion.text
-      }
-    }
-
-    if (textToInsert) {
-      window.termpolis.writeToTerminal(terminalId, textToInsert)
-      // Update input buffer to reflect the accepted text
-      if (suggestion.source === 'history') {
-        inputBufferRef.current = suggestion.text
-      } else {
-        inputBufferRef.current += textToInsert
-      }
-    }
-    dismissDropdown()
-  }, [terminalId, dismissDropdown])
+  // --- Custom hooks ---
+  const completion = useCompletionDropdown(terminalId, containerRef, inputBufferRef)
+  const agent = useAgentDetection()
+  const recording = useSessionRecording(terminalName, shellType)
+  const contextLimit = useContextLimit(
+    terminalId,
+    shellType,
+    cwd,
+    parsedCwd,
+    agent.detectedAgent?.name ?? null,
+    outputBufferRef,
+  )
 
   const handleExport = useCallback((mode: 'full' | 'visible') => {
     const term = termRef.current
@@ -214,27 +118,15 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     setContextMenu({ visible: false, x: 0, y: 0 })
   }, [terminalName])
 
-  const shellLabel: Record<string, string> = {
-    bash: 'Bash', zsh: 'Zsh', cmd: 'CMD', powershell: 'PowerShell', gitbash: 'Git Bash',
-  }
-
   const handleStartRecording = useCallback(() => {
-    const recording = createSessionRecorder(terminalName, shellLabel[shellType] ?? shellType)
-    recordingRef.current = recording
-    setIsRecording(true)
+    recording.startRecording()
     setContextMenu({ visible: false, x: 0, y: 0 })
-  }, [terminalName, shellType])
+  }, [recording])
 
   const handleStopRecording = useCallback(() => {
-    const recording = recordingRef.current
-    if (!recording) return
-    const content = formatRecording(recording)
-    const defaultFilename = generateRecordingFilename(terminalName)
-    window.termpolis.exportTerminal({ content, defaultFilename })
-    recordingRef.current = null
-    setIsRecording(false)
+    recording.stopRecording()
     setContextMenu({ visible: false, x: 0, y: 0 })
-  }, [terminalName])
+  }, [recording])
 
   const handlePinSelection = useCallback(() => {
     const selection = termRef.current?.getSelection()
@@ -351,16 +243,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           getCompletions(input).then(results => {
             if (disposed) return
             if (results.length > 0) {
-              setSuggestions(results)
-              setSelectedIndex(0)
-              setDropdownVisible(true)
-              if (containerRef.current) {
-                const rect = containerRef.current.getBoundingClientRect()
-                setDropdownPosition({
-                  x: rect.left + 20,
-                  y: rect.top + 40,
-                })
-              }
+              completion.triggerCompletions(input)
             }
           }).catch(() => {})
         }
@@ -368,72 +251,15 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }
 
       // When dropdown is visible, intercept certain keys
-      if (dropdownVisibleRef.current && suggestionsRef.current.length > 0) {
-        // Tab: accept selected suggestion
-        if (data === '\t') {
-          const selected = suggestionsRef.current[selectedIndexRef.current]
-          if (selected) {
-            // Use a microtask so React state updates apply
-            Promise.resolve().then(() => {
-              const input = inputBufferRef.current
-              let textToInsert: string
-              if (selected.source === 'history') {
-                const eraseCount = input.length
-                const eraseChars = '\u007f'.repeat(eraseCount)
-                textToInsert = eraseChars + selected.text
-              } else {
-                const parts = input.split(/\s+/)
-                const lastPart = parts[parts.length - 1] || ''
-                if (selected.text.startsWith(lastPart)) {
-                  textToInsert = selected.text.slice(lastPart.length)
-                } else {
-                  textToInsert = selected.text
-                }
-              }
-              if (textToInsert) {
-                window.termpolis.writeToTerminal(terminalId, textToInsert)
-                if (selected.source === 'history') {
-                  inputBufferRef.current = selected.text
-                } else {
-                  inputBufferRef.current += textToInsert
-                }
-              }
-              setSuggestions([])
-              setSelectedIndex(0)
-              setDropdownVisible(false)
-            })
-          }
-          return // Don't pass Tab to PTY
-        }
-
-        // Escape: dismiss dropdown
-        if (data === '\x1b') {
-          setSuggestions([])
-          setSelectedIndex(0)
-          setDropdownVisible(false)
-          return // Don't pass Escape to PTY
-        }
-
-        // Arrow Up: navigate up
-        if (data === '\x1b[A') {
-          setSelectedIndex(prev => (prev > 0 ? prev - 1 : suggestionsRef.current.length - 1))
-          return // Don't pass to PTY
-        }
-
-        // Arrow Down: navigate down
-        if (data === '\x1b[B') {
-          setSelectedIndex(prev => (prev < suggestionsRef.current.length - 1 ? prev + 1 : 0))
-          return // Don't pass to PTY
-        }
+      if (completion.handleDropdownKeyIntercept(data)) {
+        return // Key was consumed by dropdown
       }
 
       // Pass data to PTY
       window.termpolis.writeToTerminal(terminalId, data)
 
       // Record input if recording
-      if (isRecordingRef.current && recordingRef.current) {
-        appendEntry(recordingRef.current, 'input', data)
-      }
+      recording.appendRecordingEntry('input', data)
 
       // Update input buffer
       if (data === '\r') {
@@ -447,55 +273,22 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         diffDetectedRef.current = false
         setDiffDetected(false)
         // Dismiss dropdown on Enter
-        setSuggestions([])
-        setSelectedIndex(0)
-        setDropdownVisible(false)
+        completion.dismissDropdown()
       } else if (data === '\u007f') {
         inputBufferRef.current = inputBufferRef.current.slice(0, -1)
         // Re-filter completions after backspace
-        if (autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
-          getCompletions(inputBufferRef.current).then(results => {
-            if (disposed) return
-            if (results.length > 0) {
-              setSuggestions(results)
-              setSelectedIndex(0)
-              setDropdownVisible(true)
-            } else {
-              setSuggestions([])
-              setSelectedIndex(0)
-              setDropdownVisible(false)
-            }
-          }).catch(() => {})
+        if (completion.autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
+          completion.triggerCompletions(inputBufferRef.current)
         } else {
-          setSuggestions([])
-          setSelectedIndex(0)
-          setDropdownVisible(false)
+          completion.dismissDropdown()
         }
       } else if (!data.startsWith('\x1b')) {
         inputBufferRef.current += data
         // Dismiss fix banner when user starts typing a new command
         if (fixSuggestionRef.current) setFixSuggestion(null)
         // Trigger completions if autocomplete is enabled and input has 2+ chars
-        if (autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
-          getCompletions(inputBufferRef.current).then(results => {
-            if (disposed) return
-            if (results.length > 0) {
-              setSuggestions(results)
-              setSelectedIndex(0)
-              setDropdownVisible(true)
-              if (containerRef.current) {
-                const rect = containerRef.current.getBoundingClientRect()
-                setDropdownPosition({
-                  x: rect.left + 20,
-                  y: rect.top + 40,
-                })
-              }
-            } else {
-              setSuggestions([])
-              setSelectedIndex(0)
-              setDropdownVisible(false)
-            }
-          }).catch(() => {})
+        if (completion.autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
+          completion.triggerCompletions(inputBufferRef.current)
         }
       }
     })
@@ -507,9 +300,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       throttledWrite(data)
 
       // Record output if recording
-      if (isRecordingRef.current && recordingRef.current) {
-        appendEntry(recordingRef.current, 'output', data)
-      }
+      recording.appendRecordingEntry('output', data)
 
       // Buffer recent output (keep last 4KB to avoid memory bloat)
       outputBufferRef.current += data
@@ -517,85 +308,31 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         outputBufferRef.current = outputBufferRef.current.slice(-4096)
       }
 
-      // Detect diff output
-      const DIFF_PATTERN = /^diff --git /m
+      // Detect diff output (using compiled pattern)
       const hasDiff = DIFF_PATTERN.test(outputBufferRef.current)
       if (hasDiff !== diffDetectedRef.current) {
         diffDetectedRef.current = hasDiff
         if (!disposed) setDiffDetected(hasDiff)
       }
 
-      // Parse prompt for cwd and git branch (works on all platforms by reading terminal output)
+      // Strip ANSI for processing
       const stripped = outputBufferRef.current.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-      const promptInfo = parsePromptFromOutput(stripped, shellType)
-      if (promptInfo.cwd && !disposed) setParsedCwd(promptInfo.cwd)
-      if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
 
-      // Agent detection: scan first ~2KB of output then stop
-      if (!agentDetectedRef.current && agentScanBytesRef.current < AGENT_SCAN_LIMIT) {
-        agentScanBytesRef.current += data.length
-        const agent = detectAgent(stripped)
-        if (agent) {
-          agentDetectedRef.current = true
-          if (!disposed) setDetectedAgent(agent)
-        }
+      // Parse prompt for cwd and git branch — throttled to once per 500ms
+      const now = Date.now()
+      if (now - lastPromptParseRef.current > 500) {
+        lastPromptParseRef.current = now
+        const promptInfo = parsePromptFromOutput(stripped, shellType)
+        if (promptInfo.cwd && !disposed) setParsedCwd(promptInfo.cwd)
+        if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
       }
 
-      // Cost tracking: scan periodically when an agent is active
-      if (agentDetectedRef.current) {
-        costScanCounterRef.current++
-        if (costScanCounterRef.current % COST_SCAN_INTERVAL === 0) {
-          const parsed = parseCostFromOutput(stripped)
-          if (parsed && !disposed) {
-            setCostInfo(prev => ({
-              tokensIn: parsed.tokensIn ?? prev?.tokensIn ?? 0,
-              tokensOut: parsed.tokensOut ?? prev?.tokensOut ?? 0,
-              estimatedCost: parsed.estimatedCost ?? prev?.estimatedCost ?? 0,
-              lastUpdated: parsed.lastUpdated ?? Date.now(),
-            }))
-          }
-        }
-      }
+      // Agent detection + cost tracking + conversation parsing
+      agent.processAgentDetection(stripped, data.length, terminalId, terminalName)
 
-      // Conversation parsing: periodically parse output when an agent is active
-      if (agentDetectedRef.current) {
-        conversationParsedCountRef.current++
-        if (conversationParsedCountRef.current % CONVERSATION_PARSE_INTERVAL === 0) {
-          const agentName = detectedAgent?.name ?? 'AI Agent'
-          const turns = parseConversation(stripped, terminalId, terminalName, agentName)
-          const store = useTerminalStore.getState()
-          const existingConv = store.conversations.find(c => c.terminalId === terminalId)
-          const existingCount = existingConv?.turns.length ?? 0
-          // Only add genuinely new turns
-          if (turns.length > existingCount) {
-            const newTurns = turns.slice(existingCount)
-            for (const turn of newTurns) {
-              store.addConversationTurn(terminalId, terminalName, agentName, turn)
-            }
-          }
-        }
-      }
-
-      // Context limit detection: only when an agent is active and hasn't already fired
-      if (agentDetectedRef.current && !contextLimitFiredRef.current) {
-        const CONTEXT_LIMIT_PATTERNS = [
-          /context window is full/i,
-          /context limit/i,
-          /token limit/i,
-          /maximum context/i,
-          /conversation is too long/i,
-          /out of context/i,
-          /session limit/i,
-          /exceeded.*token/i,
-          /too many tokens/i,
-        ]
-        for (const pattern of CONTEXT_LIMIT_PATTERNS) {
-          if (pattern.test(stripped)) {
-            contextLimitFiredRef.current = true
-            if (!disposed) setContextLimitReached(true)
-            break
-          }
-        }
+      // Context limit detection (only when agent is active)
+      if (agent.agentDetectedRef.current) {
+        contextLimit.processContextLimit(stripped)
       }
 
       // Watch for OSC 633 exit code marker (if shell integration is enabled)
@@ -613,10 +350,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }
 
       // Pattern-matching fallback: detect common error patterns in output
-      // (works without shell integration markers)
+      // (using compiled combined pattern)
       if (lastCommandRef.current && !fixSuggestionRef.current) {
-        const errorPatterns = /command not found|not recognized|is not a .* command|Permission denied|EACCES|No such file or directory/i
-        if (errorPatterns.test(data)) {
+        if (ERROR_PATTERN.test(data)) {
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
@@ -660,20 +396,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     }
   }, [isVisible, terminalId])
 
-  // Agent handoff: capture context and open modal from banner
-  const handleHandoffSwitchTo = useCallback(async (agentCommand: string) => {
-    const effectiveCwd = parsedCwd || cwd
-    const agentName = detectedAgent?.name || 'AI Agent'
-    const stripped = outputBufferRef.current.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    const ctx = await captureHandoffContext(effectiveCwd, agentName, stripped)
-    setHandoffContext(ctx)
-    useTerminalStore.getState().setLastHandoffContext(ctx)
-    setShowHandoffModal(true)
-  }, [parsedCwd, cwd, detectedAgent])
-
+  // Agent handoff: confirm and create new terminal
   const handleHandoffConfirm = useCallback((agentCommand: string, prompt: string, keepOldTerminal: boolean) => {
-    setShowHandoffModal(false)
-    setContextLimitReached(false)
+    contextLimit.setShowHandoffModal(false)
+    contextLimit.dismissContextLimit()
 
     // Create a new terminal for the new agent
     const store = useTerminalStore.getState()
@@ -711,7 +437,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       window.termpolis.killTerminal(terminalId)
       store.removeTerminal(terminalId)
     }
-  }, [terminalId, shellType, parsedCwd, cwd, fontSize, theme, fontFamily])
+  }, [terminalId, shellType, parsedCwd, cwd, fontSize, theme, fontFamily, contextLimit])
 
   return (
     <div
@@ -785,7 +511,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               Export Visible Output...
             </button>
             <div className="border-t border-[#454545] my-1"></div>
-            {!isRecording ? (
+            {!recording.isRecording ? (
               <button
                 className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
                 onClick={handleStartRecording}
@@ -849,13 +575,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             )}
           </div>
         )}
-        {dropdownVisible && (
+        {completion.dropdownVisible && (
           <CompletionDropdown
-            suggestions={suggestions}
-            selectedIndex={selectedIndex}
-            position={dropdownPosition}
-            onAccept={acceptSuggestion}
-            onDismiss={dismissDropdown}
+            suggestions={completion.suggestions}
+            selectedIndex={completion.selectedIndex}
+            position={completion.dropdownPosition}
+            onAccept={completion.acceptSuggestion}
+            onDismiss={completion.dismissDropdown}
           />
         )}
         {fixSuggestion && (
@@ -868,11 +594,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             onDismiss={() => setFixSuggestion(null)}
           />
         )}
-        {contextLimitReached && detectedAgent && !showHandoffModal && (
+        {contextLimit.contextLimitReached && agent.detectedAgent && !contextLimit.showHandoffModal && (
           <AgentHandoffBanner
-            previousAgent={detectedAgent.name}
-            onSwitchTo={handleHandoffSwitchTo}
-            onDismiss={() => setContextLimitReached(false)}
+            previousAgent={agent.detectedAgent.name}
+            onSwitchTo={contextLimit.handleHandoffSwitchTo}
+            onDismiss={contextLimit.dismissContextLimit}
           />
         )}
         {diffDetected && (
@@ -885,18 +611,18 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           </button>
         )}
       </div>
-      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={detectedAgent} costInfo={costInfo} isRecording={isRecording} />
+      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={agent.detectedAgent} costInfo={agent.costInfo} isRecording={recording.isRecording} />
       {showDiffViewer && (
         <DiffViewer
           rawDiff={outputBufferRef.current}
           onClose={() => setShowDiffViewer(false)}
         />
       )}
-      {showHandoffModal && handoffContext && (
+      {contextLimit.showHandoffModal && contextLimit.handoffContext && (
         <AgentHandoffModal
-          context={handoffContext}
+          context={contextLimit.handoffContext}
           onConfirm={handleHandoffConfirm}
-          onCancel={() => setShowHandoffModal(false)}
+          onCancel={() => contextLimit.setShowHandoffModal(false)}
         />
       )}
     </div>

@@ -13,7 +13,7 @@ const SWITCH_TARGETS = [
   { name: 'Aider', icon: 'fa-solid fa-code', command: 'aider' },
 ]
 
-export function AgentHandoffBanner({ previousAgent, onSwitchTo, onDismiss }: Props) {
+export const AgentHandoffBanner = React.memo(function AgentHandoffBanner({ previousAgent, onSwitchTo, onDismiss }: Props) {
   // Filter out the agent that just hit its limit
   const targets = SWITCH_TARGETS.filter(
     t => t.name.toLowerCase() !== previousAgent.toLowerCase()
@@ -65,4 +65,4 @@ export function AgentHandoffBanner({ previousAgent, onSwitchTo, onDismiss }: Pro
       </div>
     </div>
   )
-}
+})

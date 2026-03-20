@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import type { SwarmMessage, SwarmTask } from '../../types'
 import { useTerminalStore } from '../../store/terminalStore'
+import { subscribe, unsubscribe } from '../../lib/pollingService'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -34,11 +35,12 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
     if (taskRes.success && taskRes.data) setTasks(taskRes.data)
   }, [])
 
-  // Poll every 3 seconds
+  // Poll every 3 seconds via centralized polling service
   useEffect(() => {
     refresh()
-    const interval = setInterval(refresh, 3000)
-    return () => clearInterval(interval)
+    const pollId = 'swarm-dashboard'
+    subscribe(pollId, refresh, 3000)
+    return () => unsubscribe(pollId)
   }, [refresh])
 
   // Escape to close

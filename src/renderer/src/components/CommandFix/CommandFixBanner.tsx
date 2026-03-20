@@ -6,7 +6,7 @@ interface Props {
   onDismiss: () => void
 }
 
-export function CommandFixBanner({ suggestion, onAccept, onDismiss }: Props) {
+export const CommandFixBanner = React.memo(function CommandFixBanner({ suggestion, onAccept, onDismiss }: Props) {
   // Auto-dismiss after 10 seconds
   useEffect(() => {
     const timer = setTimeout(onDismiss, 10000)
@@ -61,4 +61,4 @@ export function CommandFixBanner({ suggestion, onAccept, onDismiss }: Props) {
       </span>
     </div>
   )
-}
+})

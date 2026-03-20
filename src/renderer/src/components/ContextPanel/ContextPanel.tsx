@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
+import { subscribe, unsubscribe } from '../../lib/pollingService'
 
 interface Props {
   cwd: string
@@ -19,7 +20,6 @@ export function ContextPanel({ cwd, onClose }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const toggleSection = useCallback((section: string) => {
     setCollapsedSections(prev => ({ ...prev, [section]: !prev[section] }))
@@ -56,11 +56,12 @@ export function ContextPanel({ cwd, onClose }: Props) {
 
   useEffect(() => {
     refresh()
-    intervalRef.current = setInterval(refresh, 5000)
+    const pollId = `context-panel-${cwd}`
+    subscribe(pollId, refresh, 5000)
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
+      unsubscribe(pollId)
     }
-  }, [refresh])
+  }, [refresh, cwd])
 
   const statusLines = gitInfo?.status ? gitInfo.status.split('\n').filter(Boolean) : []
   const commitLines = gitInfo?.recentCommits ? gitInfo.recentCommits.split('\n').filter(Boolean) : []

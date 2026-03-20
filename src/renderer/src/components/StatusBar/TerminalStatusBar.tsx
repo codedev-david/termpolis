@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import type { ShellType } from '../../types'
 import type { AgentInfo } from '../../lib/agentDetector'
 import { formatTokens, type CostInfo } from '../../lib/costTracker'
+import { subscribe, unsubscribe } from '../../lib/pollingService'
 
 interface Props {
   terminalId: string
@@ -31,10 +32,11 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
 
     fetchStatus()
 
-    const interval = setInterval(fetchStatus, 5000)
+    const pollId = `statusbar-${terminalId}`
+    subscribe(pollId, fetchStatus, 5000)
     return () => {
       disposed = true
-      clearInterval(interval)
+      unsubscribe(pollId)
     }
   }, [terminalId, cwd])
 
