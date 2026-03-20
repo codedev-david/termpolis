@@ -36,18 +36,38 @@ An AI-native, cross-platform terminal manager built with Electron. Split panes, 
 - **Shell config editor** — edit .bashrc, .zshrc, PowerShell profiles with Monaco Editor
 
 ### AI-Native Features
-- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Aider, and GitHub Copilot with custom profiles support
+- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Gemini CLI, and Aider with custom profiles support
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P`
 - **Multi-Agent Workflow Templates** — pre-built split-pane layouts for common AI workflows (Claude + Shell, Full Stack Dev, Code Review)
-- **Agent Status Detection** — automatically detects when Claude Code, Codex, Aider, or Copilot is running and shows a colored badge in the status bar
+- **Agent Status Detection** — automatically detects when Claude Code, Codex, Gemini, or Aider is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
 - **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
 - **Output Pinning** — pin important output blocks to a persistent panel that stays visible as the terminal scrolls
 - **Diff Viewer** — detects `git diff` output and renders it with syntax highlighting (green/red for additions/deletions)
 - **Smart Context Panel** — `Ctrl+Shift+E` opens a side panel showing file tree, git status, and recent commits for the current directory
 - **Conversation History** — `Ctrl+Shift+I` searches across all AI agent conversations indexed from terminal output
-- **MCP Server** — Termpolis runs an MCP server on `localhost:9315` that AI agents can connect to for programmatic terminal control (create terminals, run commands, read output, manage layout)
+
+### MCP Server & Agent Integration
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 14 tools for AI agents to control terminals programmatically
+- **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
+- **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
+- **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
+- **Auth Token** — 256-bit random token per launch, required on all endpoints. Localhost only, CORS restricted.
+
+### Context Handoff
+- **Seamless agent switching** — when an AI agent runs out of context/tokens, an amber banner offers to switch to another agent
+- **Automatic context capture** — captures your task, git branch, modified files, recent commands, diff summary, and recent output
+- **One-click handoff** — click "Switch to Codex" (or Gemini/Aider) to launch the new agent with your full context pre-loaded
+- **Editable handoff prompt** — preview and customize the context before switching via the "More Options" modal
+- **Keep or close** — choose whether to keep the old terminal for reference or close it
+
+### Multi-Agent Swarm
+- **Swarm Dashboard** — `Ctrl+Shift+S` or the sidebar network icon opens a dashboard showing agents, tasks, and messages
+- **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
+- **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
+- **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
+- **Cross-model collaboration** — run Claude, Codex, and Gemini simultaneously, each in their own terminal, collaborating through the swarm
 
 ### Intelligence
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
@@ -104,6 +124,7 @@ All shortcuts are customizable in **Settings → Keybindings**.
 | `Ctrl+Shift+P` | Prompt templates |
 | `Ctrl+Shift+E` | Smart context panel |
 | `Ctrl+Shift+I` | Conversation history search |
+| `Ctrl+Shift+S` | Swarm dashboard |
 | `Win+Shift+T` | New terminal (global, works when minimized) |
 
 > On macOS, use `Cmd` instead of `Ctrl`.
@@ -112,7 +133,13 @@ All shortcuts are customizable in **Settings → Keybindings**.
 
 Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that AI agents can connect to via HTTP/SSE.
 
-### Available Tools
+### Claude Code Integration
+
+Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~/.claude/settings.json` so Claude Code sees it as an MCP server immediately. No manual configuration needed.
+
+### Available Tools (14)
+
+**Terminal Management:**
 
 | Tool | Description |
 |------|-------------|
@@ -124,6 +151,32 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 | `close_terminal` | Close a terminal by ID |
 | `get_file_tree` | List files and directories at a path |
 | `get_git_status` | Get git status, branch, and recent commits |
+
+**Swarm Coordination:**
+
+| Tool | Description |
+|------|-------------|
+| `swarm_send_message` | Send a message to another agent or broadcast to all |
+| `swarm_read_messages` | Read unread messages addressed to you |
+| `swarm_create_task` | Create a task and optionally assign to an agent |
+| `swarm_list_tasks` | List all tasks with statuses |
+| `swarm_update_task` | Update task status and report results |
+| `swarm_list_agents` | List all active terminals/agents |
+
+### CLI Tool
+
+Control Termpolis from any terminal without the MCP protocol:
+
+```bash
+termpolis-cli health                    # Check if MCP server is running
+termpolis-cli list                      # List all open terminals
+termpolis-cli create "Dev" bash         # Create a new terminal
+termpolis-cli run <id> "npm test"       # Run a command in a terminal
+termpolis-cli read <id> 20              # Read last 20 lines of output
+termpolis-cli close <id>                # Close a terminal
+termpolis-cli files ~/projects          # List files at a path
+termpolis-cli git ~/projects/myapp      # Get git status
+```
 
 ### Authentication
 

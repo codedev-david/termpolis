@@ -27,6 +27,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li><i className="fa-solid fa-columns text-[#999] w-5 inline-block text-center"></i> <strong>Split View</strong> / <i className="fa-solid fa-bars text-[#999] w-5 inline-block text-center"></i> <strong>Tab View</strong> — toggle between views</li>
               <li><i className="fa-solid fa-message text-[#999] w-5 inline-block text-center"></i> <strong>Prompts</strong> — open prompt templates (<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+P</kbd>)</li>
               <li><i className="fa-solid fa-cubes text-[#999] w-5 inline-block text-center"></i> <strong>Workflows</strong> — launch pre-built multi-terminal AI workflows</li>
+              <li><i className="fa-solid fa-network-wired text-[#999] w-5 inline-block text-center"></i> <strong>Swarm</strong> — open the multi-agent swarm dashboard (<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd>)</li>
               <li><i className="fa-solid fa-chevron-left text-[#999] w-5 inline-block text-center"></i> <strong>Collapse</strong> — collapse the sidebar (<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+B</kbd>)</li>
             </ul>
           </section>
@@ -151,13 +152,48 @@ function HelpModal({ onClose }: { onClose: () => void }) {
           {/* MCP Server */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
-              <i className="fa-solid fa-plug text-xs"></i> MCP Server
+              <i className="fa-solid fa-plug text-xs"></i> MCP Server & Claude Code Integration
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li>Termpolis runs an MCP server on <strong>localhost:9315</strong> (shown in the bottom bar)</li>
-              <li>AI agents can connect via HTTP to create terminals, run commands, and read output</li>
-              <li>8 tools: list/create/close terminals, run commands, read output, file tree, git status</li>
-              <li>Health check: <code>curl http://localhost:9315/health</code></li>
+              <li>AI agents can create terminals, run commands, read output, and manage your workspace</li>
+              <li><strong>Auto-registers with Claude Code</strong> — on launch, Termpolis adds itself to your Claude Code settings automatically. No manual config needed.</li>
+              <li>14 tools: terminal management, file tree, git status, and swarm coordination</li>
+              <li>Secured with a 256-bit auth token (rotates every launch, localhost only)</li>
+              <li>CLI tool available: <code>termpolis-cli list</code>, <code>termpolis-cli create "Dev"</code>, etc.</li>
+            </ul>
+          </section>
+
+          {/* Context Handoff */}
+          <section>
+            <h3 className="font-semibold text-[#D97706] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-arrow-right-arrow-left text-xs"></i> Agent Context Handoff
+            </h3>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li>When an AI agent <strong>runs out of context/tokens</strong>, an amber banner appears automatically</li>
+              <li>Click <strong>Switch to Codex</strong>, <strong>Gemini</strong>, or <strong>Aider</strong> to hand off instantly</li>
+              <li>Your working context transfers automatically: task description, git branch, modified files, recent commands, and diff summary</li>
+              <li>Click <strong>More Options</strong> to preview/edit the handoff prompt before switching</li>
+              <li>Choose to keep the old terminal open for reference or close it</li>
+            </ul>
+          </section>
+
+          {/* Multi-Agent Swarm */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-network-wired text-xs"></i> Multi-Agent Swarm
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Run multiple AI agents simultaneously and have them collaborate on tasks.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd> or the <i className="fa-solid fa-network-wired text-[10px]"></i> sidebar icon opens the <strong>Swarm Dashboard</strong></li>
+              <li><strong>How it works:</strong> launch multiple AI agents (Claude, Codex, Gemini) in separate terminals. They communicate through a shared message bus.</li>
+              <li><strong>Tasks tab</strong> — create tasks, assign them to agents, track status (Pending → In Progress → Completed)</li>
+              <li><strong>Messages tab</strong> — see all inter-agent messages (task assignments, results, questions, reviews)</li>
+              <li><strong>Example workflow:</strong></li>
+              <li className="pl-4 text-xs">1. Claude analyzes the codebase and creates tasks: "Write API tests", "Review security"</li>
+              <li className="pl-4 text-xs">2. Codex picks up the testing task and reports results back</li>
+              <li className="pl-4 text-xs">3. Gemini reviews the code and shares findings with all agents</li>
+              <li className="pl-4 text-xs">4. You watch it all happen in the Swarm Dashboard</li>
             </ul>
           </section>
 
@@ -211,6 +247,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Tab</kbd> / <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Tab</kbd> Next / Previous &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Alt+1–9</kbd> Jump to terminal</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+B</kbd> Toggle sidebar &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+G</kbd> Toggle split view</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+P</kbd> Prompts &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+E</kbd> Context panel &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+I</kbd> Conversation search</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Win+Shift+T</kbd> New terminal (global, works when minimized)</li>
               <li>All customizable in <strong>Settings → Keybindings</strong></li>
