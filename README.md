@@ -1,8 +1,11 @@
 # Termpolis
 
-A cross-platform terminal manager built with Electron. Run multiple terminal sessions in a single window with split panes, command autocomplete, auto-fix for mistyped commands, per-terminal themes, and much more.
+An AI-native, cross-platform terminal manager built with Electron. Split panes, command autocomplete, auto-fix, per-terminal themes, AI agent profiles, MCP server integration, and much more.
 
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg)](https://github.com/sponsors/codedev-david)
+
+> **Support this project** — Termpolis is free and open source. If you find it useful, consider [sponsoring the project](https://github.com/sponsors/codedev-david) to help cover AI token costs and development time.
 
 ## Downloads
 
@@ -24,10 +27,25 @@ A cross-platform terminal manager built with Electron. Run multiple terminal ses
 - **Workspaces** — save and restore terminal configurations including names, shells, themes, and working directories
 - **Session persistence** — terminals, workspaces, and settings auto-restore on relaunch
 - **Single-instance lock** — only one Termpolis window runs at a time to prevent session conflicts
+- **Drag and drop** — drag files onto a terminal to paste their quoted file paths
 
 ### Shell Support
 - **PowerShell**, **Bash**, **Zsh**, **Cmd**, **Git Bash** — auto-detected per OS
 - **Shell config editor** — edit .bashrc, .zshrc, PowerShell profiles with Monaco Editor
+
+### AI-Native Features
+- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Aider, and GitHub Copilot with custom profiles support
+- **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
+- **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P`
+- **Multi-Agent Workflow Templates** — pre-built split-pane layouts for common AI workflows (Claude + Shell, Full Stack Dev, Code Review)
+- **Agent Status Detection** — automatically detects when Claude Code, Codex, Aider, or Copilot is running and shows a colored badge in the status bar
+- **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
+- **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
+- **Output Pinning** — pin important output blocks to a persistent panel that stays visible as the terminal scrolls
+- **Diff Viewer** — detects `git diff` output and renders it with syntax highlighting (green/red for additions/deletions)
+- **Smart Context Panel** — `Ctrl+Shift+E` opens a side panel showing file tree, git status, and recent commits for the current directory
+- **Conversation History** — `Ctrl+Shift+I` searches across all AI agent conversations indexed from terminal output
+- **MCP Server** — Termpolis runs an MCP server on `localhost:9315` that AI agents can connect to for programmatic terminal control (create terminals, run commands, read output, manage layout)
 
 ### Intelligence
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
@@ -38,18 +56,18 @@ A cross-platform terminal manager built with Electron. Run multiple terminal ses
 - **7 terminal themes** — Dark, Light, Solarized Dark, Solarized Light, Monokai, Dracula, Nord
 - **Per-terminal theming** — each terminal can have its own theme, font size (8-32px), and font family
 - **Color-coded terminals** — 12 accent colors for visual identification in the sidebar
-- **Configurable keybindings** — 10 customizable keyboard shortcuts with a recording UI in Settings
+- **Configurable keybindings** — customizable keyboard shortcuts with a recording UI in Settings
 - **Collapsible sidebar** — toggle with Ctrl+B or the chevron button
 
 ### Productivity
 - **Terminal output export** — save scrollback to a text file (full or visible portion) via header button or right-click
 - **Copy/paste** — Ctrl+Shift+C/V with right-click context menu (Copy, Paste, Select All)
 - **Clickable URLs** — links in terminal output open in your default browser
-- **Per-terminal status bar** — blue bar showing shell type, current directory, and git branch
+- **Per-terminal status bar** — blue bar showing shell type, current directory, git branch, AI agent badge, and cost tracking
 - **Live git branch detection** — status bar updates by parsing prompt output (works on all platforms)
 
 ### Built-in Tools
-- **jq**, **yq**, **curl**, and **nano** — bundled and available in every terminal, even if not installed on your system
+- **jq**, **yq**, and **nano** — bundled and available in every terminal, even if not installed on your system
 - Latest versions downloaded automatically on each build
 
 ### Performance
@@ -69,18 +87,48 @@ All shortcuts are customizable in **Settings → Keybindings**.
 
 | Shortcut | Action |
 |----------|--------|
+| `Ctrl+K` | Command palette |
 | `Ctrl+Shift+T` | New terminal |
 | `Ctrl+Shift+W` | Close terminal |
 | `Ctrl+Tab` | Next terminal |
 | `Ctrl+Shift+Tab` | Previous terminal |
+| `Alt+1` – `Alt+9` | Jump to terminal by number |
 | `Ctrl+Shift+H` | Search command history |
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste |
 | `Ctrl+Space` | Trigger autocomplete |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Shift+G` | Toggle split view |
+| `Ctrl+Shift+P` | Prompt templates |
+| `Ctrl+Shift+E` | Smart context panel |
+| `Ctrl+Shift+I` | Conversation history search |
+| `Win+Shift+T` | New terminal (global, works when minimized) |
 
 > On macOS, use `Cmd` instead of `Ctrl`.
+
+## MCP Server
+
+Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that AI agents can connect to via HTTP/SSE.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_terminals` | List all open terminals with IDs, names, shells, and cwds |
+| `create_terminal` | Create a new terminal with name, shell, and working directory |
+| `run_command` | Send a command to a terminal (types it and presses Enter) |
+| `read_output` | Read recent output from a terminal (last N lines) |
+| `write_to_terminal` | Write raw text to a terminal |
+| `close_terminal` | Close a terminal by ID |
+| `get_file_tree` | List files and directories at a path |
+| `get_git_status` | Get git status, branch, and recent commits |
+
+### Health Check
+
+```bash
+curl http://localhost:9315/health
+# {"status":"ok","name":"termpolis-mcp","version":"1.0.0","tools":8}
+```
 
 ## Quick Start
 
@@ -146,7 +194,7 @@ Output: `dist-electron-builder/Termpolis-X.X.X.AppImage`
 The project includes a GitHub Actions workflow (`.github/workflows/release.yml`) that builds for all three platforms on tag push:
 
 ```bash
-git tag v1.0.0
+git tag v1.2.0
 git push --tags
 ```
 
@@ -165,6 +213,7 @@ The workflow automatically downloads the latest bundled CLI tools before packagi
 | Shell Process | [node-pty](https://github.com/nickolasburr/node-pty) |
 | State Management | [Zustand](https://zustand-demo.pmnd.rs/) |
 | Code Editor | [Monaco Editor](https://microsoft.github.io/monaco-editor/) (lazy-loaded) |
+| MCP Server | HTTP/SSE on localhost:9315 |
 | Icons | [Font Awesome](https://fontawesome.com/) 6 |
 | Styling | [Tailwind CSS](https://tailwindcss.com/) 3 |
 | Testing | [Vitest](https://vitest.dev/) + React Testing Library |
@@ -175,8 +224,9 @@ The workflow automatically downloads the latest bundled CLI tools before packagi
 ```
 termpolis/
 ├── src/
-│   ├── main/                        # Electron main process
-│   │   ├── index.ts                 # App entry, IPC handlers, single-instance lock
+│   ├── main/
+│   │   ├── index.ts                 # App entry, IPC handlers, single-instance lock, MCP server
+│   │   ├── mcpServer.ts             # MCP protocol server (HTTP/SSE, JSON-RPC 2.0)
 │   │   ├── terminalManager.ts       # node-pty wrapper + bundled tools PATH injection
 │   │   ├── completionService.ts     # PATH scanning, file listing, env vars for autocomplete
 │   │   ├── shellDetector.ts         # OS-aware shell discovery
@@ -185,89 +235,47 @@ termpolis/
 │   │   ├── configFileManager.ts     # Read/write shell config files
 │   │   └── types.ts                 # Main process type definitions
 │   ├── preload/
-│   │   └── index.ts                 # contextBridge API (window.termpolis)
+│   │   └── index.ts                 # contextBridge API + MCP event bridge
 │   └── renderer/src/
 │       ├── App.tsx                   # Root layout, session restore, global shortcuts
-│       ├── main.tsx                  # React entry point
 │       ├── store/
-│       │   └── terminalStore.ts     # Zustand (terminals, workspaces, pane tree, keybindings)
+│       │   └── terminalStore.ts     # Zustand state (terminals, workspaces, pane tree, AI state)
 │       ├── lib/
-│       │   ├── terminalDefaults.ts  # Default fontSize, theme, fontFamily
+│       │   ├── agentDetector.ts     # Detect AI agents from terminal output
+│       │   ├── costTracker.ts       # Parse token/cost from AI agent output
+│       │   ├── conversationParser.ts # Parse AI conversations from terminal output
+│       │   ├── sessionRecorder.ts   # Session recording buffer + export
+│       │   ├── promptParser.ts      # Parse cwd and git branch from prompt output
 │       │   ├── keybindings.ts       # Keybinding types, defaults, matching utilities
 │       │   ├── outputThrottle.ts    # rAF-based write batching with 64KB rate limit
 │       │   ├── exportTerminal.ts    # Buffer extraction + ANSI stripping
-│       │   ├── promptParser.ts      # Parse cwd and git branch from terminal output
-│       │   └── homedir.ts           # Cached IPC homedir lookup
+│       │   └── terminalDefaults.ts  # Default fontSize, theme, fontFamily
 │       ├── themes/
 │       │   └── terminalThemes.ts    # 7 curated xterm ITheme definitions
-│       ├── completions/
-│       │   ├── completionEngine.ts  # Orchestrates spec, shell, history sources
-│       │   ├── inputParser.ts       # Tokenizes terminal input for context detection
-│       │   ├── specLoader.ts        # Lazy-loads JSON completion specs
-│       │   └── specs/               # 20 command completion specs (git, docker, npm, etc.)
-│       ├── corrections/
-│       │   ├── correctionEngine.ts  # Matches failed commands against rules
-│       │   └── rules/               # Pure function rules (typo, permission, stderr parsing)
-│       ├── types/
-│       │   └── index.ts             # Shared TypeScript types
-│       ├── assets/fonts/            # JetBrains Mono WOFF2 fonts
+│       ├── completions/             # Autocomplete engine, input parser, spec loader, 20 specs
+│       ├── corrections/             # Command correction engine + rules
 │       └── components/
-│           ├── TitleBar/            # Custom frameless title bar
-│           ├── StatusBar/           # App footer + Quick Start Guide modal
-│           │   └── TerminalStatusBar.tsx  # Per-terminal status bar (shell, cwd, git branch)
-│           ├── Sidebar/             # Terminal tabs, workspace list, add modal, collapse
-│           ├── TabView/             # Single-terminal view
+│           ├── Sidebar/             # Terminal tabs, AI profiles, workspace list, collapse
 │           ├── SplitView/           # Split pane layout with draggable dividers
-│           │   ├── SplitView.tsx    # Top-level split view
-│           │   ├── PaneRenderer.tsx # Recursive pane tree renderer
-│           │   └── SplitDivider.tsx # Draggable divider bar
-│           ├── TerminalPane/        # xterm.js terminal with autocomplete + auto-fix
+│           ├── TerminalPane/        # xterm.js terminal with all integrations
+│           ├── CommandPalette/      # Natural language command bar (Ctrl+K)
+│           ├── PromptTemplates/     # Reusable prompt snippets (Ctrl+Shift+P)
+│           ├── WorkflowTemplates/   # Multi-agent workspace templates
+│           ├── ContextPanel/        # File tree, git status, recent commits
+│           ├── ConversationSearch/  # AI conversation history search
+│           ├── DiffViewer/          # Syntax-highlighted diff rendering
+│           ├── PinnedOutput/        # Persistent pinned output panel
 │           ├── CompletionDropdown/  # Autocomplete dropdown overlay
 │           ├── CommandFix/          # Inline correction banner
-│           ├── TabPopover/          # Edit terminal properties popover
+│           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/
-│   ├── electron/                    # Main process unit tests
-│   ├── renderer/                    # Renderer unit tests
-│   └── components/                  # React component tests
+├── tests/                           # Vitest test suites (89 tests, 19 files)
 ├── scripts/
-│   └── download-tools.sh           # Download latest jq, yq, curl, nano per platform
+│   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)
-├── assets/                          # App icons (ico, png, svg)
-├── .github/workflows/release.yml   # CI/CD: build all platforms on tag push
-├── electron.vite.config.ts
-├── electron-builder.config.ts
-├── vitest.config.ts
-├── tailwind.config.js
-└── package.json
+└── .github/workflows/release.yml   # CI/CD: build all platforms on tag push
 ```
-
-### IPC Channels
-
-| Channel | Direction | Purpose |
-|---------|-----------|---------|
-| `terminal:create` | invoke | Spawn a new pty process |
-| `terminal:kill` | invoke | Kill a pty process |
-| `terminal:write` | send | Write input to pty |
-| `terminal:resize` | send | Resize pty dimensions |
-| `terminal:data` | main→renderer | Stream pty output to xterm |
-| `terminal:export` | invoke | Save dialog + write terminal output to file |
-| `terminal:status` | invoke | Get terminal cwd + git branch |
-| `shell:available` | invoke | Get detected shells |
-| `config:read` | invoke | Read a config file |
-| `config:write` | invoke | Write a config file |
-| `history:append` | send | Log a command to history |
-| `history:search` | invoke | Search command history |
-| `completion:path-entries` | invoke | List files/dirs at a path |
-| `completion:path-commands` | invoke | List all commands in PATH |
-| `completion:env-vars` | invoke | List environment variables |
-| `session:load` | invoke | Load persisted session |
-| `session:save` | send | Persist current session |
-| `fs:homedir` | invoke | Get user home directory |
-| `window:minimize` | send | Minimize window |
-| `window:maximize` | send | Toggle maximize |
-| `window:close` | send | Close window |
 
 ### Session Persistence
 
@@ -276,9 +284,17 @@ Session data is stored as JSON in the Electron `userData` directory:
 - **macOS:** `~/Library/Application Support/termpolis/session.json`
 - **Linux:** `~/.config/termpolis/session.json`
 
-Saved state includes: open terminals (name, color, shell, cwd, theme, font size, font family), workspaces with working directories, default shell, view mode, and keybindings.
+Saved state includes: terminals, workspaces with working directories, default shell, view mode, keybindings, AI profiles, and prompt templates.
 
 Old sessions are automatically migrated — missing fields receive defaults on load.
+
+## Sponsor
+
+Termpolis is free, open source, and MIT licensed. Building and maintaining it (including AI token costs for development) takes time and resources.
+
+If you find Termpolis useful, please consider sponsoring:
+
+**[Sponsor on GitHub](https://github.com/sponsors/codedev-david)**
 
 ## Contributing
 
