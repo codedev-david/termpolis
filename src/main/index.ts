@@ -335,16 +335,19 @@ if (!gotTheLock) {
     require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
 
     // Auto-inject into Claude Code's global settings (~/.claude/settings.json)
+    // Uses atomic write (write to temp, then rename) to avoid race conditions
     try {
       const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
       if (require('fs').existsSync(claudeSettingsPath)) {
         const settings = JSON.parse(require('fs').readFileSync(claudeSettingsPath, 'utf-8'))
         if (!settings.mcpServers) settings.mcpServers = {}
-        // Only update if not already configured or if adapter path changed
         const existing = settings.mcpServers.termpolis
         if (!existing || existing.args?.[0] !== adapterPath) {
           settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
-          require('fs').writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+          // Atomic write: write to temp file then rename (prevents partial writes)
+          const tmpPath = claudeSettingsPath + '.tmp'
+          require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
+          require('fs').renameSync(tmpPath, claudeSettingsPath)
           console.log('Auto-registered Termpolis MCP server in Claude Code settings')
         }
       }

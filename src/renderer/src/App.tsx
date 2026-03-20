@@ -71,19 +71,23 @@ export default function App() {
     })
   }, [])
 
-  // Persist session on terminal or workspace changes (skip until restore completes)
+  // Persist session on state changes (debounced to avoid excessive writes)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (!loaded.current) return
-    const state = useTerminalStore.getState()
-    window.termpolis.saveSession({
-      terminals: state.terminals,
-      workspaces: state.workspaces,
-      defaultShell: state.defaultShell,
-      viewMode: state.viewMode,
-      keybindings: state.keybindings,
-      aiProfiles: state.aiProfiles,
-      promptTemplates: state.promptTemplates,
-    })
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      const state = useTerminalStore.getState()
+      window.termpolis.saveSession({
+        terminals: state.terminals,
+        workspaces: state.workspaces,
+        defaultShell: state.defaultShell,
+        viewMode: state.viewMode,
+        keybindings: state.keybindings,
+        aiProfiles: state.aiProfiles,
+        promptTemplates: state.promptTemplates,
+      })
+    }, 1000) // debounce 1 second
   }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates])
 
   // Global keyboard shortcuts
@@ -311,7 +315,7 @@ export default function App() {
         const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
         const res = await window.termpolis.createTerminal(cId, shellType, cCwd)
         if (res.success) {
-          addTerminal({ id: cId, name: claudeProfile.name, color: claudeProfile.color, shellType, cwd: cCwd, fontSize: 14, theme: 'defaultDark', fontFamily: "'Cascadia Code', 'Consolas', monospace" })
+          addTerminal({ id: cId, name: claudeProfile.name, color: claudeProfile.color, shellType, cwd: cCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
           setTimeout(() => window.termpolis.writeToTerminal(cId, claudeProfile.command + '\r'), 500)
         }
         break
@@ -323,7 +327,7 @@ export default function App() {
         const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
         const res = await window.termpolis.createTerminal(xId, shellType, xCwd)
         if (res.success) {
-          addTerminal({ id: xId, name: codexProfile.name, color: codexProfile.color, shellType, cwd: xCwd, fontSize: 14, theme: 'defaultDark', fontFamily: "'Cascadia Code', 'Consolas', monospace" })
+          addTerminal({ id: xId, name: codexProfile.name, color: codexProfile.color, shellType, cwd: xCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
           setTimeout(() => window.termpolis.writeToTerminal(xId, codexProfile.command + '\r'), 500)
         }
         break
@@ -363,7 +367,7 @@ export default function App() {
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
     const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (res.success) {
-      addTerminal({ id, name: 'Claude Code', color: '#D97706', shellType, cwd, fontSize: 14, theme: 'defaultDark', fontFamily: "'Cascadia Code', 'Consolas', monospace" })
+      addTerminal({ id, name: 'Claude Code', color: '#D97706', shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
       setTimeout(() => window.termpolis.writeToTerminal(id, 'claude\r'), 500)
     }
   }

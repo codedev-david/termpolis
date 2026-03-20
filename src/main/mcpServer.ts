@@ -325,9 +325,20 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     }
 
     if (req.method === 'POST' && req.url === '/mcp') {
+      const MAX_BODY = 1024 * 1024 // 1MB limit
       let body = ''
-      req.on('data', (chunk) => (body += chunk))
+      let overflow = false
+      req.on('data', (chunk) => {
+        body += chunk
+        if (body.length > MAX_BODY) {
+          overflow = true
+          res.writeHead(413, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Payload too large' }, id: null }))
+          req.destroy()
+        }
+      })
       req.on('end', async () => {
+        if (overflow) return
         try {
           const request = JSON.parse(body)
           const response = await handleJsonRpc(request, handlers)

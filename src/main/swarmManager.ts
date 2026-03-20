@@ -25,6 +25,7 @@ export interface SwarmTask {
 const messages: SwarmMessage[] = []
 const tasks: SwarmTask[] = []
 const MAX_MESSAGES = 500 // prevent unbounded growth
+const MAX_TASKS = 200
 
 export function sendMessage(
   from: string,
@@ -74,6 +75,7 @@ export function createTask(
     createdAt: Date.now(),
   }
   tasks.push(task)
+  if (tasks.length > MAX_TASKS) tasks.splice(0, tasks.length - MAX_TASKS)
   return task
 }
 
