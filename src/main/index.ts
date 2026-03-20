@@ -412,9 +412,10 @@ if (!gotTheLock) {
     }
 
     // Register as a Claude Code local plugin (this is how Claude actually loads MCP servers)
+    // Write to BOTH the marketplace source AND the cache (Claude reads from cache at startup)
     try {
       const localMarketplace = join(homedir(), '.claude', 'local-marketplace')
-      const pluginDir = join(localMarketplace, 'termpolis')
+      const pluginDir = join(localMarketplace, 'plugins', 'termpolis')
       const pluginMetaDir = join(pluginDir, '.claude-plugin')
       require('fs').mkdirSync(pluginMetaDir, { recursive: true })
 
@@ -461,6 +462,17 @@ if (!gotTheLock) {
           console.log(`Enabled Termpolis plugin as ${pluginKey}`)
         }
       }
+      // Also write directly to the plugin cache (Claude reads from cache at startup)
+      const cacheDir = join(homedir(), '.claude', 'plugins', 'cache', marketplaceName, 'termpolis', '1.0.0')
+      const cacheMetaDir = join(cacheDir, '.claude-plugin')
+      require('fs').mkdirSync(cacheMetaDir, { recursive: true })
+      require('fs').writeFileSync(join(cacheMetaDir, 'plugin.json'), JSON.stringify({
+        name: 'termpolis',
+        description: 'AI-native terminal manager MCP server. Create terminals, run commands, read output, and coordinate multi-agent swarms.',
+        author: { name: 'Termpolis' }
+      }, null, 2))
+      require('fs').writeFileSync(join(cacheDir, '.mcp.json'), mcpContent)
+      console.log('Termpolis plugin cached at:', cacheDir)
     } catch (e) {
       console.log('Could not register Claude Code plugin (non-fatal):', (e as any).message)
     }
