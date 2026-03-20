@@ -2,6 +2,8 @@
 
 An AI-native, cross-platform terminal manager built with Electron. Split panes, command autocomplete, auto-fix, per-terminal themes, AI agent profiles, MCP server integration, and much more.
 
+> **A note on AI-assisted development:** There may be critique that this application is built in conjunction with using AI; however, if you are still exclusively using an IDE or manually writing every line of code, then you are doing it wrong. This is the new path for AI-native engineering as a programmer. Code review is often still needed, but beyond this, software engineering has a new path. Termpolis itself is built with AI and built *for* AI workflows — and that's the point.
+
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
 [![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg)](https://github.com/sponsors/codedev-david)
 
