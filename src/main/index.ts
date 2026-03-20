@@ -392,6 +392,25 @@ if (!gotTheLock) {
       console.log('Could not auto-register in Claude Code settings (non-fatal):', (e as any).message)
     }
 
+    // Also write to ~/.mcp.json (global MCP config that Claude Code actually loads)
+    try {
+      const globalMcpPath = join(homedir(), '.mcp.json')
+      let globalMcp: any = {}
+      if (require('fs').existsSync(globalMcpPath)) {
+        try { globalMcp = JSON.parse(require('fs').readFileSync(globalMcpPath, 'utf-8')) } catch {}
+      }
+      const existingGlobal = globalMcp.termpolis
+      if (!existingGlobal || existingGlobal.args?.[0] !== adapterPath) {
+        globalMcp.termpolis = { command: 'node', args: [adapterPath] }
+        const tmpPath = globalMcpPath + '.tmp'
+        require('fs').writeFileSync(tmpPath, JSON.stringify(globalMcp, null, 2), 'utf-8')
+        require('fs').renameSync(tmpPath, globalMcpPath)
+        console.log('Auto-registered Termpolis in global ~/.mcp.json')
+      }
+    } catch (e) {
+      console.log('Could not write ~/.mcp.json (non-fatal):', (e as any).message)
+    }
+
     // Try Gemini CLI MCP config too (~/.gemini/settings.json or similar)
     // Future: add support for other AI agent configs as they standardize
 
