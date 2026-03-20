@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react'
 import type { SwarmMessage, SwarmTask } from '../../types'
 import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
+import { StartSwarmModal } from './StartSwarmModal'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -13,7 +14,10 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('agents')
   const [messages, setMessages] = useState<SwarmMessage[]>([])
   const [tasks, setTasks] = useState<SwarmTask[]>([])
+  const [showStartSwarm, setShowStartSwarm] = useState(false)
   const terminals = useTerminalStore((s) => s.terminals)
+  const swarmActive = useTerminalStore((s) => s.swarmActive)
+  const swarmAgents = useTerminalStore((s) => s.swarmAgents)
 
   // New task form
   const [showNewTask, setShowNewTask] = useState(false)
@@ -46,11 +50,11 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   // Escape to close
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && !showStartSwarm) onClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  }, [onClose, showStartSwarm])
 
   const handleCreateTask = async () => {
     if (!taskTitle.trim()) return
@@ -72,6 +76,8 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
 
   const handleClearSwarm = async () => {
     await window.swarmAPI.clear()
+    useTerminalStore.getState().setSwarmActive(false)
+    useTerminalStore.getState().setSwarmAgents([])
     refresh()
   }
 
@@ -106,13 +112,68 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
     }
   }
 
+  const agentHealthColor = (status: string) => {
+    switch (status) {
+      case 'running': return 'bg-green-500'
+      case 'starting': return 'bg-yellow-500 animate-pulse'
+      case 'error': return 'bg-red-500'
+      default: return 'bg-gray-500'
+    }
+  }
+
+  const agentHealthLabel = (status: string) => {
+    switch (status) {
+      case 'running': return 'text-green-400'
+      case 'starting': return 'text-yellow-400'
+      case 'error': return 'text-red-400'
+      default: return 'text-gray-400'
+    }
+  }
+
   const pendingTasks = tasks.filter((t) => t.status === 'pending')
   const inProgressTasks = tasks.filter((t) => t.status === 'in_progress')
   const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'failed')
 
   const renderAgents = () => (
     <div className="space-y-2">
-      {terminals.length === 0 ? (
+      {/* Swarm agents section */}
+      {swarmAgents.length > 0 && (
+        <div className="mb-4">
+          <div className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+            <i className="fa-solid fa-network-wired text-[#22D3EE]"></i>
+            Swarm Agents
+          </div>
+          {swarmAgents.map((agent) => {
+            const terminal = terminals.find(t => t.id === agent.terminalId)
+            return (
+              <div key={agent.terminalId} className="flex items-center gap-3 p-3 rounded-lg bg-[#252526] border border-[#3c3c3c] hover:border-[#555] mb-2">
+                <div className={`w-2.5 h-2.5 rounded-full ${agentHealthColor(agent.status)}`}></div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-[#d4d4d4] truncate">{agent.agentName}</div>
+                  <div className="text-xs text-[#6b7280] truncate">{agent.role}</div>
+                </div>
+                <span className={`text-[10px] font-semibold uppercase ${agentHealthLabel(agent.status)}`}>
+                  {agent.status}
+                </span>
+                {terminal && (
+                  <span className="text-xs text-[#6b7280] font-mono truncate max-w-[80px]" title={terminal.id}>
+                    {terminal.id.slice(0, 8)}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* All terminals */}
+      {swarmAgents.length > 0 && terminals.length > 0 && (
+        <div className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+          <i className="fa-solid fa-terminal"></i>
+          All Terminals
+        </div>
+      )}
+      {terminals.length === 0 && swarmAgents.length === 0 ? (
         <p className="text-[#6b7280] text-sm text-center py-8">No terminals open. AI agents appear here when running in Termpolis terminals.</p>
       ) : (
         terminals.map((t) => (
@@ -224,13 +285,27 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
           <div className="flex items-center gap-3">
             <i className="fa-solid fa-network-wired text-[#22D3EE]"></i>
             <h2 className="text-base font-semibold text-[#d4d4d4]">Swarm Dashboard</h2>
+            {swarmActive && (
+              <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-[#22D3EE]/15 text-[#22D3EE] border border-[#22D3EE]/30">
+                Swarm Active
+              </span>
+            )}
             <span className="text-xs text-[#6b7280]">
               {terminals.length} agent{terminals.length !== 1 ? 's' : ''} | {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
             </span>
           </div>
-          <button onClick={onClose} className="text-[#6b7280] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
-            <i className="fa-solid fa-xmark"></i>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowStartSwarm(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4] transition-colors"
+            >
+              <i className="fa-solid fa-rocket"></i>
+              Start Swarm
+            </button>
+            <button onClick={onClose} className="text-[#6b7280] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
+              <i className="fa-solid fa-xmark"></i>
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -247,6 +322,11 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
             >
               <i className={tab.icon}></i>
               {tab.label}
+              {tab.id === 'agents' && swarmAgents.length > 0 && (
+                <span className="ml-1 text-[10px] bg-[#22D3EE]/20 text-[#22D3EE] px-1.5 rounded-full">
+                  {swarmAgents.length}
+                </span>
+              )}
             </button>
           ))}
           <div className="flex-1"></div>
@@ -348,6 +428,17 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
           </div>
         )}
       </div>
+
+      {/* Start Swarm Modal */}
+      {showStartSwarm && (
+        <StartSwarmModal
+          onClose={() => setShowStartSwarm(false)}
+          onLaunched={() => {
+            setShowStartSwarm(false)
+            onClose()
+          }}
+        />
+      )}
     </div>
   )
 }

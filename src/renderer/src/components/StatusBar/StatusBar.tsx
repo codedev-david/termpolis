@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useTerminalStore } from '../../store/terminalStore'
 
 function HelpModal({ onClose }: { onClose: () => void }) {
   return (
@@ -298,12 +299,30 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
 export function StatusBar() {
   const [showHelp, setShowHelp] = useState(false)
+  const swarmActive = useTerminalStore((s) => s.swarmActive)
+  const swarmAgents = useTerminalStore((s) => s.swarmAgents)
+
+  const runningCount = swarmAgents.filter(a => a.status === 'running').length
+  const errorCount = swarmAgents.filter(a => a.status === 'error').length
 
   return (
     <>
       <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#6b7280] text-xs select-none shrink-0">
         <span>&copy; {new Date().getFullYear()} Termpolis &middot; MIT License</span>
         <div className="flex items-center gap-3">
+          {swarmActive && (
+            <span className="flex items-center gap-1.5 text-[#22D3EE]" title={`Swarm: ${runningCount} running, ${errorCount} errors`}>
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE] animate-pulse"></span>
+              <i className="fa-solid fa-network-wired text-[10px]"></i>
+              Swarm Active
+              {swarmAgents.length > 0 && (
+                <span className="text-[10px] text-[#6b7280]">({runningCount}/{swarmAgents.length})</span>
+              )}
+              {errorCount > 0 && (
+                <span className="text-[10px] text-red-400">{errorCount} err</span>
+              )}
+            </span>
+          )}
           <span className="flex items-center gap-1.5 text-[#22D3EE]" title="MCP server for AI agent integration">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE]"></span>
             MCP: localhost:9315

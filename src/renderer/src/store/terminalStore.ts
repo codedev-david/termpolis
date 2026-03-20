@@ -47,6 +47,13 @@ function findRightmostLeaf(node: PaneNode): string | null {
   return findRightmostLeaf(node.children[1])
 }
 
+export interface SwarmAgentEntry {
+  terminalId: string
+  agentName: string
+  role: string
+  status: 'starting' | 'running' | 'error'
+}
+
 interface TerminalStore {
   terminals: TerminalSession[]
   workspaces: Workspace[]
@@ -62,6 +69,8 @@ interface TerminalStore {
   promptTemplates: PromptTemplate[]
   conversations: ConversationIndex[]
   lastHandoffContext: HandoffContext | null
+  swarmActive: boolean
+  swarmAgents: SwarmAgentEntry[]
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -88,6 +97,9 @@ interface TerminalStore {
   addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
   clearConversations: (terminalId: string) => void
   setLastHandoffContext: (ctx: HandoffContext | null) => void
+  setSwarmActive: (active: boolean) => void
+  setSwarmAgents: (agents: SwarmAgentEntry[]) => void
+  updateSwarmAgentStatus: (terminalId: string, status: 'starting' | 'running' | 'error') => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -105,6 +117,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   promptTemplates: [],
   conversations: [],
   lastHandoffContext: null,
+  swarmActive: false,
+  swarmAgents: [],
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -266,4 +280,14 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   })),
 
   setLastHandoffContext: (ctx) => set({ lastHandoffContext: ctx }),
+
+  setSwarmActive: (active) => set({ swarmActive: active }),
+
+  setSwarmAgents: (agents) => set({ swarmAgents: agents }),
+
+  updateSwarmAgentStatus: (terminalId, status) => set(s => ({
+    swarmAgents: s.swarmAgents.map(a =>
+      a.terminalId === terminalId ? { ...a, status } : a
+    ),
+  })),
 }))
