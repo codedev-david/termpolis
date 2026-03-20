@@ -16,6 +16,21 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-5 text-sm text-[#d4d4d4]">
 
+          {/* Sidebar Icons */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-icons text-xs"></i> Sidebar Icon Bar
+            </h3>
+            <p className="text-[#bbb] text-xs mb-2">The icons at the top of the sidebar (left to right):</p>
+            <ul className="flex flex-col gap-1.5 text-[#bbb] leading-relaxed">
+              <li><i className="fa-solid fa-gear text-[#999] w-5 inline-block text-center"></i> <strong>Settings</strong> — open settings panel (default shell, keybindings, shell config editor)</li>
+              <li><i className="fa-solid fa-columns text-[#999] w-5 inline-block text-center"></i> <strong>Split View</strong> / <i className="fa-solid fa-bars text-[#999] w-5 inline-block text-center"></i> <strong>Tab View</strong> — toggle between views</li>
+              <li><i className="fa-solid fa-message text-[#999] w-5 inline-block text-center"></i> <strong>Prompts</strong> — open prompt templates (<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+P</kbd>)</li>
+              <li><i className="fa-solid fa-cubes text-[#999] w-5 inline-block text-center"></i> <strong>Workflows</strong> — launch pre-built multi-terminal AI workflows</li>
+              <li><i className="fa-solid fa-chevron-left text-[#999] w-5 inline-block text-center"></i> <strong>Collapse</strong> — collapse the sidebar (<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+B</kbd>)</li>
+            </ul>
+          </section>
+
           {/* Terminals */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
@@ -178,7 +193,10 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li>7 themes: Dark, Light, Solarized Dark/Light, Monokai, Dracula, Nord</li>
               <li>Per-terminal theme, font size (8-32px), and font family</li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+C</kbd>/<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">V</kbd> for copy/paste. Right-click for export options.</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+C</kbd>/<kbd className="bg-[#3c3c3c] px-1 rounded text-xs">V</kbd> for copy/paste</li>
+              <li><strong>Right-click</strong> inside any terminal for the full context menu:</li>
+              <li className="pl-4 text-xs">Copy · Paste · Select All · Export Full Scrollback · Export Visible Output · Pin Selection · Start/Stop Recording · Split Right/Down · View as Diff</li>
+              <li>In split view, each pane header also has export <i className="fa-solid fa-download text-[10px] text-[#999]"></i> and split buttons</li>
             </ul>
           </section>
 
