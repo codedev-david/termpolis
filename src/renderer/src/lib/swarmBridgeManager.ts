@@ -60,26 +60,10 @@ export function startBridgeForAgent(terminalId: string, agentName: string): void
         }
       }
 
-      // 2. Check for incoming swarm messages and inject into terminal
-      const messages = await window.swarmAPI.getMessages()
-      if (messages.success && messages.data) {
-        const seen = injectedMessageIds.get(terminalId)!
-        const cutoff = Date.now() - 10000 // only messages from the last 10 seconds
-
-        const forMe = messages.data.filter(
-          (m) =>
-            (m.to === terminalId || m.to === agentName || m.to === 'all') &&
-            m.from !== agentName &&
-            m.timestamp > cutoff &&
-            !seen.has(m.id),
-        )
-
-        for (const msg of forMe) {
-          const formatted = formatIncomingMessage(msg.from, msg.content)
-          window.termpolis.writeToTerminal(terminalId, formatted)
-          seen.add(msg.id)
-        }
-      }
+      // 2. Incoming messages for non-MCP agents are visible in the Swarm Dashboard.
+      // We do NOT inject messages into the terminal via writeToTerminal because
+      // that sends keystrokes to the shell — bash would interpret them as commands.
+      // MCP-capable agents (Claude Code) read messages via swarm_read_messages directly.
     } catch {
       // Swallow errors — the terminal may have been closed
     }

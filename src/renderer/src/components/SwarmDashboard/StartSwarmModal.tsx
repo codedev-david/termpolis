@@ -212,51 +212,41 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     setSwarmActive(true)
     setSwarmAgents(agentEntries)
 
-    // Step 2: Wait for shell init, then send agent commands
+    // Step 2: Wait for shell init, then send agent commands one at a time
     setLaunchProgress('Waiting for shells to initialize...')
-    await delay(1500)
+    await delay(2000)
 
     for (let i = 0; i < terminalIds.length; i++) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
       setLaunchProgress(`Starting ${agent.name}...`)
       window.termpolis.writeToTerminal(terminalIds[i], agent.command + '\r')
+      // Stagger agent launches slightly so they don't all hit the shell at once
+      await delay(500)
     }
 
-    // Step 3: Wait for agents to initialize
-    setLaunchProgress('Waiting for agents to initialize...')
-    await delay(2000)
+    // Step 3: Wait for agents to fully initialize
+    // Claude Code takes ~5-10s, Codex takes ~3-5s, Gemini ~3-5s
+    setLaunchProgress('Waiting for agents to initialize (this takes 10-15 seconds)...')
+    await delay(12000)
 
-    // Step 4: Send task prompts
+    // Step 4: Send task prompts as a SINGLE message (not line by line)
+    // The agent should be fully started and waiting for input by now
     for (let i = 0; i < terminalIds.length; i++) {
       const assignment = assignments[i]
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignment.agentId)!
       setLaunchProgress(`Sending task to ${agent.name}...`)
 
       // Build the other agents list
-      const othersLines = assignments
+      const othersList = assignments
         .filter((_, j) => j !== i)
-        .map(a => `- ${a.agentName}: ${a.role}`)
-        .join('\n')
+        .map(a => `${a.agentName}: ${a.role}`)
+        .join(', ')
 
-      const prompt = [
-        `You are part of a multi-agent swarm in Termpolis. Your role: ${assignment.role}`,
-        '',
-        `Your task: ${assignment.task}`,
-        '',
-        'Other agents in this swarm:',
-        othersLines,
-        '',
-        'You can coordinate via the Termpolis MCP tools:',
-        '- swarm_send_message: send a message to another agent',
-        '- swarm_read_messages: check for messages from other agents',
-        '- swarm_list_tasks: see all tasks',
-        '- swarm_update_task: mark your task as complete with results',
-        '',
-        'Please begin working on your task. When done, use swarm_update_task to report your results.',
-      ].join('\n')
+      // Send as a single compact message — the agent reads it as one prompt
+      const prompt = `You are part of a multi-agent swarm. Your role: ${assignment.role}. Your task: ${assignment.task}. Other agents: ${othersList}. If you have Termpolis MCP tools, use swarm_send_message and swarm_update_task to coordinate. Begin working now.`
 
-      await sendLineByLine(terminalIds[i], prompt, 50)
-      await delay(200)
+      window.termpolis.writeToTerminal(terminalIds[i], prompt + '\r')
+      await delay(500)
     }
 
     // Step 5: Create swarm tasks via API
