@@ -148,6 +148,13 @@ ipcMain.handle('completion:env-vars', async () => {
   catch (e: any) { return err(e.message) }
 })
 
+ipcMain.handle('terminal:git-diff', async (_, { cwd }) => {
+  try {
+    const diff = execSync('git diff --stat', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString().trim()
+    return ok(diff)
+  } catch { return ok('') }
+})
+
 ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
   try {
     let status = ''

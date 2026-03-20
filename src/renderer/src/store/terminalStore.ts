@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
+import type { HandoffContext } from '../lib/contextCapture'
 
 // ---- Pane tree helpers ----
 
@@ -60,6 +61,7 @@ interface TerminalStore {
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
   conversations: ConversationIndex[]
+  lastHandoffContext: HandoffContext | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -85,6 +87,7 @@ interface TerminalStore {
   removePromptTemplate: (id: string) => void
   addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
   clearConversations: (terminalId: string) => void
+  setLastHandoffContext: (ctx: HandoffContext | null) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -101,6 +104,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   aiProfiles: [],
   promptTemplates: [],
   conversations: [],
+  lastHandoffContext: null,
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -259,4 +263,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   clearConversations: (terminalId) => set(s => ({
     conversations: s.conversations.filter(c => c.terminalId !== terminalId),
   })),
+
+  setLastHandoffContext: (ctx) => set({ lastHandoffContext: ctx }),
 }))

@@ -20,6 +20,9 @@ import { detectAgent, type AgentInfo } from '../../lib/agentDetector'
 import { parseCostFromOutput, type CostInfo } from '../../lib/costTracker'
 import { parseConversation } from '../../lib/conversationParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
+import { AgentHandoffBanner } from '../AgentHandoff/AgentHandoffBanner'
+import { AgentHandoffModal } from '../AgentHandoff/AgentHandoffModal'
+import { captureHandoffContext, formatHandoffPrompt, type HandoffContext } from '../../lib/contextCapture'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
@@ -92,6 +95,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [diffDetected, setDiffDetected] = useState(false)
   const [showDiffViewer, setShowDiffViewer] = useState(false)
   const diffDetectedRef = useRef(false)
+
+  // Agent handoff state
+  const [contextLimitReached, setContextLimitReached] = useState(false)
+  const contextLimitFiredRef = useRef(false)
+  const [handoffContext, setHandoffContext] = useState<HandoffContext | null>(null)
+  const [showHandoffModal, setShowHandoffModal] = useState(false)
 
   // Refs for use inside onData callback (avoids stale closures)
   const suggestionsRef = useRef<CompletionResult[]>([])
@@ -567,6 +576,28 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }
       }
 
+      // Context limit detection: only when an agent is active and hasn't already fired
+      if (agentDetectedRef.current && !contextLimitFiredRef.current) {
+        const CONTEXT_LIMIT_PATTERNS = [
+          /context window is full/i,
+          /context limit/i,
+          /token limit/i,
+          /maximum context/i,
+          /conversation is too long/i,
+          /out of context/i,
+          /session limit/i,
+          /exceeded.*token/i,
+          /too many tokens/i,
+        ]
+        for (const pattern of CONTEXT_LIMIT_PATTERNS) {
+          if (pattern.test(stripped)) {
+            contextLimitFiredRef.current = true
+            if (!disposed) setContextLimitReached(true)
+            break
+          }
+        }
+      }
+
       // Watch for OSC 633 exit code marker (if shell integration is enabled)
       const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)
       if (oscMatch) {
@@ -628,6 +659,59 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }, 0)
     }
   }, [isVisible, terminalId])
+
+  // Agent handoff: capture context and open modal from banner
+  const handleHandoffSwitchTo = useCallback(async (agentCommand: string) => {
+    const effectiveCwd = parsedCwd || cwd
+    const agentName = detectedAgent?.name || 'AI Agent'
+    const stripped = outputBufferRef.current.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    const ctx = await captureHandoffContext(effectiveCwd, agentName, stripped)
+    setHandoffContext(ctx)
+    useTerminalStore.getState().setLastHandoffContext(ctx)
+    setShowHandoffModal(true)
+  }, [parsedCwd, cwd, detectedAgent])
+
+  const handleHandoffConfirm = useCallback((agentCommand: string, prompt: string, keepOldTerminal: boolean) => {
+    setShowHandoffModal(false)
+    setContextLimitReached(false)
+
+    // Create a new terminal for the new agent
+    const store = useTerminalStore.getState()
+    const newId = uuid()
+    const agentLabel = agentCommand.charAt(0).toUpperCase() + agentCommand.slice(1)
+    const newTerminal = {
+      id: newId,
+      name: `${agentLabel} (handoff)`,
+      color: '#D97706',
+      shellType: shellType,
+      cwd: parsedCwd || cwd,
+      fontSize,
+      theme,
+      fontFamily,
+    }
+
+    // Add the terminal to the store
+    store.addTerminal(newTerminal)
+
+    // Create the PTY
+    window.termpolis.createTerminal(newId, shellType, parsedCwd || cwd).then(() => {
+      // Wait for shell to initialize, then launch the agent and paste the handoff prompt
+      setTimeout(() => {
+        // Start the agent
+        window.termpolis.writeToTerminal(newId, agentCommand + '\r')
+        // Wait for agent to initialize, then paste the handoff prompt
+        setTimeout(() => {
+          window.termpolis.writeToTerminal(newId, prompt + '\r')
+        }, 2000)
+      }, 1000)
+    })
+
+    // Optionally close the old terminal
+    if (!keepOldTerminal) {
+      window.termpolis.killTerminal(terminalId)
+      store.removeTerminal(terminalId)
+    }
+  }, [terminalId, shellType, parsedCwd, cwd, fontSize, theme, fontFamily])
 
   return (
     <div
@@ -784,6 +868,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             onDismiss={() => setFixSuggestion(null)}
           />
         )}
+        {contextLimitReached && detectedAgent && !showHandoffModal && (
+          <AgentHandoffBanner
+            previousAgent={detectedAgent.name}
+            onSwitchTo={handleHandoffSwitchTo}
+            onDismiss={() => setContextLimitReached(false)}
+          />
+        )}
         {diffDetected && (
           <button
             className="absolute top-2 right-2 z-40 px-2.5 py-1 text-[11px] bg-[#1e3a5f] hover:bg-[#264f78] text-[#82aaff] rounded border border-[#3c5f8a] cursor-pointer shadow-lg"
@@ -799,6 +890,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         <DiffViewer
           rawDiff={outputBufferRef.current}
           onClose={() => setShowDiffViewer(false)}
+        />
+      )}
+      {showHandoffModal && handoffContext && (
+        <AgentHandoffModal
+          context={handoffContext}
+          onConfirm={handleHandoffConfirm}
+          onCancel={() => setShowHandoffModal(false)}
         />
       )}
     </div>
