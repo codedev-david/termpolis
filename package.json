@@ -2,7 +2,7 @@
   "name": "termpolis",
   "private": true,
   "version": "1.2.0",
-  "description": "Cross-platform terminal manager with tabs, grid view, workspaces, and shell config editing",
+  "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "type": "module",
   "main": "out/main/index.js",
