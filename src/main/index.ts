@@ -270,22 +270,36 @@ if (!gotTheLock) {
     require('fs').writeFileSync(tokenPath, getMcpAuthToken(), { encoding: 'utf-8', mode: 0o600 })
     console.log(`MCP token written to: ${tokenPath}`)
 
-    // Write a Claude MCP config snippet so users can easily integrate with Claude Code
-    const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
+    // Auto-register Termpolis as an MCP server in Claude Code's settings
     const adapterPath = app.isPackaged
       ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.js')
       : join(__dirname, '../../src/mcp-adapter/stdio-adapter.js')
-    const mcpConfig = {
-      mcpServers: {
-        termpolis: {
-          command: 'node',
-          args: [adapterPath],
+
+    // Also write standalone config for reference
+    const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
+    const mcpConfig = { mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }
+    require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+
+    // Auto-inject into Claude Code's global settings (~/.claude/settings.json)
+    try {
+      const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
+      if (require('fs').existsSync(claudeSettingsPath)) {
+        const settings = JSON.parse(require('fs').readFileSync(claudeSettingsPath, 'utf-8'))
+        if (!settings.mcpServers) settings.mcpServers = {}
+        // Only update if not already configured or if adapter path changed
+        const existing = settings.mcpServers.termpolis
+        if (!existing || existing.args?.[0] !== adapterPath) {
+          settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
+          require('fs').writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+          console.log('Auto-registered Termpolis MCP server in Claude Code settings')
         }
       }
+    } catch (e) {
+      console.log('Could not auto-register in Claude Code settings (non-fatal):', (e as any).message)
     }
-    require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
-    console.log(`Claude MCP config written to: ${mcpConfigPath}`)
-    console.log(`To use: copy the contents into your .mcp.json or Claude Code MCP settings`)
+
+    // Try Gemini CLI MCP config too (~/.gemini/settings.json or similar)
+    // Future: add support for other AI agent configs as they standardize
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
     globalShortcut.register('Super+Shift+T', () => {
