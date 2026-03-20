@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
+import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 
 // ---- Pane tree helpers ----
 
@@ -58,6 +59,7 @@ interface TerminalStore {
   paneTree: PaneNode | null
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
+  conversations: ConversationIndex[]
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -81,6 +83,8 @@ interface TerminalStore {
   removeAIProfile: (id: string) => void
   addPromptTemplate: (template: PromptTemplate) => void
   removePromptTemplate: (id: string) => void
+  addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
+  clearConversations: (terminalId: string) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -96,6 +100,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   paneTree: null,
   aiProfiles: [],
   promptTemplates: [],
+  conversations: [],
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -227,5 +232,31 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   removePromptTemplate: (id) => set(s => ({
     promptTemplates: s.promptTemplates.filter(t => t.id !== id),
+  })),
+
+  addConversationTurn: (terminalId, terminalName, agentName, turn) => set(s => {
+    const existing = s.conversations.find(c => c.terminalId === terminalId)
+    if (existing) {
+      return {
+        conversations: s.conversations.map(c =>
+          c.terminalId === terminalId
+            ? { ...c, turns: [...c.turns, turn] }
+            : c
+        ),
+      }
+    }
+    return {
+      conversations: [...s.conversations, {
+        turns: [turn],
+        terminalId,
+        terminalName,
+        agentName,
+        startedAt: Date.now(),
+      }],
+    }
+  }),
+
+  clearConversations: (terminalId) => set(s => ({
+    conversations: s.conversations.filter(c => c.terminalId !== terminalId),
   })),
 }))

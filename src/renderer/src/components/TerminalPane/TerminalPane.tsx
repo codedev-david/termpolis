@@ -18,6 +18,7 @@ import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
 import { detectAgent, type AgentInfo } from '../../lib/agentDetector'
 import { parseCostFromOutput, type CostInfo } from '../../lib/costTracker'
+import { parseConversation } from '../../lib/conversationParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
@@ -74,6 +75,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [costInfo, setCostInfo] = useState<CostInfo | null>(null)
   const costScanCounterRef = useRef(0)
   const COST_SCAN_INTERVAL = 5 // scan every 5th output chunk
+
+  // Conversation parsing state
+  const conversationParsedCountRef = useRef(0)
+  const CONVERSATION_PARSE_INTERVAL = 10 // parse every 10th output chunk when agent active
 
   // Session recording state
   const [isRecording, setIsRecording] = useState(false)
@@ -539,6 +544,25 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               estimatedCost: parsed.estimatedCost ?? prev?.estimatedCost ?? 0,
               lastUpdated: parsed.lastUpdated ?? Date.now(),
             }))
+          }
+        }
+      }
+
+      // Conversation parsing: periodically parse output when an agent is active
+      if (agentDetectedRef.current) {
+        conversationParsedCountRef.current++
+        if (conversationParsedCountRef.current % CONVERSATION_PARSE_INTERVAL === 0) {
+          const agentName = detectedAgent?.name ?? 'AI Agent'
+          const turns = parseConversation(stripped, terminalId, terminalName, agentName)
+          const store = useTerminalStore.getState()
+          const existingConv = store.conversations.find(c => c.terminalId === terminalId)
+          const existingCount = existingConv?.turns.length ?? 0
+          // Only add genuinely new turns
+          if (turns.length > existingCount) {
+            const newTurns = turns.slice(existingCount)
+            for (const turn of newTurns) {
+              store.addConversationTurn(terminalId, terminalName, agentName, turn)
+            }
           }
         }
       }

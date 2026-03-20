@@ -6,6 +6,8 @@ const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane')
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
 import { PromptTemplates } from './components/PromptTemplates/PromptTemplates'
 import { ContextPanel } from './components/ContextPanel/ContextPanel'
+import { CommandPalette } from './components/CommandPalette/CommandPalette'
+import { ConversationSearch } from './components/ConversationSearch/ConversationSearch'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { AddTerminalModal } from './components/Sidebar/AddTerminalModal'
@@ -27,6 +29,8 @@ export default function App() {
   const [showPrompts, setShowPrompts] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showContextPanel, setShowContextPanel] = useState(false)
+  const [showCommandPalette, setShowCommandPalette] = useState(false)
+  const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const started = useRef(false)
   const loaded = useRef(false)
@@ -144,6 +148,20 @@ export default function App() {
         return
       }
 
+      // Ctrl+K to toggle command palette
+      if (e.ctrlKey && !e.shiftKey && e.key === 'k') {
+        e.preventDefault()
+        setShowCommandPalette(v => !v)
+        return
+      }
+
+      // Ctrl+Shift+I to toggle conversation search
+      if (e.ctrlKey && e.shiftKey && e.key === 'I') {
+        e.preventDefault()
+        setShowConversationSearch(v => !v)
+        return
+      }
+
       // Ctrl+Shift+E to toggle context panel
       if (e.ctrlKey && e.shiftKey && e.key === 'E') {
         e.preventDefault()
@@ -226,6 +244,93 @@ export default function App() {
     setShowAddModal(false)
   }
 
+  const handleCommandPaletteAction = async (action: string, captured?: string) => {
+    const state = useTerminalStore.getState()
+    switch (action) {
+      case 'create_terminal':
+        setShowAddModal(true)
+        break
+      case 'split_right':
+      case 'split_down':
+        // These are handled at the SplitView level; toggle to split mode if in tabs
+        if (state.viewMode === 'tabs') toggleViewMode()
+        break
+      case 'close_terminal':
+        if (state.activeTerminalId) {
+          window.termpolis.killTerminal(state.activeTerminalId)
+          removeTerminal(state.activeTerminalId)
+        }
+        break
+      case 'toggle_sidebar':
+        setSidebarCollapsed(!state.sidebarCollapsed)
+        break
+      case 'toggle_split':
+        toggleViewMode()
+        setShowSettings(false)
+        break
+      case 'open_settings':
+        setShowSettings(true)
+        break
+      case 'search_history':
+        setHistoryOpen(true)
+        break
+      case 'save_workspace': {
+        const name = `Workspace ${state.workspaces.length + 1}`
+        useTerminalStore.getState().addWorkspace(name)
+        break
+      }
+      case 'export_output':
+        // Trigger export via context menu logic -- no direct hook, so just alert
+        break
+      case 'start_recording':
+        // Recording is per-terminal, handled in TerminalPane context menu
+        break
+      case 'show_context':
+        setShowContextPanel(v => !v)
+        break
+      case 'show_prompts':
+        setShowPrompts(v => !v)
+        break
+      case 'launch_claude': {
+        const claudeProfile = { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' }
+        const cId = uuid()
+        const cCwd = await getHomedir()
+        const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
+        const res = await window.termpolis.createTerminal(cId, shellType, cCwd)
+        if (res.success) {
+          addTerminal({ id: cId, name: claudeProfile.name, color: claudeProfile.color, shellType, cwd: cCwd, fontSize: 14, theme: 'defaultDark', fontFamily: "'Cascadia Code', 'Consolas', monospace" })
+          setTimeout(() => window.termpolis.writeToTerminal(cId, claudeProfile.command + '\r'), 500)
+        }
+        break
+      }
+      case 'launch_codex': {
+        const codexProfile = { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' }
+        const xId = uuid()
+        const xCwd = await getHomedir()
+        const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
+        const res = await window.termpolis.createTerminal(xId, shellType, xCwd)
+        if (res.success) {
+          addTerminal({ id: xId, name: codexProfile.name, color: codexProfile.color, shellType, cwd: xCwd, fontSize: 14, theme: 'defaultDark', fontFamily: "'Cascadia Code', 'Consolas', monospace" })
+          setTimeout(() => window.termpolis.writeToTerminal(xId, codexProfile.command + '\r'), 500)
+        }
+        break
+      }
+      case 'run_command':
+        if (captured && state.activeTerminalId) {
+          window.termpolis.writeToTerminal(state.activeTerminalId, captured + '\r')
+        }
+        break
+      case 'goto_terminal':
+        if (captured) {
+          const idx = parseInt(captured) - 1
+          if (idx >= 0 && idx < state.terminals.length) {
+            setActiveTerminal(state.terminals[idx].id)
+          }
+        }
+        break
+    }
+  }
+
   const renderMain = () => {
     if (showSettings) return <Suspense fallback={<div className="flex items-center justify-center h-full text-[#6b7280]">Loading settings...</div>}><SettingsPane /></Suspense>
     if (viewMode === 'split') return <SplitView />
@@ -257,6 +362,17 @@ export default function App() {
           defaultShell={defaultShell}
           onCreate={handleCreateTerminal}
           onCancel={() => setShowAddModal(false)}
+        />
+      )}
+      {showCommandPalette && (
+        <CommandPalette
+          onAction={handleCommandPaletteAction}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      )}
+      {showConversationSearch && (
+        <ConversationSearch
+          onClose={() => setShowConversationSearch(false)}
         />
       )}
     </div>
