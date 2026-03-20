@@ -9,7 +9,7 @@ import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, type McpToolHandlers } from './mcpServer'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -264,6 +264,11 @@ if (!gotTheLock) {
     }
 
     mcpServer = startMcpServer(mcpHandlers)
+    console.log(`MCP auth token: ${getMcpAuthToken()}`)
+    // Write token to a file so AI agents can discover it
+    const tokenPath = join(app.getPath('userData'), 'mcp-token')
+    require('fs').writeFileSync(tokenPath, getMcpAuthToken(), 'utf-8')
+    console.log(`MCP token written to: ${tokenPath}`)
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
     globalShortcut.register('Super+Shift+T', () => {

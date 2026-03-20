@@ -1,6 +1,14 @@
 import * as http from 'http'
+import * as crypto from 'crypto'
 
 const MCP_PORT = 9315 // "TERM" on phone keypad
+
+// Generate a random auth token on each app launch — prevents unauthorized access
+const MCP_AUTH_TOKEN = crypto.randomBytes(32).toString('hex')
+
+export function getMcpAuthToken(): string {
+  return MCP_AUTH_TOKEN
+}
 
 interface McpTool {
   name: string
@@ -187,14 +195,40 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
 
 export function startMcpServer(handlers: McpToolHandlers): http.Server {
   const server = http.createServer(async (req, res) => {
-    // CORS headers for local connections
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    // Restrict to localhost only (binding handles this, but belt-and-suspenders)
+    // No wildcard CORS — only allow same-origin requests
+    res.setHeader('Access-Control-Allow-Origin', 'http://localhost')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       res.end()
+      return
+    }
+
+    // Health check is public (no auth needed — just confirms server is running)
+    if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          name: 'termpolis-mcp',
+          version: '1.2.0',
+          tools: TOOLS.length,
+          auth: 'required',
+          hint: 'Pass Authorization: Bearer <token> header. Token is printed to stdout on app launch.',
+        })
+      )
+      return
+    }
+
+    // All other endpoints require auth token
+    const authHeader = req.headers['authorization'] || ''
+    const token = authHeader.replace(/^Bearer\s+/i, '')
+    if (token !== MCP_AUTH_TOKEN) {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Unauthorized. Pass Authorization: Bearer <token> header.' }))
       return
     }
 
@@ -232,20 +266,6 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
           )
         }
       })
-      return
-    }
-
-    // Health check
-    if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(
-        JSON.stringify({
-          status: 'ok',
-          name: 'termpolis-mcp',
-          version: '1.0.0',
-          tools: TOOLS.length,
-        })
-      )
       return
     }
 
