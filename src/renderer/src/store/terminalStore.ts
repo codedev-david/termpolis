@@ -161,7 +161,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   setShowSettings: (show) => set(s => ({
     showSettings: show,
-    activeTerminalId: show ? null : (s.activeTerminalId || s.terminals[0]?.id || null),
+    // Don't clear activeTerminalId — preserve it so closing settings returns to the same terminal
+    activeTerminalId: !show && !s.activeTerminalId ? (s.terminals[0]?.id || null) : s.activeTerminalId,
   })),
 
   setDefaultShell: (shell) => set({ defaultShell: shell }),
