@@ -63,11 +63,13 @@ An AI-native, cross-platform terminal manager built with Electron. Split panes, 
 - **Keep or close** — choose whether to keep the old terminal for reference or close it
 
 ### Multi-Agent Swarm
-- **Swarm Dashboard** — `Ctrl+Shift+S` or the sidebar network icon opens a dashboard showing agents, tasks, and messages
+- **Swarm Orchestrator** — step-by-step wizard to launch a swarm: pick agents (Claude, Codex, Gemini, Aider), describe the task, review auto-generated role assignments, and launch. Each agent gets a split pane with their task prompt.
+- **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
+- **Agent Bridge** — non-MCP agents (Codex, Gemini) are automatically bridged: Termpolis reads their terminal output, detects completions/errors, and posts to the swarm bus on their behalf
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
-- **Cross-model collaboration** — run Claude, Codex, and Gemini simultaneously, each in their own terminal, collaborating through the swarm
+- **Cross-model collaboration** — Claude, Codex, and Gemini working on the same task simultaneously, each in their own terminal
 
 ### Intelligence
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
@@ -254,7 +256,10 @@ npm run dev
 npm test
 ```
 
-89 tests across 19 test files (unit + component + integration tests).
+121 total tests:
+- `npm test` — 89 unit tests (Vitest)
+- `npx playwright test` — 32 E2E tests (Playwright, launches the actual Electron app)
+- E2E tests capture 25 screenshots automatically in `e2e/screenshots/`
 
 ## Building from Source
 

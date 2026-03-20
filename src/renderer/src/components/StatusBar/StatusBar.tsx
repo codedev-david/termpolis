@@ -187,14 +187,14 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             <p className="text-[#bbb] text-xs mb-1.5">Run multiple AI agents simultaneously and have them collaborate on tasks.</p>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd> or the <i className="fa-solid fa-network-wired text-[10px]"></i> sidebar icon opens the <strong>Swarm Dashboard</strong></li>
-              <li><strong>How it works:</strong> launch multiple AI agents (Claude, Codex, Gemini) in separate terminals. They communicate through a shared message bus.</li>
-              <li><strong>Tasks tab</strong> — create tasks, assign them to agents, track status (Pending → In Progress → Completed)</li>
-              <li><strong>Messages tab</strong> — see all inter-agent messages (task assignments, results, questions, reviews)</li>
-              <li><strong>Example workflow:</strong></li>
-              <li className="pl-4 text-xs">1. Claude analyzes the codebase and creates tasks: "Write API tests", "Review security"</li>
-              <li className="pl-4 text-xs">2. Codex picks up the testing task and reports results back</li>
-              <li className="pl-4 text-xs">3. Gemini reviews the code and shares findings with all agents</li>
-              <li className="pl-4 text-xs">4. You watch it all happen in the Swarm Dashboard</li>
+              <li><strong>Start Swarm</strong> — click the button in the dashboard to launch the orchestrator wizard:</li>
+              <li className="pl-4 text-xs">Step 1: Pick agents (Claude, Codex, Gemini, Aider — select 2+)</li>
+              <li className="pl-4 text-xs">Step 2: Describe your task</li>
+              <li className="pl-4 text-xs">Step 3: Review auto-generated role/task assignments (editable)</li>
+              <li className="pl-4 text-xs">Step 4: Launch — each agent gets a split pane with their task prompt</li>
+              <li><strong>Agent Bridge</strong> — agents without MCP (Codex, Gemini) are bridged automatically. Termpolis reads their output, detects completions and errors, and posts to the swarm bus.</li>
+              <li><strong>Dashboard tabs:</strong> Agents (health status) · Tasks (kanban columns) · Messages (chronological log)</li>
+              <li><strong>"Swarm Active"</strong> indicator appears in the status bar while a swarm is running</li>
             </ul>
           </section>
 
