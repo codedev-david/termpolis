@@ -1,3 +1,6 @@
+import { initMainSentry } from './sentry'
+initMainSentry()
+
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
