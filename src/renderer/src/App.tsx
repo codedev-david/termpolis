@@ -5,6 +5,7 @@ import { SplitView } from './components/SplitView/SplitView'
 const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane').then(m => ({ default: m.SettingsPane })))
 import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
 import { PromptTemplates } from './components/PromptTemplates/PromptTemplates'
+import { ContextPanel } from './components/ContextPanel/ContextPanel'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { AddTerminalModal } from './components/Sidebar/AddTerminalModal'
@@ -25,6 +26,7 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showPrompts, setShowPrompts] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showContextPanel, setShowContextPanel] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const started = useRef(false)
   const loaded = useRef(false)
@@ -142,6 +144,13 @@ export default function App() {
         return
       }
 
+      // Ctrl+Shift+E to toggle context panel
+      if (e.ctrlKey && e.shiftKey && e.key === 'E') {
+        e.preventDefault()
+        setShowContextPanel(v => !v)
+        return
+      }
+
       // Ctrl+Shift+P to toggle prompt templates
       if (e.ctrlKey && e.shiftKey && e.key === 'P') {
         e.preventDefault()
@@ -206,6 +215,12 @@ export default function App() {
         <main className="flex-1 overflow-hidden">
           {renderMain()}
         </main>
+        {showContextPanel && (
+          <ContextPanel
+            cwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+            onClose={() => setShowContextPanel(false)}
+          />
+        )}
       </div>
       <StatusBar />
       {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}

@@ -58,6 +58,9 @@ const api: TermpolisAPI = {
 
   getTerminalStatus: (terminalId, fallbackCwd) =>
     ipcRenderer.invoke('terminal:status', { terminalId, fallbackCwd }),
+
+  getGitInfo: (cwd) =>
+    ipcRenderer.invoke('terminal:git-info', { cwd }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

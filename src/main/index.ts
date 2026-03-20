@@ -139,6 +139,20 @@ ipcMain.handle('completion:env-vars', async () => {
   catch (e: any) { return err(e.message) }
 })
 
+ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
+  try {
+    let status = ''
+    let recentCommits = ''
+    try {
+      status = execSync('git status --short', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+    } catch {}
+    try {
+      recentCommits = execSync('git log --oneline -5', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+    } catch {}
+    return ok({ status, recentCommits })
+  } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
   try {
     // Try to get the real CWD from the PTY process

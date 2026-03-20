@@ -18,6 +18,7 @@ import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
 import { detectAgent, type AgentInfo } from '../../lib/agentDetector'
 import { parseCostFromOutput, type CostInfo } from '../../lib/costTracker'
+import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
@@ -81,6 +82,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
+
+  // Diff viewer state
+  const [diffDetected, setDiffDetected] = useState(false)
+  const [showDiffViewer, setShowDiffViewer] = useState(false)
+  const diffDetectedRef = useRef(false)
 
   // Refs for use inside onData callback (avoids stale closures)
   const suggestionsRef = useRef<CompletionResult[]>([])
@@ -424,6 +430,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }
         inputBufferRef.current = ''
         outputBufferRef.current = ''
+        diffDetectedRef.current = false
+        setDiffDetected(false)
         // Dismiss dropdown on Enter
         setSuggestions([])
         setSelectedIndex(0)
@@ -493,6 +501,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       outputBufferRef.current += data
       if (outputBufferRef.current.length > 4096) {
         outputBufferRef.current = outputBufferRef.current.slice(-4096)
+      }
+
+      // Detect diff output
+      const DIFF_PATTERN = /^diff --git /m
+      const hasDiff = DIFF_PATTERN.test(outputBufferRef.current)
+      if (hasDiff !== diffDetectedRef.current) {
+        diffDetectedRef.current = hasDiff
+        if (!disposed) setDiffDetected(hasDiff)
       }
 
       // Parse prompt for cwd and git branch (works on all platforms by reading terminal output)
@@ -686,6 +702,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               <i className="fa-solid fa-thumbtack text-[10px] mr-1.5"></i>
               Pin Selection
             </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                setShowDiffViewer(true)
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+            >
+              <i className="fa-solid fa-code-compare text-[10px] mr-1.5"></i>
+              View as Diff
+            </button>
             {(onSplitRight || onSplitDown) && (
               <>
                 <div className="border-t border-[#454545] my-1"></div>
@@ -734,8 +760,23 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             onDismiss={() => setFixSuggestion(null)}
           />
         )}
+        {diffDetected && (
+          <button
+            className="absolute top-2 right-2 z-40 px-2.5 py-1 text-[11px] bg-[#1e3a5f] hover:bg-[#264f78] text-[#82aaff] rounded border border-[#3c5f8a] cursor-pointer shadow-lg"
+            onClick={() => setShowDiffViewer(true)}
+          >
+            <i className="fa-solid fa-code-compare mr-1"></i>
+            View Diff
+          </button>
+        )}
       </div>
       <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={detectedAgent} costInfo={costInfo} isRecording={isRecording} />
+      {showDiffViewer && (
+        <DiffViewer
+          rawDiff={outputBufferRef.current}
+          onClose={() => setShowDiffViewer(false)}
+        />
+      )}
     </div>
   )
 }
