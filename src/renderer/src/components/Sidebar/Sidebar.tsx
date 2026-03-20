@@ -89,10 +89,11 @@ export function Sidebar() {
       <div className="border-t border-[#3c3c3c]"></div>
       <div className="px-3 py-1.5 text-xs text-[#6b7280] uppercase tracking-wider">Terminals</div>
       <div className="flex-1 overflow-y-auto">
-        {terminals.map(t => (
+        {terminals.map((t, i) => (
           <TerminalTab
             key={t.id}
             terminal={t}
+            index={i}
             isActive={t.id === activeTerminalId && !showSettings}
             onClick={() => setActiveTerminal(t.id)}
             onClose={() => handleClose(t.id)}

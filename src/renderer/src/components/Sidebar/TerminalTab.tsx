@@ -9,13 +9,14 @@ const SHELL_ICON: Record<string, string> = {
 
 interface Props {
   terminal: TerminalSession
+  index: number
   isActive: boolean
   onClick: () => void
   onClose: () => void
   onUpdate: (patch: Partial<Omit<TerminalSession, 'id'>>) => void
 }
 
-export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: Props) {
+export function TerminalTab({ terminal, index, isActive, onClick, onClose, onUpdate }: Props) {
   const [popoverOpen, setPopoverOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
 
@@ -27,8 +28,8 @@ export function TerminalTab({ terminal, isActive, onClick, onClose, onUpdate }: 
       onClick={onClick}
       onContextMenu={e => { e.preventDefault(); setPopoverOpen(true) }}
     >
-      <span className="text-[#6b7280] text-xs w-4 text-center font-mono">
-        {SHELL_ICON[terminal.shellType] ?? '$'}
+      <span className="text-[#6b7280] text-xs w-4 text-center font-mono" title={index < 9 ? `Alt+${index + 1}` : undefined}>
+        {index < 9 ? index + 1 : SHELL_ICON[terminal.shellType] ?? '$'}
       </span>
       <span className="flex-1 text-sm truncate">{terminal.name}</span>
       <button
