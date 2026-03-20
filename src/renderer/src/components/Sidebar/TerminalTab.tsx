@@ -28,8 +28,11 @@ export function TerminalTab({ terminal, index, isActive, onClick, onClose, onUpd
       onClick={onClick}
       onContextMenu={e => { e.preventDefault(); setPopoverOpen(true) }}
     >
-      <span className="text-[#6b7280] text-xs w-4 text-center font-mono" title={index < 9 ? `Alt+${index + 1}` : undefined}>
-        {index < 9 ? index + 1 : SHELL_ICON[terminal.shellType] ?? '$'}
+      {index < 9 && (
+        <span className="text-[#555] text-[10px] w-3 text-center font-mono" title={`Alt+${index + 1}`}>{index + 1}</span>
+      )}
+      <span className="text-[#6b7280] text-xs w-4 text-center font-mono">
+        {SHELL_ICON[terminal.shellType] ?? '$'}
       </span>
       <span className="flex-1 text-sm truncate">{terminal.name}</span>
       <button
