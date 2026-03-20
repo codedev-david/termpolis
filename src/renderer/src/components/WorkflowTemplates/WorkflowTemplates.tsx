@@ -29,7 +29,7 @@ const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     icon: 'fa-solid fa-robot',
     terminals: [
       { name: 'Claude Code', command: 'claude', shell: 'bash', color: '#D97706' },
-      { name: 'Shell', command: '', shell: 'bash', color: '#4FC3F7' },
+      { name: 'Shell', command: '', shell: 'bash', color: '#22D3EE' },
     ],
     layout: 'vertical',
   },
@@ -40,7 +40,7 @@ const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     icon: 'fa-solid fa-layer-group',
     terminals: [
       { name: 'AI Agent', command: 'claude', shell: 'bash', color: '#D97706' },
-      { name: 'Frontend', command: '', shell: 'bash', color: '#4FC3F7' },
+      { name: 'Frontend', command: '', shell: 'bash', color: '#22D3EE' },
       { name: 'Backend', command: '', shell: 'bash', color: '#A5D6A7' },
       { name: 'Tests', command: '', shell: 'bash', color: '#CE93D8' },
     ],
@@ -182,7 +182,7 @@ export function WorkflowTemplates({ onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fadeIn" onClick={onClose}>
       <div
         className="bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg shadow-xl w-[480px] max-h-[80vh] flex flex-col"
         onClick={e => e.stopPropagation()}

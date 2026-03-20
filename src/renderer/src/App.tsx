@@ -10,6 +10,7 @@ import { CommandPalette } from './components/CommandPalette/CommandPalette'
 import { ConversationSearch } from './components/ConversationSearch/ConversationSearch'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
+import { Welcome } from './components/Welcome/Welcome'
 import { AddTerminalModal } from './components/Sidebar/AddTerminalModal'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { matchesKeybinding, DEFAULT_KEYBINDINGS } from './lib/keybindings'
@@ -203,7 +204,7 @@ export default function App() {
 
   // Listen for MCP server events (AI agent created/closed terminals)
   useEffect(() => {
-    const TERMINAL_COLORS = ['#4FC3F7', '#81C784', '#FFB74D', '#E57373', '#BA68C8', '#4DB6AC', '#FF8A65']
+    const TERMINAL_COLORS = ['#22D3EE', '#81C784', '#FFB74D', '#E57373', '#BA68C8', '#4DB6AC', '#FF8A65']
     const unsubCreated = window.mcpEvents?.onTerminalCreated((data) => {
       const color = TERMINAL_COLORS[useTerminalStore.getState().terminals.length % TERMINAL_COLORS.length]
       addTerminal({
@@ -343,8 +344,56 @@ export default function App() {
     }
   }
 
+  const handleWelcomeLaunchAgent = async () => {
+    // Launch Claude Code (first default AI profile)
+    const id = uuid()
+    const cwd = await getHomedir()
+    const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
+    const res = await window.termpolis.createTerminal(id, shellType, cwd)
+    if (res.success) {
+      addTerminal({ id, name: 'Claude Code', color: '#D97706', shellType, cwd, fontSize: 14, theme: 'defaultDark', fontFamily: "'Cascadia Code', 'Consolas', monospace" })
+      setTimeout(() => window.termpolis.writeToTerminal(id, 'claude\r'), 500)
+    }
+  }
+
+  const handleWelcomeImportWorkspace = () => {
+    // If there are workspaces, activate the first one; otherwise hint
+    const state = useTerminalStore.getState()
+    if (state.workspaces.length > 0) {
+      // Trigger workspace activation via store — same as clicking in WorkspaceList
+      const ws = state.workspaces[0]
+      ;(async () => {
+        const homedir = await getHomedir()
+        const newTerminals = []
+        for (const t of ws.terminals) {
+          const tid = uuid()
+          const cwdVal = t.cwd || homedir
+          await window.termpolis.createTerminal(tid, t.shellType as any, cwdVal)
+          newTerminals.push({ id: tid, name: t.name, color: t.color, shellType: t.shellType as any, cwd: cwdVal, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily })
+        }
+        useTerminalStore.setState({
+          terminals: newTerminals,
+          activeTerminalId: newTerminals[0]?.id ?? null,
+          showSettings: false,
+        })
+      })()
+    } else {
+      // No workspaces — open add terminal modal as fallback
+      setShowAddModal(true)
+    }
+  }
+
   const renderMain = () => {
     if (showSettings) return <Suspense fallback={<div className="flex items-center justify-center h-full text-[#6b7280]">Loading settings...</div>}><SettingsPane /></Suspense>
+    if (terminals.length === 0) {
+      return (
+        <Welcome
+          onNewTerminal={() => setShowAddModal(true)}
+          onLaunchAgent={handleWelcomeLaunchAgent}
+          onImportWorkspace={handleWelcomeImportWorkspace}
+        />
+      )
+    }
     if (viewMode === 'split') return <SplitView />
     return <TabView />
   }

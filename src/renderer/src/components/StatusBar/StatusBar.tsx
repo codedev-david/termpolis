@@ -2,12 +2,12 @@ import React, { useState } from 'react'
 
 function HelpModal({ onClose }: { onClose: () => void }) {
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg shadow-xl border border-[#3c3c3c] w-[560px] max-h-[85vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#3c3c3c]">
           <h2 className="text-base font-semibold flex items-center gap-2">
-            <i className="fa-solid fa-book-open text-[#4FC3F7]"></i>
+            <i className="fa-solid fa-book-open text-[#22D3EE]"></i>
             Quick Start Guide
           </h2>
           <button onClick={onClose} className="text-[#6b7280] hover:text-white text-lg px-1">&times;</button>
@@ -18,7 +18,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Terminals */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-terminal text-xs"></i> Terminals
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -33,7 +33,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Split View */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-columns text-xs"></i> Split View
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -60,7 +60,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Command Palette */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-magnifying-glass text-xs"></i> Command Palette
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -73,7 +73,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Prompt Templates */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-message text-xs"></i> Prompt Templates
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -86,7 +86,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Session Recording */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-circle text-xs text-red-500"></i> Session Recording
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -99,7 +99,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Output Pinning */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-thumbtack text-xs"></i> Output Pinning
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -111,7 +111,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Context Panel & Diff Viewer */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-folder-tree text-xs"></i> Context Panel & Diff Viewer
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -123,7 +123,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Conversation History */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-comments text-xs"></i> Conversation History
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -135,7 +135,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* MCP Server */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-plug text-xs"></i> MCP Server
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -148,7 +148,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Autocomplete */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-wand-magic-sparkles text-xs"></i> Autocomplete & Auto-Fix
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -160,7 +160,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Workspaces */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-layer-group text-xs"></i> Workspaces
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -172,7 +172,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Themes */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-palette text-xs"></i> Themes, Fonts & Export
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -184,7 +184,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Keyboard Shortcuts */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-keyboard text-xs"></i> All Keyboard Shortcuts
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed text-xs">
@@ -201,7 +201,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
           {/* Bundled Tools */}
           <section>
-            <h3 className="font-semibold text-[#4FC3F7] mb-1.5 flex items-center gap-2">
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-toolbox text-xs"></i> Bundled Tools
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
@@ -217,7 +217,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             <a
               href="https://github.com/codedev-david/termpolis"
               onClick={e => { e.preventDefault(); window.open('https://github.com/codedev-david/termpolis', '_blank') }}
-              className="text-[#4FC3F7] hover:underline text-sm flex items-center gap-1.5"
+              className="text-[#22D3EE] hover:underline text-sm flex items-center gap-1.5"
             >
               <i className="fa-brands fa-github"></i>
               GitHub
@@ -249,8 +249,8 @@ export function StatusBar() {
       <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#6b7280] text-xs select-none shrink-0">
         <span>&copy; {new Date().getFullYear()} Termpolis &middot; MIT License</span>
         <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 text-[#4FC3F7]" title="MCP server for AI agent integration">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#4FC3F7]"></span>
+          <span className="flex items-center gap-1.5 text-[#22D3EE]" title="MCP server for AI agent integration">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE]"></span>
             MCP: localhost:9315
           </span>
           <a
@@ -264,7 +264,7 @@ export function StatusBar() {
           </a>
           <button
             onClick={() => setShowHelp(true)}
-            className="hover:text-[#4FC3F7] transition-colors"
+            className="hover:text-[#22D3EE] transition-colors"
           >Help / Support</button>
         </div>
       </div>

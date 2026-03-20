@@ -36,14 +36,14 @@ function AddTemplateForm({ onSave, onCancel }: AddTemplateFormProps) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-2 p-3 border-t border-[#3c3c3c]">
       <input
-        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#4FC3F7]"
+        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
         placeholder="Template name"
         value={name}
         onChange={e => setName(e.target.value)}
         autoFocus
       />
       <textarea
-        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#4FC3F7] resize-none"
+        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE] resize-none"
         placeholder="Prompt text..."
         rows={3}
         value={text}
@@ -51,7 +51,7 @@ function AddTemplateForm({ onSave, onCancel }: AddTemplateFormProps) {
       />
       <div className="flex gap-2 justify-end">
         <button type="button" onClick={onCancel} className="px-3 py-1 text-xs rounded hover:bg-[#37373d] text-[#6b7280]">Cancel</button>
-        <button type="submit" className="px-3 py-1 text-xs rounded bg-[#4FC3F7] text-[#1e1e1e] font-medium hover:bg-[#3bacda]">Save</button>
+        <button type="submit" className="px-3 py-1 text-xs rounded bg-[#22D3EE] text-[#1e1e1e] font-medium hover:bg-[#06b6d4]">Save</button>
       </div>
     </form>
   )
@@ -91,19 +91,19 @@ export function PromptTemplates({ onClose }: PromptTemplatesProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fadeIn" onClick={onClose}>
       <div
         className="bg-[#2d2d2d] rounded-lg w-[420px] max-h-[70vh] flex flex-col border border-[#3c3c3c] shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-[#3c3c3c]">
           <div className="flex items-center gap-2">
-            <i className="fa-solid fa-message text-[#4FC3F7] text-sm"></i>
+            <i className="fa-solid fa-message text-[#22D3EE] text-sm"></i>
             <h2 className="text-sm font-semibold text-[#d4d4d4]">Prompt Templates</h2>
           </div>
           <div className="flex items-center gap-1">
             <button
-              className="text-[#6b7280] hover:text-[#4FC3F7] text-xs px-2 py-1 rounded hover:bg-[#37373d]"
+              className="text-[#6b7280] hover:text-[#22D3EE] text-xs px-2 py-1 rounded hover:bg-[#37373d]"
               onClick={() => setShowAdd(!showAdd)}
             >
               <i className="fa-solid fa-plus mr-1"></i>Add
@@ -120,12 +120,12 @@ export function PromptTemplates({ onClose }: PromptTemplatesProps) {
             return (
               <div
                 key={template.id}
-                className="group relative bg-[#1e1e1e] rounded-lg p-3 hover:bg-[#37373d] cursor-pointer border border-[#3c3c3c] hover:border-[#4FC3F7]/40 transition-colors"
+                className="group relative bg-[#1e1e1e] rounded-lg p-3 hover:bg-[#37373d] cursor-pointer border border-[#3c3c3c] hover:border-[#22D3EE]/40 transition-colors"
                 onClick={() => handleInsert(template)}
                 title={template.text}
               >
                 <div className="flex items-center gap-2 mb-1">
-                  <i className={`${template.icon} text-[#4FC3F7] text-xs`}></i>
+                  <i className={`${template.icon} text-[#22D3EE] text-xs`}></i>
                   <span className="text-xs font-medium text-[#d4d4d4]">{template.name}</span>
                 </div>
                 <p className="text-[10px] text-[#6b7280] leading-tight line-clamp-2">{template.text}</p>

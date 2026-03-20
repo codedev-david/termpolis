@@ -3,7 +3,7 @@ import type { ShellInfo, ShellType } from '../../types'
 import { TERMINAL_THEMES, THEME_IDS, getTheme } from '../../themes/terminalThemes'
 
 const COLOR_SWATCHES = [
-  '#4FC3F7','#A5D6A7','#CE93D8','#EF9A9A','#FFE082',
+  '#22D3EE','#A5D6A7','#CE93D8','#EF9A9A','#FFE082',
   '#80CBC4','#FFCC80','#9FA8DA','#F48FB1','#C5E1A5','#80DEEA','#B0BEC5',
 ]
 
@@ -35,7 +35,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, onCreate, on
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg p-6 w-96 shadow-xl flex flex-col gap-4">
         <h2 className="text-base font-semibold">New Terminal</h2>
 

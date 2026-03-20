@@ -30,7 +30,7 @@ export function HistorySearchModal({ onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-start justify-center pt-24 z-50">
+    <div className="fixed inset-0 bg-black/70 flex items-start justify-center pt-24 z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden">
         <div className="p-3 border-b border-[#3c3c3c]">
           <input

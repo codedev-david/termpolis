@@ -89,7 +89,7 @@ export function DiffViewer({ rawDiff, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 animate-fadeIn" onClick={onClose}>
       <div
         className="bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg shadow-2xl flex flex-col"
         style={{ width: '80vw', maxWidth: 900, height: '80vh' }}

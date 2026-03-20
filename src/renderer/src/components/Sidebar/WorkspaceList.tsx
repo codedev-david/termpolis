@@ -61,16 +61,16 @@ export function WorkspaceList() {
         </button>
         <button
           onClick={() => setShowInfo(true)}
-          className="text-[#6b7280] hover:text-[#4FC3F7]"
+          className="text-[#6b7280] hover:text-[#22D3EE]"
           title="What are workspaces?"
         ><i className="fa-solid fa-circle-info text-xs"></i></button>
       </div>
       {showInfo && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
           <div className="bg-[#252526] rounded-lg p-6 w-96 shadow-xl flex flex-col gap-4 border border-[#3c3c3c]">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold flex items-center gap-2">
-                <i className="fa-solid fa-layer-group text-[#4FC3F7]"></i>
+                <i className="fa-solid fa-layer-group text-[#22D3EE]"></i>
                 Workspaces
               </h2>
               <button
@@ -88,7 +88,7 @@ export function WorkspaceList() {
                 <span><strong>Save</strong> — captures all your current terminals (names, shells, colors, themes) into a workspace.</span>
               </div>
               <div className="flex items-start gap-2">
-                <i className="fa-solid fa-rotate-right text-[#4FC3F7] mt-0.5"></i>
+                <i className="fa-solid fa-rotate-right text-[#22D3EE] mt-0.5"></i>
                 <span><strong>Restore</strong> — click a workspace to close current terminals and reopen the saved set.</span>
               </div>
               <div className="flex items-start gap-2">
@@ -131,7 +131,7 @@ export function WorkspaceList() {
               <span className="flex-1 text-sm truncate">{ws.name}</span>
               <button
                 onClick={e => { e.stopPropagation(); updateWorkspace(ws.id) }}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-[#4FC3F7] text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
+                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-[#22D3EE] text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Update ${ws.name}`}
                 title="Update with current terminals"
               >↻</button>

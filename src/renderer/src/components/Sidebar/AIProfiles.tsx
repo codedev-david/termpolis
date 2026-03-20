@@ -33,7 +33,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
   const [name, setName] = useState('')
   const [command, setCommand] = useState('')
   const [shell, setShell] = useState('bash')
-  const [color, setColor] = useState('#4FC3F7')
+  const [color, setColor] = useState('#22D3EE')
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -49,7 +49,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onCancel}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn" onClick={onCancel}>
       <form
         className="bg-[#2d2d2d] rounded-lg p-5 w-80 flex flex-col gap-3 border border-[#3c3c3c]"
         onClick={e => e.stopPropagation()}
@@ -57,20 +57,20 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
       >
         <h3 className="text-sm font-semibold text-[#d4d4d4]">Add AI Profile</h3>
         <input
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#4FC3F7]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
           placeholder="Name (e.g. My Agent)"
           value={name}
           onChange={e => setName(e.target.value)}
           autoFocus
         />
         <input
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#4FC3F7]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
           placeholder="Command (e.g. claude --model opus)"
           value={command}
           onChange={e => setCommand(e.target.value)}
         />
         <select
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#4FC3F7]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
           value={shell}
           onChange={e => setShell(e.target.value)}
         >
@@ -86,7 +86,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
         </div>
         <div className="flex gap-2 justify-end mt-1">
           <button type="button" onClick={onCancel} className="px-3 py-1.5 text-sm rounded hover:bg-[#37373d] text-[#6b7280]">Cancel</button>
-          <button type="submit" className="px-3 py-1.5 text-sm rounded bg-[#4FC3F7] text-[#1e1e1e] font-medium hover:bg-[#3bacda]">Add</button>
+          <button type="submit" className="px-3 py-1.5 text-sm rounded bg-[#22D3EE] text-[#1e1e1e] font-medium hover:bg-[#06b6d4]">Add</button>
         </div>
       </form>
     </div>
@@ -145,7 +145,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
           AI Agents
         </button>
         <button
-          className="text-[#6b7280] hover:text-[#4FC3F7] text-xs px-1"
+          className="text-[#6b7280] hover:text-[#22D3EE] text-xs px-1"
           onClick={() => setShowAddModal(true)}
           title="Add custom AI profile"
         >

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { TERMINAL_THEMES, THEME_IDS, getTheme } from '../../themes/terminalThemes'
 
 const COLOR_SWATCHES = [
-  '#4FC3F7','#A5D6A7','#CE93D8','#EF9A9A','#FFE082',
+  '#22D3EE','#A5D6A7','#CE93D8','#EF9A9A','#FFE082',
   '#80CBC4','#FFCC80','#9FA8DA','#F48FB1','#C5E1A5','#80DEEA','#B0BEC5',
 ]
 

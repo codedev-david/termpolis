@@ -56,7 +56,7 @@ export function Sidebar() {
 
   if (sidebarCollapsed) {
     return (
-      <aside className="w-10 shrink-0 flex flex-col items-center bg-[#252526] border-r border-[#3c3c3c] h-full py-2">
+      <aside className="w-10 shrink-0 flex flex-col items-center bg-[#252526] border-r border-[#3c3c3c] h-full py-2" style={{ transition: 'width 200ms ease' }}>
         <button
           onClick={() => setSidebarCollapsed(false)}
           className="text-[#6b7280] hover:text-white px-2 py-3 rounded hover:bg-[#37373d]"
@@ -67,19 +67,13 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full">
-      <div className="flex flex-col gap-1 p-2 border-b border-[#3c3c3c]">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setShowSettings(!showSettings)}
-            className={`flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] flex-1 ${showSettings ? 'bg-[#37373d]' : ''}`}
-          >⚙ Settings</button>
-          <button
-            onClick={() => setSidebarCollapsed(true)}
-            className="text-[#6b7280] hover:text-white px-2 py-2 rounded hover:bg-[#37373d]"
-            title="Collapse sidebar"
-          ><i className="fa-solid fa-chevron-left text-lg"></i></button>
-        </div>
+    <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full" style={{ transition: 'width 200ms ease' }}>
+      <div className="flex items-center gap-1 p-2 border-b border-[#3c3c3c]">
+        <button
+          onClick={() => setShowSettings(!showSettings)}
+          title="Settings"
+          className={`px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d] text-white' : ''}`}
+        ><i className="fa-solid fa-gear"></i></button>
         <button
           onClick={() => {
             toggleViewMode()
@@ -88,16 +82,25 @@ export function Sidebar() {
               setActiveTerminal(terminals[0].id)
             }
           }}
-          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
-        >{viewMode === 'tabs' ? '⊞ Split View' : '☰ Tab View'}</button>
+          title={viewMode === 'tabs' ? 'Split View' : 'Tab View'}
+          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className={`fa-solid ${viewMode === 'tabs' ? 'fa-columns' : 'fa-bars'}`}></i></button>
         <button
           onClick={() => setShowPrompts(true)}
-          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
-        ><i className="fa-solid fa-message text-xs"></i> Prompts</button>
+          title="Prompts"
+          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className="fa-solid fa-message"></i></button>
         <button
           onClick={() => setShowWorkflows(true)}
-          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
-        ><i className="fa-solid fa-cubes text-xs text-[#D97706]"></i> Workflows</button>
+          title="Workflows"
+          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className="fa-solid fa-cubes"></i></button>
+        <div className="flex-1"></div>
+        <button
+          onClick={() => setSidebarCollapsed(true)}
+          title="Collapse sidebar"
+          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
       <AIProfiles availableShells={availableShells} />
       <div className="border-t border-[#3c3c3c]"></div>
@@ -126,7 +129,7 @@ export function Sidebar() {
       <div className="p-2 border-t border-[#3c3c3c]">
         <button
           onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] text-[#4FC3F7] w-full"
+          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d] text-[#22D3EE] w-full"
         >+ Add Terminal</button>
       </div>
       {showAddModal && (

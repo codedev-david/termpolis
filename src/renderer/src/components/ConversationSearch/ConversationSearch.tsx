@@ -77,7 +77,7 @@ export function ConversationSearch({ onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 flex items-start justify-center pt-20 z-50"
+      className="fixed inset-0 bg-black/60 flex items-start justify-center pt-20 z-50 animate-fadeIn"
       onClick={onClose}
     >
       <div
