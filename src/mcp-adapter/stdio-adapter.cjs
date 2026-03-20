@@ -70,6 +70,10 @@ rl.on('line', async (line) => {
   if (!line.trim()) return
   try {
     const request = JSON.parse(line)
+    // MCP notifications are fire-and-forget — don't forward to server
+    if (!request.id && (request.method?.startsWith('notifications/') || request.method === 'initialized')) {
+      return // silently consume notifications
+    }
     const response = await sendToServer(request)
     process.stdout.write(JSON.stringify(response) + '\n')
   } catch (err) {

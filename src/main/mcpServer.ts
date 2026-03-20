@@ -246,6 +246,11 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
     }
   }
 
+  // Handle MCP notifications (no response needed, but don't error)
+  if (method?.startsWith('notifications/') || method === 'initialized') {
+    return { jsonrpc: '2.0', result: {}, id }
+  }
+
   if (method === 'tools/call') {
     const { name, arguments: args } = params
     try {
