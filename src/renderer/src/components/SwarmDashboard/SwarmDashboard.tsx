@@ -3,6 +3,7 @@ import type { SwarmMessage, SwarmTask } from '../../types'
 import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { StartSwarmModal } from './StartSwarmModal'
+import { stopAllBridges } from '../../lib/swarmBridgeManager'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -75,6 +76,7 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   }
 
   const handleClearSwarm = async () => {
+    stopAllBridges()
     await window.swarmAPI.clear()
     useTerminalStore.getState().setSwarmActive(false)
     useTerminalStore.getState().setSwarmAgents([])

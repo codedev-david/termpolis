@@ -64,6 +64,9 @@ const api: TermpolisAPI = {
 
   getGitDiff: (cwd) =>
     ipcRenderer.invoke('terminal:git-diff', { cwd }),
+
+  readTerminalBuffer: (terminalId, fromOffset) =>
+    ipcRenderer.invoke('terminal:read-buffer', { terminalId, fromOffset }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

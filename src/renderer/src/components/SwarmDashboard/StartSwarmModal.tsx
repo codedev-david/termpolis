@@ -5,6 +5,7 @@ import type { SwarmAgentEntry } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
 import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 import type { ShellInfo, ShellType } from '../../types'
+import { startBridgeForAgent } from '../../lib/swarmBridgeManager'
 
 // ---- Available agents ----
 
@@ -292,7 +293,16 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       useTerminalStore.setState({ viewMode: 'split', paneTree: tree })
     }
 
-    // Step 8: Start health monitoring
+    // Step 8: Start swarm bridge for non-MCP agents
+    // Only Claude Code has MCP tools — bridge all others
+    for (let i = 0; i < terminalIds.length; i++) {
+      const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
+      if (agent.name !== 'Claude Code') {
+        startBridgeForAgent(terminalIds[i], agent.name)
+      }
+    }
+
+    // Step 9: Start health monitoring
     startHealthMonitoring(terminalIds, agentEntries)
 
     setLaunchProgress('Swarm launched successfully!')

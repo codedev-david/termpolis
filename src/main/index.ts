@@ -193,6 +193,13 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
 })
 
 // Swarm IPC handlers for the dashboard
+// Read terminal output buffer from renderer (used by swarm bridge for non-MCP agents)
+ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
+  const buffer = terminalOutputBuffers.get(terminalId) || ''
+  const sliced = buffer.slice(fromOffset || 0)
+  return ok({ output: sliced, length: sliced.length })
+})
+
 ipcMain.handle('swarm:messages', async () => ok(getAllMessages()))
 ipcMain.handle('swarm:tasks', async () => ok(listTasks()))
 ipcMain.handle('swarm:send-message', async (_, { from, to, type, content }) => {
