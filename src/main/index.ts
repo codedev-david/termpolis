@@ -411,8 +411,61 @@ if (!gotTheLock) {
       console.log('Could not write ~/.mcp.json (non-fatal):', (e as any).message)
     }
 
-    // Try Gemini CLI MCP config too (~/.gemini/settings.json or similar)
-    // Future: add support for other AI agent configs as they standardize
+    // Register as a Claude Code local plugin (this is how Claude actually loads MCP servers)
+    try {
+      const localMarketplace = join(homedir(), '.claude', 'local-marketplace')
+      const pluginDir = join(localMarketplace, 'termpolis')
+      const pluginMetaDir = join(pluginDir, '.claude-plugin')
+      require('fs').mkdirSync(pluginMetaDir, { recursive: true })
+
+      // Plugin manifest
+      const pluginJson = join(pluginMetaDir, 'plugin.json')
+      if (!require('fs').existsSync(pluginJson)) {
+        require('fs').writeFileSync(pluginJson, JSON.stringify({
+          name: 'termpolis',
+          description: 'AI-native terminal manager MCP server. Create terminals, run commands, read output, and coordinate multi-agent swarms.',
+          author: { name: 'Termpolis' }
+        }, null, 2))
+      }
+
+      // MCP config for the plugin
+      const pluginMcp = join(pluginDir, '.mcp.json')
+      const mcpContent = JSON.stringify({ termpolis: { command: 'node', args: [adapterPath] } }, null, 2)
+      const existingMcp = require('fs').existsSync(pluginMcp) ? require('fs').readFileSync(pluginMcp, 'utf-8') : ''
+      if (existingMcp !== mcpContent) {
+        require('fs').writeFileSync(pluginMcp, mcpContent)
+      }
+
+      // Enable the plugin in Claude Code settings
+      if (require('fs').existsSync(join(homedir(), '.claude', 'settings.json'))) {
+        const settings = JSON.parse(require('fs').readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'))
+        if (!settings.enabledPlugins) settings.enabledPlugins = {}
+
+        // Detect local marketplace name from settings
+        let marketplaceName = 'local-plugins'
+        if (settings.extraKnownMarketplaces) {
+          for (const [name, config] of Object.entries(settings.extraKnownMarketplaces as Record<string, any>)) {
+            if (config?.source?.path?.includes('local-marketplace')) {
+              marketplaceName = name
+              break
+            }
+          }
+        }
+
+        const pluginKey = `termpolis@${marketplaceName}`
+        if (!settings.enabledPlugins[pluginKey]) {
+          settings.enabledPlugins[pluginKey] = true
+          const tmpPath = join(homedir(), '.claude', 'settings.json.tmp')
+          require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
+          require('fs').renameSync(tmpPath, join(homedir(), '.claude', 'settings.json'))
+          console.log(`Enabled Termpolis plugin as ${pluginKey}`)
+        }
+      }
+    } catch (e) {
+      console.log('Could not register Claude Code plugin (non-fatal):', (e as any).message)
+    }
+
+    // Future: Gemini CLI MCP config when they standardize
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
     globalShortcut.register('Super+Shift+T', () => {
