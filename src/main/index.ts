@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
 import { writeFileSync } from 'fs'
@@ -182,8 +182,21 @@ if (!gotTheLock) {
     }
   })
 
-  app.whenReady().then(() => { Menu.setApplicationMenu(null); createWindow() })
-  app.on('before-quit', () => { killAll() })
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(null)
+    createWindow()
+
+    // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
+    globalShortcut.register('Super+Shift+T', () => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.focus()
+        mainWindow.webContents.send('global:new-terminal')
+      }
+    })
+  })
+
+  app.on('before-quit', () => { globalShortcut.unregisterAll(); killAll() })
   app.on('window-all-closed', () => {
     killAll()
     if (process.platform !== 'darwin') {

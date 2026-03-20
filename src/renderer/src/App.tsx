@@ -135,10 +135,30 @@ export default function App() {
         }
         return
       }
+
+      // Alt+1 through Alt+9 to jump to terminal by index
+      if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
+        e.preventDefault()
+        const { terminals: terms } = useTerminalStore.getState()
+        const idx = parseInt(e.key) - 1
+        if (idx < terms.length) {
+          setActiveTerminal(terms[idx].id)
+        }
+        return
+      }
     }
 
     window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+
+    // Listen for global Win+Shift+T hotkey from main process
+    const unsubGlobal = window.globalEvents?.onNewTerminal(() => {
+      setShowAddModal(true)
+    })
+
+    return () => {
+      window.removeEventListener('keydown', handler)
+      unsubGlobal?.()
+    }
   }, [removeTerminal, setActiveTerminal, setSidebarCollapsed, toggleViewMode, setShowSettings])
 
   const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {

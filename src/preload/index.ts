@@ -67,3 +67,12 @@ contextBridge.exposeInMainWorld('windowControls', {
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
 })
+
+// Global hotkey listeners from main process
+contextBridge.exposeInMainWorld('globalEvents', {
+  onNewTerminal: (cb: () => void) => {
+    const handler = () => cb()
+    ipcRenderer.on('global:new-terminal', handler)
+    return () => ipcRenderer.removeListener('global:new-terminal', handler)
+  },
+})

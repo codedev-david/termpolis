@@ -79,5 +79,8 @@ declare global {
       maximize: () => void
       close: () => void
     }
+    globalEvents: {
+      onNewTerminal: (cb: () => void) => () => void
+    }
   }
 }

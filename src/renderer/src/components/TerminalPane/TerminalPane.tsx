@@ -498,6 +498,17 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         className="flex-1 relative min-h-0 overflow-hidden"
         style={{ padding: 4 }}
         onContextMenu={handleContextMenu}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+        onDrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          const files = Array.from(e.dataTransfer.files)
+          if (files.length > 0) {
+            // Paste file paths into terminal, quoted and space-separated
+            const paths = files.map(f => `"${f.path}"`).join(' ')
+            window.termpolis.writeToTerminal(terminalId, paths)
+          }
+        }}
       >
         {contextMenu.visible && (
           <div
