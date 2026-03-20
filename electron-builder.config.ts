@@ -6,7 +6,7 @@ const config: Configuration = {
   directories: { output: 'dist-electron-builder' },
   files: ['out/**/*'],
   extraResources: [
-    { from: 'src/mcp-adapter', to: 'mcp-adapter', filter: ['**/*.js'] },
+    { from: 'src/mcp-adapter', to: 'mcp-adapter', filter: ['**/*.cjs'] },
   ],
   win: {
     target: 'nsis',

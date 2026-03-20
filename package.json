@@ -6,8 +6,8 @@
   "author": "Termpolis",
   "type": "module",
   "bin": {
-    "termpolis-cli": "src/mcp-adapter/termpolis-cli.js",
-    "termpolis-mcp": "src/mcp-adapter/stdio-adapter.js"
+    "termpolis-cli": "src/mcp-adapter/termpolis-cli.cjs",
+    "termpolis-mcp": "src/mcp-adapter/stdio-adapter.cjs"
   },
   "main": "out/main/index.js",
   "scripts": {

@@ -329,8 +329,8 @@ if (!gotTheLock) {
 
     // Auto-register Termpolis as an MCP server in Claude Code's settings
     const adapterPath = app.isPackaged
-      ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.js')
-      : join(__dirname, '../../src/mcp-adapter/stdio-adapter.js')
+      ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.cjs')
+      : join(__dirname, '../../src/mcp-adapter/stdio-adapter.cjs')
 
     // Also write standalone config for reference
     const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
