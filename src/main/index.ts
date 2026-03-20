@@ -424,13 +424,18 @@ if (!gotTheLock) {
     })
   })
 
-  app.on('before-quit', () => { globalShortcut.unregisterAll(); killAll(); if (mcpServer) stopMcpServer(mcpServer) })
+  app.on('before-quit', () => {
+    globalShortcut.unregisterAll()
+    killAll()
+    if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
+  })
   app.on('window-all-closed', () => {
     killAll()
+    if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
     if (process.platform !== 'darwin') {
       app.quit()
-      // Force exit if quit doesn't complete within 1 second
-      setTimeout(() => process.exit(0), 1000)
+      // Force exit — MCP server or PTY processes may keep event loop alive
+      setTimeout(() => process.exit(0), 500)
     }
   })
   app.on('activate', () => { if (!mainWindow) createWindow() })
