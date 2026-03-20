@@ -170,10 +170,16 @@ export function StatusBar() {
     <>
       <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#6b7280] text-xs select-none shrink-0">
         <span>&copy; {new Date().getFullYear()} Termpolis &middot; MIT License</span>
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5 text-[#4FC3F7]" title="MCP server for AI agent integration">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#4FC3F7]"></span>
+            MCP: localhost:9315
+          </span>
         <button
           onClick={() => setShowHelp(true)}
           className="hover:text-[#4FC3F7] transition-colors"
         >Help / Support</button>
+        </div>
       </div>
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
     </>

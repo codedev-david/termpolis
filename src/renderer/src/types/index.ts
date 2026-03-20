@@ -102,5 +102,9 @@ declare global {
     globalEvents: {
       onNewTerminal: (cb: () => void) => () => void
     }
+    mcpEvents: {
+      onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => () => void
+      onTerminalClosed: (cb: (terminalId: string) => void) => () => void
+    }
   }
 }

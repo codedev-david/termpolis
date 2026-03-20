@@ -183,6 +183,31 @@ export default function App() {
     }
   }, [removeTerminal, setActiveTerminal, setSidebarCollapsed, toggleViewMode, setShowSettings])
 
+  // Listen for MCP server events (AI agent created/closed terminals)
+  useEffect(() => {
+    const TERMINAL_COLORS = ['#4FC3F7', '#81C784', '#FFB74D', '#E57373', '#BA68C8', '#4DB6AC', '#FF8A65']
+    const unsubCreated = window.mcpEvents?.onTerminalCreated((data) => {
+      const color = TERMINAL_COLORS[useTerminalStore.getState().terminals.length % TERMINAL_COLORS.length]
+      addTerminal({
+        id: data.id,
+        name: data.name,
+        color,
+        shellType: data.shell as any,
+        cwd: data.cwd,
+        fontSize: TERMINAL_DEFAULTS.fontSize,
+        theme: TERMINAL_DEFAULTS.theme,
+        fontFamily: TERMINAL_DEFAULTS.fontFamily,
+      })
+    })
+    const unsubClosed = window.mcpEvents?.onTerminalClosed((terminalId) => {
+      removeTerminal(terminalId)
+    })
+    return () => {
+      unsubCreated?.()
+      unsubClosed?.()
+    }
+  }, [addTerminal, removeTerminal])
+
   const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()
     const cwd = await getHomedir()

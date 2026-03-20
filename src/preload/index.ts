@@ -79,3 +79,17 @@ contextBridge.exposeInMainWorld('globalEvents', {
     return () => ipcRenderer.removeListener('global:new-terminal', handler)
   },
 })
+
+// MCP server events — terminals created/closed by AI agents
+contextBridge.exposeInMainWorld('mcpEvents', {
+  onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, data: { id: string; name: string; shell: string; cwd: string }) => cb(data)
+    ipcRenderer.on('mcp:terminal-created', handler)
+    return () => ipcRenderer.removeListener('mcp:terminal-created', handler)
+  },
+  onTerminalClosed: (cb: (terminalId: string) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, terminalId: string) => cb(terminalId)
+    ipcRenderer.on('mcp:terminal-closed', handler)
+    return () => ipcRenderer.removeListener('mcp:terminal-closed', handler)
+  },
+})

@@ -9,12 +9,17 @@ import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
+import { startMcpServer, stopMcpServer, type McpToolHandlers } from './mcpServer'
 import type { SessionData } from './types'
+import { v4 as uuidv4 } from 'uuid'
 
 function ok<T>(data?: T) { return { success: true, data } }
 function err(error: string) { return { success: false, error } }
 
 let mainWindow: BrowserWindow | null = null
+
+// Buffer terminal output for MCP read_output (capped at 32KB per terminal)
+const terminalOutputBuffers = new Map<string, string>()
 
 function createWindow() {
   const iconPath = join(__dirname, '../../assets/logo-termpolis.png')
@@ -55,6 +60,10 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd }) => {
       try {
         spawnTerminal(id, shell.executable, cwd, (data) => {
           mainWindow?.webContents.send('terminal:data', id, data)
+          // Buffer output for MCP read_output
+          const existing = terminalOutputBuffers.get(id) || ''
+          const updated = existing + data
+          terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
         })
         clearTimeout(timeout)
         resolve()
@@ -70,7 +79,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd }) => {
 })
 
 ipcMain.handle('terminal:kill', async (_, { id }) => {
-  try { killTerminal(id); return ok() }
+  try { killTerminal(id); terminalOutputBuffers.delete(id); return ok() }
   catch (e: any) { return err(e.message) }
 })
 
@@ -196,9 +205,65 @@ if (!gotTheLock) {
     }
   })
 
+  let mcpServer: ReturnType<typeof startMcpServer> | null = null
+
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     createWindow()
+
+    // Start MCP server for AI agent integration
+    const mcpHandlers: McpToolHandlers = {
+      listTerminals: () => {
+        const session = loadSession()
+        return session.terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd }))
+      },
+      createTerminal: async (name, shell, cwd) => {
+        const id = uuidv4()
+        const resolvedCwd = cwd || homedir()
+        const shells = await detectAvailableShells()
+        const shellInfo = shells.find(s => s.type === shell) || shells[0]
+        if (shellInfo) {
+          spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
+            mainWindow?.webContents.send('terminal:data', id, data)
+            // Buffer output for MCP read_output
+            const existing = terminalOutputBuffers.get(id) || ''
+            const updated = existing + data
+            terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
+          })
+        }
+        // Notify renderer to add the terminal to the store
+        mainWindow?.webContents.send('mcp:terminal-created', { id, name, shell: shellInfo?.type || shell, cwd: resolvedCwd })
+        return id
+      },
+      runCommand: (terminalId, command) => {
+        writeToTerminal(terminalId, command + '\r')
+      },
+      readOutput: (terminalId, lines) => {
+        const buffer = terminalOutputBuffers.get(terminalId) || ''
+        const allLines = buffer.split('\n')
+        return allLines.slice(-lines).join('\n')
+      },
+      closeTerminal: (terminalId) => {
+        killTerminal(terminalId)
+        terminalOutputBuffers.delete(terminalId)
+        mainWindow?.webContents.send('mcp:terminal-closed', terminalId)
+      },
+      writeToTerminal: (terminalId, text) => {
+        writeToTerminal(terminalId, text)
+      },
+      getFileTree: (path) => {
+        return listPathEntries(path)
+      },
+      getGitStatus: (cwd) => {
+        let status = '', recentCommits = '', branch = ''
+        try { status = execSync('git status --short', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
+        try { recentCommits = execSync('git log --oneline -5', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
+        try { branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
+        return { status, recentCommits, branch }
+      },
+    }
+
+    mcpServer = startMcpServer(mcpHandlers)
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
     globalShortcut.register('Super+Shift+T', () => {
@@ -210,7 +275,7 @@ if (!gotTheLock) {
     })
   })
 
-  app.on('before-quit', () => { globalShortcut.unregisterAll(); killAll() })
+  app.on('before-quit', () => { globalShortcut.unregisterAll(); killAll(); if (mcpServer) stopMcpServer(mcpServer) })
   app.on('window-all-closed', () => {
     killAll()
     if (process.platform !== 'darwin') {
