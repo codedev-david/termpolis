@@ -5,6 +5,7 @@ import { AddTerminalModal } from './AddTerminalModal'
 import { WorkspaceList } from './WorkspaceList'
 import { AIProfiles } from './AIProfiles'
 import { PromptTemplates } from '../PromptTemplates/PromptTemplates'
+import { WorkflowTemplates } from '../WorkflowTemplates/WorkflowTemplates'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -20,6 +21,7 @@ export function Sidebar() {
 
   const [showAddModal, setShowAddModal] = useState(false)
   const [showPrompts, setShowPrompts] = useState(false)
+  const [showWorkflows, setShowWorkflows] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
 
   useEffect(() => {
@@ -91,6 +93,10 @@ export function Sidebar() {
           onClick={() => setShowPrompts(true)}
           className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
         ><i className="fa-solid fa-message text-xs"></i> Prompts</button>
+        <button
+          onClick={() => setShowWorkflows(true)}
+          className="flex items-center gap-2 px-3 py-2 rounded text-sm hover:bg-[#37373d]"
+        ><i className="fa-solid fa-cubes text-xs text-[#D97706]"></i> Workflows</button>
       </div>
       <AIProfiles availableShells={availableShells} />
       <div className="border-t border-[#3c3c3c]"></div>
@@ -126,6 +132,7 @@ export function Sidebar() {
         />
       )}
       {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
+      {showWorkflows && <WorkflowTemplates onClose={() => setShowWorkflows(false)} />}
     </aside>
   )
 }

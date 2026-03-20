@@ -10,9 +10,10 @@ interface Props {
   parsedBranch?: string | null
   agent?: AgentInfo | null
   costInfo?: CostInfo | null
+  isRecording?: boolean
 }
 
-export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, agent, costInfo }: Props) {
+export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, agent, costInfo, isRecording }: Props) {
   const [ipcBranch, setIpcBranch] = useState('')
 
   // IPC-based git branch lookup as fallback (works on macOS/Linux with live cwd)
@@ -50,6 +51,12 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
 
   return (
     <div className="flex items-center gap-3 px-2 py-0.5 bg-[#007acc] text-white text-[11px] shrink-0 select-none overflow-hidden">
+      {isRecording && (
+        <span className="flex items-center gap-1 shrink-0" title="Recording session">
+          <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+          <span className="text-red-200 font-medium">REC</span>
+        </span>
+      )}
       {agent && (
         <span
           className="flex items-center gap-1 shrink-0 rounded px-1.5 py-px text-[10px] font-medium"

@@ -7,6 +7,9 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename } from '../../lib/exportTerminal'
+import { createSessionRecorder, appendEntry, formatRecording, generateRecordingFilename, type SessionRecording } from '../../lib/sessionRecorder'
+import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
+import { v4 as uuid } from 'uuid'
 import { getCompletions, type CompletionResult } from '../../completions/completionEngine'
 import { getSuggestion } from '../../corrections/correctionEngine'
 import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
@@ -71,6 +74,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const costScanCounterRef = useRef(0)
   const COST_SCAN_INTERVAL = 5 // scan every 5th output chunk
 
+  // Session recording state
+  const [isRecording, setIsRecording] = useState(false)
+  const isRecordingRef = useRef(false)
+  const recordingRef = useRef<SessionRecording | null>(null)
+
+  // Pinned output state
+  const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
+
   // Refs for use inside onData callback (avoids stale closures)
   const suggestionsRef = useRef<CompletionResult[]>([])
   const selectedIndexRef = useRef(0)
@@ -82,6 +93,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   selectedIndexRef.current = selectedIndex
   dropdownVisibleRef.current = dropdownVisible
   fixSuggestionRef.current = fixSuggestion
+  isRecordingRef.current = isRecording
 
   // Sync autocomplete setting from store
   const autocompleteEnabled = useTerminalStore(s => s.autocompleteEnabled)
@@ -181,6 +193,46 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     window.termpolis.exportTerminal({ content: text, defaultFilename })
     setContextMenu({ visible: false, x: 0, y: 0 })
   }, [terminalName])
+
+  const shellLabel: Record<string, string> = {
+    bash: 'Bash', zsh: 'Zsh', cmd: 'CMD', powershell: 'PowerShell', gitbash: 'Git Bash',
+  }
+
+  const handleStartRecording = useCallback(() => {
+    const recording = createSessionRecorder(terminalName, shellLabel[shellType] ?? shellType)
+    recordingRef.current = recording
+    setIsRecording(true)
+    setContextMenu({ visible: false, x: 0, y: 0 })
+  }, [terminalName, shellType])
+
+  const handleStopRecording = useCallback(() => {
+    const recording = recordingRef.current
+    if (!recording) return
+    const content = formatRecording(recording)
+    const defaultFilename = generateRecordingFilename(terminalName)
+    window.termpolis.exportTerminal({ content, defaultFilename })
+    recordingRef.current = null
+    setIsRecording(false)
+    setContextMenu({ visible: false, x: 0, y: 0 })
+  }, [terminalName])
+
+  const handlePinSelection = useCallback(() => {
+    const selection = termRef.current?.getSelection()
+    if (selection) {
+      const pin: PinnedItem = {
+        id: uuid(),
+        text: selection,
+        timestamp: Date.now(),
+        terminalName,
+      }
+      setPinnedItems(prev => [...prev, pin])
+    }
+    setContextMenu({ visible: false, x: 0, y: 0 })
+  }, [terminalName])
+
+  const handleUnpin = useCallback((id: string) => {
+    setPinnedItems(prev => prev.filter(p => p.id !== id))
+  }, [])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -358,6 +410,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Pass data to PTY
       window.termpolis.writeToTerminal(terminalId, data)
 
+      // Record input if recording
+      if (isRecordingRef.current && recordingRef.current) {
+        appendEntry(recordingRef.current, 'input', data)
+      }
+
       // Update input buffer
       if (data === '\r') {
         const cmd = inputBufferRef.current.trim()
@@ -426,6 +483,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     const unsub = window.termpolis.onTerminalData((id, data) => {
       if (id !== terminalId) return
       throttledWrite(data)
+
+      // Record output if recording
+      if (isRecordingRef.current && recordingRef.current) {
+        appendEntry(recordingRef.current, 'output', data)
+      }
 
       // Buffer recent output (keep last 4KB to avoid memory bloat)
       outputBufferRef.current += data
@@ -549,6 +611,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           }
         }}
       >
+        <PinnedOutput pins={pinnedItems} onUnpin={handleUnpin} />
         {contextMenu.visible && (
           <div
             className="fixed z-50 bg-[#2d2d2d] border border-[#454545] rounded shadow-lg py-1 min-w-[200px]"
@@ -596,6 +659,32 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               onClick={() => handleExport('visible')}
             >
               Export Visible Output...
+            </button>
+            <div className="border-t border-[#454545] my-1"></div>
+            {!isRecording ? (
+              <button
+                className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+                onClick={handleStartRecording}
+              >
+                <i className="fa-solid fa-circle text-red-500 text-[8px] mr-1.5"></i>
+                Start Recording
+              </button>
+            ) : (
+              <button
+                className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+                onClick={handleStopRecording}
+              >
+                <i className="fa-solid fa-stop text-red-500 text-[8px] mr-1.5"></i>
+                Stop Recording &amp; Save
+              </button>
+            )}
+            <button
+              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#094771] cursor-pointer ${termRef.current?.getSelection() ? 'text-[#d4d4d4]' : 'text-[#666] pointer-events-none'}`}
+              onClick={handlePinSelection}
+              disabled={!termRef.current?.getSelection()}
+            >
+              <i className="fa-solid fa-thumbtack text-[10px] mr-1.5"></i>
+              Pin Selection
             </button>
             {(onSplitRight || onSplitDown) && (
               <>
@@ -646,7 +735,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           />
         )}
       </div>
-      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={detectedAgent} costInfo={costInfo} />
+      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={detectedAgent} costInfo={costInfo} isRecording={isRecording} />
     </div>
   )
 }
