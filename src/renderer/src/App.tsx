@@ -8,6 +8,7 @@ import { PromptTemplates } from './components/PromptTemplates/PromptTemplates'
 import { ContextPanel } from './components/ContextPanel/ContextPanel'
 import { CommandPalette } from './components/CommandPalette/CommandPalette'
 import { ConversationSearch } from './components/ConversationSearch/ConversationSearch'
+import { SwarmDashboard } from './components/SwarmDashboard/SwarmDashboard'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { Welcome } from './components/Welcome/Welcome'
@@ -32,6 +33,7 @@ export default function App() {
   const [showContextPanel, setShowContextPanel] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [showConversationSearch, setShowConversationSearch] = useState(false)
+  const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const started = useRef(false)
   const loaded = useRef(false)
@@ -177,6 +179,13 @@ export default function App() {
         return
       }
 
+      // Ctrl+Shift+S to toggle swarm dashboard
+      if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+        e.preventDefault()
+        setShowSwarmDashboard(v => !v)
+        return
+      }
+
       // Alt+1 through Alt+9 to jump to terminal by index
       if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
@@ -291,6 +300,9 @@ export default function App() {
         break
       case 'show_prompts':
         setShowPrompts(v => !v)
+        break
+      case 'show_swarm':
+        setShowSwarmDashboard(v => !v)
         break
       case 'launch_claude': {
         const claudeProfile = { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' }
@@ -434,6 +446,11 @@ export default function App() {
       {showConversationSearch && (
         <ConversationSearch
           onClose={() => setShowConversationSearch(false)}
+        />
+      )}
+      {showSwarmDashboard && (
+        <SwarmDashboard
+          onClose={() => setShowSwarmDashboard(false)}
         />
       )}
     </div>

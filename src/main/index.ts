@@ -10,6 +10,11 @@ import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, type McpToolHandlers } from './mcpServer'
+import {
+  sendMessage, readMessages, getAllMessages,
+  createTask, listTasks, updateTask, clearSwarm,
+  type SwarmMessage, type SwarmTask,
+} from './swarmManager'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -184,6 +189,29 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+// Swarm IPC handlers for the dashboard
+ipcMain.handle('swarm:messages', async () => ok(getAllMessages()))
+ipcMain.handle('swarm:tasks', async () => ok(listTasks()))
+ipcMain.handle('swarm:send-message', async (_, { from, to, type, content }) => {
+  try { return ok(sendMessage(from, to, type, content)) }
+  catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('swarm:create-task', async (_, { title, description, createdBy, assignTo }) => {
+  try { return ok(createTask(title, description, createdBy, assignTo)) }
+  catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('swarm:update-task', async (_, { taskId, status, result }) => {
+  try {
+    const task = updateTask(taskId, status, result)
+    if (!task) return err('Task not found')
+    return ok(task)
+  } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('swarm:clear', async () => {
+  try { clearSwarm(); return ok() }
+  catch (e: any) { return err(e.message) }
+})
+
 ipcMain.on('window:minimize', () => mainWindow?.minimize())
 ipcMain.on('window:maximize', () => {
   if (mainWindow?.isMaximized()) mainWindow.unmaximize()
@@ -267,6 +295,25 @@ if (!gotTheLock) {
         try { recentCommits = execSync('git log --oneline -5', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
         try { branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
         return { status, recentCommits, branch }
+      },
+      swarmSendMessage: (from, to, type, content) => {
+        return sendMessage(from, to, type as any, content)
+      },
+      swarmReadMessages: (terminalId) => {
+        return readMessages(terminalId)
+      },
+      swarmCreateTask: (title, description, createdBy, assignTo) => {
+        return createTask(title, description, createdBy, assignTo)
+      },
+      swarmListTasks: () => {
+        return listTasks()
+      },
+      swarmUpdateTask: (taskId, status, result) => {
+        return updateTask(taskId, status as any, result)
+      },
+      swarmListAgents: () => {
+        const session = loadSession()
+        return session.terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd }))
       },
     }
 

@@ -6,6 +6,7 @@ import { WorkspaceList } from './WorkspaceList'
 import { AIProfiles } from './AIProfiles'
 import { PromptTemplates } from '../PromptTemplates/PromptTemplates'
 import { WorkflowTemplates } from '../WorkflowTemplates/WorkflowTemplates'
+import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -22,6 +23,7 @@ export function Sidebar() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [showPrompts, setShowPrompts] = useState(false)
   const [showWorkflows, setShowWorkflows] = useState(false)
+  const [showSwarm, setShowSwarm] = useState(false)
   const [terminalsCollapsed, setTerminalsCollapsed] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
 
@@ -95,6 +97,11 @@ export function Sidebar() {
           title="Workflows"
           className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-cubes"></i></button>
+        <button
+          onClick={() => setShowSwarm(true)}
+          title="Swarm Dashboard"
+          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className="fa-solid fa-network-wired"></i></button>
         <div className="flex-1"></div>
         <button
           onClick={() => setSidebarCollapsed(true)}
@@ -143,6 +150,7 @@ export function Sidebar() {
       )}
       {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
       {showWorkflows && <WorkflowTemplates onClose={() => setShowWorkflows(false)} />}
+      {showSwarm && <SwarmDashboard onClose={() => setShowSwarm(false)} />}
     </aside>
   )
 }

@@ -92,9 +92,41 @@ export interface TermpolisAPI {
   getGitDiff: (cwd: string) => Promise<IpcResponse<string>>
 }
 
+export interface SwarmMessage {
+  id: string
+  from: string
+  to: string
+  type: 'task' | 'result' | 'question' | 'info' | 'review'
+  content: string
+  timestamp: number
+  read: boolean
+}
+
+export interface SwarmTask {
+  id: string
+  title: string
+  description: string
+  assignedTo: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  createdBy: string
+  result?: string
+  createdAt: number
+  completedAt?: number
+}
+
+export interface SwarmAPI {
+  getMessages: () => Promise<IpcResponse<SwarmMessage[]>>
+  getTasks: () => Promise<IpcResponse<SwarmTask[]>>
+  sendMessage: (from: string, to: string, type: string, content: string) => Promise<IpcResponse<SwarmMessage>>
+  createTask: (title: string, description: string, createdBy: string, assignTo?: string) => Promise<IpcResponse<SwarmTask>>
+  updateTask: (taskId: string, status: string, result?: string) => Promise<IpcResponse<SwarmTask>>
+  clear: () => Promise<IpcResponse>
+}
+
 declare global {
   interface Window {
     termpolis: TermpolisAPI
+    swarmAPI: SwarmAPI
     windowControls: {
       minimize: () => void
       maximize: () => void

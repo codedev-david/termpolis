@@ -23,6 +23,7 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /record\s*(start|session)/i, action: 'start_recording', label: 'Start Recording', description: 'Start recording terminal session', icon: 'fa-solid fa-circle text-red-400' },
   { pattern: /show\s*(context|files|panel)/i, action: 'show_context', label: 'Show Context Panel', description: 'Toggle the context panel', icon: 'fa-solid fa-folder-open' },
   { pattern: /show\s*(prompts?|templates?)/i, action: 'show_prompts', label: 'Show Prompts', description: 'Open prompt templates', icon: 'fa-solid fa-message' },
+  { pattern: /show\s*swarm/i, action: 'show_swarm', label: 'Swarm Dashboard', description: 'Open the multi-agent swarm dashboard', icon: 'fa-solid fa-network-wired' },
   { pattern: /launch\s*claude/i, action: 'launch_claude', label: 'Launch Claude', description: 'Launch Claude Code AI agent', icon: 'fa-solid fa-robot' },
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
   { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },

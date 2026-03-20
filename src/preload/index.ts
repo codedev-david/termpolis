@@ -83,6 +83,19 @@ contextBridge.exposeInMainWorld('globalEvents', {
   },
 })
 
+// Swarm orchestration API
+contextBridge.exposeInMainWorld('swarmAPI', {
+  getMessages: () => ipcRenderer.invoke('swarm:messages'),
+  getTasks: () => ipcRenderer.invoke('swarm:tasks'),
+  sendMessage: (from: string, to: string, type: string, content: string) =>
+    ipcRenderer.invoke('swarm:send-message', { from, to, type, content }),
+  createTask: (title: string, description: string, createdBy: string, assignTo?: string) =>
+    ipcRenderer.invoke('swarm:create-task', { title, description, createdBy, assignTo }),
+  updateTask: (taskId: string, status: string, result?: string) =>
+    ipcRenderer.invoke('swarm:update-task', { taskId, status, result }),
+  clear: () => ipcRenderer.invoke('swarm:clear'),
+})
+
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {
   onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => {

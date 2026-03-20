@@ -104,6 +104,66 @@ const TOOLS: McpTool[] = [
       required: ['terminalId', 'text'],
     },
   },
+  {
+    name: 'swarm_send_message',
+    description: 'Send a message to another AI agent in the swarm (or broadcast to all)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Target terminal ID, agent name, or "all" for broadcast' },
+        type: { type: 'string', enum: ['task', 'result', 'question', 'info', 'review'], description: 'Message type' },
+        content: { type: 'string', description: 'Message content' },
+      },
+      required: ['to', 'type', 'content'],
+    },
+  },
+  {
+    name: 'swarm_read_messages',
+    description: 'Read unread messages addressed to this agent (or broadcast messages)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        terminalId: { type: 'string', description: 'Your terminal ID to read messages for' },
+      },
+      required: ['terminalId'],
+    },
+  },
+  {
+    name: 'swarm_create_task',
+    description: 'Create a task in the swarm task queue, optionally assigning it to an agent',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Task title' },
+        description: { type: 'string', description: 'Detailed task description' },
+        assignTo: { type: 'string', description: 'Terminal ID to assign to (optional)' },
+      },
+      required: ['title', 'description'],
+    },
+  },
+  {
+    name: 'swarm_list_tasks',
+    description: 'List all tasks in the swarm with their statuses',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'swarm_update_task',
+    description: 'Update a task status (pending/in_progress/completed/failed) and optionally add a result',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'Task ID to update' },
+        status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'failed'] },
+        result: { type: 'string', description: 'Task result or output (optional)' },
+      },
+      required: ['taskId', 'status'],
+    },
+  },
+  {
+    name: 'swarm_list_agents',
+    description: 'List all active AI agents running in Termpolis terminals',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -115,6 +175,12 @@ export interface McpToolHandlers {
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
   getGitStatus: (cwd: string) => { status: string; recentCommits: string; branch: string }
+  swarmSendMessage: (from: string, to: string, type: string, content: string) => any
+  swarmReadMessages: (terminalId: string) => any
+  swarmCreateTask: (title: string, description: string, createdBy: string, assignTo?: string) => any
+  swarmListTasks: () => any
+  swarmUpdateTask: (taskId: string, status: string, result?: string) => any
+  swarmListAgents: () => any
 }
 
 async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -140,6 +206,18 @@ async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
       return handlers.getFileTree(args.path)
     case 'get_git_status':
       return handlers.getGitStatus(args.cwd)
+    case 'swarm_send_message':
+      return handlers.swarmSendMessage('mcp-client', args.to, args.type, args.content)
+    case 'swarm_read_messages':
+      return handlers.swarmReadMessages(args.terminalId)
+    case 'swarm_create_task':
+      return handlers.swarmCreateTask(args.title, args.description, 'mcp-client', args.assignTo)
+    case 'swarm_list_tasks':
+      return handlers.swarmListTasks()
+    case 'swarm_update_task':
+      return handlers.swarmUpdateTask(args.taskId, args.status, args.result)
+    case 'swarm_list_agents':
+      return handlers.swarmListAgents()
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
