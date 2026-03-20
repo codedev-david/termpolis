@@ -22,6 +22,7 @@ export function Sidebar() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [showPrompts, setShowPrompts] = useState(false)
   const [showWorkflows, setShowWorkflows] = useState(false)
+  const [terminalsCollapsed, setTerminalsCollapsed] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
 
   useEffect(() => {
@@ -102,9 +103,15 @@ export function Sidebar() {
       <div className="border-t border-[#3c3c3c]"></div>
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
-      <div className="px-3 py-1.5 text-xs text-[#6b7280] uppercase tracking-wider">Terminals</div>
+      <div className="px-3 py-1.5 flex items-center justify-between">
+        <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#6b7280] uppercase tracking-wider hover:text-[#d4d4d4]">
+          <i className={`fa-solid fa-chevron-${terminalsCollapsed ? 'right' : 'down'} text-[9px]`}></i>
+          Terminals
+          <span className="text-[10px] normal-case tracking-normal">({terminals.length})</span>
+        </button>
+      </div>
       <div className="flex-1 overflow-y-auto">
-        {terminals.map((t, i) => (
+        {!terminalsCollapsed && terminals.map((t, i) => (
           <TerminalTab
             key={t.id}
             terminal={t}

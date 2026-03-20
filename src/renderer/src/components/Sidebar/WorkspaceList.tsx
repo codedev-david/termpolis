@@ -10,6 +10,7 @@ export function WorkspaceList() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [showInfo, setShowInfo] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
 
   const handleActivate = async (wsId: string) => {
     const ws = workspaces.find(w => w.id === wsId)
@@ -54,7 +55,10 @@ export function WorkspaceList() {
   return (
     <div className="border-b border-[#3c3c3c]">
       <div className="px-3 py-1.5 flex items-center justify-between">
-        <span className="text-xs text-[#6b7280] uppercase tracking-wider">Workspaces</span>
+        <button onClick={() => setCollapsed(!collapsed)} className="flex items-center gap-1.5 text-xs text-[#6b7280] uppercase tracking-wider hover:text-[#d4d4d4]">
+          <i className={`fa-solid fa-chevron-${collapsed ? 'right' : 'down'} text-[9px]`}></i>
+          Workspaces
+        </button>
         <button
           onClick={() => setShowInfo(true)}
           className="text-[#6b7280] hover:text-[#4FC3F7]"
@@ -103,7 +107,7 @@ export function WorkspaceList() {
           </div>
         </div>
       )}
-      {workspaces.map(ws => (
+      {!collapsed && workspaces.map(ws => (
         <div key={ws.id}>
           {editingId === ws.id ? (
             <div className="px-2 py-1 flex gap-1">
@@ -145,30 +149,32 @@ export function WorkspaceList() {
           )}
         </div>
       ))}
-      {saving ? (
-        <div className="px-2 py-2 flex flex-col gap-1">
-          <input
-            autoFocus
-            placeholder="Workspace name"
-            value={wsName}
-            onChange={e => setWsName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') { addWorkspace(wsName.trim() || 'Workspace'); setSaving(false) }
-              if (e.key === 'Escape') setSaving(false)
-            }}
-            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs focus:outline-none"
-          />
-          <div className="flex gap-1">
-            <button onClick={() => setSaving(false)} className="text-xs px-2 py-0.5 rounded hover:bg-[#3c3c3c]">Cancel</button>
-            <button onClick={() => { addWorkspace(wsName.trim() || 'Workspace'); setSaving(false) }} className="text-xs px-2 py-0.5 rounded bg-[#0078d4] text-white">Save</button>
+      {!collapsed && (
+        saving ? (
+          <div className="px-2 py-2 flex flex-col gap-1">
+            <input
+              autoFocus
+              placeholder="Workspace name"
+              value={wsName}
+              onChange={e => setWsName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { addWorkspace(wsName.trim() || 'Workspace'); setSaving(false) }
+                if (e.key === 'Escape') setSaving(false)
+              }}
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs focus:outline-none"
+            />
+            <div className="flex gap-1">
+              <button onClick={() => setSaving(false)} className="text-xs px-2 py-0.5 rounded hover:bg-[#3c3c3c]">Cancel</button>
+              <button onClick={() => { addWorkspace(wsName.trim() || 'Workspace'); setSaving(false) }} className="text-xs px-2 py-0.5 rounded bg-[#0078d4] text-white">Save</button>
+            </div>
           </div>
-        </div>
-      ) : (
-        <button
-          onClick={() => { setSaving(true); setWsName('') }}
-          disabled={terminals.length === 0}
-          className="w-full text-left text-sm text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
-        >+ Save Workspace</button>
+        ) : (
+          <button
+            onClick={() => { setSaving(true); setWsName('') }}
+            disabled={terminals.length === 0}
+            className="w-full text-left text-sm text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
+          >+ Save Workspace</button>
+        )
       )}
     </div>
   )
