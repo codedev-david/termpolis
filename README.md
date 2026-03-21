@@ -74,7 +74,7 @@
 - **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
-- **Agent Bridge** — non-MCP agents (Codex, Gemini) are automatically bridged: Termpolis reads their terminal output, detects completions/errors, and posts to the swarm bus on their behalf
+- **Agent Bridge** — agents without native MCP support (e.g., Aider) are automatically bridged: Termpolis reads their terminal output, detects completions/errors, and posts to the swarm bus on their behalf. Claude Code, Codex, and Gemini CLI all have native MCP and don't need the bridge.
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
 - **Cross-model collaboration** — Claude, Codex, and Gemini working on the same task simultaneously, each in their own terminal
 

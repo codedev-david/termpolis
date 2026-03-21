@@ -192,7 +192,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li className="pl-4 text-xs">Step 2: Describe your task</li>
               <li className="pl-4 text-xs">Step 3: Review auto-generated role/task assignments (editable)</li>
               <li className="pl-4 text-xs">Step 4: Launch — each agent gets a split pane with their task prompt</li>
-              <li><strong>Agent Bridge</strong> — agents without MCP (Codex, Gemini) are bridged automatically. Termpolis reads their output, detects completions and errors, and posts to the swarm bus.</li>
+              <li><strong>Agent Bridge</strong> — agents without native MCP (e.g., Aider) are bridged automatically. Termpolis reads their output, detects completions/errors, and posts to the swarm bus. Claude Code, Codex, and Gemini all use MCP natively.</li>
               <li><strong>Dashboard tabs:</strong> Agents (health status) · Tasks (kanban columns) · Messages (chronological log)</li>
               <li><strong>"Swarm Active"</strong> indicator appears in the status bar while a swarm is running</li>
             </ul>

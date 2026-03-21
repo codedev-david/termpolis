@@ -283,11 +283,12 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       useTerminalStore.setState({ viewMode: 'split', paneTree: tree })
     }
 
-    // Step 8: Start swarm bridge for non-MCP agents
-    // Only Claude Code has MCP tools — bridge all others
+    // Step 8: Start swarm bridge for agents without native MCP support
+    // Claude Code, Codex, and Gemini CLI all have native MCP — only Aider needs the bridge
+    const MCP_NATIVE_AGENTS = ['Claude Code', 'OpenAI Codex', 'Gemini CLI']
     for (let i = 0; i < terminalIds.length; i++) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
-      if (agent.name !== 'Claude Code') {
+      if (!MCP_NATIVE_AGENTS.includes(agent.name)) {
         startBridgeForAgent(terminalIds[i], agent.name)
       }
     }
