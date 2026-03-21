@@ -6,6 +6,10 @@ import { getHomedir } from '../../lib/homedir'
 import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 import type { ShellInfo, ShellType } from '../../types'
 import { startBridgeForAgent } from '../../lib/swarmBridgeManager'
+import { analyzeTask } from '../../lib/taskAnalyzer'
+import { routeTasks, reassignTask, estimateCosts, totalEstimatedCost } from '../../lib/smartRouter'
+import type { TaskAssignment as SmartTaskAssignment } from '../../lib/smartRouter'
+import { AGENT_CAPABILITIES, CATEGORY_LABELS } from '../../lib/agentCapabilities'
 
 // ---- Available agents ----
 
@@ -23,11 +27,12 @@ const AVAILABLE_AGENTS: AgentDef[] = [
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
   { id: 'aider', name: 'Aider', icon: 'fa-solid fa-code', command: 'aider', shell: 'bash', color: '#8B5CF6' },
+  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-code-branch', command: 'aider --model qwen3', shell: 'bash', color: '#EC4899' },
 ]
 
-// ---- Task breakdown entry ----
+// ---- Legacy task assignment for launch ----
 
-interface TaskAssignment {
+interface LegacyTaskAssignment {
   agentId: string
   agentName: string
   role: string
@@ -46,59 +51,12 @@ function resolveShellType(profileShell: string, availableShells: ShellInfo[]): S
   return available[0] ?? 'bash'
 }
 
-// ---- Smart role suggestions ----
+// ---- Score color helper ----
 
-function suggestRoles(agents: AgentDef[]): { agentId: string; role: string }[] {
-  const rolePool = [
-    'Lead -- analyze codebase and create plan',
-    'Implementation -- execute the changes',
-    'Testing & Review -- write tests and review',
-    'Documentation & QA -- verify quality and document',
-  ]
-  return agents.map((a, i) => ({
-    agentId: a.id,
-    role: rolePool[i % rolePool.length],
-  }))
-}
-
-function suggestTasks(taskDescription: string, agents: AgentDef[]): TaskAssignment[] {
-  const roles = suggestRoles(agents)
-  const taskParts = taskDescription.split(/[,;]+/).map(s => s.trim()).filter(Boolean)
-
-  return agents.map((agent, i) => {
-    const suggestedRole = roles[i]?.role ?? 'General'
-    const suggestedTask = taskParts[i] ?? taskDescription
-    return {
-      agentId: agent.id,
-      agentName: agent.name,
-      role: suggestedRole,
-      task: suggestedTask,
-    }
-  })
-}
-
-// ---- Helpers for sending text line by line ----
-
-function sendLineByLine(terminalId: string, text: string, delayMs = 50): Promise<void> {
-  return new Promise(resolve => {
-    const lines = text.split('\n')
-    let i = 0
-    function sendNext() {
-      if (i >= lines.length) {
-        // Send Enter to submit
-        setTimeout(() => {
-          window.termpolis.writeToTerminal(terminalId, '\r')
-          resolve()
-        }, delayMs)
-        return
-      }
-      const line = lines[i]
-      window.termpolis.writeToTerminal(terminalId, line + (i < lines.length - 1 ? '\n' : ''))
-      i++
-      setTimeout(sendNext, delayMs)
-    }
-    sendNext()
-  })
+function scoreColor(score: number): string {
+  if (score >= 80) return '#10B981'  // green
+  if (score >= 60) return '#D97706'  // amber
+  return '#EF4444'                    // red
 }
 
 // ---- Component ----
@@ -114,7 +72,8 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   const [step, setStep] = useState<Step>('select')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [taskDescription, setTaskDescription] = useState('')
-  const [assignments, setAssignments] = useState<TaskAssignment[]>([])
+  const [smartAssignments, setSmartAssignments] = useState<SmartTaskAssignment[]>([])
+  const [reassignOpen, setReassignOpen] = useState<number | null>(null)
   const [launchProgress, setLaunchProgress] = useState('')
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
 
@@ -159,14 +118,27 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
 
   const handleProceedToBreakdown = () => {
     if (!taskDescription.trim()) return
-    const suggested = suggestTasks(taskDescription, selectedAgents)
-    setAssignments(suggested)
+    const breakdown = analyzeTask(taskDescription)
+    const routed = routeTasks(breakdown.subtasks, Array.from(selectedIds))
+    setSmartAssignments(routed)
+    setReassignOpen(null)
     setStep('breakdown')
   }
 
-  const updateAssignment = (index: number, field: 'role' | 'task', value: string) => {
-    setAssignments(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a))
+  const handleReassign = (index: number, newAgentId: string) => {
+    setSmartAssignments(prev =>
+      prev.map((a, i) => i === index ? reassignTask(a, newAgentId) : a)
+    )
+    setReassignOpen(null)
   }
+
+  // Convert smart assignments to legacy format for launch
+  const assignments: LegacyTaskAssignment[] = smartAssignments.map(sa => ({
+    agentId: sa.agentId,
+    agentName: sa.agentName,
+    role: `${CATEGORY_LABELS[sa.subtask.category]} (Score: ${sa.score})`,
+    task: sa.subtask.description,
+  }))
 
   // ---- LAUNCH ----
   const handleLaunch = useCallback(async () => {
@@ -450,41 +422,117 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   }
 
   function renderBreakdownStep() {
+    const costEstimates = estimateCosts(smartAssignments)
+    const total = totalEstimatedCost(costEstimates)
+    const availableForReassign = AVAILABLE_AGENTS.filter(a => selectedIds.has(a.id))
+
     return (
       <div>
-        <p className="text-sm text-[#bbb] mb-4">Review and edit the task breakdown for each agent.</p>
+        <p className="text-sm text-[#bbb] mb-4">
+          Smart routing analyzed your task and assigned each subtask to the best agent.
+        </p>
         <div className="space-y-3">
-          {assignments.map((assignment, i) => {
-            const agent = AVAILABLE_AGENTS.find(a => a.id === assignment.agentId)!
+          {smartAssignments.map((sa, i) => {
+            const agent = AVAILABLE_AGENTS.find(a => a.id === sa.agentId)
+            const agentIcon = agent?.icon ?? 'fa-solid fa-robot'
+            const agentColor = agent?.color ?? '#6b7280'
+
             return (
-              <div key={assignment.agentId} className="bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <i className={agent.icon} style={{ color: agent.color, fontSize: '13px' }}></i>
-                  <span className="text-sm font-medium text-[#d4d4d4]">{agent.name}</span>
+              <div key={i} className="bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg p-4">
+                {/* Task title and category badge */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-[#d4d4d4]">{sa.subtask.title}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e1e1e] text-[#6b7280] border border-[#3c3c3c]">
+                      {CATEGORY_LABELS[sa.subtask.category]}
+                    </span>
+                  </div>
+                  <span
+                    className="text-xs font-semibold"
+                    style={{ color: scoreColor(sa.score) }}
+                  >
+                    {sa.score}/100
+                  </span>
                 </div>
-                <div className="space-y-2">
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-[#6b7280] mb-1 block">Role</label>
-                    <input
-                      value={assignment.role}
-                      onChange={e => updateAssignment(i, 'role', e.target.value)}
-                      className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-xs text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-[#6b7280] mb-1 block">Task</label>
-                    <textarea
-                      value={assignment.task}
-                      onChange={e => updateAssignment(i, 'task', e.target.value)}
-                      rows={2}
-                      className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-xs text-[#d4d4d4] outline-none focus:border-[#22D3EE] resize-none"
-                    />
-                  </div>
+
+                {/* Agent assignment */}
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] uppercase tracking-wider text-[#6b7280]">Assigned to:</span>
+                  <i className={agentIcon} style={{ color: agentColor, fontSize: '11px' }}></i>
+                  <span className="text-xs font-medium text-[#d4d4d4]">{sa.agentName}</span>
+                </div>
+
+                {/* Reason */}
+                <p className="text-[11px] text-[#888] mb-3 leading-relaxed">{sa.reason}</p>
+
+                {/* Reassign button */}
+                <div className="relative">
+                  <button
+                    onClick={() => setReassignOpen(reassignOpen === i ? null : i)}
+                    className="text-[10px] text-[#22D3EE] hover:text-[#06b6d4] flex items-center gap-1"
+                  >
+                    <i className="fa-solid fa-shuffle text-[9px]"></i>
+                    Reassign
+                    <i className={`fa-solid fa-chevron-${reassignOpen === i ? 'up' : 'down'} text-[8px]`}></i>
+                  </button>
+                  {reassignOpen === i && (
+                    <div className="absolute left-0 top-6 z-10 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg shadow-xl py-1 min-w-[180px]">
+                      {availableForReassign.map(alt => {
+                        const cap = AGENT_CAPABILITIES.find(c => c.agentId === alt.id)
+                        const strength = cap?.strengths[sa.subtask.category] ?? 0
+                        const isCurrentAgent = alt.id === sa.agentId
+                        return (
+                          <button
+                            key={alt.id}
+                            onClick={() => handleReassign(i, alt.id)}
+                            disabled={isCurrentAgent}
+                            className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
+                              isCurrentAgent
+                                ? 'text-[#555] cursor-default'
+                                : 'text-[#d4d4d4] hover:bg-[#37373d]'
+                            }`}
+                          >
+                            <i className={alt.icon} style={{ color: alt.color, fontSize: '10px' }}></i>
+                            <span className="text-xs flex-1">{alt.name}</span>
+                            <span className="text-[10px] text-[#6b7280]">{strength}/5</span>
+                            {isCurrentAgent && (
+                              <i className="fa-solid fa-check text-[9px] text-[#22D3EE]"></i>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             )
           })}
         </div>
+
+        {/* Token budget estimate */}
+        {costEstimates.length > 0 && (
+          <div className="mt-4 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <i className="fa-solid fa-coins text-[#D97706] text-[11px]"></i>
+              <span className="text-xs font-medium text-[#d4d4d4]">Token Budget Estimate</span>
+            </div>
+            <div className="space-y-1">
+              {costEstimates.map(est => (
+                <div key={est.agentId} className="flex items-center justify-between text-[11px]">
+                  <span className="text-[#888]">{est.agentName}</span>
+                  <span className="text-[#6b7280]">
+                    ~{(est.estimatedTokens / 1000).toFixed(0)}K tokens
+                    <span className="ml-2 text-[#d4d4d4]">{est.estimatedCost}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 pt-2 border-t border-[#3c3c3c] flex items-center justify-between text-xs">
+              <span className="text-[#888]">Total estimated</span>
+              <span className="font-medium text-[#d4d4d4]">~{total}</span>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
