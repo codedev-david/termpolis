@@ -70,11 +70,11 @@ export function Sidebar() {
 
   return (
     <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full overflow-hidden" style={{ transition: 'width 200ms ease' }}>
-      <div className="flex items-center gap-1 p-2 border-b border-[#3c3c3c] overflow-hidden">
+      <div className="flex items-center gap-0.5 p-1.5 border-b border-[#3c3c3c]">
         <button
           onClick={() => setShowSettings(!showSettings)}
           title="Settings"
-          className={`px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d] text-white' : ''}`}
+          className={`px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d] text-white' : ''}`}
         ><i className="fa-solid fa-gear"></i></button>
         <button
           onClick={() => {
@@ -85,28 +85,28 @@ export function Sidebar() {
             }
           }}
           title={viewMode === 'tabs' ? 'Split View' : 'Tab View'}
-          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className={`fa-solid ${viewMode === 'tabs' ? 'fa-columns' : 'fa-bars'}`}></i></button>
         <button
           onClick={() => setShowPrompts(true)}
           title="Prompts"
-          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-message"></i></button>
         <button
           onClick={() => setShowWorkflows(true)}
           title="Workflows"
-          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-cubes"></i></button>
         <button
           onClick={() => setShowSwarm(true)}
           title="Swarm Dashboard"
-          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-network-wired"></i></button>
         <div className="flex-1"></div>
         <button
           onClick={() => setSidebarCollapsed(true)}
           title="Collapse sidebar"
-          className="px-2.5 py-2 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
       <AIProfiles availableShells={availableShells} />
