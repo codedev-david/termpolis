@@ -1,5 +1,7 @@
 import * as http from 'http'
 import * as crypto from 'crypto'
+import * as fs from 'fs'
+import * as path from 'path'
 
 const MCP_PORT = 9315 // "TERM" on phone keypad
 
@@ -37,6 +39,58 @@ export function checkRateLimit(key: string): boolean {
 
 export function resetRateLimits(): void {
   rateBuckets.clear()
+}
+
+// Audit logging for MCP requests — persisted to file with rotation
+const MAX_LOG_SIZE = 1024 * 1024 // 1MB max log file size
+let auditLogPath: string | null = null
+let auditStream: fs.WriteStream | null = null
+
+export function initAuditLog(userDataPath: string): void {
+  auditLogPath = path.join(userDataPath, 'mcp-audit.log')
+  openAuditStream()
+}
+
+function openAuditStream(): void {
+  if (!auditLogPath) return
+  try {
+    auditStream = fs.createWriteStream(auditLogPath, { flags: 'a' })
+    auditStream.on('error', () => { auditStream = null })
+  } catch {
+    auditStream = null
+  }
+}
+
+function rotateLogIfNeeded(): void {
+  if (!auditLogPath) return
+  try {
+    const stats = fs.statSync(auditLogPath)
+    if (stats.size >= MAX_LOG_SIZE) {
+      // Keep one backup
+      const backupPath = auditLogPath + '.old'
+      if (auditStream) { auditStream.end(); auditStream = null }
+      try { fs.unlinkSync(backupPath) } catch {}
+      fs.renameSync(auditLogPath, backupPath)
+      openAuditStream()
+    }
+  } catch {}
+}
+
+function logMcpRequest(method: string, tool: string | null, status: 'ok' | 'error' | 'denied' | 'rate_limited', detail?: string): void {
+  const entry = {
+    ts: new Date().toISOString(),
+    method,
+    ...(tool && { tool }),
+    status,
+    ...(detail && { detail }),
+  }
+  const line = JSON.stringify(entry) + '\n'
+  console.log(`[MCP audit] ${line.trimEnd()}`)
+
+  if (auditStream) {
+    auditStream.write(line)
+    rotateLogIfNeeded()
+  }
 }
 
 export function getMcpAuthToken(): string {
@@ -294,9 +348,13 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
         id,
       }
     } catch (e: any) {
+      // Sanitize error: don't leak internal stack traces or property names
+      const safeMessage = e.message?.includes('Unknown tool') || e.message?.includes('Invalid')
+        ? e.message
+        : 'Tool execution failed'
       return {
         jsonrpc: '2.0',
-        result: { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true },
+        result: { content: [{ type: 'text', text: `Error: ${safeMessage}` }], isError: true },
         id,
       }
     }
@@ -343,6 +401,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     const authHeader = req.headers['authorization'] || ''
     const token = authHeader.replace(/^Bearer\s+/i, '')
     if (token !== MCP_AUTH_TOKEN) {
+      logMcpRequest(req.method || 'UNKNOWN', null, 'denied', 'invalid auth token')
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Unauthorized. Pass Authorization: Bearer <token> header.' }))
       return
@@ -365,6 +424,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     if (req.method === 'POST' && req.url === '/mcp') {
       // Global rate limit
       if (!checkRateLimit('_global')) {
+        logMcpRequest('POST', null, 'rate_limited', 'global limit exceeded')
         res.writeHead(429, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Rate limit exceeded' }, id: null }))
         return
@@ -388,20 +448,20 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
           const request = JSON.parse(body)
 
           // Per-tool rate limit for tools/call
-          if (request.method === 'tools/call' && request.params?.name) {
-            const toolName = request.params.name
-            if (RATE_LIMITS[toolName] && !checkRateLimit(toolName)) {
-              res.writeHead(429, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({
-                jsonrpc: '2.0',
-                error: { code: -32000, message: `Rate limit exceeded for ${toolName}` },
-                id: request.id,
-              }))
-              return
-            }
+          const toolName = request.method === 'tools/call' ? request.params?.name : null
+          if (toolName && RATE_LIMITS[toolName] && !checkRateLimit(toolName)) {
+            logMcpRequest('tools/call', toolName, 'rate_limited', `${toolName} limit exceeded`)
+            res.writeHead(429, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: { code: -32000, message: `Rate limit exceeded for ${toolName}` },
+              id: request.id,
+            }))
+            return
           }
 
           const response = await handleJsonRpc(request, handlers)
+          logMcpRequest(request.method || 'unknown', toolName, response.error ? 'error' : 'ok')
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(response))
         } catch {

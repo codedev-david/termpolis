@@ -12,7 +12,7 @@ import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, initAuditLog, type McpToolHandlers } from './mcpServer'
 import {
   sendMessage, readMessages, getAllMessages,
   createTask, listTasks, updateTask, clearSwarm,
@@ -313,7 +313,8 @@ if (!gotTheLock) {
       readOutput: (terminalId, lines) => {
         const buffer = terminalOutputBuffers.get(terminalId) || ''
         const allLines = buffer.split('\n')
-        return allLines.slice(-lines).join('\n')
+        const clampedLines = Math.max(1, Math.min(Math.floor(lines) || 50, 1000))
+        return allLines.slice(-clampedLines).join('\n')
       },
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
@@ -334,7 +335,9 @@ if (!gotTheLock) {
         return { status, recentCommits, branch }
       },
       swarmSendMessage: (from, to, type, content) => {
-        return sendMessage(from, to, type as any, content)
+        const validTypes = ['task', 'result', 'question', 'info', 'review'] as const
+        if (!validTypes.includes(type as any)) throw new Error(`Invalid message type: ${type}`)
+        return sendMessage(from, to, type as typeof validTypes[number], content)
       },
       swarmReadMessages: (terminalId) => {
         return readMessages(terminalId)
@@ -346,7 +349,9 @@ if (!gotTheLock) {
         return listTasks()
       },
       swarmUpdateTask: (taskId, status, result) => {
-        return updateTask(taskId, status as any, result)
+        const validStatuses = ['pending', 'in_progress', 'completed', 'failed'] as const
+        if (!validStatuses.includes(status as any)) throw new Error(`Invalid task status: ${status}`)
+        return updateTask(taskId, status as typeof validStatuses[number], result)
       },
       swarmListAgents: () => {
         const session = loadSession()
@@ -354,6 +359,7 @@ if (!gotTheLock) {
       },
     }
 
+    initAuditLog(app.getPath('userData'))
     mcpServer = startMcpServer(mcpHandlers)
     console.log(`MCP auth token: ${getMcpAuthToken()}`)
     // Write token to a file so AI agents can discover it
