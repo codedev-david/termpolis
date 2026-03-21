@@ -5,14 +5,55 @@
 <h1 align="center">Termpolis</h1>
 
 <p align="center">
-  <strong>The AI-Native Terminal</strong><br>
-  Split panes · command autocomplete · AI agent profiles · MCP server · multi-agent swarm · built-in tools
+  <strong>The first terminal where Claude, Codex, Gemini, and Qwen work together as a team.</strong>
 </p>
 
-> **A note on AI-assisted development:** There may be critique that this application is built in conjunction with using AI; however, if you are still exclusively using an IDE or manually writing every line of code, then you are doing it wrong. This is the new path for AI-native engineering as a programmer. Code review is often still needed, but beyond this, software engineering has a new path. Termpolis itself is built with AI and built *for* AI workflows — and that's the point.
+<p align="center">
+  Smart task routing assigns the right work to the right AI model.<br>
+  An intelligent conductor that knows who plays what instrument best.<br>
+  No AI company has built this — because it helps their competitors.<br>
+  <strong>We built it anyway, because it moves AI forward.</strong>
+</p>
 
-![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
-[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg)](https://github.com/sponsors/codedev-david)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License">
+  <a href="https://github.com/sponsors/codedev-david"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg" alt="Sponsor"></a>
+</p>
+
+---
+
+### 🎯 Flagship Feature: Multi-Agent Swarm with Smart Routing
+
+Describe your task. Termpolis analyzes it, breaks it into subtasks, and assigns each to the AI model that's best at that type of work — automatically.
+
+```
+You: "Refactor the auth module, write comprehensive tests,
+      document the API, and review for security vulnerabilities"
+
+Termpolis Smart Router:
+  📝 Refactor auth module    → Claude Code (100/100) — strongest at refactoring
+  🧪 Write tests             → Codex (95/100)        — top-rated for test writing
+  📄 Document the API        → Gemini CLI (90/100)    — best at docs, lowest cost
+  🔒 Security review         → Claude Code (95/100)   — best at code review
+
+  💰 Token Budget: Claude ~$0.60 | Codex ~$0.23 | Gemini ~$0.10 | Total ~$0.93
+```
+
+Each agent launches in a split pane with their task. They communicate through MCP. You watch it happen in the Swarm Dashboard. Every assignment is transparent and overridable.
+
+| Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
+|-----------|:-----------:|:-----:|:----------:|:----------:|
+| Refactoring | ★★★★★ | ★★★★ | ★★★ | ★★★ |
+| Testing | ★★★★ | ★★★★★ | ★★★ | ★★★ |
+| Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★ |
+| Code Review | ★★★★★ | ★★★ | ★★★★ | ★★ |
+| DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★ |
+| Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
+| Token Cost | $$$$ | $$$ | $$ | **Free** |
+
+---
+
+> **A note on AI-assisted development:** There may be critique that this application is built in conjunction with using AI; however, if you are still exclusively using an IDE or manually writing every line of code, then you are doing it wrong. This is the new path for AI-native engineering as a programmer. Code review is often still needed, but beyond this, software engineering has a new path. Termpolis itself is built with AI and built *for* AI workflows — and that's the point.
 
 > **Support this project** — Termpolis is free and open source. If you find it useful, consider [sponsoring the project](https://github.com/sponsors/codedev-david) to help cover AI token costs and development time.
 
