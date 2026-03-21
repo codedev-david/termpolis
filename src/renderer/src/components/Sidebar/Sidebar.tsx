@@ -70,7 +70,7 @@ export function Sidebar() {
 
   return (
     <aside className="w-52 shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full overflow-hidden" style={{ transition: 'width 200ms ease' }}>
-      <div className="flex items-center gap-0.5 p-1.5 border-b border-[#3c3c3c]">
+      <div className="flex items-center gap-0.5 pl-1.5 pr-3 py-1.5 border-b border-[#3c3c3c]">
         <button
           onClick={() => setShowSettings(!showSettings)}
           title="Settings"
@@ -106,7 +106,7 @@ export function Sidebar() {
         <button
           onClick={() => setSidebarCollapsed(true)}
           title="Collapse sidebar"
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] ml-2"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
       <AIProfiles availableShells={availableShells} />
