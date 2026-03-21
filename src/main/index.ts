@@ -505,7 +505,41 @@ if (!gotTheLock) {
       console.log('Could not register Claude Code plugin (non-fatal):', (e as any).message)
     }
 
-    // Future: Gemini CLI MCP config when they standardize
+    // Auto-register in Codex CLI (~/.codex/config.toml)
+    try {
+      const codexConfigPath = join(homedir(), '.codex', 'config.toml')
+      if (require('fs').existsSync(codexConfigPath)) {
+        const content = require('fs').readFileSync(codexConfigPath, 'utf-8')
+        if (!content.includes('[mcp_servers.termpolis]')) {
+          const tomlEntry = `\n[mcp_servers.termpolis]\ncommand = "node"\nargs = ["${adapterPath.replace(/\\/g, '\\\\')}"]\n`
+          require('fs').appendFileSync(codexConfigPath, tomlEntry, 'utf-8')
+          console.log('Auto-registered Termpolis MCP server in Codex CLI config')
+        }
+      }
+    } catch (e) {
+      console.log('Could not register in Codex config (non-fatal):', (e as any).message)
+    }
+
+    // Auto-register in Gemini CLI (~/.gemini/settings.json)
+    try {
+      const geminiSettingsPath = join(homedir(), '.gemini', 'settings.json')
+      if (require('fs').existsSync(geminiSettingsPath)) {
+        const settings = JSON.parse(require('fs').readFileSync(geminiSettingsPath, 'utf-8'))
+        if (!settings.mcpServers) settings.mcpServers = {}
+        if (!settings.mcpServers.termpolis) {
+          settings.mcpServers.termpolis = {
+            command: 'node',
+            args: [adapterPath],
+          }
+          const tmpPath = geminiSettingsPath + '.tmp'
+          require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
+          require('fs').renameSync(tmpPath, geminiSettingsPath)
+          console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
+        }
+      }
+    } catch (e) {
+      console.log('Could not register in Gemini settings (non-fatal):', (e as any).message)
+    }
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
     globalShortcut.register('Super+Shift+T', () => {
