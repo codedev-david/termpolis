@@ -6,6 +6,39 @@ const MCP_PORT = 9315 // "TERM" on phone keypad
 // Generate a random auth token on each app launch — prevents unauthorized access
 const MCP_AUTH_TOKEN = crypto.randomBytes(32).toString('hex')
 
+// Rate limiting — prevent abuse from misbehaving AI agents
+interface RateBucket {
+  count: number
+  resetAt: number
+}
+
+const rateBuckets = new Map<string, RateBucket>()
+
+const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {
+  create_terminal: { max: 10, windowMs: 60_000 },   // 10 terminals per minute
+  run_command: { max: 60, windowMs: 60_000 },        // 60 commands per minute
+  _global: { max: 200, windowMs: 60_000 },           // 200 total requests per minute
+}
+
+export function checkRateLimit(key: string): boolean {
+  const limit = RATE_LIMITS[key] || RATE_LIMITS._global
+  const now = Date.now()
+  const bucket = rateBuckets.get(key)
+
+  if (!bucket || now >= bucket.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + limit.windowMs })
+    return true
+  }
+
+  if (bucket.count >= limit.max) return false
+  bucket.count++
+  return true
+}
+
+export function resetRateLimits(): void {
+  rateBuckets.clear()
+}
+
 export function getMcpAuthToken(): string {
   return MCP_AUTH_TOKEN
 }
@@ -330,6 +363,13 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     }
 
     if (req.method === 'POST' && req.url === '/mcp') {
+      // Global rate limit
+      if (!checkRateLimit('_global')) {
+        res.writeHead(429, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Rate limit exceeded' }, id: null }))
+        return
+      }
+
       const MAX_BODY = 1024 * 1024 // 1MB limit
       let body = ''
       let overflow = false
@@ -346,6 +386,21 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
         if (overflow) return
         try {
           const request = JSON.parse(body)
+
+          // Per-tool rate limit for tools/call
+          if (request.method === 'tools/call' && request.params?.name) {
+            const toolName = request.params.name
+            if (RATE_LIMITS[toolName] && !checkRateLimit(toolName)) {
+              res.writeHead(429, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                error: { code: -32000, message: `Rate limit exceeded for ${toolName}` },
+                id: request.id,
+              }))
+              return
+            }
+          }
+
           const response = await handleJsonRpc(request, handlers)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(response))

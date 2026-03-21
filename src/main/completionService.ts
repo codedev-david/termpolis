@@ -1,8 +1,25 @@
-import { readdirSync, statSync, accessSync, constants } from 'fs'
+import { readdirSync, statSync, realpathSync, accessSync, constants } from 'fs'
 import { join } from 'path'
+import { homedir } from 'os'
+
+function getSafeRoots(): string[] {
+  const home = realpathSync(homedir())
+  const roots = [home]
+  try {
+    const cwd = realpathSync(process.cwd())
+    if (!cwd.startsWith(home)) roots.push(cwd)
+  } catch {}
+  return roots
+}
+
+function isPathAllowed(targetPath: string): boolean {
+  const resolved = realpathSync(targetPath)
+  return getSafeRoots().some(root => resolved.startsWith(root))
+}
 
 export function listPathEntries(dirPath: string): { name: string; isDir: boolean }[] {
   try {
+    if (!isPathAllowed(dirPath)) return []
     return readdirSync(dirPath).map(name => {
       try {
         return { name, isDir: statSync(join(dirPath, name)).isDirectory() }
@@ -61,6 +78,20 @@ export function listPathCommands(): string[] {
   return pathCommandsCache
 }
 
+const SAFE_ENV_VARS = new Set([
+  'PATH', 'Path', 'SHELL', 'TERM', 'HOME', 'USERPROFILE', 'USER', 'USERNAME',
+  'LANG', 'LC_ALL', 'EDITOR', 'VISUAL', 'PAGER',
+  'PWD', 'OLDPWD', 'HOSTNAME', 'COMPUTERNAME',
+  'OS', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+  'TMPDIR', 'TEMP', 'TMP',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+  'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION',
+])
+
 export function listEnvVars(): Record<string, string> {
-  return { ...process.env } as Record<string, string>
+  const filtered: Record<string, string> = {}
+  for (const key of SAFE_ENV_VARS) {
+    if (process.env[key]) filtered[key] = process.env[key]!
+  }
+  return filtered
 }
