@@ -70,13 +70,29 @@
 - **Keep or close** — choose whether to keep the old terminal for reference or close it
 
 ### Multi-Agent Swarm
-- **Swarm Orchestrator** — step-by-step wizard to launch a swarm: pick agents (Claude, Codex, Gemini, Aider), describe the task, review auto-generated role assignments, and launch. Each agent gets a split pane with their task prompt.
+
+No AI company has built a tool that brings together competing models to work as a team — because it helps their competitors. Termpolis does it anyway, because it moves AI forward.
+
+- **Smart Task Routing** — the orchestrator analyzes your task description, breaks it into subtasks (refactoring, testing, docs, review, etc.), and assigns each to the best agent based on a capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden.
+
+  | Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
+  |-----------|:-----------:|:-----:|:----------:|:----------:|
+  | Refactoring | ★★★★★ | ★★★★ | ★★★ | ★★★ |
+  | Testing | ★★★★ | ★★★★★ | ★★★ | ★★★ |
+  | Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★ |
+  | Code Review | ★★★★★ | ★★★ | ★★★★ | ★★ |
+  | DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★ |
+  | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
+  | Token Cost | $$$$ | $$$ | $$ | Free |
+
+- **Swarm Orchestrator** — 4-step wizard: pick agents → describe task → review smart-routed assignments with scores and token budget → launch. Each agent gets a split pane with their optimized task.
+- **Token Budget Estimates** — shows per-agent estimated tokens and cost before you launch, so you know what the swarm will cost
 - **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
-- **Agent Bridge** — agents without native MCP support (e.g., Aider) are automatically bridged: Termpolis reads their terminal output, detects completions/errors, and posts to the swarm bus on their behalf. Claude Code, Codex, and Gemini CLI all have native MCP and don't need the bridge.
+- **Agent Bridge** — agents without native MCP (e.g., Aider) are automatically bridged via terminal output parsing. Claude Code, Codex, and Gemini CLI all use MCP natively.
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
-- **Cross-model collaboration** — Claude, Codex, and Gemini working on the same task simultaneously, each in their own terminal
+- **Free local option** — Aider + Qwen3-Coder runs via Ollama with zero API cost. Auto-detects if Ollama is installed.
 
 ### Intelligence
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
