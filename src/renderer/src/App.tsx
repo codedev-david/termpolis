@@ -360,44 +360,28 @@ export default function App() {
     }
   }
 
-  const handleWelcomeLaunchAgent = async () => {
-    // Launch Claude Code (first default AI profile)
+  const AGENT_CONFIGS: Record<string, { name: string; command: string; color: string }> = {
+    claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
+    codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
+    gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
+    'aider-qwen': { name: 'Aider + Qwen3', command: 'aider --model ollama/qwen3-coder', color: '#06B6D4' },
+  }
+
+  const handleWelcomeLaunchAgent = async (agentId: string) => {
+    const config = AGENT_CONFIGS[agentId]
+    if (!config) return
     const id = uuid()
     const cwd = await getHomedir()
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
     const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (res.success) {
-      addTerminal({ id, name: 'Claude Code', color: '#D97706', shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-      setTimeout(() => window.termpolis.writeToTerminal(id, 'claude\r'), 1500)
+      addTerminal({ id, name: config.name, color: config.color, shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
+      setTimeout(() => window.termpolis.writeToTerminal(id, config.command + '\r'), 1500)
     }
   }
 
-  const handleWelcomeImportWorkspace = () => {
-    // If there are workspaces, activate the first one; otherwise hint
-    const state = useTerminalStore.getState()
-    if (state.workspaces.length > 0) {
-      // Trigger workspace activation via store — same as clicking in WorkspaceList
-      const ws = state.workspaces[0]
-      ;(async () => {
-        const homedir = await getHomedir()
-        const newTerminals = []
-        for (const t of ws.terminals) {
-          const tid = uuid()
-          const cwdVal = t.cwd || homedir
-          await window.termpolis.createTerminal(tid, t.shellType as any, cwdVal)
-          newTerminals.push({ id: tid, name: t.name, color: t.color, shellType: t.shellType as any, cwd: cwdVal, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily })
-        }
-        useTerminalStore.setState({
-          terminals: newTerminals,
-          activeTerminalId: newTerminals[0]?.id ?? null,
-          showSettings: false,
-        })
-      })()
-    } else {
-      // No workspaces — open add terminal modal as fallback
-      setShowAddModal(true)
-    }
-  }
+  // showSwarmFromWelcome triggers the existing swarm dashboard
+  const handleStartSwarmFromWelcome = () => setShowSwarmDashboard(true)
 
   const renderMain = () => {
     if (showSettings) return <Suspense fallback={<div className="flex items-center justify-center h-full text-[#6b7280]">Loading settings...</div>}><SettingsPane /></Suspense>
@@ -406,7 +390,7 @@ export default function App() {
         <Welcome
           onNewTerminal={() => setShowAddModal(true)}
           onLaunchAgent={handleWelcomeLaunchAgent}
-          onImportWorkspace={handleWelcomeImportWorkspace}
+          onStartSwarm={handleStartSwarmFromWelcome}
         />
       )
     }

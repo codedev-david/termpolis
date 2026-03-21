@@ -1,12 +1,21 @@
-import React from 'react'
+import React, { useState } from 'react'
 
 interface WelcomeProps {
   onNewTerminal: () => void
-  onLaunchAgent: () => void
-  onImportWorkspace: () => void
+  onLaunchAgent: (agentId: string) => void
+  onStartSwarm: () => void
 }
 
-export function Welcome({ onNewTerminal, onLaunchAgent, onImportWorkspace }: WelcomeProps) {
+const AGENT_OPTIONS = [
+  { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' },
+  { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', color: '#10B981' },
+  { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', color: '#4285F4' },
+  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-bolt', color: '#06B6D4' },
+]
+
+export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeProps) {
+  const [showAgentPicker, setShowAgentPicker] = useState(false)
+
   return (
     <div className="flex items-center justify-center h-full w-full select-none">
       <div className="flex flex-col items-center gap-8 max-w-xl px-6">
@@ -34,26 +43,48 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onImportWorkspace }: Wel
             <span className="text-[10px] text-[#6b7280] leading-tight">Create a terminal with custom shell and theme</span>
           </button>
 
-          <button
-            onClick={onLaunchAgent}
-            className="flex flex-col items-center gap-2 p-4 rounded-lg border border-[#3c3c3c] bg-[#252526] hover:bg-[#2a2d2e] hover:border-[#D97706]/40 transition-colors text-center group"
-          >
-            <div className="w-10 h-10 rounded-lg bg-[#37373d] group-hover:bg-[#D97706]/10 flex items-center justify-center transition-colors">
-              <i className="fa-solid fa-robot text-[#D97706]"></i>
-            </div>
-            <span className="text-sm font-medium text-[#d4d4d4]">Launch AI Agent</span>
-            <span className="text-[10px] text-[#6b7280] leading-tight">Start Claude Code, Codex, or Gemini CLI</span>
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowAgentPicker(!showAgentPicker)}
+              className="flex flex-col items-center gap-2 p-4 rounded-lg border border-[#3c3c3c] bg-[#252526] hover:bg-[#2a2d2e] hover:border-[#D97706]/40 transition-colors text-center group w-full h-full"
+            >
+              <div className="w-10 h-10 rounded-lg bg-[#37373d] group-hover:bg-[#D97706]/10 flex items-center justify-center transition-colors">
+                <i className="fa-solid fa-robot text-[#D97706]"></i>
+              </div>
+              <span className="text-sm font-medium text-[#d4d4d4]">Launch AI Agent</span>
+              <span className="text-[10px] text-[#6b7280] leading-tight">Choose an AI coding agent to start</span>
+            </button>
+            {showAgentPicker && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg shadow-xl z-10 py-1 animate-fadeIn">
+                {AGENT_OPTIONS.map(agent => (
+                  <button
+                    key={agent.id}
+                    onClick={() => {
+                      setShowAgentPicker(false)
+                      onLaunchAgent(agent.id)
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#37373d] transition-colors"
+                  >
+                    <i className={agent.icon} style={{ color: agent.color, fontSize: '12px' }}></i>
+                    <span className="text-xs text-[#d4d4d4]">{agent.name}</span>
+                    {agent.id === 'aider-qwen' && (
+                      <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4] ml-auto">FREE</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           <button
-            onClick={onImportWorkspace}
+            onClick={onStartSwarm}
             className="flex flex-col items-center gap-2 p-4 rounded-lg border border-[#3c3c3c] bg-[#252526] hover:bg-[#2a2d2e] hover:border-[#A5D6A7]/40 transition-colors text-center group"
           >
             <div className="w-10 h-10 rounded-lg bg-[#37373d] group-hover:bg-[#A5D6A7]/10 flex items-center justify-center transition-colors">
-              <i className="fa-solid fa-layer-group text-[#A5D6A7]"></i>
+              <i className="fa-solid fa-network-wired text-[#A5D6A7]"></i>
             </div>
-            <span className="text-sm font-medium text-[#d4d4d4]">Import Workspace</span>
-            <span className="text-[10px] text-[#6b7280] leading-tight">Load a saved workspace to restore your setup</span>
+            <span className="text-sm font-medium text-[#d4d4d4]">Start Swarm</span>
+            <span className="text-[10px] text-[#6b7280] leading-tight">Multiple AI agents working together on a task</span>
           </button>
         </div>
 
@@ -63,11 +94,11 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onImportWorkspace }: Wel
           <span className="text-[#3c3c3c]">·</span>
           <span>Split Panes</span>
           <span className="text-[#3c3c3c]">·</span>
-          <span>Autocomplete</span>
-          <span className="text-[#3c3c3c]">·</span>
-          <span>Session Recording</span>
+          <span>Smart Routing</span>
           <span className="text-[#3c3c3c]">·</span>
           <span>MCP Server</span>
+          <span className="text-[#3c3c3c]">·</span>
+          <span>Session Recording</span>
         </div>
 
         {/* Hint */}
