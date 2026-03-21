@@ -106,7 +106,7 @@ export function Sidebar() {
         <button
           onClick={() => setSidebarCollapsed(true)}
           title="Collapse sidebar"
-          className="px-3 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] mr-1"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] ml-2"
         ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
       <AIProfiles availableShells={availableShells} />
