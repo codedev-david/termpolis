@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
+import { InstallHint } from '../InstallHint/InstallHint'
 
 interface WelcomeProps {
   onNewTerminal: () => void
@@ -15,6 +16,27 @@ const AGENT_OPTIONS = [
 
 export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeProps) {
   const [showAgentPicker, setShowAgentPicker] = useState(false)
+  const [installedAgents, setInstalledAgents] = useState<Record<string, boolean>>({})
+  const [detecting, setDetecting] = useState(true)
+  const [installHint, setInstallHint] = useState<{ id: string; name: string } | null>(null)
+
+  useEffect(() => {
+    window.termpolis.detectAgents().then(res => {
+      if (res.success && res.data) setInstalledAgents(res.data)
+      setDetecting(false)
+    }).catch(() => setDetecting(false))
+  }, [])
+
+  const handleAgentClick = (agent: typeof AGENT_OPTIONS[0]) => {
+    const installed = detecting || installedAgents[agent.id] !== false
+    if (!installed) {
+      setShowAgentPicker(false)
+      setInstallHint({ id: agent.id, name: agent.name })
+      return
+    }
+    setShowAgentPicker(false)
+    onLaunchAgent(agent.id)
+  }
 
   return (
     <div className="flex items-center justify-center h-full w-full select-none">
@@ -56,22 +78,31 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
             </button>
             {showAgentPicker && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg shadow-xl z-10 py-1 animate-fadeIn">
-                {AGENT_OPTIONS.map(agent => (
-                  <button
-                    key={agent.id}
-                    onClick={() => {
-                      setShowAgentPicker(false)
-                      onLaunchAgent(agent.id)
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#37373d] transition-colors"
-                  >
-                    <i className={agent.icon} style={{ color: agent.color, fontSize: '12px' }}></i>
-                    <span className="text-xs text-[#d4d4d4]">{agent.name}</span>
-                    {agent.id === 'aider-qwen' && (
-                      <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4] ml-auto">FREE</span>
-                    )}
-                  </button>
-                ))}
+                {AGENT_OPTIONS.map(agent => {
+                  const installed = detecting || installedAgents[agent.id] !== false
+                  const notInstalled = !detecting && installedAgents[agent.id] === false
+                  return (
+                    <button
+                      key={agent.id}
+                      onClick={() => handleAgentClick(agent)}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${
+                        notInstalled ? 'hover:bg-[#2a2a2a]' : 'hover:bg-[#37373d]'
+                      }`}
+                    >
+                      <i className={agent.icon} style={{ color: notInstalled ? '#555' : agent.color, fontSize: '12px' }}></i>
+                      <span className={`text-xs flex-1 ${notInstalled ? 'text-[#555]' : 'text-[#d4d4d4]'}`}>{agent.name}</span>
+                      {installed && !detecting && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Installed"></span>
+                      )}
+                      {notInstalled && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-red-900/30 text-red-400">Install</span>
+                      )}
+                      {agent.id === 'aider-qwen' && installed && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4]">FREE</span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -106,6 +137,10 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
           Press <kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+K</kbd> to open the command palette, or click <strong className="text-[#6b7280]">+ Add Terminal</strong> in the sidebar
         </p>
       </div>
+
+      {installHint && (
+        <InstallHint agentId={installHint.id} agentName={installHint.name} onClose={() => setInstallHint(null)} />
+      )}
     </div>
   )
 }

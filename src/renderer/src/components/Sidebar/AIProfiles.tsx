@@ -3,6 +3,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
 import { getHomedir } from '../../lib/homedir'
 import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
+import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 
 const DEFAULT_AI_PROFILES: AIProfile[] = [
@@ -103,6 +104,9 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [ollamaStatus, setOllamaStatus] = useState<'checking' | 'installed' | 'not-installed'>('checking')
   const [showOllamaHint, setShowOllamaHint] = useState(false)
+  const [installedAgents, setInstalledAgents] = useState<Record<string, boolean>>({})
+  const [detectingAgents, setDetectingAgents] = useState(true)
+  const [installHint, setInstallHint] = useState<{ id: string; name: string } | null>(null)
 
   // Check if Ollama is installed on mount
   useEffect(() => {
@@ -121,6 +125,11 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       }
     }
     check()
+    // Also detect all agent installations
+    window.termpolis.detectAgents().then(res => {
+      if (res.success && res.data) setInstalledAgents(res.data)
+      setDetectingAgents(false)
+    }).catch(() => setDetectingAgents(false))
   }, [])
 
   const allProfiles = [...DEFAULT_AI_PROFILES, ...aiProfiles]
@@ -186,6 +195,12 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                   <button
                     className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-[#37373d] flex-1 text-left"
                     onClick={() => {
+                      // Check if agent is installed
+                      const notInstalled = !detectingAgents && installedAgents[profile.id] === false
+                      if (notInstalled) {
+                        setInstallHint({ id: profile.id, name: profile.name })
+                        return
+                      }
                       if (isAiderQwen && ollamaStatus === 'not-installed') {
                         setShowOllamaHint(true)
                         return
@@ -238,6 +253,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
         </div>
       )}
       {showAddModal && <AddProfileModal onSave={handleAddProfile} onCancel={() => setShowAddModal(false)} />}
+      {installHint && <InstallHint agentId={installHint.id} agentName={installHint.name} onClose={() => setInstallHint(null)} />}
     </>
   )
 }
