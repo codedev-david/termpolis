@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
 import { getHomedir } from '../../lib/homedir'
@@ -10,6 +10,7 @@ const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
   { id: 'aider', name: 'Aider', icon: 'fa-solid fa-code', command: 'aider', shell: 'bash', color: '#8B5CF6' },
+  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder', shell: 'bash', color: '#06B6D4' },
 ]
 
 function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -101,6 +102,27 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
   const { aiProfiles, addAIProfile, removeAIProfile, addTerminal } = useTerminalStore()
   const [showAddModal, setShowAddModal] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
+  const [ollamaStatus, setOllamaStatus] = useState<'checking' | 'installed' | 'not-installed'>('checking')
+  const [showOllamaHint, setShowOllamaHint] = useState(false)
+
+  // Check if Ollama is installed on mount
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const { execSync } = window as any
+        // Try via fetch to Ollama's local API (runs on port 11434)
+        const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) }).catch(() => null)
+        if (res?.ok) {
+          setOllamaStatus('installed')
+        } else {
+          setOllamaStatus('not-installed')
+        }
+      } catch {
+        setOllamaStatus('not-installed')
+      }
+    }
+    check()
+  }, [])
 
   const allProfiles = [...DEFAULT_AI_PROFILES, ...aiProfiles]
 
@@ -157,28 +179,63 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
         <div className="px-2 pb-1 flex flex-col gap-0.5">
           {allProfiles.map(profile => {
             const isCustom = aiProfiles.some(p => p.id === profile.id)
+            const isAiderQwen = profile.id === 'aider-qwen'
+            const isAider = profile.id === 'aider'
             return (
-              <div key={profile.id} className="group flex items-center">
-                <button
-                  className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-[#37373d] flex-1 text-left"
-                  onClick={() => handleLaunch(profile)}
-                  title={`Launch ${profile.name}: ${profile.command}`}
-                >
-                  <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
-                  <span className="text-[#d4d4d4] truncate">{profile.name}</span>
-                </button>
-                {isCustom && (
+              <div key={profile.id} className="group flex flex-col">
+                <div className="flex items-center">
                   <button
-                    className="text-[#6b7280] hover:text-red-400 text-[10px] px-1 opacity-0 group-hover:opacity-100"
-                    onClick={() => removeAIProfile(profile.id)}
-                    title="Remove profile"
+                    className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-[#37373d] flex-1 text-left"
+                    onClick={() => {
+                      if (isAiderQwen && ollamaStatus === 'not-installed') {
+                        setShowOllamaHint(true)
+                        return
+                      }
+                      handleLaunch(profile)
+                    }}
+                    title={isAiderQwen
+                      ? 'Free & local — runs Qwen3-Coder via Ollama (no API costs)'
+                      : isAider
+                        ? 'Open source AI coding tool — connect any LLM'
+                        : `Launch ${profile.name}: ${profile.command}`}
                   >
-                    <i className="fa-solid fa-xmark"></i>
+                    <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
+                    <span className="text-[#d4d4d4] truncate">{profile.name}</span>
+                    {isAiderQwen && (
+                      <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4] ml-auto shrink-0">FREE</span>
+                    )}
+                    {isAiderQwen && ollamaStatus === 'installed' && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" title="Ollama detected"></span>
+                    )}
                   </button>
-                )}
+                  {isCustom && (
+                    <button
+                      className="text-[#6b7280] hover:text-red-400 text-[10px] px-1 opacity-0 group-hover:opacity-100"
+                      onClick={() => removeAIProfile(profile.id)}
+                      title="Remove profile"
+                    >
+                      <i className="fa-solid fa-xmark"></i>
+                    </button>
+                  )}
+                </div>
               </div>
             )
           })}
+          {showOllamaHint && (
+            <div className="mx-2 mt-1 p-2 bg-[#1e3a1e] border border-[#2d5a2d] rounded text-[10px] text-[#A5D6A7] leading-relaxed">
+              <div className="flex justify-between items-start mb-1">
+                <strong className="text-[#22D3EE]">Free AI Coding with Qwen3-Coder</strong>
+                <button onClick={() => setShowOllamaHint(false)} className="text-[#666] hover:text-white">×</button>
+              </div>
+              <p className="mb-1">Aider + Qwen3-Coder runs completely free and local — no API keys, no cloud, no costs.</p>
+              <p className="mb-1">To set up:</p>
+              <ol className="list-decimal ml-3 flex flex-col gap-0.5">
+                <li>Install <a href="https://ollama.com" className="text-[#22D3EE] underline" onClick={e => { e.preventDefault(); window.open('https://ollama.com', '_blank') }}>Ollama</a></li>
+                <li>Run: <code className="bg-[#0d1b0d] px-1 rounded">ollama pull qwen3-coder</code></li>
+                <li>Click "Aider + Qwen3" above to start coding</li>
+              </ol>
+            </div>
+          )}
         </div>
       )}
       {showAddModal && <AddProfileModal onSave={handleAddProfile} onCancel={() => setShowAddModal(false)} />}
