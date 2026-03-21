@@ -1,0 +1,171 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - img "Termpolis" [ref=e6]
+        - generic [ref=e7]: Termpolis
+      - generic [ref=e8]:
+        - button "Minimize" [ref=e9] [cursor=pointer]: –
+        - button "Maximize" [ref=e10] [cursor=pointer]: □
+        - button "Close" [ref=e11] [cursor=pointer]: ✕
+    - generic [ref=e12]:
+      - complementary [ref=e13]:
+        - generic [ref=e14]:
+          - button "Settings" [ref=e15] [cursor=pointer]
+          - button "Split View" [ref=e17] [cursor=pointer]
+          - button "Prompts" [ref=e19] [cursor=pointer]
+          - button "Workflows" [ref=e21] [cursor=pointer]
+          - button "Swarm Dashboard" [ref=e23] [cursor=pointer]
+          - button "Collapse sidebar" [ref=e25] [cursor=pointer]
+        - generic [ref=e27]:
+          - button "AI Agents" [ref=e28] [cursor=pointer]: AI Agents
+          - button "Add custom AI profile" [ref=e30] [cursor=pointer]
+        - generic [ref=e32]:
+          - button "Claude Code" [ref=e35] [cursor=pointer]:
+            - generic [ref=e37]: Claude Code
+          - button "OpenAI Codex" [ref=e40] [cursor=pointer]:
+            - generic [ref=e42]: OpenAI Codex
+          - button "Gemini CLI" [ref=e45] [cursor=pointer]:
+            - generic [ref=e47]: Gemini CLI
+          - button "Aider" [ref=e50] [cursor=pointer]:
+            - generic [ref=e52]: Aider
+          - button "Aider + Qwen3 FREE Ollama detected" [ref=e55] [cursor=pointer]:
+            - generic [ref=e57]: Aider + Qwen3
+            - generic [ref=e58]: FREE
+            - generic "Ollama detected" [ref=e59]
+        - generic [ref=e61]:
+          - generic [ref=e62]:
+            - button "Workspaces" [ref=e63] [cursor=pointer]: Workspaces
+            - button "What are workspaces?" [ref=e65] [cursor=pointer]
+          - button "+ Save Workspace" [ref=e67] [cursor=pointer]
+        - button "Terminals (16)" [ref=e70] [cursor=pointer]:
+          - text: Terminals
+          - generic [ref=e72]: (16)
+        - generic [ref=e73]:
+          - generic [ref=e74] [cursor=pointer]:
+            - generic "Alt+1" [ref=e75]: "1"
+            - generic [ref=e76]: $
+            - generic [ref=e77]: Terminal 1
+            - button "Edit terminal" [ref=e78]: ✎
+            - button "Close Terminal 1" [ref=e79]: ✕
+          - generic [ref=e80] [cursor=pointer]:
+            - generic "Alt+2" [ref=e81]: "2"
+            - generic [ref=e82]: $
+            - generic [ref=e83]: Terminal 2
+            - button "Edit terminal" [ref=e84]: ✎
+            - button "Close Terminal 2" [ref=e85]: ✕
+          - generic [ref=e86] [cursor=pointer]:
+            - generic "Alt+3" [ref=e87]: "3"
+            - generic [ref=e88]: $
+            - generic [ref=e89]: Terminal 3
+            - button "Edit terminal" [ref=e90]: ✎
+            - button "Close Terminal 3" [ref=e91]: ✕
+          - generic [ref=e92] [cursor=pointer]:
+            - generic "Alt+4" [ref=e93]: "4"
+            - generic [ref=e94]: $
+            - generic [ref=e95]: Terminal 4
+            - button "Edit terminal" [ref=e96]: ✎
+            - button "Close Terminal 4" [ref=e97]: ✕
+          - generic [ref=e98] [cursor=pointer]:
+            - generic "Alt+5" [ref=e99]: "5"
+            - generic [ref=e100]: $
+            - generic [ref=e101]: Terminal 5
+            - button "Edit terminal" [ref=e102]: ✎
+            - button "Close Terminal 5" [ref=e103]: ✕
+          - generic [ref=e104] [cursor=pointer]:
+            - generic "Alt+6" [ref=e105]: "6"
+            - generic [ref=e106]: $
+            - generic [ref=e107]: Terminal 6
+            - button "Edit terminal" [ref=e108]: ✎
+            - button "Close Terminal 6" [ref=e109]: ✕
+          - generic [ref=e110] [cursor=pointer]:
+            - generic "Alt+7" [ref=e111]: "7"
+            - generic [ref=e112]: $
+            - generic [ref=e113]: Terminal 7
+            - button "Edit terminal" [ref=e114]: ✎
+            - button "Close Terminal 7" [ref=e115]: ✕
+          - generic [ref=e116] [cursor=pointer]:
+            - generic "Alt+8" [ref=e117]: "8"
+            - generic [ref=e118]: $
+            - generic [ref=e119]: Terminal 8
+            - button "Edit terminal" [ref=e120]: ✎
+            - button "Close Terminal 8" [ref=e121]: ✕
+          - generic [ref=e122] [cursor=pointer]:
+            - generic "Alt+9" [ref=e123]: "9"
+            - generic [ref=e124]: $
+            - generic [ref=e125]: Terminal 9
+            - button "Edit terminal" [ref=e126]: ✎
+            - button "Close Terminal 9" [ref=e127]: ✕
+          - generic [ref=e128] [cursor=pointer]:
+            - generic [ref=e129]: $
+            - generic [ref=e130]: Terminal 10
+            - button "Edit terminal" [ref=e131]: ✎
+            - button "Close Terminal 10" [ref=e132]: ✕
+          - generic [ref=e133] [cursor=pointer]:
+            - generic [ref=e134]: $
+            - generic [ref=e135]: Terminal 11
+            - button "Edit terminal" [ref=e136]: ✎
+            - button "Close Terminal 11" [ref=e137]: ✕
+          - generic [ref=e138] [cursor=pointer]:
+            - generic [ref=e139]: $
+            - generic [ref=e140]: Terminal 12
+            - button "Edit terminal" [ref=e141]: ✎
+            - button "Close Terminal 12" [ref=e142]: ✕
+          - generic [ref=e143] [cursor=pointer]:
+            - generic [ref=e144]: $
+            - generic [ref=e145]: Terminal 13
+            - button "Edit terminal" [ref=e146]: ✎
+            - button "Close Terminal 13" [ref=e147]: ✕
+          - generic [ref=e148] [cursor=pointer]:
+            - generic [ref=e149]: $
+            - generic [ref=e150]: Terminal 14
+            - button "Edit terminal" [ref=e151]: ✎
+            - button "Close Terminal 14" [ref=e152]: ✕
+          - generic [ref=e153] [cursor=pointer]:
+            - generic [ref=e154]: $
+            - generic [ref=e155]: Terminal 15
+            - button "Edit terminal" [ref=e156]: ✎
+            - button "Close Terminal 15" [ref=e157]: ✕
+          - generic [ref=e158] [cursor=pointer]:
+            - generic [ref=e159]: $
+            - generic [ref=e160]: Terminal 16
+            - button "Edit terminal" [ref=e161]: ✎
+            - button "Close Terminal 16" [ref=e162]: ✕
+        - button "+ Add Terminal" [ref=e164] [cursor=pointer]
+      - main [ref=e165]:
+        - generic [ref=e167]:
+          - generic [ref=e171]:
+            - textbox "Terminal input" [ref=e172]
+            - generic [ref=e175]: "<3>WSL (15 - Relay) ERROR: CreateProcessCommon:806: execvpe(/bin/bash) failed: No such file or directory"
+          - generic [ref=e216]:
+            - generic "Shell" [ref=e217]: Bash
+            - 'generic "Working directory: C:\\Users\\DavidEngelhart" [ref=e219]':
+              - generic [ref=e221]: C:\Users\DavidEngelhart
+    - generic [ref=e222]:
+      - generic [ref=e223]: © 2026 Termpolis · MIT License
+      - generic [ref=e224]:
+        - generic "MCP server for AI agent integration" [ref=e225]: "MCP: localhost:9315"
+        - link "Sponsor" [ref=e227] [cursor=pointer]:
+          - /url: https://github.com/sponsors/codedev-david
+          - text: Sponsor
+        - button "Help / Support" [ref=e229] [cursor=pointer]
+  - generic [ref=e230]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e231]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e232]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e233]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e234]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e235]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e236]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e237]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e238]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e239]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e240]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e241]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e242]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e243]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e244]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+  - generic [ref=e245]: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+```
