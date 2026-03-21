@@ -468,13 +468,29 @@ If you find Termpolis useful, please consider sponsoring:
 
 **[Sponsor on GitHub](https://github.com/sponsors/codedev-david)**
 
+## Bug Reports & Feature Requests
+
+Found a bug or have an idea? Open an issue on GitHub:
+
+**[Submit a Bug Report](https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md&labels=bug)**
+
+**[Request a Feature](https://github.com/codedev-david/termpolis/issues/new?template=feature_request.md&labels=enhancement)**
+
+When reporting a bug, please include:
+- Your OS (Windows/macOS/Linux) and version
+- Termpolis version (shown in the title bar or `package.json`)
+- Steps to reproduce the issue
+- Expected vs actual behavior
+- Screenshots if applicable
+
 ## Contributing
 
 1. Fork the repo
 2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit changes (`git commit -m 'feat: add my feature'`)
-4. Push to branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
+3. Run tests: `npm test` (unit) and `npx playwright test` (E2E)
+4. Commit changes (`git commit -m 'feat: add my feature'`)
+5. Push to branch (`git push origin feature/my-feature`)
+6. Open a Pull Request
 
 ## License
 
