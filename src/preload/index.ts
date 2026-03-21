@@ -47,6 +47,9 @@ const api: TermpolisAPI = {
   exportTerminal: (opts) =>
     ipcRenderer.invoke('terminal:export', opts),
 
+  detectAgents: () =>
+    ipcRenderer.invoke('agents:detect'),
+
   completionPathEntries: (dirPath) =>
     ipcRenderer.invoke('completion:path-entries', { dirPath }),
 

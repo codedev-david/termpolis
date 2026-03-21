@@ -192,6 +192,33 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+// Check which AI agent commands are installed on the system
+ipcMain.handle('agents:detect', async () => {
+  const agents = [
+    { id: 'claude', command: 'claude' },
+    { id: 'codex', command: 'codex' },
+    { id: 'gemini', command: 'gemini' },
+    { id: 'aider', command: 'aider' },
+  ]
+  const results: Record<string, boolean> = {}
+  for (const agent of agents) {
+    try {
+      execSync(process.platform === 'win32' ? `where ${agent.command}` : `which ${agent.command}`, { stdio: 'ignore', timeout: 3000, windowsHide: true })
+      results[agent.id] = true
+    } catch {
+      results[agent.id] = false
+    }
+  }
+  // Aider+Qwen needs both aider AND ollama
+  results['aider-qwen'] = results['aider'] && (() => {
+    try {
+      execSync(process.platform === 'win32' ? 'where ollama' : 'which ollama', { stdio: 'ignore', timeout: 3000, windowsHide: true })
+      return true
+    } catch { return false }
+  })()
+  return ok(results)
+})
+
 // Swarm IPC handlers for the dashboard
 // Read terminal output buffer from renderer (used by swarm bridge for non-MCP agents)
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {

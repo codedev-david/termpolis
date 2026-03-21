@@ -76,6 +76,8 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   const [reassignOpen, setReassignOpen] = useState<number | null>(null)
   const [launchProgress, setLaunchProgress] = useState('')
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
+  const [installedAgents, setInstalledAgents] = useState<Record<string, boolean>>({})
+  const [detectingAgents, setDetectingAgents] = useState(true)
 
   const {
     addTerminal,
@@ -89,6 +91,11 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     window.termpolis.getAvailableShells().then(res => {
       if (res.success && res.data) setAvailableShells(res.data)
     })
+    // Detect which AI agents are installed
+    window.termpolis.detectAgents().then(res => {
+      if (res.success && res.data) setInstalledAgents(res.data)
+      setDetectingAgents(false)
+    }).catch(() => setDetectingAgents(false))
   }, [])
 
   // Escape to close
@@ -356,28 +363,48 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   function renderSelectStep() {
     return (
       <div>
-        <p className="text-sm text-[#bbb] mb-4">Select 2 or more AI agents for the swarm.</p>
+        <p className="text-sm text-[#bbb] mb-4">
+          {detectingAgents ? 'Detecting installed AI agents...' : 'Select 2 or more AI agents for the swarm.'}
+        </p>
         <div className="grid grid-cols-2 gap-3">
           {AVAILABLE_AGENTS.map(agent => {
             const selected = selectedIds.has(agent.id)
+            const installed = detectingAgents ? true : installedAgents[agent.id] !== false
+            const notInstalled = !detectingAgents && installedAgents[agent.id] === false
             return (
               <button
                 key={agent.id}
-                onClick={() => toggleAgent(agent.id)}
+                onClick={() => {
+                  if (notInstalled) return
+                  toggleAgent(agent.id)
+                }}
+                disabled={notInstalled}
                 className={`flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
-                  selected
-                    ? 'bg-[#22D3EE]/10 border-[#22D3EE]/40'
-                    : 'bg-[#2d2d2d] border-[#3c3c3c] hover:border-[#555]'
+                  notInstalled
+                    ? 'bg-[#1e1e1e] border-[#2a2a2a] opacity-50 cursor-not-allowed'
+                    : selected
+                      ? 'bg-[#22D3EE]/10 border-[#22D3EE]/40'
+                      : 'bg-[#2d2d2d] border-[#3c3c3c] hover:border-[#555]'
                 }`}
               >
                 <div className={`w-5 h-5 rounded border flex items-center justify-center text-[10px] ${
-                  selected ? 'bg-[#22D3EE] border-[#22D3EE] text-[#1e1e1e]' : 'border-[#555] text-transparent'
+                  notInstalled
+                    ? 'border-[#333] text-transparent'
+                    : selected ? 'bg-[#22D3EE] border-[#22D3EE] text-[#1e1e1e]' : 'border-[#555] text-transparent'
                 }`}>
                   <i className="fa-solid fa-check"></i>
                 </div>
-                <i className={agent.icon} style={{ color: agent.color, fontSize: '14px' }}></i>
-                <div>
-                  <div className="text-sm font-medium text-[#d4d4d4]">{agent.name}</div>
+                <i className={agent.icon} style={{ color: notInstalled ? '#555' : agent.color, fontSize: '14px' }}></i>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-medium ${notInstalled ? 'text-[#555]' : 'text-[#d4d4d4]'}`}>{agent.name}</span>
+                    {!detectingAgents && installed && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Installed"></span>
+                    )}
+                    {notInstalled && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-red-900/30 text-red-400">Not installed</span>
+                    )}
+                  </div>
                   <div className="text-[10px] text-[#6b7280] font-mono">{agent.command}</div>
                 </div>
               </button>
