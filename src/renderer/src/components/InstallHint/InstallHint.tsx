@@ -6,49 +6,70 @@ interface InstallHintProps {
   onClose: () => void
 }
 
-const INSTALL_INSTRUCTIONS: Record<string, { steps: string[]; url: string }> = {
-  claude: {
-    steps: [
-      'npm install -g @anthropic-ai/claude-code',
-      'claude --version  (to verify)',
-    ],
-    url: 'https://docs.anthropic.com/en/docs/claude-code',
-  },
-  codex: {
-    steps: [
-      'npm install -g @openai/codex',
-      'codex --version  (to verify)',
-    ],
-    url: 'https://github.com/openai/codex',
-  },
-  gemini: {
-    steps: [
-      'npm install -g @anthropic-ai/gemini-cli',
-      'Or: npx @anthropic-ai/gemini-cli',
-      'gemini --version  (to verify)',
-    ],
-    url: 'https://github.com/google-gemini/gemini-cli',
-  },
-  aider: {
-    steps: [
-      'pip install aider-chat',
-      'aider --version  (to verify)',
-    ],
-    url: 'https://aider.chat/docs/install.html',
-  },
-  'aider-qwen': {
-    steps: [
-      '1. Install Aider: pip install aider-chat',
-      '2. Install Ollama: https://ollama.com',
-      '3. Pull model: ollama pull qwen3-coder',
-      '4. Launch: aider --model ollama/qwen3-coder',
-    ],
-    url: 'https://ollama.com',
-  },
+const isWindows = navigator.platform.startsWith('Win')
+
+function getInstallInstructions(agentId: string): { steps: string[]; url: string } {
+  switch (agentId) {
+    case 'claude':
+      return {
+        steps: [
+          'npm install -g @anthropic-ai/claude-code',
+          'claude --version  (to verify)',
+        ],
+        url: 'https://docs.anthropic.com/en/docs/claude-code',
+      }
+    case 'codex':
+      return {
+        steps: [
+          'npm install -g @openai/codex',
+          'codex --version  (to verify)',
+        ],
+        url: 'https://github.com/openai/codex',
+      }
+    case 'gemini':
+      return {
+        steps: [
+          'npm install -g @google/gemini-cli',
+          'Or: npx @google/gemini-cli',
+          'gemini --version  (to verify)',
+        ],
+        url: 'https://github.com/google-gemini/gemini-cli',
+      }
+    case 'aider':
+      return {
+        steps: [
+          'pip install aider-chat',
+          'aider --version  (to verify)',
+        ],
+        url: 'https://aider.chat/docs/install.html',
+      }
+    case 'aider-qwen':
+      return {
+        steps: [
+          '1. Install Aider: pip install aider-chat',
+          '2. Install Ollama: https://ollama.com',
+          ...(isWindows ? [
+            '3. Add Ollama to PATH (PowerShell as Admin):',
+            '   setx PATH "%PATH%;%LOCALAPPDATA%\\Programs\\Ollama" /M',
+            '4. Restart your terminal, then pull the model:',
+            '   ollama pull qwen3-coder',
+          ] : [
+            '3. Pull the model: ollama pull qwen3-coder',
+          ]),
+          `${isWindows ? '5' : '4'}. Restart Termpolis to detect the changes`,
+        ],
+        url: 'https://ollama.com',
+      }
+    default:
+      return {
+        steps: ['Check the documentation for install instructions.'],
+        url: 'https://github.com/codedev-david/termpolis',
+      }
+  }
 }
 
 export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
-  const info = INSTALL_INSTRUCTIONS[agentId] || INSTALL_INSTRUCTIONS['claude']
+  const info = getInstallInstructions(agentId)
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn" onClick={onClose}>

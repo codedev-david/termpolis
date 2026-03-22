@@ -17,7 +17,6 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
   const setActiveTerminal = useTerminalStore(s => s.setActiveTerminal)
   const removeTerminal = useTerminalStore(s => s.removeTerminal)
   const splitTerminal = useTerminalStore(s => s.splitTerminal)
-  const terminals = useTerminalStore(s => s.terminals)
   const termInstanceRef = useRef<any>(null)
 
   const handleTerminalReady = useCallback((term: any) => {
@@ -42,11 +41,8 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
       if (!terminal) return
       const { v4: uuidv4 } = await import('uuid')
       const newId = uuidv4()
-      // Create a new terminal with the same config
       const res = await window.termpolis.createTerminal(newId, terminal.shellType, terminal.cwd)
       if (!res.success) return
-      const { addTerminal } = useTerminalStore.getState()
-      // Add the terminal to the store (but don't let addTerminal auto-append to tree)
       const newTerminal = {
         id: newId,
         name: `${terminal.name} (split)`,
@@ -57,7 +53,6 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
         theme: terminal.theme,
         fontFamily: terminal.fontFamily,
       }
-      // Add terminal to list without tree modification — we handle tree via splitTerminal
       useTerminalStore.setState(s => ({
         terminals: [...s.terminals, newTerminal],
       }))

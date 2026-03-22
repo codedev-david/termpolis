@@ -269,7 +269,7 @@ describe('terminalStore', () => {
       expect(buildPaneTree(['a'])).toEqual({ type: 'terminal', terminalId: 'a' })
     })
 
-    it('builds balanced binary tree for multiple ids', () => {
+    it('builds balanced binary tree for multiple ids with alternating directions', () => {
       const tree = buildPaneTree(['a', 'b', 'c'])!
       expect(tree.type).toBe('split')
       if (tree.type === 'split') {
@@ -277,6 +277,9 @@ describe('terminalStore', () => {
         expect(tree.ratio).toBe(0.5)
         // 3 ids: ceil(3/2)=2 left, 1 right
         expect(tree.children[0].type).toBe('split')
+        if (tree.children[0].type === 'split') {
+          expect(tree.children[0].direction).toBe('vertical')
+        }
         expect(tree.children[1]).toEqual({ type: 'terminal', terminalId: 'c' })
       }
     })

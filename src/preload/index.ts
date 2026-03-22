@@ -2,8 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { TermpolisAPI, ShellType } from '../renderer/src/types'
 
 const api: TermpolisAPI = {
-  createTerminal: (id, shellType, cwd) =>
-    ipcRenderer.invoke('terminal:create', { id, shellType, cwd }),
+  createTerminal: (id, shellType, cwd, extraPaths) =>
+    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths }),
 
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),
@@ -49,6 +49,12 @@ const api: TermpolisAPI = {
 
   detectAgents: () =>
     ipcRenderer.invoke('agents:detect'),
+
+  getOllamaPath: () =>
+    ipcRenderer.invoke('agents:ollama-path'),
+
+  pickDirectory: (defaultPath?: string) =>
+    ipcRenderer.invoke('dialog:pick-directory', { defaultPath }),
 
   completionPathEntries: (dirPath) =>
     ipcRenderer.invoke('completion:path-entries', { dirPath }),

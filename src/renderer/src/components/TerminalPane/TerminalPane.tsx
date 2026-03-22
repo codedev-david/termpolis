@@ -211,13 +211,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       term.loadAddon(webLinksAddon)
     } catch {}
 
-    // 7. Fit
-    fitAddon.fit()
+    // 7. Fit (deferred to avoid layout thrashing when multiple terminals mount at once)
+    requestAnimationFrame(() => {
+      if (!disposed) fitAddon.fit()
+    })
 
     termRef.current = term
     fitRef.current = fitAddon
 
     onTerminalReady?.(term)
+
+    // Replay buffered output so view switches don't lose scrollback
+    window.termpolis.readTerminalBuffer(terminalId).then(res => {
+      if (disposed || !res.success || !res.data) return
+      if (res.data.output) term.write(res.data.output)
+    })
 
     // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste)
     const keyHandler = term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -363,15 +371,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }
     })
 
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null
     const ro = new ResizeObserver(() => {
-      fitAddon.fit()
-      window.termpolis.resizeTerminal(terminalId, term.cols, term.rows)
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (disposed) return
+        fitAddon.fit()
+        window.termpolis.resizeTerminal(terminalId, term.cols, term.rows)
+      }, 100)
     })
     ro.observe(containerRef.current)
 
     return () => {
       disposed = true
       unsub()
+      if (resizeTimer) clearTimeout(resizeTimer)
       ro.disconnect()
       term.dispose()
     }

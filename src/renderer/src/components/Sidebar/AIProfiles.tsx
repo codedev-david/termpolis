@@ -10,7 +10,7 @@ const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
-  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder', shell: 'bash', color: '#06B6D4' },
+  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
 ]
 
 function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -99,7 +99,7 @@ interface AIProfilesProps {
 }
 
 export function AIProfiles({ availableShells }: AIProfilesProps) {
-  const { aiProfiles, addAIProfile, removeAIProfile, addTerminal } = useTerminalStore()
+  const { aiProfiles, addAIProfile, removeAIProfile, addTerminal, setLaunchingAgent } = useTerminalStore()
   const [showAddModal, setShowAddModal] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [ollamaStatus, setOllamaStatus] = useState<'checking' | 'installed' | 'not-installed'>('checking')
@@ -135,11 +135,24 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
   const allProfiles = [...DEFAULT_AI_PROFILES, ...aiProfiles]
 
   const handleLaunch = async (profile: AIProfile) => {
+    // Prompt user to pick a project directory
+    const dirRes = await window.termpolis.pickDirectory()
+    if (!dirRes.success || !dirRes.data) return  // user cancelled
+    const cwd = dirRes.data
+    setLaunchingAgent(profile.name)
     const id = uuid()
     const shellType = resolveShellType(profile.shell, availableShells)
-    const cwd = await getHomedir()
-    const res = await window.termpolis.createTerminal(id, shellType, cwd)
+    // Inject Ollama path for Aider + Qwen so it can find the ollama binary
+    let extraPaths: string[] | undefined
+    if (profile.id === 'aider-qwen') {
+      const ollamaRes = await window.termpolis.getOllamaPath()
+      if (ollamaRes.success && ollamaRes.data && ollamaRes.data !== 'ollama') {
+        extraPaths = [ollamaRes.data]
+      }
+    }
+    const res = await window.termpolis.createTerminal(id, shellType, cwd, extraPaths)
     if (!res.success) {
+      setLaunchingAgent(null)
       alert(`Failed to open terminal: ${res.error}`)
       return
     }
@@ -152,12 +165,20 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       fontSize: TERMINAL_DEFAULTS.fontSize,
       theme: TERMINAL_DEFAULTS.theme,
       fontFamily: TERMINAL_DEFAULTS.fontFamily,
+      agentCommand: profile.command,
     })
     // Wait for shell to fully initialize before sending command
     // Git Bash on Windows can take 1-2 seconds to show the prompt
     setTimeout(() => {
       window.termpolis.writeToTerminal(id, profile.command + '\r')
     }, 1500)
+    // Auto-trust: Claude/Codex show trust prompts ~5s after launch.
+    // Send Enter to confirm the pre-selected trust option.
+    if (profile.command.startsWith('claude') || profile.command.startsWith('codex')) {
+      setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), 7000)
+    }
+    const dismissMs = (profile.id === 'gemini' || profile.id === 'aider-qwen') ? 15000 : 8000
+    setTimeout(() => setLaunchingAgent(null), dismissMs)
   }
 
   const handleAddProfile = (profile: AIProfile) => {

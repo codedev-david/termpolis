@@ -15,10 +15,10 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('agents')
   const [messages, setMessages] = useState<SwarmMessage[]>([])
   const [tasks, setTasks] = useState<SwarmTask[]>([])
-  const [showStartSwarm, setShowStartSwarm] = useState(false)
   const terminals = useTerminalStore((s) => s.terminals)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
+  const [showStartSwarm, setShowStartSwarm] = useState(!swarmActive)
 
   // New task form
   const [showNewTask, setShowNewTask] = useState(false)
@@ -32,12 +32,16 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   const [broadcastType, setBroadcastType] = useState<string>('info')
 
   const refresh = useCallback(async () => {
-    const [msgRes, taskRes] = await Promise.all([
-      window.swarmAPI.getMessages(),
-      window.swarmAPI.getTasks(),
-    ])
-    if (msgRes.success && msgRes.data) setMessages(msgRes.data)
-    if (taskRes.success && taskRes.data) setTasks(taskRes.data)
+    try {
+      const [msgRes, taskRes] = await Promise.all([
+        window.swarmAPI.getMessages(),
+        window.swarmAPI.getTasks(),
+      ])
+      if (msgRes.success && msgRes.data) setMessages(msgRes.data)
+      if (taskRes.success && taskRes.data) setTasks(taskRes.data)
+    } catch {
+      // Swarm API may not be ready yet — ignore
+    }
   }, [])
 
   // Poll every 3 seconds via centralized polling service

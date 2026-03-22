@@ -27,7 +27,7 @@ const AVAILABLE_AGENTS: AgentDef[] = [
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
   { id: 'aider', name: 'Aider', icon: 'fa-solid fa-code', command: 'aider', shell: 'bash', color: '#8B5CF6' },
-  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-code-branch', command: 'aider --model qwen3', shell: 'bash', color: '#EC4899' },
+  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-code-branch', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#EC4899' },
 ]
 
 // ---- Legacy task assignment for launch ----
@@ -154,14 +154,25 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     const terminalIds: string[] = []
     const agentEntries: SwarmAgentEntry[] = []
 
+    // Resolve Ollama path once for any aider-qwen agents
+    let ollamaExtraPaths: string[] | undefined
+    const hasAiderQwen = assignments.some(a => a.agentId === 'aider-qwen')
+    if (hasAiderQwen) {
+      const ollamaRes = await window.termpolis.getOllamaPath()
+      if (ollamaRes.success && ollamaRes.data && ollamaRes.data !== 'ollama') {
+        ollamaExtraPaths = [ollamaRes.data]
+      }
+    }
+
     // Step 1: Create terminals
     for (const assignment of assignments) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignment.agentId)!
       const id = uuid()
       const shellType = resolveShellType(agent.shell, availableShells)
+      const extraPaths = agent.id === 'aider-qwen' ? ollamaExtraPaths : undefined
 
       setLaunchProgress(`Creating terminal for ${agent.name}...`)
-      const res = await window.termpolis.createTerminal(id, shellType, cwd)
+      const res = await window.termpolis.createTerminal(id, shellType, cwd, extraPaths)
       if (!res.success) {
         setLaunchProgress(`Failed to create terminal for ${agent.name}: ${res.error}`)
         continue
@@ -176,6 +187,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
         fontSize: TERMINAL_DEFAULTS.fontSize,
         theme: TERMINAL_DEFAULTS.theme,
         fontFamily: TERMINAL_DEFAULTS.fontFamily,
+        agentCommand: agent.command,
       })
 
       terminalIds.push(id)
@@ -201,6 +213,15 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       window.termpolis.writeToTerminal(terminalIds[i], agent.command + '\r')
       // Stagger agent launches slightly so they don't all hit the shell at once
       await delay(500)
+    }
+
+    // Auto-trust for Claude/Codex terminals in swarm
+    for (let i = 0; i < terminalIds.length; i++) {
+      const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
+      if (agent.command.startsWith('claude') || agent.command.startsWith('codex')) {
+        const tid = terminalIds[i]
+        setTimeout(() => window.termpolis.writeToTerminal(tid, '\r'), 7000)
+      }
     }
 
     // Step 3: Wait for agents to fully initialize

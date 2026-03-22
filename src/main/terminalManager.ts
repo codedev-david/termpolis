@@ -12,6 +12,10 @@ interface PtyProcess {
 
 const processes = new Map<string, PtyProcess>()
 
+// Trust prompt detection is handled by timed Enter sends in the renderer
+// (AIProfiles.tsx, App.tsx, StartSwarmModal.tsx) since Claude Code's TUI
+// doesn't reliably respond to output-based detection.
+
 // Cache tool availability check — run once, reuse for all terminal spawns
 let bundledToolsNeeded: boolean | null = null
 
@@ -31,7 +35,8 @@ export function spawnTerminal(
   id: string,
   executable: string,
   cwd: string,
-  onData: (data: string) => void
+  onData: (data: string) => void,
+  extraPaths?: string[]
 ): void {
   const resolvedCwd = (() => {
     try { return existsSync(cwd) ? cwd : homedir() }
@@ -43,11 +48,17 @@ export function spawnTerminal(
     'tools',
     process.platform
   )
+  const sep = process.platform === 'win32' ? ';' : ':'
   const existingPath = process.env.PATH || process.env.Path || ''
   const needsBundled = checkBundledToolsNeeded()
-  const env = needsBundled
-    ? { ...process.env, PATH: `${toolsDir}${process.platform === 'win32' ? ';' : ':'}${existingPath}` } as Record<string, string>
-    : { ...process.env } as Record<string, string>
+  const extraPathStr = extraPaths?.length ? extraPaths.join(sep) + sep : ''
+  const basePath = needsBundled ? `${toolsDir}${sep}${existingPath}` : existingPath
+  const env = {
+    ...process.env,
+    PATH: `${extraPathStr}${basePath}`,
+    // Ensure Ollama API base is set for Aider + Qwen
+    OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
+  } as Record<string, string>
 
   const proc = pty.spawn(executable, getShellArgs(executable), {
     name: 'xterm-256color',

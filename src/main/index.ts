@@ -58,7 +58,7 @@ function createWindow() {
 }
 
 // IPC Handlers
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -72,7 +72,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd }) => {
           const existing = terminalOutputBuffers.get(id) || ''
           const updated = existing + data
           terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
-        })
+        }, extraPaths)
         clearTimeout(timeout)
         resolve()
       } catch (e) {
@@ -141,6 +141,18 @@ ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+ipcMain.handle('dialog:pick-directory', async (_, { defaultPath }) => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      defaultPath: defaultPath || homedir(),
+      properties: ['openDirectory'],
+      title: 'Choose project directory',
+    })
+    if (result.canceled || !result.filePaths[0]) return ok(null)
+    return ok(result.filePaths[0])
+  } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('completion:path-entries', async (_, { dirPath }) => {
   try { return ok(listPathEntries(dirPath)) }
   catch (e: any) { return err(e.message) }
@@ -193,6 +205,31 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
 })
 
 // Check which AI agent commands are installed on the system
+// Find Ollama executable — checks PATH first, then common install locations on Windows
+function findOllamaPath(): string | null {
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  try {
+    execSync(process.platform === 'win32' ? 'where ollama' : 'which ollama', execOpts)
+    return 'ollama' // found in PATH
+  } catch {
+    // Not in PATH — check common Windows install locations
+    if (process.platform === 'win32') {
+      const { existsSync } = require('fs')
+      const { join } = require('path')
+      const home = require('os').homedir()
+      const candidates = [
+        join(home, 'AppData', 'Local', 'Programs', 'Ollama'),
+        'C:\\Program Files\\Ollama',
+        join(home, 'AppData', 'Local', 'Ollama'),
+      ]
+      for (const dir of candidates) {
+        if (existsSync(join(dir, 'ollama.exe'))) return dir
+      }
+    }
+    return null
+  }
+}
+
 ipcMain.handle('agents:detect', async () => {
   const agents = [
     { id: 'claude', command: 'claude' },
@@ -200,23 +237,24 @@ ipcMain.handle('agents:detect', async () => {
     { id: 'gemini', command: 'gemini' },
     { id: 'aider', command: 'aider' },
   ]
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
   const results: Record<string, boolean> = {}
   for (const agent of agents) {
     try {
-      execSync(process.platform === 'win32' ? `where ${agent.command}` : `which ${agent.command}`, { stdio: 'ignore', timeout: 3000, windowsHide: true })
+      execSync(process.platform === 'win32' ? `where ${agent.command}` : `which ${agent.command}`, execOpts)
       results[agent.id] = true
     } catch {
       results[agent.id] = false
     }
   }
   // Aider+Qwen needs both aider AND ollama
-  results['aider-qwen'] = results['aider'] && (() => {
-    try {
-      execSync(process.platform === 'win32' ? 'where ollama' : 'which ollama', { stdio: 'ignore', timeout: 3000, windowsHide: true })
-      return true
-    } catch { return false }
-  })()
+  results['aider-qwen'] = results['aider'] && findOllamaPath() !== null
   return ok(results)
+})
+
+// Expose Ollama path for terminal environment injection
+ipcMain.handle('agents:ollama-path', async () => {
+  return ok(findOllamaPath())
 })
 
 // Swarm IPC handlers for the dashboard

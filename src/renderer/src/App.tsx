@@ -34,7 +34,10 @@ export default function App() {
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
+  const launchingAgent = useTerminalStore(s => s.launchingAgent)
+  const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
+  const [restoring, setRestoring] = useState(true)
   const started = useRef(false)
   const loaded = useRef(false)
 
@@ -59,8 +62,49 @@ export default function App() {
           promptTemplates: pt ?? [],
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.map(t => t.id)) : null,
         })
+        // Infer agent commands from terminal names for sessions saved before agentCommand existed
+        const KNOWN_AGENTS: Record<string, string> = {
+          'Claude Code': 'claude',
+          'OpenAI Codex': 'codex',
+          'Gemini CLI': 'gemini',
+          'Aider': 'aider',
+          'Aider + Qwen3': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
+        }
+        const resolvedSaved = saved.map(t => ({
+          ...t,
+          agentCommand: t.agentCommand || KNOWN_AGENTS[t.name] || undefined,
+        }))
+        // Update store with resolved agentCommands so they persist on next save
+        useTerminalStore.setState({ terminals: resolvedSaved })
+
         // Spawn all terminals in parallel for faster startup
-        Promise.all(saved.map(t => window.termpolis.createTerminal(t.id, t.shellType, t.cwd)))
+        const agentTerminals = resolvedSaved.filter(t => t.agentCommand)
+        if (agentTerminals.length > 0) {
+          setLaunchingAgent(agentTerminals[0].name)
+        }
+        Promise.all(resolvedSaved.map(t => window.termpolis.createTerminal(t.id, t.shellType, t.cwd))).then(() => {
+          // Re-launch agent commands after shells initialize
+          if (agentTerminals.length > 0) {
+            setTimeout(() => {
+              for (const t of agentTerminals) {
+                window.termpolis.writeToTerminal(t.id, t.agentCommand! + '\r')
+              }
+              setRestoring(false)
+            }, 3000)
+            // Auto-trust for Claude/Codex terminals on restore (agent sent at 3s, trust prompt ~5s later)
+            const trustTerminals = agentTerminals.filter(t => t.agentCommand?.startsWith('claude') || t.agentCommand?.startsWith('codex'))
+            for (const t of trustTerminals) {
+              setTimeout(() => window.termpolis.writeToTerminal(t.id, '\r'), 9000)
+            }
+            const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini' || t.agentCommand?.startsWith('aider'))
+            setTimeout(() => setLaunchingAgent(null), hasSlowAgent ? 15000 : 8000)
+          } else {
+            // No agent terminals — just show terminals after a brief shell init
+            setTimeout(() => setRestoring(false), 1500)
+          }
+        })
+      } else {
+        setRestoring(false)
       }
       loaded.current = true
     })
@@ -308,39 +352,27 @@ export default function App() {
       case 'show_swarm':
         setShowSwarmDashboard(v => !v)
         break
-      case 'launch_claude': {
-        const claudeProfile = { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' }
-        const cId = uuid()
-        const cCwd = await getHomedir()
-        const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-        const res = await window.termpolis.createTerminal(cId, shellType, cCwd)
-        if (res.success) {
-          addTerminal({ id: cId, name: claudeProfile.name, color: claudeProfile.color, shellType, cwd: cCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-          setTimeout(() => window.termpolis.writeToTerminal(cId, claudeProfile.command + '\r'), 1500)
-        }
-        break
-      }
-      case 'launch_codex': {
-        const codexProfile = { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' }
-        const xId = uuid()
-        const xCwd = await getHomedir()
-        const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-        const res = await window.termpolis.createTerminal(xId, shellType, xCwd)
-        if (res.success) {
-          addTerminal({ id: xId, name: codexProfile.name, color: codexProfile.color, shellType, cwd: xCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-          setTimeout(() => window.termpolis.writeToTerminal(xId, codexProfile.command + '\r'), 1500)
-        }
-        break
-      }
+      case 'launch_claude':
+      case 'launch_codex':
       case 'launch_gemini': {
-        const geminiProfile = { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' }
-        const gId = uuid()
-        const gCwd = await getHomedir()
-        const gShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-        const gRes = await window.termpolis.createTerminal(gId, gShellType, gCwd)
-        if (gRes.success) {
-          addTerminal({ id: gId, name: geminiProfile.name, color: geminiProfile.color, shellType: gShellType, cwd: gCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
-          setTimeout(() => window.termpolis.writeToTerminal(gId, geminiProfile.command + '\r'), 1500)
+        const profiles: Record<string, typeof AGENT_CONFIGS[string]> = {
+          launch_claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
+          launch_codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
+          launch_gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
+        }
+        const prof = profiles[action]
+        const dirRes = await window.termpolis.pickDirectory()
+        if (!dirRes.success || !dirRes.data) break
+        const pCwd = dirRes.data
+        const pId = uuid()
+        const pShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
+        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd)
+        if (pRes.success) {
+          addTerminal({ id: pId, name: prof.name, color: prof.color, shellType: pShellType, cwd: pCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace', agentCommand: prof.command })
+          setTimeout(() => window.termpolis.writeToTerminal(pId, prof.command + '\r'), 1500)
+          if (prof.command === 'claude' || prof.command === 'codex') {
+            setTimeout(() => window.termpolis.writeToTerminal(pId, '\r'), 7000)
+          }
         }
         break
       }
@@ -364,19 +396,30 @@ export default function App() {
     claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
     codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
     gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
-    'aider-qwen': { name: 'Aider + Qwen3', command: 'aider --model ollama/qwen3-coder', color: '#06B6D4' },
+    'aider-qwen': { name: 'Aider + Qwen3', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', color: '#06B6D4' },
   }
 
   const handleWelcomeLaunchAgent = async (agentId: string) => {
     const config = AGENT_CONFIGS[agentId]
     if (!config) return
+    // Prompt user to pick a project directory
+    const dirRes = await window.termpolis.pickDirectory()
+    if (!dirRes.success || !dirRes.data) return  // user cancelled
+    const cwd = dirRes.data
+    setLaunchingAgent(config.name)
     const id = uuid()
-    const cwd = await getHomedir()
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
     const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (res.success) {
-      addTerminal({ id, name: config.name, color: config.color, shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace' })
+      addTerminal({ id, name: config.name, color: config.color, shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace', agentCommand: config.command })
       setTimeout(() => window.termpolis.writeToTerminal(id, config.command + '\r'), 1500)
+      if (config.command.startsWith('claude') || config.command.startsWith('codex')) {
+        setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), 7000)
+      }
+      const dismissMs = (agentId === 'gemini' || agentId === 'aider-qwen') ? 15000 : 8000
+      setTimeout(() => setLaunchingAgent(null), dismissMs)
+    } else {
+      setLaunchingAgent(null)
     }
   }
 
@@ -385,7 +428,7 @@ export default function App() {
 
   const renderMain = () => {
     if (showSettings) return <Suspense fallback={<div className="flex items-center justify-center h-full text-[#6b7280]">Loading settings...</div>}><SettingsPane /></Suspense>
-    if (terminals.length === 0) {
+    if (terminals.length === 0 || restoring) {
       return (
         <Welcome
           onNewTerminal={() => setShowAddModal(true)}
@@ -403,8 +446,22 @@ export default function App() {
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-hidden">
+        <main className="flex-1 overflow-hidden relative">
           {renderMain()}
+          {launchingAgent && (
+            <div
+              className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-[#1e1e1e]/85 backdrop-blur-sm cursor-pointer"
+              onClick={() => setLaunchingAgent(null)}
+            >
+              <div className="relative mb-6">
+                <div className="w-16 h-16 rounded-full border-2 border-[#22D3EE]/30 border-t-[#22D3EE] animate-spin"></div>
+                <i className="fa-solid fa-robot text-[#22D3EE] text-xl absolute inset-0 flex items-center justify-center"></i>
+              </div>
+              <h3 className="text-sm font-semibold text-[#d4d4d4] mb-1">Launching {launchingAgent}</h3>
+              <p className="text-xs text-[#6b7280]">Waiting for agent to initialize...</p>
+              <p className="text-[10px] text-[#555] mt-4">Click anywhere to dismiss</p>
+            </div>
+          )}
         </main>
         {showContextPanel && (
           <ContextPanel

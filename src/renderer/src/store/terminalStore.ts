@@ -7,16 +7,17 @@ import type { HandoffContext } from '../lib/contextCapture'
 
 // ---- Pane tree helpers ----
 
-export function buildPaneTree(terminalIds: string[]): PaneNode | null {
+export function buildPaneTree(terminalIds: string[], depth = 0): PaneNode | null {
   if (terminalIds.length === 0) return null
   if (terminalIds.length === 1) return { type: 'terminal', terminalId: terminalIds[0] }
-  // Stack terminals vertically in a balanced binary tree
+  // Alternate directions for a grid layout: rows first (horizontal), then columns (vertical)
+  const direction = depth % 2 === 0 ? 'horizontal' : 'vertical'
   const mid = Math.ceil(terminalIds.length / 2)
-  const left = buildPaneTree(terminalIds.slice(0, mid))
-  const right = buildPaneTree(terminalIds.slice(mid))
+  const left = buildPaneTree(terminalIds.slice(0, mid), depth + 1)
+  const right = buildPaneTree(terminalIds.slice(mid), depth + 1)
   if (!left) return right
   if (!right) return left
-  return { type: 'split', direction: 'horizontal', ratio: 0.5, children: [left, right] }
+  return { type: 'split', direction, ratio: 0.5, children: [left, right] }
 }
 
 function findAndReplace(node: PaneNode, terminalId: string, replacement: PaneNode): PaneNode | null {
@@ -71,6 +72,7 @@ interface TerminalStore {
   lastHandoffContext: HandoffContext | null
   swarmActive: boolean
   swarmAgents: SwarmAgentEntry[]
+  launchingAgent: string | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -100,6 +102,7 @@ interface TerminalStore {
   setSwarmActive: (active: boolean) => void
   setSwarmAgents: (agents: SwarmAgentEntry[]) => void
   updateSwarmAgentStatus: (terminalId: string, status: 'starting' | 'running' | 'error') => void
+  setLaunchingAgent: (name: string | null) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -119,6 +122,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   lastHandoffContext: null,
   swarmActive: false,
   swarmAgents: [],
+  launchingAgent: null,
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -290,4 +294,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       a.terminalId === terminalId ? { ...a, status } : a
     ),
   })),
+
+  setLaunchingAgent: (name) => set({ launchingAgent: name }),
 }))
