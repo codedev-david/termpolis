@@ -11,7 +11,36 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  test:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run unit tests
+        run: npx vitest run
+
+      - name: Build app
+        run: npx electron-vite build
+
+      - name: Run E2E tests
+        run: npx playwright test
+        env:
+          TERMPOLIS_TEST_AGENTS: '1'
+          TERMPOLIS_TEST_TIMING: '1'
+
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
