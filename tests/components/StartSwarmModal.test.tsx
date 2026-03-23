@@ -68,18 +68,17 @@ import { StartSwarmModal } from '../../src/renderer/src/components/SwarmDashboar
 
 describe('StartSwarmModal', () => {
   it('shows preparing step with spinner on mount', () => {
-    // Make checkClaudeInstalled hang so we stay on preparing step
     vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     expect(screen.getByText('Preparing Conductor')).toBeInTheDocument()
     expect(screen.getByText('Checking Claude Code...')).toBeInTheDocument()
   })
 
-  it('shows error when Claude Code is not installed', async () => {
+  it('shows Claude Code Required when not installed', async () => {
     vi.mocked(checkClaudeInstalled).mockResolvedValue(false)
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     await waitFor(() => {
-      expect(screen.getByText(/Swarm requires Claude Code/)).toBeInTheDocument()
+      expect(screen.getByText('Claude Code Required')).toBeInTheDocument()
     })
   })
 
@@ -95,21 +94,21 @@ describe('StartSwarmModal', () => {
   it('shows describe step after successful preparation', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     await waitFor(() => {
-      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
   })
 
-  it('shows tips box on describe step', async () => {
+  it('shows AI Conductor info box on describe step', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     await waitFor(() => {
-      expect(screen.getByText('Tips for better results')).toBeInTheDocument()
+      expect(screen.getByText('AI Conductor')).toBeInTheDocument()
     })
   })
 
   it('has Launch Swarm button disabled when task is empty', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     await waitFor(() => {
-      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
     const launchButton = screen.getByText('Launch Swarm')
     expect(launchButton.closest('button')).toBeDisabled()
@@ -118,9 +117,9 @@ describe('StartSwarmModal', () => {
   it('enables Launch Swarm button when task is entered', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     await waitFor(() => {
-      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
-    const textarea = screen.getByPlaceholderText(/Build a tic-tac-toe/)
+    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     const launchButton = screen.getByText('Launch Swarm')
     expect(launchButton.closest('button')).not.toBeDisabled()
@@ -130,9 +129,9 @@ describe('StartSwarmModal', () => {
     const onLaunched = vi.fn()
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} />)
     await waitFor(() => {
-      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
-    const textarea = screen.getByPlaceholderText(/Build a tic-tac-toe/)
+    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
     await waitFor(() => {
@@ -143,7 +142,6 @@ describe('StartSwarmModal', () => {
 
   it('shows auth message when conductor needs authentication', async () => {
     vi.mocked(startConductor).mockResolvedValue({ success: true, needsAuth: true })
-    // Make waitForAuth hang so we can see the auth message
     vi.mocked(waitForAuth).mockReturnValue(new Promise(() => {}))
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     await waitFor(() => {
@@ -163,8 +161,13 @@ describe('StartSwarmModal', () => {
     vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
     expect(screen.getByText('Start Swarm')).toBeInTheDocument()
-    // 3 step dots (preparing, describe, launching)
     const dots = document.querySelectorAll('.rounded-full.w-2.h-2')
     expect(dots.length).toBe(3)
+  })
+
+  it('shows swarm description during preparation', () => {
+    vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    expect(screen.getByText(/multiple AI agents work together/)).toBeInTheDocument()
   })
 })
