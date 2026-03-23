@@ -271,7 +271,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   function renderDescribeStep() {
     return (
       <div>
-        <p className="text-sm text-[#bbb] mb-2">What do you want the swarm to build?</p>
+        <p className="text-sm text-[#bbb] mb-2">What do you want the swarm to work on?</p>
         <p className="text-xs text-[#6b7280] mb-3">
           Just describe what you need in plain language. The AI conductor will figure out how to break it down, which agents to use, and how to coordinate the work.
         </p>
