@@ -24,6 +24,7 @@ export function Sidebar() {
   const [showPrompts, setShowPrompts] = useState(false)
   const [showWorkflows, setShowWorkflows] = useState(false)
   const [showSwarm, setShowSwarm] = useState(false)
+  const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
   const [terminalsCollapsed, setTerminalsCollapsed] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
 
@@ -98,7 +99,21 @@ export function Sidebar() {
           className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-cubes"></i></button>
         <button
-          onClick={() => setShowSwarm(true)}
+          onClick={async () => {
+            const swarmActive = useTerminalStore.getState().swarmActive
+            if (swarmActive) {
+              // Just open dashboard to view active swarm
+              setSwarmCwd(null)
+              setShowSwarm(true)
+            } else {
+              // Pick directory first for new swarm
+              const res = await window.termpolis.pickDirectory()
+              if (res.success && res.data) {
+                setSwarmCwd(res.data)
+                setShowSwarm(true)
+              }
+            }
+          }}
           title="Swarm Dashboard"
           className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-network-wired"></i></button>
@@ -150,7 +165,7 @@ export function Sidebar() {
       )}
       {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
       {showWorkflows && <WorkflowTemplates onClose={() => setShowWorkflows(false)} />}
-      {showSwarm && <SwarmDashboard onClose={() => setShowSwarm(false)} />}
+      {showSwarm && <SwarmDashboard onClose={() => { setShowSwarm(false); setSwarmCwd(null) }} initialCwd={swarmCwd} />}
     </aside>
   )
 }

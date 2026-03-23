@@ -280,7 +280,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             <i className="fa-solid fa-brain text-[#22D3EE]"></i>
             <span className="font-semibold uppercase tracking-wider">AI Conductor</span>
           </p>
-          <p className="text-[10px] text-[#555]">
+          <p className="text-[10px] text-[#d4d4d4]">
             The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. You'll see progress updates in the Swarm Dashboard.
           </p>
         </div>
