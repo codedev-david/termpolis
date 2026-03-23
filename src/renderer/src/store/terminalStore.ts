@@ -45,6 +45,7 @@ function removeFromTree(node: PaneNode, terminalId: string): PaneNode | null {
 
 function findRightmostLeaf(node: PaneNode): string | null {
   if (node.type === 'terminal') return node.terminalId
+  if (!node.children?.[1]) return node.children?.[0] ? findRightmostLeaf(node.children[0]) : null
   return findRightmostLeaf(node.children[1])
 }
 

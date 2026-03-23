@@ -225,7 +225,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     window.termpolis.readTerminalBuffer(terminalId).then(res => {
       if (disposed || !res.success || !res.data) return
       if (res.data.output) term.write(res.data.output)
-    })
+    }).catch(() => { /* terminal may have been killed before replay */ })
 
     // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste)
     const keyHandler = term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
