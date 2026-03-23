@@ -24,3 +24,4 @@ ui_testing/
 *.suo
 *.user
 .superpowers/
+e2e/screenshots/
