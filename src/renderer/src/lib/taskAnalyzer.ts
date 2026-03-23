@@ -32,8 +32,9 @@ const CATEGORY_RULES: CategoryRule[] = [
     category: 'frontend',
     keywords: [
       /\bbuild\b/i, /\bcreate\b/i, /\bmake\b/i, /\bimplement/i, /\bdevelop/i,
-      /\bwrite\s+(?:a|an|the)\b/i, /\bcod(?:e|ing)\b/i,
+      /\bwrite\s+(?:a|an|the)\b/i, /\bcod(?:e|ing)\b/i, /\badd\b/i,
       /\bapp\b/i, /\bapplication/i, /\bgame\b/i, /\btool\b/i, /\bwebsite/i, /\bpage\b/i,
+      /\bfeature/i, /\bfunction/i, /\bmodule/i, /\bservice/i, /\bapi\b/i, /\bendpoint/i,
       /\bI\s+want\b/i, /\bI\s+need\b/i,
     ],
     baseComplexity: 4,
@@ -41,7 +42,10 @@ const CATEGORY_RULES: CategoryRule[] = [
   },
   {
     category: 'refactoring',
-    keywords: [/\brefactor/i, /\brewrite/i, /\brestructur/i, /\bclean\s*up/i, /\bmoderniz/i, /\bmigrat/i],
+    keywords: [
+      /\brefactor/i, /\brewrite/i, /\brestructur/i, /\bclean\s*up/i, /\bmoderniz/i, /\bmigrat/i,
+      /\bupgrade/i, /\bupdate\b/i, /\bimprove/i, /\boptimiz/i, /\bperformance/i, /\bconvert\s+(?:to|from)/i,
+    ],
     baseComplexity: 4,
     tokenIntensity: 'high',
   },
@@ -83,7 +87,7 @@ const CATEGORY_RULES: CategoryRule[] = [
   },
   {
     category: 'devops',
-    keywords: [/\bdeploy/i, /\bci\b/i, /\bcd\b/i, /\bdocker/i, /\bkubernetes/i, /\bpipeline/i, /\binfra/i, /\bcloud/i, /\bterraform/i],
+    keywords: [/\bdeploy/i, /\bci\b/i, /\bcd\b/i, /\bdocker/i, /\bkubernetes/i, /\bpipeline/i, /\binfra/i, /\bcloud/i, /\bterraform/i, /\bset\s*up/i, /\bconfig/i],
     baseComplexity: 3,
     tokenIntensity: 'medium',
   },

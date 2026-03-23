@@ -461,17 +461,25 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     return (
       <div>
         <p className="text-sm text-[#bbb] mb-2">Describe what the swarm should work on.</p>
-        <p className="text-xs text-[#6b7280] mb-4">
-          Be specific -- the task will be split across {selectedAgents.length} agents.
+        <p className="text-xs text-[#6b7280] mb-3">
+          Be specific — list each distinct task so the router can split work across {selectedAgents.length} agents.
         </p>
         <textarea
           autoFocus
           value={taskDescription}
           onChange={e => setTaskDescription(e.target.value)}
-          placeholder='e.g. "Refactor the auth module, write comprehensive tests, and review for security issues"'
+          placeholder='e.g. "Build a tic-tac-toe game in React, write unit tests for the game logic, and create documentation on how to play"'
           rows={5}
           className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
         />
+        <div className="mt-3 p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
+          <p className="text-[10px] text-[#6b7280] mb-1.5 font-semibold uppercase tracking-wider">Tips for better routing</p>
+          <ul className="text-[10px] text-[#555] space-y-0.5 list-disc list-inside">
+            <li>Use action words: <span className="text-[#888]">build, create, refactor, test, fix, document, review, upgrade, deploy</span></li>
+            <li>Separate tasks with <span className="text-[#888]">"and"</span> or commas so each agent gets distinct work</li>
+            <li>Be explicit: <span className="text-[#888]">"build the app and write tests"</span> not <span className="text-[#888]">"make it work"</span></li>
+          </ul>
+        </div>
         <div className="flex items-center gap-2 mt-3">
           {selectedAgents.map(a => (
             <span key={a.id} className="flex items-center gap-1.5 text-xs bg-[#2d2d2d] px-2 py-1 rounded border border-[#3c3c3c]">
