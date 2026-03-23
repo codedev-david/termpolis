@@ -25,3 +25,4 @@ ui_testing/
 *.user
 .superpowers/
 e2e/screenshots/
+e2e/visual-regression.spec.ts-snapshots/
