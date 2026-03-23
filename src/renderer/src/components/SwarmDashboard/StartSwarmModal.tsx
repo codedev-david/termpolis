@@ -149,8 +149,11 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
 
   // ---- LAUNCH ----
   const handleLaunch = useCallback(async () => {
+    // Prompt user to pick a project directory
+    const dirRes = await window.termpolis.pickDirectory()
+    if (!dirRes.success || !dirRes.data) return  // user cancelled
     setStep('launching')
-    const cwd = await getHomedir()
+    const cwd = dirRes.data
     const terminalIds: string[] = []
     const agentEntries: SwarmAgentEntry[] = []
 
@@ -204,8 +207,9 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     setSwarmAgents(agentEntries)
 
     // Step 2: Wait for shell init, then send agent commands one at a time
+    // Git Bash on Windows needs 3s to fully initialize
     setLaunchProgress('Waiting for shells to initialize...')
-    await delay(testDelay(2000))
+    await delay(testDelay(3000))
 
     for (let i = 0; i < terminalIds.length; i++) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
@@ -225,9 +229,10 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     }
 
     // Step 3: Wait for agents to fully initialize
-    // Claude Code takes ~5-10s, Codex takes ~3-5s, Gemini ~3-5s
-    setLaunchProgress('Waiting for agents to initialize (this takes 10-15 seconds)...')
-    await delay(testDelay(12000))
+    // Must wait long enough for: shell init (3s) + agent startup (5-10s) + trust auto-dismiss (9s)
+    // The auto-trust Enter fires at 9s — we need to wait past that before sending task prompts
+    setLaunchProgress('Waiting for agents to initialize (this takes 15-20 seconds)...')
+    await delay(testDelay(18000))
 
     // Step 4: Send task prompts as a SINGLE message (not line by line)
     // The agent should be fully started and waiting for input by now
