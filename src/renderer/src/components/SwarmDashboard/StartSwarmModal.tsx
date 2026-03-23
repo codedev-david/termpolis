@@ -21,11 +21,8 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   const cwdRef = useRef<string | null>(null)
   const abortedRef = useRef(false)
 
-  // Preparation flow on mount (guard against StrictMode double-fire)
-  const prepStarted = useRef(false)
+  // Preparation flow on mount
   useEffect(() => {
-    if (prepStarted.current) return
-    prepStarted.current = true
     let cancelled = false
 
     async function prepare() {
@@ -39,19 +36,23 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
         return
       }
 
-      // Step 2: Pick directory
-      setStatusMessage('Select a project directory...')
-      const dirRes = await window.termpolis.pickDirectory()
+      // Step 2: Pick directory (skip if already picked from a previous effect run)
+      if (cwdRef.current) {
+        // Already have a directory from a previous run
+      } else {
+        setStatusMessage('Select a project directory...')
+        const dirRes = await window.termpolis.pickDirectory()
+        if (cancelled || abortedRef.current) return
+
+        if (!dirRes.success || !dirRes.data) {
+          onClose()
+          return
+        }
+        cwdRef.current = dirRes.data
+      }
       if (cancelled || abortedRef.current) return
 
-      if (!dirRes.success || !dirRes.data) {
-        // User cancelled picker — close modal
-        onClose()
-        return
-      }
-
-      const cwd = dirRes.data
-      cwdRef.current = cwd
+      const cwd = cwdRef.current!
 
       // Step 3: Start conductor
       setStatusMessage('Starting conductor...')
