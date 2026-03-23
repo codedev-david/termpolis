@@ -69,44 +69,41 @@ import { StartSwarmModal } from '../../src/renderer/src/components/SwarmDashboar
 describe('StartSwarmModal', () => {
   it('shows preparing step with spinner on mount', () => {
     vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     expect(screen.getByText('Preparing Conductor')).toBeInTheDocument()
     expect(screen.getByText('Checking Claude Code...')).toBeInTheDocument()
   })
 
   it('shows Claude Code Required when not installed', async () => {
     vi.mocked(checkClaudeInstalled).mockResolvedValue(false)
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('Claude Code Required')).toBeInTheDocument()
     })
   })
 
-  it('closes modal when user cancels directory picker', async () => {
-    ;(window as any).termpolis.pickDirectory = vi.fn().mockResolvedValue({ success: false })
-    const onClose = vi.fn()
-    render(<StartSwarmModal onClose={onClose} onLaunched={vi.fn()} />)
-    await waitFor(() => {
-      expect(onClose).toHaveBeenCalled()
-    })
+  it('receives projectCwd as prop', () => {
+    vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
+    expect(screen.getByText('Preparing Conductor')).toBeInTheDocument()
   })
 
   it('shows describe step after successful preparation', async () => {
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
   })
 
   it('shows AI Conductor info box on describe step', async () => {
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('AI Conductor')).toBeInTheDocument()
     })
   })
 
   it('has Launch Swarm button disabled when task is empty', async () => {
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
@@ -115,7 +112,7 @@ describe('StartSwarmModal', () => {
   })
 
   it('enables Launch Swarm button when task is entered', async () => {
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
@@ -127,7 +124,7 @@ describe('StartSwarmModal', () => {
 
   it('calls sendTask and onLaunched when Launch Swarm is clicked', async () => {
     const onLaunched = vi.fn()
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     })
@@ -143,7 +140,7 @@ describe('StartSwarmModal', () => {
   it('shows auth message when conductor needs authentication', async () => {
     vi.mocked(startConductor).mockResolvedValue({ success: true, needsAuth: true })
     vi.mocked(waitForAuth).mockReturnValue(new Promise(() => {}))
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText(/Complete sign-in in your browser/)).toBeInTheDocument()
     })
@@ -151,7 +148,7 @@ describe('StartSwarmModal', () => {
 
   it('shows error when conductor fails to start', async () => {
     vi.mocked(startConductor).mockResolvedValue({ success: false, error: 'Terminal creation failed' })
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
       expect(screen.getByText('Terminal creation failed')).toBeInTheDocument()
     })
@@ -159,7 +156,7 @@ describe('StartSwarmModal', () => {
 
   it('has 3 step dots in the header', () => {
     vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     expect(screen.getByText('Start Swarm')).toBeInTheDocument()
     const dots = document.querySelectorAll('.rounded-full.w-2.h-2')
     expect(dots.length).toBe(3)
@@ -167,7 +164,7 @@ describe('StartSwarmModal', () => {
 
   it('shows swarm description during preparation', () => {
     vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
-    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     expect(screen.getByText(/multiple AI agents work together/)).toBeInTheDocument()
   })
 })

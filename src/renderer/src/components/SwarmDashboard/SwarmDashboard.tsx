@@ -19,8 +19,13 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   const terminals = useTerminalStore((s) => s.terminals)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
-  const [showStartSwarm, setShowStartSwarm] = useState(!swarmActive)
+  const [showStartSwarm, setShowStartSwarm] = useState(false)
+  const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
   const [conductorStatus, setConductorStatus] = useState<string>('idle')
+
+  // Auto-prompt to start swarm on mount if no swarm active
+  // Don't auto-open directory picker — let user click "Start Swarm" button
+  // which will pick directory then open the wizard
 
   // Poll conductor state every 3 seconds
   useEffect(() => {
@@ -338,7 +343,13 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
               </span>
             ) : (
               <button
-                onClick={() => setShowStartSwarm(true)}
+                onClick={async () => {
+                  const res = await window.termpolis.pickDirectory()
+                  if (res.success && res.data) {
+                    setSwarmCwd(res.data)
+                    setShowStartSwarm(true)
+                  }
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4] transition-colors"
               >
                 <i className="fa-solid fa-rocket"></i>
@@ -482,8 +493,9 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
       </div>
 
       {/* Start Swarm Modal */}
-      {showStartSwarm && (
+      {showStartSwarm && swarmCwd && (
         <StartSwarmModal
+          projectCwd={swarmCwd}
           onClose={() => setShowStartSwarm(false)}
           onLaunched={() => {
             setShowStartSwarm(false)

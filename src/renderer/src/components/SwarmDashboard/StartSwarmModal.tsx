@@ -6,11 +6,12 @@ import { checkClaudeInstalled, startConductor, waitForAuth, sendTask } from '../
 interface StartSwarmModalProps {
   onClose: () => void
   onLaunched: () => void
+  projectCwd: string
 }
 
 type Step = 'preparing' | 'describe' | 'launching'
 
-export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
+export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmModalProps) {
   const [step, setStep] = useState<Step>('preparing')
   const [taskDescription, setTaskDescription] = useState('')
   const [statusMessage, setStatusMessage] = useState('Checking Claude Code...')
@@ -18,7 +19,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   const [error, setError] = useState<string | null>(null)
   const [claudeNotInstalled, setClaudeNotInstalled] = useState(false)
   const [launchProgress, setLaunchProgress] = useState('')
-  const cwdRef = useRef<string | null>(null)
+  const cwdRef = useRef<string>(projectCwd)
   const abortedRef = useRef(false)
 
   // Preparation flow on mount
@@ -36,23 +37,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
         return
       }
 
-      // Step 2: Pick directory (skip if already picked from a previous effect run)
-      if (cwdRef.current) {
-        // Already have a directory from a previous run
-      } else {
-        setStatusMessage('Select a project directory...')
-        const dirRes = await window.termpolis.pickDirectory()
-        if (cancelled || abortedRef.current) return
-
-        if (!dirRes.success || !dirRes.data) {
-          onClose()
-          return
-        }
-        cwdRef.current = dirRes.data
-      }
-      if (cancelled || abortedRef.current) return
-
-      const cwd = cwdRef.current!
+      const cwd = cwdRef.current
 
       // Step 3: Start conductor
       setStatusMessage('Starting conductor...')
