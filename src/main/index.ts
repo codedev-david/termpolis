@@ -58,26 +58,14 @@ function createWindow() {
   let forceClose = false
   mainWindow.on('close', (e) => {
     if (forceClose || process.env.NODE_ENV === 'test') return
-    // Check if any terminals have agent commands (agents running)
+    // Ask renderer if agents are running, show in-app dialog if so
     const hasAgents = mainWindow?.webContents.executeJavaScript(
       `(() => { try { return window.__termpolis_has_agents?.() ?? false } catch { return false } })()`
     )
     hasAgents?.then((running: boolean) => {
       if (running) {
-        const { dialog } = require('electron')
-        const choice = dialog.showMessageBoxSync(mainWindow!, {
-          type: 'warning',
-          buttons: ['Close Anyway', 'Cancel'],
-          defaultId: 1,
-          cancelId: 1,
-          title: 'AI Agents Running',
-          message: 'AI agents are still running. Closing will terminate all agents and any in-progress work will be lost.',
-          detail: 'Are you sure you want to close?',
-        })
-        if (choice === 0) {
-          forceClose = true
-          mainWindow?.close()
-        }
+        // Send event to renderer to show in-app close confirmation dialog
+        mainWindow?.webContents.send('app:confirm-close')
       } else {
         forceClose = true
         mainWindow?.close()
@@ -87,6 +75,12 @@ function createWindow() {
       mainWindow?.close()
     })
     e.preventDefault()
+  })
+
+  // Renderer confirmed force close
+  ipcMain.on('app:force-close', () => {
+    forceClose = true
+    mainWindow?.close()
   })
 
   mainWindow.on('closed', () => { mainWindow = null })

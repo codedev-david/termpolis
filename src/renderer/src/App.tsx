@@ -39,6 +39,7 @@ export default function App() {
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
   const swarmNotification = useTerminalStore(s => s.swarmNotification)
   const setSwarmNotification = useTerminalStore(s => s.setSwarmNotification)
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const [restoring, setRestoring] = useState(true)
   const started = useRef(false)
@@ -262,9 +263,14 @@ export default function App() {
       setShowAddModal(true)
     })
 
+    const unsubClose = window.globalEvents?.onConfirmClose(() => {
+      setShowCloseConfirm(true)
+    })
+
     return () => {
       window.removeEventListener('keydown', handler)
       unsubGlobal?.()
+      unsubClose?.()
     }
   }, [removeTerminal, setActiveTerminal, setSidebarCollapsed, toggleViewMode, setShowSettings])
 
@@ -541,6 +547,38 @@ export default function App() {
         <SwarmDashboard
           onClose={() => setShowSwarmDashboard(false)}
         />
+      )}
+      {showCloseConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70">
+          <div className="bg-[#252526] border border-[#3c3c3c] rounded-xl shadow-2xl w-[420px] p-6 flex flex-col gap-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-[#D97706]/15 flex items-center justify-center">
+                <i className="fa-solid fa-triangle-exclamation text-[#D97706]"></i>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-[#d4d4d4]">AI Agents Running</h3>
+                <p className="text-xs text-[#6b7280]">Closing will stop all work in progress</p>
+              </div>
+            </div>
+            <p className="text-xs text-[#999] leading-relaxed">
+              AI agents are still running. Closing Termpolis will terminate all agents and any in-progress work will be lost.
+            </p>
+            <div className="flex items-center justify-end gap-2 mt-1">
+              <button
+                onClick={() => setShowCloseConfirm(false)}
+                className="px-4 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { setShowCloseConfirm(false); (window as any).globalEvents?.forceClose() }}
+                className="px-4 py-1.5 text-xs rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 font-medium"
+              >
+                Close Anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

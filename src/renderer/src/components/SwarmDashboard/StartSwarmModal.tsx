@@ -252,7 +252,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
         </div>
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Preparing Conductor</h3>
         <p className="text-xs text-[#6b7280] text-center max-w-sm mb-4">{statusMessage}</p>
-        <p className="text-[11px] text-[#555] text-center max-w-md leading-relaxed">
+        <p className="text-[11px] text-[#d4d4d4] text-center max-w-md leading-relaxed">
           A swarm lets multiple AI agents work together on the same project simultaneously — one builds, another writes tests, another handles docs. An AI conductor coordinates the work so you just describe what you need.
         </p>
         {needsAuth && (

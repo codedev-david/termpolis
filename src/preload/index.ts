@@ -93,6 +93,12 @@ contextBridge.exposeInMainWorld('globalEvents', {
     ipcRenderer.on('global:new-terminal', handler)
     return () => ipcRenderer.removeListener('global:new-terminal', handler)
   },
+  onConfirmClose: (cb: () => void) => {
+    const handler = () => cb()
+    ipcRenderer.on('app:confirm-close', handler)
+    return () => ipcRenderer.removeListener('app:confirm-close', handler)
+  },
+  forceClose: () => ipcRenderer.send('app:force-close'),
 })
 
 // Swarm orchestration API
