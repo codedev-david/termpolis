@@ -22,6 +22,7 @@ export interface TerminalSession {
   theme: string
   fontFamily: string
   agentCommand?: string
+  isSwarm?: boolean
 }
 
 export interface Workspace {

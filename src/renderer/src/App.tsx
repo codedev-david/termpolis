@@ -130,7 +130,7 @@ export default function App() {
     saveTimerRef.current = setTimeout(() => {
       const state = useTerminalStore.getState()
       window.termpolis.saveSession({
-        terminals: state.terminals,
+        terminals: state.terminals.filter(t => !t.isSwarm),
         workspaces: state.workspaces,
         defaultShell: state.defaultShell,
         viewMode: state.viewMode,

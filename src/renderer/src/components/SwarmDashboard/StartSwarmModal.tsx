@@ -195,6 +195,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
         theme: TERMINAL_DEFAULTS.theme,
         fontFamily: TERMINAL_DEFAULTS.fontFamily,
         agentCommand: agent.command,
+        isSwarm: true,
       })
 
       terminalIds.push(id)

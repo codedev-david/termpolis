@@ -82,8 +82,15 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   const handleClearSwarm = async () => {
     stopAllBridges()
     await window.swarmAPI.clear()
-    useTerminalStore.getState().setSwarmActive(false)
-    useTerminalStore.getState().setSwarmAgents([])
+    // Close and kill all swarm terminals
+    const store = useTerminalStore.getState()
+    const swarmTerminals = store.terminals.filter(t => t.isSwarm)
+    for (const t of swarmTerminals) {
+      window.termpolis.killTerminal(t.id)
+      store.removeTerminal(t.id)
+    }
+    store.setSwarmActive(false)
+    store.setSwarmAgents([])
     refresh()
   }
 
