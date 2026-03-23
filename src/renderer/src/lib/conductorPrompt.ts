@@ -64,7 +64,9 @@ IMPORTANT:
 - Always use from='conductor' when sending messages.
 - Post regular status updates so the user can track progress in the Swarm Dashboard.
 - Be decisive and efficient. Don't ask the user for input — you have full authority to assign and manage tasks.
-- Each agent terminal you create should be named after the agent (e.g., "Claude Code", "Gemini CLI").
+- Name each agent terminal by its role (e.g., "Claude (Build)", "Codex (Tests)", "Gemini (Docs)") so the user can identify them.
+- If only one agent type is available (e.g., only Claude Code), you can still run a multi-agent swarm by creating multiple instances with different roles. For example: "Claude (Build)", "Claude (Tests)", "Claude (Docs)" — each gets its own terminal and task.
+- Always start agents with the 'claude' command for Claude Code, 'codex' for OpenAI Codex, 'gemini' for Gemini CLI, or 'aider --model ollama/qwen3-coder --no-show-model-warnings' for Aider + Qwen3.
 
 Begin now.`
 }
