@@ -4,6 +4,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { StartSwarmModal } from './StartSwarmModal'
 import { stopAllBridges } from '../../lib/swarmBridgeManager'
+import { stopConductor, getConductorState, revealConductor } from '../../lib/conductorManager'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -19,6 +20,16 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
   const [showStartSwarm, setShowStartSwarm] = useState(!swarmActive)
+  const [conductorStatus, setConductorStatus] = useState<string>('idle')
+
+  // Poll conductor state every 3 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const state = getConductorState()
+      setConductorStatus(state.status)
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [])
 
   // New task form
   const [showNewTask, setShowNewTask] = useState(false)
@@ -81,6 +92,7 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
 
   const handleClearSwarm = async () => {
     stopAllBridges()
+    stopConductor()
     await window.swarmAPI.clear()
     // Close and kill all swarm terminals
     const store = useTerminalStore.getState()
@@ -299,9 +311,20 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
             <i className="fa-solid fa-network-wired text-[#22D3EE]"></i>
             <h2 className="text-base font-semibold text-[#d4d4d4]">Swarm Dashboard</h2>
             {swarmActive && (
-              <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-[#22D3EE]/15 text-[#22D3EE] border border-[#22D3EE]/30">
-                Swarm Active
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-[#22D3EE]/15 text-[#22D3EE] border border-[#22D3EE]/30">
+                  Swarm Active
+                </span>
+                <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full border ${
+                  conductorStatus === 'running' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+                  conductorStatus === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+                  conductorStatus === 'done' ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' :
+                  'bg-[#3c3c3c] text-[#6b7280] border-[#3c3c3c]'
+                }`}>
+                  <i className="fa-solid fa-brain mr-1 text-[8px]"></i>
+                  Conductor: {conductorStatus}
+                </span>
+              </div>
             )}
             <span className="text-xs text-[#6b7280]">
               {terminals.length} agent{terminals.length !== 1 ? 's' : ''} | {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
@@ -364,6 +387,15 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
           >
             <i className="fa-solid fa-bullhorn"></i> Broadcast
           </button>
+          {swarmActive && (
+            <button
+              onClick={() => revealConductor()}
+              className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#D97706] hover:bg-[#37373d]"
+              title="Reveal conductor terminal for debugging"
+            >
+              <i className="fa-solid fa-bug"></i> Debug
+            </button>
+          )}
           <button
             onClick={handleClearSwarm}
             className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#E57373] hover:bg-[#37373d]"

@@ -37,6 +37,8 @@ export default function App() {
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const launchingAgent = useTerminalStore(s => s.launchingAgent)
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
+  const swarmNotification = useTerminalStore(s => s.swarmNotification)
+  const setSwarmNotification = useTerminalStore(s => s.setSwarmNotification)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const [restoring, setRestoring] = useState(true)
   const started = useRef(false)
@@ -291,6 +293,13 @@ export default function App() {
     }
   }, [addTerminal, removeTerminal])
 
+  // Auto-dismiss swarm notification after 15 seconds
+  useEffect(() => {
+    if (!swarmNotification) return
+    const timer = setTimeout(() => setSwarmNotification(null), 15000)
+    return () => clearTimeout(timer)
+  }, [swarmNotification, setSwarmNotification])
+
   const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()
     const cwd = await getHomedir()
@@ -453,7 +462,34 @@ export default function App() {
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-hidden relative">
+        <main className="flex-1 overflow-hidden relative flex flex-col">
+          {swarmNotification && (
+            <div className={`px-4 py-2.5 flex items-center justify-between text-sm ${
+              swarmNotification.type === 'success'
+                ? 'bg-green-900/30 border-b border-green-800/50 text-green-300'
+                : 'bg-red-900/30 border-b border-red-800/50 text-red-300'
+            }`}>
+              <div className="flex items-center gap-2">
+                <i className={`fa-solid ${swarmNotification.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle'}`}></i>
+                <span>{swarmNotification.message}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowSwarmDashboard(true)}
+                  className="text-xs px-2 py-1 rounded hover:bg-white/10"
+                >
+                  View Dashboard
+                </button>
+                <button
+                  onClick={() => setSwarmNotification(null)}
+                  className="text-xs px-1.5 py-1 rounded hover:bg-white/10"
+                >
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex-1 overflow-hidden relative">
           {renderMain()}
           {launchingAgent && (
             <div
@@ -469,6 +505,7 @@ export default function App() {
               <p className="text-[10px] text-[#555] mt-4">Click anywhere to dismiss</p>
             </div>
           )}
+          </div>
         </main>
         {showContextPanel && (
           <ContextPanel
