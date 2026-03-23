@@ -54,6 +54,41 @@ function createWindow() {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
+  // Confirm close when AI agents are running
+  let forceClose = false
+  mainWindow.on('close', (e) => {
+    if (forceClose) return
+    // Check if any terminals have agent commands (agents running)
+    const hasAgents = mainWindow?.webContents.executeJavaScript(
+      `(() => { try { return window.__termpolis_has_agents?.() ?? false } catch { return false } })()`
+    )
+    hasAgents?.then((running: boolean) => {
+      if (running) {
+        const { dialog } = require('electron')
+        const choice = dialog.showMessageBoxSync(mainWindow!, {
+          type: 'warning',
+          buttons: ['Close Anyway', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          title: 'AI Agents Running',
+          message: 'AI agents are still running. Closing will terminate all agents and any in-progress work will be lost.',
+          detail: 'Are you sure you want to close?',
+        })
+        if (choice === 0) {
+          forceClose = true
+          mainWindow?.close()
+        }
+      } else {
+        forceClose = true
+        mainWindow?.close()
+      }
+    }).catch(() => {
+      forceClose = true
+      mainWindow?.close()
+    })
+    e.preventDefault()
+  })
+
   mainWindow.on('closed', () => { mainWindow = null })
 }
 

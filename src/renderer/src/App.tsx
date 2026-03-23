@@ -115,6 +115,13 @@ export default function App() {
     })
   }, [])
 
+  // Expose agent check for close confirmation dialog in main process
+  useEffect(() => {
+    (window as any).__termpolis_has_agents = () => {
+      return terminals.some(t => t.agentCommand)
+    }
+  }, [terminals])
+
   // Persist session on state changes (debounced to avoid excessive writes)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
