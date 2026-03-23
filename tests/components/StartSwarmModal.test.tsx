@@ -1,15 +1,27 @@
 import React from 'react'
-import { render, screen } from '@testing-library/react'
-import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-beforeAll(() => {
+// Mock conductorManager before importing the component
+vi.mock('../../src/renderer/src/lib/conductorManager', () => ({
+  checkClaudeInstalled: vi.fn(),
+  startConductor: vi.fn(),
+  waitForAuth: vi.fn(),
+  sendTask: vi.fn(),
+  stopConductor: vi.fn(),
+}))
+
+import { checkClaudeInstalled, startConductor, waitForAuth, sendTask } from '../../src/renderer/src/lib/conductorManager'
+
+beforeEach(() => {
   ;(window as any).termpolis = {
-    detectAgents: vi.fn().mockResolvedValue({ success: true, data: { claude: true, codex: true, gemini: true, 'aider-qwen': true } }),
+    detectAgents: vi.fn().mockResolvedValue({ success: true, data: { claude: true } }),
     getAvailableShells: vi.fn().mockResolvedValue({ success: true, data: [{ type: 'bash', label: 'Bash' }] }),
-    getOllamaPath: vi.fn().mockResolvedValue({ success: true, data: null }),
+    pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/test/project' }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
     killTerminal: vi.fn().mockResolvedValue({ success: true }),
+    readTerminalBuffer: vi.fn().mockResolvedValue({ success: true, data: { output: '' } }),
   }
   ;(window as any).swarmAPI = {
     getMessages: vi.fn().mockResolvedValue({ success: true, data: [] }),
@@ -18,6 +30,11 @@ beforeAll(() => {
     createTask: vi.fn().mockResolvedValue({ success: true }),
     clear: vi.fn().mockResolvedValue({ success: true }),
   }
+
+  vi.mocked(checkClaudeInstalled).mockResolvedValue(true)
+  vi.mocked(startConductor).mockResolvedValue({ success: true, needsAuth: false })
+  vi.mocked(waitForAuth).mockResolvedValue(true)
+  vi.mocked(sendTask).mockResolvedValue(undefined)
 })
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
@@ -36,6 +53,10 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
       getState: vi.fn(() => ({
         terminals: [],
         viewMode: 'tabs',
+        addTerminal: vi.fn(),
+        setSwarmActive: vi.fn(),
+        setSwarmNotification: vi.fn(),
+        removeTerminal: vi.fn(),
       })),
       setState: vi.fn(),
     },
@@ -43,46 +64,107 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   buildPaneTree: vi.fn(),
 }))
 
-vi.mock('../../src/renderer/src/lib/swarmBridgeManager', () => ({
-  startBridgeForAgent: vi.fn(),
-}))
-
-vi.mock('../../src/renderer/src/lib/homedir', () => ({
-  getHomedir: vi.fn().mockResolvedValue('/home/test'),
-}))
-
-vi.mock('../../src/renderer/src/lib/testAgents', () => ({
-  resolveAgentCommand: vi.fn((cmd: string) => cmd),
-  testDelay: vi.fn((ms: number) => 0),
-}))
-
 import { StartSwarmModal } from '../../src/renderer/src/components/SwarmDashboard/StartSwarmModal'
 
 describe('StartSwarmModal', () => {
-  it('renders agent selection grid with 4 agents', async () => {
+  it('shows preparing step with spinner on mount', () => {
+    // Make checkClaudeInstalled hang so we stay on preparing step
+    vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
-    // Wait for agent detection to finish
-    await screen.findByText('Claude Code')
-    expect(screen.getByText('Claude Code')).toBeInTheDocument()
-    expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
-    expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
-    expect(screen.getByText('Aider + Qwen3')).toBeInTheDocument()
+    expect(screen.getByText('Preparing Conductor')).toBeInTheDocument()
+    expect(screen.getByText('Checking Claude Code...')).toBeInTheDocument()
   })
 
-  it('shows 4 agent options', async () => {
+  it('shows error when Claude Code is not installed', async () => {
+    vi.mocked(checkClaudeInstalled).mockResolvedValue(false)
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
-    await screen.findByText('Claude Code')
-    // Each agent shows its command
-    expect(screen.getByText('claude')).toBeInTheDocument()
-    expect(screen.getByText('codex')).toBeInTheDocument()
-    expect(screen.getByText('gemini')).toBeInTheDocument()
-    expect(screen.getByText('aider --model ollama/qwen3-coder --no-show-model-warnings')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText(/Swarm requires Claude Code/)).toBeInTheDocument()
+    })
   })
 
-  it('has Next button disabled initially (need 2+ agents)', async () => {
+  it('closes modal when user cancels directory picker', async () => {
+    ;(window as any).termpolis.pickDirectory = vi.fn().mockResolvedValue({ success: false })
+    const onClose = vi.fn()
+    render(<StartSwarmModal onClose={onClose} onLaunched={vi.fn()} />)
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalled()
+    })
+  })
+
+  it('shows describe step after successful preparation', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
-    await screen.findByText('Claude Code')
-    const nextButton = screen.getByText('Next')
-    expect(nextButton).toBeDisabled()
+    await waitFor(() => {
+      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+    })
+  })
+
+  it('shows tips box on describe step', async () => {
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Tips for better results')).toBeInTheDocument()
+    })
+  })
+
+  it('has Launch Swarm button disabled when task is empty', async () => {
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+    })
+    const launchButton = screen.getByText('Launch Swarm')
+    expect(launchButton.closest('button')).toBeDisabled()
+  })
+
+  it('enables Launch Swarm button when task is entered', async () => {
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+    })
+    const textarea = screen.getByPlaceholderText(/Build a tic-tac-toe/)
+    fireEvent.change(textarea, { target: { value: 'Build a React app' } })
+    const launchButton = screen.getByText('Launch Swarm')
+    expect(launchButton.closest('button')).not.toBeDisabled()
+  })
+
+  it('calls sendTask and onLaunched when Launch Swarm is clicked', async () => {
+    const onLaunched = vi.fn()
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} />)
+    await waitFor(() => {
+      expect(screen.getByText('Describe what the swarm should work on.')).toBeInTheDocument()
+    })
+    const textarea = screen.getByPlaceholderText(/Build a tic-tac-toe/)
+    fireEvent.change(textarea, { target: { value: 'Build a React app' } })
+    fireEvent.click(screen.getByText('Launch Swarm'))
+    await waitFor(() => {
+      expect(sendTask).toHaveBeenCalledWith('Build a React app', '/test/project')
+      expect(onLaunched).toHaveBeenCalled()
+    })
+  })
+
+  it('shows auth message when conductor needs authentication', async () => {
+    vi.mocked(startConductor).mockResolvedValue({ success: true, needsAuth: true })
+    // Make waitForAuth hang so we can see the auth message
+    vi.mocked(waitForAuth).mockReturnValue(new Promise(() => {}))
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText(/Complete sign-in in your browser/)).toBeInTheDocument()
+    })
+  })
+
+  it('shows error when conductor fails to start', async () => {
+    vi.mocked(startConductor).mockResolvedValue({ success: false, error: 'Terminal creation failed' })
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Terminal creation failed')).toBeInTheDocument()
+    })
+  })
+
+  it('has 3 step dots in the header', () => {
+    vi.mocked(checkClaudeInstalled).mockReturnValue(new Promise(() => {}))
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} />)
+    expect(screen.getByText('Start Swarm')).toBeInTheDocument()
+    // 3 step dots (preparing, describe, launching)
+    const dots = document.querySelectorAll('.rounded-full.w-2.h-2')
+    expect(dots.length).toBe(3)
   })
 })
