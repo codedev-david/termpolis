@@ -75,7 +75,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     return () => {
       cancelled = true
     }
-  }, [onClose])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Escape to close (not during launching)
   useEffect(() => {
