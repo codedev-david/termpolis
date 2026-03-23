@@ -40,6 +40,7 @@ export default function App() {
   const swarmNotification = useTerminalStore(s => s.swarmNotification)
   const setSwarmNotification = useTerminalStore(s => s.setSwarmNotification)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
+  const [swarmStartCwd, setSwarmStartCwd] = useState<string | null>(null)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const [restoring, setRestoring] = useState(true)
   const started = useRef(false)
@@ -445,8 +446,14 @@ export default function App() {
     }
   }
 
-  // showSwarmFromWelcome triggers the existing swarm dashboard
-  const handleStartSwarmFromWelcome = () => setShowSwarmDashboard(true)
+  // Start swarm: pick directory first, then open dashboard with wizard
+  const handleStartSwarm = async () => {
+    const res = await window.termpolis.pickDirectory()
+    if (res.success && res.data) {
+      setSwarmStartCwd(res.data)
+      setShowSwarmDashboard(true)
+    }
+  }
 
   const renderMain = () => {
     if (showSettings) return <Suspense fallback={<div className="flex items-center justify-center h-full text-[#6b7280]">Loading settings...</div>}><SettingsPane /></Suspense>
@@ -455,7 +462,7 @@ export default function App() {
         <Welcome
           onNewTerminal={() => setShowAddModal(true)}
           onLaunchAgent={handleWelcomeLaunchAgent}
-          onStartSwarm={handleStartSwarmFromWelcome}
+          onStartSwarm={handleStartSwarm}
         />
       )
     }
@@ -545,7 +552,8 @@ export default function App() {
       )}
       {showSwarmDashboard && (
         <SwarmDashboard
-          onClose={() => setShowSwarmDashboard(false)}
+          onClose={() => { setShowSwarmDashboard(false); setSwarmStartCwd(null) }}
+          initialCwd={swarmStartCwd}
         />
       )}
       {showCloseConfirm && (

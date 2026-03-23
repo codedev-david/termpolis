@@ -8,24 +8,22 @@ import { stopConductor, getConductorState, revealConductor } from '../../lib/con
 
 interface SwarmDashboardProps {
   onClose: () => void
+  initialCwd?: string | null
 }
 
 type TabId = 'agents' | 'tasks' | 'messages'
 
-export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
+export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('agents')
   const [messages, setMessages] = useState<SwarmMessage[]>([])
   const [tasks, setTasks] = useState<SwarmTask[]>([])
   const terminals = useTerminalStore((s) => s.terminals)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
-  const [showStartSwarm, setShowStartSwarm] = useState(false)
-  const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
+  // Auto-open wizard if we have an initialCwd (came from Welcome/sidebar with directory already picked)
+  const [showStartSwarm, setShowStartSwarm] = useState(!!initialCwd && !swarmActive)
+  const [swarmCwd, setSwarmCwd] = useState<string | null>(initialCwd ?? null)
   const [conductorStatus, setConductorStatus] = useState<string>('idle')
-
-  // Auto-prompt to start swarm on mount if no swarm active
-  // Don't auto-open directory picker — let user click "Start Swarm" button
-  // which will pick directory then open the wizard
 
   // Poll conductor state every 3 seconds
   useEffect(() => {
