@@ -21,8 +21,11 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   const cwdRef = useRef<string | null>(null)
   const abortedRef = useRef(false)
 
-  // Preparation flow on mount
+  // Preparation flow on mount (guard against StrictMode double-fire)
+  const prepStarted = useRef(false)
   useEffect(() => {
+    if (prepStarted.current) return
+    prepStarted.current = true
     let cancelled = false
 
     async function prepare() {
