@@ -370,9 +370,9 @@ export default function App() {
         const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd)
         if (pRes.success) {
           addTerminal({ id: pId, name: prof.name, color: prof.color, shellType: pShellType, cwd: pCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace', agentCommand: prof.command })
-          setTimeout(() => window.termpolis.writeToTerminal(pId, resolveAgentCommand(prof.command) + '\r'), testDelay(1500))
+          setTimeout(() => window.termpolis.writeToTerminal(pId, resolveAgentCommand(prof.command) + '\r'), testDelay(3000))
           if (prof.command === 'claude' || prof.command === 'codex') {
-            setTimeout(() => window.termpolis.writeToTerminal(pId, '\r'), testDelay(7000))
+            setTimeout(() => window.termpolis.writeToTerminal(pId, '\r'), testDelay(9000))
           }
         }
         break
@@ -413,9 +413,9 @@ export default function App() {
     const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (res.success) {
       addTerminal({ id, name: config.name, color: config.color, shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace', agentCommand: config.command })
-      setTimeout(() => window.termpolis.writeToTerminal(id, resolveAgentCommand(config.command) + '\r'), testDelay(1500))
+      setTimeout(() => window.termpolis.writeToTerminal(id, resolveAgentCommand(config.command) + '\r'), testDelay(3000))
       if (config.command.startsWith('claude') || config.command.startsWith('codex')) {
-        setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), testDelay(7000))
+        setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), testDelay(9000))
       }
       const dismissMs = (agentId === 'gemini' || agentId === 'aider-qwen') ? 15000 : 8000
       setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))

@@ -221,7 +221,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
       if (agent.command.startsWith('claude') || agent.command.startsWith('codex')) {
         const tid = terminalIds[i]
-        setTimeout(() => window.termpolis.writeToTerminal(tid, '\r'), testDelay(7000))
+        setTimeout(() => window.termpolis.writeToTerminal(tid, '\r'), testDelay(9000))
       }
     }
 
