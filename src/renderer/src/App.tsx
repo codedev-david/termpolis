@@ -61,7 +61,7 @@ export default function App() {
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
           aiProfiles: ap ?? [],
           promptTemplates: pt ?? [],
-          paneTree: resolvedVm === 'split' ? buildPaneTree(saved.map(t => t.id)) : null,
+          paneTree: resolvedVm === 'split' ? buildPaneTree(saved.filter(t => !t.hidden).map(t => t.id)) : null,
         })
         // Infer agent commands from terminal names for sessions saved before agentCommand existed
         const KNOWN_AGENTS: Record<string, string> = {
@@ -130,7 +130,7 @@ export default function App() {
     saveTimerRef.current = setTimeout(() => {
       const state = useTerminalStore.getState()
       window.termpolis.saveSession({
-        terminals: state.terminals.filter(t => !t.isSwarm),
+        terminals: state.terminals.filter(t => !t.isSwarm && !t.hidden),
         workspaces: state.workspaces,
         defaultShell: state.defaultShell,
         viewMode: state.viewMode,

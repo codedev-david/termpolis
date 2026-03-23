@@ -117,11 +117,11 @@ export function Sidebar() {
         <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#6b7280] uppercase tracking-wider hover:text-[#d4d4d4]">
           <i className={`fa-solid fa-chevron-${terminalsCollapsed ? 'right' : 'down'} text-[9px]`}></i>
           Terminals
-          <span className="text-[10px] normal-case tracking-normal">({terminals.length})</span>
+          <span className="text-[10px] normal-case tracking-normal">({terminals.filter(t => !t.hidden).length})</span>
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {!terminalsCollapsed && terminals.map((t, i) => (
+        {!terminalsCollapsed && terminals.filter(t => !t.hidden).map((t, i) => (
           <TerminalTab
             key={t.id}
             terminal={t}

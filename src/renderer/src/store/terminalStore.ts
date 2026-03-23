@@ -74,6 +74,7 @@ interface TerminalStore {
   swarmActive: boolean
   swarmAgents: SwarmAgentEntry[]
   launchingAgent: string | null
+  swarmNotification: { message: string; type: 'success' | 'error' } | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -104,6 +105,7 @@ interface TerminalStore {
   setSwarmAgents: (agents: SwarmAgentEntry[]) => void
   updateSwarmAgentStatus: (terminalId: string, status: 'starting' | 'running' | 'error') => void
   setLaunchingAgent: (name: string | null) => void
+  setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -124,11 +126,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   swarmActive: false,
   swarmAgents: [],
   launchingAgent: null,
+  swarmNotification: null,
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
     let newTree = s.paneTree
-    if (s.viewMode === 'split') {
+    if (s.viewMode === 'split' && !t.hidden) {
       const newLeaf: PaneNode = { type: 'terminal', terminalId: t.id }
       if (!newTree) {
         newTree = newLeaf
@@ -173,7 +176,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const newMode: ViewMode = s.viewMode === 'tabs' ? 'split' : 'tabs'
     let newTree = s.paneTree
     if (newMode === 'split' && !newTree) {
-      newTree = buildPaneTree(s.terminals.map(t => t.id))
+      newTree = buildPaneTree(s.terminals.filter(t => !t.hidden).map(t => t.id))
     }
     return { viewMode: newMode, paneTree: newTree }
   }),
@@ -297,4 +300,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   })),
 
   setLaunchingAgent: (name) => set({ launchingAgent: name }),
+
+  setSwarmNotification: (notification) => set({ swarmNotification: notification }),
 }))

@@ -23,6 +23,8 @@ export interface TerminalSession {
   fontFamily: string
   agentCommand?: string
   isSwarm?: boolean
+  hidden?: boolean
+  isConductor?: boolean
 }
 
 export interface Workspace {
