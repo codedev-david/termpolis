@@ -18,57 +18,80 @@ Termpolis has 230 unit tests and 132 E2E tests, but coverage gaps exist in the a
 
 E2E-heavy with targeted unit tests. Mock agent scripts simulate Claude/Codex/Gemini/Aider for repeatable E2E testing without API keys.
 
+## Production Code Changes Required
+
+The test mode mechanism does not exist yet. These files need modification:
+
+- **`src/renderer/src/components/Sidebar/AIProfiles.tsx`** — Check `TERMPOLIS_TEST_AGENTS` env var in `handleLaunch`, swap `profile.command` with mock script path
+- **`src/renderer/src/App.tsx`** — Same swap in `handleWelcomeLaunchAgent`, command palette launch cases, and session restore agent re-launch
+- **`src/renderer/src/components/SwarmDashboard/StartSwarmModal.tsx`** — Same swap in swarm launch for each agent command
+- **`src/renderer/src/lib/testAgents.ts`** (new file) — Centralized helper: `resolveAgentCommand(command: string): string` that checks the env var and returns the mock path or the original command. All launch points call this instead of duplicating the swap logic.
+
+The env var is passed via Playwright config (`use: { env: { TERMPOLIS_TEST_AGENTS: '1' } }`) and read in the renderer via `window.process?.env` or a preload-exposed value.
+
+### Test Timing
+
+Production code uses hardcoded `setTimeout` delays (1.5s shell init, 3s restore, 7-9s trust, 8-15s overlay). For tests, these are too slow. Add a `TERMPOLIS_TEST_TIMING` env var that, when set, reduces all delays to 1/10th (e.g., 7s trust becomes 700ms). The `resolveAgentCommand` helper can also export a `testDelay(ms: number): number` function that scales delays.
+
 ## Mock Agent Infrastructure
 
 ### Location
 ```
 e2e/mocks/
-  mock-claude.sh
-  mock-codex.sh
-  mock-gemini.sh
-  mock-aider.sh
+  mock-claude.js
+  mock-codex.js
+  mock-gemini.js
+  mock-aider.js
 ```
+
+Using Node.js scripts (not bash) for true cross-platform support. Node.js is guaranteed available since Termpolis is an Electron app. Scripts run via `node e2e/mocks/mock-claude.js`.
 
 ### Behavior
 Each mock script simulates the real agent's startup sequence:
 
-**mock-claude.sh:**
+**mock-claude.js:**
 - Prints the Claude Code trust prompt (exact text: "Quick safety check", "Yes, I trust this folder")
-- Waits for stdin (Enter to confirm trust)
-- Prints Claude startup banner with version
+- Reads stdin for Enter (trust confirmation)
+- Prints Claude startup banner with version ("Claude Code v1.0.0")
 - Shows `claude> ` prompt
-- Accepts input, returns canned responses
-- Responds to swarm task prompts with simulated work output
-- Exits on `/exit` or `exit`
+- Reads stdin in a loop, returns canned responses
+- Responds to swarm task prompts with simulated work output (e.g., "Working on: [task]...")
+- Produces periodic output lines so swarm health monitor detects activity
+- Exits on `/exit`, `exit`, or EOF
 
-**mock-codex.sh:**
+**mock-codex.js:**
 - Prints Codex trust/sandbox prompt
-- Waits for stdin confirmation
+- Reads stdin for confirmation
 - Prints Codex startup banner
 - Shows `codex> ` prompt
 - Accepts input, returns canned responses
-- Exits on `exit`
+- Exits on `exit` or EOF
 
-**mock-gemini.sh:**
-- Prints Gemini CLI welcome (slower startup, ~2s delay with `sleep`)
+**mock-gemini.js:**
+- Waits 500ms (simulates slower startup, short enough to avoid test flakiness)
+- Prints Gemini CLI welcome banner
 - Shows `gemini> ` prompt
 - Accepts input, returns canned responses
-- Exits on `exit`
+- Exits on `exit` or EOF
 
-**mock-aider.sh:**
-- Prints Aider startup banner with model info
+**mock-aider.js:**
+- Prints Aider startup banner with model info ("Aider v0.86.2", "Model: ollama/qwen3-coder")
 - Shows `aider> ` prompt
 - Accepts input, returns canned responses
-- Exits on `/exit`
+- Outputs swarm-compatible signals that the bridge can parse
+- Exits on `/exit` or EOF
+
+### Error Handling
+All mock scripts use a robust read loop (`readline` interface in Node.js) and handle EOF gracefully. Unexpected input before the mock is ready is buffered, not dropped.
 
 ### Test Mode Activation
 Environment variable `TERMPOLIS_TEST_AGENTS=1` switches agent commands:
-- `claude` -> `bash e2e/mocks/mock-claude.sh`
-- `codex` -> `bash e2e/mocks/mock-codex.sh`
-- `gemini` -> `bash e2e/mocks/mock-gemini.sh`
-- `aider --model ollama/qwen3-coder --no-show-model-warnings` -> `bash e2e/mocks/mock-aider.sh`
+- `claude` -> `node e2e/mocks/mock-claude.js`
+- `codex` -> `node e2e/mocks/mock-codex.js`
+- `gemini` -> `node e2e/mocks/mock-gemini.js`
+- `aider --model ollama/qwen3-coder --no-show-model-warnings` -> `node e2e/mocks/mock-aider.js`
 
-This is checked in the renderer at launch time. The mock path is resolved relative to the app root.
+Mock paths resolved via `app.getAppPath()` or `__dirname` relative to the project root.
 
 ### Swarm Simulation
 Mock agents support swarm workflows:
@@ -76,6 +99,18 @@ Mock agents support swarm workflows:
 - Output status lines that the agent detector recognizes (e.g., "Claude Code" in output triggers detection)
 - Produce periodic output so the swarm health monitor sees them as "running"
 - Output swarm-compatible messages that the bridge can parse (for non-MCP agents like Aider)
+
+## Test Isolation Strategy
+
+- One Electron app instance per spec file via `test.beforeAll` / `test.afterAll`
+- Session store cleared before each spec file runs (delete `session.json` in `beforeAll`)
+- Each spec file is independent — no shared state between files
+- Playwright runs spec files sequentially (not in parallel) to avoid port conflicts on MCP server (localhost:9315)
+- Playwright timeout increased to 60s for agent-related specs (agent-launch, agent-swarm, session-restore)
+
+## Overlap with Existing E2E Tests
+
+Existing files `comprehensive.spec.ts` (66 tests) and `full-test.spec.ts` (35 tests) cover basic UI flows (app launch, sidebar, themes, terminal creation). The new spec files focus on **deeper feature testing** that existing tests don't cover (agent launch with mock trust, swarm lifecycle, session restore, view switching with buffer replay). No deduplication needed — existing tests stay as-is for regression safety.
 
 ## E2E Test Plan (~140 tests)
 
@@ -98,7 +133,7 @@ Mock agents support swarm workflows:
 ### agent-swarm.spec.ts (25 tests)
 - Open swarm dashboard (Ctrl+Shift+S)
 - Swarm wizard auto-opens when no swarm active
-- Agent selection step: all 5 agents shown with install status
+- Agent selection step: agents shown with install status (5 entries: Claude, Codex, Gemini, Aider, Aider+Qwen)
 - Agent selection: checkboxes toggle, minimum 2 required
 - Describe task step: textarea, selected agents shown as chips
 - Smart routing step: subtasks displayed with scores, agent assignments, token estimates
@@ -126,9 +161,9 @@ Mock agents support swarm workflows:
 - Save session with 1 agent terminal, restart, verify terminal restored
 - Restored terminal has correct cwd from last session
 - Restored terminal has correct name, color, shell type
-- Restored agent terminal re-sends agent command after 3s
-- Restored Claude terminal auto-trusts (Enter at 9s)
-- Restored Codex terminal auto-trusts (Enter at 9s)
+- Restored agent terminal re-sends agent command
+- Restored Claude terminal auto-trusts
+- Restored Codex terminal auto-trusts
 - Loading overlay shows during restore for agent terminals
 - Welcome screen shows while terminals restore in background
 - Restore with mixed agent + normal terminals: agents re-launch, normals just open shell
@@ -241,7 +276,7 @@ Mock agents support swarm workflows:
 - Detect "Gemini" from terminal output
 - Detect "Aider" from terminal output
 - No false positive on regular shell output
-- Detection within first 2KB only (scan limit)
+- Detection respects scan byte limit in useAgentDetection hook (2048 bytes)
 - Returns correct AgentInfo (name, icon, color)
 - Handles ANSI-stripped output
 - Multiple agents in sequence (only first detected)
@@ -313,22 +348,24 @@ Mock agents support swarm workflows:
 
 ## CI Integration
 
-- Mock agent scripts are cross-platform (bash, works in Git Bash on Windows)
-- `TERMPOLIS_TEST_AGENTS=1` set in Playwright config
+- Mock agents are Node.js scripts — cross-platform (Windows, macOS, Linux)
+- `TERMPOLIS_TEST_AGENTS=1` and `TERMPOLIS_TEST_TIMING=1` set in Playwright config
 - Test order: unit tests first (fast, ~15s), E2E second (~3-5 min)
 - E2E screenshots on failure saved to `e2e/screenshots/`
-- Swarm tests tagged `@slow` — can be skipped with `--grep-invert @slow` for fast CI
+- Swarm tests in `agent-swarm.spec.ts` use `test.describe('swarm @slow', ...)` naming convention — can be skipped with `--grep-invert @slow` for fast CI runs
+- Playwright timeout: 60s for agent/swarm/session specs, 30s for others
 - All tests run in GitHub Actions CI on push/PR
+- Spec files run sequentially (no parallel) to avoid MCP port conflicts
 
 ## File Structure
 
 ```
 e2e/
   mocks/
-    mock-claude.sh
-    mock-codex.sh
-    mock-gemini.sh
-    mock-aider.sh
+    mock-claude.js
+    mock-codex.js
+    mock-gemini.js
+    mock-aider.js
   agent-launch.spec.ts
   agent-swarm.spec.ts
   session-restore.spec.ts
@@ -339,6 +376,9 @@ e2e/
   mcp-swarm-tools.spec.ts
   command-palette.spec.ts
   error-resilience.spec.ts
+src/
+  renderer/src/lib/
+    testAgents.ts          (new — resolveAgentCommand helper)
 tests/
   renderer/
     agentDetector.test.ts
@@ -353,9 +393,10 @@ tests/
 
 ## Success Criteria
 
-- All 200 new tests pass locally and in CI
+- All ~200 new tests pass locally and in CI
 - No regressions in existing 362 tests
 - Agent launch -> trust -> use -> switch view -> close -> restore flow fully covered
-- Full swarm lifecycle tested end-to-end
+- Full swarm lifecycle tested end-to-end (wizard -> launch -> dashboard -> coordination -> clear)
 - View switching never shows wrong terminal content
 - Session restore correctly re-launches all agent types
+- Mock agents reliably simulate trust prompts, startup, and swarm participation
