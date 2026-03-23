@@ -10,6 +10,7 @@ import { analyzeTask } from '../../lib/taskAnalyzer'
 import { routeTasks, reassignTask, estimateCosts, totalEstimatedCost } from '../../lib/smartRouter'
 import type { TaskAssignment as SmartTaskAssignment } from '../../lib/smartRouter'
 import { AGENT_CAPABILITIES, CATEGORY_LABELS } from '../../lib/agentCapabilities'
+import { resolveAgentCommand, testDelay } from '../../lib/testAgents'
 
 // ---- Available agents ----
 
@@ -205,14 +206,14 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
 
     // Step 2: Wait for shell init, then send agent commands one at a time
     setLaunchProgress('Waiting for shells to initialize...')
-    await delay(2000)
+    await delay(testDelay(2000))
 
     for (let i = 0; i < terminalIds.length; i++) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
       setLaunchProgress(`Starting ${agent.name}...`)
-      window.termpolis.writeToTerminal(terminalIds[i], agent.command + '\r')
+      window.termpolis.writeToTerminal(terminalIds[i], resolveAgentCommand(agent.command) + '\r')
       // Stagger agent launches slightly so they don't all hit the shell at once
-      await delay(500)
+      await delay(testDelay(500))
     }
 
     // Auto-trust for Claude/Codex terminals in swarm
@@ -220,14 +221,14 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
       if (agent.command.startsWith('claude') || agent.command.startsWith('codex')) {
         const tid = terminalIds[i]
-        setTimeout(() => window.termpolis.writeToTerminal(tid, '\r'), 7000)
+        setTimeout(() => window.termpolis.writeToTerminal(tid, '\r'), testDelay(7000))
       }
     }
 
     // Step 3: Wait for agents to fully initialize
     // Claude Code takes ~5-10s, Codex takes ~3-5s, Gemini ~3-5s
     setLaunchProgress('Waiting for agents to initialize (this takes 10-15 seconds)...')
-    await delay(12000)
+    await delay(testDelay(12000))
 
     // Step 4: Send task prompts as a SINGLE message (not line by line)
     // The agent should be fully started and waiting for input by now
@@ -246,7 +247,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       const prompt = `You are part of a multi-agent swarm. Your role: ${assignment.role}. Your task: ${assignment.task}. Other agents: ${othersList}. If you have Termpolis MCP tools, use swarm_send_message and swarm_update_task to coordinate. Begin working now.`
 
       window.termpolis.writeToTerminal(terminalIds[i], prompt + '\r')
-      await delay(500)
+      await delay(testDelay(500))
     }
 
     // Step 5: Create swarm tasks via API
@@ -297,7 +298,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     startHealthMonitoring(terminalIds, agentEntries)
 
     setLaunchProgress('Swarm launched successfully!')
-    await delay(800)
+    await delay(testDelay(800))
     onLaunched()
   }, [assignments, availableShells, taskDescription, addTerminal, setPaneTree, setSwarmActive, setSwarmAgents, onLaunched])
 
