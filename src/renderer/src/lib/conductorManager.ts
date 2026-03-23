@@ -24,7 +24,16 @@ export async function checkClaudeInstalled(): Promise<boolean> {
 
 // Step 2: Spawn the conductor terminal (hidden)
 export async function startConductor(cwd: string): Promise<{ success: boolean; error?: string; needsAuth?: boolean }> {
+  // Kill any existing conductor first to prevent duplicates
+  if (conductorState.terminalId) {
+    stopConductor()
+  }
+
   conductorState = { terminalId: null, status: 'starting', error: null }
+
+  // Set swarm active immediately to prevent duplicate launches
+  const storeInit = useTerminalStore.getState()
+  storeInit.setSwarmActive(true)
 
   const id = uuid()
   const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
@@ -32,6 +41,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
 
   if (!res.success) {
     conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal' }
+    storeInit.setSwarmActive(false)
     return { success: false, error: conductorState.error! }
   }
 
@@ -129,10 +139,6 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   // Send prompt to conductor terminal
   window.termpolis.writeToTerminal(id, prompt + '\r')
 
-  // Set swarm as active
-  const store = useTerminalStore.getState()
-  store.setSwarmActive(true)
-
   // Post initial message to swarm bus
   await window.swarmAPI.sendMessage(
     'conductor',
@@ -208,9 +214,17 @@ export function stopConductor(): void {
   }
 
   if (conductorState.terminalId) {
-    window.termpolis.killTerminal(conductorState.terminalId)
+    try { window.termpolis.killTerminal(conductorState.terminalId) } catch {}
     const store = useTerminalStore.getState()
     store.removeTerminal(conductorState.terminalId)
+  }
+
+  // Also clean up any orphaned conductor terminals
+  const store = useTerminalStore.getState()
+  const orphanedConductors = store.terminals.filter(t => t.isConductor)
+  for (const t of orphanedConductors) {
+    try { window.termpolis.killTerminal(t.id) } catch {}
+    store.removeTerminal(t.id)
   }
 
   conductorState = { terminalId: null, status: 'idle', error: null }
