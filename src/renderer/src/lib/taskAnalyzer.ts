@@ -28,6 +28,18 @@ interface CategoryRule {
 
 const CATEGORY_RULES: CategoryRule[] = [
   {
+    // "Build/create/make" — the most common task type, often implicit
+    category: 'frontend',
+    keywords: [
+      /\bbuild\b/i, /\bcreate\b/i, /\bmake\b/i, /\bimplement/i, /\bdevelop/i,
+      /\bwrite\s+(?:a|an|the)\b/i, /\bcod(?:e|ing)\b/i,
+      /\bapp\b/i, /\bapplication/i, /\bgame\b/i, /\btool\b/i, /\bwebsite/i, /\bpage\b/i,
+      /\bI\s+want\b/i, /\bI\s+need\b/i,
+    ],
+    baseComplexity: 4,
+    tokenIntensity: 'high',
+  },
+  {
     category: 'refactoring',
     keywords: [/\brefactor/i, /\brewrite/i, /\brestructur/i, /\bclean\s*up/i, /\bmoderniz/i, /\bmigrat/i],
     baseComplexity: 4,
@@ -155,7 +167,7 @@ function generateSubtaskTitle(category: StrengthCategory, _description: string):
     documentation: 'Document the codebase',
     codeReview: 'Review code for quality and security',
     debugging: 'Debug and fix issues',
-    frontend: 'Implement UI/frontend changes',
+    frontend: 'Build and implement the application',
     devops: 'Set up DevOps and infrastructure',
     dataAnalysis: 'Process and analyze data',
     bulkTasks: 'Execute bulk file operations',
@@ -164,17 +176,22 @@ function generateSubtaskTitle(category: StrengthCategory, _description: string):
 }
 
 function generateSubtaskDescription(category: StrengthCategory, fullDescription: string): string {
-  // Extract the relevant portion of the description for this category
-  // Split by common delimiters and find the segment mentioning this category's keywords
-  const segments = fullDescription.split(/[,;]+/).map(s => s.trim()).filter(Boolean)
+  // Split by common delimiters: "and", commas, semicolons, periods, "also"
+  const segments = fullDescription.split(/\band\b|[,;.]+|\balso\b/i).map(s => s.trim()).filter(s => s.length > 3)
   const rule = CATEGORY_RULES.find(r => r.category === category)
 
   if (rule && segments.length > 1) {
+    // Find the segment that best matches this category
     for (const segment of segments) {
       for (const kw of rule.keywords) {
         if (kw.test(segment)) return segment
       }
     }
+  }
+
+  // For the primary build/coding task, use the full description
+  if (category === 'frontend') {
+    return fullDescription
   }
 
   // Fallback: use the full description with a category-specific prefix

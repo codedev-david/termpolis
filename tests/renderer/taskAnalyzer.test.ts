@@ -24,7 +24,7 @@ describe('taskAnalyzer', () => {
     })
 
     it('falls back to a general task for vague input', () => {
-      const result = analyzeTask('do something with the code')
+      const result = analyzeTask('do some stuff')
       expect(result.subtasks).toHaveLength(1)
       expect(result.subtasks[0].title).toBe('Implement task')
     })
