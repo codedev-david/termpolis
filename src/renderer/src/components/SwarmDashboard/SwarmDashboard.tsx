@@ -301,13 +301,20 @@ export function SwarmDashboard({ onClose }: SwarmDashboardProps) {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowStartSwarm(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4] transition-colors"
-            >
-              <i className="fa-solid fa-rocket"></i>
-              Start Swarm
-            </button>
+            {swarmActive ? (
+              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#3c3c3c] text-[#555] cursor-not-allowed" title="Clear the current swarm before starting a new one">
+                <i className="fa-solid fa-lock text-[10px]"></i>
+                Swarm Active
+              </span>
+            ) : (
+              <button
+                onClick={() => setShowStartSwarm(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4] transition-colors"
+              >
+                <i className="fa-solid fa-rocket"></i>
+                Start Swarm
+              </button>
+            )}
             <button onClick={onClose} className="text-[#6b7280] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
               <i className="fa-solid fa-xmark"></i>
             </button>
