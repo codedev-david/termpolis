@@ -16,6 +16,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   const [statusMessage, setStatusMessage] = useState('Checking Claude Code...')
   const [needsAuth, setNeedsAuth] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [claudeNotInstalled, setClaudeNotInstalled] = useState(false)
   const [launchProgress, setLaunchProgress] = useState('')
   const cwdRef = useRef<string | null>(null)
   const abortedRef = useRef(false)
@@ -31,7 +32,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       if (cancelled || abortedRef.current) return
 
       if (!installed) {
-        setError('Swarm requires Claude Code. Install it with: npm install -g @anthropic-ai/claude-code')
+        setClaudeNotInstalled(true)
         return
       }
 
@@ -171,7 +172,7 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
             </button>
           </div>
         )}
-        {step === 'preparing' && error && (
+        {step === 'preparing' && (claudeNotInstalled || error) && (
           <div className="flex items-center justify-between px-5 py-3 border-t border-[#3c3c3c]">
             <button
               onClick={() => { abortedRef.current = true; onClose() }}
@@ -189,6 +190,60 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   // ---- Step renderers ----
 
   function renderPreparingStep() {
+    if (claudeNotInstalled) {
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center">
+              <i className="fa-solid fa-brain text-red-400"></i>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-[#d4d4d4]">Claude Code Required</h3>
+              <p className="text-xs text-[#6b7280]">The swarm conductor needs Claude Code CLI installed</p>
+            </div>
+          </div>
+
+          <div className="p-3 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
+            <p className="text-xs text-[#bbb] mb-3">
+              Termpolis uses a dedicated Claude Code instance as the <span className="text-[#22D3EE]">AI conductor</span> to
+              orchestrate your swarm. It analyzes your task, picks the best agents, assigns work, monitors progress, and
+              coordinates communication between agents.
+            </p>
+            <p className="text-xs text-[#888] mb-3">
+              This requires the <span className="text-[#d4d4d4]">Claude Code CLI</span> (command-line tool) — not the VS Code
+              extension. The VS Code extension is a different product that runs inside VS Code. The CLI runs in any terminal.
+            </p>
+          </div>
+
+          <div className="p-3 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
+            <p className="text-[10px] text-[#6b7280] mb-2 font-semibold uppercase tracking-wider">Install Steps</p>
+            <div className="space-y-2">
+              <div className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-2 font-mono text-xs text-[#d4d4d4] select-all">
+                npm install -g @anthropic-ai/claude-code
+              </div>
+              <div className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-2 font-mono text-xs text-[#d4d4d4] select-all">
+                claude --version
+              </div>
+            </div>
+            <p className="text-[10px] text-[#555] mt-2">
+              Requires Node.js 18+. After installing, restart Termpolis and try Start Swarm again.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <a
+              href="https://docs.anthropic.com/en/docs/claude-code"
+              onClick={e => { e.preventDefault(); window.open('https://docs.anthropic.com/en/docs/claude-code', '_blank') }}
+              className="text-[#22D3EE] hover:underline text-xs flex items-center gap-1"
+            >
+              <i className="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
+              Claude Code Documentation
+            </a>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className="flex flex-col items-center justify-center py-12">
         <div className="relative mb-6">
@@ -197,14 +252,12 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
         </div>
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Preparing Conductor</h3>
         <p className="text-xs text-[#6b7280] text-center max-w-sm">{statusMessage}</p>
-        {/* Show auth message if needed */}
         {needsAuth && (
           <div className="mt-4 p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7] max-w-sm text-center">
             <i className="fa-solid fa-arrow-up-right-from-square mr-1"></i>
             Complete sign-in in your browser. Waiting for authentication...
           </div>
         )}
-        {/* Show error if Claude not installed or other failure */}
         {error && (
           <div className="mt-4 p-3 bg-[#3a1e1e] border border-[#5a2d2d] rounded-lg text-xs text-[#E57373] max-w-sm text-center">
             <i className="fa-solid fa-triangle-exclamation mr-1"></i>
