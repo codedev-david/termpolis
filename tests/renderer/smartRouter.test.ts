@@ -136,7 +136,7 @@ describe('smartRouter', () => {
   })
 
   it('assigns documentation to Gemini when available', () => {
-    const breakdown = analyzeTask('Document all the API endpoints')
+    const breakdown = analyzeTask('Write comprehensive readme documentation')
     const assignments = routeTasks(breakdown.subtasks, ['claude', 'codex', 'gemini'])
     const docTask = assignments.find(a => a.subtask.category === 'documentation')
     expect(docTask?.agentId).toBe('gemini')
