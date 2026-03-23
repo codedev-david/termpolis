@@ -167,9 +167,13 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       }
     }
 
-    // Step 1: Create terminals
-    for (const assignment of assignments) {
-      const agent = AVAILABLE_AGENTS.find(a => a.id === assignment.agentId)!
+    // Step 1: Create one terminal per unique agent (not per assignment)
+    const uniqueAgentIds = [...new Set(assignments.map(a => a.agentId))]
+    const agentTerminalMap = new Map<string, string>() // agentId -> terminalId
+
+    for (const agentId of uniqueAgentIds) {
+      const agent = AVAILABLE_AGENTS.find(a => a.id === agentId)!
+      const agentAssignments = assignments.filter(a => a.agentId === agentId)
       const id = uuid()
       const shellType = resolveShellType(agent.shell, availableShells)
       const extraPaths = agent.id === 'aider-qwen' ? ollamaExtraPaths : undefined
@@ -194,10 +198,11 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
       })
 
       terminalIds.push(id)
+      agentTerminalMap.set(agentId, id)
       agentEntries.push({
         terminalId: id,
         agentName: agent.name,
-        role: assignment.role,
+        role: agentAssignments.map(a => a.role).join('; '),
         status: 'starting',
       })
     }
@@ -211,53 +216,57 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
     setLaunchProgress('Waiting for shells to initialize...')
     await delay(testDelay(3000))
 
-    for (let i = 0; i < terminalIds.length; i++) {
-      const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
+    for (const agentId of uniqueAgentIds) {
+      const agent = AVAILABLE_AGENTS.find(a => a.id === agentId)!
+      const tid = agentTerminalMap.get(agentId)!
       setLaunchProgress(`Starting ${agent.name}...`)
-      window.termpolis.writeToTerminal(terminalIds[i], resolveAgentCommand(agent.command) + '\r')
-      // Stagger agent launches slightly so they don't all hit the shell at once
+      window.termpolis.writeToTerminal(tid, resolveAgentCommand(agent.command) + '\r')
       await delay(testDelay(500))
     }
 
     // Auto-trust for Claude/Codex terminals in swarm
-    for (let i = 0; i < terminalIds.length; i++) {
-      const agent = AVAILABLE_AGENTS.find(a => a.id === assignments[i].agentId)!
+    for (const agentId of uniqueAgentIds) {
+      const agent = AVAILABLE_AGENTS.find(a => a.id === agentId)!
       if (agent.command.startsWith('claude') || agent.command.startsWith('codex')) {
-        const tid = terminalIds[i]
+        const tid = agentTerminalMap.get(agentId)!
         setTimeout(() => window.termpolis.writeToTerminal(tid, '\r'), testDelay(9000))
       }
     }
 
     // Step 3: Wait for agents to fully initialize
     // Must wait long enough for: shell init (3s) + agent startup (5-10s) + trust auto-dismiss (9s)
-    // The auto-trust Enter fires at 9s — we need to wait past that before sending task prompts
     setLaunchProgress('Waiting for agents to initialize (this takes 15-20 seconds)...')
     await delay(testDelay(18000))
 
-    // Step 4: Send task prompts as a SINGLE message (not line by line)
-    // The agent should be fully started and waiting for input by now
-    for (let i = 0; i < terminalIds.length; i++) {
-      const assignment = assignments[i]
-      const agent = AVAILABLE_AGENTS.find(a => a.id === assignment.agentId)!
+    // Step 4: Send task prompts — one combined prompt per agent with all their tasks
+    for (const agentId of uniqueAgentIds) {
+      const agent = AVAILABLE_AGENTS.find(a => a.id === agentId)!
+      const tid = agentTerminalMap.get(agentId)!
+      const agentTasks = assignments.filter(a => a.agentId === agentId)
       setLaunchProgress(`Sending task to ${agent.name}...`)
 
       // Build the other agents list
-      const othersList = assignments
-        .filter((_, j) => j !== i)
-        .map(a => `${a.agentName}: ${a.role}`)
-        .join(', ')
+      const otherAgents = uniqueAgentIds
+        .filter(id => id !== agentId)
+        .map(id => {
+          const a = AVAILABLE_AGENTS.find(x => x.id === id)!
+          const tasks = assignments.filter(x => x.agentId === id)
+          return `${a.name}: ${tasks.map(t => t.role).join(', ')}`
+        })
+        .join('; ')
 
-      // Send as a single compact message — the agent reads it as one prompt
-      const prompt = `You are part of a multi-agent swarm. Your role: ${assignment.role}. Your task: ${assignment.task}. Other agents: ${othersList}. If you have Termpolis MCP tools, use swarm_send_message and swarm_update_task to coordinate. Begin working now.`
+      // Combine all tasks for this agent into one prompt
+      const taskList = agentTasks.map(t => `${t.role}: ${t.task}`).join('. ')
+      const prompt = `You are part of a multi-agent swarm. Your tasks: ${taskList}. Other agents: ${otherAgents}. If you have Termpolis MCP tools, use swarm_send_message and swarm_update_task to coordinate. Begin working now.`
 
-      window.termpolis.writeToTerminal(terminalIds[i], prompt + '\r')
+      window.termpolis.writeToTerminal(tid, prompt + '\r')
       await delay(testDelay(500))
     }
 
     // Step 5: Create swarm tasks via API
     setLaunchProgress('Creating swarm tasks...')
     for (const assignment of assignments) {
-      const termId = terminalIds[assignments.indexOf(assignment)]
+      const termId = agentTerminalMap.get(assignment.agentId) ?? terminalIds[0]
       await window.swarmAPI.createTask(
         `${assignment.agentName}: ${assignment.role}`,
         assignment.task,

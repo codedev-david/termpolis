@@ -62,11 +62,25 @@ export function routeTasks(
 
   if (agents.length === 0) return []
 
+  // Ensure we have at least as many subtasks as agents so every agent gets work.
+  // If the task analyzer produced fewer subtasks than agents, duplicate the most
+  // complex subtask with adjusted descriptions so each agent participates.
+  let expandedSubtasks = [...subtasks]
+  while (expandedSubtasks.length < agents.length) {
+    // Clone the highest-complexity subtask with a variation
+    const base = [...expandedSubtasks].sort((a, b) => b.complexity - a.complexity)[0]
+    expandedSubtasks.push({
+      ...base,
+      title: `Support: ${base.title}`,
+      description: `Assist with and review: ${base.description}`,
+    })
+  }
+
   const assignments: TaskAssignment[] = []
   const agentLoad = new Map<string, number>()
 
   // Sort subtasks by complexity (hardest first — assign best agents to hardest work)
-  const sorted = [...subtasks].sort((a, b) => b.complexity - a.complexity)
+  const sorted = [...expandedSubtasks].sort((a, b) => b.complexity - a.complexity)
 
   for (const subtask of sorted) {
     let bestAgent = agents[0]
@@ -83,9 +97,16 @@ export function routeTasks(
         else if (agent.tokenCost === 'medium') score += 5
       }
 
-      // Penalty for overloaded agents (balance work distribution)
+      // Heavy penalty for agents that already have tasks — ensures distribution
+      // across all selected agents before doubling up
       const currentLoad = agentLoad.get(agent.agentId) || 0
-      score -= currentLoad * 10
+      const unassignedAgents = agents.filter(a => !agentLoad.has(a.agentId) || agentLoad.get(a.agentId) === 0)
+      const isUnassigned = currentLoad === 0
+      if (currentLoad > 0 && unassignedAgents.length > 0 && !isUnassigned) {
+        score -= 50 // strong penalty to force work to unassigned agents first
+      } else {
+        score -= currentLoad * 15
+      }
 
       // Bonus for MCP-capable agents (better swarm integration)
       if (agent.hasMcp) score += 5
