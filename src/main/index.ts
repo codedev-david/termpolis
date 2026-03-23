@@ -54,10 +54,10 @@ function createWindow() {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // Confirm close when AI agents are running
+  // Confirm close when AI agents are running (skip in test mode)
   let forceClose = false
   mainWindow.on('close', (e) => {
-    if (forceClose) return
+    if (forceClose || process.env.NODE_ENV === 'test') return
     // Check if any terminals have agent commands (agents running)
     const hasAgents = mainWindow?.webContents.executeJavaScript(
       `(() => { try { return window.__termpolis_has_agents?.() ?? false } catch { return false } })()`
