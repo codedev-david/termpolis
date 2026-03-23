@@ -27,7 +27,6 @@ const AVAILABLE_AGENTS: AgentDef[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
-  { id: 'aider', name: 'Aider', icon: 'fa-solid fa-code', command: 'aider', shell: 'bash', color: '#8B5CF6' },
   { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-code-branch', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#EC4899' },
 ]
 

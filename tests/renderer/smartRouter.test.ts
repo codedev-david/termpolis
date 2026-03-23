@@ -8,8 +8,8 @@ import { AGENT_CAPABILITIES, CATEGORY_LABELS } from '../../src/renderer/src/lib/
 // ═══════════════════════════════════════════════════════
 
 describe('agentCapabilities', () => {
-  it('has 5 agents defined', () => {
-    expect(AGENT_CAPABILITIES.length).toBe(5)
+  it('has 4 agents defined', () => {
+    expect(AGENT_CAPABILITIES.length).toBe(4)
   })
 
   it('each agent has all 10 strength categories', () => {
@@ -49,7 +49,7 @@ describe('agentCapabilities', () => {
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'claude')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'codex')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'gemini')!.hasMcp).toBe(true)
-    expect(AGENT_CAPABILITIES.find(a => a.agentId === 'aider')!.hasMcp).toBe(false)
+    expect(AGENT_CAPABILITIES.find(a => a.agentId === 'aider-qwen')!.hasMcp).toBe(false)
   })
 
   it('has labels for all categories', () => {

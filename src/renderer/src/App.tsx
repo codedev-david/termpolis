@@ -68,7 +68,6 @@ export default function App() {
           'Claude Code': 'claude',
           'OpenAI Codex': 'codex',
           'Gemini CLI': 'gemini',
-          'Aider': 'aider',
           'Aider + Qwen3': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
         }
         const resolvedSaved = saved.map(t => ({

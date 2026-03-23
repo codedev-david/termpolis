@@ -210,7 +210,6 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
           {allProfiles.map(profile => {
             const isCustom = aiProfiles.some(p => p.id === profile.id)
             const isAiderQwen = profile.id === 'aider-qwen'
-            const isAider = profile.id === 'aider'
             return (
               <div key={profile.id} className="group flex flex-col">
                 <div className="flex items-center">
@@ -231,9 +230,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                     }}
                     title={isAiderQwen
                       ? 'Free & local — runs Qwen3-Coder via Ollama (no API costs)'
-                      : isAider
-                        ? 'Open source AI coding tool — connect any LLM'
-                        : `Launch ${profile.name}: ${profile.command}`}
+                      : `Launch ${profile.name}: ${profile.command}`}
                   >
                     <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
                     <span className="text-[#d4d4d4] truncate">{profile.name}</span>

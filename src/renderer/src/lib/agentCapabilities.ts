@@ -91,24 +91,6 @@ export const AGENT_CAPABILITIES: AgentCapability[] = [
     hasMcp: true,
   },
   {
-    agentId: 'aider',
-    agentName: 'Aider',
-    strengths: {
-      refactoring: 3,
-      architecture: 2,
-      testing: 3,
-      documentation: 2,
-      codeReview: 2,
-      debugging: 3,
-      frontend: 2,
-      devops: 2,
-      dataAnalysis: 2,
-      bulkTasks: 4,
-    },
-    tokenCost: 'low',
-    hasMcp: false,
-  },
-  {
     agentId: 'aider-qwen',
     agentName: 'Aider + Qwen3',
     strengths: {

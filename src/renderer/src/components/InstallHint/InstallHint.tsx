@@ -35,14 +35,6 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
         ],
         url: 'https://github.com/google-gemini/gemini-cli',
       }
-    case 'aider':
-      return {
-        steps: [
-          'pip install aider-chat',
-          'aider --version  (to verify)',
-        ],
-        url: 'https://aider.chat/docs/install.html',
-      }
     case 'aider-qwen':
       return {
         steps: [
