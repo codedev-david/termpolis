@@ -271,25 +271,26 @@ export function StartSwarmModal({ onClose, onLaunched }: StartSwarmModalProps) {
   function renderDescribeStep() {
     return (
       <div>
-        <p className="text-sm text-[#bbb] mb-2">Describe what the swarm should work on.</p>
+        <p className="text-sm text-[#bbb] mb-2">What do you want the swarm to build?</p>
         <p className="text-xs text-[#6b7280] mb-3">
-          Be specific about each task. The conductor will analyze your description, pick the best agents, and assign work automatically.
+          Just describe what you need in plain language. The AI conductor will figure out how to break it down, which agents to use, and how to coordinate the work.
         </p>
         <textarea
           autoFocus
           value={taskDescription}
           onChange={e => setTaskDescription(e.target.value)}
-          placeholder='e.g. "Build a tic-tac-toe game in React, write unit tests for the game logic, and create documentation on how to play"'
+          placeholder='e.g. "I want a tic-tac-toe game for two players with documentation on how to play"'
           rows={5}
           className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
         />
         <div className="mt-3 p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
-          <p className="text-[10px] text-[#6b7280] mb-1.5 font-semibold uppercase tracking-wider">Tips for better results</p>
-          <ul className="text-[10px] text-[#555] space-y-0.5 list-disc list-inside">
-            <li>Use action words: <span className="text-[#888]">build, create, refactor, test, fix, document, review, upgrade, deploy</span></li>
-            <li>Separate tasks with <span className="text-[#888]">"and"</span> or commas so each agent gets distinct work</li>
-            <li>Be explicit: <span className="text-[#888]">"build the app and write tests"</span> not <span className="text-[#888]">"make it work"</span></li>
-          </ul>
+          <p className="text-[10px] text-[#6b7280] mb-1.5 flex items-center gap-1.5">
+            <i className="fa-solid fa-brain text-[#22D3EE]"></i>
+            <span className="font-semibold uppercase tracking-wider">AI Conductor</span>
+          </p>
+          <p className="text-[10px] text-[#555]">
+            The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. You'll see progress updates in the Swarm Dashboard.
+          </p>
         </div>
       </div>
     )
