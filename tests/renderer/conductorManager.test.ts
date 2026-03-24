@@ -168,4 +168,176 @@ describe('conductorManager', () => {
       expect.stringContaining('claude'),
     )
   })
+
+  // ---- Monitoring loop: task-based completion ----
+
+  it('monitoring loop marks swarm done when all tasks are completed', async () => {
+    // Start and ready the conductor
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    // Mock tasks: all completed
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 't1', status: 'completed' },
+        { id: 't2', status: 'completed' },
+      ],
+    })
+
+    await sendTask('Build a tic-tac-toe game', '/tmp/project')
+
+    // Advance monitoring interval
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const store = useTerminalStore.getState()
+    expect(store.swarmActive).toBe(false)
+    expect(store.swarmNotification).toMatchObject({ type: 'success' })
+    expect(getConductorState().status).toBe('done')
+  })
+
+  it('monitoring loop marks swarm done when a mix of completed and failed tasks', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 't1', status: 'completed' },
+        { id: 't2', status: 'failed' },
+      ],
+    })
+
+    await sendTask('Build something', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+    expect(getConductorState().status).toBe('done')
+  })
+
+  it('monitoring loop does NOT mark done when tasks are still in-progress', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 't1', status: 'completed' },
+        { id: 't2', status: 'in-progress' },
+      ],
+    })
+
+    await sendTask('Build something', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    // Still running — swarmActive should remain true
+    expect(useTerminalStore.getState().swarmActive).toBe(true)
+    expect(getConductorState().status).toBe('running')
+  })
+
+  // ---- Monitoring loop: message-based completion (fallback) ----
+
+  it('monitoring loop marks done when message with type=result arrives', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    // No tasks created — fallback to message detection
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [],
+    })
+    ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { type: 'info', content: 'Starting work...' },
+        { type: 'result', content: 'SWARM COMPLETE: built the app' },
+      ],
+    })
+
+    await sendTask('Build an app', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+    expect(getConductorState().status).toBe('done')
+  })
+
+  it('monitoring loop marks done when message content matches SWARM COMPLETE pattern', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [],
+    })
+    ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { type: 'info', content: 'All tasks are completed — swarm finished' },
+      ],
+    })
+
+    await sendTask('Build an app', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+    expect(getConductorState().status).toBe('done')
+  })
+
+  it('monitoring loop does NOT mark done when messages have no completion signal', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [],
+    })
+    ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { type: 'info', content: 'Agent 1 is working on feature X...' },
+        { type: 'info', content: 'Agent 2 started tests...' },
+      ],
+    })
+
+    await sendTask('Build an app', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(useTerminalStore.getState().swarmActive).toBe(true)
+    expect(getConductorState().status).toBe('running')
+  })
+
+  // ---- markSwarmDone side-effects ----
+
+  it('completing swarm sets swarmActive to false, enabling new swarm start', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    // swarmActive should be true after conductor starts
+    expect(useTerminalStore.getState().swarmActive).toBe(true)
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [{ id: 't1', status: 'completed' }],
+    })
+
+    await sendTask('Build a game', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    // After completion, swarmActive is false — a new swarm can start
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+  })
 })

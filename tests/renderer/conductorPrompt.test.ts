@@ -95,4 +95,43 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('TASK FROM USER:')
     expect(prompt).toContain('PROJECT DIRECTORY:')
   })
+
+  // ---- Task creation enforcement ----
+
+  it('places swarm_create_task in STEP 2 before creating terminals', () => {
+    const prompt = buildDefault()
+    const step2Idx = prompt.indexOf('STEP 2')
+    const step3Idx = prompt.indexOf('STEP 3')
+    const createTaskIdx = prompt.indexOf('swarm_create_task', step2Idx)
+    // swarm_create_task must appear in the STEP 2 block
+    expect(step2Idx).toBeGreaterThan(-1)
+    expect(createTaskIdx).toBeGreaterThan(step2Idx)
+    expect(createTaskIdx).toBeLessThan(step3Idx)
+  })
+
+  it('marks task creation as mandatory in the instructions', () => {
+    const prompt = buildDefault()
+    // "Do NOT skip" must appear in the STEP 2 block
+    const step2Idx = prompt.indexOf('STEP 2')
+    const step3Idx = prompt.indexOf('STEP 3')
+    const step2Block = prompt.slice(step2Idx, step3Idx)
+    expect(step2Block).toMatch(/do not skip|never skip/i)
+  })
+
+  it('instructs conductor never to skip task creation', () => {
+    const prompt = buildDefault()
+    expect(prompt).toMatch(/never skip|do not skip/i)
+  })
+
+  it('includes swarm_update_task for marking tasks complete', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain('swarm_update_task')
+  })
+
+  it('requires a SWARM COMPLETE result message as the final step', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain('SWARM COMPLETE')
+    // Should be part of a swarm_send_message call with type result
+    expect(prompt).toContain("type='result'")
+  })
 })

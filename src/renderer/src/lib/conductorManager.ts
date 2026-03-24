@@ -197,8 +197,9 @@ function startMonitoring(): void {
     }
 
     try {
-      // Check if conductor terminal still exists
       const store = useTerminalStore.getState()
+
+      // Check if conductor terminal still exists
       const conductorTerminal = store.terminals.find(t => t.id === conductorState.terminalId)
       if (!conductorTerminal) {
         conductorState = { ...conductorState, status: 'error', error: 'Conductor terminal closed unexpectedly' }
@@ -207,23 +208,34 @@ function startMonitoring(): void {
         return
       }
 
-      // Check task completion
+      // Check task-based completion (conductor used swarm_create_task)
       const tasksRes = await window.swarmAPI.getTasks()
       if (tasksRes.success && tasksRes.data && tasksRes.data.length > 0) {
         const allCompleted = tasksRes.data.every(
           (t: { status: string }) => t.status === 'completed' || t.status === 'failed'
         )
         if (allCompleted) {
-          conductorState.status = 'done'
-          store.setSwarmNotification({
-            message: `Swarm complete — ${tasksRes.data.length} task${tasksRes.data.length !== 1 ? 's' : ''} finished`,
-            type: 'success',
-          })
-          if (monitoringInterval) clearInterval(monitoringInterval)
+          markSwarmDone(store, `Swarm complete — ${tasksRes.data.length} task${tasksRes.data.length !== 1 ? 's' : ''} finished`)
+          return
         }
       }
 
-      // Check conductor output for errors/token limits
+      // Also detect completion from messages (catches cases where conductor
+      // skipped swarm_create_task but still posted a result/completion message)
+      const msgsRes = await window.swarmAPI.getMessages()
+      if (msgsRes.success && msgsRes.data && msgsRes.data.length > 0) {
+        const recent = msgsRes.data.slice(-15)
+        const completionMsg = recent.find((m: { type: string; content: string }) =>
+          m.type === 'result' ||
+          /SWARM COMPLETE|TASK COMPLETE|all tasks.*complet|swarm.*finished/i.test(m.content)
+        )
+        if (completionMsg) {
+          markSwarmDone(store, 'Swarm complete — check the Messages tab for results')
+          return
+        }
+      }
+
+      // Check conductor output for token limit errors
       if (conductorState.terminalId) {
         const bufferRes = await window.termpolis.readTerminalBuffer(conductorState.terminalId)
         const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
@@ -239,6 +251,17 @@ function startMonitoring(): void {
       // Monitoring error — continue silently
     }
   }, testDelay(15000))
+}
+
+function markSwarmDone(store: ReturnType<typeof useTerminalStore.getState>, message: string): void {
+  conductorState.status = 'done'
+  // Allow a new swarm to be started
+  store.setSwarmActive(false)
+  store.setSwarmNotification({ message, type: 'success' })
+  if (monitoringInterval) {
+    clearInterval(monitoringInterval)
+    monitoringInterval = null
+  }
 }
 
 // Cleanup

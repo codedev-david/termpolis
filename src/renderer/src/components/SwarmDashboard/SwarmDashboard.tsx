@@ -313,20 +313,28 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           <div className="flex items-center gap-3">
             <i className="fa-solid fa-network-wired text-[#22D3EE]"></i>
             <h2 className="text-base font-semibold text-[#d4d4d4]">Swarm Dashboard</h2>
-            {swarmActive && (
+            {(swarmActive || conductorStatus === 'done') && (
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-[#22D3EE]/15 text-[#22D3EE] border border-[#22D3EE]/30">
-                  Swarm Active
-                </span>
-                <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full border ${
-                  conductorStatus === 'running' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
-                  conductorStatus === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
-                  conductorStatus === 'done' ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' :
-                  'bg-[#3c3c3c] text-[#6b7280] border-[#3c3c3c]'
-                }`}>
-                  <i className="fa-solid fa-brain mr-1 text-[8px]"></i>
-                  Conductor: {conductorStatus}
-                </span>
+                {conductorStatus === 'done' ? (
+                  <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30">
+                    <i className="fa-solid fa-circle-check mr-1 text-[8px]"></i>
+                    Swarm Complete
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-[#22D3EE]/15 text-[#22D3EE] border border-[#22D3EE]/30">
+                    Swarm Active
+                  </span>
+                )}
+                {conductorStatus !== 'idle' && conductorStatus !== 'done' && (
+                  <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full border ${
+                    conductorStatus === 'running' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+                    conductorStatus === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+                    'bg-[#3c3c3c] text-[#6b7280] border-[#3c3c3c]'
+                  }`}>
+                    <i className="fa-solid fa-brain mr-1 text-[8px]"></i>
+                    Conductor: {conductorStatus}
+                  </span>
+                )}
               </div>
             )}
             <span className="text-xs text-[#6b7280]">
@@ -351,7 +359,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4] transition-colors"
               >
                 <i className="fa-solid fa-rocket"></i>
-                Start Swarm
+                {conductorStatus === 'done' ? 'Start New Swarm' : 'Start Swarm'}
               </button>
             )}
             <button onClick={onClose} className="text-[#6b7280] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">

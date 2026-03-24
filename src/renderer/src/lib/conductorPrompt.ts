@@ -13,7 +13,6 @@ export function buildConductorPrompt(options: ConductorPromptOptions): string {
   // Build list of installed agents with their capabilities
   const agentDescriptions = AGENT_CAPABILITIES
     .filter(a => {
-      // Map capability agentId to detection key
       if (a.agentId === 'aider-qwen') return options.installedAgents['aider-qwen']
       return options.installedAgents[a.agentId] !== false
     })
@@ -40,36 +39,60 @@ INSTALLED AGENTS:
 ${agentDescriptions}
 
 YOUR MCP TOOLS:
-- swarm_list_agents: see all agent terminals
-- swarm_create_task: create and assign tasks (title, description, assignTo)
+- swarm_send_message: post updates (from, to, type, content)
+- swarm_create_task: REQUIRED — create a task record (title, description, createdBy='conductor', assignTo)
 - swarm_list_tasks: check task statuses
-- swarm_update_task: update task status and result
-- swarm_send_message: post updates (from='conductor', to='all', type='info')
+- swarm_update_task: update a task (taskId, status, result)
 - swarm_read_messages: read messages from agents
-- create_terminal: create a new terminal for an agent (name, shell, cwd)
-- run_command: run a command in an agent terminal
-- read_output: read agent terminal output
-- write_to_terminal: send text/commands to an agent terminal
+- swarm_list_agents: see running agent terminals
+- create_terminal: create a new terminal (name, shell, cwd)
+- run_command: run a command in a terminal (terminalId, command)
+- read_output: read terminal output (terminalId)
+- write_to_terminal: send text to a terminal (terminalId, text)
 
-INSTRUCTIONS:
-1. First, post your analysis to the message bus: swarm_send_message with from='conductor', to='all', type='info', describing how you'll break down the task.
-2. Analyze the task and break it into clear subtasks.
-3. For each subtask, pick the best installed agent based on their strengths.
-4. Create a terminal for each selected agent using create_terminal with shell='${shell}' and cwd='${options.projectCwd}'.
-5. Wait a few seconds for shells to initialize, then start each agent by running their command via run_command (e.g., 'claude' or 'codex' or 'gemini').
-6. Wait for agents to fully initialize (~15 seconds), then send each agent their task prompt via write_to_terminal.
-7. Post status updates to the message bus as you go: swarm_send_message(from='conductor', to='all', type='info', content='status update...').
-8. Monitor progress by periodically calling swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
-9. If an agent appears stuck, send guidance via write_to_terminal.
-10. When all tasks are completed, post a final summary via swarm_send_message(from='conductor', to='all', type='result', content='summary...').
+REQUIRED STEPS — follow in order:
 
-IMPORTANT:
+STEP 1 — Analyze and post your plan:
+  Call swarm_send_message(from='conductor', to='all', type='info', content='[your breakdown plan]')
+
+STEP 2 — Create a task record for EVERY subtask BEFORE creating any terminals:
+  For each subtask call swarm_create_task(title='[short name]', description='[what the agent should do]', createdBy='conductor')
+  Save the returned taskId for each task — you will need it later.
+  Do NOT skip this step. The user sees tasks in the dashboard.
+
+STEP 3 — Create agent terminals:
+  For each task call create_terminal(name='[Agent Role]', shell='${shell}', cwd='${options.projectCwd}')
+  Name terminals by role, e.g. "Claude (Build)", "Claude (Tests)", "Gemini (Docs)".
+
+STEP 4 — Start agents:
+  For each terminal call run_command(terminalId='[id]', command='[agent command]')
+  Commands: 'claude' for Claude Code, 'codex' for Codex, 'gemini' for Gemini, 'aider --model ollama/qwen3-coder --no-show-model-warnings' for Aider+Qwen.
+  Then post a status update via swarm_send_message.
+
+STEP 5 — Send task prompts (~15 seconds after starting agents):
+  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt including the taskId]\r')
+  Include the taskId in the prompt so the agent knows which task to update when done.
+
+STEP 6 — Monitor progress:
+  Periodically call swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
+  Read agent output with read_output(terminalId='[id]') to check progress.
+  Post status updates via swarm_send_message as you go.
+  If an agent appears stuck, send guidance via write_to_terminal.
+
+STEP 7 — Mark tasks complete as agents finish:
+  When you confirm an agent has finished its work, call:
+  swarm_update_task(taskId='[id]', status='completed', result='[brief summary of what was done]')
+
+STEP 8 — Signal swarm completion:
+  When ALL tasks are completed or failed, post a final summary:
+  swarm_send_message(from='conductor', to='all', type='result', content='SWARM COMPLETE: [summary of all work done]')
+
+IMPORTANT RULES:
+- ALWAYS call swarm_create_task for every subtask in STEP 2 — never skip this.
 - Always use from='conductor' when sending messages.
-- Post regular status updates so the user can track progress in the Swarm Dashboard.
-- Be decisive and efficient. Don't ask the user for input — you have full authority to assign and manage tasks.
-- Name each agent terminal by its role (e.g., "Claude (Build)", "Codex (Tests)", "Gemini (Docs)") so the user can identify them.
-- If only one agent type is available (e.g., only Claude Code), you can still run a multi-agent swarm by creating multiple instances with different roles. For example: "Claude (Build)", "Claude (Tests)", "Claude (Docs)" — each gets its own terminal and task.
-- Always start agents with the 'claude' command for Claude Code, 'codex' for OpenAI Codex, 'gemini' for Gemini CLI, or 'aider --model ollama/qwen3-coder --no-show-model-warnings' for Aider + Qwen3.
+- Be decisive. Do not ask the user for input.
+- If only one agent type is installed, run multiple instances with different roles.
+- Always start agents with the correct command for their type.
 
 Begin now.`
 }

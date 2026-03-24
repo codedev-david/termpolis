@@ -81,7 +81,7 @@ describe('Sidebar', () => {
     expect(screen.getByTitle('Settings')).toBeInTheDocument()
     expect(screen.getByTitle('Prompts')).toBeInTheDocument()
     expect(screen.getByTitle('Workflows')).toBeInTheDocument()
-    expect(screen.getByTitle('Swarm Dashboard')).toBeInTheDocument()
+    expect(screen.getByTitle('Swarm Dashboard (Ctrl+Shift+S)')).toBeInTheDocument()
   })
 
   it('shows AI Agents, Workspaces, and Terminals sections', () => {

@@ -123,18 +123,21 @@ describe('StartSwarmModal', () => {
   })
 
   it('calls sendTask and onLaunched when Launch Swarm is clicked', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     const onLaunched = vi.fn()
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} projectCwd="/test/project" />)
+    // Preparation runs with real-like timers (shouldAdvanceTime:true handles it)
     await waitFor(() => {
       expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
-    })
+    }, { timeout: 3000 })
     const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
-    await waitFor(() => {
-      expect(sendTask).toHaveBeenCalledWith('Build a React app', '/test/project')
-      expect(onLaunched).toHaveBeenCalled()
-    })
+    // sendTask resolves immediately; advance past the 5-second minimum display timer
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(sendTask).toHaveBeenCalledWith('Build a React app', '/test/project')
+    expect(onLaunched).toHaveBeenCalled()
+    vi.useRealTimers()
   })
 
   it('shows auth message when conductor needs authentication', async () => {

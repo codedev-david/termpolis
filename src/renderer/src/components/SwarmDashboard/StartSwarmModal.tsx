@@ -93,7 +93,12 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     if (!taskDescription.trim() || !cwdRef.current) return
     setStep('launching')
     setLaunchProgress('Sending task to conductor...')
-    await sendTask(taskDescription, cwdRef.current)
+    // Run sendTask and a minimum display delay in parallel so the user
+    // has time to read the startup notice before the modal closes
+    await Promise.all([
+      sendTask(taskDescription, cwdRef.current),
+      new Promise(r => setTimeout(r, 5000)),
+    ])
     onLaunched()
   }, [taskDescription, onLaunched])
 
@@ -302,12 +307,25 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
         </div>
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Launching Swarm</h3>
         <p className="text-xs text-[#6b7280] text-center max-w-sm mb-4">{launchProgress}</p>
-        <div className="p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7] max-w-sm text-center">
-          <i className="fa-solid fa-clock mr-1.5"></i>
-          Agents can take up to <strong>30 seconds</strong> to start up and receive their tasks.
-          <div className="mt-2 text-[#6b9e6b]">
-            Open the <span className="text-[#A5D6A7] font-semibold"><i className="fa-solid fa-brain mr-1 text-[9px]"></i>Swarm Dashboard</span> to track progress
-            <span className="ml-1 font-mono text-[10px] bg-[#1e2e1e] px-1.5 py-0.5 rounded">Ctrl+Shift+S</span>
+        <div className="space-y-2 max-w-sm w-full">
+          <div className="p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7]">
+            <div className="flex items-center gap-1.5 mb-1">
+              <i className="fa-solid fa-clock"></i>
+              <span className="font-semibold">Agents are starting up</span>
+            </div>
+            <p className="text-[#6b9e6b]">
+              It can take <strong className="text-[#A5D6A7]">30–45 seconds</strong> for agent terminals to appear and receive their tasks. Open the <span className="text-[#A5D6A7] font-semibold">Swarm Dashboard</span> to watch progress
+              <span className="ml-1 font-mono text-[10px] bg-[#1e2e1e] px-1 py-0.5 rounded">Ctrl+Shift+S</span>
+            </p>
+          </div>
+          <div className="p-3 bg-[#2a1f1a] border border-[#5a3a2d] rounded-lg text-xs text-[#FFB74D]">
+            <div className="flex items-center gap-1.5 mb-1">
+              <i className="fa-solid fa-triangle-exclamation"></i>
+              <span className="font-semibold">Watch the Agents tab</span>
+            </div>
+            <p className="text-[#c49060]">
+              Each agent terminal may require <strong className="text-[#FFB74D]">login or verification</strong> before it can work — especially on first use. Check the Agents tab and complete any sign-in prompts in the agent terminals.
+            </p>
           </div>
         </div>
       </div>
