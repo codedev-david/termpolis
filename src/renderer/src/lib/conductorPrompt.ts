@@ -64,14 +64,20 @@ STEP 3 — Create agent terminals:
   For each task call create_terminal(name='[Agent Role]', shell='${shell}', cwd='${options.projectCwd}')
   Name terminals by role, e.g. "Claude (Build)", "Claude (Tests)", "Gemini (Docs)".
 
-STEP 4 — Start agents:
+STEP 4 — Start agents in INTERACTIVE mode:
   For each terminal call run_command(terminalId='[id]', command='[agent command]')
-  Commands: 'claude' for Claude Code, 'codex' for Codex, 'gemini' for Gemini, 'aider --model ollama/qwen3-coder --no-show-model-warnings' for Aider+Qwen.
+  IMPORTANT — use ONLY these exact commands (no flags, no -p, no --print):
+    Claude Code → 'claude'
+    Codex       → 'codex'
+    Gemini CLI  → 'gemini'
+    Aider+Qwen  → 'aider --model ollama/qwen3-coder --no-show-model-warnings'
+  Never append -p or any other flag — agents must start interactively so they have full tool access (file writing, shell, etc).
   Then post a status update via swarm_send_message.
 
 STEP 5 — Send task prompts (~15 seconds after starting agents):
   For each agent call write_to_terminal(terminalId='[id]', text='[task prompt including the taskId]\r')
   Include the taskId in the prompt so the agent knows which task to update when done.
+  The prompt should instruct the agent to actually write/modify files, not just print output.
 
 STEP 6 — Monitor progress:
   Periodically call swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
@@ -92,7 +98,8 @@ IMPORTANT RULES:
 - Always use from='conductor' when sending messages.
 - Be decisive. Do not ask the user for input.
 - If only one agent type is installed, run multiple instances with different roles.
-- Always start agents with the correct command for their type.
+- NEVER use -p, --print, or pipe flags when starting agents — always interactive mode only.
+- Always start agents with the exact commands listed in STEP 4, no modifications.
 
 Begin now.`
 }
