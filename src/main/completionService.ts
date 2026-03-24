@@ -37,6 +37,12 @@ let pathCommandsCache: string[] | null = null
 let pathCommandsCacheTime = 0
 const CACHE_TTL = 5 * 60 * 1000
 
+/** Reset the PATH-commands cache. Exported for test isolation only. */
+export function resetPathCommandsCache(): void {
+  pathCommandsCache = null
+  pathCommandsCacheTime = 0
+}
+
 export function listPathCommands(): string[] {
   const now = Date.now()
   if (pathCommandsCache && now - pathCommandsCacheTime < CACHE_TTL) {

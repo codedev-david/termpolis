@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -29,7 +29,7 @@ vi.mock('fs', () => ({
 }))
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
-const { listPathEntries, listEnvVars } = await import('../../src/main/completionService')
+const { listPathEntries, listEnvVars, listPathCommands, resetPathCommandsCache } = await import('../../src/main/completionService')
 
 const home = homedir()
 const safePath = join(home, 'test-project')
@@ -173,5 +173,144 @@ describe('completionService', () => {
         expect(allowedKeys.has(key)).toBe(true)
       }
     })
+
+    it('returns empty object when no safe vars are set', () => {
+      const originalEnv2 = process.env
+      process.env = {}
+      try {
+        const result = listEnvVars()
+        expect(result).toEqual({})
+      } finally {
+        process.env = originalEnv2
+      }
+    })
+  })
+
+  describe('listPathEntries — additional edge cases', () => {
+    it('returns [] when readdirSync throws', () => {
+      mockReaddirSync.mockImplementation(() => { throw new Error('EPERM') })
+      const result = listPathEntries(safePath)
+      expect(result).toEqual([])
+    })
+
+    it('marks entries as isDir true or false based on statSync', () => {
+      mockReaddirSync.mockReturnValue(['file.txt', 'subdir', 'link'])
+      mockStatSync.mockImplementation((p: any) => ({
+        isDirectory: () => String(p).endsWith('subdir'),
+      }))
+      const result = listPathEntries(safePath)
+      expect(result).toContainEqual({ name: 'file.txt', isDir: false })
+      expect(result).toContainEqual({ name: 'subdir', isDir: true })
+      expect(result).toContainEqual({ name: 'link', isDir: false })
+    })
+
+    it('returns isDir: false when statSync throws for a specific entry', () => {
+      mockReaddirSync.mockReturnValue(['good.txt', 'bad-entry'])
+      mockStatSync.mockImplementation((p: any) => {
+        if (String(p).includes('bad-entry')) throw new Error('EACCES')
+        return { isDirectory: () => false }
+      })
+      const result = listPathEntries(safePath)
+      expect(result).toContainEqual({ name: 'good.txt', isDir: false })
+      expect(result).toContainEqual({ name: 'bad-entry', isDir: false })
+    })
+  })
+})
+
+describe('listPathCommands', () => {
+  let originalPlatform: string
+  let originalPATH: string | undefined
+  let originalPathAlt: string | undefined
+
+  beforeEach(() => {
+    mockReaddirSync.mockReset()
+    mockStatSync.mockReset()
+    mockRealpathSync.mockReset()
+    mockAccessSync.mockReset()
+    mockRealpathSync.mockImplementation((p: any) => String(p))
+    resetPathCommandsCache()
+    originalPlatform = process.platform
+    originalPATH = process.env.PATH
+    originalPathAlt = process.env.Path
+    // Force linux-like platform so non-Windows branch is exercised
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+    process.env.PATH = originalPATH
+    if (originalPathAlt !== undefined) {
+      process.env.Path = originalPathAlt
+    } else {
+      delete process.env.Path
+    }
+    vi.restoreAllMocks()
+  })
+
+  it('returns sorted list of PATH commands on non-Windows', () => {
+    process.env.PATH = '/usr/bin'
+    mockReaddirSync.mockReturnValue(['zebra', 'alpha', 'middle'])
+    mockAccessSync.mockImplementation(() => undefined)
+    const result = listPathCommands()
+    expect(result).toEqual(['alpha', 'middle', 'zebra'])
+  })
+
+  it('deduplicates commands that appear in multiple PATH dirs', () => {
+    process.env.PATH = '/usr/bin:/usr/local/bin'
+    mockReaddirSync.mockReturnValue(['git', 'node'])
+    mockAccessSync.mockImplementation(() => undefined)
+    const result = listPathCommands()
+    expect(result.filter((x: string) => x === 'git')).toHaveLength(1)
+    expect(result.filter((x: string) => x === 'node')).toHaveLength(1)
+  })
+
+  it('on non-Windows skips non-executable files (accessSync throws)', () => {
+    process.env.PATH = '/usr/bin'
+    mockReaddirSync.mockReturnValue(['runnable', 'not-runnable'])
+    mockAccessSync.mockImplementation((p: any) => {
+      if (String(p).includes('not-runnable')) throw new Error('EACCES')
+    })
+    const result = listPathCommands()
+    expect(result).toContain('runnable')
+    expect(result).not.toContain('not-runnable')
+  })
+
+  it('returns cached result on second call within TTL', () => {
+    process.env.PATH = '/usr/bin'
+    mockReaddirSync.mockReturnValue(['git'])
+    mockAccessSync.mockImplementation(() => undefined)
+    listPathCommands() // first call — populates cache
+    mockReaddirSync.mockReturnValue(['totally-different'])
+    const second = listPathCommands() // second call — should use cache
+    expect(second).toContain('git')
+    expect(second).not.toContain('totally-different')
+    expect(mockReaddirSync).toHaveBeenCalledTimes(1)
+  })
+
+  it('cache expires after TTL and returns fresh results', () => {
+    process.env.PATH = '/usr/bin'
+    mockReaddirSync.mockReturnValue(['git'])
+    mockAccessSync.mockImplementation(() => undefined)
+
+    let fakeNow = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => fakeNow)
+
+    listPathCommands() // first call at t=1_000_000
+
+    // Advance time beyond 5-minute TTL
+    fakeNow += 6 * 60 * 1000
+    mockReaddirSync.mockReturnValue(['fresh-command'])
+
+    const second = listPathCommands()
+    expect(second).toContain('fresh-command')
+    expect(second).not.toContain('git')
+  })
+
+  it('returns [] when PATH is empty and all dirs are unreadable', () => {
+    process.env.PATH = ''
+    delete process.env.Path
+    mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT') })
+    const result = listPathCommands()
+    expect(result).toEqual([])
   })
 })
