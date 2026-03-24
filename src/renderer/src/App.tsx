@@ -9,6 +9,7 @@ import { ContextPanel } from './components/ContextPanel/ContextPanel'
 import { CommandPalette } from './components/CommandPalette/CommandPalette'
 import { ConversationSearch } from './components/ConversationSearch/ConversationSearch'
 import { SwarmDashboard } from './components/SwarmDashboard/SwarmDashboard'
+import { SwarmCompleteDialog } from './components/SwarmDashboard/SwarmCompleteDialog'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { Welcome } from './components/Welcome/Welcome'
@@ -39,6 +40,8 @@ export default function App() {
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
   const swarmNotification = useTerminalStore(s => s.swarmNotification)
   const setSwarmNotification = useTerminalStore(s => s.setSwarmNotification)
+  const swarmCompletionSummary = useTerminalStore(s => s.swarmCompletionSummary)
+  const setSwarmCompletionSummary = useTerminalStore(s => s.setSwarmCompletionSummary)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const [swarmStartCwd, setSwarmStartCwd] = useState<string | null>(null)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
@@ -561,6 +564,14 @@ export default function App() {
         <SwarmDashboard
           onClose={() => { setShowSwarmDashboard(false); setSwarmStartCwd(null) }}
           initialCwd={swarmStartCwd}
+        />
+      )}
+      {swarmCompletionSummary && (
+        <SwarmCompleteDialog
+          message={swarmCompletionSummary.message}
+          tasks={swarmCompletionSummary.tasks}
+          onViewDashboard={() => { setSwarmCompletionSummary(null); setShowSwarmDashboard(true) }}
+          onDismiss={() => setSwarmCompletionSummary(null)}
         />
       )}
       {showCloseConfirm && (

@@ -31,9 +31,10 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
 
   conductorState = { terminalId: null, status: 'starting', error: null }
 
-  // Set swarm active immediately to prevent duplicate launches
+  // Set swarm active immediately to prevent duplicate launches; clear any prior completion dialog
   const storeInit = useTerminalStore.getState()
   storeInit.setSwarmActive(true)
+  storeInit.setSwarmCompletionSummary(null)
 
   const id = uuid()
   const isWindows = navigator.platform.startsWith('Win')
@@ -215,7 +216,12 @@ function startMonitoring(): void {
           (t: { status: string }) => t.status === 'completed' || t.status === 'failed'
         )
         if (allCompleted) {
-          markSwarmDone(store, `Swarm complete — ${tasksRes.data.length} task${tasksRes.data.length !== 1 ? 's' : ''} finished`)
+          const completedCount = tasksRes.data.filter((t: { status: string }) => t.status === 'completed').length
+          const failedCount = tasksRes.data.filter((t: { status: string }) => t.status === 'failed').length
+          const msg = failedCount > 0
+            ? `${completedCount} task${completedCount !== 1 ? 's' : ''} succeeded, ${failedCount} failed`
+            : `${completedCount} task${completedCount !== 1 ? 's' : ''} completed successfully`
+          markSwarmDone(store, msg, tasksRes.data)
           return
         }
       }
@@ -230,7 +236,7 @@ function startMonitoring(): void {
           /SWARM COMPLETE|TASK COMPLETE|all tasks.*complet|swarm.*finished/i.test(m.content)
         )
         if (completionMsg) {
-          markSwarmDone(store, 'Swarm complete — check the Messages tab for results')
+          markSwarmDone(store, completionMsg.content || 'Swarm finished')
           return
         }
       }
@@ -253,11 +259,16 @@ function startMonitoring(): void {
   }, testDelay(15000))
 }
 
-function markSwarmDone(store: ReturnType<typeof useTerminalStore.getState>, message: string): void {
+function markSwarmDone(
+  store: ReturnType<typeof useTerminalStore.getState>,
+  message: string,
+  tasks: Array<{ id: string; title: string; status: string; result?: string }> = []
+): void {
   conductorState.status = 'done'
   // Allow a new swarm to be started
   store.setSwarmActive(false)
   store.setSwarmNotification({ message, type: 'success' })
+  store.setSwarmCompletionSummary({ message, tasks })
   if (monitoringInterval) {
     clearInterval(monitoringInterval)
     monitoringInterval = null

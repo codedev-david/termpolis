@@ -75,6 +75,7 @@ interface TerminalStore {
   swarmAgents: SwarmAgentEntry[]
   launchingAgent: string | null
   swarmNotification: { message: string; type: 'success' | 'error' } | null
+  swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -106,6 +107,7 @@ interface TerminalStore {
   updateSwarmAgentStatus: (terminalId: string, status: 'starting' | 'running' | 'error') => void
   setLaunchingAgent: (name: string | null) => void
   setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
+  setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -127,6 +129,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   swarmAgents: [],
   launchingAgent: null,
   swarmNotification: null,
+  swarmCompletionSummary: null,
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -302,4 +305,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   setLaunchingAgent: (name) => set({ launchingAgent: name }),
 
   setSwarmNotification: (notification) => set({ swarmNotification: notification }),
+
+  setSwarmCompletionSummary: (summary) => set({ swarmCompletionSummary: summary }),
 }))
