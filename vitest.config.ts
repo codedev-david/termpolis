@@ -11,5 +11,32 @@ export default defineConfig({
     environmentMatchGlobs: [
       ['tests/electron/**', 'node'],
     ],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      include: [
+        'src/renderer/src/lib/**/*.ts',
+        'src/renderer/src/components/**/*.tsx',
+        'src/renderer/src/store/**/*.ts',
+        'src/main/**/*.ts',
+        'src/preload/**/*.ts',
+      ],
+      exclude: [
+        '**/*.d.ts',
+        '**/node_modules/**',
+        '**/types/**',
+        'src/renderer/src/lib/sentry.ts',
+        'src/main/sentry.ts',
+        'src/renderer/src/lib/terminalDefaults.ts',
+        'src/renderer/src/lib/outputPatterns.ts',
+        'src/renderer/src/lib/homedir.ts',
+      ],
+      thresholds: {
+        lines: 90,
+        functions: 90,
+        branches: 85,
+        statements: 90,
+      },
+    },
   },
 })
