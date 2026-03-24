@@ -182,15 +182,16 @@ function HelpModal({ onClose }: { onClose: () => void }) {
           {/* Multi-Agent Swarm */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
-              <i className="fa-solid fa-network-wired text-xs"></i> Multi-Agent Swarm &amp; Smart Routing
+              <i className="fa-solid fa-network-wired text-xs"></i> Multi-Agent Swarm &amp; AI Conductor
             </h3>
-            <p className="text-[#bbb] text-xs mb-1.5">The flagship feature — multiple AI models collaborating on the same task, with intelligent work assignment.</p>
+            <p className="text-[#bbb] text-xs mb-1.5">The flagship feature — a dedicated Claude Code AI conductor orchestrates a team of AI agents working on the same task simultaneously.</p>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd> or the <i className="fa-solid fa-network-wired text-[10px]"></i> sidebar icon opens the <strong>Swarm Dashboard</strong></li>
-              <li><strong>Smart Task Routing</strong> — the orchestrator analyzes your task description, breaks it into subtasks (refactoring, testing, docs, review, etc.), and assigns each to the best AI model based on a capability matrix:</li>
+              <li><strong>AI Conductor</strong> — a real Claude Code instance runs as the conductor. It reads your task, reasons about how to break it down, assigns subtasks to agents via MCP, and monitors progress. Not keyword matching — live AI orchestration.</li>
+              <li><strong>Smart Task Routing</strong> — the conductor assigns each subtask to the best agent based on a capability matrix:</li>
               <li className="pl-4 text-xs">Claude Code → strongest at refactoring and code review</li>
               <li className="pl-4 text-xs">Codex → best at test writing</li>
-              <li className="pl-4 text-xs">Gemini CLI → leads in documentation and DevOps</li>
+              <li className="pl-4 text-xs">Gemini CLI → leads in documentation and DevOps (runs in interactive mode)</li>
               <li className="pl-4 text-xs">Aider + Qwen3 → free local model for bulk tasks</li>
               <li><strong>Scores &amp; Reasons</strong> — every assignment shows a score (0-100) and a human-readable reason explaining why that agent was chosen. You can override any assignment.</li>
               <li><strong>Token Budget</strong> — see estimated tokens and cost per agent before launching. Expensive models handle complex work, free models handle volume.</li>
@@ -198,7 +199,9 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li className="pl-4 text-xs">Step 1: Pick agents (select 2+)</li>
               <li className="pl-4 text-xs">Step 2: Describe your task</li>
               <li className="pl-4 text-xs">Step 3: Review smart-routed assignments with scores and budget</li>
-              <li className="pl-4 text-xs">Step 4: Launch — each agent gets a split pane with their optimized task</li>
+              <li className="pl-4 text-xs">Step 4: Launch — ~30 second init while the conductor starts up and agents are prepared</li>
+              <li className="pl-4 text-xs">Step 5: Conductor takes over — delegates tasks to agents via MCP and monitors completion</li>
+              <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results from each agent.</li>
               <li><strong>Agent Bridge</strong> — agents without native MCP (e.g., Aider) are bridged automatically. Claude Code, Codex, and Gemini all use MCP natively.</li>
               <li><strong>Dashboard tabs:</strong> Agents (health status) · Tasks (kanban columns) · Messages (chronological log)</li>
               <li><strong>Free option:</strong> Aider + Qwen3-Coder via Ollama — zero API cost, fully local</li>

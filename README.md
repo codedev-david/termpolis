@@ -39,7 +39,7 @@ Termpolis Smart Router:
   💰 Token Budget: Claude ~$0.60 | Codex ~$0.23 | Gemini ~$0.10 | Total ~$0.93
 ```
 
-Each agent launches in a split pane with their task. They communicate through MCP. You watch it happen in the Swarm Dashboard. Every assignment is transparent and overridable.
+A dedicated Claude Code instance acts as the conductor — it reasons about your task, delegates subtasks to agents via MCP tools, and monitors completion. You watch it happen in the Swarm Dashboard. Every assignment is transparent and overridable. When the swarm finishes, a summary dialog shows what each agent accomplished.
 
 | Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
 |-----------|:-----------:|:-----:|:----------:|:----------:|
@@ -114,7 +114,9 @@ Each agent launches in a split pane with their task. They communicate through MC
 
 No AI company has built a tool that brings together competing models to work as a team — because it helps their competitors. Termpolis does it anyway, because it moves AI forward.
 
-- **Smart Task Routing** — the orchestrator analyzes your task description, breaks it into subtasks (refactoring, testing, docs, review, etc.), and assigns each to the best agent based on a capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden.
+- **AI Conductor** — a dedicated Claude Code instance runs as the swarm conductor. It receives your task description, reasons about how to break it into subtasks, assigns each subtask to the best agent via MCP tools, and monitors completion. This is live AI orchestration — not keyword matching.
+
+- **Smart Task Routing** — the conductor assigns subtasks to the best agent based on a capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden.
 
   | Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
   |-----------|:-----------:|:-----:|:----------:|:----------:|
@@ -126,7 +128,9 @@ No AI company has built a tool that brings together competing models to work as 
   | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
   | Token Cost | $$$$ | $$$ | $$ | Free |
 
-- **Swarm Orchestrator** — 4-step wizard: pick agents → describe task → review smart-routed assignments with scores and token budget → launch. Each agent gets a split pane with their optimized task.
+- **Swarm Wizard** — 5-step flow: pick agents → describe task → review smart-routed assignments with scores and token budget → launch (30-second init while conductor and agents start up) → conductor delegates tasks via MCP and monitors progress.
+- **Swarm Complete Dialog** — when all tasks finish, a summary dialog appears showing completed vs failed tasks with the result from each agent.
+- **Interactive Agent Mode** — all agents (including Gemini CLI) launch in interactive mode so they retain full tool access, including file writing and command execution.
 - **Token Budget Estimates** — shows per-agent estimated tokens and cost before you launch, so you know what the swarm will cost
 - **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
@@ -166,7 +170,7 @@ No AI company has built a tool that brings together competing models to work as 
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
 - **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
 - **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
-- **164 automated tests** — 89 unit (Vitest) + 75 E2E (Playwright) with 55 screenshots
+- **590 automated tests** — 515 unit (Vitest) + 75 E2E (Playwright) with 55 screenshots
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -323,8 +327,9 @@ npm run dev
 npm test
 ```
 
-164 total tests:
-- `npm test` — 89 unit tests (Vitest)
+590 total tests:
+- `npm test` — 515 unit tests (Vitest, 62 test files)
+- `npm run test:coverage` — unit tests with v8 coverage report
 - `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
 - E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
 
@@ -442,7 +447,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (89 tests, 19 files)
+├── tests/                           # Vitest test suites (515 tests, 62 files)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)
