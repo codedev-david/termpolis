@@ -133,8 +133,8 @@ describe('StartSwarmModal', () => {
     const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
-    // sendTask resolves immediately; advance past the 5-second minimum display timer
-    await vi.advanceTimersByTimeAsync(5000)
+    // sendTask resolves immediately; advance past the 30-second minimum display timer
+    await vi.advanceTimersByTimeAsync(30000)
     expect(sendTask).toHaveBeenCalledWith('Build a React app', '/test/project')
     expect(onLaunched).toHaveBeenCalled()
     vi.useRealTimers()

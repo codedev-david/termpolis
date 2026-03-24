@@ -97,7 +97,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     // has time to read the startup notice before the modal closes
     await Promise.all([
       sendTask(taskDescription, cwdRef.current),
-      new Promise(r => setTimeout(r, 5000)),
+      new Promise(r => setTimeout(r, 30000)),
     ])
     onLaunched()
   }, [taskDescription, onLaunched])
