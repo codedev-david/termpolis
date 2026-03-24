@@ -264,6 +264,11 @@ export default function App() {
       setShowAddModal(true)
     })
 
+    // Listen for global Win+Shift+S hotkey to toggle swarm dashboard
+    const unsubSwarm = window.globalEvents?.onToggleSwarm(() => {
+      setShowSwarmDashboard(v => !v)
+    })
+
     const unsubClose = window.globalEvents?.onConfirmClose(() => {
       setShowCloseConfirm(true)
     })
@@ -271,6 +276,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handler)
       unsubGlobal?.()
+      unsubSwarm?.()
       unsubClose?.()
     }
   }, [removeTerminal, setActiveTerminal, setSidebarCollapsed, toggleViewMode, setShowSettings])
@@ -289,6 +295,7 @@ export default function App() {
         fontSize: TERMINAL_DEFAULTS.fontSize,
         theme: TERMINAL_DEFAULTS.theme,
         fontFamily: TERMINAL_DEFAULTS.fontFamily,
+        isSwarm: true,
       })
     })
     const unsubClosed = window.mcpEvents?.onTerminalClosed((terminalId) => {

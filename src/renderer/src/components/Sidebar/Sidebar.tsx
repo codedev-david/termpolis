@@ -17,7 +17,7 @@ export function Sidebar() {
     terminals, activeTerminalId, viewMode, showSettings, defaultShell,
     addTerminal, removeTerminal, updateTerminal,
     setActiveTerminal, toggleViewMode, setShowSettings,
-    sidebarCollapsed, setSidebarCollapsed,
+    sidebarCollapsed, setSidebarCollapsed, swarmActive,
   } = useTerminalStore()
 
   const [showAddModal, setShowAddModal] = useState(false)
@@ -114,9 +114,12 @@ export function Sidebar() {
               }
             }
           }}
-          title="Swarm Dashboard"
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
-        ><i className="fa-solid fa-network-wired"></i></button>
+          title="Swarm Dashboard (Ctrl+Shift+S)"
+          className={`relative px-2 py-1.5 rounded text-sm hover:bg-[#37373d] transition-colors ${swarmActive ? 'text-[#22c55e] hover:text-[#4ade80]' : 'text-[#999] hover:text-white'}`}
+        >
+          <i className="fa-solid fa-network-wired"></i>
+          {swarmActive && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse"></span>}
+        </button>
         <div className="flex-1"></div>
         <button
           onClick={() => setSidebarCollapsed(true)}

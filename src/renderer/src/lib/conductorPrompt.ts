@@ -4,9 +4,12 @@ interface ConductorPromptOptions {
   taskDescription: string
   installedAgents: Record<string, boolean>  // from detectAgents
   projectCwd: string
+  shellType?: string  // 'bash' | 'powershell'
 }
 
 export function buildConductorPrompt(options: ConductorPromptOptions): string {
+  const shell = options.shellType || (navigator.platform.startsWith('Win') ? 'powershell' : 'bash')
+
   // Build list of installed agents with their capabilities
   const agentDescriptions = AGENT_CAPABILITIES
     .filter(a => {
@@ -52,7 +55,7 @@ INSTRUCTIONS:
 1. First, post your analysis to the message bus: swarm_send_message with from='conductor', to='all', type='info', describing how you'll break down the task.
 2. Analyze the task and break it into clear subtasks.
 3. For each subtask, pick the best installed agent based on their strengths.
-4. Create a terminal for each selected agent using create_terminal with shell='bash' and cwd='${options.projectCwd}'.
+4. Create a terminal for each selected agent using create_terminal with shell='${shell}' and cwd='${options.projectCwd}'.
 5. Wait a few seconds for shells to initialize, then start each agent by running their command via run_command (e.g., 'claude' or 'codex' or 'gemini').
 6. Wait for agents to fully initialize (~15 seconds), then send each agent their task prompt via write_to_terminal.
 7. Post status updates to the message bus as you go: swarm_send_message(from='conductor', to='all', type='info', content='status update...').

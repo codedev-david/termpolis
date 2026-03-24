@@ -93,6 +93,11 @@ contextBridge.exposeInMainWorld('globalEvents', {
     ipcRenderer.on('global:new-terminal', handler)
     return () => ipcRenderer.removeListener('global:new-terminal', handler)
   },
+  onToggleSwarm: (cb: () => void) => {
+    const handler = () => cb()
+    ipcRenderer.on('global:toggle-swarm', handler)
+    return () => ipcRenderer.removeListener('global:toggle-swarm', handler)
+  },
   onConfirmClose: (cb: () => void) => {
     const handler = () => cb()
     ipcRenderer.on('app:confirm-close', handler)

@@ -14,9 +14,11 @@ beforeAll(() => {
     killTerminal: vi.fn().mockResolvedValue({ success: true }),
     readTerminalBuffer: vi.fn().mockResolvedValue({
       success: true,
-      data: { output: 'claude> ', length: 8 },
+      data: { output: 'claude 1.0.0 ', length: 12 },
     }),
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/tmp/test' }),
+    getHomedir: vi.fn().mockResolvedValue({ success: true, data: '/tmp' }),
+    writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
   }
   ;(window as any).swarmAPI = {
     sendMessage: vi.fn().mockResolvedValue({ success: true }),
@@ -74,12 +76,9 @@ describe('conductorManager', () => {
   it('startConductor creates a terminal and writes claude command', async () => {
     const promise = startConductor('/tmp/project')
 
-    // Advance past the shell init delay (testDelay(3000))
-    await vi.advanceTimersByTimeAsync(3000)
-    // Advance past the auto-trust delay (testDelay(9000))
-    await vi.advanceTimersByTimeAsync(9000)
-    // Advance past the auth check delay (testDelay(12000))
-    await vi.advanceTimersByTimeAsync(12000)
+    // Advance past shell init (2s) + auth check wait (5s)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
 
     const result = await promise
 
@@ -88,7 +87,7 @@ describe('conductorManager', () => {
       expect.any(String),
       '/tmp/project',
     )
-    // Should have written the claude command
+    // Should have written the claude --version command
     expect(window.termpolis.writeToTerminal).toHaveBeenCalledWith(
       'conductor-uuid-1',
       expect.stringContaining('claude'),
@@ -102,22 +101,20 @@ describe('conductorManager', () => {
     // State should be starting right away
     expect(getConductorState().status).toBe('starting')
 
-    await vi.advanceTimersByTimeAsync(3000)
-    await vi.advanceTimersByTimeAsync(9000)
-    await vi.advanceTimersByTimeAsync(12000)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
 
     await promise
 
-    // After completion with 'claude> ' output (no auth prompt), state should be ready
+    // After completion with version output (no auth prompt), state should be ready
     expect(getConductorState().status).toBe('ready')
   })
 
   it('stopConductor kills the terminal and resets state', async () => {
     // Start conductor first
     const promise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(3000)
-    await vi.advanceTimersByTimeAsync(9000)
-    await vi.advanceTimersByTimeAsync(12000)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
     await promise
 
     stopConductor()
@@ -130,9 +127,8 @@ describe('conductorManager', () => {
 
   it('revealConductor updates terminal hidden flag to false', async () => {
     const promise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(3000)
-    await vi.advanceTimersByTimeAsync(9000)
-    await vi.advanceTimersByTimeAsync(12000)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
     await promise
 
     // The conductor terminal should exist in the store as hidden
@@ -149,9 +145,8 @@ describe('conductorManager', () => {
   it('sendTask calls swarmAPI.sendMessage with conductor info', async () => {
     // Start and ready the conductor
     const promise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(3000)
-    await vi.advanceTimersByTimeAsync(9000)
-    await vi.advanceTimersByTimeAsync(12000)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
     await promise
 
     await sendTask('Build a REST API', '/tmp/project')
@@ -162,10 +157,15 @@ describe('conductorManager', () => {
       'info',
       expect.stringContaining('Build a REST API'),
     )
-    // Should have written the prompt to the terminal
+    // Prompt should be written to temp file, not terminal
+    expect(window.termpolis.writeConfigFile).toHaveBeenCalledWith(
+      expect.stringContaining('.termpolis-conductor-task.md'),
+      expect.stringContaining('Build a REST API'),
+    )
+    // Terminal should receive the shell run command
     expect(window.termpolis.writeToTerminal).toHaveBeenCalledWith(
       'conductor-uuid-1',
-      expect.stringContaining('Build a REST API'),
+      expect.stringContaining('claude'),
     )
   })
 })

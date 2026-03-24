@@ -480,12 +480,17 @@ if (!gotTheLock) {
           'mcp__termpolis__swarm_update_task',
           'mcp__termpolis__swarm_list_agents',
         ]
-        for (const tool of termpolisTools) {
-          const permission = `${tool}(*)`
-          if (!settings.permissions.allow.includes(permission)) {
-            settings.permissions.allow.push(permission)
-            changed = true
-          }
+        // Remove old (*) style entries (no longer valid in Claude Code)
+        const oldEntries = settings.permissions.allow.filter((p: string) => p.startsWith('mcp__termpolis__') && p.endsWith('(*)'))
+        if (oldEntries.length > 0) {
+          settings.permissions.allow = settings.permissions.allow.filter((p: string) => !oldEntries.includes(p))
+          changed = true
+        }
+
+        // Use wildcard rule — covers all current and future termpolis tools
+        if (!settings.permissions.allow.includes('mcp__termpolis__*')) {
+          settings.permissions.allow.push('mcp__termpolis__*')
+          changed = true
         }
 
         if (changed) {
@@ -647,6 +652,15 @@ if (!gotTheLock) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.focus()
         mainWindow.webContents.send('global:new-terminal')
+      }
+    })
+
+    // Global hotkey: Win+Shift+S to open/close swarm dashboard
+    globalShortcut.register('Super+Shift+S', () => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.focus()
+        mainWindow.webContents.send('global:toggle-swarm')
       }
     })
   })

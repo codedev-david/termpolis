@@ -142,6 +142,8 @@ declare global {
     }
     globalEvents: {
       onNewTerminal: (cb: () => void) => () => void
+      onToggleSwarm: (cb: () => void) => () => void
+      onConfirmClose: (cb: () => void) => () => void
     }
     mcpEvents: {
       onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => () => void

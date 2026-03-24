@@ -281,7 +281,12 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             <span className="font-semibold uppercase tracking-wider">AI Conductor</span>
           </p>
           <p className="text-[10px] text-[#d4d4d4]">
-            The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. You'll see progress updates in the Swarm Dashboard.
+            The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. After launching, track progress by clicking the{' '}
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2d2d2d] border border-[#3c3c3c] text-[#22c55e]">
+              <i className="fa-solid fa-network-wired text-[9px]"></i>
+              <span className="text-[9px] font-mono">Swarm</span>
+            </span>
+            {' '}icon in the sidebar.
           </p>
         </div>
       </div>
@@ -290,13 +295,21 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
 
   function renderLaunchingStep() {
     return (
-      <div className="flex flex-col items-center justify-center py-12">
+      <div className="flex flex-col items-center justify-center py-10">
         <div className="relative mb-6">
           <div className="w-16 h-16 rounded-full border-2 border-[#22D3EE]/30 border-t-[#22D3EE] animate-spin"></div>
           <i className="fa-solid fa-rocket text-[#22D3EE] text-xl absolute inset-0 flex items-center justify-center"></i>
         </div>
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Launching Swarm</h3>
-        <p className="text-xs text-[#6b7280] text-center max-w-sm">{launchProgress}</p>
+        <p className="text-xs text-[#6b7280] text-center max-w-sm mb-4">{launchProgress}</p>
+        <div className="p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7] max-w-sm text-center">
+          <i className="fa-solid fa-clock mr-1.5"></i>
+          Agents can take up to <strong>30 seconds</strong> to start up and receive their tasks.
+          <div className="mt-2 text-[#6b9e6b]">
+            Open the <span className="text-[#A5D6A7] font-semibold"><i className="fa-solid fa-brain mr-1 text-[9px]"></i>Swarm Dashboard</span> to track progress
+            <span className="ml-1 font-mono text-[10px] bg-[#1e2e1e] px-1.5 py-0.5 rounded">Ctrl+Shift+S</span>
+          </div>
+        </div>
       </div>
     )
   }

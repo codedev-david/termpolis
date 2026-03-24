@@ -22,7 +22,7 @@ export async function checkClaudeInstalled(): Promise<boolean> {
   return res.success && res.data?.claude === true
 }
 
-// Step 2: Spawn the conductor terminal (hidden)
+// Step 2: Spawn the conductor terminal (hidden) and verify Claude is accessible
 export async function startConductor(cwd: string): Promise<{ success: boolean; error?: string; needsAuth?: boolean }> {
   // Kill any existing conductor first to prevent duplicates
   if (conductorState.terminalId) {
@@ -36,7 +36,8 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   storeInit.setSwarmActive(true)
 
   const id = uuid()
-  const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
+  const isWindows = navigator.platform.startsWith('Win')
+  const shellType = isWindows ? 'powershell' as const : 'bash' as const
   const res = await window.termpolis.createTerminal(id, shellType, cwd)
 
   if (!res.success) {
@@ -64,27 +65,15 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
 
   conductorState.terminalId = id
 
-  // Wait for shell init
-  await new Promise(r => setTimeout(r, testDelay(3000)))
+  // Wait for shell init then check if Claude is authenticated
+  await new Promise(r => setTimeout(r, testDelay(2000)))
+  window.termpolis.writeToTerminal(id, resolveAgentCommand('claude') + ' --version\r')
+  await new Promise(r => setTimeout(r, testDelay(5000)))
 
-  // Send claude command
-  window.termpolis.writeToTerminal(id, resolveAgentCommand('claude') + '\r')
-
-  // Auto-trust at 9s
-  setTimeout(() => {
-    if (conductorState.terminalId === id) {
-      window.termpolis.writeToTerminal(id, '\r')
-    }
-  }, testDelay(9000))
-
-  // Wait and check for auth
-  await new Promise(r => setTimeout(r, testDelay(12000)))
-
-  // Read terminal output to check if authenticated
   const bufferRes = await window.termpolis.readTerminalBuffer(id)
   const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
 
-  // Check for auth prompts
+  // Check for auth prompts in the output
   const needsAuth = /sign in|log in|authenticate|visit.*to sign in|https:\/\/.*auth/i.test(output)
 
   if (needsAuth) {
@@ -97,18 +86,27 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
 }
 
 // Step 3: Wait for authentication to complete
-export async function waitForAuth(timeoutMs: number = 60000): Promise<boolean> {
+export async function waitForAuth(timeoutMs: number = 120000): Promise<boolean> {
   const start = Date.now()
   const id = conductorState.terminalId
   if (!id) return false
 
   while (Date.now() - start < timeoutMs) {
-    await new Promise(r => setTimeout(r, 2000))
+    await new Promise(r => setTimeout(r, 4000))
+
+    // Re-run --version to check if auth is now complete
+    window.termpolis.writeToTerminal(id, resolveAgentCommand('claude') + ' --version\r')
+    await new Promise(r => setTimeout(r, testDelay(3000)))
+
     const bufferRes = await window.termpolis.readTerminalBuffer(id)
     const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
+    const recent = output.slice(-1500)
 
-    // Check for successful auth indicators
-    if (/authenticated|logged in|welcome|claude>/i.test(output) && !/sign in|log in/i.test(output.slice(-500))) {
+    // Auth complete when we see a version number and no auth prompts
+    const hasVersion = /claude.*\d+\.\d+|\d+\.\d+.*claude/i.test(recent)
+    const hasAuthPrompt = /sign in|log in|authenticate|visit.*to sign in|https:\/\/.*auth/i.test(recent)
+
+    if (hasVersion && !hasAuthPrompt) {
       conductorState.status = 'ready'
       return true
     }
@@ -118,10 +116,21 @@ export async function waitForAuth(timeoutMs: number = 60000): Promise<boolean> {
   return false
 }
 
-// Step 4: Send the task to the conductor
+// Step 4: Send the task to the conductor via a temp file (reliable multi-line delivery)
 export async function sendTask(taskDescription: string, cwd: string): Promise<void> {
   const id = conductorState.terminalId
-  if (!id || conductorState.status !== 'ready') return
+  if (!id || conductorState.status !== 'ready') {
+    // Post diagnostic message so the user can see what went wrong
+    try {
+      await window.swarmAPI.sendMessage(
+        'system',
+        'all',
+        'info',
+        `Conductor not ready (status: ${conductorState.status}, terminal: ${id ?? 'none'}). Please clear the swarm and try again.`
+      )
+    } catch {}
+    return
+  }
 
   conductorState.status = 'running'
 
@@ -129,15 +138,41 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const agentsRes = await window.termpolis.detectAgents()
   const installedAgents = agentsRes.success && agentsRes.data ? agentsRes.data : {}
 
-  // Build and send the conductor prompt
+  // Build the conductor prompt
+  const isWindows = navigator.platform.startsWith('Win')
   const prompt = buildConductorPrompt({
     taskDescription,
     installedAgents,
     projectCwd: cwd,
+    shellType: isWindows ? 'powershell' : 'bash',
   })
 
-  // Send prompt to conductor terminal
-  window.termpolis.writeToTerminal(id, prompt + '\r')
+  // Write prompt to a temp file
+  const homedirRes = await window.termpolis.getHomedir()
+  const homedir = homedirRes.success && homedirRes.data ? homedirRes.data : cwd
+  const homeSlash = homedir.replace(/\\/g, '/')
+  const tempFile = homeSlash + '/.termpolis-conductor-task.md'
+  await window.termpolis.writeConfigFile(tempFile, prompt)
+
+  // Write a launch script so the full prompt is passed to claude -p without any
+  // shell escaping issues (PowerShell here-string / bash heredoc handle all chars)
+  const claudeCmd = resolveAgentCommand('claude')
+  let runCmd: string
+  if (isWindows) {
+    // PowerShell here-string (@'...'@) is fully literal — no escaping needed.
+    // '@ must be at the start of a line, so the script ends with \n'@\n
+    const scriptFile = homeSlash + '/.termpolis-conductor-run.ps1'
+    const psScript = `$task = @'\n${prompt}\n'@\n${claudeCmd} -p $task --dangerously-skip-permissions\n`
+    await window.termpolis.writeConfigFile(scriptFile, psScript)
+    runCmd = `powershell -ExecutionPolicy Bypass -File "${scriptFile}"`
+  } else {
+    // Bash: input-redirect from temp file into claude --print (agent mode)
+    const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
+    const shScript = `#!/bin/bash\n${claudeCmd} -p "$(cat '${tempFile}')" --dangerously-skip-permissions\n`
+    await window.termpolis.writeConfigFile(scriptFile, shScript)
+    runCmd = `bash "${scriptFile}"`
+  }
+  window.termpolis.writeToTerminal(id, runCmd + '\r')
 
   // Post initial message to swarm bus
   await window.swarmAPI.sendMessage(
