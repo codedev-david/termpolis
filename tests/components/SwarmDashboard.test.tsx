@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 
 beforeAll(() => {
@@ -81,5 +81,36 @@ describe('SwarmDashboard', () => {
   it('shows Start Swarm button', () => {
     render(<SwarmDashboard onClose={vi.fn()} />)
     expect(screen.getByText('Start Swarm')).toBeInTheDocument()
+  })
+
+  it('shows Clear button', () => {
+    render(<SwarmDashboard onClose={vi.fn()} />)
+    expect(screen.getByText('Clear')).toBeInTheDocument()
+  })
+
+  it('shows confirmation modal when Clear is clicked', () => {
+    render(<SwarmDashboard onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText('Clear'))
+    expect(screen.getByText(/All swarm work will be lost/)).toBeInTheDocument()
+    // Modal heading
+    const heading = screen.getAllByText('Clear Swarm').find(el => el.tagName === 'H3')
+    expect(heading).toBeInTheDocument()
+  })
+
+  it('confirmation modal has Cancel and confirm buttons', () => {
+    render(<SwarmDashboard onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText('Clear'))
+    expect(screen.getByText('Cancel')).toBeInTheDocument()
+    // The confirm button has the trash icon and destructive styling
+    const confirmBtn = screen.getAllByText(/Clear Swarm/).find(el => el.tagName === 'BUTTON')
+    expect(confirmBtn).toBeInTheDocument()
+  })
+
+  it('dismisses confirmation modal when Cancel is clicked', () => {
+    render(<SwarmDashboard onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText('Clear'))
+    expect(screen.getByText(/All swarm work will be lost/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Cancel'))
+    expect(screen.queryByText(/All swarm work will be lost/)).not.toBeInTheDocument()
   })
 })

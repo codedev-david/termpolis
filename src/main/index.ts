@@ -29,6 +29,11 @@ let mainWindow: BrowserWindow | null = null
 // Buffer terminal output for MCP read_output (capped at 32KB per terminal)
 const terminalOutputBuffers = new Map<string, string>()
 
+// Track terminals created via MCP (swarm) so we can enforce agent commands
+const mcpCreatedTerminals = new Set<string>()
+
+import { sanitizeAgentCommand } from './agentCommandSanitizer'
+
 function createWindow() {
   const iconPath = join(__dirname, '../../assets/logo-termpolis.png')
   mainWindow = new BrowserWindow({
@@ -370,12 +375,18 @@ if (!gotTheLock) {
             terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
           })
         }
+        // Track as MCP-created (swarm) terminal for command enforcement
+        mcpCreatedTerminals.add(id)
         // Notify renderer to add the terminal to the store
         mainWindow?.webContents.send('mcp:terminal-created', { id, name, shell: shellInfo?.type || shell, cwd: resolvedCwd })
         return id
       },
       runCommand: (terminalId, command) => {
-        writeToTerminal(terminalId, command + '\r')
+        // Enforce correct agent commands on swarm terminals
+        const safeCommand = mcpCreatedTerminals.has(terminalId)
+          ? sanitizeAgentCommand(command)
+          : command
+        writeToTerminal(terminalId, safeCommand + '\r')
       },
       readOutput: (terminalId, lines) => {
         const buffer = terminalOutputBuffers.get(terminalId) || ''
@@ -386,6 +397,7 @@ if (!gotTheLock) {
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
         terminalOutputBuffers.delete(terminalId)
+        mcpCreatedTerminals.delete(terminalId)
         mainWindow?.webContents.send('mcp:terminal-closed', terminalId)
       },
       writeToTerminal: (terminalId, text) => {

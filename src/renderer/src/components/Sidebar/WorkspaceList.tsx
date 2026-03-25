@@ -55,13 +55,13 @@ export function WorkspaceList() {
   return (
     <div className="border-b border-[#3c3c3c]">
       <div className="px-3 py-1.5 flex items-center justify-between">
-        <button onClick={() => setCollapsed(!collapsed)} className="flex items-center gap-1.5 text-xs text-[#6b7280] uppercase tracking-wider hover:text-[#d4d4d4]">
+        <button onClick={() => setCollapsed(!collapsed)} className="flex items-center gap-1.5 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]">
           <i className={`fa-solid fa-chevron-${collapsed ? 'right' : 'down'} text-[9px]`}></i>
           Workspaces
         </button>
         <button
           onClick={() => setShowInfo(true)}
-          className="text-[#6b7280] hover:text-[#22D3EE]"
+          className="text-[#9ca3af] hover:text-[#22D3EE]"
           title="What are workspaces?"
         ><i className="fa-solid fa-circle-info text-xs"></i></button>
       </div>
@@ -75,7 +75,7 @@ export function WorkspaceList() {
               </h2>
               <button
                 onClick={() => setShowInfo(false)}
-                className="text-[#6b7280] hover:text-white text-lg px-1"
+                className="text-[#9ca3af] hover:text-white text-lg px-1"
               >&times;</button>
             </div>
             <p className="text-sm text-[#d4d4d4] leading-relaxed">
@@ -96,7 +96,7 @@ export function WorkspaceList() {
                 <span><strong>Update</strong> — overwrite a workspace with your current terminal setup.</span>
               </div>
             </div>
-            <p className="text-xs text-[#6b7280]">
+            <p className="text-xs text-[#9ca3af]">
               Great for switching between projects — e.g. a "Frontend" workspace with
               Node + build terminals, and a "Backend" workspace with API + database terminals.
             </p>
@@ -131,18 +131,18 @@ export function WorkspaceList() {
               <span className="flex-1 text-sm truncate">{ws.name}</span>
               <button
                 onClick={e => { e.stopPropagation(); updateWorkspace(ws.id) }}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-[#22D3EE] text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
+                className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-[#22D3EE] text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Update ${ws.name}`}
                 title="Update with current terminals"
               >↻</button>
               <button
                 onClick={e => startRename(e, ws)}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
+                className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Rename ${ws.name}`}
               >✎</button>
               <button
                 onClick={e => { e.stopPropagation(); removeWorkspace(ws.id) }}
-                className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
+                className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Delete ${ws.name}`}
               >✕</button>
             </div>
@@ -172,7 +172,7 @@ export function WorkspaceList() {
           <button
             onClick={() => { setSaving(true); setWsName('') }}
             disabled={terminals.length === 0}
-            className="w-full text-left text-sm text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
+            className="w-full text-left text-sm text-[#9ca3af] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
           >+ Save Workspace</button>
         )
       )}

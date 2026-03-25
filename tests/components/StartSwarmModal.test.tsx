@@ -125,16 +125,34 @@ describe('StartSwarmModal', () => {
   it('calls sendTask and onLaunched when Launch Swarm is clicked', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const onLaunched = vi.fn()
+
+    // After launch, simulate an agent terminal appearing so the polling resolves
+    const { useTerminalStore } = await import('../../src/renderer/src/store/terminalStore')
+    const mockGetState = vi.mocked(useTerminalStore.getState)
+    let agentTerminalVisible = false
+    mockGetState.mockImplementation(() => ({
+      terminals: agentTerminalVisible
+        ? [{ id: 't1', name: 'Claude (Build)', isSwarm: true, isConductor: false, hidden: false } as any]
+        : [],
+      viewMode: 'tabs' as const,
+      addTerminal: vi.fn(),
+      setSwarmActive: vi.fn(),
+      setSwarmNotification: vi.fn(),
+      removeTerminal: vi.fn(),
+    }))
+
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} projectCwd="/test/project" />)
-    // Preparation runs with real-like timers (shouldAdvanceTime:true handles it)
     await waitFor(() => {
       expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
     }, { timeout: 3000 })
     const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
-    // sendTask resolves immediately; advance past the 30-second minimum display timer
-    await vi.advanceTimersByTimeAsync(30000)
+
+    // sendTask resolves immediately; simulate agent terminal appearing after min wait
+    agentTerminalVisible = true
+    await vi.advanceTimersByTimeAsync(15000)
+
     expect(sendTask).toHaveBeenCalledWith('Build a React app', '/test/project')
     expect(onLaunched).toHaveBeenCalled()
     vi.useRealTimers()
@@ -170,4 +188,37 @@ describe('StartSwarmModal', () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     expect(screen.getByText(/multiple AI agents work together/)).toBeInTheDocument()
   })
+
+  it('shows live progress message during launch', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
+    await waitFor(() => {
+      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+    }, { timeout: 3000 })
+    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
+    fireEvent.change(textarea, { target: { value: 'Build something' } })
+    fireEvent.click(screen.getByText('Launch Swarm'))
+    // Should show conductor working message
+    await waitFor(() => {
+      expect(screen.getByText(/Conductor is analyzing|Sending task/)).toBeInTheDocument()
+    })
+    vi.useRealTimers()
+  })
+
+  it('shows conductor working message in launching step', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
+    await waitFor(() => {
+      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+    }, { timeout: 3000 })
+    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
+    fireEvent.change(textarea, { target: { value: 'Test task' } })
+    fireEvent.click(screen.getByText('Launch Swarm'))
+    await waitFor(() => {
+      expect(screen.getByText('The AI conductor is working')).toBeInTheDocument()
+      expect(screen.getByText(/This screen will close automatically/)).toBeInTheDocument()
+    })
+    vi.useRealTimers()
+  })
+
 })

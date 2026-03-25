@@ -50,7 +50,7 @@ function AddTemplateForm({ onSave, onCancel }: AddTemplateFormProps) {
         onChange={e => setText(e.target.value)}
       />
       <div className="flex gap-2 justify-end">
-        <button type="button" onClick={onCancel} className="px-3 py-1 text-xs rounded hover:bg-[#37373d] text-[#6b7280]">Cancel</button>
+        <button type="button" onClick={onCancel} className="px-3 py-1 text-xs rounded hover:bg-[#37373d] text-[#9ca3af]">Cancel</button>
         <button type="submit" className="px-3 py-1 text-xs rounded bg-[#22D3EE] text-[#1e1e1e] font-medium hover:bg-[#06b6d4]">Save</button>
       </div>
     </form>
@@ -103,12 +103,12 @@ export function PromptTemplates({ onClose }: PromptTemplatesProps) {
           </div>
           <div className="flex items-center gap-1">
             <button
-              className="text-[#6b7280] hover:text-[#22D3EE] text-xs px-2 py-1 rounded hover:bg-[#37373d]"
+              className="text-[#9ca3af] hover:text-[#22D3EE] text-xs px-2 py-1 rounded hover:bg-[#37373d]"
               onClick={() => setShowAdd(!showAdd)}
             >
               <i className="fa-solid fa-plus mr-1"></i>Add
             </button>
-            <button className="text-[#6b7280] hover:text-white px-2 py-1" onClick={onClose}>
+            <button className="text-[#9ca3af] hover:text-white px-2 py-1" onClick={onClose}>
               <i className="fa-solid fa-xmark"></i>
             </button>
           </div>
@@ -128,10 +128,10 @@ export function PromptTemplates({ onClose }: PromptTemplatesProps) {
                   <i className={`${template.icon} text-[#22D3EE] text-xs`}></i>
                   <span className="text-xs font-medium text-[#d4d4d4]">{template.name}</span>
                 </div>
-                <p className="text-[10px] text-[#6b7280] leading-tight line-clamp-2">{template.text}</p>
+                <p className="text-[10px] text-[#9ca3af] leading-tight line-clamp-2">{template.text}</p>
                 {isCustom && (
                   <button
-                    className="absolute top-1.5 right-1.5 text-[#6b7280] hover:text-red-400 text-[10px] opacity-0 group-hover:opacity-100"
+                    className="absolute top-1.5 right-1.5 text-[#9ca3af] hover:text-red-400 text-[10px] opacity-0 group-hover:opacity-100"
                     onClick={e => { e.stopPropagation(); removePromptTemplate(template.id) }}
                     title="Remove template"
                   >
@@ -146,7 +146,7 @@ export function PromptTemplates({ onClose }: PromptTemplatesProps) {
         {showAdd && <AddTemplateForm onSave={handleAddTemplate} onCancel={() => setShowAdd(false)} />}
 
         <div className="px-4 py-2 border-t border-[#3c3c3c]">
-          <p className="text-[10px] text-[#6b7280]">Click a template to insert into the active terminal. <kbd className="bg-[#1e1e1e] px-1 rounded text-[9px]">Ctrl+Shift+P</kbd></p>
+          <p className="text-[10px] text-[#9ca3af]">Click a template to insert into the active terminal. <kbd className="bg-[#1e1e1e] px-1 rounded text-[9px]">Ctrl+Shift+P</kbd></p>
         </div>
       </div>
     </div>

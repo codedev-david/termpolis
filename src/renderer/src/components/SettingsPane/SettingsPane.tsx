@@ -93,7 +93,7 @@ export function SettingsPane() {
             <button
               key={f.path}
               onClick={() => setActiveFile(f.path)}
-              className={`text-sm px-3 py-1 rounded-t ${activeFile === f.path ? 'bg-[#2d2d2d] text-white' : 'text-[#6b7280] hover:text-white'}`}
+              className={`text-sm px-3 py-1 rounded-t ${activeFile === f.path ? 'bg-[#2d2d2d] text-white' : 'text-[#9ca3af] hover:text-white'}`}
             >{f.label}</button>
           ))}
         </div>

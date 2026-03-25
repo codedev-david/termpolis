@@ -71,7 +71,7 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
             <i className="fa-solid fa-download text-[#22D3EE]"></i>
             Install {agentName}
           </h2>
-          <button onClick={onClose} className="text-[#6b7280] hover:text-white text-lg px-1">&times;</button>
+          <button onClick={onClose} className="text-[#9ca3af] hover:text-white text-lg px-1">&times;</button>
         </div>
 
         <p className="text-sm text-[#999]">
@@ -86,7 +86,7 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
           ))}
         </div>
 
-        <p className="text-xs text-[#6b7280]">
+        <p className="text-xs text-[#9ca3af]">
           After installing, restart Termpolis and the agent will be available.
         </p>
 

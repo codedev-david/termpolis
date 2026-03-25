@@ -35,7 +35,7 @@ export function PinnedOutput({ pins, onUnpin }: Props) {
               className="bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1.5 relative group"
             >
               <button
-                className="absolute top-1 right-1 text-[#666] hover:text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer w-4 h-4 flex items-center justify-center"
+                className="absolute top-1 right-1 text-[#999] hover:text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer w-4 h-4 flex items-center justify-center"
                 onClick={() => onUnpin(pin.id)}
                 title="Unpin"
               >
@@ -44,7 +44,7 @@ export function PinnedOutput({ pins, onUnpin }: Props) {
               <pre className="text-[11px] text-[#d4d4d4] font-mono whitespace-pre-wrap max-h-[4lh] overflow-y-auto leading-tight pr-4">
                 {pin.text}
               </pre>
-              <div className="text-[9px] text-[#666] mt-1">
+              <div className="text-[9px] text-[#999] mt-1">
                 {new Date(pin.timestamp).toLocaleTimeString()}
               </div>
             </div>

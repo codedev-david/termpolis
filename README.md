@@ -128,11 +128,14 @@ No AI company has built a tool that brings together competing models to work as 
   | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
   | Token Cost | $$$$ | $$$ | $$ | Free |
 
-- **Swarm Wizard** — 5-step flow: pick agents → describe task → review smart-routed assignments with scores and token budget → launch (30-second init while conductor and agents start up) → conductor delegates tasks via MCP and monitors progress.
-- **Swarm Complete Dialog** — when all tasks finish, a summary dialog appears showing completed vs failed tasks with the result from each agent.
+- **Swarm Wizard** — 3-step flow: prepare conductor → describe task → launch. Includes guidance on when to use a swarm (autonomous task completion) vs individual agent terminals (back-and-forth conversation). Live progress tracking shows conductor status in real time — the modal stays open until agent terminals actually appear.
+- **Swarm Complete Dialog** — when all tasks finish, a summary dialog appears showing completed vs failed tasks with the result from each agent. Includes "What next?" guidance for iterating with individual agents or starting a new swarm.
+- **Agent Command Enforcement** — agents are guaranteed to launch correctly regardless of what the conductor attempts. A programmatic sanitizer intercepts all `run_command` calls on swarm terminals, stripping unauthorized flags (`-p`, `--sandbox`, `--print`) and enforcing the exact approved command for each agent. Claude gets `--dangerously-skip-permissions`, Codex gets `--full-auto` — no trust prompts, no permission dialogs during swarms.
 - **Interactive Agent Mode** — all agents (including Gemini CLI) launch in interactive mode so they retain full tool access, including file writing and command execution.
 - **Token Budget Estimates** — shows per-agent estimated tokens and cost before you launch, so you know what the swarm will cost
-- **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages
+- **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages. Also accessible by clicking the "Swarm Active" indicator in the bottom status bar.
+- **Clear Confirmation** — clearing a swarm requires explicit confirmation to prevent accidental loss of in-progress work
+- **Agent Install Status** — the AI Agents sidebar shows green checkmarks for installed agents and red X icons for missing ones. Clicking a missing agent's icon shows installation instructions.
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
 - **Agent Bridge** — agents without native MCP (e.g., Aider) are automatically bridged via terminal output parsing. Claude Code, Codex, and Gemini CLI all use MCP natively.
@@ -162,6 +165,10 @@ No AI company has built a tool that brings together competing models to work as 
 - **jq**, **yq**, and **nano** — bundled and available in every terminal, even if not installed on your system
 - Latest versions downloaded automatically on each build
 
+### Accessibility
+- **WCAG AA compliant contrast** — all text meets the 4.5:1 minimum contrast ratio against dark backgrounds. Audited and fixed across every component in the app (116 text elements upgraded).
+- **Agent install indicators** — clear visual icons (green check / red X) show install status at a glance, with one-click access to setup instructions
+
 ### Performance & Reliability
 - **Output throttling** — rAF-based batching with 64KB per-frame rate limit prevents UI freezing from heavy output
 - **10,000-line scrollback buffer** per terminal (prevents unbounded memory growth)
@@ -170,7 +177,7 @@ No AI company has built a tool that brings together competing models to work as 
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
 - **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
 - **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
-- **590 automated tests** — 515 unit (Vitest) + 75 E2E (Playwright) with 55 screenshots
+- **650+ automated tests** — 580+ unit (Vitest) + 75 E2E (Playwright) with 55 screenshots
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -327,8 +334,8 @@ npm run dev
 npm test
 ```
 
-590 total tests:
-- `npm test` — 515 unit tests (Vitest, 62 test files)
+650+ total tests:
+- `npm test` — 580+ unit tests (Vitest, 65 test files)
 - `npm run test:coverage` — unit tests with v8 coverage report
 - `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
 - E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
@@ -404,6 +411,7 @@ termpolis/
 │   ├── main/
 │   │   ├── index.ts                 # App entry, IPC handlers, single-instance lock, MCP server
 │   │   ├── mcpServer.ts             # MCP protocol server (HTTP/SSE, JSON-RPC 2.0)
+│   │   ├── agentCommandSanitizer.ts  # Swarm agent command enforcement (allowlist + flag stripping)
 │   │   ├── terminalManager.ts       # node-pty wrapper + bundled tools PATH injection
 │   │   ├── completionService.ts     # PATH scanning, file listing, env vars for autocomplete
 │   │   ├── shellDetector.ts         # OS-aware shell discovery
@@ -447,7 +455,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (515 tests, 62 files)
+├── tests/                           # Vitest test suites (580+ tests, 65 files)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)

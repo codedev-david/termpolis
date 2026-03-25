@@ -11,7 +11,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             <i className="fa-solid fa-book-open text-[#22D3EE]"></i>
             Quick Start Guide
           </h2>
-          <button onClick={onClose} className="text-[#6b7280] hover:text-white text-lg px-1">&times;</button>
+          <button onClick={onClose} className="text-[#9ca3af] hover:text-white text-lg px-1">&times;</button>
         </div>
 
         {/* Scrollable content */}
@@ -186,22 +186,19 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             </h3>
             <p className="text-[#bbb] text-xs mb-1.5">The flagship feature — a dedicated Claude Code AI conductor orchestrates a team of AI agents working on the same task simultaneously.</p>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd> or the <i className="fa-solid fa-network-wired text-[10px]"></i> sidebar icon opens the <strong>Swarm Dashboard</strong></li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd> or the <i className="fa-solid fa-network-wired text-[10px]"></i> sidebar icon opens the <strong>Swarm Dashboard</strong>. You can also click <strong>Swarm Active</strong> in the bottom status bar.</li>
               <li><strong>AI Conductor</strong> — a real Claude Code instance runs as the conductor. It reads your task, reasons about how to break it down, assigns subtasks to agents via MCP, and monitors progress. Not keyword matching — live AI orchestration.</li>
+              <li><strong>Agent Command Enforcement</strong> — agents are guaranteed to launch correctly. A programmatic sanitizer enforces the exact approved command for each agent (Claude gets <code className="bg-[#3c3c3c] px-1 rounded">--dangerously-skip-permissions</code>, Codex gets <code className="bg-[#3c3c3c] px-1 rounded">--full-auto</code>). No trust prompts or permission dialogs during swarms.</li>
               <li><strong>Smart Task Routing</strong> — the conductor assigns each subtask to the best agent based on a capability matrix:</li>
               <li className="pl-4 text-xs">Claude Code → strongest at refactoring and code review</li>
               <li className="pl-4 text-xs">Codex → best at test writing</li>
               <li className="pl-4 text-xs">Gemini CLI → leads in documentation and DevOps (runs in interactive mode)</li>
               <li className="pl-4 text-xs">Aider + Qwen3 → free local model for bulk tasks</li>
-              <li><strong>Scores &amp; Reasons</strong> — every assignment shows a score (0-100) and a human-readable reason explaining why that agent was chosen. You can override any assignment.</li>
-              <li><strong>Token Budget</strong> — see estimated tokens and cost per agent before launching. Expensive models handle complex work, free models handle volume.</li>
-              <li><strong>Start Swarm wizard:</strong></li>
-              <li className="pl-4 text-xs">Step 1: Pick agents (select 2+)</li>
-              <li className="pl-4 text-xs">Step 2: Describe your task</li>
-              <li className="pl-4 text-xs">Step 3: Review smart-routed assignments with scores and budget</li>
-              <li className="pl-4 text-xs">Step 4: Launch — ~30 second init while the conductor starts up and agents are prepared</li>
-              <li className="pl-4 text-xs">Step 5: Conductor takes over — delegates tasks to agents via MCP and monitors completion</li>
-              <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results from each agent.</li>
+              <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress (tasks created, terminals opened) and closes automatically when agents are ready. You land on the Swarm Dashboard to watch agents work.</li>
+              <li><strong>Clear Confirmation</strong> — clearing a swarm requires explicit confirmation to prevent accidental loss of in-progress work.</li>
+              <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results from each agent. Includes "What next?" guidance for iterating.</li>
+              <li><strong>Swarm vs Individual Agents</strong> — swarms are best for completing a well-defined task autonomously. For back-and-forth conversations or iterating on details, launch individual agents from the <strong>AI Agents</strong> section in the sidebar. After a swarm finishes, use individual agents to refine the work or start a new swarm.</li>
+              <li><strong>Agent Install Status</strong> — the AI Agents sidebar shows <i className="fa-solid fa-circle-check text-green-400 text-[10px]"></i> for installed agents and <i className="fa-solid fa-circle-xmark text-red-400 text-[10px]"></i> for missing ones. Click a missing agent for setup instructions.</li>
               <li><strong>Agent Bridge</strong> — agents without native MCP (e.g., Aider) are bridged automatically. Claude Code, Codex, and Gemini all use MCP natively.</li>
               <li><strong>Dashboard tabs:</strong> Agents (health status) · Tasks (kanban columns) · Messages (chronological log)</li>
               <li><strong>Free option:</strong> Aider + Qwen3-Coder via Ollama — zero API cost, fully local</li>
@@ -275,6 +272,19 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li>If not already on your system, Termpolis ships them automatically</li>
             </ul>
           </section>
+
+          {/* Accessibility */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-universal-access text-xs"></i> Accessibility
+            </h3>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>WCAG AA contrast</strong> — all text meets the 4.5:1 minimum contrast ratio for readability</li>
+              <li><strong>Agent install indicators</strong> — clear <i className="fa-solid fa-circle-check text-green-400 text-[10px]"></i> / <i className="fa-solid fa-circle-xmark text-red-400 text-[10px]"></i> icons show install status at a glance</li>
+              <li><strong>Confirmation dialogs</strong> — destructive actions (clearing a swarm) require explicit confirmation</li>
+              <li><strong>Keyboard accessible</strong> — all major features have keyboard shortcuts (see shortcuts above)</li>
+            </ul>
+          </section>
         </div>
 
         {/* Footer */}
@@ -307,7 +317,11 @@ function HelpModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-export function StatusBar() {
+interface StatusBarProps {
+  onSwarmClick?: () => void
+}
+
+export function StatusBar({ onSwarmClick }: StatusBarProps) {
   const [showHelp, setShowHelp] = useState(false)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
@@ -317,21 +331,25 @@ export function StatusBar() {
 
   return (
     <>
-      <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#6b7280] text-xs select-none shrink-0">
+      <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#9ca3af] text-xs select-none shrink-0">
         <span>&copy; {new Date().getFullYear()} Termpolis &middot; MIT License</span>
         <div className="flex items-center gap-3">
           {swarmActive && (
-            <span className="flex items-center gap-1.5 text-[#22D3EE]" title={`Swarm: ${runningCount} running, ${errorCount} errors`}>
+            <button
+              onClick={onSwarmClick}
+              className="flex items-center gap-1.5 text-[#22D3EE] hover:text-[#67e8f9] transition-colors cursor-pointer"
+              title="Open Swarm Dashboard"
+            >
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE] animate-pulse"></span>
               <i className="fa-solid fa-network-wired text-[10px]"></i>
               Swarm Active
               {swarmAgents.length > 0 && (
-                <span className="text-[10px] text-[#6b7280]">({runningCount}/{swarmAgents.length})</span>
+                <span className="text-[10px] text-[#9ca3af]">({runningCount}/{swarmAgents.length})</span>
               )}
               {errorCount > 0 && (
                 <span className="text-[10px] text-red-400">{errorCount} err</span>
               )}
-            </span>
+            </button>
           )}
           <span className="flex items-center gap-1.5 text-[#22D3EE]" title="MCP server for AI agent integration">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE]"></span>

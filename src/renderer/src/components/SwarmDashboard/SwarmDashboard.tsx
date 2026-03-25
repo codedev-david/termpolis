@@ -40,6 +40,9 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const [taskDesc, setTaskDesc] = useState('')
   const [taskAssignTo, setTaskAssignTo] = useState('')
 
+  // Clear confirmation
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+
   // Broadcast form
   const [showBroadcast, setShowBroadcast] = useState(false)
   const [broadcastContent, setBroadcastContent] = useState('')
@@ -167,7 +170,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
       {/* Swarm agents section */}
       {swarmAgents.length > 0 && (
         <div className="mb-4">
-          <div className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+          <div className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
             <i className="fa-solid fa-network-wired text-[#22D3EE]"></i>
             Swarm Agents
           </div>
@@ -178,13 +181,13 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 <div className={`w-2.5 h-2.5 rounded-full ${agentHealthColor(agent.status)}`}></div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-[#d4d4d4] truncate">{agent.agentName}</div>
-                  <div className="text-xs text-[#6b7280] truncate">{agent.role}</div>
+                  <div className="text-xs text-[#9ca3af] truncate">{agent.role}</div>
                 </div>
                 <span className={`text-[10px] font-semibold uppercase ${agentHealthLabel(agent.status)}`}>
                   {agent.status}
                 </span>
                 {terminal && (
-                  <span className="text-xs text-[#6b7280] font-mono truncate max-w-[80px]" title={terminal.id}>
+                  <span className="text-xs text-[#9ca3af] font-mono truncate max-w-[80px]" title={terminal.id}>
                     {terminal.id.slice(0, 8)}
                   </span>
                 )}
@@ -196,23 +199,23 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
 
       {/* All terminals (excluding hidden conductor terminals) */}
       {swarmAgents.length > 0 && terminals.filter(t => !t.hidden).length > 0 && (
-        <div className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+        <div className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
           <i className="fa-solid fa-terminal"></i>
           All Terminals
         </div>
       )}
       {terminals.filter(t => !t.hidden).length === 0 && swarmAgents.length === 0 ? (
-        <p className="text-[#6b7280] text-sm text-center py-8">No terminals open. AI agents appear here when running in Termpolis terminals.</p>
+        <p className="text-[#9ca3af] text-sm text-center py-8">No terminals open. AI agents appear here when running in Termpolis terminals.</p>
       ) : (
         terminals.filter(t => !t.hidden).map((t) => (
           <div key={t.id} className="flex items-center gap-3 p-3 rounded-lg bg-[#2d2d2d] border border-[#3c3c3c] hover:border-[#555]">
             <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }}></div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-[#d4d4d4] truncate">{t.name}</div>
-              <div className="text-xs text-[#6b7280] truncate">{t.cwd}</div>
+              <div className="text-xs text-[#9ca3af] truncate">{t.cwd}</div>
             </div>
-            <span className="text-xs text-[#6b7280] bg-[#1e1e1e] px-2 py-0.5 rounded font-mono">{t.shellType}</span>
-            <span className="text-xs text-[#6b7280] font-mono truncate max-w-[80px]" title={t.id}>{t.id.slice(0, 8)}</span>
+            <span className="text-xs text-[#9ca3af] bg-[#1e1e1e] px-2 py-0.5 rounded font-mono">{t.shellType}</span>
+            <span className="text-xs text-[#9ca3af] font-mono truncate max-w-[80px]" title={t.id}>{t.id.slice(0, 8)}</span>
           </div>
         ))
       )}
@@ -221,13 +224,13 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
 
   const renderTaskColumn = (title: string, columnTasks: SwarmTask[], icon: string) => (
     <div className="flex-1 min-w-0">
-      <div className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+      <div className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
         <i className={icon}></i>
         {title} <span className="text-[10px] normal-case">({columnTasks.length})</span>
       </div>
       <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
         {columnTasks.length === 0 ? (
-          <p className="text-[#555] text-xs text-center py-4">None</p>
+          <p className="text-[#888] text-xs text-center py-4">None</p>
         ) : (
           columnTasks.map((task) => (
             <div key={task.id} className={`p-2.5 rounded-lg border ${statusColor(task.status)}`}>
@@ -275,7 +278,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const renderMessages = () => (
     <div className="space-y-1.5 max-h-[500px] overflow-y-auto">
       {messages.length === 0 ? (
-        <p className="text-[#6b7280] text-sm text-center py-8">No swarm messages yet. AI agents communicate here through MCP tools.</p>
+        <p className="text-[#9ca3af] text-sm text-center py-8">No swarm messages yet. AI agents communicate here through MCP tools.</p>
       ) : (
         [...messages].reverse().map((msg) => (
           <div key={msg.id} className="flex items-start gap-2 p-2 rounded bg-[#2d2d2d] border border-[#3c3c3c] text-xs">
@@ -285,8 +288,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 <span className="text-[#d4d4d4]">{msg.from}</span>
                 {' -> '}
                 <span className="text-[#d4d4d4]">{msg.to}</span>
-                <span className="ml-2 text-[#555]">{formatTime(msg.timestamp)}</span>
-                {msg.read && <span className="ml-1.5 text-[#555]">(read)</span>}
+                <span className="ml-2 text-[#888]">{formatTime(msg.timestamp)}</span>
+                {msg.read && <span className="ml-1.5 text-[#888]">(read)</span>}
               </div>
               <div className="text-[#bbb] whitespace-pre-wrap break-words">{msg.content}</div>
             </div>
@@ -329,7 +332,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                   <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full border ${
                     conductorStatus === 'running' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
                     conductorStatus === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
-                    'bg-[#3c3c3c] text-[#6b7280] border-[#3c3c3c]'
+                    'bg-[#3c3c3c] text-[#9ca3af] border-[#3c3c3c]'
                   }`}>
                     <i className="fa-solid fa-brain mr-1 text-[8px]"></i>
                     Conductor: {conductorStatus}
@@ -337,13 +340,13 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 )}
               </div>
             )}
-            <span className="text-xs text-[#6b7280]">
+            <span className="text-xs text-[#9ca3af]">
               {terminals.filter(t => !t.hidden).length} agent{terminals.filter(t => !t.hidden).length !== 1 ? 's' : ''} | {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
             </span>
           </div>
           <div className="flex items-center gap-2">
             {swarmActive ? (
-              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#3c3c3c] text-[#555] cursor-not-allowed" title="Clear the current swarm before starting a new one">
+              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[#3c3c3c] text-[#888] cursor-not-allowed" title="Clear the current swarm before starting a new one">
                 <i className="fa-solid fa-lock text-[10px]"></i>
                 Swarm Active
               </span>
@@ -362,7 +365,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 {conductorStatus === 'done' ? 'Start New Swarm' : 'Start Swarm'}
               </button>
             )}
-            <button onClick={onClose} className="text-[#6b7280] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
+            <button onClick={onClose} className="text-[#9ca3af] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
               <i className="fa-solid fa-xmark"></i>
             </button>
           </div>
@@ -377,7 +380,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
                 activeTab === tab.id
                   ? 'bg-[#37373d] text-[#22D3EE]'
-                  : 'text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#2d2d2d]'
+                  : 'text-[#9ca3af] hover:text-[#d4d4d4] hover:bg-[#2d2d2d]'
               }`}
             >
               <i className={tab.icon}></i>
@@ -414,7 +417,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
             </button>
           )}
           <button
-            onClick={handleClearSwarm}
+            onClick={() => setShowClearConfirm(true)}
             className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#E57373] hover:bg-[#37373d]"
             title="Clear all messages and tasks"
           >
@@ -439,14 +442,14 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
                 placeholder="Task title"
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none"
+                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none"
               />
               <textarea
                 value={taskDesc}
                 onChange={(e) => setTaskDesc(e.target.value)}
                 placeholder="Description"
                 rows={3}
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
+                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none resize-none"
               />
               <select
                 value={taskAssignTo}
@@ -487,11 +490,36 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
                 onChange={(e) => setBroadcastContent(e.target.value)}
                 placeholder="Message content..."
                 rows={4}
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
+                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none resize-none"
               />
               <div className="flex justify-end gap-2">
                 <button onClick={() => setShowBroadcast(false)} className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]">Cancel</button>
                 <button onClick={handleBroadcast} className="px-3 py-1.5 text-xs bg-[#22D3EE]/20 text-[#22D3EE] rounded hover:bg-[#22D3EE]/30">Send</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Clear Confirmation Modal */}
+        {showClearConfirm && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 rounded-xl" onClick={() => setShowClearConfirm(false)}>
+            <div className="bg-[#252526] border border-[#3c3c3c] rounded-lg p-5 w-96 space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-triangle-exclamation text-[#E57373]"></i>
+                <h3 className="text-sm font-semibold text-[#d4d4d4]">Clear Swarm</h3>
+              </div>
+              <p className="text-xs text-[#bbb] leading-relaxed">
+                This will stop all running agents, close their terminals, and delete all tasks and messages.
+                <span className="text-[#E57373] font-medium"> All swarm work will be lost.</span>
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <button onClick={() => setShowClearConfirm(false)} className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]">Cancel</button>
+                <button
+                  onClick={() => { setShowClearConfirm(false); handleClearSwarm() }}
+                  className="px-3 py-1.5 text-xs bg-[#E57373]/20 text-[#E57373] rounded hover:bg-[#E57373]/30 font-medium"
+                >
+                  <i className="fa-solid fa-trash mr-1"></i>Clear Swarm
+                </button>
               </div>
             </div>
           </div>
@@ -505,7 +533,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           onClose={() => setShowStartSwarm(false)}
           onLaunched={() => {
             setShowStartSwarm(false)
-            onClose()
+            // Stay on the dashboard so user can watch agents work
           }}
         />
       )}

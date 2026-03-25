@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { checkClaudeInstalled, startConductor, waitForAuth, sendTask } from '../../lib/conductorManager'
+import { useTerminalStore } from '../../store/terminalStore'
 
 // ---- Component ----
 
@@ -93,12 +94,60 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     if (!taskDescription.trim() || !cwdRef.current) return
     setStep('launching')
     setLaunchProgress('Sending task to conductor...')
-    // Run sendTask and a minimum display delay in parallel so the user
-    // has time to read the startup notice before the modal closes
-    await Promise.all([
-      sendTask(taskDescription, cwdRef.current),
-      new Promise(r => setTimeout(r, 30000)),
-    ])
+
+    await sendTask(taskDescription, cwdRef.current)
+    setLaunchProgress('Conductor is analyzing your task...')
+
+    // Poll for real progress instead of a fixed timer.
+    // Wait until we see tasks created AND agent terminals opened, or timeout after 2 minutes.
+    const startTime = Date.now()
+    const maxWait = 120000
+    const minWait = 10000  // show for at least 10 seconds
+
+    const pollForAgents = () => new Promise<void>((resolve) => {
+      const check = async () => {
+        const elapsed = Date.now() - startTime
+
+        try {
+          const [taskRes, msgRes] = await Promise.all([
+            window.swarmAPI.getTasks(),
+            window.swarmAPI.getMessages(),
+          ])
+          const taskCount = taskRes.success && taskRes.data ? taskRes.data.length : 0
+          const msgCount = msgRes.success && msgRes.data ? msgRes.data.length : 0
+          const agentTerminals = useTerminalStore.getState().terminals.filter(t => t.isSwarm && !t.isConductor && !t.hidden)
+
+          // Update progress message based on what's happened
+          if (agentTerminals.length > 0) {
+            setLaunchProgress(`${agentTerminals.length} agent terminal${agentTerminals.length !== 1 ? 's' : ''} opened — agents receiving tasks...`)
+          } else if (taskCount > 0) {
+            setLaunchProgress(`${taskCount} task${taskCount !== 1 ? 's' : ''} created — starting agent terminals...`)
+          } else if (msgCount > 0) {
+            setLaunchProgress('Conductor posted a plan — creating tasks...')
+          } else {
+            setLaunchProgress('Conductor is analyzing your task...')
+          }
+
+          // Done when agent terminals are visible (and min wait elapsed)
+          if (agentTerminals.length > 0 && elapsed >= minWait) {
+            resolve()
+            return
+          }
+        } catch {
+          // Swarm API not ready — continue polling
+        }
+
+        if (elapsed >= maxWait) {
+          resolve()
+          return
+        }
+
+        setTimeout(check, 3000)
+      }
+      check()
+    })
+
+    await pollForAgents()
     onLaunched()
   }, [taskDescription, onLaunched])
 
@@ -131,7 +180,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             </div>
           </div>
           {step !== 'launching' && (
-            <button onClick={() => { abortedRef.current = true; onClose() }} className="text-[#6b7280] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
+            <button onClick={() => { abortedRef.current = true; onClose() }} className="text-[#9ca3af] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
               <i className="fa-solid fa-xmark"></i>
             </button>
           )}
@@ -158,7 +207,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
               disabled={!taskDescription.trim()}
               className={`px-4 py-1.5 text-xs rounded font-medium transition-colors ${
                 !taskDescription.trim()
-                  ? 'bg-[#3c3c3c] text-[#555] cursor-not-allowed'
+                  ? 'bg-[#3c3c3c] text-[#888] cursor-not-allowed'
                   : 'bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4]'
               }`}
             >
@@ -193,7 +242,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             </div>
             <div>
               <h3 className="text-sm font-semibold text-[#d4d4d4]">Claude Code Required</h3>
-              <p className="text-xs text-[#6b7280]">The swarm conductor needs Claude Code CLI installed</p>
+              <p className="text-xs text-[#9ca3af]">The swarm conductor needs Claude Code CLI installed</p>
             </div>
           </div>
 
@@ -203,14 +252,14 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
               orchestrate your swarm. It analyzes your task, picks the best agents, assigns work, monitors progress, and
               coordinates communication between agents.
             </p>
-            <p className="text-xs text-[#888] mb-3">
+            <p className="text-xs text-[#aaa] mb-3">
               This requires the <span className="text-[#d4d4d4]">Claude Code CLI</span> (command-line tool) — not the VS Code
               extension. The VS Code extension is a different product that runs inside VS Code. The CLI runs in any terminal.
             </p>
           </div>
 
           <div className="p-3 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
-            <p className="text-[10px] text-[#6b7280] mb-2 font-semibold uppercase tracking-wider">Install Steps</p>
+            <p className="text-[10px] text-[#9ca3af] mb-2 font-semibold uppercase tracking-wider">Install Steps</p>
             <div className="space-y-2">
               <div className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-2 font-mono text-xs text-[#d4d4d4] select-all">
                 npm install -g @anthropic-ai/claude-code
@@ -219,7 +268,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
                 claude --version
               </div>
             </div>
-            <p className="text-[10px] text-[#555] mt-2">
+            <p className="text-[10px] text-[#888] mt-2">
               Requires Node.js 18+. After installing, restart Termpolis and try Start Swarm again.
             </p>
           </div>
@@ -245,7 +294,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           <i className="fa-solid fa-brain text-[#22D3EE] text-xl absolute inset-0 flex items-center justify-center"></i>
         </div>
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Preparing Conductor</h3>
-        <p className="text-xs text-[#6b7280] text-center max-w-sm mb-4">{statusMessage}</p>
+        <p className="text-xs text-[#9ca3af] text-center max-w-sm mb-4">{statusMessage}</p>
         <p className="text-[11px] text-[#d4d4d4] text-center max-w-md leading-relaxed">
           A swarm lets multiple AI agents work together on the same project simultaneously — one builds, another writes tests, another handles docs. An AI conductor coordinates the work so you just describe what you need.
         </p>
@@ -269,7 +318,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     return (
       <div>
         <p className="text-sm text-[#bbb] mb-2">What do you want the swarm to work on?</p>
-        <p className="text-xs text-[#6b7280] mb-3">
+        <p className="text-xs text-[#9ca3af] mb-3">
           Just describe what you need in plain language. The AI conductor will figure out how to break it down, which agents to use, and how to coordinate the work.
         </p>
         <textarea
@@ -278,21 +327,40 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           onChange={e => setTaskDescription(e.target.value)}
           placeholder='e.g. "I want a tic-tac-toe game for two players with documentation on how to play"'
           rows={5}
-          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
+          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none resize-none"
         />
-        <div className="mt-3 p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
-          <p className="text-[10px] text-[#6b7280] mb-1.5 flex items-center gap-1.5">
-            <i className="fa-solid fa-brain text-[#22D3EE]"></i>
-            <span className="font-semibold uppercase tracking-wider">AI Conductor</span>
-          </p>
-          <p className="text-[10px] text-[#d4d4d4]">
-            The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. After launching, track progress by clicking the{' '}
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2d2d2d] border border-[#3c3c3c] text-[#22c55e]">
-              <i className="fa-solid fa-network-wired text-[9px]"></i>
-              <span className="text-[9px] font-mono">Swarm</span>
-            </span>
-            {' '}icon in the sidebar.
-          </p>
+        <div className="mt-3 space-y-2">
+          <div className="p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
+            <p className="text-[10px] text-[#9ca3af] mb-1.5 flex items-center gap-1.5">
+              <i className="fa-solid fa-brain text-[#22D3EE]"></i>
+              <span className="font-semibold uppercase tracking-wider">AI Conductor</span>
+            </p>
+            <p className="text-[11px] text-[#d4d4d4]">
+              The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. After launching, track progress by clicking the{' '}
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2d2d2d] border border-[#3c3c3c] text-[#22c55e]">
+                <i className="fa-solid fa-network-wired text-[9px]"></i>
+                <span className="text-[9px] font-mono">Swarm</span>
+              </span>
+              {' '}icon in the sidebar.
+            </p>
+          </div>
+          <div className="p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
+            <p className="text-[10px] text-[#9ca3af] mb-2 flex items-center gap-1.5">
+              <i className="fa-solid fa-circle-info text-[#9ca3af]"></i>
+              <span className="font-semibold uppercase tracking-wider">Swarm vs individual agents</span>
+            </p>
+            <div className="text-[11px] text-[#bbb] leading-relaxed space-y-1.5">
+              <p>
+                <strong className="text-[#22D3EE]">Swarm</strong> — best for completing a well-defined task autonomously. Describe what you want built, and the agents do it.
+              </p>
+              <p>
+                <strong className="text-[#22D3EE]">Individual agent terminals</strong> — better for back-and-forth conversations, exploring ideas, or iterating on details. Launch them from the <strong className="text-[#d4d4d4]">AI Agents</strong> section in the sidebar.
+              </p>
+              <p className="text-[#9ca3af]">
+                After a swarm finishes, launch an individual agent to refine the work, or start a new swarm for the next task.
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     )
@@ -306,16 +374,16 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           <i className="fa-solid fa-rocket text-[#22D3EE] text-xl absolute inset-0 flex items-center justify-center"></i>
         </div>
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Launching Swarm</h3>
-        <p className="text-xs text-[#6b7280] text-center max-w-sm mb-4">{launchProgress}</p>
+        <p className="text-xs text-[#22D3EE] text-center max-w-sm mb-4 font-medium">{launchProgress}</p>
         <div className="space-y-2 max-w-sm w-full">
           <div className="p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7]">
             <div className="flex items-center gap-1.5 mb-1">
               <i className="fa-solid fa-clock"></i>
-              <span className="font-semibold">Agents are starting up</span>
+              <span className="font-semibold">The AI conductor is working</span>
             </div>
             <p className="text-[#6b9e6b]">
-              It can take <strong className="text-[#A5D6A7]">30–45 seconds</strong> for agent terminals to appear and receive their tasks. Open the <span className="text-[#A5D6A7] font-semibold">Swarm Dashboard</span> to watch progress
-              <span className="ml-1 font-mono text-[10px] bg-[#1e2e1e] px-1 py-0.5 rounded">Ctrl+Shift+S</span>
+              The conductor is analyzing your task, creating a plan, and spinning up agent terminals.
+              This screen will close automatically once agents are ready.
             </p>
           </div>
           <div className="p-3 bg-[#2a1f1a] border border-[#5a3a2d] rounded-lg text-xs text-[#FFB74D]">

@@ -537,7 +537,7 @@ export default function App() {
           />
         )}
       </div>
-      <StatusBar />
+      <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />
       {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
       {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
       {showAddModal && (

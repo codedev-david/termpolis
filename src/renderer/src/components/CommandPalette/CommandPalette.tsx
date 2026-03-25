@@ -117,7 +117,7 @@ export function CommandPalette({ onAction, onClose }: Props) {
       >
         {/* Search input */}
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#3c3c3c]">
-          <i className="fa-solid fa-magnifying-glass text-[#6b7280] text-sm"></i>
+          <i className="fa-solid fa-magnifying-glass text-[#9ca3af] text-sm"></i>
           <input
             ref={inputRef}
             autoFocus
@@ -125,15 +125,15 @@ export function CommandPalette({ onAction, onClose }: Props) {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent text-sm text-[#d4d4d4] outline-none placeholder-[#6b7280]"
+            className="flex-1 bg-transparent text-sm text-[#d4d4d4] outline-none placeholder-[#9ca3af]"
           />
-          <kbd className="text-[10px] text-[#6b7280] bg-[#1e1e1e] rounded px-1.5 py-0.5 border border-[#3c3c3c]">Esc</kbd>
+          <kbd className="text-[10px] text-[#9ca3af] bg-[#1e1e1e] rounded px-1.5 py-0.5 border border-[#3c3c3c]">Esc</kbd>
         </div>
 
         {/* Results */}
         <div className="overflow-y-auto max-h-72">
           {matches.length === 0 && query && (
-            <p className="text-center text-sm text-[#6b7280] py-6">No matching command</p>
+            <p className="text-center text-sm text-[#9ca3af] py-6">No matching command</p>
           )}
           {matches.map((match, i) => (
             <button
@@ -144,15 +144,15 @@ export function CommandPalette({ onAction, onClose }: Props) {
               onClick={() => executeMatch(i)}
               onMouseEnter={() => setSelectedIndex(i)}
             >
-              <i className={`${match.icon} text-[12px] w-4 text-center text-[#6b7280]`}></i>
+              <i className={`${match.icon} text-[12px] w-4 text-center text-[#9ca3af]`}></i>
               <span className="text-sm text-[#d4d4d4] flex-1">{match.label}</span>
-              <span className="text-xs text-[#6b7280]">{match.description}</span>
+              <span className="text-xs text-[#9ca3af]">{match.description}</span>
             </button>
           ))}
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-1.5 text-[10px] text-[#6b7280] border-t border-[#3c3c3c] flex gap-3">
+        <div className="px-4 py-1.5 text-[10px] text-[#9ca3af] border-t border-[#3c3c3c] flex gap-3">
           <span><kbd className="bg-[#1e1e1e] rounded px-1 py-0.5 border border-[#3c3c3c]">Up/Down</kbd> navigate</span>
           <span><kbd className="bg-[#1e1e1e] rounded px-1 py-0.5 border border-[#3c3c3c]">Enter</kbd> execute</span>
           <span><kbd className="bg-[#1e1e1e] rounded px-1 py-0.5 border border-[#3c3c3c]">Esc</kbd> close</span>

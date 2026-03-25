@@ -62,7 +62,7 @@ export function Sidebar() {
       <aside className="w-10 shrink-0 flex flex-col items-center bg-[#252526] border-r border-[#3c3c3c] h-full py-2" style={{ transition: 'width 200ms ease' }}>
         <button
           onClick={() => setSidebarCollapsed(false)}
-          className="text-[#6b7280] hover:text-white px-2 py-3 rounded hover:bg-[#37373d]"
+          className="text-[#9ca3af] hover:text-white px-2 py-3 rounded hover:bg-[#37373d]"
           title="Expand sidebar"
         ><i className="fa-solid fa-chevron-right text-lg"></i></button>
       </aside>
@@ -132,7 +132,7 @@ export function Sidebar() {
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
       <div className="px-3 py-1.5 flex items-center justify-between">
-        <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#6b7280] uppercase tracking-wider hover:text-[#d4d4d4]">
+        <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]">
           <i className={`fa-solid fa-chevron-${terminalsCollapsed ? 'right' : 'down'} text-[9px]`}></i>
           Terminals
           <span className="text-[10px] normal-case tracking-normal">({terminals.filter(t => !t.hidden).length})</span>

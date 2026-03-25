@@ -7,7 +7,7 @@ export function TabView() {
 
   if (terminals.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-[#6b7280]">
+      <div className="flex items-center justify-center h-full text-[#9ca3af]">
         <p>No terminals open. Click <strong className="text-[#d4d4d4]">+ Add Terminal</strong> to get started.</p>
       </div>
     )

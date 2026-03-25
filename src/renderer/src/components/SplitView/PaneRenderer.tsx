@@ -78,21 +78,21 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
         <span className="text-xs font-medium truncate flex-1">{terminal.name}</span>
         <button
           onClick={(e) => { e.stopPropagation(); handleSplit('vertical') }}
-          className="text-[#6b7280] hover:text-white text-xs px-1"
+          className="text-[#9ca3af] hover:text-white text-xs px-1"
           title="Split Right"
         >
           <i className="fa-solid fa-columns"></i>
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); handleSplit('horizontal') }}
-          className="text-[#6b7280] hover:text-white text-xs px-1"
+          className="text-[#9ca3af] hover:text-white text-xs px-1"
           title="Split Down"
         >
           <i className="fa-solid fa-grip-lines"></i>
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); handleExport() }}
-          className="text-[#6b7280] hover:text-white text-xs px-1"
+          className="text-[#9ca3af] hover:text-white text-xs px-1"
           title="Export terminal output"
         >
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -101,7 +101,7 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); handleClose() }}
-          className="text-[#6b7280] hover:text-white text-xs px-1"
+          className="text-[#9ca3af] hover:text-white text-xs px-1"
           aria-label={`Close ${terminal.name}`}
         >&#x2715;</button>
       </div>

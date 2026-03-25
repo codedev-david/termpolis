@@ -29,20 +29,20 @@ export function TerminalTab({ terminal, index, isActive, onClick, onClose, onUpd
       onContextMenu={e => { e.preventDefault(); setPopoverOpen(true) }}
     >
       {index < 9 && (
-        <span className="text-[#555] text-[10px] w-3 text-center font-mono" title={`Alt+${index + 1}`}>{index + 1}</span>
+        <span className="text-[#888] text-[10px] w-3 text-center font-mono" title={`Alt+${index + 1}`}>{index + 1}</span>
       )}
-      <span className="text-[#6b7280] text-xs w-4 text-center font-mono">
+      <span className="text-[#9ca3af] text-xs w-4 text-center font-mono">
         {SHELL_ICON[terminal.shellType] ?? '$'}
       </span>
       <span className="flex-1 text-sm truncate">{terminal.name}</span>
       <button
         onClick={e => { e.stopPropagation(); setPopoverOpen(true) }}
-        className="opacity-0 group-hover:opacity-100 text-[#6b7280] hover:text-white text-xs px-1"
+        className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-xs px-1"
         aria-label="Edit terminal"
       >✎</button>
       <button
         onClick={e => { e.stopPropagation(); onClose() }}
-        className="text-[#6b7280] hover:text-white text-xs px-1"
+        className="text-[#9ca3af] hover:text-white text-xs px-1"
         aria-label={`Close ${terminal.name}`}
       >✕</button>
       {popoverOpen && createPortal(

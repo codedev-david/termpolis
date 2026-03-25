@@ -87,27 +87,27 @@ export function ConversationSearch({ onClose }: Props) {
       >
         {/* Search input */}
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#3c3c3c]">
-          <i className="fa-solid fa-comments text-[#6b7280] text-sm"></i>
+          <i className="fa-solid fa-comments text-[#9ca3af] text-sm"></i>
           <input
             autoFocus
             placeholder="Search AI conversations..."
             value={query}
             onChange={e => setQuery(e.target.value)}
-            className="flex-1 bg-transparent text-sm text-[#d4d4d4] outline-none placeholder-[#6b7280]"
+            className="flex-1 bg-transparent text-sm text-[#d4d4d4] outline-none placeholder-[#9ca3af]"
           />
-          <kbd className="text-[10px] text-[#6b7280] bg-[#1e1e1e] rounded px-1.5 py-0.5 border border-[#3c3c3c]">Esc</kbd>
+          <kbd className="text-[10px] text-[#9ca3af] bg-[#1e1e1e] rounded px-1.5 py-0.5 border border-[#3c3c3c]">Esc</kbd>
         </div>
 
         {/* Results */}
         <div className="overflow-y-auto max-h-96">
           {query && results.length === 0 && (
-            <p className="text-center text-sm text-[#6b7280] py-6">No matching conversations</p>
+            <p className="text-center text-sm text-[#9ca3af] py-6">No matching conversations</p>
           )}
           {!query && conversations.length === 0 && (
-            <p className="text-center text-sm text-[#6b7280] py-6">No AI conversations indexed yet</p>
+            <p className="text-center text-sm text-[#9ca3af] py-6">No AI conversations indexed yet</p>
           )}
           {!query && conversations.length > 0 && (
-            <p className="text-center text-sm text-[#6b7280] py-6">
+            <p className="text-center text-sm text-[#9ca3af] py-6">
               {conversations.reduce((sum, c) => sum + c.turns.length, 0)} turns across {conversations.length} conversation{conversations.length !== 1 ? 's' : ''} -- type to search
             </p>
           )}
@@ -117,7 +117,7 @@ export function ConversationSearch({ onClose }: Props) {
               <div className="px-4 py-1.5 bg-[#1e1e1e] flex items-center gap-2">
                 <i className="fa-solid fa-robot text-[10px] text-[#d97706]"></i>
                 <span className="text-xs font-medium text-[#d4d4d4]">{group.agentName}</span>
-                <span className="text-xs text-[#6b7280]">in {group.terminalName}</span>
+                <span className="text-xs text-[#9ca3af]">in {group.terminalName}</span>
               </div>
               {/* Matched turns */}
               {group.turns.map((turn, i) => (
@@ -143,7 +143,7 @@ export function ConversationSearch({ onClose }: Props) {
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-1.5 text-[10px] text-[#6b7280] border-t border-[#3c3c3c]">
+        <div className="px-4 py-1.5 text-[10px] text-[#9ca3af] border-t border-[#3c3c3c]">
           Click a result to switch to that terminal -- Esc to close
         </div>
       </div>

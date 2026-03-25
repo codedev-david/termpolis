@@ -122,7 +122,7 @@ export function DiffViewer({ rawDiff, onClose }: Props) {
         {/* Diff content */}
         <div className="flex-1 overflow-auto font-mono text-[12px] leading-5">
           {files.length === 0 && (
-            <div className="flex items-center justify-center h-full text-[#666]">
+            <div className="flex items-center justify-center h-full text-[#999]">
               No diff content to display
             </div>
           )}
@@ -137,7 +137,7 @@ export function DiffViewer({ rawDiff, onClose }: Props) {
               <div>
                 {file.lines.map((line, li) => (
                   <div key={li} className={`flex ${lineStyles[line.type]} hover:brightness-110`}>
-                    <span className="w-12 text-right pr-2 text-[10px] text-[#555] select-none flex-shrink-0 border-r border-[#333] leading-5">
+                    <span className="w-12 text-right pr-2 text-[10px] text-[#888] select-none flex-shrink-0 border-r border-[#333] leading-5">
                       {line.lineNumber ?? ''}
                     </span>
                     <pre className="pl-2 whitespace-pre-wrap break-all flex-1">{line.text}</pre>

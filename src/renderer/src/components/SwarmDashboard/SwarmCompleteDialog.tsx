@@ -51,12 +51,12 @@ export function SwarmCompleteDialog({ message, tasks, onViewDashboard, onDismiss
                 )}
               </div>
             ) : (
-              <p className="text-xs text-[#6b7280]">The swarm has finished its work</p>
+              <p className="text-xs text-[#9ca3af]">The swarm has finished its work</p>
             )}
           </div>
           <button
             onClick={onDismiss}
-            className="text-[#6b7280] hover:text-white px-1.5 py-1 rounded hover:bg-[#37373d] shrink-0"
+            className="text-[#9ca3af] hover:text-white px-1.5 py-1 rounded hover:bg-[#37373d] shrink-0"
           >
             <i className="fa-solid fa-xmark"></i>
           </button>
@@ -96,6 +96,14 @@ export function SwarmCompleteDialog({ message, tasks, onViewDashboard, onDismiss
             ))}
           </div>
         )}
+
+        {/* Next steps tip */}
+        <div className="mx-6 mb-2 px-3 py-2 bg-[#1a1a2e] border border-[#2d2d5a] rounded-lg">
+          <p className="text-[11px] text-[#aaaadd] leading-relaxed">
+            <i className="fa-solid fa-lightbulb text-[#bbbbed] mr-1"></i>
+            <strong className="text-[#d4d4ee]">What next?</strong> Launch an individual AI agent terminal from the <strong className="text-[#d4d4ee]">AI Agents</strong> sidebar to refine the results, have a back-and-forth conversation about changes, or start a new swarm for the next task.
+          </p>
+        </div>
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-[#3c3c3c] mt-2">

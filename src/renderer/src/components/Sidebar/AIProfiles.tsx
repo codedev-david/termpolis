@@ -83,11 +83,11 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
           <option value="gitbash">Git Bash</option>
         </select>
         <div className="flex items-center gap-2">
-          <label className="text-xs text-[#6b7280]">Color</label>
+          <label className="text-xs text-[#9ca3af]">Color</label>
           <input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-8 h-6 border-0 bg-transparent cursor-pointer" />
         </div>
         <div className="flex gap-2 justify-end mt-1">
-          <button type="button" onClick={onCancel} className="px-3 py-1.5 text-sm rounded hover:bg-[#37373d] text-[#6b7280]">Cancel</button>
+          <button type="button" onClick={onCancel} className="px-3 py-1.5 text-sm rounded hover:bg-[#37373d] text-[#9ca3af]">Cancel</button>
           <button type="submit" className="px-3 py-1.5 text-sm rounded bg-[#22D3EE] text-[#1e1e1e] font-medium hover:bg-[#06b6d4]">Add</button>
         </div>
       </form>
@@ -191,14 +191,14 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
     <>
       <div className="flex items-center justify-between px-3 py-1.5">
         <button
-          className="flex items-center gap-1 text-xs text-[#6b7280] uppercase tracking-wider hover:text-[#d4d4d4]"
+          className="flex items-center gap-1 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]"
           onClick={() => setCollapsed(!collapsed)}
         >
           <i className={`fa-solid fa-chevron-${collapsed ? 'right' : 'down'} text-[9px]`}></i>
           AI Agents
         </button>
         <button
-          className="text-[#6b7280] hover:text-[#22D3EE] text-xs px-1"
+          className="text-[#9ca3af] hover:text-[#22D3EE] text-xs px-1"
           onClick={() => setShowAddModal(true)}
           title="Add custom AI profile"
         >
@@ -237,13 +237,28 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                     {isAiderQwen && (
                       <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4] ml-auto shrink-0">FREE</span>
                     )}
-                    {isAiderQwen && ollamaStatus === 'installed' && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" title="Ollama detected"></span>
-                    )}
                   </button>
+                  {!detectingAgents && (
+                    installedAgents[profile.id] === false ? (
+                      <button
+                        className="text-[#E57373] hover:text-red-300 text-[10px] px-1 shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setInstallHint({ id: profile.id, name: profile.name })
+                        }}
+                        title={`${profile.name} not installed — click for setup instructions`}
+                      >
+                        <i className="fa-solid fa-circle-xmark"></i>
+                      </button>
+                    ) : (
+                      <span className="text-green-400 text-[10px] px-1 shrink-0" title={`${profile.name} installed`}>
+                        <i className="fa-solid fa-circle-check"></i>
+                      </span>
+                    )
+                  )}
                   {isCustom && (
                     <button
-                      className="text-[#6b7280] hover:text-red-400 text-[10px] px-1 opacity-0 group-hover:opacity-100"
+                      className="text-[#9ca3af] hover:text-red-400 text-[10px] px-1 opacity-0 group-hover:opacity-100"
                       onClick={() => removeAIProfile(profile.id)}
                       title="Remove profile"
                     >
@@ -258,7 +273,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
             <div className="mx-2 mt-1 p-2 bg-[#1e3a1e] border border-[#2d5a2d] rounded text-[10px] text-[#A5D6A7] leading-relaxed">
               <div className="flex justify-between items-start mb-1">
                 <strong className="text-[#22D3EE]">Free AI Coding with Qwen3-Coder</strong>
-                <button onClick={() => setShowOllamaHint(false)} className="text-[#666] hover:text-white">×</button>
+                <button onClick={() => setShowOllamaHint(false)} className="text-[#999] hover:text-white">×</button>
               </div>
               <p className="mb-1">Aider + Qwen3-Coder runs completely free and local — no API keys, no cloud, no costs.</p>
               <p className="mb-1">To set up:</p>

@@ -49,7 +49,7 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
         {/* Title */}
         <div className="text-center">
           <h1 className="text-xl font-semibold text-[#d4d4d4] mb-1">Welcome to Termpolis</h1>
-          <p className="text-sm text-[#6b7280]">The AI-native terminal for developers</p>
+          <p className="text-sm text-[#9ca3af]">The AI-native terminal for developers</p>
         </div>
 
         {/* Action Cards */}
@@ -62,7 +62,7 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
               <i className="fa-solid fa-terminal text-[#22D3EE]"></i>
             </div>
             <span className="text-sm font-medium text-[#d4d4d4]">New Terminal</span>
-            <span className="text-[10px] text-[#6b7280] leading-tight">Create a terminal with custom shell and theme</span>
+            <span className="text-[10px] text-[#9ca3af] leading-tight">Create a terminal with custom shell and theme</span>
           </button>
 
           <div className="relative">
@@ -74,7 +74,7 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
                 <i className="fa-solid fa-robot text-[#D97706]"></i>
               </div>
               <span className="text-sm font-medium text-[#d4d4d4]">Launch AI Agent</span>
-              <span className="text-[10px] text-[#6b7280] leading-tight">Choose an AI coding agent to start</span>
+              <span className="text-[10px] text-[#9ca3af] leading-tight">Choose an AI coding agent to start</span>
             </button>
             {showAgentPicker && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg shadow-xl z-10 py-1 animate-fadeIn">
@@ -90,7 +90,7 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
                       }`}
                     >
                       <i className={agent.icon} style={{ color: notInstalled ? '#555' : agent.color, fontSize: '12px' }}></i>
-                      <span className={`text-xs flex-1 ${notInstalled ? 'text-[#555]' : 'text-[#d4d4d4]'}`}>{agent.name}</span>
+                      <span className={`text-xs flex-1 ${notInstalled ? 'text-[#888]' : 'text-[#d4d4d4]'}`}>{agent.name}</span>
                       {installed && !detecting && (
                         <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Installed"></span>
                       )}
@@ -115,12 +115,12 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
               <i className="fa-solid fa-network-wired text-[#A5D6A7]"></i>
             </div>
             <span className="text-sm font-medium text-[#d4d4d4]">Start Swarm</span>
-            <span className="text-[10px] text-[#6b7280] leading-tight">Multiple AI agents working together on a task</span>
+            <span className="text-[10px] text-[#9ca3af] leading-tight">Multiple AI agents working together on a task</span>
           </button>
         </div>
 
         {/* Feature Highlights */}
-        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[11px] text-[#555]">
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[11px] text-[#888]">
           <span>Ctrl+K Command Palette</span>
           <span className="text-[#3c3c3c]">·</span>
           <span>Split Panes</span>
@@ -133,8 +133,8 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
         </div>
 
         {/* Hint */}
-        <p className="text-[11px] text-[#555]">
-          Press <kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+K</kbd> to open the command palette, or click <strong className="text-[#6b7280]">+ Add Terminal</strong> in the sidebar
+        <p className="text-[11px] text-[#888]">
+          Press <kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+K</kbd> to open the command palette, or click <strong className="text-[#9ca3af]">+ Add Terminal</strong> in the sidebar
         </p>
       </div>
 

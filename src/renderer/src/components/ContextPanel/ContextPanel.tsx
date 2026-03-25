@@ -102,12 +102,12 @@ export function ContextPanel({ cwd, onClose }: Props) {
             <i className={`fa-solid fa-chevron-${collapsedSections.files ? 'right' : 'down'} text-[8px] text-[#888]`}></i>
             <i className="fa-solid fa-folder text-[#dcb67a] text-[10px]"></i>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[#bbb]">File Tree</span>
-            <span className="text-[10px] text-[#666] ml-auto">{files.length}</span>
+            <span className="text-[10px] text-[#999] ml-auto">{files.length}</span>
           </button>
           {!collapsedSections.files && (
             <div className="pb-1">
               {files.length === 0 && (
-                <div className="px-5 py-1 text-[#666] italic text-[11px]">No files</div>
+                <div className="px-5 py-1 text-[#999] italic text-[11px]">No files</div>
               )}
               {files.map(f => (
                 <div key={f.name} className="flex items-center gap-1.5 px-5 py-0.5 hover:bg-[#2a2d2e] truncate">
@@ -137,7 +137,7 @@ export function ContextPanel({ cwd, onClose }: Props) {
           {!collapsedSections.status && (
             <div className="pb-1 font-mono">
               {statusLines.length === 0 && (
-                <div className="px-5 py-1 text-[#666] italic text-[11px]">
+                <div className="px-5 py-1 text-[#999] italic text-[11px]">
                   {gitInfo ? 'Clean working tree' : 'Not a git repo'}
                 </div>
               )}
@@ -168,7 +168,7 @@ export function ContextPanel({ cwd, onClose }: Props) {
           {!collapsedSections.commits && (
             <div className="pb-1 font-mono">
               {commitLines.length === 0 && (
-                <div className="px-5 py-1 text-[#666] italic text-[11px]">No commits</div>
+                <div className="px-5 py-1 text-[#999] italic text-[11px]">No commits</div>
               )}
               {commitLines.map((line, i) => {
                 const spaceIdx = line.indexOf(' ')
@@ -187,7 +187,7 @@ export function ContextPanel({ cwd, onClose }: Props) {
       </div>
 
       {/* Footer with cwd */}
-      <div className="px-3 py-1.5 border-t border-[#3c3c3c] text-[10px] text-[#666] truncate" title={cwd}>
+      <div className="px-3 py-1.5 border-t border-[#3c3c3c] text-[10px] text-[#999] truncate" title={cwd}>
         {cwd}
       </div>
     </div>

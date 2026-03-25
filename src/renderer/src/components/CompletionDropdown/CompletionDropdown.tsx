@@ -35,7 +35,7 @@ export const CompletionDropdown = React.memo(function CompletionDropdown({ sugge
           <span className="text-[#999] ml-3 truncate text-[10px]">{s.description}</span>
         </div>
       ))}
-      <div className="px-3 py-1 text-[10px] text-[#666] border-t border-[#3c3c3c]">
+      <div className="px-3 py-1 text-[10px] text-[#999] border-t border-[#3c3c3c]">
         {'\u2191\u2193 navigate \u00b7 Tab accept \u00b7 Esc dismiss'}
       </div>
     </div>

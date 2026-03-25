@@ -1,8 +1,30 @@
 import { defineConfig } from 'vitest/config'
+import { createLogger } from 'vite'
 import react from '@vitejs/plugin-react'
+
+// Suppress known deprecation warnings from @vitejs/plugin-react 4.x
+// (uses esbuild API deprecated in Vite 6 bundled by vitest 4.x)
+const logger = createLogger()
+const origWarn = logger.warn.bind(logger)
+logger.warn = (msg, ...args) => {
+  if (typeof msg === 'string' && (
+    (msg.includes('esbuild') && msg.includes('deprecated')) ||
+    msg.includes('Both esbuild and oxc options were set')
+  )) return
+  origWarn(msg, ...args)
+}
+
+// Vite's option resolver also writes directly to stderr — intercept that too
+const origStderrWrite = process.stderr.write.bind(process.stderr)
+process.stderr.write = ((chunk: any, ...rest: any[]) => {
+  const str = typeof chunk === 'string' ? chunk : chunk?.toString?.() ?? ''
+  if (str.includes('esbuild') && str.includes('oxc')) return true
+  return (origStderrWrite as any)(chunk, ...rest)
+}) as typeof process.stderr.write
 
 export default defineConfig({
   plugins: [react()],
+  customLogger: logger,
   test: {
     globals: true,
     environment: 'jsdom',

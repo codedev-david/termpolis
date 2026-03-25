@@ -193,7 +193,7 @@ export function WorkflowTemplates({ onClose }: Props) {
             Workflow Templates
           </h2>
           <button
-            className="text-[#666] hover:text-white text-sm cursor-pointer"
+            className="text-[#999] hover:text-white text-sm cursor-pointer"
             onClick={onClose}
           >
             <i className="fa-solid fa-xmark"></i>
@@ -234,7 +234,7 @@ export function WorkflowTemplates({ onClose }: Props) {
             </div>
           ))}
         </div>
-        <div className="px-4 py-2 border-t border-[#3c3c3c] text-[10px] text-[#666]">
+        <div className="px-4 py-2 border-t border-[#3c3c3c] text-[10px] text-[#999]">
           Launching a workflow will close all current terminals.
         </div>
       </div>

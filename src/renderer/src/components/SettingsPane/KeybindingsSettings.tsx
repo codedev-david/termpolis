@@ -51,7 +51,7 @@ export function KeybindingsSettings() {
             resetKeybindings()
             setRecording(null)
           }}
-          className="text-xs text-[#6b7280] hover:text-[#d4d4d4] px-2 py-1 rounded hover:bg-[#37373d] transition-colors"
+          className="text-xs text-[#9ca3af] hover:text-[#d4d4d4] px-2 py-1 rounded hover:bg-[#37373d] transition-colors"
         >
           Reset All
         </button>
@@ -60,8 +60,8 @@ export function KeybindingsSettings() {
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-[#2d2d2d] border-b border-[#3c3c3c]">
-              <th className="text-left px-3 py-2 text-xs text-[#6b7280] font-medium uppercase tracking-wider">Action</th>
-              <th className="text-left px-3 py-2 text-xs text-[#6b7280] font-medium uppercase tracking-wider">Shortcut</th>
+              <th className="text-left px-3 py-2 text-xs text-[#9ca3af] font-medium uppercase tracking-wider">Action</th>
+              <th className="text-left px-3 py-2 text-xs text-[#9ca3af] font-medium uppercase tracking-wider">Shortcut</th>
               <th className="w-8"></th>
             </tr>
           </thead>
@@ -92,7 +92,7 @@ export function KeybindingsSettings() {
                       <button
                         onClick={() => setKeybinding(action, DEFAULT_KEYBINDINGS[action])}
                         title="Reset to default"
-                        className="text-[#6b7280] hover:text-[#d4d4d4] text-xs px-1"
+                        className="text-[#9ca3af] hover:text-[#d4d4d4] text-xs px-1"
                       >
                         <i className="fa-solid fa-rotate-left"></i>
                       </button>
@@ -105,7 +105,7 @@ export function KeybindingsSettings() {
         </table>
       </div>
       {recording && (
-        <p className="text-xs text-[#6b7280]">
+        <p className="text-xs text-[#9ca3af]">
           Click anywhere outside or press Escape to cancel.
         </p>
       )}

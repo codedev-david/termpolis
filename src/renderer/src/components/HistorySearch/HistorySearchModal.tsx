@@ -43,7 +43,7 @@ export function HistorySearchModal({ onClose }: Props) {
         </div>
         <div className="overflow-y-auto max-h-80">
           {results.length === 0 && query && (
-            <p className="text-center text-sm text-[#6b7280] py-6">No results for "{query}"</p>
+            <p className="text-center text-sm text-[#9ca3af] py-6">No results for "{query}"</p>
           )}
           {results.map((r, i) => (
             <button
@@ -52,12 +52,12 @@ export function HistorySearchModal({ onClose }: Props) {
               className="w-full text-left flex items-center gap-3 px-4 py-2 hover:bg-[#37373d] border-b border-[#2d2d2d]"
             >
               <code className="flex-1 text-sm font-mono text-[#d4d4d4] truncate">{r.command}</code>
-              <span className="text-xs text-[#6b7280] shrink-0">{r.terminalName}</span>
+              <span className="text-xs text-[#9ca3af] shrink-0">{r.terminalName}</span>
               <span className="text-xs text-[#4b5563] shrink-0">{new Date(r.timestamp).toLocaleTimeString()}</span>
             </button>
           ))}
         </div>
-        <div className="px-4 py-2 text-xs text-[#6b7280] border-t border-[#3c3c3c]">
+        <div className="px-4 py-2 text-xs text-[#9ca3af] border-t border-[#3c3c3c]">
           Click a result to copy to clipboard • Esc to close
         </div>
       </div>

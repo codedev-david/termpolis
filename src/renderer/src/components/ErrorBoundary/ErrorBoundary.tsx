@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component<Props, State> {
               Termpolis encountered an unexpected error. Your terminals are still running
               in the background — no data has been lost.
             </p>
-            <details className="text-xs text-[#666]">
+            <details className="text-xs text-[#999]">
               <summary className="cursor-pointer text-[#999] hover:text-white">Error details</summary>
               <pre className="mt-2 p-3 bg-[#1e1e1e] rounded overflow-auto max-h-40 border border-[#3c3c3c]">
                 {this.state.error?.message}
@@ -58,7 +58,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 Reload app
               </button>
             </div>
-            <p className="text-xs text-[#555]">
+            <p className="text-xs text-[#888]">
               If this keeps happening, please report it at{' '}
               <a
                 href="https://github.com/codedev-david/termpolis/issues"

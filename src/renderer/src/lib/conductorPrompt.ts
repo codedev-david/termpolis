@@ -66,18 +66,31 @@ STEP 3 — Create agent terminals:
 
 STEP 4 — Start agents in INTERACTIVE mode:
   For each terminal call run_command(terminalId='[id]', command='[agent command]')
-  IMPORTANT — use ONLY these exact commands (no flags, no -p, no --print):
-    Claude Code → 'claude'
-    Codex       → 'codex'
+  Use ONLY these exact commands — copy them verbatim:
+    Claude Code → 'claude --dangerously-skip-permissions'
+    Codex       → 'codex --full-auto'
     Gemini CLI  → 'gemini'
     Aider+Qwen  → 'aider --model ollama/qwen3-coder --no-show-model-warnings'
-  Never append -p or any other flag — agents must start interactively so they have full tool access (file writing, shell, etc).
   Then post a status update via swarm_send_message.
 
-STEP 5 — Send task prompts (~15 seconds after starting agents):
-  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt including the taskId]\r')
+  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Aider):
+    ✗ claude -p "prompt"                    — loses tool access (no file writes)
+    ✗ gemini -p "prompt"                    — loses tool access (no file writes)
+    ✗ gemini --sandbox                      — restricts capabilities, do NOT use
+    ✗ gemini --sandbox -p "prompt"          — even worse, no tools at all
+    ✗ codex -p "prompt"                     — loses tool access
+    ✗ echo "prompt" | claude                — piping breaks stdin (Ink raw mode error)
+    ✗ agent_command "prompt as argument"    — positional args not supported
+    ✗ Any flag not listed in STEP 4         — do NOT add -p, --sandbox, --print, or any other flag
+  Agents launched with -p or --sandbox CANNOT write files or use tools.
+  The ONLY correct way to send a task prompt is via write_to_terminal in STEP 5.
+
+STEP 5 — Send task prompts (wait ~15 seconds after STEP 4 for agents to initialize):
+  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt]\r')
+  This types the prompt into the agent's interactive session — the ONLY supported method.
   Include the taskId in the prompt so the agent knows which task to update when done.
   The prompt should instruct the agent to actually write/modify files, not just print output.
+  IMPORTANT: The text MUST end with \r (carriage return) to submit the prompt.
 
 STEP 6 — Monitor progress:
   Periodically call swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
@@ -93,13 +106,42 @@ STEP 8 — Signal swarm completion:
   When ALL tasks are completed or failed, post a final summary:
   swarm_send_message(from='conductor', to='all', type='result', content='SWARM COMPLETE: [summary of all work done]')
 
+WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
+
+  === Claude agent for "Build UI" ===
+  swarm_create_task(title='Build UI', description='Create the dashboard component', createdBy='conductor')
+  → taskId: 'task-abc-123'
+  create_terminal(name='Claude (Build UI)', shell='${shell}', cwd='${options.projectCwd}')
+  → terminalId: 'term-001'
+  run_command(terminalId='term-001', command='claude --dangerously-skip-permissions')
+  // wait ~15 seconds...
+  write_to_terminal(terminalId='term-001', text='You are working in ${options.projectCwd}. Create the dashboard component. Task ID: task-abc-123\\r')
+
+  === Gemini agent for "Write Docs" ===
+  swarm_create_task(title='Write Docs', description='Write project documentation', createdBy='conductor')
+  → taskId: 'task-def-456'
+  create_terminal(name='Gemini (Docs)', shell='${shell}', cwd='${options.projectCwd}')
+  → terminalId: 'term-002'
+  run_command(terminalId='term-002', command='gemini')
+  // wait ~15 seconds...
+  write_to_terminal(terminalId='term-002', text='You are working in ${options.projectCwd}. Write project documentation. Task ID: task-def-456\\r')
+
+  ✗ WRONG: run_command(command='claude -p "Build the login page"')     — no -p flag!
+  ✗ WRONG: run_command(command='gemini -p "Write docs"')               — no -p flag!
+  ✗ WRONG: run_command(command='gemini --sandbox -p "Write docs"')     — no --sandbox or -p!
+  ✗ WRONG: run_command(command='Build the login page')                 — raw text in shell!
+  ✗ WRONG: write_to_terminal BEFORE run_command                        — agent must be started first!
+
 IMPORTANT RULES:
 - ALWAYS call swarm_create_task for every subtask in STEP 2 — never skip this.
 - Always use from='conductor' when sending messages.
 - Be decisive. Do not ask the user for input.
 - If only one agent type is installed, run multiple instances with different roles.
-- NEVER use -p, --print, or pipe flags when starting agents — always interactive mode only.
-- Always start agents with the exact commands listed in STEP 4, no modifications.
+- NEVER add -p, --sandbox, --print, or ANY extra flags to agent commands. The commands in STEP 4 are complete.
+- NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex, not Aider).
+- ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
+- The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
+- If you are tempted to add flags, use -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`
 }

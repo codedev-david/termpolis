@@ -489,7 +489,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
             >
-              Copy<span className="float-right text-[#666]">Ctrl+Shift+C</span>
+              Copy<span className="float-right text-[#999]">Ctrl+Shift+C</span>
             </button>
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
@@ -500,7 +500,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
             >
-              Paste<span className="float-right text-[#666]">Ctrl+Shift+V</span>
+              Paste<span className="float-right text-[#999]">Ctrl+Shift+V</span>
             </button>
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
@@ -543,7 +543,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               </button>
             )}
             <button
-              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#094771] cursor-pointer ${termRef.current?.getSelection() ? 'text-[#d4d4d4]' : 'text-[#666] pointer-events-none'}`}
+              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#094771] cursor-pointer ${termRef.current?.getSelection() ? 'text-[#d4d4d4]' : 'text-[#999] pointer-events-none'}`}
               onClick={handlePinSelection}
               disabled={!termRef.current?.getSelection()}
             >
@@ -571,7 +571,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                       setContextMenu({ visible: false, x: 0, y: 0 })
                     }}
                   >
-                    Split Right<span className="float-right text-[#666]">Ctrl+Shift+R</span>
+                    Split Right<span className="float-right text-[#999]">Ctrl+Shift+R</span>
                   </button>
                 )}
                 {onSplitDown && (
@@ -582,7 +582,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                       setContextMenu({ visible: false, x: 0, y: 0 })
                     }}
                   >
-                    Split Down<span className="float-right text-[#666]">Ctrl+Shift+D</span>
+                    Split Down<span className="float-right text-[#999]">Ctrl+Shift+D</span>
                   </button>
                 )}
               </>

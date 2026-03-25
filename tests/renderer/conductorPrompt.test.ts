@@ -134,4 +134,38 @@ describe('buildConductorPrompt', () => {
     // Should be part of a swarm_send_message call with type result
     expect(prompt).toContain("type='result'")
   })
+
+  // ---- Anti-piping / stdin safety ----
+
+  it('warns against piping and headless mode for all agents', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain('piping breaks stdin')
+    expect(prompt).toContain('echo "prompt" | claude')
+    expect(prompt).toContain('gemini -p "prompt"')
+    expect(prompt).toContain('gemini --sandbox')
+  })
+
+  it('specifies write_to_terminal as the ONLY way to send prompts', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain('write_to_terminal')
+    expect(prompt).toMatch(/ONLY.*way to send prompts/i)
+  })
+
+  it('includes --dangerously-skip-permissions in Claude agent command', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain("claude --dangerously-skip-permissions")
+  })
+
+  it('includes worked examples for both Claude and Gemini agents', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain("command='claude --dangerously-skip-permissions'")
+    expect(prompt).toContain("command='gemini'")
+    expect(prompt).toContain('Gemini (Docs)')
+  })
+
+  it('lists wrong Gemini examples in the WRONG section', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain("gemini -p")
+    expect(prompt).toContain("gemini --sandbox -p")
+  })
 })

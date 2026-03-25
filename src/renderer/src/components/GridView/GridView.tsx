@@ -69,7 +69,7 @@ function TerminalCard({
         <span className="text-xs font-medium truncate flex-1">{t.name}</span>
         <button
           onClick={handleExport}
-          className="text-[#6b7280] hover:text-white text-xs px-1"
+          className="text-[#9ca3af] hover:text-white text-xs px-1"
           aria-label={`Export ${t.name}`}
           title="Export terminal output"
         >
@@ -79,7 +79,7 @@ function TerminalCard({
         </button>
         <button
           onClick={() => { window.termpolis.killTerminal(t.id); onRemove(t.id) }}
-          className="text-[#6b7280] hover:text-white text-xs px-1"
+          className="text-[#9ca3af] hover:text-white text-xs px-1"
           aria-label={`Close ${t.name}`}
         >&#x2715;</button>
       </div>
@@ -105,7 +105,7 @@ export function GridView() {
 
   if (terminals.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-[#6b7280]">
+      <div className="flex items-center justify-center h-full text-[#9ca3af]">
         <p>No terminals open. Click <strong className="text-[#d4d4d4]">+ Add Terminal</strong> to get started.</p>
       </div>
     )
