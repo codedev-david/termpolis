@@ -165,6 +165,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const inProgressTasks = tasks.filter((t) => t.status === 'in_progress')
   const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'failed')
 
+  const swarmTerminals = terminals.filter(t => t.isSwarm && !t.hidden && !t.isConductor)
+
   const renderAgents = () => (
     <div className="space-y-2">
       {/* Swarm agents section */}
@@ -197,17 +199,17 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
         </div>
       )}
 
-      {/* All terminals (excluding hidden conductor terminals) */}
-      {swarmAgents.length > 0 && terminals.filter(t => !t.hidden).length > 0 && (
+      {/* Swarm terminals only (excluding conductor and non-swarm terminals) */}
+      {swarmTerminals.length > 0 && (
         <div className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
           <i className="fa-solid fa-terminal"></i>
-          All Terminals
+          Swarm Terminals
         </div>
       )}
-      {terminals.filter(t => !t.hidden).length === 0 && swarmAgents.length === 0 ? (
-        <p className="text-[#9ca3af] text-sm text-center py-8">No terminals open. AI agents appear here when running in Termpolis terminals.</p>
+      {swarmTerminals.length === 0 && swarmAgents.length === 0 ? (
+        <p className="text-[#9ca3af] text-sm text-center py-8">No swarm agents running. Start a swarm to see agents here.</p>
       ) : (
-        terminals.filter(t => !t.hidden).map((t) => (
+        swarmTerminals.map((t) => (
           <div key={t.id} className="flex items-center gap-3 p-3 rounded-lg bg-[#2d2d2d] border border-[#3c3c3c] hover:border-[#555]">
             <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }}></div>
             <div className="flex-1 min-w-0">
@@ -341,7 +343,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
               </div>
             )}
             <span className="text-xs text-[#9ca3af]">
-              {terminals.filter(t => !t.hidden).length} agent{terminals.filter(t => !t.hidden).length !== 1 ? 's' : ''} | {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
+              {swarmTerminals.length} agent{swarmTerminals.length !== 1 ? 's' : ''} | {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -385,9 +387,9 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
             >
               <i className={tab.icon}></i>
               {tab.label}
-              {tab.id === 'agents' && swarmAgents.length > 0 && (
+              {tab.id === 'agents' && (swarmAgents.length > 0 || swarmTerminals.length > 0) && (
                 <span className="ml-1 text-[10px] bg-[#22D3EE]/20 text-[#22D3EE] px-1.5 rounded-full">
-                  {swarmAgents.length}
+                  {swarmAgents.length || swarmTerminals.length}
                 </span>
               )}
             </button>

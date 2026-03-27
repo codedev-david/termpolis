@@ -63,6 +63,15 @@ jobs:
         run: bash scripts/download-tools.sh
         continue-on-error: true
 
+      - name: Install CodeSignTool (Windows)
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.ssl.com/download/codesigntool-for-windows/" -OutFile "CodeSignTool.zip"
+          Expand-Archive -Path "CodeSignTool.zip" -DestinationPath "CodeSignTool" -Force
+          $cstPath = (Get-ChildItem -Path "CodeSignTool" -Recurse -Filter "CodeSignTool.bat" | Select-Object -First 1).DirectoryName
+          echo "$cstPath" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
       - name: Build app
         run: npx electron-vite build
 
@@ -70,6 +79,10 @@ jobs:
         run: npx electron-builder --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
+          SSL_COM_PASSWORD: ${{ secrets.SSL_COM_PASSWORD }}
+          SSL_COM_TOTP_SECRET: ${{ secrets.SSL_COM_TOTP_SECRET }}
+          SSL_COM_CREDENTIAL_ID: ${{ secrets.SSL_COM_CREDENTIAL_ID }}
 
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2.6.1

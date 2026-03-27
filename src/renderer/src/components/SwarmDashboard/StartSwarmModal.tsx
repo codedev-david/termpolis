@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { checkClaudeInstalled, startConductor, waitForAuth, sendTask } from '../../lib/conductorManager'
+import { checkClaudeInstalled, startConductor, waitForAuth, sendTask, stopConductor } from '../../lib/conductorManager'
 import { useTerminalStore } from '../../store/terminalStore'
 
 // ---- Component ----
@@ -14,7 +14,10 @@ type Step = 'preparing' | 'describe' | 'launching'
 
 export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmModalProps) {
   const [step, setStep] = useState<Step>('preparing')
-  const [taskDescription, setTaskDescription] = useState('')
+  const [goal, setGoal] = useState('')
+  const [constraints, setConstraints] = useState('')
+  const [expectedOutput, setExpectedOutput] = useState('')
+  const [failureConditions, setFailureConditions] = useState('')
   const [statusMessage, setStatusMessage] = useState('Checking Claude Code...')
   const [needsAuth, setNeedsAuth] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -78,24 +81,41 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Cancel: stop the conductor and clean up before closing
+  const handleCancel = useCallback(() => {
+    abortedRef.current = true
+    if (step !== 'launching') {
+      stopConductor()
+      useTerminalStore.getState().setSwarmActive(false)
+    }
+    onClose()
+  }, [onClose, step])
+
   // Escape to close (not during launching)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'launching') {
-        abortedRef.current = true
-        onClose()
+        handleCancel()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose, step])
+  }, [handleCancel, step])
+
+  const buildPromptContract = useCallback(() => {
+    let prompt = `## Goal\n${goal.trim()}`
+    if (constraints.trim()) prompt += `\n\n## Constraints\n${constraints.trim()}`
+    if (expectedOutput.trim()) prompt += `\n\n## Expected Output\n${expectedOutput.trim()}`
+    if (failureConditions.trim()) prompt += `\n\n## Failure Conditions\n${failureConditions.trim()}`
+    return prompt
+  }, [goal, constraints, expectedOutput, failureConditions])
 
   const handleLaunch = useCallback(async () => {
-    if (!taskDescription.trim() || !cwdRef.current) return
+    if (!goal.trim() || !cwdRef.current) return
     setStep('launching')
     setLaunchProgress('Sending task to conductor...')
 
-    await sendTask(taskDescription, cwdRef.current)
+    await sendTask(buildPromptContract(), cwdRef.current)
     setLaunchProgress('Conductor is analyzing your task...')
 
     // Poll for real progress instead of a fixed timer.
@@ -149,16 +169,16 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
 
     await pollForAgents()
     onLaunched()
-  }, [taskDescription, onLaunched])
+  }, [goal, buildPromptContract, onLaunched])
 
   const stepIndex = (s: Step): number => {
     return ['preparing', 'describe', 'launching'].indexOf(s)
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={step !== 'launching' ? () => { abortedRef.current = true; onClose() } : undefined}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={step !== 'launching' ? handleCancel : undefined}>
       <div
-        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded-xl shadow-2xl w-[640px] max-w-[90vw] max-h-[85vh] flex flex-col"
+        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded-xl shadow-2xl w-[780px] max-w-[92vw] max-h-[90vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -180,7 +200,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             </div>
           </div>
           {step !== 'launching' && (
-            <button onClick={() => { abortedRef.current = true; onClose() }} className="text-[#9ca3af] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
+            <button onClick={handleCancel} className="text-[#9ca3af] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
               <i className="fa-solid fa-xmark"></i>
             </button>
           )}
@@ -197,16 +217,16 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
         {step === 'describe' && (
           <div className="flex items-center justify-between px-5 py-3 border-t border-[#3c3c3c]">
             <button
-              onClick={() => { abortedRef.current = true; onClose() }}
+              onClick={handleCancel}
               className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]"
             >
               Cancel
             </button>
             <button
               onClick={handleLaunch}
-              disabled={!taskDescription.trim()}
+              disabled={!goal.trim()}
               className={`px-4 py-1.5 text-xs rounded font-medium transition-colors ${
-                !taskDescription.trim()
+                !goal.trim()
                   ? 'bg-[#3c3c3c] text-[#888] cursor-not-allowed'
                   : 'bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4]'
               }`}
@@ -218,7 +238,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
         {step === 'preparing' && (claudeNotInstalled || error) && (
           <div className="flex items-center justify-between px-5 py-3 border-t border-[#3c3c3c]">
             <button
-              onClick={() => { abortedRef.current = true; onClose() }}
+              onClick={handleCancel}
               className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]"
             >
               Close
@@ -315,28 +335,91 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
   }
 
   function renderDescribeStep() {
+    const fieldClass = "w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
+
     return (
-      <div>
-        <p className="text-sm text-[#bbb] mb-2">What do you want the swarm to work on?</p>
-        <p className="text-xs text-[#9ca3af] mb-3">
-          Just describe what you need in plain language. The AI conductor will figure out how to break it down, which agents to use, and how to coordinate the work.
-        </p>
-        <textarea
-          autoFocus
-          value={taskDescription}
-          onChange={e => setTaskDescription(e.target.value)}
-          placeholder='e.g. "I want a tic-tac-toe game for two players with documentation on how to play"'
-          rows={5}
-          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none resize-none"
-        />
-        <div className="mt-3 space-y-2">
+      <div className="space-y-4">
+        <div>
+          <p className="text-sm text-[#bbb] mb-1">Define your task as a prompt contract</p>
+          <p className="text-xs text-[#9ca3af]">
+            Structured inputs produce better results. Only <strong className="text-[#d4d4d4]">Goal</strong> is required — the more detail you provide, the better the swarm performs.
+          </p>
+        </div>
+
+        {/* Goal */}
+        <div>
+          <label className="flex items-center gap-1.5 text-xs font-semibold text-[#d4d4d4] mb-1.5">
+            <i className="fa-solid fa-bullseye text-[#22D3EE] text-[10px]"></i>
+            Goal
+            <span className="text-[#E57373] text-[10px]">*</span>
+          </label>
+          <textarea
+            autoFocus
+            value={goal}
+            onChange={e => setGoal(e.target.value)}
+            placeholder={'"Build a real-time chat application with user authentication, message history, and typing indicators. Success = two users can sign up, log in, and exchange messages that persist across sessions."'}
+            rows={3}
+            className={fieldClass}
+          />
+        </div>
+
+        {/* Constraints */}
+        <div>
+          <label className="flex items-center gap-1.5 text-xs font-semibold text-[#d4d4d4] mb-1.5">
+            <i className="fa-solid fa-shield-halved text-[#F59E0B] text-[10px]"></i>
+            Constraints
+            <span className="text-[10px] text-[#9ca3af] font-normal ml-1">optional</span>
+          </label>
+          <textarea
+            value={constraints}
+            onChange={e => setConstraints(e.target.value)}
+            placeholder={'"React 18 with TypeScript strict mode. Use Socket.io for real-time — no polling. PostgreSQL with Prisma ORM. No Firebase, no third-party auth services — use JWT with bcrypt. All API routes must validate input with Zod."'}
+            rows={3}
+            className={fieldClass}
+          />
+        </div>
+
+        {/* Expected Output */}
+        <div>
+          <label className="flex items-center gap-1.5 text-xs font-semibold text-[#d4d4d4] mb-1.5">
+            <i className="fa-solid fa-folder-tree text-[#22C55E] text-[10px]"></i>
+            Expected Output
+            <span className="text-[10px] text-[#9ca3af] font-normal ml-1">optional</span>
+          </label>
+          <textarea
+            value={expectedOutput}
+            onChange={e => setExpectedOutput(e.target.value)}
+            placeholder={'"src/server/ with Express API and Socket.io handlers. src/client/ with React components for login, chat room, and message list. prisma/schema.prisma with User and Message models. README with setup instructions and environment variables."'}
+            rows={3}
+            className={fieldClass}
+          />
+        </div>
+
+        {/* Failure Conditions */}
+        <div>
+          <label className="flex items-center gap-1.5 text-xs font-semibold text-[#d4d4d4] mb-1.5">
+            <i className="fa-solid fa-triangle-exclamation text-[#E57373] text-[10px]"></i>
+            Failure Conditions
+            <span className="text-[10px] text-[#9ca3af] font-normal ml-1">optional</span>
+          </label>
+          <textarea
+            value={failureConditions}
+            onChange={e => setFailureConditions(e.target.value)}
+            placeholder={'"Messages lost on page refresh. Passwords stored in plain text. No input validation on API routes. Uses polling instead of WebSockets. Missing TypeScript types or any use of `any`."'}
+            rows={3}
+            className={fieldClass}
+          />
+        </div>
+
+        {/* Info boxes */}
+        <div className="space-y-2">
           <div className="p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
             <p className="text-[10px] text-[#9ca3af] mb-1.5 flex items-center gap-1.5">
               <i className="fa-solid fa-brain text-[#22D3EE]"></i>
               <span className="font-semibold uppercase tracking-wider">AI Conductor</span>
             </p>
             <p className="text-[11px] text-[#d4d4d4]">
-              The conductor analyzes your description, picks the best available agents, breaks the work into tasks, and coordinates everything automatically. After launching, track progress by clicking the{' '}
+              The conductor reads your contract, picks the best agents, breaks the work into tasks, and coordinates everything. After launching, track progress via the{' '}
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2d2d2d] border border-[#3c3c3c] text-[#22c55e]">
                 <i className="fa-solid fa-network-wired text-[9px]"></i>
                 <span className="text-[9px] font-mono">Swarm</span>
