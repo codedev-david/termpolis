@@ -100,3 +100,31 @@ jobs:
             dist-electron-builder/*.exe
             dist-electron-builder/*.dmg
             dist-electron-builder/*.AppImage
+
+      - name: Publish to Chocolatey
+        if: matrix.platform == 'win'
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+        run: |
+          $version = (node -p "require('./package.json').version")
+          $exe = Get-ChildItem -Path "dist-electron-builder" -Filter "*.exe" | Select-Object -First 1
+          $hash = (Get-FileHash -Path $exe.FullName -Algorithm SHA256).Hash
+
+          # Update install script with correct URL and hash
+          $installScript = Get-Content "packaging/chocolatey/tools/chocolateyinstall.ps1" -Raw
+          $installScript = $installScript -replace 'REPLACE_WITH_SHA256', $hash
+          $installScript = $installScript -replace 'v1\.4\.1', "v$version"
+          $installScript = $installScript -replace '1\.4\.1', $version
+          Set-Content "packaging/chocolatey/tools/chocolateyinstall.ps1" $installScript
+
+          # Update nuspec version
+          $nuspec = Get-Content "packaging/chocolatey/termpolis.nuspec" -Raw
+          $nuspec = $nuspec -replace '<version>.*</version>', "<version>$version</version>"
+          $nuspec = $nuspec -replace 'v1\.4\.1', "v$version"
+          Set-Content "packaging/chocolatey/termpolis.nuspec" $nuspec
+
+          # Pack and push
+          cd packaging/chocolatey
+          choco pack
+          choco push "termpolis.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
