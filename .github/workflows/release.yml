@@ -138,9 +138,11 @@ jobs:
         if: matrix.platform == 'win'
         shell: pwsh
         run: |
-          # Copy only the .exe to a staging folder for upload
+          # Copy the .exe plus a stable-name copy for the Microsoft Store
           New-Item -ItemType Directory -Path "ftp-staging" -Force
-          Copy-Item "dist-electron-builder/*.exe" "ftp-staging/"
+          $exe = Get-ChildItem -Path "dist-electron-builder" -Filter "*.exe" | Select-Object -First 1
+          Copy-Item $exe.FullName "ftp-staging/"
+          Copy-Item $exe.FullName "ftp-staging/Termpolis-Setup-Latest.exe"
 
       - name: FTP deploy to termpolis.com
         if: matrix.platform == 'win'
