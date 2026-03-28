@@ -38,7 +38,11 @@
     "mac": {
       "target": "dmg",
       "icon": "assets/icon.png",
-      "identity": null
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "notarize": false
     },
     "linux": {
       "target": "AppImage",
