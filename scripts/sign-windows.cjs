@@ -20,7 +20,7 @@ exports.default = async function sign(configuration) {
   console.log(`Signing: ${path.basename(filePath)}`)
 
   const command = [
-    'CodeSignTool sign',
+    'CodeSignTool.bat sign',
     `-username="${SSL_COM_USERNAME}"`,
     `-password="${SSL_COM_PASSWORD}"`,
     `-totp_secret="${SSL_COM_TOTP_SECRET}"`,

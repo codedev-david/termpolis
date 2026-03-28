@@ -67,10 +67,16 @@ jobs:
         if: matrix.platform == 'win'
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://www.ssl.com/download/codesigntool-for-windows/" -OutFile "CodeSignTool.zip"
+          Invoke-WebRequest -Uri "https://www.ssl.com/download/codesigntool-for-windows/" -OutFile "CodeSignTool.zip" -MaximumRedirection 10
           Expand-Archive -Path "CodeSignTool.zip" -DestinationPath "CodeSignTool" -Force
-          $cstPath = (Get-ChildItem -Path "CodeSignTool" -Recurse -Filter "CodeSignTool.bat" | Select-Object -First 1).DirectoryName
-          echo "$cstPath" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          Get-ChildItem -Path "CodeSignTool" -Recurse | Select-Object -First 20
+          $cstBat = Get-ChildItem -Path "CodeSignTool" -Recurse -Filter "CodeSignTool.bat" | Select-Object -First 1
+          if (-not $cstBat) {
+            Write-Error "CodeSignTool.bat not found in extracted archive"
+            exit 1
+          }
+          echo "$($cstBat.DirectoryName)" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          Write-Host "CodeSignTool installed at: $($cstBat.FullName)"
 
       - name: Build app
         run: npx electron-vite build
