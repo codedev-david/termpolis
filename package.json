@@ -33,10 +33,7 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.png",
-      "publisherName": "Termpolis",
-      "signingHashAlgorithms": ["sha256"],
-      "sign": "scripts/sign-windows.cjs",
-      "signDlls": false
+      "publisherName": "Termpolis"
     },
     "mac": {
       "target": "dmg",
