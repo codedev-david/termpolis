@@ -17,6 +17,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License">
+  <img src="https://img.shields.io/badge/Windows-Code%20Signed-0078D4?logo=windows&logoColor=white" alt="Windows Code Signed">
   <a href="https://github.com/sponsors/codedev-david"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg" alt="Sponsor"></a>
 </p>
 
@@ -59,13 +60,13 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 
 ## Downloads
 
-| Platform | Download | Format |
-|----------|----------|--------|
-| Windows | [Termpolis Setup.exe](https://github.com/codedev-david/termpolis/releases/latest) | NSIS Installer |
-| macOS | [Termpolis.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG |
-| Linux | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage |
+| Platform | Download | Format | Signed |
+|----------|----------|--------|--------|
+| Windows | [Termpolis Setup.exe](https://github.com/codedev-david/termpolis/releases/latest) | NSIS Installer | Code signed (SSL.com) |
+| macOS | [Termpolis.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | — |
+| Linux | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage | — |
 
-> Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
+> The Windows installer is digitally signed with an SSL.com code signing certificate — Windows will recognize Termpolis as a verified application with no SmartScreen warnings. Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
 
 ## Features
 
