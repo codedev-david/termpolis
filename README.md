@@ -66,7 +66,20 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 | macOS | [Termpolis.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | — |
 | Linux | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage | — |
 
-> The Windows installer is digitally signed with an SSL.com code signing certificate — Windows will recognize Termpolis as a verified application with no SmartScreen warnings. Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
+### Package Managers
+
+```powershell
+# Windows (winget)
+winget install codedev-david.Termpolis
+
+# Windows (Chocolatey)
+choco install termpolis
+
+# macOS (Homebrew)
+brew tap codedev-david/tap && brew install --cask termpolis
+```
+
+> The Windows installer is digitally signed with an SSL.com code signing certificate — Windows will recognize Termpolis as a verified application. Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
 
 ## Features
 

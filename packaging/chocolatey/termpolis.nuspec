@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.chocolatey.org/2010/06/nuspec">
+  <metadata>
+    <id>termpolis</id>
+    <version>1.4.1</version>
+    <title>Termpolis</title>
+    <authors>David Engelhart</authors>
+    <owners>codedev-david</owners>
+    <projectUrl>https://github.com/codedev-david/termpolis</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/codedev-david/termpolis/main/assets/icon.png</iconUrl>
+    <licenseUrl>https://github.com/codedev-david/termpolis/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/codedev-david/termpolis</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/codedev-david/termpolis/issues</bugTrackerUrl>
+    <tags>terminal ai cli electron claude codex gemini multi-agent</tags>
+    <summary>AI-native terminal manager where Claude, Codex, Gemini, and Qwen work together as a team</summary>
+    <description><![CDATA[
+## Termpolis
+
+The first terminal where Claude, Codex, Gemini, and Qwen work together as a team.
+
+Smart task routing assigns the right work to the right AI model. An intelligent conductor that knows who plays what instrument best.
+
+### Features
+- Multi-terminal sessions with split panes and workspaces
+- AI swarm with smart routing — describe a task and agents collaborate automatically
+- Support for Claude Code, OpenAI Codex, Gemini CLI, and Aider+Qwen
+- Built-in MCP server for AI agent integration
+- Command palette, prompt templates, and tab completion
+- WCAG AA accessible
+- Windows code signed
+]]></description>
+    <releaseNotes>https://github.com/codedev-david/termpolis/releases/tag/v1.4.1</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

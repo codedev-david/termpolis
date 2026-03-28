@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: codedev-david.Termpolis
+PackageVersion: 1.4.1
+PackageLocale: en-US
+Publisher: David Engelhart
+PublisherUrl: https://github.com/codedev-david
+PackageName: Termpolis
+PackageUrl: https://github.com/codedev-david/termpolis
+License: MIT
+LicenseUrl: https://github.com/codedev-david/termpolis/blob/main/LICENSE
+ShortDescription: AI-native terminal manager where Claude, Codex, Gemini, and Qwen work together as a team
+Description: |-
+  The first terminal where Claude, Codex, Gemini, and Qwen work together as a team.
+  Smart task routing assigns the right work to the right AI model. An intelligent
+  conductor that knows who plays what instrument best. Features multi-terminal sessions
+  with split panes, AI swarm orchestration, command palette, prompt templates, and
+  built-in MCP server.
+Tags:
+  - terminal
+  - ai
+  - cli
+  - electron
+  - claude
+  - codex
+  - gemini
+  - developer-tools
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    InstallerUrl: https://github.com/codedev-david/termpolis/releases/download/v1.4.1/Termpolis.Setup.1.4.1.exe
+    InstallerSha256: REPLACE_WITH_SHA256
+ManifestType: singleton
+ManifestVersion: 1.6.0
