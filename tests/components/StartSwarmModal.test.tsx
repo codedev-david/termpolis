@@ -91,7 +91,7 @@ describe('StartSwarmModal', () => {
   it('shows describe step after successful preparation', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
-      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+      expect(screen.getByText('Define your task as a prompt contract')).toBeInTheDocument()
     })
   })
 
@@ -105,7 +105,7 @@ describe('StartSwarmModal', () => {
   it('has Launch Swarm button disabled when task is empty', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
-      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+      expect(screen.getByText('Define your task as a prompt contract')).toBeInTheDocument()
     })
     const launchButton = screen.getByText('Launch Swarm')
     expect(launchButton.closest('button')).toBeDisabled()
@@ -114,9 +114,9 @@ describe('StartSwarmModal', () => {
   it('enables Launch Swarm button when task is entered', async () => {
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
-      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+      expect(screen.getByText('Define your task as a prompt contract')).toBeInTheDocument()
     })
-    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
+    const textarea = screen.getByPlaceholderText(/Build a real-time chat/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     const launchButton = screen.getByText('Launch Swarm')
     expect(launchButton.closest('button')).not.toBeDisabled()
@@ -143,9 +143,9 @@ describe('StartSwarmModal', () => {
 
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={onLaunched} projectCwd="/test/project" />)
     await waitFor(() => {
-      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+      expect(screen.getByText('Define your task as a prompt contract')).toBeInTheDocument()
     }, { timeout: 3000 })
-    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
+    const textarea = screen.getByPlaceholderText(/Build a real-time chat/)
     fireEvent.change(textarea, { target: { value: 'Build a React app' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
 
@@ -153,7 +153,7 @@ describe('StartSwarmModal', () => {
     agentTerminalVisible = true
     await vi.advanceTimersByTimeAsync(15000)
 
-    expect(sendTask).toHaveBeenCalledWith('Build a React app', '/test/project')
+    expect(sendTask).toHaveBeenCalledWith(expect.stringContaining('## Goal\nBuild a React app'), '/test/project')
     expect(onLaunched).toHaveBeenCalled()
     vi.useRealTimers()
   })
@@ -193,9 +193,9 @@ describe('StartSwarmModal', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
-      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+      expect(screen.getByText('Define your task as a prompt contract')).toBeInTheDocument()
     }, { timeout: 3000 })
-    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
+    const textarea = screen.getByPlaceholderText(/Build a real-time chat/)
     fireEvent.change(textarea, { target: { value: 'Build something' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
     // Should show conductor working message
@@ -209,9 +209,9 @@ describe('StartSwarmModal', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
     await waitFor(() => {
-      expect(screen.getByText('What do you want the swarm to work on?')).toBeInTheDocument()
+      expect(screen.getByText('Define your task as a prompt contract')).toBeInTheDocument()
     }, { timeout: 3000 })
-    const textarea = screen.getByPlaceholderText(/tic-tac-toe/)
+    const textarea = screen.getByPlaceholderText(/Build a real-time chat/)
     fireEvent.change(textarea, { target: { value: 'Test task' } })
     fireEvent.click(screen.getByText('Launch Swarm'))
     await waitFor(() => {
