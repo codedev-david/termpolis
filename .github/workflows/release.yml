@@ -134,6 +134,27 @@ jobs:
             dist-electron-builder/*.dmg
             dist-electron-builder/*.AppImage
 
+      - name: Upload installer to termpolis.com
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          # Copy only the .exe to a staging folder for upload
+          New-Item -ItemType Directory -Path "ftp-staging" -Force
+          Copy-Item "dist-electron-builder/*.exe" "ftp-staging/"
+
+      - name: FTP deploy to termpolis.com
+        if: matrix.platform == 'win'
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          port: 21
+          protocol: ftp
+          local-dir: ftp-staging/
+          server-dir: /downloads/
+          dangerous-clean-slate: true
+
       - name: Publish to Chocolatey
         if: matrix.platform == 'win'
         shell: pwsh
