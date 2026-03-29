@@ -188,7 +188,7 @@ jobs:
           port: 21
           protocol: ftps
           local-dir: ftp-staging/
-          server-dir: /../../../downloads/
+          server-dir: /downloads/
           dangerous-clean-slate: true
 
       - name: Publish to Chocolatey
