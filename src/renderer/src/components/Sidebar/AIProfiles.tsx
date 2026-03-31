@@ -169,10 +169,14 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       agentCommand: profile.command,
     })
     // Wait for shell to fully initialize before sending command
-    // Git Bash on Windows can take 2-3 seconds to show the prompt
+    // Git Bash on Windows can take 3-5 seconds to show the prompt
+    // Send a no-op newline first to flush any partial shell init, then the real command
     setTimeout(() => {
-      window.termpolis.writeToTerminal(id, resolveAgentCommand(profile.command) + '\r')
-    }, testDelay(3000))
+      window.termpolis.writeToTerminal(id, '\r')
+      setTimeout(() => {
+        window.termpolis.writeToTerminal(id, resolveAgentCommand(profile.command) + '\r')
+      }, 500)
+    }, testDelay(4000))
     // Auto-trust: Claude/Codex show trust prompts ~5s after launch.
     // Send Enter to confirm the pre-selected trust option.
     if (profile.command.startsWith('claude') || profile.command.startsWith('codex')) {
