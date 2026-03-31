@@ -264,12 +264,55 @@ function findOllamaPath(): string | null {
   }
 }
 
+// Check common pip/Python install locations for aider on Windows
+function findAiderInstalled(): boolean {
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  try {
+    execSync(process.platform === 'win32' ? 'where aider' : 'which aider', execOpts)
+    return true
+  } catch {
+    if (process.platform === 'win32') {
+      const { existsSync } = require('fs')
+      const { join } = require('path')
+      const home = require('os').homedir()
+      const localPackages = join(home, 'AppData', 'Local', 'Packages')
+      // Check Microsoft Store Python installs
+      try {
+        const { readdirSync } = require('fs')
+        const packages = readdirSync(localPackages).filter((d: string) => d.startsWith('PythonSoftwareFoundation'))
+        for (const pkg of packages) {
+          const scriptsDir = join(localPackages, pkg, 'LocalCache', 'local-packages')
+          // Check Python 3.x Scripts directories
+          try {
+            const subDirs = readdirSync(scriptsDir).filter((d: string) => d.startsWith('Python'))
+            for (const sub of subDirs) {
+              if (existsSync(join(scriptsDir, sub, 'Scripts', 'aider.exe'))) return true
+            }
+          } catch {}
+        }
+      } catch {}
+      // Check standard pip install locations
+      const candidates = [
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'Scripts', 'aider.exe'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python312', 'Scripts', 'aider.exe'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python313', 'Scripts', 'aider.exe'),
+        join(home, 'AppData', 'Roaming', 'Python', 'Python311', 'Scripts', 'aider.exe'),
+        join(home, 'AppData', 'Roaming', 'Python', 'Python312', 'Scripts', 'aider.exe'),
+        join(home, 'AppData', 'Roaming', 'Python', 'Python313', 'Scripts', 'aider.exe'),
+      ]
+      for (const p of candidates) {
+        if (existsSync(p)) return true
+      }
+    }
+    return false
+  }
+}
+
 ipcMain.handle('agents:detect', async () => {
   const agents = [
     { id: 'claude', command: 'claude' },
     { id: 'codex', command: 'codex' },
     { id: 'gemini', command: 'gemini' },
-    { id: 'aider', command: 'aider' },
   ]
   const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
   const results: Record<string, boolean> = {}
@@ -281,6 +324,8 @@ ipcMain.handle('agents:detect', async () => {
       results[agent.id] = false
     }
   }
+  // Aider detection with fallback to common pip install paths
+  results['aider'] = findAiderInstalled()
   // Aider+Qwen needs both aider AND ollama
   results['aider-qwen'] = results['aider'] && findOllamaPath() !== null
   return ok(results)
