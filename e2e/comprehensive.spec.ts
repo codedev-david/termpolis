@@ -89,7 +89,7 @@ test.describe.serial('1. Fresh Launch', () => {
 
 test.describe.serial('2. Sidebar', () => {
   test('2.1 all icon buttons present', async () => {
-    for (const title of ['Settings', 'Prompts', 'Workflows', 'Swarm Dashboard', 'Collapse sidebar']) {
+    for (const title of ['Settings', 'Prompts', 'Workflows', 'Swarm Dashboard (Ctrl+Shift+S)', 'Collapse sidebar']) {
       await expect(page.locator(`button[title="${title}"]`)).toBeVisible()
     }
     await ss('2.1-sidebar-icons')
