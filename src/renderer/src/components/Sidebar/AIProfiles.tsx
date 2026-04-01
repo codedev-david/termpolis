@@ -179,8 +179,12 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
     }, testDelay(4000))
     // Auto-trust: Claude/Codex show trust prompts ~5s after launch.
     // Send Enter to confirm the pre-selected trust option.
-    if (profile.command.startsWith('claude') || profile.command.startsWith('codex')) {
+    if (profile.command.startsWith('claude')) {
       setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), testDelay(9000))
+    }
+    if (profile.command.startsWith('codex')) {
+      // Codex requires '1' to trust the directory
+      setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(9000))
     }
     const dismissMs = (profile.id === 'gemini' || profile.id === 'aider-qwen') ? 15000 : 8000
     setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))

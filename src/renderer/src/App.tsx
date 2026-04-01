@@ -105,9 +105,13 @@ export default function App() {
               }, 500)
             }, testDelay(4000))
             // Auto-trust for Claude/Codex terminals on restore (agent sent at 4.5s, trust prompt ~5s later)
-            const trustTerminals = agentTerminals.filter(t => t.agentCommand?.startsWith('claude') || t.agentCommand?.startsWith('codex'))
-            for (const t of trustTerminals) {
+            const claudeTerminals = agentTerminals.filter(t => t.agentCommand?.startsWith('claude'))
+            for (const t of claudeTerminals) {
               setTimeout(() => window.termpolis.writeToTerminal(t.id, '\r'), testDelay(10000))
+            }
+            const codexTerminals = agentTerminals.filter(t => t.agentCommand?.startsWith('codex'))
+            for (const t of codexTerminals) {
+              setTimeout(() => window.termpolis.writeToTerminal(t.id, '1\r'), testDelay(10000))
             }
             const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini' || t.agentCommand?.startsWith('aider'))
             setTimeout(() => setLaunchingAgent(null), testDelay(hasSlowAgent ? 15000 : 8000))
@@ -412,8 +416,11 @@ export default function App() {
             window.termpolis.writeToTerminal(pId, '\r')
             setTimeout(() => window.termpolis.writeToTerminal(pId, resolveAgentCommand(prof.command) + '\r'), 500)
           }, testDelay(4000))
-          if (prof.command === 'claude' || prof.command === 'codex') {
+          if (prof.command === 'claude') {
             setTimeout(() => window.termpolis.writeToTerminal(pId, '\r'), testDelay(10000))
+          }
+          if (prof.command === 'codex') {
+            setTimeout(() => window.termpolis.writeToTerminal(pId, '1\r'), testDelay(10000))
           }
         }
         break
@@ -458,8 +465,11 @@ export default function App() {
         window.termpolis.writeToTerminal(id, '\r')
         setTimeout(() => window.termpolis.writeToTerminal(id, resolveAgentCommand(config.command) + '\r'), 500)
       }, testDelay(4000))
-      if (config.command.startsWith('claude') || config.command.startsWith('codex')) {
+      if (config.command.startsWith('claude')) {
         setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), testDelay(10000))
+      }
+      if (config.command.startsWith('codex')) {
+        setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(10000))
       }
       const dismissMs = (agentId === 'gemini' || agentId === 'aider-qwen') ? 15000 : 8000
       setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
