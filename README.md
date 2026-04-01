@@ -63,7 +63,7 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 
 | Platform | Download | Format | Signed |
 |----------|----------|--------|--------|
-| Windows | [Microsoft Store](https://apps.microsoft.com/detail/xpfpfw87x52qf0) · [Termpolis Setup.exe](https://github.com/codedev-david/termpolis/releases/latest) | NSIS Installer | Code signed (SSL.com) |
+| Windows | [Termpolis Setup.exe](https://github.com/codedev-david/termpolis/releases/latest) | NSIS Installer | Code signed (SSL.com) |
 | macOS | [Termpolis.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | Signed & notarized (Apple) |
 | Linux | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage | — |
 
