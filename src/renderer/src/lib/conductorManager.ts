@@ -146,6 +146,7 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
     installedAgents,
     projectCwd: cwd,
     shellType: isWindows ? 'powershell' : 'bash',
+    agentRatingOverrides: useTerminalStore.getState().agentRatingOverrides,
   })
 
   // Write prompt to a temp file

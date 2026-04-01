@@ -6,7 +6,9 @@ import {
   AGENT_CAPABILITIES,
   CATEGORY_LABELS,
   TOKEN_COST_LABELS,
+  getEffectiveCapabilities,
   type AgentCapability,
+  type AgentRatingOverrides,
 } from './agentCapabilities'
 
 export interface TaskAssignment {
@@ -57,8 +59,9 @@ function generateReason(agent: AgentCapability, subtask: SubTask): string {
 export function routeTasks(
   subtasks: SubTask[],
   availableAgentIds: string[],
+  overrides?: AgentRatingOverrides,
 ): TaskAssignment[] {
-  const agents = AGENT_CAPABILITIES.filter(a => availableAgentIds.includes(a.agentId))
+  const agents = getEffectiveCapabilities(overrides).filter(a => availableAgentIds.includes(a.agentId))
 
   if (agents.length === 0) return []
 

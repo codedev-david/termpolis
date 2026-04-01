@@ -133,7 +133,7 @@ No AI company has built a tool that brings together competing models to work as 
 
 - **AI Conductor** — a dedicated Claude Code instance runs as the swarm conductor. It receives your task description, reasons about how to break it into subtasks, assigns each subtask to the best agent via MCP tools, and monitors completion. This is live AI orchestration — not keyword matching.
 
-- **Smart Task Routing** — the conductor assigns subtasks to the best agent based on a capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden.
+- **Smart Task Routing** — the conductor assigns subtasks to the best agent based on a customizable capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden. Default ratings are estimates based on general model capabilities — customize them in **Settings > Agent Capability Ratings** based on your experience. The conductor uses ratings as hints but makes its own judgment.
 
   | Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
   |-----------|:-----------:|:-----:|:----------:|:----------:|

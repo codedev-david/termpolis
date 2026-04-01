@@ -1,5 +1,14 @@
 // Agent capability matrix — scores each model's strengths across task categories.
-// Scores are 1-5 (5 = strongest). These are opinionated but tunable over time.
+// Scores are 1-5 (5 = strongest).
+//
+// DEFAULT RATINGS NOTE:
+// These are estimated defaults based on general model capabilities as of March 2026.
+// They are NOT based on formal benchmarks. Each AI agent uses a specific underlying
+// model (e.g., Claude Code uses Sonnet 4, Codex uses codex-mini/o4-mini) which may
+// change over time. Users can customize these ratings in Settings > Agent Ratings.
+//
+// The AI conductor uses these ratings as hints when assigning tasks but makes its
+// own judgment calls — so even imperfect ratings produce reasonable assignments.
 
 export interface AgentCapability {
   agentId: string
@@ -35,7 +44,7 @@ export const STRENGTH_CATEGORIES: StrengthCategory[] = [
   'bulkTasks',
 ]
 
-export const AGENT_CAPABILITIES: AgentCapability[] = [
+export const DEFAULT_AGENT_CAPABILITIES: AgentCapability[] = [
   {
     agentId: 'claude',
     agentName: 'Claude Code',
@@ -110,8 +119,28 @@ export const AGENT_CAPABILITIES: AgentCapability[] = [
   },
 ]
 
-export function getAgentCapability(agentId: string): AgentCapability | undefined {
-  return AGENT_CAPABILITIES.find(a => a.agentId === agentId)
+// Custom overrides stored per-agent: { [agentId]: { [category]: score } }
+export type AgentRatingOverrides = Record<string, Partial<AgentCapability['strengths']>>
+
+/** Merge default capabilities with user overrides */
+export function getEffectiveCapabilities(overrides?: AgentRatingOverrides): AgentCapability[] {
+  if (!overrides) return DEFAULT_AGENT_CAPABILITIES
+  return DEFAULT_AGENT_CAPABILITIES.map(agent => {
+    const agentOverrides = overrides[agent.agentId]
+    if (!agentOverrides) return agent
+    return {
+      ...agent,
+      strengths: { ...agent.strengths, ...agentOverrides },
+    }
+  })
+}
+
+// Backwards-compatible export — consumers that import AGENT_CAPABILITIES get defaults
+export const AGENT_CAPABILITIES = DEFAULT_AGENT_CAPABILITIES
+
+export function getAgentCapability(agentId: string, overrides?: AgentRatingOverrides): AgentCapability | undefined {
+  const caps = getEffectiveCapabilities(overrides)
+  return caps.find(a => a.agentId === agentId)
 }
 
 /** Human-readable label for a strength category */

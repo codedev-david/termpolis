@@ -189,11 +189,12 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+S</kbd> or the <i className="fa-solid fa-network-wired text-[10px]"></i> sidebar icon opens the <strong>Swarm Dashboard</strong>. You can also click <strong>Swarm Active</strong> in the bottom status bar.</li>
               <li><strong>AI Conductor</strong> — a real Claude Code instance runs as the conductor. It reads your task, reasons about how to break it down, assigns subtasks to agents via MCP, and monitors progress. Not keyword matching — live AI orchestration.</li>
               <li><strong>Agent Command Enforcement</strong> — agents are guaranteed to launch correctly. A programmatic sanitizer enforces the exact approved command for each agent (Claude gets <code className="bg-[#3c3c3c] px-1 rounded">--dangerously-skip-permissions</code>, Codex gets <code className="bg-[#3c3c3c] px-1 rounded">--full-auto</code>). No trust prompts or permission dialogs during swarms.</li>
-              <li><strong>Smart Task Routing</strong> — the conductor assigns each subtask to the best agent based on a capability matrix:</li>
-              <li className="pl-4 text-xs">Claude Code → strongest at refactoring and code review</li>
-              <li className="pl-4 text-xs">Codex → best at test writing</li>
-              <li className="pl-4 text-xs">Gemini CLI → leads in documentation and DevOps (runs in interactive mode)</li>
-              <li className="pl-4 text-xs">Aider + Qwen3 → free local model for bulk tasks</li>
+              <li><strong>Smart Task Routing</strong> — the conductor assigns each subtask to the best agent based on a customizable capability matrix:</li>
+              <li className="pl-4 text-xs">Claude Code — strongest at refactoring and code review (default)</li>
+              <li className="pl-4 text-xs">Codex — best at test writing (default)</li>
+              <li className="pl-4 text-xs">Gemini CLI — leads in documentation and DevOps (default)</li>
+              <li className="pl-4 text-xs">Aider + Qwen3 — free local model for bulk tasks (default)</li>
+              <li className="pl-4 text-xs"><strong>Customize ratings</strong> in <strong>Settings &gt; Agent Capability Ratings</strong>. Defaults are estimates — adjust based on your experience. The conductor uses ratings as hints but makes its own judgment.</li>
               <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress (tasks created, terminals opened) and closes automatically when agents are ready. You land on the Swarm Dashboard to watch agents work.</li>
               <li><strong>Clear Confirmation</strong> — clearing a swarm requires explicit confirmation to prevent accidental loss of in-progress work.</li>
               <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results from each agent. Includes "What next?" guidance for iterating.</li>

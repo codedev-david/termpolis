@@ -1,17 +1,18 @@
-import { AGENT_CAPABILITIES, CATEGORY_LABELS } from './agentCapabilities'
+import { CATEGORY_LABELS, getEffectiveCapabilities, type AgentRatingOverrides } from './agentCapabilities'
 
 interface ConductorPromptOptions {
   taskDescription: string
   installedAgents: Record<string, boolean>  // from detectAgents
   projectCwd: string
   shellType?: string  // 'bash' | 'powershell'
+  agentRatingOverrides?: AgentRatingOverrides
 }
 
 export function buildConductorPrompt(options: ConductorPromptOptions): string {
   const shell = options.shellType || (navigator.platform.startsWith('Win') ? 'powershell' : 'bash')
 
-  // Build list of installed agents with their capabilities
-  const agentDescriptions = AGENT_CAPABILITIES
+  // Build list of installed agents with their capabilities (using user overrides if any)
+  const agentDescriptions = getEffectiveCapabilities(options.agentRatingOverrides)
     .filter(a => {
       if (a.agentId === 'aider-qwen') return options.installedAgents['aider-qwen']
       return options.installedAgents[a.agentId] !== false

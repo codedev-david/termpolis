@@ -4,6 +4,7 @@ import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfi
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { HandoffContext } from '../lib/contextCapture'
+import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 
 // ---- Pane tree helpers ----
 
@@ -76,6 +77,7 @@ interface TerminalStore {
   launchingAgent: string | null
   swarmNotification: { message: string; type: 'success' | 'error' } | null
   swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null
+  agentRatingOverrides: AgentRatingOverrides
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -108,6 +110,7 @@ interface TerminalStore {
   setLaunchingAgent: (name: string | null) => void
   setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
   setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null) => void
+  setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -130,6 +133,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   launchingAgent: null,
   swarmNotification: null,
   swarmCompletionSummary: null,
+  agentRatingOverrides: {},
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -307,4 +311,5 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   setSwarmNotification: (notification) => set({ swarmNotification: notification }),
 
   setSwarmCompletionSummary: (summary) => set({ swarmCompletionSummary: summary }),
+  setAgentRatingOverrides: (overrides) => set({ agentRatingOverrides: overrides }),
 }))

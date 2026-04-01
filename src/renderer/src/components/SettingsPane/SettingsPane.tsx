@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellInfo, ShellType } from '../../types'
 import { KeybindingsSettings } from './KeybindingsSettings'
+import { AgentRatingsSettings } from './AgentRatingsSettings'
 
 function getConfigFiles(home: string): { label: string; path: string; lang: string }[] {
   const isWin = /^[A-Za-z]:\\/.test(home)
@@ -86,6 +87,7 @@ export function SettingsPane() {
         </button>
       </div>
       <KeybindingsSettings />
+      <AgentRatingsSettings />
       <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>
         <label className="text-sm font-medium">Shell Config Files</label>
         <div className="flex gap-1 border-b border-[#3c3c3c] pb-1">
