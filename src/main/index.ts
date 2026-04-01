@@ -335,22 +335,45 @@ function getExtendedPath(): string {
   return [...getAgentExtraPaths(), currentPath].join(sep)
 }
 
+// Check if a command exists — tries `where`/`which` first, then scans known install dirs
+function findAgentInstalled(command: string): boolean {
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  // Try system where/which first (works when launched from terminal)
+  try {
+    execSync(process.platform === 'win32' ? `where ${command}` : `which ${command}`, execOpts)
+    return true
+  } catch {}
+
+  // Fallback: check known install locations directly (works for installed GUI apps)
+  const { existsSync } = require('fs')
+  const home = homedir()
+  const ext = process.platform === 'win32' ? '.cmd' : ''
+  const candidates = process.platform === 'win32'
+    ? [
+        join(home, 'AppData', 'Roaming', 'npm', `${command}${ext}`),
+        join(home, 'AppData', 'Roaming', 'npm', `${command}.exe`),
+        join(home, 'AppData', 'Local', 'pnpm', `${command}${ext}`),
+        join(home, 'AppData', 'Local', 'pnpm', `${command}.exe`),
+        join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin', `${command}${ext}`),
+        join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin', `${command}.exe`),
+        join(home, 'AppData', 'Local', 'Programs', command, `${command}.exe`),
+      ]
+    : [
+        join(home, '.local', 'bin', command),
+        `/usr/local/bin/${command}`,
+        `/opt/homebrew/bin/${command}`,
+      ]
+  for (const p of candidates) {
+    if (existsSync(p)) return true
+  }
+  return false
+}
+
 ipcMain.handle('agents:detect', async () => {
-  const agents = [
-    { id: 'claude', command: 'claude' },
-    { id: 'codex', command: 'codex' },
-    { id: 'gemini', command: 'gemini' },
-  ]
-  const extendedPath = getExtendedPath()
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true, env: { ...process.env, PATH: extendedPath } }
+  const agents = ['claude', 'codex', 'gemini']
   const results: Record<string, boolean> = {}
   for (const agent of agents) {
-    try {
-      execSync(process.platform === 'win32' ? `where ${agent.command}` : `which ${agent.command}`, execOpts)
-      results[agent.id] = true
-    } catch {
-      results[agent.id] = false
-    }
+    results[agent] = findAgentInstalled(agent)
   }
   // Aider detection with fallback to common pip install paths
   results['aider'] = findAiderInstalled()
