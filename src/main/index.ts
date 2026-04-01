@@ -100,13 +100,15 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('timeout')), 5000)
       try {
+        const agentPaths = getAgentExtraPaths()
+        const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
         spawnTerminal(id, shell.executable, cwd, (data) => {
           mainWindow?.webContents.send('terminal:data', id, data)
           // Buffer output for MCP read_output
           const existing = terminalOutputBuffers.get(id) || ''
           const updated = existing + data
           terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
-        }, extraPaths)
+        }, allExtraPaths)
         clearTimeout(timeout)
         resolve()
       } catch (e) {
@@ -308,13 +310,39 @@ function findAiderInstalled(): boolean {
   }
 }
 
+// Common agent install locations that GUI apps may not have in PATH
+// Terminals spawned from Start Menu/desktop don't inherit user shell PATH
+function getAgentExtraPaths(): string[] {
+  const home = homedir()
+  if (process.platform === 'win32') {
+    return [
+      join(home, 'AppData', 'Roaming', 'npm'),                    // npm global (claude, codex)
+      join(home, 'AppData', 'Local', 'pnpm'),                     // pnpm global
+      join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin'), // gemini via gcloud
+    ]
+  }
+  return [
+    join(home, '.local', 'bin'),       // Linux/macOS pip, cargo
+    '/usr/local/bin',                  // macOS Homebrew
+    '/opt/homebrew/bin',               // macOS Apple Silicon Homebrew
+  ]
+}
+
+// Build a complete PATH for agent detection (extends process.env.PATH)
+function getExtendedPath(): string {
+  const currentPath = process.env.PATH || ''
+  const sep = process.platform === 'win32' ? ';' : ':'
+  return [...getAgentExtraPaths(), currentPath].join(sep)
+}
+
 ipcMain.handle('agents:detect', async () => {
   const agents = [
     { id: 'claude', command: 'claude' },
     { id: 'codex', command: 'codex' },
     { id: 'gemini', command: 'gemini' },
   ]
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  const extendedPath = getExtendedPath()
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true, env: { ...process.env, PATH: extendedPath } }
   const results: Record<string, boolean> = {}
   for (const agent of agents) {
     try {
@@ -418,7 +446,7 @@ if (!gotTheLock) {
             const existing = terminalOutputBuffers.get(id) || ''
             const updated = existing + data
             terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
-          })
+          }, getAgentExtraPaths())
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
