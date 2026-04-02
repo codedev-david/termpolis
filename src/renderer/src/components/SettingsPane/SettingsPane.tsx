@@ -25,7 +25,7 @@ function getConfigFiles(home: string): { label: string; path: string; lang: stri
 }
 
 export function SettingsPane() {
-  const { defaultShell, setDefaultShell, autocompleteEnabled, setAutocompleteEnabled } = useTerminalStore()
+  const { defaultShell, setDefaultShell, autocompleteEnabled, setAutocompleteEnabled, voiceEnabled, setVoiceEnabled } = useTerminalStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [configFiles, setConfigFiles] = useState<{ label: string; path: string; lang: string }[]>([])
   const [activeFile, setActiveFile] = useState('')
@@ -85,6 +85,27 @@ export function SettingsPane() {
             }`}
           />
         </button>
+      </div>
+      <div className="flex items-center gap-3">
+        <label className="text-sm font-medium">
+          <i className="fa-solid fa-microphone text-[12px] mr-1.5 text-[#9ca3af]"></i>
+          Enable Voice Input
+        </label>
+        <button
+          onClick={() => setVoiceEnabled(!voiceEnabled)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+            voiceEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              voiceEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+        {voiceEnabled && (
+          <span className="text-[11px] text-[#9ca3af]">Mic buttons appear in terminal status bar and swarm wizard</span>
+        )}
       </div>
       <KeybindingsSettings />
       <AgentRatingsSettings />

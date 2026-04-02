@@ -193,6 +193,7 @@ jobs:
 
       - name: Publish to Chocolatey
         if: matrix.platform == 'win'
+        continue-on-error: true
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}

@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { checkClaudeInstalled, startConductor, waitForAuth, sendTask, stopConductor } from '../../lib/conductorManager'
 import { useTerminalStore } from '../../store/terminalStore'
+import { useVoiceInput } from '../../hooks/useVoiceInput'
+import { MicButton } from '../VoiceInput/MicButton'
 
 // ---- Component ----
 
@@ -25,6 +27,26 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
   const [launchProgress, setLaunchProgress] = useState('')
   const cwdRef = useRef<string>(projectCwd)
   const abortedRef = useRef(false)
+  const voiceEnabled = useTerminalStore(s => s.voiceEnabled)
+
+  // Voice input for each field — appends to current value
+  const [activeVoiceField, setActiveVoiceField] = useState<string | null>(null)
+  const voiceGoal = useVoiceInput(t => setGoal(prev => prev ? prev + ' ' + t : t), { continuous: true })
+  const voiceConstraints = useVoiceInput(t => setConstraints(prev => prev ? prev + ' ' + t : t), { continuous: true })
+  const voiceExpected = useVoiceInput(t => setExpectedOutput(prev => prev ? prev + ' ' + t : t), { continuous: true })
+  const voiceFailure = useVoiceInput(t => setFailureConditions(prev => prev ? prev + ' ' + t : t), { continuous: true })
+
+  const toggleVoiceField = useCallback((field: string, voice: ReturnType<typeof useVoiceInput>) => {
+    // Stop any other active voice input
+    if (activeVoiceField && activeVoiceField !== field) {
+      voiceGoal.stop()
+      voiceConstraints.stop()
+      voiceExpected.stop()
+      voiceFailure.stop()
+    }
+    voice.toggle()
+    setActiveVoiceField(voice.isListening ? null : field)
+  }, [activeVoiceField, voiceGoal, voiceConstraints, voiceExpected, voiceFailure])
 
   // Preparation flow on mount
   useEffect(() => {
@@ -352,6 +374,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             <i className="fa-solid fa-bullseye text-[#22D3EE] text-[10px]"></i>
             Goal
             <span className="text-[#E57373] text-[10px]">*</span>
+            {voiceEnabled && <MicButton isListening={voiceGoal.isListening} onClick={() => toggleVoiceField('goal', voiceGoal)} supported={voiceGoal.supported} />}
           </label>
           <textarea
             autoFocus
@@ -369,6 +392,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             <i className="fa-solid fa-shield-halved text-[#F59E0B] text-[10px]"></i>
             Constraints
             <span className="text-[10px] text-[#9ca3af] font-normal ml-1">optional</span>
+            {voiceEnabled && <MicButton isListening={voiceConstraints.isListening} onClick={() => toggleVoiceField('constraints', voiceConstraints)} supported={voiceConstraints.supported} />}
           </label>
           <textarea
             value={constraints}
@@ -385,6 +409,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             <i className="fa-solid fa-folder-tree text-[#22C55E] text-[10px]"></i>
             Expected Output
             <span className="text-[10px] text-[#9ca3af] font-normal ml-1">optional</span>
+            {voiceEnabled && <MicButton isListening={voiceExpected.isListening} onClick={() => toggleVoiceField('expected', voiceExpected)} supported={voiceExpected.supported} />}
           </label>
           <textarea
             value={expectedOutput}
@@ -401,6 +426,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             <i className="fa-solid fa-triangle-exclamation text-[#E57373] text-[10px]"></i>
             Failure Conditions
             <span className="text-[10px] text-[#9ca3af] font-normal ml-1">optional</span>
+            {voiceEnabled && <MicButton isListening={voiceFailure.isListening} onClick={() => toggleVoiceField('failure', voiceFailure)} supported={voiceFailure.supported} />}
           </label>
           <textarea
             value={failureConditions}
