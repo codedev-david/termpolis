@@ -67,19 +67,6 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 | macOS | [Termpolis.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | Signed & notarized (Apple) |
 | Linux | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage | — |
 
-### Package Managers
-
-```powershell
-# Windows (winget)
-winget install codedev-david.Termpolis
-
-# Windows (Chocolatey)
-choco install termpolis
-
-# macOS (Homebrew)
-brew tap codedev-david/tap && brew install --cask termpolis
-```
-
 > The Windows installer is code signed via SSL.com and the macOS DMG is signed and notarized with Apple Developer ID — both platforms will recognize Termpolis as a verified application. Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
 
 > **\* Windows SmartScreen note:** SmartScreen may show a "Windows protected your PC" warning for newly signed software. Click **"More info"** then **"Run anyway"** to proceed. Termpolis is digitally signed and safe to install — the warning disappears as download reputation builds.
