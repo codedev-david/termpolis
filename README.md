@@ -99,7 +99,6 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 - **Diff Viewer** — detects `git diff` output and renders it with syntax highlighting (green/red for additions/deletions)
 - **Smart Context Panel** — `Ctrl+Shift+E` opens a side panel showing file tree, git status, and recent commits for the current directory
 - **Conversation History** — `Ctrl+Shift+I` searches across all AI agent conversations indexed from terminal output
-- **Voice Input** — speak commands into the terminal or dictate swarm task descriptions using built-in speech recognition (enable in Settings)
 
 ### MCP Server & Agent Integration
 - **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 14 tools for AI agents to control terminals programmatically

@@ -1,11 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { ShellType } from '../../types'
 import type { AgentInfo } from '../../lib/agentDetector'
 import { formatTokens, type CostInfo } from '../../lib/costTracker'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
-import { useVoiceInput } from '../../hooks/useVoiceInput'
-import { useTerminalStore } from '../../store/terminalStore'
-import { MicButton } from '../VoiceInput/MicButton'
 
 interface Props {
   terminalId: string
@@ -19,13 +16,6 @@ interface Props {
 
 export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, agent, costInfo, isRecording }: Props) {
   const [ipcBranch, setIpcBranch] = useState('')
-  const voiceEnabled = useTerminalStore(s => s.voiceEnabled)
-
-  const handleVoiceResult = useCallback((text: string) => {
-    window.termpolis.writeToTerminal(terminalId, text)
-  }, [terminalId])
-
-  const voice = useVoiceInput(handleVoiceResult, { continuous: true })
 
   // IPC-based git branch lookup as fallback (works on macOS/Linux with live cwd)
   useEffect(() => {
@@ -67,19 +57,6 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
         <span className="flex items-center gap-1 shrink-0" title="Recording session">
           <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
           <span className="text-red-200 font-medium">REC</span>
-        </span>
-      )}
-      {voiceEnabled && voice.supported && (
-        <span className="flex items-center gap-1 shrink-0">
-          <MicButton
-            isListening={voice.isListening}
-            onClick={voice.toggle}
-            supported={voice.supported}
-            title={voice.isListening ? 'Stop voice input' : 'Voice input — speak to type into terminal'}
-          />
-          {voice.isListening && (
-            <span className="text-red-200 text-[10px] font-medium animate-pulse">Listening...</span>
-          )}
         </span>
       )}
       {agent && (

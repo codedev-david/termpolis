@@ -53,18 +53,6 @@ function createWindow() {
     },
   })
 
-  // Grant microphone access for voice input (speech recognition)
-  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
-    if (permission === 'media') {
-      callback(true)
-    } else {
-      callback(false)
-    }
-  })
-  mainWindow.webContents.session.setPermissionCheckHandler((_webContents, permission) => {
-    return permission === 'media'
-  })
-
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {

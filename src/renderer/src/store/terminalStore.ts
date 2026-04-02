@@ -78,7 +78,6 @@ interface TerminalStore {
   swarmNotification: { message: string; type: 'success' | 'error' } | null
   swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null
   agentRatingOverrides: AgentRatingOverrides
-  voiceEnabled: boolean
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -112,7 +111,6 @@ interface TerminalStore {
   setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
   setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null) => void
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
-  setVoiceEnabled: (enabled: boolean) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
@@ -136,7 +134,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   swarmNotification: null,
   swarmCompletionSummary: null,
   agentRatingOverrides: {},
-  voiceEnabled: false,
 
   addTerminal: (t) => set(s => {
     const newTerminals = [...s.terminals, t]
@@ -315,5 +312,4 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   setSwarmCompletionSummary: (summary) => set({ swarmCompletionSummary: summary }),
   setAgentRatingOverrides: (overrides) => set({ agentRatingOverrides: overrides }),
-  setVoiceEnabled: (enabled) => set({ voiceEnabled: enabled }),
 }))

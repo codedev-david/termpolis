@@ -25,7 +25,7 @@ import { resolveAgentCommand, testDelay } from './lib/testAgents'
 export default function App() {
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
-    defaultShell, keybindings, aiProfiles, promptTemplates, agentRatingOverrides, voiceEnabled,
+    defaultShell, keybindings, aiProfiles, promptTemplates, agentRatingOverrides,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
   } = useTerminalStore()
@@ -55,7 +55,7 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, aiProfiles: ap, promptTemplates: pt, agentRatingOverrides: aro, voiceEnabled: ve } = res.data
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, aiProfiles: ap, promptTemplates: pt, agentRatingOverrides: aro } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
         // Migrate old 'grid' viewMode to 'split'
         const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
@@ -69,7 +69,6 @@ export default function App() {
           aiProfiles: ap ?? [],
           promptTemplates: pt ?? [],
           agentRatingOverrides: aro ?? {},
-          voiceEnabled: ve ?? false,
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.filter(t => !t.hidden).map(t => t.id)) : null,
         })
         // Infer agent commands from terminal names for sessions saved before agentCommand existed
@@ -157,10 +156,9 @@ export default function App() {
         aiProfiles: state.aiProfiles,
         promptTemplates: state.promptTemplates,
         agentRatingOverrides: state.agentRatingOverrides,
-        voiceEnabled: state.voiceEnabled,
       })
     }, 1000) // debounce 1 second
-  }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates, agentRatingOverrides, voiceEnabled])
+  }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates, agentRatingOverrides])
 
   // Global keyboard shortcuts
   useEffect(() => {
