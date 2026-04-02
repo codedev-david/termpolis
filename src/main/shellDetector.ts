@@ -7,7 +7,6 @@ const SHELL_CANDIDATES: Record<string, { type: ShellType; label: string; paths: 
     { type: 'powershell', label: 'PowerShell', paths: ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'] },
     { type: 'cmd', label: 'Command Prompt', paths: ['C:\\Windows\\System32\\cmd.exe'] },
     { type: 'gitbash', label: 'Git Bash', paths: ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'] },
-    { type: 'bash', label: 'Bash (WSL)', paths: ['C:\\Windows\\System32\\bash.exe'] },
   ],
   darwin: [
     { type: 'zsh', label: 'Zsh', paths: ['/bin/zsh'] },

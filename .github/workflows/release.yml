@@ -204,14 +204,14 @@ jobs:
           # Update install script with correct URL and hash
           $installScript = Get-Content "packaging/chocolatey/tools/chocolateyinstall.ps1" -Raw
           $installScript = $installScript -replace 'REPLACE_WITH_SHA256', $hash
-          $installScript = $installScript -replace 'v1\.4\.1', "v$version"
-          $installScript = $installScript -replace '1\.4\.1', $version
+          $installScript = $installScript -replace 'download/v[\d.]+/', "download/v$version/"
+          $installScript = $installScript -replace 'Termpolis\.Setup\.[\d.]+\.exe', "Termpolis.Setup.$version.exe"
           Set-Content "packaging/chocolatey/tools/chocolateyinstall.ps1" $installScript
 
-          # Update nuspec version
+          # Update nuspec version and release notes URL
           $nuspec = Get-Content "packaging/chocolatey/termpolis.nuspec" -Raw
           $nuspec = $nuspec -replace '<version>.*</version>', "<version>$version</version>"
-          $nuspec = $nuspec -replace 'v1\.4\.1', "v$version"
+          $nuspec = $nuspec -replace '<releaseNotes>.*</releaseNotes>', "<releaseNotes>https://github.com/codedev-david/termpolis/releases/tag/v$version</releaseNotes>"
           Set-Content "packaging/chocolatey/termpolis.nuspec" $nuspec
 
           # Pack and push

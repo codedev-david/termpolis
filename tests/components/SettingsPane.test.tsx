@@ -21,6 +21,8 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
       keybindings: {},
       setKeybinding: vi.fn(),
       resetKeybindings: vi.fn(),
+      agentRatingOverrides: {},
+      setAgentRatingOverrides: vi.fn(),
     }
     return selector ? selector(state) : state
   },
