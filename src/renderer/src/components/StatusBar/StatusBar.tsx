@@ -218,6 +218,20 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             </ul>
           </section>
 
+          {/* Voice Input */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-microphone text-xs"></i> Voice Input
+            </h3>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li>Enable in <strong>Settings &gt; Enable Voice Input</strong> (off by default)</li>
+              <li>A <i className="fa-solid fa-microphone text-[10px]"></i> mic button appears in the <strong>terminal status bar</strong> — click it to speak commands directly into the terminal</li>
+              <li>Mic buttons also appear next to each field in the <strong>Swarm Wizard</strong> — dictate your Goal, Constraints, Expected Output, and Failure Conditions</li>
+              <li>Uses the browser's built-in speech recognition — no external services or API keys needed</li>
+              <li>Click the mic to start, click again (or the <i className="fa-solid fa-stop text-[10px]"></i> stop button) to finish. A red pulse indicates active listening.</li>
+            </ul>
+          </section>
+
           {/* Workspaces */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
