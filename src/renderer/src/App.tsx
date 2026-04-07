@@ -21,6 +21,7 @@ import { TERMINAL_DEFAULTS } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from './types'
 import { resolveAgentCommand, testDelay } from './lib/testAgents'
+import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 
 export default function App() {
   const {
@@ -300,7 +301,8 @@ export default function App() {
   useEffect(() => {
     const TERMINAL_COLORS = ['#22D3EE', '#81C784', '#FFB74D', '#E57373', '#BA68C8', '#4DB6AC', '#FF8A65']
     const unsubCreated = window.mcpEvents?.onTerminalCreated((data) => {
-      const color = TERMINAL_COLORS[useTerminalStore.getState().terminals.length % TERMINAL_COLORS.length]
+      const store = useTerminalStore.getState()
+      const color = TERMINAL_COLORS[store.terminals.length % TERMINAL_COLORS.length]
       addTerminal({
         id: data.id,
         name: data.name,
@@ -312,8 +314,48 @@ export default function App() {
         fontFamily: TERMINAL_DEFAULTS.fontFamily,
         isSwarm: true,
       })
+
+      // Extract agent name and role from terminal name (e.g. "Claude (Build UI)" → agent: "Claude", role: "Build UI")
+      const nameMatch = data.name.match(/^(.+?)\s*\((.+)\)$/)
+      const agentName = nameMatch ? nameMatch[1].trim() : data.name
+      const role = nameMatch ? nameMatch[2].trim() : 'Agent'
+
+      // Add to swarmAgents list so the dashboard shows them
+      const updatedStore = useTerminalStore.getState()
+      const newAgent = { terminalId: data.id, agentName, role, status: 'starting' as const }
+      updatedStore.setSwarmAgents([...updatedStore.swarmAgents, newAgent])
+
+      // Auto-trust: swarm agents may show folder trust prompts after launch.
+      // Claude/Codex need Enter or '1' sent to confirm trust.
+      const isClaudeAgent = /claude/i.test(agentName)
+      const isCodexAgent = /codex/i.test(agentName)
+      if (isClaudeAgent) {
+        // Claude shows trust prompt ~5-10s after interactive launch — send Enter to confirm
+        setTimeout(() => window.termpolis.writeToTerminal(data.id, '\r'), testDelay(10000))
+        setTimeout(() => window.termpolis.writeToTerminal(data.id, '\r'), testDelay(15000))
+      }
+      if (isCodexAgent) {
+        // Codex requires '1' to trust the directory
+        setTimeout(() => window.termpolis.writeToTerminal(data.id, '1\r'), testDelay(10000))
+        setTimeout(() => window.termpolis.writeToTerminal(data.id, '1\r'), testDelay(15000))
+      }
+
+      // Start bridge for non-MCP agents (output monitoring + signal detection)
+      // Claude Code has native MCP, but others (Codex, Gemini, Aider) need the bridge
+      if (!isClaudeAgent) {
+        startBridgeForAgent(data.id, agentName)
+      }
+
+      // Mark agent as "running" after a delay (agent needs time to initialize)
+      setTimeout(() => {
+        useTerminalStore.getState().updateSwarmAgentStatus(data.id, 'running')
+      }, testDelay(20000))
     })
     const unsubClosed = window.mcpEvents?.onTerminalClosed((terminalId) => {
+      stopBridgeForAgent(terminalId)
+      // Remove from swarmAgents
+      const store = useTerminalStore.getState()
+      store.setSwarmAgents(store.swarmAgents.filter(a => a.terminalId !== terminalId))
       removeTerminal(terminalId)
     })
     return () => {

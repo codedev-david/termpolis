@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { checkClaudeInstalled, startConductor, waitForAuth, sendTask, stopConductor } from '../../lib/conductorManager'
+import { checkClaudeInstalled, startConductor, waitForAuth, sendTask, stopConductor, getConductorState } from '../../lib/conductorManager'
 import { useTerminalStore } from '../../store/terminalStore'
 
 // ---- Component ----
@@ -151,6 +151,15 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           // Done when agent terminals are visible (and min wait elapsed)
           if (agentTerminals.length > 0 && elapsed >= minWait) {
             resolve()
+            return
+          }
+
+          // Check if conductor refused the task or errored out
+          const conductorState = getConductorState()
+          if (conductorState.status === 'error') {
+            setLaunchProgress(conductorState.error || 'Conductor encountered an error.')
+            // Give user a moment to read the message, then close
+            setTimeout(resolve, 5000)
             return
           }
         } catch {
@@ -340,9 +349,9 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     return (
       <div className="space-y-4">
         <div>
-          <p className="text-sm text-[#bbb] mb-1">Define your task as a prompt contract</p>
+          <p className="text-sm text-[#bbb] mb-1">Describe what you want built</p>
           <p className="text-xs text-[#9ca3af]">
-            Structured inputs produce better results. Only <strong className="text-[#d4d4d4]">Goal</strong> is required — the more detail you provide, the better the swarm performs.
+            Only <strong className="text-[#d4d4d4]">Goal</strong> is required — the more detail you provide, the better the results.
           </p>
         </div>
 
@@ -358,7 +367,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             autoFocus
             value={goal}
             onChange={e => setGoal(e.target.value)}
-            placeholder={'"Build a real-time chat application with user authentication, message history, and typing indicators. Success = two users can sign up, log in, and exchange messages that persist across sessions."'}
+            placeholder={'"Add a contact form to the website with name, email, and message fields. It should validate inputs, send an email on submit, and show a confirmation message."'}
             rows={3}
             className={fieldClass}
           />
@@ -375,7 +384,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           <textarea
             value={constraints}
             onChange={e => setConstraints(e.target.value)}
-            placeholder={'"React 18 with TypeScript strict mode. Use Socket.io for real-time — no polling. PostgreSQL with Prisma ORM. No Firebase, no third-party auth services — use JWT with bcrypt. All API routes must validate input with Zod."'}
+            placeholder={'"Needs to work on Windows and Mac. Should have a simple UI — nothing fancy. Must support iPhone and Android if mobile. Python preferred but not required. No paid services or API keys."'}
             rows={3}
             className={fieldClass}
           />
@@ -392,7 +401,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           <textarea
             value={expectedOutput}
             onChange={e => setExpectedOutput(e.target.value)}
-            placeholder={'"src/server/ with Express API and Socket.io handlers. src/client/ with React components for login, chat room, and message list. prisma/schema.prisma with User and Message models. README with setup instructions and environment variables."'}
+            placeholder={'"A working contact page integrated into the site, with form validation and email delivery. Tests for the form logic and a brief note in the README."'}
             rows={3}
             className={fieldClass}
           />
@@ -409,7 +418,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           <textarea
             value={failureConditions}
             onChange={e => setFailureConditions(e.target.value)}
-            placeholder={'"Messages lost on page refresh. Passwords stored in plain text. No input validation on API routes. Uses polling instead of WebSockets. Missing TypeScript types or any use of `any`."'}
+            placeholder={'"Form submits without validating required fields. Email is sent but no confirmation shown to the user. Page breaks on small screens."'}
             rows={3}
             className={fieldClass}
           />

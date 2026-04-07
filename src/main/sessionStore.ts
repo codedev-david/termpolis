@@ -21,6 +21,10 @@ function getSessionPath(): string {
   return join(app.getPath('userData'), 'session.json')
 }
 
+function getAppVersion(): string {
+  try { return app.getVersion() } catch { return '0.0.0' }
+}
+
 export function loadSession(): SessionData {
   const path = getSessionPath()
   if (!existsSync(path)) return { ...DEFAULT_SESSION }
@@ -29,11 +33,21 @@ export function loadSession(): SessionData {
     const parsed = { ...DEFAULT_SESSION, ...JSON.parse(raw) }
     // Migrate old 'grid' viewMode to 'split'
     if (parsed.viewMode === 'grid') parsed.viewMode = 'split'
-    parsed.terminals = parsed.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
-    parsed.workspaces = parsed.workspaces.map((w: any) => ({
-      ...w,
-      terminals: w.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
-    }))
+
+    // If the app version changed (new install/upgrade), don't restore terminals —
+    // old shell processes no longer exist. Keep settings (viewMode, keybindings, etc.).
+    const currentVersion = getAppVersion()
+    if (parsed.appVersion !== currentVersion) {
+      console.log(`App version changed (${parsed.appVersion ?? 'none'} → ${currentVersion}), skipping terminal restore`)
+      parsed.terminals = []
+      parsed.workspaces = parsed.workspaces.map((w: any) => ({ ...w, terminals: [] }))
+    } else {
+      parsed.terminals = parsed.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
+      parsed.workspaces = parsed.workspaces.map((w: any) => ({
+        ...w,
+        terminals: w.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
+      }))
+    }
     return parsed
   } catch {
     return { ...DEFAULT_SESSION }
@@ -41,5 +55,6 @@ export function loadSession(): SessionData {
 }
 
 export function saveSession(data: SessionData): void {
-  writeFileSync(getSessionPath(), JSON.stringify(data, null, 2), 'utf-8')
+  const withVersion = { ...data, appVersion: getAppVersion() }
+  writeFileSync(getSessionPath(), JSON.stringify(withVersion, null, 2), 'utf-8')
 }

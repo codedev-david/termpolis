@@ -50,6 +50,7 @@ export interface SessionData {
   keybindings?: Record<string, string>
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
+  appVersion?: string
 }
 
 export interface HistoryEntry {

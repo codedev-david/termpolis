@@ -11,6 +11,7 @@ interface ConductorState {
 
 let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null }
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
+let monitoringStartTime: number = 0
 
 export function getConductorState(): ConductorState {
   return { ...conductorState }
@@ -191,6 +192,8 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
 // Monitoring loop
 function startMonitoring(): void {
   if (monitoringInterval) clearInterval(monitoringInterval)
+  monitoringStartTime = Date.now()
+  let stallWarned = false
 
   monitoringInterval = setInterval(async () => {
     if (conductorState.status !== 'running') {
@@ -208,6 +211,50 @@ function startMonitoring(): void {
         store.setSwarmNotification({ message: 'Conductor stopped unexpectedly', type: 'error' })
         if (monitoringInterval) clearInterval(monitoringInterval)
         return
+      }
+
+      // Check conductor output for errors and refusals
+      if (conductorState.terminalId) {
+        const bufferRes = await window.termpolis.readTerminalBuffer(conductorState.terminalId)
+        const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
+        const recent = output.slice(-3000)
+
+        // Detect conductor refusal — Claude may refuse unethical/dangerous/illegal tasks
+        if (/I (?:can't|cannot|won't|will not|am unable to)|I'm not able to|refuse to|not (?:something|able)|against (?:my|the) (?:guidelines|policy|terms)|potentially (?:harmful|dangerous|illegal|unethical)/i.test(recent) &&
+            !/swarm_create_task|create_terminal/i.test(recent)) {
+          // Extract a snippet of the refusal for the notification
+          const refusalMatch = recent.match(/(I (?:can't|cannot|won't|will not)[^.]*\.)/i)
+          const snippet = refusalMatch ? refusalMatch[1].slice(0, 150) : 'The conductor declined this task.'
+          conductorState = { ...conductorState, status: 'error', error: 'Conductor refused the task' }
+          store.setSwarmNotification({
+            message: `Conductor refused the task: "${snippet}" — Click Debug to see full response.`,
+            type: 'error',
+          })
+          // Post the refusal to the swarm message bus so it's visible in the dashboard
+          try {
+            await window.swarmAPI.sendMessage('conductor', 'all', 'info', `Task refused: ${snippet}`)
+          } catch {}
+          store.setSwarmActive(false)
+          if (monitoringInterval) { clearInterval(monitoringInterval); monitoringInterval = null }
+          return
+        }
+
+        // Detect fatal errors in conductor output
+        if (/error.*mcp|mcp.*error|cannot connect|ECONNREFUSED|tool.*not found|Unknown tool/i.test(recent) &&
+            !/Conductor analyzing/i.test(recent)) {
+          store.setSwarmNotification({
+            message: 'Conductor may have trouble connecting to MCP tools. Click Debug to check output.',
+            type: 'error',
+          })
+        }
+
+        // Token limit errors
+        if (/context.*(limit|window|exceeded)|token.*(limit|budget)/i.test(recent)) {
+          store.setSwarmNotification({
+            message: 'Conductor reached token limit. Agents continue but without coordination.',
+            type: 'error',
+          })
+        }
       }
 
       // Check task-based completion (conductor used swarm_create_task)
@@ -242,14 +289,15 @@ function startMonitoring(): void {
         }
       }
 
-      // Check conductor output for token limit errors
-      if (conductorState.terminalId) {
-        const bufferRes = await window.termpolis.readTerminalBuffer(conductorState.terminalId)
-        const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
-        const recent = output.slice(-1000)
-        if (/context.*(limit|window|exceeded)|token.*(limit|budget)/i.test(recent)) {
+      // Stall detection — if no tasks and no messages after 60 seconds, warn user
+      if (!stallWarned) {
+        const elapsed = Date.now() - monitoringStartTime
+        const hasTasks = tasksRes.success && tasksRes.data && tasksRes.data.length > 0
+        const hasMessages = msgsRes.success && msgsRes.data && msgsRes.data.length > 1 // >1 because we post the initial "analyzing" message
+        if (elapsed > 60000 && !hasTasks && !hasMessages) {
+          stallWarned = true
           store.setSwarmNotification({
-            message: 'Conductor reached token limit. Agents continue but without coordination.',
+            message: 'Conductor has not created any tasks or agents yet. Click Debug to reveal conductor terminal and check for errors.',
             type: 'error',
           })
         }

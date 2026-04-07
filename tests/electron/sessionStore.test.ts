@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 
 vi.mock('fs')
-vi.mock('electron', () => ({ app: { getPath: () => '/fake/userData' } }))
+vi.mock('electron', () => ({ app: { getPath: () => '/fake/userData', getVersion: () => '1.0.0' } }))
 
 const { loadSession, saveSession } = await import('../../src/main/sessionStore')
 
@@ -22,9 +22,9 @@ describe('loadSession', () => {
     expect(result).toMatchObject(defaultSession)
   })
 
-  it('parses and returns session when file exists', () => {
+  it('parses and returns session when file exists with matching version', () => {
     vi.mocked(existsSync).mockReturnValue(true)
-    const stored = { ...defaultSession, defaultShell: 'zsh', terminals: [{ id: '1', name: 'T1', color: '#fff', shellType: 'zsh', cwd: '/home' }] }
+    const stored = { ...defaultSession, appVersion: '1.0.0', defaultShell: 'zsh', terminals: [{ id: '1', name: 'T1', color: '#fff', shellType: 'zsh', cwd: '/home' }] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
     const result = loadSession()
     expect(result.defaultShell).toBe('zsh')
@@ -37,6 +37,15 @@ describe('loadSession', () => {
     })
   })
 
+  it('skips terminal restore when app version changed', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = { ...defaultSession, appVersion: '0.9.0', defaultShell: 'zsh', terminals: [{ id: '1', name: 'T1', color: '#fff', shellType: 'zsh', cwd: '/home' }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const result = loadSession()
+    expect(result.defaultShell).toBe('zsh')
+    expect(result.terminals).toHaveLength(0)
+  })
+
   it('returns default session when file is corrupt JSON', () => {
     vi.mocked(existsSync).mockReturnValue(true)
     vi.mocked(readFileSync).mockReturnValue('not-json' as any)
@@ -46,11 +55,11 @@ describe('loadSession', () => {
 })
 
 describe('saveSession', () => {
-  it('writes session to disk as JSON', () => {
+  it('writes session to disk with appVersion', () => {
     saveSession(defaultSession)
     expect(writeFileSync).toHaveBeenCalledWith(
       expect.stringContaining('session.json'),
-      JSON.stringify(defaultSession, null, 2),
+      JSON.stringify({ ...defaultSession, appVersion: '1.0.0' }, null, 2),
       'utf-8'
     )
   })
