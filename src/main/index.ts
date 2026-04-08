@@ -31,6 +31,7 @@ const terminalOutputBuffers = new Map<string, string>()
 
 // Track terminals created via MCP (swarm) so we can enforce agent commands
 const mcpCreatedTerminals = new Set<string>()
+const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
 
@@ -458,6 +459,9 @@ if (!gotTheLock) {
         return session.terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd }))
       },
       createTerminal: async (name, shell, cwd) => {
+        if (mcpCreatedTerminals.size >= MAX_MCP_TERMINALS) {
+          throw new Error(`Agent terminal limit reached (${MAX_MCP_TERMINALS}). Close existing agent terminals before creating more.`)
+        }
         const id = uuidv4()
         const resolvedCwd = cwd || homedir()
         const shells = await detectAvailableShells()

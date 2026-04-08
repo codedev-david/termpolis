@@ -136,6 +136,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   agentRatingOverrides: {},
 
   addTerminal: (t) => set(s => {
+    const visibleCount = s.terminals.filter(t => !t.hidden).length
+    if (visibleCount >= 20 && !t.hidden) {
+      console.warn(`[Termpolis] ${visibleCount + 1} terminals open — consider closing unused terminals to reduce memory usage`)
+    }
     const newTerminals = [...s.terminals, t]
     let newTree = s.paneTree
     if (s.viewMode === 'split' && !t.hidden) {

@@ -172,12 +172,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     let disposed = false
 
     // 1. Create Terminal instance
+    // Swarm agent terminals use reduced scrollback to save memory
+    const termInfo = useTerminalStore.getState().terminals.find(t => t.id === terminalId)
+    const scrollback = termInfo?.isSwarm ? 3000 : 10000
+
     const term = new Terminal({
       theme: getTheme(theme),
       fontFamily,
       fontSize,
       cursorBlink: true,
-      scrollback: 10000,
+      scrollback,
     })
 
     // 2. Load FitAddon

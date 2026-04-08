@@ -3,17 +3,17 @@ import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
 import { SplitView } from './components/SplitView/SplitView'
 const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane').then(m => ({ default: m.SettingsPane })))
-import { HistorySearchModal } from './components/HistorySearch/HistorySearchModal'
-import { PromptTemplates } from './components/PromptTemplates/PromptTemplates'
-import { ContextPanel } from './components/ContextPanel/ContextPanel'
-import { CommandPalette } from './components/CommandPalette/CommandPalette'
-import { ConversationSearch } from './components/ConversationSearch/ConversationSearch'
-import { SwarmDashboard } from './components/SwarmDashboard/SwarmDashboard'
-import { SwarmCompleteDialog } from './components/SwarmDashboard/SwarmCompleteDialog'
+const HistorySearchModal = lazy(() => import('./components/HistorySearch/HistorySearchModal').then(m => ({ default: m.HistorySearchModal })))
+const PromptTemplates = lazy(() => import('./components/PromptTemplates/PromptTemplates').then(m => ({ default: m.PromptTemplates })))
+const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel').then(m => ({ default: m.ContextPanel })))
+const CommandPalette = lazy(() => import('./components/CommandPalette/CommandPalette').then(m => ({ default: m.CommandPalette })))
+const ConversationSearch = lazy(() => import('./components/ConversationSearch/ConversationSearch').then(m => ({ default: m.ConversationSearch })))
+const SwarmDashboard = lazy(() => import('./components/SwarmDashboard/SwarmDashboard').then(m => ({ default: m.SwarmDashboard })))
+const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/SwarmCompleteDialog').then(m => ({ default: m.SwarmCompleteDialog })))
+const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { Welcome } from './components/Welcome/Welcome'
-import { AddTerminalModal } from './components/Sidebar/AddTerminalModal'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { matchesKeybinding, DEFAULT_KEYBINDINGS } from './lib/keybindings'
 import { getHomedir } from './lib/homedir'
@@ -596,50 +596,54 @@ export default function App() {
           )}
           </div>
         </main>
-        {showContextPanel && (
-          <ContextPanel
-            cwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
-            onClose={() => setShowContextPanel(false)}
-          />
-        )}
+        <Suspense fallback={null}>
+          {showContextPanel && (
+            <ContextPanel
+              cwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+              onClose={() => setShowContextPanel(false)}
+            />
+          )}
+        </Suspense>
       </div>
       <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />
-      {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
-      {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
-      {showAddModal && (
-        <AddTerminalModal
-          shells={availableShells}
-          nextIndex={terminals.length + 1}
-          defaultShell={defaultShell}
-          onCreate={handleCreateTerminal}
-          onCancel={() => setShowAddModal(false)}
-        />
-      )}
-      {showCommandPalette && (
-        <CommandPalette
-          onAction={handleCommandPaletteAction}
-          onClose={() => setShowCommandPalette(false)}
-        />
-      )}
-      {showConversationSearch && (
-        <ConversationSearch
-          onClose={() => setShowConversationSearch(false)}
-        />
-      )}
-      {showSwarmDashboard && (
-        <SwarmDashboard
-          onClose={() => { setShowSwarmDashboard(false); setSwarmStartCwd(null) }}
-          initialCwd={swarmStartCwd}
-        />
-      )}
-      {swarmCompletionSummary && (
-        <SwarmCompleteDialog
-          message={swarmCompletionSummary.message}
-          tasks={swarmCompletionSummary.tasks}
-          onViewDashboard={() => { setSwarmCompletionSummary(null); setShowSwarmDashboard(true) }}
-          onDismiss={() => setSwarmCompletionSummary(null)}
-        />
-      )}
+      <Suspense fallback={null}>
+        {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
+        {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
+        {showAddModal && (
+          <AddTerminalModal
+            shells={availableShells}
+            nextIndex={terminals.length + 1}
+            defaultShell={defaultShell}
+            onCreate={handleCreateTerminal}
+            onCancel={() => setShowAddModal(false)}
+          />
+        )}
+        {showCommandPalette && (
+          <CommandPalette
+            onAction={handleCommandPaletteAction}
+            onClose={() => setShowCommandPalette(false)}
+          />
+        )}
+        {showConversationSearch && (
+          <ConversationSearch
+            onClose={() => setShowConversationSearch(false)}
+          />
+        )}
+        {showSwarmDashboard && (
+          <SwarmDashboard
+            onClose={() => { setShowSwarmDashboard(false); setSwarmStartCwd(null) }}
+            initialCwd={swarmStartCwd}
+          />
+        )}
+        {swarmCompletionSummary && (
+          <SwarmCompleteDialog
+            message={swarmCompletionSummary.message}
+            tasks={swarmCompletionSummary.tasks}
+            onViewDashboard={() => { setSwarmCompletionSummary(null); setShowSwarmDashboard(true) }}
+            onDismiss={() => setSwarmCompletionSummary(null)}
+          />
+        )}
+      </Suspense>
       {showCloseConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70">
           <div className="bg-[#252526] border border-[#3c3c3c] rounded-xl shadow-2xl w-[420px] p-6 flex flex-col gap-4" onClick={e => e.stopPropagation()}>
