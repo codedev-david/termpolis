@@ -64,7 +64,8 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 | Platform | Download | Format | Signed |
 |----------|----------|--------|--------|
 | Windows | [Termpolis Setup.exe](https://github.com/codedev-david/termpolis/releases/latest) | NSIS Installer | Code signed (SSL.com) |
-| macOS | [Termpolis.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | Signed & notarized (Apple) |
+| macOS (Apple Silicon) | [Termpolis-arm64.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | Signed & notarized (Apple) |
+| macOS (Intel) | [Termpolis-x64.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | Signed & notarized (Apple) |
 | Linux | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage | — |
 
 > The Windows installer is code signed via SSL.com and the macOS DMG is signed and notarized with Apple Developer ID — both platforms will recognize Termpolis as a verified application. Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
@@ -362,9 +363,9 @@ bash scripts/download-tools.sh
 npm run package
 ```
 
-Output: `dist-electron-builder/Termpolis-X.X.X.dmg`
+Output: `dist-electron-builder/Termpolis-X.X.X-arm64.dmg` and `Termpolis-X.X.X-x64.dmg`
 
-> macOS builds must be run on macOS.
+> macOS builds must be run on macOS. Both Apple Silicon (arm64) and Intel (x64) DMGs are produced.
 
 ### Linux (AppImage)
 
