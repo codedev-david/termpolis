@@ -2,6 +2,12 @@ import { initMainSentry } from './sentry'
 initMainSentry()
 
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage } from 'electron'
+
+// Linux AppImage: the bundled chrome-sandbox lacks SUID root, which crashes on
+// launch. Use Chromium's namespace sandbox instead (no root needed).
+if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME_DEVEL_SANDBOX)) {
+  app.commandLine.appendSwitch('no-sandbox')
+}
 import { join } from 'path'
 import { homedir } from 'os'
 import { writeFileSync } from 'fs'
