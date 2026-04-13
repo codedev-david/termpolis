@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 
 vi.mock('fs')
-vi.mock('electron', () => ({ app: { getPath: () => '/fake/userData' } }))
+vi.mock('electron', () => ({ app: { getPath: () => '/fake/userData', getVersion: () => '1.0.0' } }))
 
 const { loadSession } = await import('../../src/main/sessionStore')
 
@@ -16,6 +16,7 @@ describe('session migration', () => {
       workspaces: [],
       defaultShell: 'bash',
       viewMode: 'tabs',
+      appVersion: '1.0.0',
     }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(oldSession) as any)
     const result = loadSession()
@@ -33,6 +34,7 @@ describe('session migration', () => {
       workspaces: [],
       defaultShell: 'bash',
       viewMode: 'tabs',
+      appVersion: '1.0.0',
     }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(session) as any)
     const result = loadSession()
@@ -48,6 +50,7 @@ describe('session migration', () => {
       workspaces: [{ id: 'w1', name: 'Dev', terminals: [{ name: 'T1', color: '#fff', shellType: 'bash' }] }],
       defaultShell: 'bash',
       viewMode: 'tabs',
+      appVersion: '1.0.0',
     }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(oldSession) as any)
     const result = loadSession()

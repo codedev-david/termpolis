@@ -22,6 +22,7 @@ import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from './types'
 import { resolveAgentCommand, testDelay } from './lib/testAgents'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
+import { detectAgentStatus } from './lib/agentStatusDetector'
 
 export default function App() {
   const {
@@ -346,10 +347,7 @@ export default function App() {
         startBridgeForAgent(data.id, agentName)
       }
 
-      // Mark agent as "running" after a delay (agent needs time to initialize)
-      setTimeout(() => {
-        useTerminalStore.getState().updateSwarmAgentStatus(data.id, 'running')
-      }, testDelay(20000))
+      // Status detection is handled by the agent status polling effect below
     })
     const unsubClosed = window.mcpEvents?.onTerminalClosed((terminalId) => {
       stopBridgeForAgent(terminalId)
@@ -363,6 +361,45 @@ export default function App() {
       unsubClosed?.()
     }
   }, [addTerminal, removeTerminal])
+
+  // Poll swarm agent terminals for real-time status detection
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const store = useTerminalStore.getState()
+      if (store.swarmAgents.length === 0) return
+
+      for (const agent of store.swarmAgents) {
+        // Don't re-detect completed or errored agents
+        if (agent.status === 'completed' || agent.status === 'errored') continue
+
+        try {
+          const bufferRes = await window.termpolis.readTerminalBuffer(agent.terminalId)
+          if (!bufferRes.success || !bufferRes.data) continue
+
+          const output = bufferRes.data.output || ''
+          const recent = output.slice(-3000)
+          const result = detectAgentStatus(recent, agent.agentName, agent.status)
+
+          // Only update if status or summary actually changed
+          if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {
+            store.updateSwarmAgentStatus(agent.terminalId, result.status, result.summary)
+
+            // Notify user when agent needs input
+            if (result.status === 'waiting_for_input' && agent.status !== 'waiting_for_input') {
+              store.setSwarmNotification({
+                message: `${agent.agentName} (${agent.role}) needs your input: ${result.summary}`,
+                type: 'error',
+              })
+            }
+          }
+        } catch {
+          // Terminal may have been closed — skip
+        }
+      }
+    }, testDelay(5000))
+
+    return () => clearInterval(interval)
+  }, [])
 
   // Auto-dismiss swarm notification after 15 seconds
   useEffect(() => {

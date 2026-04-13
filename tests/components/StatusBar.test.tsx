@@ -19,24 +19,52 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
 beforeEach(() => {
   mockSwarmActive = false
   mockSwarmAgents = []
+  ;(window as any).open = vi.fn()
 })
 
 describe('StatusBar', () => {
-  it('renders copyright text', () => {
+  it('renders copyright text with current year', () => {
     render(<StatusBar />)
     const year = new Date().getFullYear().toString()
     expect(screen.getByText(new RegExp(`${year} Termpolis`))).toBeInTheDocument()
   })
 
-  it('shows MCP server status', () => {
+  it('renders MIT License mention', () => {
+    render(<StatusBar />)
+    expect(screen.getByText(/MIT License/)).toBeInTheDocument()
+  })
+
+  it('renders MCP server status indicator', () => {
     render(<StatusBar />)
     expect(screen.getByText('MCP: localhost:9315')).toBeInTheDocument()
   })
 
-  it('shows Sponsor link', () => {
+  it('renders MCP status with title tooltip', () => {
+    render(<StatusBar />)
+    const mcpEl = screen.getByText('MCP: localhost:9315').closest('span')
+    expect(mcpEl).toHaveAttribute('title', 'MCP server for AI agent integration')
+  })
+
+  it('renders Sponsor link', () => {
     render(<StatusBar />)
     expect(screen.getByText('Sponsor')).toBeInTheDocument()
   })
+
+  it('opens sponsor URL in new window on click', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Sponsor'))
+    expect((window as any).open).toHaveBeenCalledWith(
+      'https://github.com/sponsors/codedev-david',
+      '_blank'
+    )
+  })
+
+  it('renders Help / Support button', () => {
+    render(<StatusBar />)
+    expect(screen.getByText('Help / Support')).toBeInTheDocument()
+  })
+
+  // -- Swarm indicator --
 
   it('does not show swarm indicator when swarm is inactive', () => {
     render(<StatusBar />)
@@ -59,7 +87,7 @@ describe('StatusBar', () => {
     expect(onSwarmClick).toHaveBeenCalledTimes(1)
   })
 
-  it('shows agent count when swarm agents exist', () => {
+  it('shows running/total agent count when swarm agents exist', () => {
     mockSwarmActive = true
     mockSwarmAgents = [
       { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
@@ -67,6 +95,17 @@ describe('StatusBar', () => {
     ]
     render(<StatusBar />)
     expect(screen.getByText('(2/2)')).toBeInTheDocument()
+  })
+
+  it('shows partial running count correctly', () => {
+    mockSwarmActive = true
+    mockSwarmAgents = [
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
+      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'done' },
+      { terminalId: 't3', agentName: 'Gemini', role: 'Docs', status: 'running' },
+    ]
+    render(<StatusBar />)
+    expect(screen.getByText('(2/3)')).toBeInTheDocument()
   })
 
   it('shows error count when swarm agents have errors', () => {
@@ -77,5 +116,93 @@ describe('StatusBar', () => {
     ]
     render(<StatusBar />)
     expect(screen.getByText('1 err')).toBeInTheDocument()
+  })
+
+  it('shows multiple error count', () => {
+    mockSwarmActive = true
+    mockSwarmAgents = [
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'error' },
+      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'error' },
+    ]
+    render(<StatusBar />)
+    expect(screen.getByText('2 err')).toBeInTheDocument()
+  })
+
+  it('does not show error count when there are no errors', () => {
+    mockSwarmActive = true
+    mockSwarmAgents = [
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
+    ]
+    render(<StatusBar />)
+    expect(screen.queryByText(/err/)).not.toBeInTheDocument()
+  })
+
+  it('does not show agent count when no swarm agents', () => {
+    mockSwarmActive = true
+    mockSwarmAgents = []
+    render(<StatusBar />)
+    expect(screen.queryByText(/\(\d+\/\d+\)/)).not.toBeInTheDocument()
+  })
+
+  // -- Help dialog --
+
+  it('opens help dialog when Help / Support is clicked', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
+  })
+
+  it('closes help dialog when close button in header is clicked', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
+    // Click the x button in the modal header
+    const closeBtn = screen.getByText('\u00D7')
+    fireEvent.click(closeBtn)
+    expect(screen.queryByText('Quick Start Guide')).not.toBeInTheDocument()
+  })
+
+  it('closes help dialog when footer Close button is clicked', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
+    // The footer Close button is the one with bg-[#0078d4] class
+    const closeBtn = screen.getByRole('button', { name: 'Close' })
+    fireEvent.click(closeBtn)
+    expect(screen.queryByText('Quick Start Guide')).not.toBeInTheDocument()
+  })
+
+  it('help dialog shows key sections', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Sidebar Icon Bar')).toBeInTheDocument()
+    expect(screen.getByText('Command Palette')).toBeInTheDocument()
+    expect(screen.getByText('Prompt Templates')).toBeInTheDocument()
+    expect(screen.getByText('Session Recording')).toBeInTheDocument()
+    expect(screen.getByText('Output Pinning')).toBeInTheDocument()
+  })
+
+  it('help dialog shows GitHub link', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('GitHub')).toBeInTheDocument()
+  })
+
+  it('help dialog shows Sponsor this project link', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Sponsor this project')).toBeInTheDocument()
+  })
+
+  it('help dialog shows multi-agent swarm section', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/Multi-Agent Swarm/)).toBeInTheDocument()
+  })
+
+  it('help dialog shows all keyboard shortcuts section', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('All Keyboard Shortcuts')).toBeInTheDocument()
   })
 })

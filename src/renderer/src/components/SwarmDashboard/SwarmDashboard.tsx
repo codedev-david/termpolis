@@ -145,19 +145,53 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
 
   const agentHealthColor = (status: string) => {
     switch (status) {
-      case 'running': return 'bg-green-500'
+      case 'working': return 'bg-green-500 animate-pulse'
+      case 'thinking': return 'bg-blue-500 animate-pulse'
+      case 'waiting_for_input': return 'bg-orange-500 animate-pulse'
+      case 'idle': return 'bg-green-500'
       case 'starting': return 'bg-yellow-500 animate-pulse'
-      case 'error': return 'bg-red-500'
+      case 'completed': return 'bg-emerald-400'
+      case 'errored': return 'bg-red-500'
       default: return 'bg-gray-500'
     }
   }
 
   const agentHealthLabel = (status: string) => {
     switch (status) {
-      case 'running': return 'text-green-400'
+      case 'working': return 'text-green-400'
+      case 'thinking': return 'text-blue-400'
+      case 'waiting_for_input': return 'text-orange-400'
+      case 'idle': return 'text-green-400'
       case 'starting': return 'text-yellow-400'
-      case 'error': return 'text-red-400'
+      case 'completed': return 'text-emerald-400'
+      case 'errored': return 'text-red-400'
       default: return 'text-gray-400'
+    }
+  }
+
+  const agentStatusIcon = (status: string) => {
+    switch (status) {
+      case 'working': return 'fa-solid fa-hammer'
+      case 'thinking': return 'fa-solid fa-brain'
+      case 'waiting_for_input': return 'fa-solid fa-hand'
+      case 'idle': return 'fa-solid fa-circle-check'
+      case 'starting': return 'fa-solid fa-spinner fa-spin'
+      case 'completed': return 'fa-solid fa-flag-checkered'
+      case 'errored': return 'fa-solid fa-triangle-exclamation'
+      default: return 'fa-solid fa-circle-question'
+    }
+  }
+
+  const agentStatusLabel = (status: string) => {
+    switch (status) {
+      case 'working': return 'Working'
+      case 'thinking': return 'Thinking'
+      case 'waiting_for_input': return 'Needs Input'
+      case 'idle': return 'Idle'
+      case 'starting': return 'Starting'
+      case 'completed': return 'Done'
+      case 'errored': return 'Error'
+      default: return status
     }
   }
 
@@ -178,21 +212,40 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           </div>
           {swarmAgents.map((agent) => {
             const terminal = terminals.find(t => t.id === agent.terminalId)
+            const needsAttention = agent.status === 'waiting_for_input'
             return (
-              <div key={agent.terminalId} className="flex items-center gap-3 p-3 rounded-lg bg-[#252526] border border-[#3c3c3c] hover:border-[#555] mb-2">
-                <div className={`w-2.5 h-2.5 rounded-full ${agentHealthColor(agent.status)}`}></div>
+              <div
+                key={agent.terminalId}
+                className={`flex items-center gap-3 p-3 rounded-lg mb-2 transition-colors ${
+                  needsAttention
+                    ? 'bg-orange-500/10 border border-orange-500/40 hover:border-orange-400 cursor-pointer'
+                    : 'bg-[#252526] border border-[#3c3c3c] hover:border-[#555]'
+                }`}
+                onClick={needsAttention ? () => {
+                  const store = useTerminalStore.getState()
+                  store.setActiveTerminal(agent.terminalId)
+                  onClose()
+                } : undefined}
+                title={needsAttention ? 'Click to jump to this agent\'s terminal' : undefined}
+              >
+                <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${agentHealthColor(agent.status)}`}></div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-[#d4d4d4] truncate">{agent.agentName}</div>
-                  <div className="text-xs text-[#9ca3af] truncate">{agent.role}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-[#d4d4d4] truncate">{agent.agentName}</span>
+                    <span className="text-[10px] text-[#9ca3af]">{agent.role}</span>
+                  </div>
+                  {agent.summary && (
+                    <div className={`text-xs truncate mt-0.5 ${needsAttention ? 'text-orange-300' : 'text-[#888]'}`}>
+                      {agent.summary}
+                    </div>
+                  )}
                 </div>
-                <span className={`text-[10px] font-semibold uppercase ${agentHealthLabel(agent.status)}`}>
-                  {agent.status}
-                </span>
-                {terminal && (
-                  <span className="text-xs text-[#9ca3af] font-mono truncate max-w-[80px]" title={terminal.id}>
-                    {terminal.id.slice(0, 8)}
+                <div className="flex items-center gap-2 shrink-0">
+                  <i className={`${agentStatusIcon(agent.status)} text-[10px] ${agentHealthLabel(agent.status)}`}></i>
+                  <span className={`text-[10px] font-semibold uppercase ${agentHealthLabel(agent.status)}`}>
+                    {agentStatusLabel(agent.status)}
                   </span>
-                )}
+                </div>
               </div>
             )
           })}

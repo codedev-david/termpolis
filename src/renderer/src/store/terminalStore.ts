@@ -50,11 +50,15 @@ function findRightmostLeaf(node: PaneNode): string | null {
   return findRightmostLeaf(node.children[1])
 }
 
+export type SwarmAgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed'
+
 export interface SwarmAgentEntry {
   terminalId: string
   agentName: string
   role: string
-  status: 'starting' | 'running' | 'error'
+  status: SwarmAgentStatus
+  /** One-line summary of what the agent is doing */
+  summary?: string
 }
 
 interface TerminalStore {
@@ -106,7 +110,7 @@ interface TerminalStore {
   setLastHandoffContext: (ctx: HandoffContext | null) => void
   setSwarmActive: (active: boolean) => void
   setSwarmAgents: (agents: SwarmAgentEntry[]) => void
-  updateSwarmAgentStatus: (terminalId: string, status: 'starting' | 'running' | 'error') => void
+  updateSwarmAgentStatus: (terminalId: string, status: SwarmAgentStatus, summary?: string) => void
   setLaunchingAgent: (name: string | null) => void
   setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
   setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }> } | null) => void
@@ -304,9 +308,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   setSwarmAgents: (agents) => set({ swarmAgents: agents }),
 
-  updateSwarmAgentStatus: (terminalId, status) => set(s => ({
+  updateSwarmAgentStatus: (terminalId, status, summary) => set(s => ({
     swarmAgents: s.swarmAgents.map(a =>
-      a.terminalId === terminalId ? { ...a, status } : a
+      a.terminalId === terminalId ? { ...a, status, ...(summary !== undefined && { summary }) } : a
     ),
   })),
 
