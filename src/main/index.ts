@@ -218,6 +218,71 @@ ipcMain.handle('terminal:git-diff', async (_, { cwd }) => {
   } catch { return ok('') }
 })
 
+// Git operations for the Git Panel
+ipcMain.handle('git:stage', async (_, { cwd, files }: { cwd: string; files: string[] }) => {
+  try {
+    const args = files.length > 0 ? files.map(f => `"${f}"`).join(' ') : '.'
+    execSync(`git add ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true })
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: string[] }) => {
+  try {
+    const args = files.length > 0 ? files.map(f => `"${f}"`).join(' ') : '.'
+    execSync(`git reset HEAD ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true })
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('git:commit', async (_, { cwd, message }: { cwd: string; message: string }) => {
+  try {
+    if (!message.trim()) return err('Commit message cannot be empty')
+    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000, windowsHide: true })
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('git:pull', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const output = execSync('git pull', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000, windowsHide: true }).toString().trim()
+    return ok(output)
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('git:push', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const output = execSync('git push', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000, windowsHide: true }).toString().trim()
+    return ok(output)
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('git:file-diff', async (_, { cwd, file }: { cwd: string; file: string }) => {
+  try {
+    const diff = execSync(`git diff -- "${file}"`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString()
+    return ok(diff)
+  } catch { return ok('') }
+})
+
+ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
+  try {
+    let branch = ''
+    try { branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000, windowsHide: true }).toString().trim() } catch {}
+    const statusRaw = execSync('git status --porcelain', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString().trim()
+    const staged: { file: string; status: string }[] = []
+    const unstaged: { file: string; status: string }[] = []
+    for (const line of statusRaw.split('\n')) {
+      if (!line.trim()) continue
+      const indexStatus = line[0]
+      const workTreeStatus = line[1]
+      const file = line.slice(3).trim()
+      if (indexStatus !== ' ' && indexStatus !== '?') staged.push({ file, status: indexStatus })
+      if (workTreeStatus !== ' ' && workTreeStatus !== undefined) unstaged.push({ file, status: workTreeStatus === '?' ? 'U' : workTreeStatus })
+    }
+    return ok({ branch, staged, unstaged })
+  } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
   try {
     let status = ''

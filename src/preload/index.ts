@@ -76,6 +76,22 @@ const api: TermpolisAPI = {
 
   readTerminalBuffer: (terminalId, fromOffset) =>
     ipcRenderer.invoke('terminal:read-buffer', { terminalId, fromOffset }),
+
+  // Git operations
+  gitStatusParsed: (cwd) =>
+    ipcRenderer.invoke('git:status-parsed', { cwd }),
+  gitStage: (cwd, files) =>
+    ipcRenderer.invoke('git:stage', { cwd, files }),
+  gitUnstage: (cwd, files) =>
+    ipcRenderer.invoke('git:unstage', { cwd, files }),
+  gitCommit: (cwd, message) =>
+    ipcRenderer.invoke('git:commit', { cwd, message }),
+  gitPull: (cwd) =>
+    ipcRenderer.invoke('git:pull', { cwd }),
+  gitPush: (cwd) =>
+    ipcRenderer.invoke('git:push', { cwd }),
+  gitFileDiff: (cwd, file) =>
+    ipcRenderer.invoke('git:file-diff', { cwd, file }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

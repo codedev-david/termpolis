@@ -98,6 +98,15 @@ export interface TermpolisAPI {
   getGitInfo: (cwd: string) => Promise<IpcResponse<{ status: string; recentCommits: string }>>
   getGitDiff: (cwd: string) => Promise<IpcResponse<string>>
   readTerminalBuffer: (terminalId: string, fromOffset?: number) => Promise<IpcResponse<{ output: string; length: number }>>
+
+  // Git operations
+  gitStatusParsed: (cwd: string) => Promise<IpcResponse<{ branch: string; staged: { file: string; status: string }[]; unstaged: { file: string; status: string }[] }>>
+  gitStage: (cwd: string, files: string[]) => Promise<IpcResponse>
+  gitUnstage: (cwd: string, files: string[]) => Promise<IpcResponse>
+  gitCommit: (cwd: string, message: string) => Promise<IpcResponse>
+  gitPull: (cwd: string) => Promise<IpcResponse<string>>
+  gitPush: (cwd: string) => Promise<IpcResponse<string>>
+  gitFileDiff: (cwd: string, file: string) => Promise<IpcResponse<string>>
 }
 
 export interface SwarmMessage {

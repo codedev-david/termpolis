@@ -7,6 +7,7 @@ import { AIProfiles } from './AIProfiles'
 import { PromptTemplates } from '../PromptTemplates/PromptTemplates'
 import { WorkflowTemplates } from '../WorkflowTemplates/WorkflowTemplates'
 import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
+import { GitPanel } from '../GitPanel/GitPanel'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -24,6 +25,7 @@ export function Sidebar() {
   const [showPrompts, setShowPrompts] = useState(false)
   const [showWorkflows, setShowWorkflows] = useState(false)
   const [showSwarm, setShowSwarm] = useState(false)
+  const [showGit, setShowGit] = useState(false)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
   const [terminalsCollapsed, setTerminalsCollapsed] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
@@ -99,6 +101,11 @@ export function Sidebar() {
           className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-cubes"></i></button>
         <button
+          onClick={() => setShowGit(true)}
+          title="Git Panel"
+          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className="fa-brands fa-git-alt"></i></button>
+        <button
           onClick={async () => {
             const swarmActive = useTerminalStore.getState().swarmActive
             if (swarmActive) {
@@ -169,6 +176,7 @@ export function Sidebar() {
       {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
       {showWorkflows && <WorkflowTemplates onClose={() => setShowWorkflows(false)} />}
       {showSwarm && <SwarmDashboard onClose={() => { setShowSwarm(false); setSwarmCwd(null) }} initialCwd={swarmCwd} />}
+      {showGit && <GitPanel onClose={() => setShowGit(false)} />}
     </aside>
   )
 }
