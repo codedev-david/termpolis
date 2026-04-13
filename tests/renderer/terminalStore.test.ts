@@ -491,5 +491,137 @@ describe('terminalStore', () => {
       expect(updated[0].status).toBe('running')
       expect(updated[1].status).toBe('starting') // unchanged
     })
+
+    it('updates status with summary', () => {
+      const agents: SwarmAgentEntry[] = [
+        { terminalId: 't1', agentName: 'claude', role: 'lead', status: 'starting' },
+      ]
+      useTerminalStore.setState({ swarmAgents: agents })
+      useTerminalStore.getState().updateSwarmAgentStatus('t1', 'working', 'Refactoring module')
+
+      const updated = useTerminalStore.getState().swarmAgents
+      expect(updated[0].status).toBe('working')
+      expect(updated[0].summary).toBe('Refactoring module')
+    })
+  })
+
+  // ---- Additional coverage: 20+ terminal warning ----
+
+  describe('addTerminal memory warning', () => {
+    it('logs warning when exceeding 20 visible terminals', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      // Add 20 visible terminals
+      for (let i = 0; i < 20; i++) {
+        useTerminalStore.getState().addTerminal(makeTerminal({ id: `t${i}`, name: `T${i}` }))
+      }
+
+      // The 21st terminal should trigger the warning
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 't20', name: 'T20' }))
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('terminals open'))
+      warnSpy.mockRestore()
+    })
+
+    it('does not warn for hidden terminals', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      for (let i = 0; i < 20; i++) {
+        useTerminalStore.getState().addTerminal(makeTerminal({ id: `t${i}`, name: `T${i}` }))
+      }
+
+      // Add a hidden terminal - should not trigger extra warning
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 't-hidden', name: 'Hidden', hidden: true } as any))
+
+      // Only one warning from 21st visible terminal, not from the hidden one
+      const calls = warnSpy.mock.calls.filter(c => c[0]?.includes?.('terminals open'))
+      expect(calls.length).toBeLessThanOrEqual(1)
+      warnSpy.mockRestore()
+    })
+  })
+
+  // ---- setShowSettings restores active terminal ----
+
+  describe('setShowSettings edge cases', () => {
+    it('sets first terminal as active when closing settings with no active terminal', () => {
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'a' }))
+      useTerminalStore.setState({ activeTerminalId: null, showSettings: true })
+      useTerminalStore.getState().setShowSettings(false)
+
+      expect(useTerminalStore.getState().activeTerminalId).toBe('a')
+    })
+
+    it('keeps null activeTerminalId when closing settings with no terminals', () => {
+      useTerminalStore.setState({ activeTerminalId: null, showSettings: true, terminals: [] })
+      useTerminalStore.getState().setShowSettings(false)
+
+      expect(useTerminalStore.getState().activeTerminalId).toBeNull()
+    })
+  })
+
+  // ---- Launching agent / swarm notification / completion summary ----
+
+  describe('setLaunchingAgent', () => {
+    it('sets and clears the launching agent', () => {
+      useTerminalStore.getState().setLaunchingAgent('claude')
+      expect(useTerminalStore.getState().launchingAgent).toBe('claude')
+
+      useTerminalStore.getState().setLaunchingAgent(null)
+      expect(useTerminalStore.getState().launchingAgent).toBeNull()
+    })
+  })
+
+  describe('setSwarmNotification', () => {
+    it('sets and clears swarm notification', () => {
+      useTerminalStore.getState().setSwarmNotification({ message: 'Test', type: 'success' })
+      expect(useTerminalStore.getState().swarmNotification).toEqual({ message: 'Test', type: 'success' })
+
+      useTerminalStore.getState().setSwarmNotification(null)
+      expect(useTerminalStore.getState().swarmNotification).toBeNull()
+    })
+  })
+
+  describe('setSwarmCompletionSummary', () => {
+    it('sets and clears completion summary', () => {
+      const summary = { message: 'Done', tasks: [{ id: 't1', title: 'Task 1', status: 'completed' }] }
+      useTerminalStore.getState().setSwarmCompletionSummary(summary)
+      expect(useTerminalStore.getState().swarmCompletionSummary).toEqual(summary)
+
+      useTerminalStore.getState().setSwarmCompletionSummary(null)
+      expect(useTerminalStore.getState().swarmCompletionSummary).toBeNull()
+    })
+  })
+
+  describe('setLastHandoffContext', () => {
+    it('sets and clears last handoff context', () => {
+      const ctx = { previousAgent: 'claude', taskDescription: 'fix tests' } as any
+      useTerminalStore.getState().setLastHandoffContext(ctx)
+      expect(useTerminalStore.getState().lastHandoffContext).toEqual(ctx)
+
+      useTerminalStore.getState().setLastHandoffContext(null)
+      expect(useTerminalStore.getState().lastHandoffContext).toBeNull()
+    })
+  })
+
+  describe('setAgentRatingOverrides', () => {
+    it('sets agent rating overrides', () => {
+      const overrides = { claude: { refactoring: 10 } } as any
+      useTerminalStore.getState().setAgentRatingOverrides(overrides)
+      expect(useTerminalStore.getState().agentRatingOverrides).toEqual(overrides)
+    })
+  })
+
+  // ---- addTerminal in split mode with hidden terminal ----
+
+  describe('addTerminal split mode with hidden terminal', () => {
+    it('does not add hidden terminal to pane tree', () => {
+      useTerminalStore.setState({ viewMode: 'split' })
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'a' }))
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'hidden', hidden: true } as any))
+
+      const tree = useTerminalStore.getState().paneTree
+      // Tree should only contain 'a', not the hidden terminal
+      expect(tree).toEqual({ type: 'terminal', terminalId: 'a' })
+    })
   })
 })

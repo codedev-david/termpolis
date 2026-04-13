@@ -205,4 +205,46 @@ describe('StatusBar', () => {
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.getByText('All Keyboard Shortcuts')).toBeInTheDocument()
   })
+
+  // -- Help dialog link clicks --
+
+  it('help dialog GitHub link opens in new window', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    const githubLink = screen.getByText('GitHub')
+    fireEvent.click(githubLink)
+    expect((window as any).open).toHaveBeenCalledWith(
+      'https://github.com/codedev-david/termpolis',
+      '_blank'
+    )
+  })
+
+  it('help dialog Sponsor link opens in new window', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    const sponsorLink = screen.getByText('Sponsor this project')
+    fireEvent.click(sponsorLink)
+    expect((window as any).open).toHaveBeenCalledWith(
+      'https://github.com/sponsors/codedev-david',
+      '_blank'
+    )
+  })
+
+  it('help dialog shows context handoff section', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Agent Context Handoff')).toBeInTheDocument()
+  })
+
+  it('help dialog shows workspaces section', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Workspaces')).toBeInTheDocument()
+  })
+
+  it('help dialog shows accessibility section', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Accessibility')).toBeInTheDocument()
+  })
 })

@@ -1131,3 +1131,339 @@ describe('terminal:git-diff', () => {
     expect(result.data).toBe('')
   })
 })
+
+// =========================================================================
+// git:stage
+// =========================================================================
+describe('git:stage', () => {
+  it('stages specified files', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+
+    const result = await invokeHandler('git:stage', { cwd: '/repo', files: ['src/a.ts', 'src/b.ts'] })
+    expect(result).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('git add'),
+      expect.objectContaining({ cwd: '/repo' }),
+    )
+  })
+
+  it('stages all files when empty array provided', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+
+    const result = await invokeHandler('git:stage', { cwd: '/repo', files: [] })
+    expect(result).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      'git add .',
+      expect.objectContaining({ cwd: '/repo' }),
+    )
+  })
+
+  it('returns error when git add fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('pathspec error') })
+
+    const result = await invokeHandler('git:stage', { cwd: '/repo', files: ['bad-file'] })
+    expect(result).toEqual({ success: false, error: 'pathspec error' })
+  })
+})
+
+// =========================================================================
+// git:unstage
+// =========================================================================
+describe('git:unstage', () => {
+  it('unstages specified files', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+
+    const result = await invokeHandler('git:unstage', { cwd: '/repo', files: ['src/a.ts'] })
+    expect(result).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('git reset HEAD'),
+      expect.objectContaining({ cwd: '/repo' }),
+    )
+  })
+
+  it('unstages all files when empty array provided', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+
+    const result = await invokeHandler('git:unstage', { cwd: '/repo', files: [] })
+    expect(result).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      'git reset HEAD .',
+      expect.objectContaining({ cwd: '/repo' }),
+    )
+  })
+
+  it('returns error when git reset fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('reset error') })
+
+    const result = await invokeHandler('git:unstage', { cwd: '/repo', files: ['x'] })
+    expect(result).toEqual({ success: false, error: 'reset error' })
+  })
+})
+
+// =========================================================================
+// git:commit
+// =========================================================================
+describe('git:commit', () => {
+  it('commits with provided message', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+
+    const result = await invokeHandler('git:commit', { cwd: '/repo', message: 'fix: bug' })
+    expect(result).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('git commit -m'),
+      expect.objectContaining({ cwd: '/repo' }),
+    )
+  })
+
+  it('returns error for empty commit message', async () => {
+    const result = await invokeHandler('git:commit', { cwd: '/repo', message: '   ' })
+    expect(result).toEqual({ success: false, error: 'Commit message cannot be empty' })
+  })
+
+  it('returns error when git commit fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('nothing to commit') })
+
+    const result = await invokeHandler('git:commit', { cwd: '/repo', message: 'test' })
+    expect(result).toEqual({ success: false, error: 'nothing to commit' })
+  })
+
+  it('escapes double quotes in commit message', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+
+    await invokeHandler('git:commit', { cwd: '/repo', message: 'fix: handle "quotes"' })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('\\"quotes\\"'),
+      expect.any(Object),
+    )
+  })
+})
+
+// =========================================================================
+// git:pull
+// =========================================================================
+describe('git:pull', () => {
+  it('returns pull output on success', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('Already up to date.\n'))
+
+    const result = await invokeHandler('git:pull', { cwd: '/repo' })
+    expect(result).toEqual({ success: true, data: 'Already up to date.' })
+  })
+
+  it('returns error when pull fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('no tracking branch') })
+
+    const result = await invokeHandler('git:pull', { cwd: '/repo' })
+    expect(result).toEqual({ success: false, error: 'no tracking branch' })
+  })
+})
+
+// =========================================================================
+// git:push
+// =========================================================================
+describe('git:push', () => {
+  it('returns push output on success', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('Everything up-to-date\n'))
+
+    const result = await invokeHandler('git:push', { cwd: '/repo' })
+    expect(result).toEqual({ success: true, data: 'Everything up-to-date' })
+  })
+
+  it('returns error when push fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('rejected') })
+
+    const result = await invokeHandler('git:push', { cwd: '/repo' })
+    expect(result).toEqual({ success: false, error: 'rejected' })
+  })
+})
+
+// =========================================================================
+// git:file-diff
+// =========================================================================
+describe('git:file-diff', () => {
+  it('returns diff for a specific file', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('diff --git a/f.ts b/f.ts\n+new line'))
+
+    const result = await invokeHandler('git:file-diff', { cwd: '/repo', file: 'f.ts' })
+    expect(result.success).toBe(true)
+    expect(result.data).toContain('+new line')
+  })
+
+  it('returns empty string when file has no diff', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('no diff') })
+
+    const result = await invokeHandler('git:file-diff', { cwd: '/repo', file: 'clean.ts' })
+    expect(result.success).toBe(true)
+    expect(result.data).toBe('')
+  })
+})
+
+// =========================================================================
+// git:status-parsed
+// =========================================================================
+describe('git:status-parsed', () => {
+  it('parses staged and unstaged files', async () => {
+    mockExecSync
+      .mockReturnValueOnce(Buffer.from('main\n'))  // branch
+      .mockReturnValueOnce(Buffer.from('M  src/a.ts\n M src/b.ts\n?? new.ts\n'))  // status
+
+    const result = await invokeHandler('git:status-parsed', { cwd: '/repo' })
+    expect(result.success).toBe(true)
+    expect(result.data.branch).toBe('main')
+    expect(result.data.staged).toEqual([{ file: 'src/a.ts', status: 'M' }])
+    expect(result.data.unstaged.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('returns empty arrays when working tree is clean', async () => {
+    mockExecSync
+      .mockReturnValueOnce(Buffer.from('develop\n'))
+      .mockReturnValueOnce(Buffer.from('\n'))
+
+    const result = await invokeHandler('git:status-parsed', { cwd: '/repo' })
+    expect(result.success).toBe(true)
+    expect(result.data.branch).toBe('develop')
+    expect(result.data.staged).toEqual([])
+    expect(result.data.unstaged).toEqual([])
+  })
+
+  it('returns error when git status fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('not a git repo') })
+
+    const result = await invokeHandler('git:status-parsed', { cwd: '/bad' })
+    expect(result).toEqual({ success: false, error: 'not a git repo' })
+  })
+
+  it('handles branch detection failure gracefully', async () => {
+    // First call (branch) throws, second call (status) succeeds
+    let callCount = 0
+    mockExecSync.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) throw new Error('detached HEAD')
+      return Buffer.from('A  new-file.ts\n')
+    })
+
+    const result = await invokeHandler('git:status-parsed', { cwd: '/repo' })
+    expect(result.success).toBe(true)
+    expect(result.data.branch).toBe('')
+    expect(result.data.staged.length).toBe(1)
+  })
+})
+
+// =========================================================================
+// IPC handler registration - git handlers
+// =========================================================================
+describe('IPC handler registration - git handlers', () => {
+  it('registers all git IPC handle channels', () => {
+    const gitChannels = [
+      'git:stage',
+      'git:unstage',
+      'git:commit',
+      'git:pull',
+      'git:push',
+      'git:file-diff',
+      'git:status-parsed',
+    ]
+    for (const channel of gitChannels) {
+      expect(ipcHandlers.has(channel), `Missing handler for ${channel}`).toBe(true)
+    }
+  })
+})
+
+// =========================================================================
+// app:force-close handler
+// =========================================================================
+describe('app:force-close', () => {
+  it('registers the app:force-close on handler', () => {
+    expect(ipcOnHandlers.has('app:force-close')).toBe(true)
+  })
+})
+
+// =========================================================================
+// terminal:export edge case
+// =========================================================================
+describe('terminal:export - cancelled dialog no filePath', () => {
+  it('returns ok when dialog has no filePath field', async () => {
+    const { dialog } = await import('electron') as any
+    dialog.showSaveDialog.mockResolvedValue({
+      canceled: true,
+      filePath: undefined,
+    })
+
+    const result = await invokeHandler('terminal:export', {
+      content: 'content', defaultFilename: 'out.txt',
+    })
+    expect(result).toEqual({ success: true, data: undefined })
+  })
+})
+
+// =========================================================================
+// git:status-parsed with untracked files
+// =========================================================================
+describe('git:status-parsed additional parsing', () => {
+  it('handles untracked files (? status) as unstaged with U status', async () => {
+    mockExecSync
+      .mockReturnValueOnce(Buffer.from('main\n'))
+      .mockReturnValueOnce(Buffer.from('?? untracked.ts\n'))
+
+    const result = await invokeHandler('git:status-parsed', { cwd: '/repo' })
+    expect(result.success).toBe(true)
+    expect(result.data.staged).toEqual([])
+    expect(result.data.unstaged).toEqual([{ file: 'untracked.ts', status: 'U' }])
+  })
+
+  it('handles both staged and worktree changes on same file', async () => {
+    mockExecSync
+      .mockReturnValueOnce(Buffer.from('main\n'))
+      .mockReturnValueOnce(Buffer.from('MM src/both.ts\n'))
+
+    const result = await invokeHandler('git:status-parsed', { cwd: '/repo' })
+    expect(result.success).toBe(true)
+    expect(result.data.staged).toEqual([{ file: 'src/both.ts', status: 'M' }])
+    expect(result.data.unstaged).toEqual([{ file: 'src/both.ts', status: 'M' }])
+  })
+})
+
+// =========================================================================
+// dialog:pick-directory with default path
+// =========================================================================
+describe('dialog:pick-directory defaults', () => {
+  it('uses homedir when no defaultPath provided', async () => {
+    const { dialog } = await import('electron') as any
+    dialog.showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: ['/selected/dir'],
+    })
+
+    const result = await invokeHandler('dialog:pick-directory', {})
+    expect(result).toEqual({ success: true, data: '/selected/dir' })
+  })
+})
+
+// =========================================================================
+// Large output buffer truncation
+// =========================================================================
+describe('terminal output buffer truncation', () => {
+  it('truncates buffer beyond 32KB', async () => {
+    let dataCallback: Function | undefined
+    mockSpawnTerminal.mockImplementation((_id: string, _exec: string, _cwd: string, onData: Function) => {
+      dataCallback = onData
+    })
+    mockDetectAvailableShells.mockResolvedValue([
+      { type: 'bash', label: 'Bash', executable: '/bin/bash' },
+    ])
+
+    await invokeHandler('terminal:create', {
+      id: 'term-trunc', shellType: 'bash', cwd: '/tmp', extraPaths: [],
+    })
+
+    // Send more than 32KB of data
+    const largeData = 'x'.repeat(40000)
+    dataCallback!(largeData)
+
+    const result = await invokeHandler('terminal:read-buffer', {
+      terminalId: 'term-trunc', fromOffset: 0,
+    })
+    expect(result.success).toBe(true)
+    // Buffer should be capped to last 32768 chars
+    expect(result.data.output.length).toBeLessThanOrEqual(32768)
+  })
+})

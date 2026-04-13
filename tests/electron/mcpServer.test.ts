@@ -441,4 +441,357 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.error.message).toContain('create_terminal')
   })
+
+  // --- SSE endpoint ---
+
+  it('GET /mcp/sse returns event stream with ready event', async () => {
+    const res = await new Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/mcp/sse',
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+        (res) => {
+          let data = ''
+          res.on('data', (chunk) => {
+            data += chunk
+            // We only need the first event, destroy after receiving data
+            req.destroy()
+          })
+          res.on('end', () => resolve({ statusCode: res.statusCode!, headers: res.headers, body: data }))
+          res.on('error', () => resolve({ statusCode: res.statusCode!, headers: res.headers, body: data }))
+          // If the connection stays open, resolve after short timeout
+          setTimeout(() => {
+            req.destroy()
+            resolve({ statusCode: res.statusCode!, headers: res.headers, body: data })
+          }, 500)
+        },
+      )
+      req.on('error', (e) => {
+        // ECONNRESET expected when we destroy the request
+        if ((e as any).code === 'ECONNRESET') return
+        reject(e)
+      })
+      req.end()
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['content-type']).toBe('text/event-stream')
+    expect(res.body).toContain('"method":"ready"')
+  })
+
+  it('GET /mcp/sse without auth returns 401', async () => {
+    const res = await makeRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/mcp/sse',
+      method: 'GET',
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  // --- Tool execution errors ---
+
+  it('tools/call with unknown tool returns sanitized error', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'nonexistent_tool', arguments: {} },
+      id: 200,
+    })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toContain('Unknown tool')
+  })
+
+  // --- Payload size limit ---
+
+  it('returns 413 when payload exceeds 1MB', async () => {
+    const largePayload = 'x'.repeat(1024 * 1024 + 100)
+    try {
+      const res = await makeRequest(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/mcp',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        },
+        largePayload,
+      )
+      expect(res.statusCode).toBe(413)
+      const body = JSON.parse(res.body)
+      expect(body.error.message).toBe('Payload too large')
+    } catch (e: any) {
+      // ECONNRESET is acceptable — server destroyed the connection
+      expect(e.code).toBe('ECONNRESET')
+    }
+  })
+
+  it('tools/call handler exception returns generic error (no stack leak)', async () => {
+    // Force a handler to throw a non-standard error
+    handlers.listTerminals.mockImplementation(() => {
+      throw new Error('internal db connection string: postgres://user:pass@host/db')
+    })
+
+    try {
+      const res = await jsonRpcRequest(port, token, {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'list_terminals', arguments: {} },
+        id: 201,
+      })
+      expect(res.statusCode).toBe(200)
+      const body = JSON.parse(res.body)
+      expect(body.result.isError).toBe(true)
+      // Should NOT leak the internal error details
+      expect(body.result.content[0].text).toBe('Error: Tool execution failed')
+      expect(body.result.content[0].text).not.toContain('postgres')
+    } catch (e: any) {
+      // ECONNRESET can happen when previous test disrupted connection pool
+      if (e.code !== 'ECONNRESET') throw e
+    }
+  })
+
+  // --- Additional tool calls ---
+
+  it('tools/call close_terminal calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'close_terminal', arguments: { terminalId: 't1' } },
+      id: 300,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.closeTerminal).toHaveBeenCalledWith('t1')
+    const body = JSON.parse(res.body)
+    const content = JSON.parse(body.result.content[0].text)
+    expect(content.success).toBe(true)
+  })
+
+  it('tools/call write_to_terminal calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'write_to_terminal', arguments: { terminalId: 't1', text: 'hello' } },
+      id: 301,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.writeToTerminal).toHaveBeenCalledWith('t1', 'hello')
+  })
+
+  it('tools/call get_file_tree calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'get_file_tree', arguments: { path: '/project' } },
+      id: 302,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.getFileTree).toHaveBeenCalledWith('/project')
+  })
+
+  it('tools/call get_git_status calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'get_git_status', arguments: { cwd: '/repo' } },
+      id: 303,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.getGitStatus).toHaveBeenCalledWith('/repo')
+  })
+
+  it('tools/call swarm_send_message calls handler with mcp-client as from', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_send_message', arguments: { to: 'agent-1', type: 'task', content: 'do work' } },
+      id: 304,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmSendMessage).toHaveBeenCalledWith('mcp-client', 'agent-1', 'task', 'do work')
+  })
+
+  it('tools/call swarm_read_messages calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_read_messages', arguments: { terminalId: 't1' } },
+      id: 305,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmReadMessages).toHaveBeenCalledWith('t1')
+  })
+
+  it('tools/call swarm_create_task calls handler with mcp-client as createdBy', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_create_task', arguments: { title: 'Test', description: 'desc', assignTo: 'a1' } },
+      id: 306,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmCreateTask).toHaveBeenCalledWith('Test', 'desc', 'mcp-client', 'a1')
+  })
+
+  it('tools/call swarm_list_tasks calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_list_tasks', arguments: {} },
+      id: 307,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmListTasks).toHaveBeenCalled()
+  })
+
+  it('tools/call swarm_update_task calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_update_task', arguments: { taskId: 'task-1', status: 'completed', result: 'done' } },
+      id: 308,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmUpdateTask).toHaveBeenCalledWith('task-1', 'completed', 'done')
+  })
+
+  it('tools/call swarm_list_agents calls handler', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_list_agents', arguments: {} },
+      id: 309,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmListAgents).toHaveBeenCalled()
+  })
+
+  // --- Rate limiting edge: run_command limit ---
+
+  it('returns 429 when run_command per-tool rate limit is exceeded', async () => {
+    for (let i = 0; i < 60; i++) {
+      checkRateLimit('run_command')
+    }
+
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'run_command', arguments: { terminalId: 't1', command: 'ls' } },
+      id: 400,
+    })
+    expect(res.statusCode).toBe(429)
+    const body = JSON.parse(res.body)
+    expect(body.error.message).toContain('run_command')
+  })
+
+  // --- GET / root health check ---
+
+  it('GET / also returns health status', async () => {
+    const res = await makeRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/',
+      method: 'GET',
+    })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.status).toBe('ok')
+  })
+
+  // --- Additional tool calls: create_terminal defaults ---
+
+  it('tools/call create_terminal uses defaults when shell and cwd omitted', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'create_terminal', arguments: { name: 'Default' } },
+      id: 500,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.createTerminal).toHaveBeenCalledWith('Default', 'bash', '')
+  })
+
+  it('tools/call read_output uses default 50 lines when omitted', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'read_output', arguments: { terminalId: 't1' } },
+      id: 501,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.readOutput).toHaveBeenCalledWith('t1', 50)
+  })
+
+  it('tools/call swarm_create_task without assignTo passes undefined', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_create_task', arguments: { title: 'NoAssign', description: 'test' } },
+      id: 502,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmCreateTask).toHaveBeenCalledWith('NoAssign', 'test', 'mcp-client', undefined)
+  })
+
+  it('tools/call swarm_update_task without result passes undefined', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_update_task', arguments: { taskId: 'task-1', status: 'in_progress' } },
+      id: 503,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmUpdateTask).toHaveBeenCalledWith('task-1', 'in_progress', undefined)
+  })
+
+  // --- Error with "Invalid" message passes through ---
+
+  it('tools/call handler error with Invalid message is not sanitized', async () => {
+    handlers.listTerminals.mockImplementation(() => {
+      throw new Error('Invalid terminal ID')
+    })
+
+    try {
+      const res = await jsonRpcRequest(port, token, {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'list_terminals', arguments: {} },
+        id: 504,
+      })
+      expect(res.statusCode).toBe(200)
+      const body = JSON.parse(res.body)
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toBe('Error: Invalid terminal ID')
+    } catch (e: any) {
+      if (e.code !== 'ECONNRESET') throw e
+    }
+  })
+})
+
+// --- Audit logging ---
+
+describe('audit logging', () => {
+  it('initAuditLog does not throw', async () => {
+    const { initAuditLog } = await import('../../src/main/mcpServer')
+    const os = await import('os')
+    expect(() => initAuditLog(os.tmpdir())).not.toThrow()
+  })
+})
+
+// --- stopMcpServer ---
+
+describe('stopMcpServer', () => {
+  it('closes the server', () => {
+    const mockServer = { close: vi.fn() } as any
+    stopMcpServer(mockServer)
+    expect(mockServer.close).toHaveBeenCalled()
+  })
 })

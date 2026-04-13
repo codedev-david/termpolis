@@ -120,4 +120,55 @@ describe('TabPopover', () => {
       fontFamily: 'Consolas, "Courier New", monospace',
     })
   })
+
+  it('positions popover based on anchorEl', () => {
+    const anchorEl = document.createElement('div')
+    anchorEl.getBoundingClientRect = vi.fn(() => ({
+      top: 100, left: 50, right: 200, bottom: 120, width: 150, height: 20, x: 50, y: 100, toJSON: () => {},
+    }))
+    const { container } = render(<TabPopover {...props} anchorEl={anchorEl} />)
+    const popover = container.firstChild as HTMLElement
+    expect(popover.style.top).toBe('100px')
+    expect(popover.style.left).toBe('204px')
+  })
+
+  it('clicking outside closes popover', () => {
+    const onClose = vi.fn()
+    render(<TabPopover {...props} onClose={onClose} />)
+    fireEvent.mouseDown(document)
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('clicking inside does not close popover', () => {
+    const onClose = vi.fn()
+    const { container } = render(<TabPopover {...props} onClose={onClose} />)
+    fireEvent.mouseDown(container.firstChild as HTMLElement)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('changing font size via input field works', () => {
+    const onSave = vi.fn()
+    render(<TabPopover {...props} onSave={onSave} />)
+    const fontSizeInput = screen.getByRole('spinbutton', { name: /font size/i })
+    fireEvent.change(fontSizeInput, { target: { value: '20' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ fontSize: 20 }))
+  })
+
+  it('clicking a color swatch updates the color', () => {
+    const onSave = vi.fn()
+    render(<TabPopover {...props} onSave={onSave} />)
+    // Click the first swatch (#22D3EE)
+    fireEvent.click(screen.getByLabelText('#22D3EE'))
+    fireEvent.click(screen.getByText('Save'))
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ color: '#22D3EE' }))
+  })
+
+  it('saves original name when trimmed name is empty', () => {
+    const onSave = vi.fn()
+    render(<TabPopover {...props} onSave={onSave} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '   ' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'My Terminal' }))
+  })
 })

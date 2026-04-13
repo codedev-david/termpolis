@@ -108,6 +108,9 @@ vi.mock('../../src/renderer/src/components/SwarmDashboard/SwarmDashboard', () =>
     </div>
   ),
 }))
+vi.mock('../../src/renderer/src/components/GitPanel/GitPanel', () => ({
+  GitPanel: ({ onClose }: any) => <div data-testid="git-panel"><button onClick={onClose}>Close Git</button></div>,
+}))
 vi.mock('../../src/renderer/src/lib/homedir', () => ({
   getHomedir: vi.fn().mockResolvedValue('/home/user'),
 }))
@@ -351,5 +354,113 @@ describe('Sidebar', () => {
     }
     render(<Sidebar />)
     expect(screen.getByTestId('terminal-tab-t1').dataset.active).toBe('false')
+  })
+
+  // -- Git Panel --
+
+  it('git button opens GitPanel', async () => {
+    render(<Sidebar />)
+    expect(screen.queryByText('Close Git')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Git Panel'))
+    expect(screen.getByTestId('git-panel')).toBeInTheDocument()
+  })
+
+  it('closing GitPanel hides it', () => {
+    render(<Sidebar />)
+    fireEvent.click(screen.getByTitle('Git Panel'))
+    expect(screen.getByTestId('git-panel')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Close Git'))
+    expect(screen.queryByTestId('git-panel')).not.toBeInTheDocument()
+  })
+
+  // -- View mode toggle sets first terminal active when none active --
+
+  it('view mode toggle sets first terminal as active when none is active', () => {
+    mockState = {
+      ...getDefaultState(),
+      terminals: [
+        { id: 't1', name: 'T1', color: '#fff', shellType: 'bash', cwd: '/', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+      ],
+      activeTerminalId: null,
+    }
+    render(<Sidebar />)
+    fireEvent.click(screen.getByTitle('Split View'))
+    expect(mockSetActiveTerminal).toHaveBeenCalledWith('t1')
+  })
+
+  // -- Add Terminal modal create flow --
+
+  it('creating a terminal through modal calls handleCreate', async () => {
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('+ Add Terminal'))
+    expect(screen.getByTestId('add-terminal-modal')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('modal-create'))
+    await waitFor(() => {
+      expect(mockAddTerminal).toHaveBeenCalled()
+    })
+  })
+
+  it('cancelling add terminal modal hides it', () => {
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('+ Add Terminal'))
+    expect(screen.getByTestId('add-terminal-modal')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('modal-cancel'))
+    expect(screen.queryByTestId('add-terminal-modal')).not.toBeInTheDocument()
+  })
+
+  it('handleCreate shows alert when createTerminal fails', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    ;(window as any).termpolis.createTerminal = vi.fn().mockResolvedValue({ success: false, error: 'Shell not found' })
+
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('+ Add Terminal'))
+    fireEvent.click(screen.getByTestId('modal-create'))
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Shell not found'))
+    })
+    alertSpy.mockRestore()
+  })
+
+  // -- Closing prompt/workflow templates --
+
+  it('closing PromptTemplates hides it', () => {
+    render(<Sidebar />)
+    fireEvent.click(screen.getByTitle('Prompts'))
+    expect(screen.getByTestId('prompt-templates')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Close Prompts'))
+    expect(screen.queryByTestId('prompt-templates')).not.toBeInTheDocument()
+  })
+
+  it('closing WorkflowTemplates hides it', () => {
+    render(<Sidebar />)
+    fireEvent.click(screen.getByTitle('Workflows'))
+    expect(screen.getByTestId('workflow-templates')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Close Workflows'))
+    expect(screen.queryByTestId('workflow-templates')).not.toBeInTheDocument()
+  })
+
+  it('closing SwarmDashboard hides it and clears cwd', async () => {
+    const mockPickDirectory = vi.fn().mockResolvedValue({ success: true, data: '/my/project' })
+    ;(window as any).termpolis.pickDirectory = mockPickDirectory
+
+    render(<Sidebar />)
+    fireEvent.click(screen.getByTitle('Swarm Dashboard (Ctrl+Shift+S)'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('swarm-dashboard')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText('Close Swarm'))
+    expect(screen.queryByTestId('swarm-dashboard')).not.toBeInTheDocument()
+  })
+
+  // -- Swarm button indicator --
+
+  it('shows pulsing indicator when swarm is active', () => {
+    mockState = { ...getDefaultState(), swarmActive: true }
+    const { container } = render(<Sidebar />)
+    const indicator = container.querySelector('.animate-pulse')
+    expect(indicator).toBeInTheDocument()
   })
 })
