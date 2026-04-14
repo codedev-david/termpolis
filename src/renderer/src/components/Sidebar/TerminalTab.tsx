@@ -34,7 +34,7 @@ export function TerminalTab({ terminal, index, isActive, onClick, onClose, onUpd
       <span className="text-[#9ca3af] text-xs w-4 text-center font-mono">
         {SHELL_ICON[terminal.shellType] ?? '$'}
       </span>
-      <span className="flex-1 text-sm truncate">{terminal.name}</span>
+      <span className="flex-1 text-sm truncate" title={index < 9 ? `${terminal.name} — Alt+${index + 1} to switch` : terminal.name}>{terminal.name}</span>
       <button
         onClick={e => { e.stopPropagation(); setPopoverOpen(true) }}
         className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-xs px-1"
