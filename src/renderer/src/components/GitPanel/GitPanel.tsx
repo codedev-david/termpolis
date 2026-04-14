@@ -44,7 +44,8 @@ export function GitPanel({ onClose }: GitPanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [diffFile, setDiffFile] = useState<string | null>(null)
   const [diffContent, setDiffContent] = useState<string>('')
-  const [liveCwd, setLiveCwd] = useState<string>('')
+  const [gitRoot, setGitRoot] = useState<string | null>(null)
+  const [detecting, setDetecting] = useState(true)
   const [stagedCollapsed, setStagedCollapsed] = useState(false)
   const [unstagedCollapsed, setUnstagedCollapsed] = useState(false)
 
@@ -52,39 +53,59 @@ export function GitPanel({ onClose }: GitPanelProps) {
     const id = s.activeTerminalId
     return id ? s.terminals.find(t => t.id === id) : null
   })
-  // The store's cwd is kept up-to-date by TerminalPane's prompt parser
-  const cwd = activeTerminal?.cwd || ''
+  const terminalCwd = activeTerminal?.cwd || ''
 
-  const refresh = useCallback(async () => {
-    if (!cwd) return
-    // Try the stored cwd first; if it's not a git repo, ask git to find the root
-    let effectiveCwd = cwd
-    let res = await window.termpolis.gitStatusParsed(effectiveCwd)
-    if (!res.success) {
-      // The stored cwd might be a parent dir — try finding the git root
-      const rootRes = await window.termpolis.gitFindRoot(effectiveCwd)
-      if (rootRes.success && rootRes.data) {
-        effectiveCwd = rootRes.data
-        res = await window.termpolis.gitStatusParsed(effectiveCwd)
+  // On open: try to auto-detect a git repo from the terminal's cwd
+  useEffect(() => {
+    if (!terminalCwd) { setDetecting(false); return }
+    setDetecting(true)
+    window.termpolis.gitFindRoot(terminalCwd).then(res => {
+      if (res.success && res.data) {
+        setGitRoot(res.data)
       }
-    }
-    setLiveCwd(effectiveCwd)
-    if (res.success && res.data) {
-      setGitStatus(res.data)
+      setDetecting(false)
+    }).catch(() => setDetecting(false))
+  }, [terminalCwd])
+
+  // Pick a folder manually
+  const handlePickFolder = async () => {
+    const res = await window.termpolis.pickDirectory(terminalCwd || undefined)
+    if (!res.success || !res.data) return
+    // Verify it's a git repo
+    const rootRes = await window.termpolis.gitFindRoot(res.data)
+    if (rootRes.success && rootRes.data) {
+      setGitRoot(rootRes.data)
       setError(null)
     } else {
-      setGitStatus(null)
-      setError(res.error || 'Not a git repository')
+      setError('Selected folder is not a git repository')
     }
-  }, [cwd])
+  }
 
-  // Poll every 3 seconds
+  const refresh = useCallback(async () => {
+    if (!gitRoot) return
+    try {
+      const res = await window.termpolis.gitStatusParsed(gitRoot)
+      if (res.success && res.data) {
+        setGitStatus(res.data)
+        setError(null)
+      } else {
+        setGitStatus(null)
+        setError(res.error || 'Failed to read git status')
+      }
+    } catch {
+      setGitStatus(null)
+      setError('Failed to read git status')
+    }
+  }, [gitRoot])
+
+  // Poll every 3 seconds once we have a git root
   useEffect(() => {
+    if (!gitRoot) return
     refresh()
     const pollId = 'git-panel'
     subscribe(pollId, refresh, 3000)
     return () => unsubscribe(pollId)
-  }, [refresh])
+  }, [gitRoot, refresh])
 
   // Escape to close
   useEffect(() => {
@@ -99,27 +120,27 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }, [onClose, diffFile])
 
   const handleStage = async (files: string[]) => {
-    if (!liveCwd) return
+    if (!gitRoot) return
     setLoading(true)
-    const res = await window.termpolis.gitStage(liveCwd, files)
+    const res = await window.termpolis.gitStage(gitRoot, files)
     if (!res.success) setError(res.error || 'Stage failed')
     await refresh()
     setLoading(false)
   }
 
   const handleUnstage = async (files: string[]) => {
-    if (!liveCwd) return
+    if (!gitRoot) return
     setLoading(true)
-    const res = await window.termpolis.gitUnstage(liveCwd, files)
+    const res = await window.termpolis.gitUnstage(gitRoot, files)
     if (!res.success) setError(res.error || 'Unstage failed')
     await refresh()
     setLoading(false)
   }
 
   const handleCommit = async () => {
-    if (!liveCwd || !commitMsg.trim()) return
+    if (!gitRoot || !commitMsg.trim()) return
     setLoading(true)
-    const res = await window.termpolis.gitCommit(liveCwd, commitMsg.trim())
+    const res = await window.termpolis.gitCommit(gitRoot, commitMsg.trim())
     if (res.success) {
       setCommitMsg('')
       setError(null)
@@ -131,9 +152,9 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }
 
   const handlePull = async () => {
-    if (!liveCwd) return
+    if (!gitRoot) return
     setLoading(true)
-    const res = await window.termpolis.gitPull(liveCwd)
+    const res = await window.termpolis.gitPull(gitRoot)
     if (!res.success) setError(res.error || 'Pull failed')
     else setError(null)
     await refresh()
@@ -141,9 +162,9 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }
 
   const handlePush = async () => {
-    if (!liveCwd) return
+    if (!gitRoot) return
     setLoading(true)
-    const res = await window.termpolis.gitPush(liveCwd)
+    const res = await window.termpolis.gitPush(gitRoot)
     if (!res.success) setError(res.error || 'Push failed')
     else setError(null)
     await refresh()
@@ -151,9 +172,9 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }
 
   const handleViewDiff = async (file: string) => {
-    if (!liveCwd) return
+    if (!gitRoot) return
     setDiffFile(file)
-    const res = await window.termpolis.gitFileDiff(liveCwd, file)
+    const res = await window.termpolis.gitFileDiff(gitRoot, file)
     setDiffContent(res.success && res.data ? res.data : 'No diff available')
   }
 
@@ -187,15 +208,35 @@ export function GitPanel({ onClose }: GitPanelProps) {
     </div>
   )
 
-  if (!activeTerminal) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-        <div className="bg-[#1e1e1e] border border-[#3c3c3c] rounded-xl shadow-2xl w-[500px] p-6" onClick={e => e.stopPropagation()}>
-          <p className="text-[#9ca3af] text-sm text-center">No terminal selected. Open a terminal first.</p>
-        </div>
-      </div>
-    )
-  }
+  // No git root detected — show folder picker
+  const renderNoRepo = () => (
+    <div className="text-center py-10 space-y-4">
+      {detecting ? (
+        <>
+          <div className="w-10 h-10 mx-auto rounded-full border-2 border-[#22D3EE]/30 border-t-[#22D3EE] animate-spin"></div>
+          <p className="text-[#9ca3af] text-sm">Detecting git repository...</p>
+        </>
+      ) : (
+        <>
+          <i className="fa-brands fa-git-alt text-4xl text-[#555] block"></i>
+          <p className="text-[#d4d4d4] text-sm font-medium">Select a Git Repository</p>
+          <p className="text-[#9ca3af] text-xs max-w-xs mx-auto">
+            Choose a project folder to view changes, stage files, and commit.
+          </p>
+          <button
+            onClick={handlePickFolder}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded text-xs font-medium bg-[#22D3EE] text-[#1e1e1e] hover:bg-[#06b6d4] transition-colors"
+          >
+            <i className="fa-solid fa-folder-open"></i>
+            Open Folder
+          </button>
+          {error && (
+            <p className="text-red-400 text-xs mt-2">{error}</p>
+          )}
+        </>
+      )}
+    </div>
+  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -214,25 +255,38 @@ export function GitPanel({ onClose }: GitPanelProps) {
                 {gitStatus.branch}
               </span>
             )}
+            {gitRoot && (
+              <span
+                className="text-[10px] text-[#888] truncate max-w-[180px] cursor-pointer hover:text-[#bbb]"
+                title={`${gitRoot} — click to change`}
+                onClick={handlePickFolder}
+              >
+                {gitRoot.split(/[/\\]/).slice(-2).join('/')}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={handlePull} disabled={loading} className="px-2.5 py-1 rounded text-xs text-[#9ca3af] hover:text-white hover:bg-[#37373d] disabled:opacity-50" title="Pull">
-              <i className="fa-solid fa-arrow-down mr-1"></i>Pull
-            </button>
-            <button onClick={handlePush} disabled={loading} className="px-2.5 py-1 rounded text-xs text-[#9ca3af] hover:text-white hover:bg-[#37373d] disabled:opacity-50" title="Push">
-              <i className="fa-solid fa-arrow-up mr-1"></i>Push
-            </button>
-            <button onClick={() => refresh()} className="px-2 py-1 rounded text-xs text-[#9ca3af] hover:text-white hover:bg-[#37373d]" title="Refresh">
-              <i className="fa-solid fa-arrows-rotate"></i>
-            </button>
+            {gitRoot && (
+              <>
+                <button onClick={handlePull} disabled={loading} className="px-2.5 py-1 rounded text-xs text-[#9ca3af] hover:text-white hover:bg-[#37373d] disabled:opacity-50" title="Pull">
+                  <i className="fa-solid fa-arrow-down mr-1"></i>Pull
+                </button>
+                <button onClick={handlePush} disabled={loading} className="px-2.5 py-1 rounded text-xs text-[#9ca3af] hover:text-white hover:bg-[#37373d] disabled:opacity-50" title="Push">
+                  <i className="fa-solid fa-arrow-up mr-1"></i>Push
+                </button>
+                <button onClick={() => refresh()} className="px-2 py-1 rounded text-xs text-[#9ca3af] hover:text-white hover:bg-[#37373d]" title="Refresh">
+                  <i className="fa-solid fa-arrows-rotate"></i>
+                </button>
+              </>
+            )}
             <button onClick={onClose} className="text-[#9ca3af] hover:text-white px-2 py-1 rounded hover:bg-[#37373d]">
               <i className="fa-solid fa-xmark"></i>
             </button>
           </div>
         </div>
 
-        {/* Error banner — only for operational errors, not "not a git repo" */}
-        {error && gitStatus && (
+        {/* Error banner — only for operational errors */}
+        {error && gitRoot && gitStatus && (
           <div className="mx-5 mt-3 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400 flex items-center gap-2">
             <i className="fa-solid fa-triangle-exclamation"></i>
             <span className="flex-1">{error}</span>
@@ -265,20 +319,8 @@ export function GitPanel({ onClose }: GitPanelProps) {
         {/* Main content */}
         {!diffFile && (
           <div className="flex-1 overflow-y-auto p-5 space-y-4">
-            {!gitStatus ? (
-              <div className="text-center py-12">
-                {error ? (
-                  <>
-                    <i className="fa-solid fa-folder-open text-3xl text-[#555] mb-4 block"></i>
-                    <p className="text-[#d4d4d4] text-sm font-medium mb-2">Not a Git Repository</p>
-                    <p className="text-[#9ca3af] text-xs max-w-xs mx-auto">
-                      The current terminal directory isn't inside a git repo. Navigate to a project folder with <code className="bg-[#2d2d2d] px-1 rounded">cd</code> or open a terminal in a git project.
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-[#9ca3af] text-sm">Loading git status...</p>
-                )}
-              </div>
+            {!gitRoot ? renderNoRepo() : !gitStatus ? (
+              <p className="text-[#9ca3af] text-sm text-center py-8">Loading git status...</p>
             ) : gitStatus.staged.length === 0 && gitStatus.unstaged.length === 0 ? (
               <p className="text-[#9ca3af] text-sm text-center py-8">
                 <i className="fa-solid fa-circle-check text-green-400 mr-2"></i>

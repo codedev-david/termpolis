@@ -38,11 +38,13 @@ const mockGitCommit = vi.fn()
 const mockGitPull = vi.fn()
 const mockGitPush = vi.fn()
 const mockGitFileDiff = vi.fn()
-const mockGetTerminalStatus = vi.fn()
+const mockGitFindRoot = vi.fn()
+const mockPickDirectory = vi.fn()
 
 beforeAll(() => {
   ;(window as any).termpolis = {
-    getTerminalStatus: mockGetTerminalStatus,
+    gitFindRoot: mockGitFindRoot,
+    pickDirectory: mockPickDirectory,
     gitStatusParsed: mockGitStatusParsed,
     gitStage: mockGitStage,
     gitUnstage: mockGitUnstage,
@@ -70,7 +72,8 @@ beforeEach(() => {
   mockGitPull.mockResolvedValue({ success: true, data: 'Already up to date.' })
   mockGitPush.mockResolvedValue({ success: true, data: '' })
   mockGitFileDiff.mockResolvedValue({ success: true, data: '+added line\n-removed line' })
-  mockGetTerminalStatus.mockResolvedValue({ success: true, data: { cwd: '/test/project', gitBranch: 'main' } })
+  mockGitFindRoot.mockResolvedValue({ success: true, data: '/test/project' })
+  mockPickDirectory.mockResolvedValue({ success: true, data: '/test/project' })
 })
 
 import { GitPanel } from '../../src/renderer/src/components/GitPanel/GitPanel'
@@ -193,10 +196,11 @@ describe('GitPanel', () => {
     await waitFor(() => expect(screen.getByText(/nothing to commit/)).toBeInTheDocument())
   })
 
-  it('shows error when not a git repository', async () => {
-    mockGitStatusParsed.mockResolvedValue({ success: false, error: 'Not a git repository' })
+  it('shows folder picker when not a git repository', async () => {
+    mockGitFindRoot.mockResolvedValue({ success: true, data: null })
     render(<GitPanel onClose={vi.fn()} />)
-    await waitFor(() => expect(screen.getByText('Not a Git Repository')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Select a Git Repository')).toBeInTheDocument())
+    expect(screen.getByText('Open Folder')).toBeInTheDocument()
   })
 
   it('shows error banner on failed commit', async () => {
@@ -208,10 +212,11 @@ describe('GitPanel', () => {
     await waitFor(() => expect(screen.getByText('nothing to commit')).toBeInTheDocument())
   })
 
-  it('shows message when no terminal selected', () => {
+  it('shows folder picker when no terminal selected', async () => {
     mockActiveTerminalId = null
+    mockGitFindRoot.mockResolvedValue({ success: true, data: null })
     render(<GitPanel onClose={vi.fn()} />)
-    expect(screen.getByText(/No terminal selected/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('Select a Git Repository')).toBeInTheDocument())
   })
 
   it('has Stage All and Unstage All buttons', async () => {
