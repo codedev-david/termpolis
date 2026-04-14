@@ -4,7 +4,6 @@ import { TerminalTab } from './TerminalTab'
 import { AddTerminalModal } from './AddTerminalModal'
 import { WorkspaceList } from './WorkspaceList'
 import { AIProfiles } from './AIProfiles'
-import { PromptTemplates } from '../PromptTemplates/PromptTemplates'
 import { WorkflowTemplates } from '../WorkflowTemplates/WorkflowTemplates'
 import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { GitPanel } from '../GitPanel/GitPanel'
@@ -22,7 +21,6 @@ export function Sidebar() {
   } = useTerminalStore()
 
   const [showAddModal, setShowAddModal] = useState(false)
-  const [showPrompts, setShowPrompts] = useState(false)
   const [showWorkflows, setShowWorkflows] = useState(false)
   const [showSwarm, setShowSwarm] = useState(false)
   const [showGit, setShowGit] = useState(false)
@@ -73,11 +71,11 @@ export function Sidebar() {
 
   return (
     <aside className="shrink-0 flex flex-col bg-[#252526] border-r border-[#3c3c3c] h-full" style={{ width: 240, transition: 'width 200ms ease' }}>
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[#3c3c3c]">
+      <div className="flex items-center px-2 py-2 border-b border-[#3c3c3c]">
         <button
           onClick={() => setShowSettings(!showSettings)}
           title="Settings"
-          className={`px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d] text-white' : ''}`}
+          className={`px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d] ${showSettings ? 'bg-[#37373d] text-white' : ''}`}
         ><i className="fa-solid fa-gear"></i></button>
         <button
           onClick={() => {
@@ -88,32 +86,25 @@ export function Sidebar() {
             }
           }}
           title={viewMode === 'tabs' ? 'Split View' : 'Tab View'}
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className={`fa-solid ${viewMode === 'tabs' ? 'fa-columns' : 'fa-bars'}`}></i></button>
-        <button
-          onClick={() => setShowPrompts(true)}
-          title="Prompts"
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
-        ><i className="fa-solid fa-message"></i></button>
         <button
           onClick={() => setShowWorkflows(true)}
           title="Workflows"
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-cubes"></i></button>
         <button
           onClick={() => setShowGit(true)}
           title="Git Panel"
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-brands fa-git-alt"></i></button>
         <button
           onClick={async () => {
             const swarmActive = useTerminalStore.getState().swarmActive
             if (swarmActive) {
-              // Just open dashboard to view active swarm
               setSwarmCwd(null)
               setShowSwarm(true)
             } else {
-              // Pick directory first for new swarm
               const res = await window.termpolis.pickDirectory()
               if (res.success && res.data) {
                 setSwarmCwd(res.data)
@@ -122,7 +113,7 @@ export function Sidebar() {
             }
           }}
           title="Swarm Dashboard (Ctrl+Shift+S)"
-          className={`relative px-2 py-1.5 rounded text-sm hover:bg-[#37373d] transition-colors ${swarmActive ? 'text-[#22c55e] hover:text-[#4ade80]' : 'text-[#999] hover:text-white'}`}
+          className={`relative px-2.5 py-2 rounded text-base hover:bg-[#37373d] transition-colors ${swarmActive ? 'text-[#22c55e] hover:text-[#4ade80]' : 'text-[#999] hover:text-white'}`}
         >
           <i className="fa-solid fa-network-wired"></i>
           {swarmActive && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse"></span>}
@@ -131,7 +122,7 @@ export function Sidebar() {
         <button
           onClick={() => setSidebarCollapsed(true)}
           title="Collapse sidebar"
-          className="px-2 py-1.5 rounded text-sm text-[#999] hover:text-white hover:bg-[#37373d]"
+          className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
       <AIProfiles availableShells={availableShells} />
@@ -173,7 +164,6 @@ export function Sidebar() {
           onCancel={() => setShowAddModal(false)}
         />
       )}
-      {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
       {showWorkflows && <WorkflowTemplates onClose={() => setShowWorkflows(false)} />}
       {showSwarm && <SwarmDashboard onClose={() => { setShowSwarm(false); setSwarmCwd(null) }} initialCwd={swarmCwd} />}
       {showGit && <GitPanel onClose={() => setShowGit(false)} />}
