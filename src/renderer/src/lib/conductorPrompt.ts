@@ -71,7 +71,7 @@ STEP 4 — Start agents in INTERACTIVE mode:
     Claude Code → 'claude --dangerously-skip-permissions'
     Codex       → 'codex --full-auto'
     Gemini CLI  → 'gemini'
-    Qwen AI     → 'aider --model ollama/qwen3-coder-next --no-show-model-warnings'
+    Qwen AI     → 'aider --model ollama/qwen3-coder --no-show-model-warnings'
   Then post a status update via swarm_send_message.
 
   ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Aider):

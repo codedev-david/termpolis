@@ -11,7 +11,7 @@ const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
-  { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder-next --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
+  { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
 ]
 
 function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -287,7 +287,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
               <p className="mb-1">To set up:</p>
               <ol className="list-decimal ml-3 flex flex-col gap-0.5">
                 <li>Install <a href="https://ollama.com" className="text-[#22D3EE] underline" onClick={e => { e.preventDefault(); window.open('https://ollama.com', '_blank') }}>Ollama</a></li>
-                <li>Run: <code className="bg-[#0d1b0d] px-1 rounded">ollama pull qwen3-coder-next</code></li>
+                <li>Run: <code className="bg-[#0d1b0d] px-1 rounded">ollama pull qwen3-coder</code></li>
                 <li>Click "Qwen AI" above to start coding</li>
               </ol>
             </div>

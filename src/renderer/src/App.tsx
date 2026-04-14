@@ -78,8 +78,8 @@ export default function App() {
           'Claude Code': 'claude',
           'OpenAI Codex': 'codex',
           'Gemini CLI': 'gemini',
-          'Qwen AI': 'aider --model ollama/qwen3-coder-next --no-show-model-warnings',
-          'Aider + Qwen3': 'aider --model ollama/qwen3-coder-next --no-show-model-warnings',
+          'Qwen AI': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
+          'Aider + Qwen3': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
         }
         const resolvedSaved = saved.map(t => ({
           ...t,
@@ -527,7 +527,7 @@ export default function App() {
     claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
     codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
     gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
-    'aider-qwen': { name: 'Qwen AI', command: 'aider --model ollama/qwen3-coder-next --no-show-model-warnings', color: '#06B6D4' },
+    'aider-qwen': { name: 'Qwen AI', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', color: '#06B6D4' },
   }
 
   const handleWelcomeLaunchAgent = async (agentId: string) => {

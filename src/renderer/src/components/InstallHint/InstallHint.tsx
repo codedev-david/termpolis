@@ -47,17 +47,21 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
             '3. Add Ollama to PATH (PowerShell as Admin):',
             '   setx PATH "%PATH%;%LOCALAPPDATA%\\Programs\\Ollama" /M',
             '4. Restart your terminal, then pull a model:',
-            '   ollama pull qwen3-coder-next  (recommended, 64GB+ RAM)',
-            '   ollama pull qwen3-coder       (lighter, 16GB+ RAM)',
+            '   ollama pull qwen3-coder         (default, 16GB+ RAM)',
+            '   ollama pull qwen3-coder-next    (advanced, 64GB+ RAM)',
           ] : [
             '3. Pull a model:',
-            '   ollama pull qwen3-coder-next  (recommended, 64GB+ RAM)',
-            '   ollama pull qwen3-coder       (lighter, 16GB+ RAM)',
+            '   ollama pull qwen3-coder         (default, 16GB+ RAM)',
+            '   ollama pull qwen3-coder-next    (advanced, 64GB+ RAM)',
           ]),
           `${isWindows ? '5' : '4'}. Restart Termpolis to detect the changes`,
+          '',
+          'To use qwen3-coder-next instead (64GB+ RAM):',
+          '  Click + in AI Agents to add a custom profile',
+          '  Set command to: aider --model ollama/qwen3-coder-next --no-show-model-warnings',
         ],
         url: 'https://ollama.com',
-        pricing: 'Free — runs locally on your machine with no API costs. Qwen3-Coder-Next needs 64GB+ RAM. Qwen3-Coder works with 16GB+.',
+        pricing: 'Free — runs locally on your machine with no API costs. Default model works with 16GB+ RAM.',
       }
     default:
       return {

@@ -4,7 +4,7 @@ export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
   'claude': 'claude --dangerously-skip-permissions',
   'codex': 'codex --full-auto',
   'gemini': 'gemini',
-  'aider': 'aider --model ollama/qwen3-coder-next --no-show-model-warnings',
+  'aider': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
 }
 
 export function sanitizeAgentCommand(command: string): string {
