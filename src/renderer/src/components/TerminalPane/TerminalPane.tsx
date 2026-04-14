@@ -379,7 +379,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (now - lastPromptParseRef.current > 500) {
         lastPromptParseRef.current = now
         const promptInfo = parsePromptFromOutput(stripped, shellType)
-        if (promptInfo.cwd && !disposed) setParsedCwd(promptInfo.cwd)
+        if (promptInfo.cwd && !disposed) {
+          setParsedCwd(promptInfo.cwd)
+          // Write live cwd back to the store so Git Panel and other components can use it
+          useTerminalStore.getState().updateTerminal(terminalId, { cwd: promptInfo.cwd })
+        }
         if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
       }
 

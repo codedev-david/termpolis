@@ -52,16 +52,10 @@ export function GitPanel({ onClose }: GitPanelProps) {
     const id = s.activeTerminalId
     return id ? s.terminals.find(t => t.id === id) : null
   })
-  const fallbackCwd = activeTerminal?.cwd || ''
+  // The store's cwd is kept up-to-date by TerminalPane's prompt parser
+  const cwd = activeTerminal?.cwd || ''
 
   const refresh = useCallback(async () => {
-    if (!activeTerminal) return
-    // Get the live working directory (user may have cd'd since terminal opened)
-    let cwd = fallbackCwd
-    try {
-      const statusRes = await window.termpolis.getTerminalStatus(activeTerminal.id, fallbackCwd)
-      if (statusRes.success && statusRes.data?.cwd) cwd = statusRes.data.cwd
-    } catch {}
     if (!cwd) return
     setLiveCwd(cwd)
     try {
@@ -77,7 +71,7 @@ export function GitPanel({ onClose }: GitPanelProps) {
       setGitStatus(null)
       setError('Failed to read git status')
     }
-  }, [activeTerminal, fallbackCwd])
+  }, [cwd])
 
   // Poll every 3 seconds
   useEffect(() => {
