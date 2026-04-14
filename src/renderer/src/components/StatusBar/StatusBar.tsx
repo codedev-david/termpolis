@@ -206,10 +206,42 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             </ul>
           </section>
 
-          {/* Autocomplete */}
+          {/* Git Panel */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
-              <i className="fa-solid fa-wand-magic-sparkles text-xs"></i> Autocomplete & Auto-Fix
+              <i className="fa-brands fa-git-alt text-xs"></i> Git Panel
+            </h3>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li>Click the <i className="fa-brands fa-git-alt text-[10px]"></i> icon in the sidebar to open the Git Panel</li>
+              <li><strong>Auto-detects</strong> git repos from your terminal's directory, or pick any folder manually</li>
+              <li>View <strong>current branch</strong>, <strong>staged</strong> and <strong>unstaged</strong> files with status indicators (M/A/D/R/U)</li>
+              <li><strong>Stage/Unstage</strong> individual files or all at once with one click</li>
+              <li>Type a commit message and press <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> to commit</li>
+              <li><strong>Pull</strong> and <strong>Push</strong> buttons in the header</li>
+              <li>Click any file to view an <strong>inline diff</strong> with syntax highlighting (green = added, red = removed)</li>
+              <li>Auto-refreshes every 3 seconds — like VS Code's source control panel</li>
+            </ul>
+          </section>
+
+          {/* AI Command Suggestions */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-wand-magic-sparkles text-xs"></i> AI Command Suggestions
+            </h3>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li>Type <strong>natural language</strong> in any terminal and get instant shell command suggestions</li>
+              <li>Examples: "find large files", "undo last commit", "what's on port 3000", "kill port 8080"</li>
+              <li><strong>30+ built-in patterns</strong> — file search, git ops, npm/yarn, Docker, process management, system info, compression, downloads</li>
+              <li>Captures values from your input: "kill port 3000" becomes <code className="bg-[#2d2d2d] px-1 rounded">kill $(lsof -t -i:3000)</code></li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Tab</kbd> to accept, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">↑↓</kbd> to navigate, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Esc</kbd> to dismiss</li>
+              <li><strong>Zero latency</strong> — all local pattern matching, no API calls</li>
+            </ul>
+          </section>
+
+          {/* Autocomplete & Auto-Fix */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-bolt text-xs"></i> Autocomplete & Auto-Fix
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li>Start typing — suggestions appear after 2 characters. <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Tab</kbd> to accept, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Esc</kbd> to dismiss</li>

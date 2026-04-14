@@ -91,7 +91,7 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 ### AI-Native Features
 - **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Gemini CLI, and Aider with custom profiles support
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
-- **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P`
+- **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
 - **Multi-Agent Workflow Templates** — pre-built split-pane layouts for common AI workflows (Claude + Shell, Full Stack Dev, Code Review)
 - **Agent Status Detection** — automatically detects when Claude Code, Codex, Gemini, or Aider is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
@@ -148,9 +148,13 @@ No AI company has built a tool that brings together competing models to work as 
 - **Free local option** — Aider + Qwen3-Coder runs via Ollama with zero API cost. Auto-detects if Ollama is installed.
 
 ### Intelligence
+- **AI Command Suggestions** — type natural language in any terminal and get instant shell command suggestions. 30+ built-in patterns covering file search, git operations, npm/yarn, Docker, process management, system info, compression, and downloads. Captures values from your input (e.g., "kill port 3000" becomes `kill $(lsof -t -i:3000)`). Tab to accept, arrow keys to navigate, Esc to dismiss. Zero latency — all local pattern matching, no API calls.
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
 - **Command auto-fix** — mistype a command? A green banner suggests the correction. Press Enter to run or Esc to ignore. Detects typos, permission errors, wrong flags, and more
 - **Command history search** — search across all terminals with Ctrl+Shift+H
+
+### Git Panel
+- **Built-in git panel** — accessible from the sidebar git icon. Shows current branch, staged and unstaged file lists with status indicators (M/A/D/R/U), stage or unstage individual files or all at once, commit with message, and pull/push buttons. Includes an inline diff viewer with syntax highlighting. Auto-detects git repos or lets you pick a folder (VS Code-style). Collapsible sections, auto-refreshes every 3 seconds.
 
 ### Customization
 - **7 terminal themes** — Dark, Light, Solarized Dark, Solarized Light, Monokai, Dracula, Nord
@@ -445,7 +449,7 @@ termpolis/
 │       ├── completions/             # Autocomplete engine, input parser, spec loader, 20 specs
 │       ├── corrections/             # Command correction engine + rules
 │       └── components/
-│           ├── Sidebar/             # Terminal tabs, AI profiles, workspace list, collapse
+│           ├── Sidebar/             # Terminal tabs, AI profiles, git panel, workspace list, collapse
 │           ├── SplitView/           # Split pane layout with draggable dividers
 │           ├── TerminalPane/        # xterm.js terminal with all integrations
 │           ├── CommandPalette/      # Natural language command bar (Ctrl+K)
