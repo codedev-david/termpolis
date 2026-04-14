@@ -245,26 +245,18 @@ export function GitPanel({ onClose }: GitPanelProps) {
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[#3c3c3c]">
-          <div className="flex items-center gap-3">
-            <i className="fa-brands fa-git-alt text-[#F05032]"></i>
-            <h2 className="text-base font-semibold text-[#d4d4d4]">Git</h2>
-            {gitStatus && (
-              <span className="text-xs text-[#22D3EE] bg-[#22D3EE]/10 px-2 py-0.5 rounded-full font-mono">
-                <i className="fa-solid fa-code-branch mr-1 text-[10px]"></i>
-                {gitStatus.branch}
-              </span>
-            )}
-            {gitRoot && (
-              <span
-                className="text-[10px] text-[#888] truncate max-w-[180px] cursor-pointer hover:text-[#bbb]"
-                title={`${gitRoot} — click to change`}
-                onClick={handlePickFolder}
-              >
-                {gitRoot.split(/[/\\]/).slice(-2).join('/')}
-              </span>
-            )}
-          </div>
+        <div className="px-5 py-3 border-b border-[#3c3c3c]">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <i className="fa-brands fa-git-alt text-[#F05032]"></i>
+              <h2 className="text-base font-semibold text-[#d4d4d4]">Git</h2>
+              {gitStatus && (
+                <span className="text-xs text-[#22D3EE] bg-[#22D3EE]/10 px-2 py-0.5 rounded-full font-mono">
+                  <i className="fa-solid fa-code-branch mr-1 text-[10px]"></i>
+                  {gitStatus.branch}
+                </span>
+              )}
+            </div>
           <div className="flex items-center gap-1">
             {gitRoot && (
               <>
@@ -283,6 +275,17 @@ export function GitPanel({ onClose }: GitPanelProps) {
               <i className="fa-solid fa-xmark"></i>
             </button>
           </div>
+          </div>
+          {gitRoot && (
+            <div
+              className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#888] cursor-pointer hover:text-[#bbb] truncate"
+              title={`${gitRoot} — click to change`}
+              onClick={handlePickFolder}
+            >
+              <i className="fa-solid fa-folder text-[9px]"></i>
+              {gitRoot.replace(/\\/g, '/')}
+            </div>
+          )}
         </div>
 
         {/* Error banner — only for operational errors */}
