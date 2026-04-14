@@ -264,6 +264,13 @@ ipcMain.handle('git:file-diff', async (_, { cwd, file }: { cwd: string; file: st
   } catch { return ok('') }
 })
 
+ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const root = execSync('git rev-parse --show-toplevel', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+    return ok(root)
+  } catch { return ok(null) }
+})
+
 ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
   try {
     let branch = ''

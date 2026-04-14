@@ -57,19 +57,24 @@ export function GitPanel({ onClose }: GitPanelProps) {
 
   const refresh = useCallback(async () => {
     if (!cwd) return
-    setLiveCwd(cwd)
-    try {
-      const res = await window.termpolis.gitStatusParsed(cwd)
-      if (res.success && res.data) {
-        setGitStatus(res.data)
-        setError(null)
-      } else {
-        setGitStatus(null)
-        setError(res.error || 'Not a git repository')
+    // Try the stored cwd first; if it's not a git repo, ask git to find the root
+    let effectiveCwd = cwd
+    let res = await window.termpolis.gitStatusParsed(effectiveCwd)
+    if (!res.success) {
+      // The stored cwd might be a parent dir — try finding the git root
+      const rootRes = await window.termpolis.gitFindRoot(effectiveCwd)
+      if (rootRes.success && rootRes.data) {
+        effectiveCwd = rootRes.data
+        res = await window.termpolis.gitStatusParsed(effectiveCwd)
       }
-    } catch {
+    }
+    setLiveCwd(effectiveCwd)
+    if (res.success && res.data) {
+      setGitStatus(res.data)
+      setError(null)
+    } else {
       setGitStatus(null)
-      setError('Failed to read git status')
+      setError(res.error || 'Not a git repository')
     }
   }, [cwd])
 

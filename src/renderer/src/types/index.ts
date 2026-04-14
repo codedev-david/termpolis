@@ -100,6 +100,7 @@ export interface TermpolisAPI {
   readTerminalBuffer: (terminalId: string, fromOffset?: number) => Promise<IpcResponse<{ output: string; length: number }>>
 
   // Git operations
+  gitFindRoot: (cwd: string) => Promise<IpcResponse<string | null>>
   gitStatusParsed: (cwd: string) => Promise<IpcResponse<{ branch: string; staged: { file: string; status: string }[]; unstaged: { file: string; status: string }[] }>>
   gitStage: (cwd: string, files: string[]) => Promise<IpcResponse>
   gitUnstage: (cwd: string, files: string[]) => Promise<IpcResponse>

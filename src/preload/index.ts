@@ -78,6 +78,8 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('terminal:read-buffer', { terminalId, fromOffset }),
 
   // Git operations
+  gitFindRoot: (cwd) =>
+    ipcRenderer.invoke('git:find-root', { cwd }),
   gitStatusParsed: (cwd) =>
     ipcRenderer.invoke('git:status-parsed', { cwd }),
   gitStage: (cwd, files) =>
