@@ -39,7 +39,6 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
   { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },
   { pattern: /run\s+(.+)/i, action: 'run_command', capture: true, label: 'Run Command', description: 'Execute a command in active terminal', icon: 'fa-solid fa-terminal' },
-  { pattern: /go\s*to\s*terminal\s*(\d)/i, action: 'goto_terminal', capture: true, label: 'Go to Terminal', description: 'Switch to terminal by number', icon: 'fa-solid fa-arrow-right' },
 ]
 
 interface Props {
@@ -53,6 +52,7 @@ export function CommandPalette({ onAction, onClose }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const storeTemplates = useTerminalStore(s => s.promptTemplates)
+  const terminals = useTerminalStore(s => s.terminals).filter(t => !t.hidden)
 
   // Merge default + custom prompt templates
   const allTemplates = useMemo(() => {
@@ -110,8 +110,20 @@ export function CommandPalette({ onAction, onClose }: Props) {
         captured: t.text,
       }))
 
-    return [...commandResults, ...templateResults]
-  }, [query, allTemplates])
+    // Build terminal switch entries
+    const terminalResults = terminals
+      .filter(t => !lower || t.name.toLowerCase().includes(lower) || 'terminal'.includes(lower) || 'switch'.includes(lower))
+      .map((t, i) => ({
+        pattern: /.*/ as RegExp,
+        action: `goto_terminal:${t.id}`,
+        label: `${t.name}`,
+        description: i < 9 ? `Alt+${i + 1}` : '',
+        icon: 'fa-solid fa-terminal',
+        captured: t.id,
+      }))
+
+    return [...commandResults, ...templateResults, ...terminalResults]
+  }, [query, allTemplates, terminals])
 
   // Reset selection when matches change
   useEffect(() => {
@@ -128,6 +140,12 @@ export function CommandPalette({ onAction, onClose }: Props) {
   const executeMatch = (idx: number) => {
     const match = matches[idx]
     if (!match) return
+    // Terminal switch — activate the selected terminal
+    if (match.action.startsWith('goto_terminal:') && match.captured) {
+      useTerminalStore.getState().setActiveTerminal(match.captured)
+      onClose()
+      return
+    }
     // Prompt template insertion — type the text into the active terminal
     if (match.action.startsWith('insert_prompt:') && match.captured) {
       const terminalId = useTerminalStore.getState().activeTerminalId
