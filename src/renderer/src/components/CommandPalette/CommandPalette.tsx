@@ -1,4 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
+import { useTerminalStore } from '../../store/terminalStore'
+import type { PromptTemplate } from '../../types'
+
+const DEFAULT_TEMPLATES: PromptTemplate[] = [
+  { id: 'fix-tests', name: 'Fix Tests', text: 'Fix the failing tests and explain what was wrong', icon: 'fa-solid fa-bug' },
+  { id: 'review', name: 'Code Review', text: 'Review this code for bugs, security issues, and improvements', icon: 'fa-solid fa-magnifying-glass' },
+  { id: 'explain', name: 'Explain Code', text: 'Explain what this code does step by step', icon: 'fa-solid fa-book' },
+  { id: 'refactor', name: 'Refactor', text: 'Refactor this code to be cleaner and more maintainable', icon: 'fa-solid fa-wand-magic-sparkles' },
+  { id: 'test', name: 'Write Tests', text: 'Write comprehensive tests for this code', icon: 'fa-solid fa-flask' },
+  { id: 'docs', name: 'Add Docs', text: 'Add documentation and comments to this code', icon: 'fa-solid fa-file-lines' },
+]
 
 interface CommandAction {
   pattern: RegExp
@@ -40,6 +51,14 @@ export function CommandPalette({ onAction, onClose }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const storeTemplates = useTerminalStore(s => s.promptTemplates)
+
+  // Merge default + custom prompt templates
+  const allTemplates = useMemo(() => {
+    const customs = storeTemplates.filter(t => t.isCustom)
+    return [...DEFAULT_TEMPLATES, ...customs]
+  }, [storeTemplates])
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -57,37 +76,67 @@ export function CommandPalette({ onAction, onClose }: Props) {
   }, [onClose])
 
   const matches = useMemo(() => {
-    if (!query.trim()) {
-      // Show all commands when empty
-      return COMMAND_PATTERNS.map(cmd => ({ ...cmd, captured: undefined as string | undefined }))
-    }
-    const results: (CommandAction & { captured?: string })[] = []
-    for (const cmd of COMMAND_PATTERNS) {
-      const m = cmd.pattern.exec(query)
-      if (m) {
-        results.push({ ...cmd, captured: cmd.capture ? m[1] : undefined })
-      }
-    }
-    // Also do a fuzzy label match if no regex matched
-    if (results.length === 0) {
-      const lower = query.toLowerCase()
+    const lower = query.trim().toLowerCase()
+
+    // Build command matches
+    let commandResults: (CommandAction & { captured?: string })[] = []
+    if (!lower) {
+      commandResults = COMMAND_PATTERNS.map(cmd => ({ ...cmd, captured: undefined as string | undefined }))
+    } else {
       for (const cmd of COMMAND_PATTERNS) {
-        if (cmd.label.toLowerCase().includes(lower) || cmd.description.toLowerCase().includes(lower)) {
-          results.push({ ...cmd, captured: undefined })
+        const m = cmd.pattern.exec(query)
+        if (m) {
+          commandResults.push({ ...cmd, captured: cmd.capture ? m[1] : undefined })
+        }
+      }
+      if (commandResults.length === 0) {
+        for (const cmd of COMMAND_PATTERNS) {
+          if (cmd.label.toLowerCase().includes(lower) || cmd.description.toLowerCase().includes(lower)) {
+            commandResults.push({ ...cmd, captured: undefined })
+          }
         }
       }
     }
-    return results
-  }, [query])
+
+    // Build prompt template matches
+    const templateResults = allTemplates
+      .filter(t => !lower || t.name.toLowerCase().includes(lower) || t.text.toLowerCase().includes(lower))
+      .map(t => ({
+        pattern: /.*/ as RegExp,
+        action: `insert_prompt:${t.id}`,
+        label: t.name,
+        description: t.text.slice(0, 60) + (t.text.length > 60 ? '...' : ''),
+        icon: t.icon,
+        captured: t.text,
+      }))
+
+    return [...commandResults, ...templateResults]
+  }, [query, allTemplates])
 
   // Reset selection when matches change
   useEffect(() => {
     setSelectedIndex(0)
   }, [matches])
 
+  // Scroll selected item into view
+  useEffect(() => {
+    if (!listRef.current) return
+    const item = listRef.current.children[selectedIndex] as HTMLElement | undefined
+    item?.scrollIntoView?.({ block: 'nearest' })
+  }, [selectedIndex])
+
   const executeMatch = (idx: number) => {
     const match = matches[idx]
     if (!match) return
+    // Prompt template insertion — type the text into the active terminal
+    if (match.action.startsWith('insert_prompt:') && match.captured) {
+      const terminalId = useTerminalStore.getState().activeTerminalId
+      if (terminalId) {
+        window.termpolis.writeToTerminal(terminalId, match.captured)
+      }
+      onClose()
+      return
+    }
     onAction(match.action, match.captured)
     onClose()
   }
@@ -131,7 +180,7 @@ export function CommandPalette({ onAction, onClose }: Props) {
         </div>
 
         {/* Results */}
-        <div className="overflow-y-auto max-h-72">
+        <div ref={listRef} className="overflow-y-auto max-h-72">
           {matches.length === 0 && query && (
             <p className="text-center text-sm text-[#9ca3af] py-6">No matching command</p>
           )}

@@ -8,7 +8,7 @@ interface InstallHintProps {
 
 const isWindows = navigator.platform.startsWith('Win')
 
-function getInstallInstructions(agentId: string): { steps: string[]; url: string } {
+function getInstallInstructions(agentId: string): { steps: string[]; url: string; pricing: string | null } {
   switch (agentId) {
     case 'claude':
       return {
@@ -17,6 +17,7 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
           'claude --version  (to verify)',
         ],
         url: 'https://docs.anthropic.com/en/docs/claude-code',
+        pricing: 'Requires an Anthropic API plan or Claude Pro/Max subscription.',
       }
     case 'codex':
       return {
@@ -25,6 +26,7 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
           'codex --version  (to verify)',
         ],
         url: 'https://github.com/openai/codex',
+        pricing: 'Requires an OpenAI API key with active billing.',
       }
     case 'gemini':
       return {
@@ -34,6 +36,7 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
           'gemini --version  (to verify)',
         ],
         url: 'https://github.com/google-gemini/gemini-cli',
+        pricing: 'Free tier available. Paid Google AI API plan for higher usage.',
       }
     case 'aider-qwen':
       return {
@@ -51,11 +54,13 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
           `${isWindows ? '5' : '4'}. Restart Termpolis to detect the changes`,
         ],
         url: 'https://ollama.com',
+        pricing: 'Free — runs locally on your machine with no API costs.',
       }
     default:
       return {
         steps: ['Check the documentation for install instructions.'],
         url: 'https://github.com/codedev-david/termpolis',
+        pricing: null,
       }
   }
 }
@@ -85,6 +90,13 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
             </div>
           ))}
         </div>
+
+        {info.pricing && (
+          <div className="flex items-start gap-2 p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded">
+            <i className="fa-solid fa-credit-card text-[#F59E0B] text-xs mt-0.5"></i>
+            <p className="text-xs text-[#bbb]">{info.pricing}</p>
+          </div>
+        )}
 
         <p className="text-xs text-[#9ca3af]">
           After installing, restart Termpolis and the agent will be available.
