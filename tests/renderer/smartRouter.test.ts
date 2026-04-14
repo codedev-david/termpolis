@@ -39,7 +39,7 @@ describe('agentCapabilities', () => {
     expect(gemini.strengths.devops).toBe(5)
   })
 
-  it('Aider+Qwen is free and strongest at bulk tasks', () => {
+  it('Qwen AI is free and strongest at bulk tasks', () => {
     const qwen = AGENT_CAPABILITIES.find(a => a.agentId === 'aider-qwen')!
     expect(qwen.tokenCost).toBe('free')
     expect(qwen.strengths.bulkTasks).toBe(5)

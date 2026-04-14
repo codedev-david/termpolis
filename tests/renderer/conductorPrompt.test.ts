@@ -29,7 +29,7 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('Claude Code')
     expect(prompt).toContain('OpenAI Codex')
     expect(prompt).toContain('Gemini CLI')
-    expect(prompt).toContain('Aider + Qwen3')
+    expect(prompt).toContain('Qwen AI')
   })
 
   it('excludes agents that are not installed (installedAgents[id] === false)', () => {
@@ -42,7 +42,7 @@ describe('buildConductorPrompt', () => {
     expect(agentsSection).not.toContain('OpenAI Codex')
     expect(agentsSection).not.toContain('Gemini CLI')
     // aider-qwen is special — only included when explicitly true
-    expect(agentsSection).not.toContain('Aider + Qwen3')
+    expect(agentsSection).not.toContain('Qwen AI')
   })
 
   it('includes MCP tool names', () => {
@@ -83,7 +83,7 @@ describe('buildConductorPrompt', () => {
     expect(agentsSection).toContain('Claude Code')
     expect(agentsSection).not.toContain('OpenAI Codex')
     expect(agentsSection).not.toContain('Gemini CLI')
-    expect(agentsSection).not.toContain('Aider + Qwen3')
+    expect(agentsSection).not.toContain('Qwen AI')
     // Should still be a valid prompt with tools section
     expect(prompt).toContain('swarm_create_task')
   })

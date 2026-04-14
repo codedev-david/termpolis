@@ -101,7 +101,7 @@ export const DEFAULT_AGENT_CAPABILITIES: AgentCapability[] = [
   },
   {
     agentId: 'aider-qwen',
-    agentName: 'Aider + Qwen3',
+    agentName: 'Qwen AI',
     strengths: {
       refactoring: 3,
       architecture: 2,

@@ -86,7 +86,7 @@ describe('Welcome', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
-    expect(screen.getByText('Aider + Qwen3')).toBeInTheDocument()
+    expect(screen.getByText('Qwen AI')).toBeInTheDocument()
   })
 
   it('toggles agent picker open and closed', () => {

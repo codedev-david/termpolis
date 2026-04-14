@@ -17,8 +17,8 @@ describe('sanitizeAgentCommand', () => {
   })
 
   it('passes through correct aider command', () => {
-    expect(sanitizeAgentCommand('aider --model ollama/qwen3-coder --no-show-model-warnings'))
-      .toBe('aider --model ollama/qwen3-coder --no-show-model-warnings')
+    expect(sanitizeAgentCommand('aider --model ollama/qwen3-coder-next --no-show-model-warnings'))
+      .toBe('aider --model ollama/qwen3-coder-next --no-show-model-warnings')
   })
 
   // ---- Strips -p flag from all agents ----

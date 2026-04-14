@@ -82,7 +82,7 @@ describe('getEffectiveCapabilities', () => {
     const qwen = result.find(a => a.agentId === 'aider-qwen')!
     expect(qwen.tokenCost).toBe('free')
     expect(qwen.hasMcp).toBe(false)
-    expect(qwen.agentName).toBe('Aider + Qwen3')
+    expect(qwen.agentName).toBe('Qwen AI')
   })
 
   it('ignores overrides for non-existent agent IDs', () => {
@@ -208,8 +208,8 @@ describe('buildConductorPrompt with agentRatingOverrides', () => {
       projectCwd: '/home/user/project',
       agentRatingOverrides: overrides,
     })
-    // Aider+Qwen normally has refactoring 3 (below threshold), but boosted to 5 it should appear
-    const qwenLine = prompt.split('\n').find(l => l.includes('Aider + Qwen3'))!
+    // Qwen AI normally has refactoring 3 (below threshold), but boosted to 5 it should appear
+    const qwenLine = prompt.split('\n').find(l => l.includes('Qwen AI'))!
     expect(qwenLine).toContain('Refactoring (5/5)')
   })
 

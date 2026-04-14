@@ -90,7 +90,7 @@ describe('AIProfiles', () => {
       expect(screen.getByText('Claude Code')).toBeInTheDocument()
       expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
       expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
-      expect(screen.getByText('Aider + Qwen3')).toBeInTheDocument()
+      expect(screen.getByText('Qwen AI')).toBeInTheDocument()
     })
 
     it('renders custom profiles alongside defaults', async () => {
@@ -107,7 +107,7 @@ describe('AIProfiles', () => {
       expect(screen.getByText('AI Agents')).toBeInTheDocument()
     })
 
-    it('shows FREE badge on Aider + Qwen3', () => {
+    it('shows FREE badge on Qwen AI', () => {
       render(<AIProfiles availableShells={defaultShells} />)
       expect(screen.getByText('FREE')).toBeInTheDocument()
     })
@@ -269,7 +269,7 @@ describe('AIProfiles', () => {
   })
 
   describe('Ollama path detection for Aider', () => {
-    it('fetches Ollama path when launching Aider + Qwen3', async () => {
+    it('fetches Ollama path when launching Qwen AI', async () => {
       mockInstalledAgents = { claude: true, codex: true, gemini: true, 'aider-qwen': true }
       ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
         success: true,
@@ -285,7 +285,7 @@ describe('AIProfiles', () => {
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-check').length).toBe(4)
       }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Aider + Qwen3'))
+      fireEvent.click(screen.getByText('Qwen AI'))
       await waitFor(() => {
         expect((window as any).termpolis.getOllamaPath).toHaveBeenCalled()
       }, { timeout: 3000 })
@@ -314,7 +314,7 @@ describe('AIProfiles', () => {
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-check').length).toBe(4)
       }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Aider + Qwen3'))
+      fireEvent.click(screen.getByText('Qwen AI'))
       await waitFor(() => {
         expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith(
           expect.any(String),
@@ -339,9 +339,9 @@ describe('AIProfiles', () => {
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
       }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Aider + Qwen3'))
+      fireEvent.click(screen.getByText('Qwen AI'))
       await waitFor(() => {
-        expect(screen.getByText('Free AI Coding with Qwen3-Coder')).toBeInTheDocument()
+        expect(screen.getByText('Free AI Coding with Qwen AI')).toBeInTheDocument()
       }, { timeout: 3000 })
     }, 10000)
   })

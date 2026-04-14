@@ -193,7 +193,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li className="pl-4 text-xs">Claude Code — strongest at refactoring and code review (default)</li>
               <li className="pl-4 text-xs">Codex — best at test writing (default)</li>
               <li className="pl-4 text-xs">Gemini CLI — leads in documentation and DevOps (default)</li>
-              <li className="pl-4 text-xs">Aider + Qwen3 — free local model for bulk tasks (default)</li>
+              <li className="pl-4 text-xs">Qwen AI — free local model via Ollama for bulk tasks (default)</li>
               <li className="pl-4 text-xs"><strong>Customize ratings</strong> in <strong>Settings &gt; Agent Capability Ratings</strong>. Defaults are estimates — adjust based on your experience. The conductor uses ratings as hints but makes its own judgment.</li>
               <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress (tasks created, terminals opened) and closes automatically when agents are ready. You land on the Swarm Dashboard to watch agents work.</li>
               <li><strong>Clear Confirmation</strong> — clearing a swarm requires explicit confirmation to prevent accidental loss of in-progress work.</li>
@@ -202,7 +202,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li><strong>Agent Install Status</strong> — the AI Agents sidebar shows <i className="fa-solid fa-circle-check text-green-400 text-[10px]"></i> for installed agents and <i className="fa-solid fa-circle-xmark text-red-400 text-[10px]"></i> for missing ones. Click a missing agent for setup instructions.</li>
               <li><strong>Agent Bridge</strong> — agents without native MCP (e.g., Aider) are bridged automatically. Claude Code, Codex, and Gemini all use MCP natively.</li>
               <li><strong>Dashboard tabs:</strong> Agents (health status) · Tasks (kanban columns) · Messages (chronological log)</li>
-              <li><strong>Free option:</strong> Aider + Qwen3-Coder via Ollama — zero API cost, fully local</li>
+              <li><strong>Free option:</strong> Qwen AI via Ollama — zero API cost, fully local. Qwen3-Coder-Next (64GB+ RAM) or Qwen3-Coder (16GB+ RAM)</li>
             </ul>
           </section>
 

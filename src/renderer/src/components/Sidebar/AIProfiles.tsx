@@ -11,7 +11,7 @@ const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
-  { id: 'aider-qwen', name: 'Aider + Qwen3', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
+  { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder-next --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
 ]
 
 function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -237,7 +237,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                       handleLaunch(profile)
                     }}
                     title={isAiderQwen
-                      ? 'Free & local — runs Qwen3-Coder via Ollama (no API costs)'
+                      ? 'Free & local — runs Qwen3-Coder-Next via Ollama (no API costs)'
                       : `Launch ${profile.name}: ${profile.command}`}
                   >
                     <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
@@ -280,15 +280,15 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
           {showOllamaHint && (
             <div className="mx-2 mt-1 p-2 bg-[#1e3a1e] border border-[#2d5a2d] rounded text-[10px] text-[#A5D6A7] leading-relaxed">
               <div className="flex justify-between items-start mb-1">
-                <strong className="text-[#22D3EE]">Free AI Coding with Qwen3-Coder</strong>
+                <strong className="text-[#22D3EE]">Free AI Coding with Qwen AI</strong>
                 <button onClick={() => setShowOllamaHint(false)} className="text-[#999] hover:text-white">×</button>
               </div>
-              <p className="mb-1">Aider + Qwen3-Coder runs completely free and local — no API keys, no cloud, no costs.</p>
+              <p className="mb-1">Qwen AI runs completely free and local via Ollama — no API keys, no cloud, no costs.</p>
               <p className="mb-1">To set up:</p>
               <ol className="list-decimal ml-3 flex flex-col gap-0.5">
                 <li>Install <a href="https://ollama.com" className="text-[#22D3EE] underline" onClick={e => { e.preventDefault(); window.open('https://ollama.com', '_blank') }}>Ollama</a></li>
-                <li>Run: <code className="bg-[#0d1b0d] px-1 rounded">ollama pull qwen3-coder</code></li>
-                <li>Click "Aider + Qwen3" above to start coding</li>
+                <li>Run: <code className="bg-[#0d1b0d] px-1 rounded">ollama pull qwen3-coder-next</code></li>
+                <li>Click "Qwen AI" above to start coding</li>
               </ol>
             </div>
           )}
