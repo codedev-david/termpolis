@@ -125,10 +125,10 @@ export function CommandPalette({ onAction, onClose }: Props) {
     return [...commandResults, ...templateResults, ...terminalResults]
   }, [query, allTemplates, terminals])
 
-  // Reset selection when matches change
+  // Reset selection only when the query changes (not when matches recompute from store updates)
   useEffect(() => {
     setSelectedIndex(0)
-  }, [matches])
+  }, [query])
 
   // Scroll selected item into view
   useEffect(() => {
