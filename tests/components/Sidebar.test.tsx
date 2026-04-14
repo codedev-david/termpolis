@@ -124,8 +124,8 @@ describe('Sidebar', () => {
   it('renders sidebar with icon bar buttons', () => {
     render(<Sidebar />)
     expect(screen.getByTitle('Settings')).toBeInTheDocument()
-    expect(screen.getByTitle('Prompts')).toBeInTheDocument()
     expect(screen.getByTitle('Workflows')).toBeInTheDocument()
+    expect(screen.getByTitle('Git Panel')).toBeInTheDocument()
     expect(screen.getByTitle('Swarm Dashboard (Ctrl+Shift+S)')).toBeInTheDocument()
   })
 
@@ -296,13 +296,6 @@ describe('Sidebar', () => {
     expect(mockSetShowSettings).toHaveBeenCalledWith(false)
   })
 
-  it('prompts button opens PromptTemplates', async () => {
-    render(<Sidebar />)
-    expect(screen.queryByTestId('prompt-templates')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByTitle('Prompts'))
-    expect(screen.getByTestId('prompt-templates')).toBeInTheDocument()
-  })
-
   it('workflows button opens WorkflowTemplates', async () => {
     render(<Sidebar />)
     expect(screen.queryByTestId('workflow-templates')).not.toBeInTheDocument()
@@ -423,14 +416,6 @@ describe('Sidebar', () => {
   })
 
   // -- Closing prompt/workflow templates --
-
-  it('closing PromptTemplates hides it', () => {
-    render(<Sidebar />)
-    fireEvent.click(screen.getByTitle('Prompts'))
-    expect(screen.getByTestId('prompt-templates')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Close Prompts'))
-    expect(screen.queryByTestId('prompt-templates')).not.toBeInTheDocument()
-  })
 
   it('closing WorkflowTemplates hides it', () => {
     render(<Sidebar />)
