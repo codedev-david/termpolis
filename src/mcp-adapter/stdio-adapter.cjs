@@ -31,7 +31,27 @@ function findToken() {
 }
 
 const TOKEN = findToken()
-const MCP_PORT = 9315
+
+// Read the actual port from file (may differ from 9315 if that port was taken)
+function findPort() {
+  const platform = process.platform
+  let tokenDir
+  if (platform === 'win32') {
+    tokenDir = path.join(process.env.APPDATA || '', 'termpolis')
+  } else if (platform === 'darwin') {
+    tokenDir = path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
+  } else {
+    tokenDir = path.join(os.homedir(), '.config', 'termpolis')
+  }
+  const portPath = path.join(tokenDir, 'mcp-port')
+  try {
+    const port = parseInt(fs.readFileSync(portPath, 'utf-8').trim(), 10)
+    if (port > 0 && port < 65536) return port
+  } catch {}
+  return 9315 // default fallback
+}
+
+const MCP_PORT = findPort()
 
 function sendToServer(body) {
   return new Promise((resolve, reject) => {

@@ -18,7 +18,7 @@ import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, initAuditLog, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, initAuditLog, type McpToolHandlers } from './mcpServer'
 import {
   sendMessage, readMessages, getAllMessages,
   createTask, listTasks, updateTask, clearSwarm,
@@ -623,6 +623,13 @@ if (!gotTheLock) {
     const tokenPath = join(app.getPath('userData'), 'mcp-token')
     require('fs').writeFileSync(tokenPath, getMcpAuthToken(), { encoding: 'utf-8', mode: 0o600 })
     console.log(`MCP token written to: ${tokenPath}`)
+    // Write the actual port (may differ from 9315 if port was taken)
+    const portPath = join(app.getPath('userData'), 'mcp-port')
+    // Port is written after a short delay to ensure the server has bound (including fallback)
+    setTimeout(() => {
+      require('fs').writeFileSync(portPath, String(getMcpPort()), { encoding: 'utf-8', mode: 0o600 })
+      console.log(`MCP port written to: ${portPath} (port ${getMcpPort()})`)
+    }, 1000)
 
     // Auto-register Termpolis as an MCP server in Claude Code's settings
     const adapterPath = app.isPackaged

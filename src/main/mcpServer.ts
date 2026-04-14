@@ -367,6 +367,12 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
   }
 }
 
+let actualPort = MCP_PORT
+
+export function getMcpPort(): number {
+  return actualPort
+}
+
 export function startMcpServer(handlers: McpToolHandlers): http.Server {
   const server = http.createServer(async (req, res) => {
     // Restrict to localhost only (binding handles this, but belt-and-suspenders)
@@ -483,14 +489,19 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
   })
 
   server.listen(MCP_PORT, '127.0.0.1', () => {
+    actualPort = MCP_PORT
     console.log(`Termpolis MCP server listening on http://127.0.0.1:${MCP_PORT}`)
   })
 
-  // Don't crash if port is taken
+  // Don't crash if port is taken — try next port
   server.on('error', (e: any) => {
     if (e.code === 'EADDRINUSE') {
-      console.warn(`MCP port ${MCP_PORT} in use, trying ${MCP_PORT + 1}`)
-      server.listen(MCP_PORT + 1, '127.0.0.1')
+      const nextPort = MCP_PORT + 1
+      console.warn(`MCP port ${MCP_PORT} in use, trying ${nextPort}`)
+      server.listen(nextPort, '127.0.0.1', () => {
+        actualPort = nextPort
+        console.log(`Termpolis MCP server listening on http://127.0.0.1:${nextPort}`)
+      })
     }
   })
 
