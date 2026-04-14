@@ -44,6 +44,7 @@ export function GitPanel({ onClose }: GitPanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [diffFile, setDiffFile] = useState<string | null>(null)
   const [diffContent, setDiffContent] = useState<string>('')
+  const [liveCwd, setLiveCwd] = useState<string>('')
   const [stagedCollapsed, setStagedCollapsed] = useState(false)
   const [unstagedCollapsed, setUnstagedCollapsed] = useState(false)
 
@@ -51,10 +52,18 @@ export function GitPanel({ onClose }: GitPanelProps) {
     const id = s.activeTerminalId
     return id ? s.terminals.find(t => t.id === id) : null
   })
-  const cwd = activeTerminal?.cwd || ''
+  const fallbackCwd = activeTerminal?.cwd || ''
 
   const refresh = useCallback(async () => {
+    if (!activeTerminal) return
+    // Get the live working directory (user may have cd'd since terminal opened)
+    let cwd = fallbackCwd
+    try {
+      const statusRes = await window.termpolis.getTerminalStatus(activeTerminal.id, fallbackCwd)
+      if (statusRes.success && statusRes.data?.cwd) cwd = statusRes.data.cwd
+    } catch {}
     if (!cwd) return
+    setLiveCwd(cwd)
     try {
       const res = await window.termpolis.gitStatusParsed(cwd)
       if (res.success && res.data) {
@@ -68,7 +77,7 @@ export function GitPanel({ onClose }: GitPanelProps) {
       setGitStatus(null)
       setError('Failed to read git status')
     }
-  }, [cwd])
+  }, [activeTerminal, fallbackCwd])
 
   // Poll every 3 seconds
   useEffect(() => {
@@ -91,27 +100,27 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }, [onClose, diffFile])
 
   const handleStage = async (files: string[]) => {
-    if (!cwd) return
+    if (!liveCwd) return
     setLoading(true)
-    const res = await window.termpolis.gitStage(cwd, files)
+    const res = await window.termpolis.gitStage(liveCwd, files)
     if (!res.success) setError(res.error || 'Stage failed')
     await refresh()
     setLoading(false)
   }
 
   const handleUnstage = async (files: string[]) => {
-    if (!cwd) return
+    if (!liveCwd) return
     setLoading(true)
-    const res = await window.termpolis.gitUnstage(cwd, files)
+    const res = await window.termpolis.gitUnstage(liveCwd, files)
     if (!res.success) setError(res.error || 'Unstage failed')
     await refresh()
     setLoading(false)
   }
 
   const handleCommit = async () => {
-    if (!cwd || !commitMsg.trim()) return
+    if (!liveCwd || !commitMsg.trim()) return
     setLoading(true)
-    const res = await window.termpolis.gitCommit(cwd, commitMsg.trim())
+    const res = await window.termpolis.gitCommit(liveCwd, commitMsg.trim())
     if (res.success) {
       setCommitMsg('')
       setError(null)
@@ -123,9 +132,9 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }
 
   const handlePull = async () => {
-    if (!cwd) return
+    if (!liveCwd) return
     setLoading(true)
-    const res = await window.termpolis.gitPull(cwd)
+    const res = await window.termpolis.gitPull(liveCwd)
     if (!res.success) setError(res.error || 'Pull failed')
     else setError(null)
     await refresh()
@@ -133,9 +142,9 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }
 
   const handlePush = async () => {
-    if (!cwd) return
+    if (!liveCwd) return
     setLoading(true)
-    const res = await window.termpolis.gitPush(cwd)
+    const res = await window.termpolis.gitPush(liveCwd)
     if (!res.success) setError(res.error || 'Push failed')
     else setError(null)
     await refresh()
@@ -143,9 +152,9 @@ export function GitPanel({ onClose }: GitPanelProps) {
   }
 
   const handleViewDiff = async (file: string) => {
-    if (!cwd) return
+    if (!liveCwd) return
     setDiffFile(file)
-    const res = await window.termpolis.gitFileDiff(cwd, file)
+    const res = await window.termpolis.gitFileDiff(liveCwd, file)
     setDiffContent(res.success && res.data ? res.data : 'No diff available')
   }
 
@@ -179,7 +188,7 @@ export function GitPanel({ onClose }: GitPanelProps) {
     </div>
   )
 
-  if (!cwd) {
+  if (!activeTerminal) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
         <div className="bg-[#1e1e1e] border border-[#3c3c3c] rounded-xl shadow-2xl w-[500px] p-6" onClick={e => e.stopPropagation()}>
@@ -223,8 +232,8 @@ export function GitPanel({ onClose }: GitPanelProps) {
           </div>
         </div>
 
-        {/* Error banner */}
-        {error && (
+        {/* Error banner — only for operational errors, not "not a git repo" */}
+        {error && gitStatus && (
           <div className="mx-5 mt-3 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400 flex items-center gap-2">
             <i className="fa-solid fa-triangle-exclamation"></i>
             <span className="flex-1">{error}</span>
@@ -258,9 +267,19 @@ export function GitPanel({ onClose }: GitPanelProps) {
         {!diffFile && (
           <div className="flex-1 overflow-y-auto p-5 space-y-4">
             {!gitStatus ? (
-              <p className="text-[#9ca3af] text-sm text-center py-8">
-                {error ? error : 'Loading git status...'}
-              </p>
+              <div className="text-center py-12">
+                {error ? (
+                  <>
+                    <i className="fa-solid fa-folder-open text-3xl text-[#555] mb-4 block"></i>
+                    <p className="text-[#d4d4d4] text-sm font-medium mb-2">Not a Git Repository</p>
+                    <p className="text-[#9ca3af] text-xs max-w-xs mx-auto">
+                      The current terminal directory isn't inside a git repo. Navigate to a project folder with <code className="bg-[#2d2d2d] px-1 rounded">cd</code> or open a terminal in a git project.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[#9ca3af] text-sm">Loading git status...</p>
+                )}
+              </div>
             ) : gitStatus.staged.length === 0 && gitStatus.unstaged.length === 0 ? (
               <p className="text-[#9ca3af] text-sm text-center py-8">
                 <i className="fa-solid fa-circle-check text-green-400 mr-2"></i>

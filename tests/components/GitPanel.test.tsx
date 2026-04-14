@@ -38,9 +38,11 @@ const mockGitCommit = vi.fn()
 const mockGitPull = vi.fn()
 const mockGitPush = vi.fn()
 const mockGitFileDiff = vi.fn()
+const mockGetTerminalStatus = vi.fn()
 
 beforeAll(() => {
   ;(window as any).termpolis = {
+    getTerminalStatus: mockGetTerminalStatus,
     gitStatusParsed: mockGitStatusParsed,
     gitStage: mockGitStage,
     gitUnstage: mockGitUnstage,
@@ -68,6 +70,7 @@ beforeEach(() => {
   mockGitPull.mockResolvedValue({ success: true, data: 'Already up to date.' })
   mockGitPush.mockResolvedValue({ success: true, data: '' })
   mockGitFileDiff.mockResolvedValue({ success: true, data: '+added line\n-removed line' })
+  mockGetTerminalStatus.mockResolvedValue({ success: true, data: { cwd: '/test/project', gitBranch: 'main' } })
 })
 
 import { GitPanel } from '../../src/renderer/src/components/GitPanel/GitPanel'
@@ -193,7 +196,7 @@ describe('GitPanel', () => {
   it('shows error when not a git repository', async () => {
     mockGitStatusParsed.mockResolvedValue({ success: false, error: 'Not a git repository' })
     render(<GitPanel onClose={vi.fn()} />)
-    await waitFor(() => expect(screen.getAllByText('Not a git repository').length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getByText('Not a Git Repository')).toBeInTheDocument())
   })
 
   it('shows error banner on failed commit', async () => {
