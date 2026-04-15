@@ -82,9 +82,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-      - name: Rebuild native modules for Electron
-        run: npx electron-rebuild -f -w node-pty
-
       - name: Build app
         run: npx electron-vite build
 
@@ -96,7 +93,6 @@ jobs:
 
       - name: Notarize macOS DMGs
         if: matrix.platform == 'mac'
-        continue-on-error: true
         timeout-minutes: 30
         run: |
           for DMG in dist-electron-builder/*.dmg; do
