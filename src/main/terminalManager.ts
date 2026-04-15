@@ -60,13 +60,20 @@ export function spawnTerminal(
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
   } as Record<string, string>
 
-  const proc = pty.spawn(executable, getShellArgs(executable), {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd: resolvedCwd,
-    env,
-  })
+  let proc: pty.IPty
+  try {
+    proc = pty.spawn(executable, getShellArgs(executable), {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: resolvedCwd,
+      env,
+    })
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+    console.error(`[node-pty] Failed to spawn "${executable}" in "${resolvedCwd}": ${msg}`)
+    throw new Error(`Failed to open terminal: ${msg}`)
+  }
 
   proc.onData(onData)
   proc.onExit(() => { processes.delete(id) })

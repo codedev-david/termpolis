@@ -82,6 +82,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
+      - name: Rebuild native modules for Electron
+        run: npx electron-rebuild -f -w node-pty
+
       - name: Build app
         run: npx electron-vite build
 
