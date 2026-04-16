@@ -85,7 +85,8 @@ jobs:
       - name: Build app
         run: npx electron-vite build
 
-      - name: Package (with notarization for macOS)
+      - name: Package (macOS with signing + notarization)
+        if: matrix.platform == 'mac'
         run: npx electron-builder --publish never
         timeout-minutes: 30
         env:
@@ -95,6 +96,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Package (Windows/Linux)
+        if: matrix.platform != 'mac'
+        run: npx electron-builder --publish never
+        timeout-minutes: 30
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Staple notarization ticket to DMGs
         if: matrix.platform == 'mac'

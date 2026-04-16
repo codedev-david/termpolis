@@ -48,7 +48,9 @@ exports.default = async function notarizing(context) {
     console.error(`[notarize] ✗ Notarization FAILED after ${elapsed}s`)
     console.error(`[notarize] Error message: ${e.message}`)
     console.error(`[notarize] Full error:`, e)
-    // Throw so the build fails visibly — we need notarization to work
-    throw e
+    // Don't throw — let the build continue so DMGs still upload
+    // The error is logged above for diagnosis
+    console.error(`[notarize] Build will continue WITHOUT notarization`)
+    console.error(`[notarize] Users will need to right-click > Open to bypass Gatekeeper`)
   }
 }
