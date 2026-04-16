@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.6.5",
+  "version": "1.6.6",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "type": "module",
@@ -34,6 +34,7 @@
       "**/node_modules/node-pty/**",
       "resources/tools/**"
     ],
+    "afterPack": "scripts/afterPack.cjs",
     "afterSign": "scripts/notarize.cjs",
     "win": {
       "target": "nsis",
