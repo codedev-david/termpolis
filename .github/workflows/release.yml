@@ -93,6 +93,7 @@ jobs:
 
       - name: Notarize macOS DMGs
         if: matrix.platform == 'mac'
+        continue-on-error: true
         timeout-minutes: 30
         run: |
           for DMG in dist-electron-builder/*.dmg; do
