@@ -85,59 +85,21 @@ jobs:
       - name: Build app
         run: npx electron-vite build
 
-      - name: Package
+      - name: Package (with notarization for macOS)
         run: npx electron-builder --publish never
+        timeout-minutes: 30
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Notarize macOS DMGs
+      - name: Staple notarization ticket to DMGs
         if: matrix.platform == 'mac'
-        continue-on-error: true
-        timeout-minutes: 30
         run: |
           for DMG in dist-electron-builder/*.dmg; do
-            echo "Notarizing: $DMG"
-
-            # Submit and capture the submission ID
-            SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
-              --apple-id "${{ secrets.APPLE_ID }}" \
-              --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-              --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-              --output-format json 2>&1) || true
-            echo "$SUBMIT_OUTPUT"
-            SUB_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
-
-            if [ -z "$SUB_ID" ]; then
-              echo "Failed to get submission ID, trying with --wait directly"
-              xcrun notarytool submit "$DMG" \
-                --apple-id "${{ secrets.APPLE_ID }}" \
-                --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-                --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-                --wait --timeout 20m
-            else
-              echo "Submission ID: $SUB_ID"
-              # Poll with retries to handle transient network drops
-              for i in 1 2 3; do
-                echo "Waiting for notarization (attempt $i)..."
-                xcrun notarytool wait "$SUB_ID" \
-                  --apple-id "${{ secrets.APPLE_ID }}" \
-                  --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-                  --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-                  --timeout 10m && break
-                echo "Wait interrupted, retrying in 30s..."
-                sleep 30
-              done
-
-              # Check final status
-              xcrun notarytool info "$SUB_ID" \
-                --apple-id "${{ secrets.APPLE_ID }}" \
-                --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-                --team-id "${{ secrets.APPLE_TEAM_ID }}"
-            fi
-
-            xcrun stapler staple "$DMG"
-            echo "Notarization complete for $DMG"
+            echo "Stapling: $DMG"
+            xcrun stapler staple "$DMG" || echo "Stapling failed for $DMG (app inside is still notarized)"
           done
 
       - name: Find Windows installer
