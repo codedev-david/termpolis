@@ -48,8 +48,7 @@ exports.default = async function notarizing(context) {
     console.error(`[notarize] ✗ Notarization FAILED after ${elapsed}s`)
     console.error(`[notarize] Error message: ${e.message}`)
     console.error(`[notarize] Full error:`, e)
-    // Don't throw — let the build continue with an unnotarized DMG
-    // The DMG will still be code-signed, user will need to right-click > Open
-    console.error(`[notarize] Build will continue with unnotarized app (Gatekeeper will warn users)`)
+    // Throw so the build fails visibly — we need notarization to work
+    throw e
   }
 }

@@ -149,7 +149,11 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await promise
 
-    await sendTask('Build a REST API', '/tmp/project')
+    // sendTask now has internal delays for interactive mode
+    const sendPromise = sendTask('Build a REST API', '/tmp/project')
+    // Advance past the 15s wait for Claude init + 3s trust prompt
+    await vi.advanceTimersByTimeAsync(20000)
+    await sendPromise
 
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith(
       'conductor',
@@ -157,15 +161,20 @@ describe('conductorManager', () => {
       'info',
       expect.stringContaining('Build a REST API'),
     )
-    // Prompt should be written to temp file, not terminal
+    // Prompt should be written to temp file
     expect(window.termpolis.writeConfigFile).toHaveBeenCalledWith(
       expect.stringContaining('.termpolis-conductor-task.md'),
       expect.stringContaining('Build a REST API'),
     )
-    // Terminal should receive the shell run command
+    // Terminal should receive the claude launch command
     expect(window.termpolis.writeToTerminal).toHaveBeenCalledWith(
       'conductor-uuid-1',
       expect.stringContaining('claude'),
+    )
+    // Terminal should receive the instruction to read the prompt file
+    expect(window.termpolis.writeToTerminal).toHaveBeenCalledWith(
+      'conductor-uuid-1',
+      expect.stringContaining('Read the file'),
     )
   })
 
@@ -187,10 +196,10 @@ describe('conductorManager', () => {
       ],
     })
 
-    await sendTask('Build a tic-tac-toe game', '/tmp/project')
-
-    // Advance monitoring interval
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP1 = sendTask('Build a tic-tac-toe game', '/tmp/project')
+    // Advance past sendTask internal delays (15s + 3s) + monitoring interval (15s)
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP1
 
     const store = useTerminalStore.getState()
     expect(store.swarmActive).toBe(false)
@@ -212,8 +221,9 @@ describe('conductorManager', () => {
       ],
     })
 
-    await sendTask('Build something', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP = sendTask('Build something', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
     expect(getConductorState().status).toBe('done')
@@ -233,8 +243,9 @@ describe('conductorManager', () => {
       ],
     })
 
-    await sendTask('Build something', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP = sendTask('Build something', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP
 
     // Still running — swarmActive should remain true
     expect(useTerminalStore.getState().swarmActive).toBe(true)
@@ -262,8 +273,9 @@ describe('conductorManager', () => {
       ],
     })
 
-    await sendTask('Build an app', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP2 = sendTask('Build an app', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP2
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
     expect(getConductorState().status).toBe('done')
@@ -286,8 +298,9 @@ describe('conductorManager', () => {
       ],
     })
 
-    await sendTask('Build an app', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP2 = sendTask('Build an app', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP2
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
     expect(getConductorState().status).toBe('done')
@@ -311,8 +324,9 @@ describe('conductorManager', () => {
       ],
     })
 
-    await sendTask('Build an app', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP2 = sendTask('Build an app', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP2
 
     expect(useTerminalStore.getState().swarmActive).toBe(true)
     expect(getConductorState().status).toBe('running')
@@ -334,8 +348,9 @@ describe('conductorManager', () => {
       data: [{ id: 't1', status: 'completed' }],
     })
 
-    await sendTask('Build a game', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
+    const sendP3 = sendTask('Build a game', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(35000)
+    await sendP3
 
     // After completion, swarmActive is false — a new swarm can start
     expect(useTerminalStore.getState().swarmActive).toBe(false)

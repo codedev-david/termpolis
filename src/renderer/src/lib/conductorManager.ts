@@ -157,25 +157,24 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const tempFile = homeSlash + '/.termpolis-conductor-task.md'
   await window.termpolis.writeConfigFile(tempFile, prompt)
 
-  // Write a launch script so the full prompt is passed to claude -p without any
-  // shell escaping issues (PowerShell here-string / bash heredoc handle all chars)
+  // Launch Claude Code in INTERACTIVE mode (not -p print mode).
+  // -p mode is one-shot text generation — Claude can't use MCP tools in -p mode.
+  // Interactive mode with --dangerously-skip-permissions allows Claude
+  // to call create_terminal, swarm_create_task, etc. via MCP.
   const claudeCmd = resolveAgentCommand('claude')
-  let runCmd: string
-  if (isWindows) {
-    // PowerShell here-string (@'...'@) is fully literal — no escaping needed.
-    // '@ must be at the start of a line, so the script ends with \n'@\n
-    const scriptFile = homeSlash + '/.termpolis-conductor-run.ps1'
-    const psScript = `$task = @'\n${prompt}\n'@\n${claudeCmd} -p $task --dangerously-skip-permissions\n`
-    await window.termpolis.writeConfigFile(scriptFile, psScript)
-    runCmd = `powershell -ExecutionPolicy Bypass -File "${scriptFile}"`
-  } else {
-    // Bash: input-redirect from temp file into claude --print (agent mode)
-    const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
-    const shScript = `#!/bin/bash\n${claudeCmd} -p "$(cat '${tempFile}')" --dangerously-skip-permissions\n`
-    await window.termpolis.writeConfigFile(scriptFile, shScript)
-    runCmd = `bash "${scriptFile}"`
-  }
-  window.termpolis.writeToTerminal(id, runCmd + '\r')
+  window.termpolis.writeToTerminal(id, `${claudeCmd} --dangerously-skip-permissions\r`)
+
+  // Wait for Claude to initialize and show its prompt
+  await new Promise(r => setTimeout(r, testDelay(15000)))
+
+  // Auto-trust folder prompt if it appears
+  window.termpolis.writeToTerminal(id, '\r')
+  await new Promise(r => setTimeout(r, testDelay(3000)))
+
+  // Send the task by telling Claude to read the temp file we already wrote
+  // This avoids shell escaping issues with typing the full prompt
+  const readCmd = `Read the file ${tempFile} — it contains your complete instructions. Follow every step exactly.`
+  window.termpolis.writeToTerminal(id, readCmd + '\r')
 
   // Post initial message to swarm bus
   await window.swarmAPI.sendMessage(

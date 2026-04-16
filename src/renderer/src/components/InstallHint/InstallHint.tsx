@@ -74,6 +74,13 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
 
 export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
   const info = getInstallInstructions(agentId)
+  const [copiedIndex, setCopiedIndex] = React.useState<number | null>(null)
+
+  const handleCopy = (text: string, index: number) => {
+    navigator.clipboard.writeText(text.replace(/^\d+\.\s*/, '').trim())
+    setCopiedIndex(index)
+    setTimeout(() => setCopiedIndex(null), 2000)
+  }
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn" onClick={onClose}>
@@ -92,8 +99,15 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
 
         <div className="flex flex-col gap-2">
           {info.steps.map((step, i) => (
-            <div key={i} className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 font-mono text-xs text-[#d4d4d4] select-all">
-              {step}
+            <div key={i} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">
+              <span className="font-mono text-xs text-[#d4d4d4] flex-1 select-all">{step}</span>
+              <button
+                onClick={() => handleCopy(step, i)}
+                className="shrink-0 text-[#9ca3af] hover:text-[#22D3EE] px-1.5 py-0.5 rounded hover:bg-[#37373d] transition-colors"
+                title="Copy to clipboard"
+              >
+                <i className={`fa-solid ${copiedIndex === i ? 'fa-check text-green-400' : 'fa-copy'} text-[10px]`}></i>
+              </button>
             </div>
           ))}
         </div>
@@ -105,9 +119,12 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
           </div>
         )}
 
-        <p className="text-xs text-[#9ca3af]">
-          After installing, restart Termpolis and the agent will be available.
-        </p>
+        <div className="flex items-center gap-2 p-3 bg-[#2a1f1a] border border-[#5a3a2d] rounded-lg">
+          <i className="fa-solid fa-triangle-exclamation text-[#FFB74D] text-sm"></i>
+          <p className="text-xs text-[#FFB74D] font-medium">
+            You must restart Termpolis after installing for the agent to be detected.
+          </p>
+        </div>
 
         <div className="flex items-center justify-between mt-1">
           <a
