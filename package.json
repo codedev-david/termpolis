@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "type": "module",
@@ -28,13 +28,13 @@
       "output": "dist-electron-builder"
     },
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "node_modules/node-pty/**"
     ],
     "asarUnpack": [
       "node_modules/node-pty/**",
       "resources/tools/**"
     ],
-    "afterPack": "scripts/afterPack.cjs",
     "win": {
       "target": "nsis",
       "icon": "assets/icon.png",
