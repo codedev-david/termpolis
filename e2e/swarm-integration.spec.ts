@@ -338,7 +338,6 @@ test.describe.serial('Swarm Integration', () => {
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=Swarm Dashboard')).toBeVisible({ timeout: 3000 })
-    await dismissWizardIfVisible()
 
     // Agents tab should show terminals (default tab)
     const claudeEntry = page.locator('.fixed').locator('text=Claude Agent').first()
@@ -380,7 +379,6 @@ test.describe.serial('Swarm Integration', () => {
     // Open dashboard and go to Tasks tab
     await page.keyboard.press('Control+Shift+S')
     await page.waitForTimeout(500)
-    await dismissWizardIfVisible()
     await clickDashboardTab('Tasks')
 
     // Verify the task appears in the Pending column
@@ -510,7 +508,6 @@ test.describe.serial('Swarm Integration', () => {
     // Open dashboard
     await page.keyboard.press('Control+Shift+S')
     await page.waitForTimeout(500)
-    await dismissWizardIfVisible()
 
     // Verify there are tasks and messages before clearing
     const beforeClear = await page.evaluate(async () => {

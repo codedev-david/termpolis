@@ -55,9 +55,9 @@ test('02 - welcome screen shows on first launch', async () => {
 
 test('03 - sidebar icon bar visible', async () => {
   await expect(page.locator('button[title="Settings"]')).toBeVisible()
-  await expect(page.locator('button[title="Prompts"]')).toBeVisible()
   await expect(page.locator('button[title="Workflows"]')).toBeVisible()
-  await expect(page.locator('button[title="Swarm Dashboard"]')).toBeVisible()
+  await expect(page.locator('button[title="Git Panel"]')).toBeVisible()
+  await expect(page.locator('button[title="Swarm Dashboard (Ctrl+Shift+S)"]')).toBeVisible()
   await expect(page.locator('button[title="Collapse sidebar"]')).toBeVisible()
   await screenshot('03-sidebar-icons')
 })
@@ -258,21 +258,18 @@ test('21 - command palette filters on typing', async () => {
 })
 
 // ══════════════════════════════════════════════════════
-// 7. PROMPT TEMPLATES
+// 7. GIT PANEL
 // ══════════════════════════════════════════════════════
 
-test('22 - prompt templates modal opens', async () => {
+test('22 - git panel opens from sidebar', async () => {
   await closeAnyModal()
-  await page.locator('button[title="Prompts"]').click()
+  await page.locator('button[title="Git Panel"]').click()
   await page.waitForTimeout(500)
 
-  const fixTests = page.locator('text=Fix Tests').first()
-  if (await fixTests.isVisible().catch(() => false)) {
-    await expect(fixTests).toBeVisible()
-    await expect(page.locator('text=Code Review').first()).toBeVisible()
-    await expect(page.locator('text=Refactor').first()).toBeVisible()
-    await screenshot('22-prompt-templates')
-  }
+  const gitContent = page.locator('text=Git').first()
+  const visible = await gitContent.isVisible().catch(() => false)
+  expect(visible).toBeTruthy()
+  await screenshot('22-git-panel')
   await closeAnyModal()
 })
 

@@ -100,11 +100,16 @@ test.describe.serial('Agent Swarm', () => {
     await ss('03-dashboard-tabs')
   })
 
-  test('4. When no swarm active, Start Swarm wizard auto-opens', async () => {
-    // The wizard auto-opens when no swarm is active (showStartSwarm defaults to !swarmActive)
+  test('4. Start Swarm button opens wizard', async () => {
+    // The wizard no longer auto-opens; click "Start Swarm" to open it
+    const startBtn = page.locator('button:has-text("Start Swarm")').first()
+    await expect(startBtn).toBeVisible({ timeout: 3000 })
+    await startBtn.click()
+    await page.waitForTimeout(500)
+
     const wizardHeading = page.locator('h2:has-text("Start Swarm")').first()
     await expect(wizardHeading).toBeVisible({ timeout: 3000 })
-    await ss('04-wizard-auto-open')
+    await ss('04-wizard-opened')
   })
 
   // ---- SECTION 2: WIZARD STEP 1 - AGENT SELECTION ----
@@ -116,8 +121,8 @@ test.describe.serial('Agent Swarm', () => {
     await ss('05-agent-grid')
   })
 
-  test('6. Agents listed include Claude Code, OpenAI Codex, Gemini CLI, Aider, Aider + Qwen3', async () => {
-    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Aider', 'Aider + Qwen3']
+  test('6. Agents listed include Claude Code, OpenAI Codex, Gemini CLI, Qwen AI', async () => {
+    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Qwen AI']
     for (const agent of agents) {
       const el = page.locator(`text=${agent}`).first()
       await expect(el).toBeVisible({ timeout: 3000 })
@@ -274,15 +279,6 @@ test.describe.serial('Agent Swarm', () => {
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=Swarm Dashboard')).toBeVisible({ timeout: 3000 })
-
-    // The wizard auto-opens on top of the dashboard. Close it by clicking its X button
-    // in the wizard header (the xmark icon button).
-    const wizardXBtn = page.locator('h2:has-text("Start Swarm")').locator('..').locator('..').locator('button:last-child')
-    const wizardVisible = await wizardXBtn.isVisible().catch(() => false)
-    if (wizardVisible) {
-      await wizardXBtn.click({ force: true })
-      await page.waitForTimeout(300)
-    }
 
     // The dashboard defaults to the Agents tab, which should already be showing
     const emptyMsg = page.locator('text=No terminals open')

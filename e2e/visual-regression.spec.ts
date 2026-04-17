@@ -180,11 +180,16 @@ test.describe.serial('Visual Regression', () => {
   })
 
   test('8. swarm wizard step 1 - agent selection', async () => {
-    const swarmBtn = page.locator('button[title="Swarm Dashboard"]')
+    const swarmBtn = page.locator('button[title="Swarm Dashboard (Ctrl+Shift+S)"]')
     await swarmBtn.click()
     await page.waitForTimeout(500)
 
-    // The StartSwarmModal opens by default when swarm is not active
+    // The wizard no longer auto-opens; click "Start Swarm" to open it
+    const startBtn = page.locator('button:has-text("Start Swarm")').first()
+    await expect(startBtn).toBeVisible({ timeout: 3000 })
+    await startBtn.click()
+    await page.waitForTimeout(500)
+
     // Step 1 is agent selection - verify it's visible
     await expect(page.locator('text=Start Swarm').first()).toBeVisible()
     await expect(page).toHaveScreenshot('swarm-wizard-step1.png', screenshotOpts)

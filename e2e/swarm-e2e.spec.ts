@@ -87,8 +87,8 @@ test('5. Tasks tab shows empty kanban', async () => {
 })
 
 test('6. Create a manual task', async () => {
-  // Click + Task button
-  const taskBtn = page.locator('button:has-text("Task")').first()
+  // Click the "+ Task" button (use icon selector to avoid matching the "Tasks" tab)
+  const taskBtn = page.locator('button:has(i.fa-plus):has-text("Task")').first()
   await taskBtn.click()
   await page.waitForTimeout(500)
 
@@ -137,6 +137,12 @@ test('9. Message appears in Messages tab', async () => {
 })
 
 test('10. Agents tab shows empty state', async () => {
+  // Ensure dashboard is open
+  const dashboardVisible = await page.locator('text=Swarm Dashboard').first().isVisible().catch(() => false)
+  if (!dashboardVisible) {
+    await page.keyboard.press('Control+Shift+S')
+    await page.waitForTimeout(1000)
+  }
   await page.locator('button:has-text("Agents")').first().click()
   await page.waitForTimeout(300)
   const emptyAgents = page.locator('text=No swarm agents running')
@@ -151,6 +157,12 @@ test('11. Start Swarm button visible when not active', async () => {
 })
 
 test('12. Clear swarm - shows confirmation', async () => {
+  // Ensure dashboard is open
+  const dashboardVisible = await page.locator('text=Swarm Dashboard').first().isVisible().catch(() => false)
+  if (!dashboardVisible) {
+    await page.keyboard.press('Control+Shift+S')
+    await page.waitForTimeout(1000)
+  }
   const clearBtn = page.locator('button:has-text("Clear")').first()
   await clearBtn.click()
   await page.waitForTimeout(300)
