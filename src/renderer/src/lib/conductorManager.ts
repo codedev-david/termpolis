@@ -157,24 +157,25 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const tempFile = homeSlash + '/.termpolis-conductor-task.md'
   await window.termpolis.writeConfigFile(tempFile, prompt)
 
-  // Launch Claude Code in INTERACTIVE mode (not -p print mode).
-  // -p mode is one-shot text generation — Claude can't use MCP tools in -p mode.
-  // Interactive mode with --dangerously-skip-permissions allows Claude
-  // to call create_terminal, swarm_create_task, etc. via MCP.
+  // Launch Claude Code with -p flag reading from the temp file.
+  // Claude -p with --dangerously-skip-permissions HAS full tool access
+  // (MCP tools, file read/write, bash execution) — it's just non-interactive.
   const claudeCmd = resolveAgentCommand('claude')
-  window.termpolis.writeToTerminal(id, `${claudeCmd} --dangerously-skip-permissions\r`)
-
-  // Wait for Claude to initialize and show its prompt
-  await new Promise(r => setTimeout(r, testDelay(15000)))
-
-  // Auto-trust folder prompt if it appears
-  window.termpolis.writeToTerminal(id, '\r')
-  await new Promise(r => setTimeout(r, testDelay(3000)))
-
-  // Send the task by telling Claude to read the temp file we already wrote
-  // This avoids shell escaping issues with typing the full prompt
-  const readCmd = `Read the file ${tempFile} — it contains your complete instructions. Follow every step exactly.`
-  window.termpolis.writeToTerminal(id, readCmd + '\r')
+  let runCmd: string
+  if (isWindows) {
+    // PowerShell: read file content and pipe as argument
+    const scriptFile = homeSlash + '/.termpolis-conductor-run.ps1'
+    const psScript = `$task = Get-Content -Raw "${tempFile.replace(/\//g, '\\')}"\n${claudeCmd} -p $task --dangerously-skip-permissions\n`
+    await window.termpolis.writeConfigFile(scriptFile, psScript)
+    runCmd = `powershell -ExecutionPolicy Bypass -File "${scriptFile}"`
+  } else {
+    // Bash: use cat to read the prompt file into claude -p
+    const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
+    const shScript = `#!/bin/bash\n${claudeCmd} -p "$(cat '${tempFile}')" --dangerously-skip-permissions\n`
+    await window.termpolis.writeConfigFile(scriptFile, shScript)
+    runCmd = `bash "${scriptFile}"`
+  }
+  window.termpolis.writeToTerminal(id, runCmd + '\r')
 
   // Post initial message to swarm bus
   await window.swarmAPI.sendMessage(
@@ -182,6 +183,12 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
     'all',
     'info',
     `Conductor analyzing task: ${taskDescription.slice(0, 200)}...`
+  )
+  await window.swarmAPI.sendMessage(
+    'system',
+    'all',
+    'info',
+    `Conductor launched in ${isWindows ? 'PowerShell' : 'Bash'}. Click Debug to see conductor output. If nothing happens after 60s, the conductor may have an issue connecting to MCP tools.`
   )
 
   // Start monitoring
