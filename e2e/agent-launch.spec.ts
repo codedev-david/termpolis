@@ -110,7 +110,7 @@ test.describe.serial('2. Sidebar AI Agents', () => {
 
   test('2.2 sidebar shows AI Agents section with all 4 agents listed', async () => {
     await ensureAgentsExpanded()
-    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Aider']
+    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Qwen AI']
     for (const agent of agents) {
       const el = page.locator(`text=${agent}`).first()
       await expect(el).toBeVisible()
@@ -131,11 +131,11 @@ test.describe.serial('2. Sidebar AI Agents', () => {
     await expect(page.locator('text=Gemini CLI').first()).toBeVisible()
   })
 
-  test('2.6 sidebar shows agent name: Aider + Qwen3', async () => {
-    await expect(page.locator('text=Aider + Qwen3').first()).toBeVisible()
+  test('2.6 sidebar shows agent name: Qwen AI', async () => {
+    await expect(page.locator('text=Qwen AI').first()).toBeVisible()
   })
 
-  test('2.7 Aider + Qwen3 shows FREE badge in sidebar', async () => {
+  test('2.7 Qwen AI shows FREE badge in sidebar', async () => {
     await ensureAgentsExpanded()
     const freeBadge = page.locator('text=FREE').first()
     await expect(freeBadge).toBeVisible()
