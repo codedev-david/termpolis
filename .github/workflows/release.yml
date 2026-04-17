@@ -102,12 +102,55 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Staple notarization ticket to DMGs
+      - name: Notarize macOS DMGs
         if: matrix.platform == 'mac'
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           for DMG in dist-electron-builder/*.dmg; do
+            echo "=== Notarizing: $DMG ==="
+
+            SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --output-format json 2>&1) || true
+            echo "$SUBMIT_OUTPUT"
+
+            SUB_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
+
+            if [ -z "$SUB_ID" ]; then
+              echo "::warning::Failed to submit $DMG for notarization"
+              continue
+            fi
+
+            echo "Submission ID: $SUB_ID — waiting for Apple..."
+            xcrun notarytool wait "$SUB_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --timeout 20m || true
+
+            # Show the result
+            xcrun notarytool info "$SUB_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" || true
+
+            # If notarization succeeded, show the log
+            xcrun notarytool log "$SUB_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" 2>/dev/null || true
+
             echo "Stapling: $DMG"
-            xcrun stapler staple "$DMG" || echo "Stapling failed for $DMG (app inside is still notarized)"
+            xcrun stapler staple "$DMG" || echo "::warning::Stapling failed for $DMG"
+
+            echo "=== Done: $DMG ==="
           done
 
       - name: Find Windows installer
