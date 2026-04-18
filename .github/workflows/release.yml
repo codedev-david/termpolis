@@ -53,7 +53,14 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
