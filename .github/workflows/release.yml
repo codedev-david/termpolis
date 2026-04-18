@@ -85,6 +85,12 @@ jobs:
       - name: Build app
         run: npx electron-vite build
 
+      - name: Fix spawn-helper permissions (macOS)
+        if: matrix.platform == 'mac'
+        run: |
+          # node-pty's spawn-helper needs execute permission for posix_spawnp
+          find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
+
       - name: Package
         run: npx electron-builder --publish never
         env:
@@ -93,34 +99,30 @@ jobs:
 
       - name: Notarize macOS DMGs
         if: matrix.platform == 'mac'
-        continue-on-error: true
         timeout-minutes: 30
         run: |
           for DMG in dist-electron-builder/*.dmg; do
-            echo "=== Notarizing: $DMG ==="
+            echo "Notarizing: $DMG"
 
+            # Submit and capture the submission ID
             SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
               --apple-id "${{ secrets.APPLE_ID }}" \
               --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
               --team-id "${{ secrets.APPLE_TEAM_ID }}" \
               --output-format json 2>&1) || true
             echo "$SUBMIT_OUTPUT"
-
             SUB_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
 
             if [ -z "$SUB_ID" ]; then
-              echo "::warning::Failed to submit $DMG for notarization"
-              echo "Attempting with --wait flag..."
+              echo "Failed to get submission ID, trying with --wait directly"
               xcrun notarytool submit "$DMG" \
                 --apple-id "${{ secrets.APPLE_ID }}" \
                 --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
                 --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-                --wait --timeout 20m 2>&1 || {
-                  echo "::warning::Notarization failed for $DMG"
-                  continue
-                }
+                --wait --timeout 20m
             else
               echo "Submission ID: $SUB_ID"
+              # Poll with retries to handle transient network drops
               for i in 1 2 3; do
                 echo "Waiting for notarization (attempt $i)..."
                 xcrun notarytool wait "$SUB_ID" \
@@ -132,19 +134,15 @@ jobs:
                 sleep 30
               done
 
+              # Check final status
               xcrun notarytool info "$SUB_ID" \
                 --apple-id "${{ secrets.APPLE_ID }}" \
                 --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-                --team-id "${{ secrets.APPLE_TEAM_ID }}" || true
-
-              xcrun notarytool log "$SUB_ID" \
-                --apple-id "${{ secrets.APPLE_ID }}" \
-                --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-                --team-id "${{ secrets.APPLE_TEAM_ID }}" 2>/dev/null || true
+                --team-id "${{ secrets.APPLE_TEAM_ID }}"
             fi
 
-            xcrun stapler staple "$DMG" || echo "::warning::Stapling failed for $DMG"
-            echo "=== Done: $DMG ==="
+            xcrun stapler staple "$DMG"
+            echo "Notarization complete for $DMG"
           done
 
       - name: Find Windows installer
