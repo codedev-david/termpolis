@@ -230,4 +230,34 @@ describe('terminalManager', () => {
   it('getTerminalCwd returns null for a non-existent terminal', () => {
     expect(getTerminalCwd('nope')).toBeNull()
   })
+
+  // 17. spawnTerminal falls back to homedir when existsSync throws
+  it('spawnTerminal falls back to homedir when existsSync throws', () => {
+    vi.mocked(existsSync).mockImplementation(() => { throw new Error('EPERM') })
+    const { homedir } = require('os')
+    spawnTerminal('t17', '/bin/bash', '/bad/path', vi.fn())
+    const call = vi.mocked(pty.spawn).mock.calls[0]
+    expect(call[2]?.cwd).toBe(homedir())
+  })
+
+  // 18. spawnTerminal throws a descriptive error when pty.spawn fails
+  it('spawnTerminal throws a descriptive error when pty.spawn fails', () => {
+    vi.mocked(pty.spawn).mockImplementationOnce(() => {
+      throw new Error('posix_spawnp: no such file')
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(() => spawnTerminal('t18', '/bad/shell', '/tmp', vi.fn())).toThrow(
+      /Failed to open terminal/,
+    )
+    errSpy.mockRestore()
+  })
+
+  // 19. spawnTerminal sets BASH_SILENCE_DEPRECATION_WARNING to silence macOS bash warning
+  it('spawnTerminal sets BASH_SILENCE_DEPRECATION_WARNING env var', () => {
+    spawnTerminal('t19', '/bin/bash', '/tmp', vi.fn())
+    const call = vi.mocked(pty.spawn).mock.calls[0]
+    const env = call[2]?.env as Record<string, string>
+    expect(env?.BASH_SILENCE_DEPRECATION_WARNING).toBe('1')
+  })
+
 })

@@ -321,6 +321,57 @@ describe('conductorManager', () => {
     expect(getConductorState().status).toBe('running')
   })
 
+  // ---- stall detection ----
+
+  it('monitoring loop emits a stall notification after 60s with no tasks or messages', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: [],
+    })
+    ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: [{ type: 'info', content: 'Analyzing task...' }],
+    })
+
+    await sendTask('Build an app', '/tmp/project')
+    // First tick (15s) — monitoringStartTime set
+    await vi.advanceTimersByTimeAsync(15000)
+    // Advance past the 60s stall threshold
+    await vi.advanceTimersByTimeAsync(60000)
+
+    const stallCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('not created any tasks'),
+    )
+    expect(stallCall).toBeDefined()
+    expect(stallCall?.[0].type).toBe('error')
+  })
+
+  // ---- stopConductor orphan cleanup ----
+
+  it('stopConductor kills orphaned conductor terminals in the store', async () => {
+    // Seed the store with an orphan conductor terminal that was never tracked by conductorState
+    useTerminalStore.setState({
+      terminals: [
+        { id: 'orphan-conductor', name: 'orphan', hidden: true, isConductor: true } as any,
+      ],
+      swarmActive: false,
+      activeTerminalId: null,
+    })
+    const killSpy = window.termpolis.killTerminal as ReturnType<typeof vi.fn>
+
+    stopConductor()
+
+    expect(killSpy).toHaveBeenCalledWith('orphan-conductor')
+    expect(useTerminalStore.getState().terminals.find(t => t.id === 'orphan-conductor')).toBeUndefined()
+  })
+
   // ---- markSwarmDone side-effects ----
 
   it('completing swarm sets swarmActive to false, enabling new swarm start', async () => {

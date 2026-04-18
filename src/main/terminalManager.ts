@@ -56,8 +56,8 @@ export function spawnTerminal(
   const env = {
     ...process.env,
     PATH: `${extraPathStr}${basePath}`,
-    // Ensure Ollama API base is set for Aider + Qwen
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
+    BASH_SILENCE_DEPRECATION_WARNING: '1',
   } as Record<string, string>
 
   let proc: pty.IPty
