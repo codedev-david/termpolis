@@ -106,38 +106,54 @@ jobs:
         if: matrix.platform == 'mac'
         continue-on-error: true
         timeout-minutes: 30
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          echo "=== Notarization Debug ==="
-          echo "APPLE_ID set: ${APPLE_ID:+YES}"
-          echo "APPLE_APP_SPECIFIC_PASSWORD set: ${APPLE_APP_SPECIFIC_PASSWORD:+YES}"
-          echo "APPLE_TEAM_ID: $APPLE_TEAM_ID"
-
           for DMG in dist-electron-builder/*.dmg; do
             echo "=== Notarizing: $DMG ==="
-            echo "File size: $(du -h "$DMG" | cut -f1)"
 
-            # Submit with --wait for simpler flow
-            echo "Submitting to Apple notarization service..."
-            xcrun notarytool submit "$DMG" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 20m 2>&1 || {
-                echo "::warning::Notarization failed for $DMG"
-                echo "Trying to get more details..."
-                xcrun notarytool submit "$DMG" \
-                  --apple-id "$APPLE_ID" \
-                  --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-                  --team-id "$APPLE_TEAM_ID" \
-                  --output-format json 2>&1 || true
-                continue
-              }
+            SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
+              --apple-id "${{ secrets.APPLE_ID }}" \
+              --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+              --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+              --output-format json 2>&1) || true
+            echo "$SUBMIT_OUTPUT"
 
-            echo "Stapling: $DMG"
+            SUB_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
+
+            if [ -z "$SUB_ID" ]; then
+              echo "::warning::Failed to submit $DMG for notarization"
+              echo "Attempting with --wait flag..."
+              xcrun notarytool submit "$DMG" \
+                --apple-id "${{ secrets.APPLE_ID }}" \
+                --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+                --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+                --wait --timeout 20m 2>&1 || {
+                  echo "::warning::Notarization failed for $DMG"
+                  continue
+                }
+            else
+              echo "Submission ID: $SUB_ID"
+              for i in 1 2 3; do
+                echo "Waiting for notarization (attempt $i)..."
+                xcrun notarytool wait "$SUB_ID" \
+                  --apple-id "${{ secrets.APPLE_ID }}" \
+                  --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+                  --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+                  --timeout 10m && break
+                echo "Wait interrupted, retrying in 30s..."
+                sleep 30
+              done
+
+              xcrun notarytool info "$SUB_ID" \
+                --apple-id "${{ secrets.APPLE_ID }}" \
+                --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+                --team-id "${{ secrets.APPLE_TEAM_ID }}" || true
+
+              xcrun notarytool log "$SUB_ID" \
+                --apple-id "${{ secrets.APPLE_ID }}" \
+                --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+                --team-id "${{ secrets.APPLE_TEAM_ID }}" 2>/dev/null || true
+            fi
+
             xcrun stapler staple "$DMG" || echo "::warning::Stapling failed for $DMG"
             echo "=== Done: $DMG ==="
           done
