@@ -85,22 +85,11 @@ jobs:
       - name: Build app
         run: npx electron-vite build
 
-      - name: Package (macOS with signing + notarization)
-        if: matrix.platform == 'mac'
+      - name: Package
         run: npx electron-builder --publish never
-        timeout-minutes: 30
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-      - name: Package (Windows/Linux)
-        if: matrix.platform != 'mac'
-        run: npx electron-builder --publish never
-        timeout-minutes: 30
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notarize macOS DMGs
         if: matrix.platform == 'mac'

@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.7.4",
+  "version": "1.7.5",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "type": "module",
@@ -31,7 +31,7 @@
       "out/**/*"
     ],
     "asarUnpack": [
-      "**/node_modules/node-pty/**",
+      "node_modules/node-pty/**",
       "resources/tools/**"
     ],
     "afterPack": "scripts/afterPack.cjs",
@@ -54,7 +54,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
-      "entitlementsInherit": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.inherit.plist",
       "notarize": false
     },
     "linux": {
