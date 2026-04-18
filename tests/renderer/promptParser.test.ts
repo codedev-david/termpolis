@@ -41,5 +41,98 @@ describe('promptParser', () => {
       expect(result.cwd).toBeNull()
       expect(result.gitBranch).toBeNull()
     })
+
+    // -----------------------------------------------------------------
+    // CD command tracking
+    // The parser scans bottom-up. It first finds a "cd X" command,
+    // stores lastCdTarget, then continues up to find a prompt with a path.
+    // The prompt and the cd must be on SEPARATE lines.
+    // -----------------------------------------------------------------
+    it('resolves relative cd target from a known path', () => {
+      // Line 1: prompt with path, Line 2: cd command
+      const output = '~/project $\n$ cd src\n'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.cwd).toBe('~/project/src')
+    })
+
+    it('resolves absolute cd target', () => {
+      const output = '~/old $\n$ cd /home/user/new\n'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.cwd).toBe('/home/user/new')
+    })
+
+    it('resolves cd to home-relative path (~)', () => {
+      const output = '/tmp $\n$ cd ~/projects\n'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.cwd).toBe('~/projects')
+    })
+
+    it('resolves cd to nested relative path', () => {
+      const output = '~/repos $\n$ cd my-app/src\n'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.cwd).toBe('~/repos/my-app/src')
+    })
+
+    it('resolves cd with Windows drive letter target in bash', () => {
+      // The cd regex recognizes Windows absolute paths (letter colon)
+      const output = '/old/path $\n$ cd C:\\Projects\\app\n'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.cwd).toBe('C:\\Projects\\app')
+    })
+
+    // -----------------------------------------------------------------
+    // Branch detection in various formats
+    // -----------------------------------------------------------------
+    it('detects branch from parens at end of prompt line', () => {
+      const output = 'user:~/project (feature/branch) $'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.gitBranch).toBe('feature/branch')
+    })
+
+    it('handles multi-line output and finds most recent prompt', () => {
+      const output = [
+        'user@host MINGW64 ~/old-project (old-branch)',
+        '$ git status',
+        'On branch old-branch',
+        'nothing to commit, working tree clean',
+        'user@host MINGW64 ~/new-project (new-branch)',
+        '$',
+      ].join('\n')
+      const result = parsePromptFromOutput(output, 'gitbash')
+      expect(result.cwd).toBe('~/new-project')
+      expect(result.gitBranch).toBe('new-branch')
+    })
+
+    // -----------------------------------------------------------------
+    // Edge cases
+    // -----------------------------------------------------------------
+    it('handles empty output', () => {
+      const result = parsePromptFromOutput('', 'bash')
+      expect(result.cwd).toBeNull()
+      expect(result.gitBranch).toBeNull()
+    })
+
+    it('handles very long output (takes last ~2000 chars)', () => {
+      const filler = 'x'.repeat(5000)
+      const output = filler + '\n/home/user/final $'
+      const result = parsePromptFromOutput(output, 'bash')
+      expect(result.cwd).toBe('/home/user/final')
+    })
+
+    it('does not scan more than 20 lines back', () => {
+      // Put a valid prompt 25 lines from the bottom, preceded by 25 blank/filler lines
+      const lines = ['/home/user/deep $']
+      for (let i = 0; i < 25; i++) lines.push('some output line')
+      const result = parsePromptFromOutput(lines.join('\n'), 'bash')
+      // Should NOT find the prompt because it's > 20 lines back
+      expect(result.cwd).toBeNull()
+    })
+
+    it('parses Git Bash prompt with spaces in path', () => {
+      const output = 'user@host MINGW64 ~/My Documents/project (main)\n$'
+      const result = parsePromptFromOutput(output, 'gitbash')
+      expect(result.cwd).toBe('~/My Documents/project')
+      expect(result.gitBranch).toBe('main')
+    })
   })
 })

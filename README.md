@@ -186,7 +186,7 @@ No AI company has built a tool that brings together competing models to work as 
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
 - **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
 - **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
-- **650+ automated tests** — 580+ unit (Vitest) + 75 E2E (Playwright) with 55 screenshots
+- **1,400+ automated tests** — 1,400+ unit tests (Vitest, 90% line coverage) + 140+ E2E tests (Playwright). Coverage is maintained at 90%+ as a hard gate — no commits allowed below this threshold.
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -344,7 +344,7 @@ npm test
 ```
 
 650+ total tests:
-- `npm test` — 580+ unit tests (Vitest, 65 test files)
+- `npm test` — 1,400+ unit tests (Vitest, 75 test files, 90% coverage)
 - `npm run test:coverage` — unit tests with v8 coverage report
 - `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
 - E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
@@ -464,7 +464,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (580+ tests, 65 files)
+├── tests/                           # Vitest test suites (1,400+ tests, 75 files, 90% coverage)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)

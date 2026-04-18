@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stripAnsi, generateFilename } from '../../src/renderer/src/lib/exportTerminal'
+import { stripAnsi, generateFilename, extractBuffer } from '../../src/renderer/src/lib/exportTerminal'
 
 describe('stripAnsi', () => {
   it('removes color codes', () => {
@@ -33,5 +33,65 @@ describe('generateFilename', () => {
     const name = generateFilename('Terminal <1>/test')
     expect(name).not.toMatch(/[<>/]/)
     expect(name).toMatch(/\.txt$/)
+  })
+})
+
+describe('extractBuffer', () => {
+  it('extracts text lines from a terminal buffer', () => {
+    const mockTerminal = {
+      buffer: {
+        active: {
+          length: 3,
+          getLine: (i: number) => {
+            const lines = ['$ ls -la', 'file1.txt', 'file2.txt']
+            return { translateToString: () => lines[i] }
+          },
+        },
+      },
+    }
+    const result = extractBuffer(mockTerminal)
+    expect(result).toBe('$ ls -la\nfile1.txt\nfile2.txt')
+  })
+
+  it('strips ANSI codes from extracted buffer', () => {
+    const mockTerminal = {
+      buffer: {
+        active: {
+          length: 1,
+          getLine: () => ({ translateToString: () => '\x1b[32mgreen text\x1b[0m' }),
+        },
+      },
+    }
+    const result = extractBuffer(mockTerminal)
+    expect(result).toBe('green text')
+  })
+
+  it('skips undefined lines', () => {
+    const mockTerminal = {
+      buffer: {
+        active: {
+          length: 3,
+          getLine: (i: number) => {
+            if (i === 1) return undefined
+            return { translateToString: () => `line${i}` }
+          },
+        },
+      },
+    }
+    const result = extractBuffer(mockTerminal)
+    expect(result).toBe('line0\nline2')
+  })
+
+  it('returns empty string for empty buffer', () => {
+    const mockTerminal = {
+      buffer: {
+        active: {
+          length: 0,
+          getLine: () => undefined,
+        },
+      },
+    }
+    const result = extractBuffer(mockTerminal)
+    expect(result).toBe('')
   })
 })

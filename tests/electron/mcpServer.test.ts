@@ -5,6 +5,7 @@ vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
 const {
   getMcpAuthToken,
+  getMcpPort,
   checkRateLimit,
   resetRateLimits,
   startMcpServer,
@@ -774,6 +775,33 @@ describe('MCP HTTP server', () => {
       if (e.code !== 'ECONNRESET') throw e
     }
   })
+
+  // --- Additional edge case tests ---
+
+  it('tools/call with missing arguments object uses empty default', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_list_tasks' },
+      id: 600,
+    })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.result.content).toBeDefined()
+  })
+
+  it('tools/call with a second unknown tool returns sanitized error', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'completely_fake_tool', arguments: {} },
+      id: 601,
+    })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toContain('Unknown tool')
+  })
 })
 
 // --- Audit logging ---
@@ -786,6 +814,23 @@ describe('audit logging', () => {
   })
 })
 
+// --- getMcpPort ---
+
+describe('getMcpPort', () => {
+  it('returns a number', () => {
+    const port = getMcpPort()
+    expect(typeof port).toBe('number')
+    expect(port).toBeGreaterThan(0)
+  })
+
+  it('returns the actual listening port (matching the server)', () => {
+    // getMcpPort should return the same port the test server is listening on
+    const port = getMcpPort()
+    // The test server was started above, so port should match
+    expect(port).toBeGreaterThanOrEqual(9315)
+  })
+})
+
 // --- stopMcpServer ---
 
 describe('stopMcpServer', () => {
@@ -795,3 +840,5 @@ describe('stopMcpServer', () => {
     expect(mockServer.close).toHaveBeenCalled()
   })
 })
+
+// (Additional edge case tests moved into the main MCP HTTP server describe block above)

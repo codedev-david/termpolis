@@ -243,4 +243,135 @@ describe('GitPanel', () => {
     fireEvent.click(screen.getByText(/Staged Changes/))
     expect(screen.queryByText('src/index.ts')).not.toBeInTheDocument()
   })
+
+  // -----------------------------------------------------------------------
+  // Auto-detect git root on mount
+  // -----------------------------------------------------------------------
+  it('auto-detects git root from terminal cwd on mount', async () => {
+    mockGitFindRoot.mockResolvedValue({ success: true, data: '/test/project' })
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(mockGitFindRoot).toHaveBeenCalledWith('/test/project'))
+    // After detection, should load git status
+    await waitFor(() => expect(mockGitStatusParsed).toHaveBeenCalledWith('/test/project'))
+  })
+
+  it('skips git detection when terminal has no cwd', async () => {
+    mockActiveTerminalId = null
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Select a Git Repository')).toBeInTheDocument())
+    // gitFindRoot should not have been called
+    expect(mockGitFindRoot).not.toHaveBeenCalled()
+  })
+
+  // -----------------------------------------------------------------------
+  // Open Folder button calls pickDirectory
+  // -----------------------------------------------------------------------
+  it('Open Folder button calls pickDirectory and sets git root', async () => {
+    mockGitFindRoot.mockResolvedValue({ success: true, data: null })
+    mockPickDirectory.mockResolvedValue({ success: true, data: '/new/repo' })
+    // After picking, verify it's a git repo
+    mockGitFindRoot
+      .mockResolvedValueOnce({ success: true, data: null }) // initial detection
+      .mockResolvedValueOnce({ success: true, data: '/new/repo' }) // after pick
+
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Open Folder')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Open Folder'))
+    await waitFor(() => expect(mockPickDirectory).toHaveBeenCalled())
+  })
+
+  // -----------------------------------------------------------------------
+  // Folder picker validates git repo — shows error for non-git folder
+  // -----------------------------------------------------------------------
+  it('shows error when picked folder is not a git repo', async () => {
+    mockGitFindRoot.mockResolvedValue({ success: true, data: null })
+    mockPickDirectory.mockResolvedValue({ success: true, data: '/not-a-repo' })
+
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Open Folder')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Open Folder'))
+    await waitFor(() => expect(screen.getByText('Selected folder is not a git repository')).toBeInTheDocument())
+  })
+
+  // -----------------------------------------------------------------------
+  // Detecting spinner shows during detection
+  // -----------------------------------------------------------------------
+  it('shows detecting spinner while auto-detecting git root', async () => {
+    // Make gitFindRoot hang so we can observe the detecting state
+    let resolveRoot: (v: any) => void
+    mockGitFindRoot.mockReturnValue(new Promise(r => { resolveRoot = r }))
+
+    render(<GitPanel onClose={vi.fn()} />)
+    // Should show detecting message
+    expect(screen.getByText('Detecting git repository...')).toBeInTheDocument()
+
+    // Now resolve
+    resolveRoot!({ success: true, data: '/test/project' })
+    await waitFor(() => expect(screen.queryByText('Detecting git repository...')).not.toBeInTheDocument())
+  })
+
+  // -----------------------------------------------------------------------
+  // pickDirectory cancelled — no action
+  // -----------------------------------------------------------------------
+  it('does nothing when folder picker is cancelled', async () => {
+    mockGitFindRoot.mockResolvedValue({ success: true, data: null })
+    mockPickDirectory.mockResolvedValue({ success: false, data: null })
+
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Open Folder')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Open Folder'))
+    // Should still show the folder picker prompt
+    await waitFor(() => expect(screen.getByText('Select a Git Repository')).toBeInTheDocument())
+  })
+
+  // -----------------------------------------------------------------------
+  // Escape closes diff view first, then panel
+  // -----------------------------------------------------------------------
+  it('Escape closes diff view before closing panel', async () => {
+    const onClose = vi.fn()
+    render(<GitPanel onClose={onClose} />)
+    await waitFor(() => expect(screen.getByText('README.md')).toBeInTheDocument())
+
+    // Open diff
+    fireEvent.click(screen.getByText('README.md'))
+    await waitFor(() => expect(screen.getByText('Back')).toBeInTheDocument())
+
+    // First Escape closes diff, not panel
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.queryByText('Back')).not.toBeInTheDocument()
+
+    // Second Escape closes panel
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  // -----------------------------------------------------------------------
+  // Error display and dismissal
+  // -----------------------------------------------------------------------
+  it('shows error from failed pull', async () => {
+    mockGitPull.mockResolvedValue({ success: false, error: 'no upstream configured' })
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Pull')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Pull'))
+    await waitFor(() => expect(screen.getByText('no upstream configured')).toBeInTheDocument())
+  })
+
+  it('shows error from failed push', async () => {
+    mockGitPush.mockResolvedValue({ success: false, error: 'rejected by remote' })
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Push')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Push'))
+    await waitFor(() => expect(screen.getByText('rejected by remote')).toBeInTheDocument())
+  })
+
+  // -----------------------------------------------------------------------
+  // gitFindRoot failure on mount
+  // -----------------------------------------------------------------------
+  it('handles gitFindRoot rejection on mount gracefully', async () => {
+    mockGitFindRoot.mockRejectedValue(new Error('IPC channel destroyed'))
+    render(<GitPanel onClose={vi.fn()} />)
+    // Should show the folder picker (detecting finished with no root)
+    await waitFor(() => expect(screen.getByText('Select a Git Repository')).toBeInTheDocument())
+  })
 })

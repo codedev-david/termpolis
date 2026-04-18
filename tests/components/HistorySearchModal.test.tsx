@@ -31,4 +31,21 @@ describe('HistorySearchModal', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('copies command to clipboard and closes when a result is clicked', async () => {
+    const onClose = vi.fn()
+    render(<HistorySearchModal onClose={onClose} />)
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'git' } })
+    await waitFor(() => expect(screen.getByText('git status')).toBeInTheDocument(), { timeout: 500 })
+    fireEvent.click(screen.getByText('git status'))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('git status')
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('shows no results message for unmatched query', async () => {
+    ;(window as any).termpolis.searchHistory.mockResolvedValue({ success: true, data: [] })
+    render(<HistorySearchModal onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'zzz_no_match' } })
+    await waitFor(() => expect(screen.getByText(/No results/)).toBeInTheDocument(), { timeout: 500 })
+  })
 })

@@ -106,4 +106,86 @@ describe('InstallHint', () => {
     fireEvent.click(screen.getByText('Documentation'))
     expect(window.open).toHaveBeenCalledWith('https://github.com/openai/codex', '_blank')
   })
+
+  // -----------------------------------------------------------------------
+  // Copy button tests
+  // -----------------------------------------------------------------------
+  it('copies step text to clipboard when copy button is clicked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    // Each step row has a copy button with a fa-copy icon
+    const copyButtons = screen.getAllByTitle('Copy to clipboard')
+    expect(copyButtons.length).toBeGreaterThan(0)
+    fireEvent.click(copyButtons[0])
+    expect(writeText).toHaveBeenCalledWith('npm install -g @anthropic-ai/claude-code')
+  })
+
+  it('shows checkmark icon after copying', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    const copyButtons = screen.getAllByTitle('Copy to clipboard')
+    fireEvent.click(copyButtons[0])
+    // After click, the icon should change to fa-check
+    const checkIcon = copyButtons[0].querySelector('.fa-check')
+    expect(checkIcon).toBeTruthy()
+  })
+
+  it('strips step numbers when copying aider-qwen steps', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    const copyButtons = screen.getAllByTitle('Copy to clipboard')
+    // The first step starts with "1. Install Aider: ..."
+    fireEvent.click(copyButtons[0])
+    // The leading number prefix "1. " should be stripped
+    expect(writeText).toHaveBeenCalledWith('Install Aider: pip install aider-chat')
+  })
+
+  // -----------------------------------------------------------------------
+  // Restart warning banner
+  // -----------------------------------------------------------------------
+  it('displays the restart warning banner', () => {
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    const warning = screen.getByText(/You must restart Termpolis/)
+    expect(warning).toBeInTheDocument()
+    // Check it has the warning icon
+    const warningContainer = warning.closest('div')
+    expect(warningContainer).toBeTruthy()
+    expect(warningContainer!.querySelector('.fa-triangle-exclamation')).toBeTruthy()
+  })
+
+  // -----------------------------------------------------------------------
+  // Pricing info per agent
+  // -----------------------------------------------------------------------
+  it('shows pricing info for claude', () => {
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    expect(screen.getByText(/Anthropic API plan/)).toBeInTheDocument()
+  })
+
+  it('shows pricing info for codex', () => {
+    render(<InstallHint agentId="codex" agentName="OpenAI Codex" onClose={vi.fn()} />)
+    expect(screen.getByText(/OpenAI API key/)).toBeInTheDocument()
+  })
+
+  it('shows pricing info for gemini', () => {
+    render(<InstallHint agentId="gemini" agentName="Gemini CLI" onClose={vi.fn()} />)
+    expect(screen.getByText(/Free tier available/)).toBeInTheDocument()
+  })
+
+  it('shows pricing info for aider-qwen (free local)', () => {
+    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    expect(screen.getByText(/Free.*runs locally/)).toBeInTheDocument()
+  })
+
+  it('does not show pricing for unknown agent', () => {
+    render(<InstallHint agentId="unknown-agent" agentName="Unknown" onClose={vi.fn()} />)
+    // No credit card icon should be present since pricing is null
+    const pricingIcon = document.querySelector('.fa-credit-card')
+    expect(pricingIcon).toBeNull()
+  })
 })
