@@ -708,9 +708,13 @@ if (!gotTheLock) {
       if (require('fs').existsSync(globalMcpPath)) {
         try { globalMcp = JSON.parse(require('fs').readFileSync(globalMcpPath, 'utf-8')) } catch {}
       }
-      const existingGlobal = globalMcp.termpolis
+      // Claude Code expects { mcpServers: { name: { command, args } } }
+      if (!globalMcp.mcpServers) globalMcp.mcpServers = {}
+      const existingGlobal = globalMcp.mcpServers.termpolis
       if (!existingGlobal || existingGlobal.args?.[0] !== adapterPath) {
-        globalMcp.termpolis = { command: 'node', args: [adapterPath] }
+        globalMcp.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
+        // Clean up old root-level entry if present (from previous versions)
+        delete globalMcp.termpolis
         const tmpPath = globalMcpPath + '.tmp'
         require('fs').writeFileSync(tmpPath, JSON.stringify(globalMcp, null, 2), 'utf-8')
         require('fs').renameSync(tmpPath, globalMcpPath)
