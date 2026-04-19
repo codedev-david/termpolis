@@ -117,4 +117,36 @@ describe('SwarmCompleteDialog', () => {
     expect(screen.getByText(/1 task completed/)).toBeInTheDocument()
     expect(screen.queryByText(/1 tasks/)).not.toBeInTheDocument()
   })
+
+  describe('project location', () => {
+    it('renders project location when projectCwd provided', () => {
+      render(<SwarmCompleteDialog {...make({ projectCwd: 'C:/Users/dev/my-app' })} />)
+      expect(screen.getByText('Project location')).toBeInTheDocument()
+      expect(screen.getByText('C:/Users/dev/my-app')).toBeInTheDocument()
+    })
+
+    it('does not render project location when projectCwd is null', () => {
+      render(<SwarmCompleteDialog {...make({ projectCwd: null })} />)
+      expect(screen.queryByText('Project location')).not.toBeInTheDocument()
+    })
+
+    it('does not render project location when projectCwd is undefined', () => {
+      render(<SwarmCompleteDialog {...make()} />)
+      expect(screen.queryByText('Project location')).not.toBeInTheDocument()
+    })
+
+    it('calls openPath IPC when Open button is clicked', () => {
+      const openPath = vi.fn()
+      ;(window as any).termpolis = { openPath }
+      render(<SwarmCompleteDialog {...make({ projectCwd: '/home/dev/project' })} />)
+      fireEvent.click(screen.getByTitle('Open folder'))
+      expect(openPath).toHaveBeenCalledWith('/home/dev/project')
+    })
+
+    it('does not crash if openPath IPC is missing', () => {
+      ;(window as any).termpolis = {}
+      render(<SwarmCompleteDialog {...make({ projectCwd: '/tmp/x' })} />)
+      expect(() => fireEvent.click(screen.getByTitle('Open folder'))).not.toThrow()
+    })
+  })
 })

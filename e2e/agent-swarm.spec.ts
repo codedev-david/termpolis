@@ -267,7 +267,7 @@ test.describe.serial('Agent Swarm', () => {
 
   // ---- SECTION 5: DASHBOARD TABS CONTENT ----
 
-  test('17. Dashboard Agents tab: when no agents, shows empty state message', async () => {
+  test('17. Dashboard defaults to Tasks tab with empty kanban columns', async () => {
     // Make sure everything is closed first
     await page.keyboard.press('Escape')
     await page.waitForTimeout(300)
@@ -280,10 +280,11 @@ test.describe.serial('Agent Swarm', () => {
 
     await expect(page.locator('text=Swarm Dashboard')).toBeVisible({ timeout: 3000 })
 
-    // The dashboard defaults to the Agents tab, which should already be showing
-    const emptyMsg = page.locator('text=No terminals open')
-    await expect(emptyMsg).toBeVisible()
-    await ss('17-agents-empty')
+    // Dashboard now defaults to the Tasks tab — Agents tab was removed.
+    await expect(page.locator('text=Pending').first()).toBeVisible()
+    await expect(page.locator('text=In Progress').first()).toBeVisible()
+    await expect(page.locator('text=Completed').first()).toBeVisible()
+    await ss('17-tasks-empty')
   })
 
   test('18. Dashboard Tasks tab: shows kanban columns (Pending, In Progress, Completed)', async () => {

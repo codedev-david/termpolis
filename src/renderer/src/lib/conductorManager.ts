@@ -7,9 +7,10 @@ interface ConductorState {
   terminalId: string | null
   status: 'idle' | 'starting' | 'authenticating' | 'ready' | 'running' | 'error' | 'done'
   error: string | null
+  cwd: string | null
 }
 
-let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null }
+let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null }
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
 
@@ -30,7 +31,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
     stopConductor()
   }
 
-  conductorState = { terminalId: null, status: 'starting', error: null }
+  conductorState = { terminalId: null, status: 'starting', error: null, cwd }
 
   // Set swarm active immediately to prevent duplicate launches; clear any prior completion dialog
   const storeInit = useTerminalStore.getState()
@@ -43,7 +44,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   const res = await window.termpolis.createTerminal(id, shellType, cwd)
 
   if (!res.success) {
-    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal' }
+    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null }
     storeInit.setSwarmActive(false)
     return { success: false, error: conductorState.error! }
   }
@@ -160,18 +161,89 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   // Launch Claude Code with -p flag reading from the temp file.
   // Claude -p with --dangerously-skip-permissions HAS full tool access
   // (MCP tools, file read/write, bash execution) — it's just non-interactive.
+  //
+  // The npm-global Claude Code install can end up with a broken bin/claude.exe
+  // stub when postinstall didn't run or the platform-native optional dep was
+  // skipped. In that case PowerShell's PATH resolves `claude` to a .ps1 shim
+  // that calls the stub → "not a valid application for this OS platform" →
+  // conductor silently dies and the swarm stalls at 0 tasks. The script below
+  // probes candidate locations and picks the first one that actually responds
+  // to `--version`, so the conductor survives broken installs.
   const claudeCmd = resolveAgentCommand('claude')
+  // In E2E test mode the command is substituted to a node-based mock shim.
+  // The production Resolve-WorkingClaude preamble probes PATH + well-known
+  // install locations and verifies the binary prints "Claude Code" — the mock
+  // doesn't pass that check, so in test mode we skip the preamble and invoke
+  // the substituted command directly (same as the pre-regression path).
+  const isTestMode = claudeCmd !== 'claude'
   let runCmd: string
   if (isWindows) {
-    // PowerShell: read file content and pipe as argument
     const scriptFile = homeSlash + '/.termpolis-conductor-run.ps1'
-    const psScript = `$task = Get-Content -Raw "${tempFile.replace(/\//g, '\\')}"\n${claudeCmd} -p $task --dangerously-skip-permissions\n`
+    const taskPath = tempFile.replace(/\//g, '\\')
+    const psScript = isTestMode
+      ? [
+          `$task = Get-Content -Raw "${taskPath}"`,
+          `${claudeCmd} -p $task --dangerously-skip-permissions`,
+          'exit $LASTEXITCODE',
+          '',
+        ].join('\n')
+      : [
+          'function Resolve-WorkingClaude {',
+          '  $candidates = @()',
+          '  try { $candidates += (Get-Command claude -ErrorAction SilentlyContinue | ForEach-Object Source) } catch {}',
+          '  $candidates += "$env:USERPROFILE\\.local\\bin\\claude.exe"',
+          '  $candidates += "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\node_modules\\@anthropic-ai\\claude-code-win32-x64\\claude.exe"',
+          '  $candidates += "$env:LOCALAPPDATA\\Programs\\claude-code\\claude.exe"',
+          '  foreach ($c in $candidates) {',
+          '    if (-not $c) { continue }',
+          '    if (-not (Test-Path $c)) { continue }',
+          '    try {',
+          '      $out = & $c --version 2>&1',
+          '      if ($LASTEXITCODE -eq 0 -and "$out" -match "Claude Code") { return $c }',
+          '    } catch {}',
+          '  }',
+          '  Write-Error "No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force"',
+          '  exit 1',
+          '}',
+          '$claudeExe = Resolve-WorkingClaude',
+          `$task = Get-Content -Raw "${taskPath}"`,
+          '& $claudeExe -p $task --dangerously-skip-permissions',
+          'exit $LASTEXITCODE',
+          '',
+        ].join('\n')
     await window.termpolis.writeConfigFile(scriptFile, psScript)
     runCmd = `powershell -ExecutionPolicy Bypass -File "${scriptFile}"`
   } else {
-    // Bash: use cat to read the prompt file into claude -p
     const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
-    const shScript = `#!/bin/bash\n${claudeCmd} -p "$(cat '${tempFile}')" --dangerously-skip-permissions\n`
+    const shScript = isTestMode
+      ? [
+          '#!/bin/bash',
+          `${claudeCmd} -p "$(cat '${tempFile}')" --dangerously-skip-permissions`,
+          '',
+        ].join('\n')
+      : [
+          '#!/bin/bash',
+          'resolve_claude() {',
+          '  local cands=()',
+          '  command -v claude >/dev/null 2>&1 && cands+=("$(command -v claude)")',
+          '  cands+=("$HOME/.local/bin/claude")',
+          '  cands+=("/usr/local/bin/claude")',
+          '  cands+=("/opt/homebrew/bin/claude")',
+          '  for c in "${cands[@]}"; do',
+          '    [ -x "$c" ] || continue',
+          '    if out=$("$c" --version 2>&1) && echo "$out" | grep -q "Claude Code"; then',
+          '      echo "$c"; return 0',
+          '    fi',
+          '  done',
+          '  return 1',
+          '}',
+          'CLAUDE_EXE=$(resolve_claude) || {',
+          '  echo "No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force" >&2',
+          '  exit 1',
+          '}',
+          `"$CLAUDE_EXE" -p "$(cat '${tempFile}')" --dangerously-skip-permissions`,
+          '',
+        ].join('\n')
     await window.termpolis.writeConfigFile(scriptFile, shScript)
     runCmd = `bash "${scriptFile}"`
   }
@@ -323,7 +395,7 @@ function markSwarmDone(
   // Allow a new swarm to be started
   store.setSwarmActive(false)
   store.setSwarmNotification({ message, type: 'success' })
-  store.setSwarmCompletionSummary({ message, tasks })
+  store.setSwarmCompletionSummary({ message, tasks, projectCwd: conductorState.cwd })
   if (monitoringInterval) {
     clearInterval(monitoringInterval)
     monitoringInterval = null
@@ -351,7 +423,7 @@ export function stopConductor(): void {
     store.removeTerminal(t.id)
   }
 
-  conductorState = { terminalId: null, status: 'idle', error: null }
+  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null }
 }
 
 // Reveal conductor terminal for debugging

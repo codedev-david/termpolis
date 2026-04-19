@@ -133,12 +133,13 @@ No AI company has built a tool that brings together competing models to work as 
   | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
   | Token Cost | $$$$ | $$$ | $$ | Free |
 
-- **Swarm Wizard** — 3-step flow: prepare conductor → describe task → launch. Includes guidance on when to use a swarm (autonomous task completion) vs individual agent terminals (back-and-forth conversation). Live progress tracking shows conductor status in real time — the modal stays open until agent terminals actually appear.
+- **Swarm Wizard** — 3-step flow: prepare conductor → describe task → launch. Includes guidance on when to use a swarm (autonomous task completion) vs individual agent terminals (back-and-forth conversation). Live progress tracking shows conductor status in real time — the modal stays open until the first task or message appears (can take up to 30 seconds).
+- **Agents run in the background** — swarm-spawned agent terminals are hidden from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. For back-and-forth conversations, launch individual agents from the AI Agents sidebar section — those still appear in the sidebar and work normally.
 - **Swarm Complete Dialog** — when all tasks finish, a summary dialog appears showing completed vs failed tasks with the result from each agent. Includes "What next?" guidance for iterating with individual agents or starting a new swarm.
 - **Agent Command Enforcement** — agents are guaranteed to launch correctly regardless of what the conductor attempts. A programmatic sanitizer intercepts all `run_command` calls on swarm terminals, stripping unauthorized flags (`-p`, `--sandbox`, `--print`) and enforcing the exact approved command for each agent. Claude gets `--dangerously-skip-permissions`, Codex gets `--full-auto` — no trust prompts, no permission dialogs during swarms.
 - **Interactive Agent Mode** — all agents (including Gemini CLI) launch in interactive mode so they retain full tool access, including file writing and command execution.
 - **Token Budget Estimates** — shows per-agent estimated tokens and cost before you launch, so you know what the swarm will cost
-- **Swarm Dashboard** — `Ctrl+Shift+S` opens real-time view of agents (health status), tasks (kanban columns), and messages. Also accessible by clicking the "Swarm Active" indicator in the bottom status bar.
+- **Swarm Dashboard** — `Ctrl+Shift+S` opens a real-time view with two tabs: **Tasks** (kanban: Pending · In Progress · Completed · Failed) and **Messages** (chronological log). Also accessible by clicking the "Swarm Active" indicator in the bottom status bar.
 - **Clear Confirmation** — clearing a swarm requires explicit confirmation to prevent accidental loss of in-progress work
 - **Agent Install Status** — the AI Agents sidebar shows green checkmarks for installed agents and red X icons for missing ones. Clicking a missing agent's icon shows installation instructions.
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)

@@ -101,7 +101,8 @@ function TerminalCard({
 }
 
 export function GridView() {
-  const { terminals, removeTerminal } = useTerminalStore()
+  const { terminals: allTerminals, removeTerminal } = useTerminalStore()
+  const terminals = allTerminals.filter(t => !t.hidden)
 
   if (terminals.length === 0) {
     return (

@@ -216,7 +216,24 @@ describe('StartSwarmModal', () => {
     fireEvent.click(screen.getByText('Launch Swarm'))
     await waitFor(() => {
       expect(screen.getByText('The AI conductor is working')).toBeInTheDocument()
-      expect(screen.getByText(/This screen will close automatically/)).toBeInTheDocument()
+      expect(screen.getByText(/This screen will close as soon as/)).toBeInTheDocument()
+    })
+    vi.useRealTimers()
+  })
+
+  it('shows working directory notification in launching step', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/home/dev/my-special-app" />)
+    await waitFor(() => {
+      expect(screen.getByText('Describe what you want built')).toBeInTheDocument()
+    }, { timeout: 3000 })
+    const textarea = screen.getByPlaceholderText(/Add a contact form/)
+    fireEvent.change(textarea, { target: { value: 'Build a thing' } })
+    fireEvent.click(screen.getByText('Launch Swarm'))
+    await waitFor(() => {
+      expect(screen.getByText('Working directory')).toBeInTheDocument()
+      expect(screen.getByText('/home/dev/my-special-app')).toBeInTheDocument()
+      expect(screen.getByText(/The swarm will work in this folder/)).toBeInTheDocument()
     })
     vi.useRealTimers()
   })

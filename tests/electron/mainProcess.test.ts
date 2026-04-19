@@ -34,6 +34,7 @@ vi.mock('electron', () => ({
     getPath: vi.fn(() => require('os').tmpdir()),
     whenReady: () => Promise.resolve(),
     requestSingleInstanceLock: () => true,
+    setName: vi.fn(),
     on: vi.fn(),
     commandLine: { appendSwitch: vi.fn() },
     isPackaged: false,

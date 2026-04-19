@@ -104,6 +104,19 @@ function isErrored(tail: string): boolean {
   if (/token.*(?:limit|exceeded|budget)|context.*(?:limit|exceeded|full)/i.test(tail)) return true
   if (/rate.?limit.*exceeded|429.*too many/i.test(tail)) return true
   if (/ECONNREFUSED|ETIMEDOUT|network.*error/i.test(tail)) return true
+  // Windows shell launch failures — the stub-claude.exe case produces this exact
+  // wording; the "recognized as an internal or external command" is cmd.exe's
+  // version of the same; "cannot find the path" is PowerShell's missing-binary
+  // error. Catching these as errored surfaces a clear signal to the dashboard
+  // instead of leaving the status stuck at "thinking" or "starting".
+  if (/not a valid application for this OS platform/i.test(tail)) return true
+  if (/is not recognized as an internal or external command/i.test(tail)) return true
+  if (/cannot find the path specified|The system cannot find the (?:file|path)/i.test(tail)) return true
+  if (/ApplicationFailedException|NativeCommandFailed/i.test(tail)) return true
+  // Claude's own stub shim prints this exact message when the native binary
+  // wasn't installed (postinstall skipped or --ignore-scripts).
+  if (/claude native binary not installed/i.test(tail)) return true
+  if (/command not found.*(?:claude|codex|gemini|aider)/i.test(tail)) return true
   return false
 }
 

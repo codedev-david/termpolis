@@ -177,9 +177,9 @@ describe('SwarmDashboard', () => {
     expect(screen.getByText('Swarm Dashboard')).toBeInTheDocument()
   })
 
-  it('shows Agents, Tasks, and Messages tabs', () => {
+  it('shows Tasks and Messages tabs', () => {
     render(<SwarmDashboard onClose={vi.fn()} />)
-    expect(screen.getByText('Agents')).toBeInTheDocument()
+    expect(screen.queryByText('Agents')).not.toBeInTheDocument()
     expect(screen.getByText('Tasks')).toBeInTheDocument()
     expect(screen.getByText('Messages')).toBeInTheDocument()
   })
@@ -238,104 +238,33 @@ describe('SwarmDashboard', () => {
   // ------------------------------------------------------------------
   // 1. Agent status rendering
   // ------------------------------------------------------------------
-  describe('Agent status rendering', () => {
-    const statuses = [
-      { status: 'starting', label: 'Starting', iconClass: 'fa-spinner' },
-      { status: 'thinking', label: 'Thinking', iconClass: 'fa-brain' },
-      { status: 'waiting_for_input', label: 'Needs Input', iconClass: 'fa-hand' },
-      { status: 'working', label: 'Working', iconClass: 'fa-hammer' },
-      { status: 'idle', label: 'Idle', iconClass: 'fa-circle-check' },
-      { status: 'errored', label: 'Error', iconClass: 'fa-triangle-exclamation' },
-      { status: 'completed', label: 'Done', iconClass: 'fa-flag-checkered' },
-    ]
-
-    statuses.forEach(({ status, label, iconClass }) => {
-      it(`renders agent with status "${status}" showing label "${label}" and icon "${iconClass}"`, () => {
-        const termId = `term-${status}`
-        mockSwarmAgents = [makeAgent({ agentName: `Agent-${status}`, status, terminalId: termId })]
-        // Do NOT add a matching terminal with the same name to avoid duplicate text
-        mockTerminals = []
-        render(<SwarmDashboard onClose={vi.fn()} />)
-        expect(screen.getByText(label)).toBeInTheDocument()
-        expect(screen.getByText(`Agent-${status}`)).toBeInTheDocument()
-        // Verify the icon element exists with the correct class
-        const iconEl = document.querySelector(`.${iconClass}`)
-        expect(iconEl).not.toBeNull()
-      })
-    })
-  })
-
-  // ------------------------------------------------------------------
-  // 2. Agent summary display
-  // ------------------------------------------------------------------
-  describe('Agent summary display', () => {
-    it('displays summary text under the agent name', () => {
-      mockSwarmAgents = [makeAgent({ agentName: 'Coder-1', summary: 'Refactoring the auth module' })]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('Refactoring the auth module')).toBeInTheDocument()
-    })
-
-    it('does not render summary element when summary is undefined', () => {
-      mockSwarmAgents = [makeAgent({ agentName: 'Coder-2', summary: undefined })]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('Coder-2')).toBeInTheDocument()
-      expect(screen.queryByText('Refactoring the auth module')).not.toBeInTheDocument()
-    })
-  })
-
-  // ------------------------------------------------------------------
-  // 3. Waiting_for_input agents are clickable
-  // ------------------------------------------------------------------
-  describe('Waiting-for-input agents', () => {
-    it('has orange border class for waiting_for_input agent', () => {
-      const agent = makeAgent({ agentName: 'Blocked-Agent', status: 'waiting_for_input' })
-      mockSwarmAgents = [agent]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      const agentEl = screen.getByText('Blocked-Agent').closest('[class*="border-orange"]')
-      expect(agentEl).not.toBeNull()
-    })
-
-    it('clicking a waiting_for_input agent calls setActiveTerminal and onClose', () => {
-      const onClose = vi.fn()
-      const agent = makeAgent({ agentName: 'Blocked-Agent', status: 'waiting_for_input', terminalId: 'term-blocked' })
-      mockSwarmAgents = [agent]
-      render(<SwarmDashboard onClose={onClose} />)
-      const agentRow = screen.getByText('Blocked-Agent').closest('[class*="cursor-pointer"]')!
-      fireEvent.click(agentRow)
-      expect(onClose).toHaveBeenCalled()
-    })
-
-    it('non-waiting agents are NOT clickable', () => {
-      const onClose = vi.fn()
-      mockSwarmAgents = [makeAgent({ agentName: 'Working-Agent', status: 'working' })]
-      render(<SwarmDashboard onClose={onClose} />)
-      const agentRow = screen.getByText('Working-Agent').closest('[class*="bg-"]')
-      // Should not have cursor-pointer
-      expect(agentRow?.className).not.toContain('cursor-pointer')
-    })
-  })
+  // Agent status/summary/waiting-for-input render tests were removed along with
+  // the Agents tab. Conductor (claude --dangerously-skip-permissions) has
+  // native write/edit/bash tools and typically does work itself instead of
+  // delegating to per-agent terminals, so per-agent idle rows were misleading.
+  // Agent-status detection logic is still covered by agentStatusDetector.test.ts.
 
   // ------------------------------------------------------------------
   // 4. Tab switching
   // ------------------------------------------------------------------
   describe('Tab switching', () => {
-    it('defaults to Agents tab', () => {
-      mockSwarmAgents = []
+    it('defaults to Tasks tab', async () => {
       render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('No swarm agents running. Start a swarm to see agents here.')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.getByText('Pending')).toBeInTheDocument()
+        expect(screen.getByText('In Progress')).toBeInTheDocument()
+        expect(screen.getByText('Completed')).toBeInTheDocument()
+      })
     })
 
-    it('switches to Tasks tab and shows kanban columns', async () => {
+    it('Tasks tab shows kanban columns with data', async () => {
       ;(window.swarmAPI.getTasks as any).mockResolvedValue({
         success: true,
         data: [makeTask({ title: 'Kanban Task', status: 'pending' })],
       })
       render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByText('Tasks'))
       await waitFor(() => {
-        expect(screen.getByText('Pending')).toBeInTheDocument()
-        expect(screen.getByText('In Progress')).toBeInTheDocument()
-        expect(screen.getByText('Completed')).toBeInTheDocument()
+        expect(screen.getByText('Kanban Task')).toBeInTheDocument()
       })
     })
 
@@ -345,11 +274,13 @@ describe('SwarmDashboard', () => {
       expect(screen.getByText(/No swarm messages yet/)).toBeInTheDocument()
     })
 
-    it('switches back to Agents tab from Messages', () => {
+    it('switches back to Tasks tab from Messages', async () => {
       render(<SwarmDashboard onClose={vi.fn()} />)
       fireEvent.click(screen.getByText('Messages'))
-      fireEvent.click(screen.getByText('Agents'))
-      expect(screen.getByText('No swarm agents running. Start a swarm to see agents here.')).toBeInTheDocument()
+      fireEvent.click(screen.getByText('Tasks'))
+      await waitFor(() => {
+        expect(screen.getByText('Pending')).toBeInTheDocument()
+      })
     })
   })
 
@@ -415,6 +346,34 @@ describe('SwarmDashboard', () => {
         expect(screen.getByText('Done')).toBeInTheDocument()
         expect(screen.getByText('Fail')).toBeInTheDocument()
       })
+    })
+
+    it('applies pulsing animation class to in_progress task cards', async () => {
+      ;(window.swarmAPI.getTasks as any).mockResolvedValue({
+        success: true,
+        data: [makeTask({ title: 'Actively Working', status: 'in_progress' })],
+      })
+      render(<SwarmDashboard onClose={vi.fn()} />)
+      fireEvent.click(screen.getByText('Tasks'))
+      await waitFor(() => screen.getByText('Actively Working'))
+      // Card should have animate-pulse-border class
+      const card = screen.getByText('Actively Working').closest('.animate-pulse-border')
+      expect(card).toBeInTheDocument()
+    })
+
+    it('does NOT apply pulse animation to pending or completed tasks', async () => {
+      ;(window.swarmAPI.getTasks as any).mockResolvedValue({
+        success: true,
+        data: [
+          makeTask({ title: 'Not Started', status: 'pending' }),
+          makeTask({ title: 'All Done', status: 'completed' }),
+        ],
+      })
+      render(<SwarmDashboard onClose={vi.fn()} />)
+      fireEvent.click(screen.getByText('Tasks'))
+      await waitFor(() => screen.getByText('Not Started'))
+      expect(screen.getByText('Not Started').closest('.animate-pulse-border')).toBeNull()
+      expect(screen.getByText('All Done').closest('.animate-pulse-border')).toBeNull()
     })
 
     it('calls updateTask when Start button is clicked', async () => {
@@ -534,136 +493,7 @@ describe('SwarmDashboard', () => {
   })
 
   // ------------------------------------------------------------------
-  // 7. New Task modal
-  // ------------------------------------------------------------------
-  describe('New Task modal', () => {
-    it('opens when Task button is clicked', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      // The "+ Task" button in the tab bar
-      const taskBtn = screen.getByTitle('New Task')
-      fireEvent.click(taskBtn)
-      expect(screen.getByText('New Swarm Task')).toBeInTheDocument()
-    })
-
-    it('has title, description, and assignee fields', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('New Task'))
-      expect(screen.getByPlaceholderText('Task title')).toBeInTheDocument()
-      expect(screen.getByPlaceholderText('Description')).toBeInTheDocument()
-      expect(screen.getByText('Unassigned (pending)')).toBeInTheDocument()
-    })
-
-    it('submits a new task with entered values', async () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('New Task'))
-
-      fireEvent.change(screen.getByPlaceholderText('Task title'), { target: { value: 'New feature' } })
-      fireEvent.change(screen.getByPlaceholderText('Description'), { target: { value: 'Build it fast' } })
-      fireEvent.click(screen.getByText('Create'))
-
-      await waitFor(() => {
-        expect(window.swarmAPI.createTask).toHaveBeenCalledWith('New feature', 'Build it fast', 'dashboard', undefined)
-      })
-    })
-
-    it('does not submit when title is empty', async () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('New Task'))
-      fireEvent.click(screen.getByText('Create'))
-      expect(window.swarmAPI.createTask).not.toHaveBeenCalled()
-    })
-
-    it('closes when Cancel is clicked', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('New Task'))
-      expect(screen.getByText('New Swarm Task')).toBeInTheDocument()
-      fireEvent.click(screen.getByText('Cancel'))
-      expect(screen.queryByText('New Swarm Task')).not.toBeInTheDocument()
-    })
-
-    it('clears fields after successful submission', async () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('New Task'))
-      fireEvent.change(screen.getByPlaceholderText('Task title'), { target: { value: 'Some task' } })
-      fireEvent.click(screen.getByText('Create'))
-      await waitFor(() => {
-        expect(window.swarmAPI.createTask).toHaveBeenCalled()
-      })
-      // Modal should close after creation
-      expect(screen.queryByText('New Swarm Task')).not.toBeInTheDocument()
-    })
-  })
-
-  // ------------------------------------------------------------------
-  // 8. Broadcast modal
-  // ------------------------------------------------------------------
-  describe('Broadcast modal', () => {
-    it('opens when Broadcast button is clicked', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('Broadcast Message'))
-      expect(screen.getByText('Broadcast to All Agents')).toBeInTheDocument()
-    })
-
-    it('has type selector and content textarea', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('Broadcast Message'))
-      expect(screen.getByText('Info')).toBeInTheDocument()
-      expect(screen.getByPlaceholderText('Message content...')).toBeInTheDocument()
-    })
-
-    it('sends a broadcast message with selected type', async () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('Broadcast Message'))
-
-      // Change type to "task"
-      const select = screen.getByDisplayValue('Info')
-      fireEvent.change(select, { target: { value: 'task' } })
-
-      fireEvent.change(screen.getByPlaceholderText('Message content...'), {
-        target: { value: 'Everyone focus on auth' },
-      })
-      fireEvent.click(screen.getByText('Send'))
-
-      await waitFor(() => {
-        expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith(
-          'dashboard',
-          'all',
-          'task',
-          'Everyone focus on auth',
-        )
-      })
-    })
-
-    it('does not send when content is empty', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('Broadcast Message'))
-      fireEvent.click(screen.getByText('Send'))
-      expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
-    })
-
-    it('closes when Cancel is clicked', () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('Broadcast Message'))
-      expect(screen.getByText('Broadcast to All Agents')).toBeInTheDocument()
-      fireEvent.click(screen.getByText('Cancel'))
-      expect(screen.queryByText('Broadcast to All Agents')).not.toBeInTheDocument()
-    })
-
-    it('closes after successful send', async () => {
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      fireEvent.click(screen.getByTitle('Broadcast Message'))
-      fireEvent.change(screen.getByPlaceholderText('Message content...'), {
-        target: { value: 'Go go go' },
-      })
-      fireEvent.click(screen.getByText('Send'))
-      await waitFor(() => {
-        expect(screen.queryByText('Broadcast to All Agents')).not.toBeInTheDocument()
-      })
-    })
-  })
-
-  // ------------------------------------------------------------------
-  // 9. Start Swarm button
+  // 7. Start Swarm button
   // ------------------------------------------------------------------
   describe('Start Swarm button', () => {
     it('shows "Start Swarm" when swarm is not active', () => {
@@ -820,53 +650,27 @@ describe('SwarmDashboard', () => {
   // Additional edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {
-    it('shows empty agents message when no agents and no terminals', () => {
+    it('shows empty kanban columns by default when no tasks', async () => {
       mockSwarmAgents = []
       mockTerminals = []
+      ;(window.swarmAPI.getTasks as any).mockResolvedValue({ success: true, data: [] })
       render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('No swarm agents running. Start a swarm to see agents here.')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.getByText('Pending')).toBeInTheDocument()
+        expect(screen.getByText('In Progress')).toBeInTheDocument()
+        expect(screen.getByText('Completed')).toBeInTheDocument()
+      })
     })
 
-    it('renders agent role text', () => {
-      mockSwarmAgents = [makeAgent({ agentName: 'Specialist', role: 'reviewer' })]
+    it('shows task count badge on Tasks tab when tasks exist', async () => {
+      ;(window.swarmAPI.getTasks as any).mockResolvedValue({
+        success: true,
+        data: [makeTask({ id: 't1', status: 'pending' }), makeTask({ id: 't2', status: 'completed' })],
+      })
       render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('reviewer')).toBeInTheDocument()
-    })
-
-    it('renders swarm terminal entries (non-agent swarm terminals)', () => {
-      mockSwarmAgents = []
-      mockTerminals = [
-        { id: 'sw-t1', name: 'Worker-1', isSwarm: true, hidden: false, isConductor: false, color: '#ff0', cwd: '/project', shellType: 'zsh' },
-      ]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('Worker-1')).toBeInTheDocument()
-      expect(screen.getByText('/project')).toBeInTheDocument()
-      expect(screen.getByText('zsh')).toBeInTheDocument()
-    })
-
-    it('hides conductor terminals from the list', () => {
-      mockSwarmAgents = []
-      mockTerminals = [
-        { id: 'cond-1', name: 'Conductor', isSwarm: true, hidden: false, isConductor: true, color: '#fff', cwd: '/tmp', shellType: 'bash' },
-      ]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      // Conductor terminals should be filtered out
-      expect(screen.queryByText('Conductor')).not.toBeInTheDocument()
-    })
-
-    it('hides hidden swarm terminals from the list', () => {
-      mockSwarmAgents = []
-      mockTerminals = [
-        { id: 'hidden-1', name: 'HiddenAgent', isSwarm: true, hidden: true, isConductor: false, color: '#fff', cwd: '/tmp', shellType: 'bash' },
-      ]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.queryByText('HiddenAgent')).not.toBeInTheDocument()
-    })
-
-    it('shows agent count badge on Agents tab when agents exist', () => {
-      mockSwarmAgents = [makeAgent(), makeAgent({ terminalId: 'term-2', agentName: 'Agent-2' })]
-      render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText('2')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.getByText('2')).toBeInTheDocument()
+      })
     })
 
     it('closes overlay when clicking the backdrop', () => {
@@ -886,13 +690,8 @@ describe('SwarmDashboard', () => {
       expect(onClose).not.toHaveBeenCalled()
     })
 
-    it('shows stats in the header (agent count, task count, message count)', () => {
-      mockTerminals = [
-        { id: 'sw-1', name: 'A1', isSwarm: true, hidden: false, isConductor: false },
-        { id: 'sw-2', name: 'A2', isSwarm: true, hidden: false, isConductor: false },
-      ]
+    it('shows stats in the header (task count, message count)', () => {
       render(<SwarmDashboard onClose={vi.fn()} />)
-      expect(screen.getByText(/2 agents/)).toBeInTheDocument()
       expect(screen.getByText(/0 tasks/)).toBeInTheDocument()
       expect(screen.getByText(/0 msgs/)).toBeInTheDocument()
     })

@@ -56,6 +56,9 @@ const api: TermpolisAPI = {
   pickDirectory: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', { defaultPath }),
 
+  openPath: (path: string) =>
+    ipcRenderer.invoke('shell:open-path', { path }),
+
   completionPathEntries: (dirPath) =>
     ipcRenderer.invoke('completion:path-entries', { dirPath }),
 

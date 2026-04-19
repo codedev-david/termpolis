@@ -118,11 +118,11 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     await sendTask(buildPromptContract(), cwdRef.current)
     setLaunchProgress('Conductor is analyzing your task...')
 
-    // Poll for real progress instead of a fixed timer.
-    // Wait until we see tasks created AND agent terminals opened, or timeout after 2 minutes.
+    // Close the modal as soon as we see the conductor is alive (first message,
+    // task, or agent terminal). The dashboard shows live progress after that —
+    // no reason to trap the user behind a spinner while the LLM thinks.
     const startTime = Date.now()
-    const maxWait = 120000
-    const minWait = 10000  // show for at least 10 seconds
+    const maxWait = 60000
 
     const pollForAgents = () => new Promise<void>((resolve) => {
       const check = async () => {
@@ -134,22 +134,25 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             window.swarmAPI.getMessages(),
           ])
           const taskCount = taskRes.success && taskRes.data ? taskRes.data.length : 0
-          const msgCount = msgRes.success && msgRes.data ? msgRes.data.length : 0
+          // The sendTask call itself posts 2 system/conductor messages, so we
+          // only count conductor messages as real progress.
+          const conductorMsgs = msgRes.success && msgRes.data
+            ? msgRes.data.filter((m: any) => m.from === 'conductor' || m.from === 'mcp-client')
+            : []
           const agentTerminals = useTerminalStore.getState().terminals.filter(t => t.isSwarm && !t.isConductor && !t.hidden)
 
-          // Update progress message based on what's happened
           if (agentTerminals.length > 0) {
-            setLaunchProgress(`${agentTerminals.length} agent terminal${agentTerminals.length !== 1 ? 's' : ''} opened — agents receiving tasks...`)
+            setLaunchProgress(`${agentTerminals.length} agent terminal${agentTerminals.length !== 1 ? 's' : ''} opened — handing off to dashboard...`)
           } else if (taskCount > 0) {
-            setLaunchProgress(`${taskCount} task${taskCount !== 1 ? 's' : ''} created — starting agent terminals...`)
-          } else if (msgCount > 0) {
-            setLaunchProgress('Conductor posted a plan — creating tasks...')
+            setLaunchProgress(`${taskCount} task${taskCount !== 1 ? 's' : ''} created — handing off to dashboard...`)
+          } else if (conductorMsgs.length > 1) {
+            setLaunchProgress('Conductor is planning — handing off to dashboard...')
           } else {
             setLaunchProgress('Conductor is analyzing your task...')
           }
 
-          // Done when agent terminals are visible (and min wait elapsed)
-          if (agentTerminals.length > 0 && elapsed >= minWait) {
+          // Close as soon as ANY real progress is visible.
+          if (agentTerminals.length > 0 || taskCount > 0 || conductorMsgs.length > 1) {
             resolve()
             return
           }
@@ -158,8 +161,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           const conductorState = getConductorState()
           if (conductorState.status === 'error') {
             setLaunchProgress(conductorState.error || 'Conductor encountered an error.')
-            // Give user a moment to read the message, then close
-            setTimeout(resolve, 5000)
+            setTimeout(resolve, 3000)
             return
           }
         } catch {
@@ -171,7 +173,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
           return
         }
 
-        setTimeout(check, 3000)
+        setTimeout(check, 1000)
       }
       check()
     })
@@ -472,23 +474,28 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Launching Swarm</h3>
         <p className="text-xs text-[#22D3EE] text-center max-w-sm mb-4 font-medium">{launchProgress}</p>
         <div className="space-y-2 max-w-sm w-full">
+          <div className="p-3 bg-[#1e2a3a] border border-[#2d4a5a] rounded-lg text-xs text-[#93c5fd]">
+            <div className="flex items-center gap-1.5 mb-1">
+              <i className="fa-solid fa-folder-open"></i>
+              <span className="font-semibold">Working directory</span>
+            </div>
+            <p className="text-[#6b8fae] break-all font-mono text-[11px]">
+              {cwdRef.current || projectCwd}
+            </p>
+            <p className="text-[#6b8fae] mt-1.5 leading-relaxed">
+              The swarm will work in this folder — all files created or modified by the conductor
+              and agents will go here.
+            </p>
+          </div>
           <div className="p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7]">
             <div className="flex items-center gap-1.5 mb-1">
               <i className="fa-solid fa-clock"></i>
               <span className="font-semibold">The AI conductor is working</span>
             </div>
             <p className="text-[#6b9e6b]">
-              The conductor is analyzing your task, creating a plan, and spinning up agent terminals.
-              This screen will close automatically once agents are ready.
-            </p>
-          </div>
-          <div className="p-3 bg-[#2a1f1a] border border-[#5a3a2d] rounded-lg text-xs text-[#FFB74D]">
-            <div className="flex items-center gap-1.5 mb-1">
-              <i className="fa-solid fa-triangle-exclamation"></i>
-              <span className="font-semibold">Watch the Agents tab</span>
-            </div>
-            <p className="text-[#c49060]">
-              Each agent terminal may require <strong className="text-[#FFB74D]">login or verification</strong> before it can work — especially on first use. Check the Agents tab and complete any sign-in prompts in the agent terminals.
+              The conductor is analyzing your task and creating a plan. This screen will close as soon as
+              the first task or message appears. It can take up to <strong className="text-[#A5D6A7]">30 seconds</strong>
+              {' '}for tasks to show up in the Swarm Dashboard — the conductor runs in the background via MCP.
             </p>
           </div>
         </div>

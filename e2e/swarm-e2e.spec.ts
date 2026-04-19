@@ -86,68 +86,63 @@ test('5. Tasks tab shows empty kanban', async () => {
   await ss('05-empty-tasks')
 })
 
-test('6. Create a manual task', async () => {
-  // Click the "+ Task" button (use icon selector to avoid matching the "Tasks" tab)
-  const taskBtn = page.locator('button:has(i.fa-plus):has-text("Task")').first()
-  await taskBtn.click()
-  await page.waitForTimeout(500)
-
-  // Fill in task form
-  const titleInput = page.locator('input[placeholder="Task title"]')
-  await titleInput.fill('Test task from E2E')
-
-  const descInput = page.locator('textarea[placeholder="Description"]')
-  await descInput.fill('This is a test task created by Playwright')
-
-  // Submit
-  const createBtn = page.locator('button:has-text("Create")').last()
-  await createBtn.click()
-  await page.waitForTimeout(500)
-  await ss('06-task-created')
+test('6. Manual task / broadcast buttons are removed from dashboard', async () => {
+  // The old "+ Task" and "Broadcast" buttons were removed — the conductor and
+  // its agents are the sole producers of tasks and messages via MCP tools.
+  // User-facing affordances to hand-inject tasks/messages would confuse the
+  // flow and bypass the conductor, so they no longer exist.
+  const taskBtn = page.locator('button:has(i.fa-plus):has-text("Task")')
+  await expect(taskBtn).toHaveCount(0)
+  const broadcastBtn = page.locator('button:has-text("Broadcast")')
+  await expect(broadcastBtn).toHaveCount(0)
+  await ss('06-no-manual-task-broadcast-buttons')
 })
 
-test('7. Task appears in Pending column', async () => {
+test('7. Task can still be injected via swarmAPI (for MCP agent path)', async () => {
+  // Even though the UI buttons are gone, the underlying swarmAPI still works —
+  // MCP tools (swarm_create_task) call through this path from agents.
+  await page.evaluate(async () => {
+    await (window as any).swarmAPI.createTask('E2E-injected task', 'via API', 'e2e')
+  })
   await page.locator('button:has-text("Tasks")').first().click()
   await page.waitForTimeout(500)
-  const task = page.locator('text=Test task from E2E')
+  const task = page.locator('text=E2E-injected task')
   await expect(task).toBeVisible({ timeout: 5000 })
-  await ss('07-pending-task')
+  await ss('07-api-task-visible')
 })
 
-test('8. Broadcast a message to all agents', async () => {
-  const broadcastBtn = page.locator('button:has-text("Broadcast")').first()
-  await broadcastBtn.click()
-  await page.waitForTimeout(500)
-
-  const msgInput = page.locator('textarea[placeholder*="Message content"]')
-  await msgInput.fill('Hello from Playwright E2E test!')
-
-  const sendBtn = page.locator('button:has-text("Send")').last()
-  await sendBtn.click()
-  await page.waitForTimeout(500)
-  await ss('08-broadcast-sent')
-})
-
-test('9. Message appears in Messages tab', async () => {
+test('8. Message can still be injected via swarmAPI', async () => {
+  await page.evaluate(async () => {
+    await (window as any).swarmAPI.sendMessage('e2e', 'all', 'info', 'E2E-injected message')
+  })
   await page.locator('button:has-text("Messages")').first().click()
   await page.waitForTimeout(500)
-  const msg = page.locator('text=Hello from Playwright E2E test!')
+  const msg = page.locator('text=E2E-injected message')
   await expect(msg).toBeVisible({ timeout: 5000 })
-  await ss('09-message-visible')
+  await ss('08-api-message-visible')
 })
 
-test('10. Agents tab shows empty state', async () => {
+test('9. Messages tab renders chronological log', async () => {
+  await page.locator('button:has-text("Messages")').first().click()
+  await page.waitForTimeout(300)
+  // The log is scoped to the dashboard — verify the tab renders
+  await expect(page.locator('button:has-text("Messages")').first()).toBeVisible()
+  await ss('09-messages-tab')
+})
+
+test('10. Agents tab is removed from dashboard', async () => {
   // Ensure dashboard is open
   const dashboardVisible = await page.locator('text=Swarm Dashboard').first().isVisible().catch(() => false)
   if (!dashboardVisible) {
     await page.keyboard.press('Control+Shift+S')
     await page.waitForTimeout(1000)
   }
-  await page.locator('button:has-text("Agents")').first().click()
-  await page.waitForTimeout(300)
-  const emptyAgents = page.locator('text=No swarm agents running')
-  await expect(emptyAgents).toBeVisible()
-  await ss('10-no-agents')
+  // Agents tab no longer exists — conductor (claude --dangerously-skip-permissions)
+  // has native tools and typically does work itself, so per-agent idle rows were
+  // misleading. Dashboard now surfaces Tasks and Messages only.
+  const agentsTab = page.locator('button:has-text("Agents")').first()
+  await expect(agentsTab).not.toBeVisible()
+  await ss('10-no-agents-tab')
 })
 
 test('11. Start Swarm button visible when not active', async () => {
@@ -176,10 +171,10 @@ test('13. Cancel clear', async () => {
   const cancelBtn = page.locator('button:has-text("Cancel")').last()
   await cancelBtn.click()
   await page.waitForTimeout(300)
-  // Task should still exist
+  // Task from test 7 should still exist (cancel preserves state)
   await page.locator('button:has-text("Tasks")').first().click()
   await page.waitForTimeout(300)
-  await expect(page.locator('text=Test task from E2E')).toBeVisible()
+  await expect(page.locator('text=E2E-injected task')).toBeVisible()
   await ss('13-cancel-clear')
 })
 

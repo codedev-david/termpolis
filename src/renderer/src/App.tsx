@@ -141,6 +141,16 @@ export default function App() {
     (window as any).__termpolis_has_agents = () => {
       return terminals.some(t => t.agentCommand)
     }
+    // Read-only test inspection hook — used by e2e swarm tests
+    ;(window as any).__termpolis_test_state = () => {
+      const s = useTerminalStore.getState()
+      return {
+        terminals: s.terminals,
+        swarmActive: s.swarmActive,
+        swarmAgents: s.swarmAgents,
+        swarmCompletionSummary: s.swarmCompletionSummary,
+      }
+    }
   }, [terminals])
 
   // Persist session on state changes (debounced to avoid excessive writes)
@@ -315,6 +325,7 @@ export default function App() {
         theme: TERMINAL_DEFAULTS.theme,
         fontFamily: TERMINAL_DEFAULTS.fontFamily,
         isSwarm: true,
+        hidden: true,
       })
 
       // Extract agent name and role from terminal name (e.g. "Claude (Build UI)" → agent: "Claude", role: "Build UI")
@@ -327,20 +338,12 @@ export default function App() {
       const newAgent = { terminalId: data.id, agentName, role, status: 'starting' as const }
       updatedStore.setSwarmAgents([...updatedStore.swarmAgents, newAgent])
 
-      // Auto-trust: swarm agents may show folder trust prompts after launch.
-      // Claude/Codex need Enter or '1' sent to confirm trust.
+      // Auto-trust is now handled by the polling loop below — it watches the
+      // terminal buffer for the actual trust-prompt pattern and sends the
+      // dismiss character as soon as it appears. The old timer-based approach
+      // (fire at 10s + 15s) missed prompts that arrived early or late and sent
+      // noise into agents that didn't need it.
       const isClaudeAgent = /claude/i.test(agentName)
-      const isCodexAgent = /codex/i.test(agentName)
-      if (isClaudeAgent) {
-        // Claude shows trust prompt ~5-10s after interactive launch — send Enter to confirm
-        setTimeout(() => window.termpolis.writeToTerminal(data.id, '\r'), testDelay(10000))
-        setTimeout(() => window.termpolis.writeToTerminal(data.id, '\r'), testDelay(15000))
-      }
-      if (isCodexAgent) {
-        // Codex requires '1' to trust the directory
-        setTimeout(() => window.termpolis.writeToTerminal(data.id, '1\r'), testDelay(10000))
-        setTimeout(() => window.termpolis.writeToTerminal(data.id, '1\r'), testDelay(15000))
-      }
 
       // Start bridge for non-MCP agents (output monitoring + signal detection)
       // Claude Code has native MCP, but others (Codex, Gemini, Aider) need the bridge
@@ -365,6 +368,13 @@ export default function App() {
 
   // Poll swarm agent terminals for real-time status detection
   useEffect(() => {
+    // Remember the trust-prompt fingerprint we most recently dismissed for each
+    // terminal, so we don't keep pounding Enter on the same prompt every tick.
+    const lastDismissedPrompt = new Map<string, string>()
+    // Clear the stale "needs input" notification once the agent has moved past
+    // the trust prompt and back to actually working.
+    const priorNotifKey = new Map<string, string>()
+
     const interval = setInterval(async () => {
       const store = useTerminalStore.getState()
       if (store.swarmAgents.length === 0) return
@@ -379,18 +389,67 @@ export default function App() {
 
           const output = bufferRes.data.output || ''
           const recent = output.slice(-3000)
+          const tail = recent.slice(-1500)
+
+          // Pattern-based auto-dismiss for trust / onboarding prompts. The
+          // same pattern only fires once per prompt instance — we key on the
+          // last ~200 chars of the buffer so we don't re-dismiss after it
+          // scrolls off the visible region.
+          const dismissKey = tail.slice(-200)
+          const alreadyDismissed = lastDismissedPrompt.get(agent.terminalId) === dismissKey
+          const isCodex = /codex/i.test(agent.agentName)
+          const isGemini = /gemini/i.test(agent.agentName)
+          const isAider = /aider/i.test(agent.agentName)
+
+          let dismissChar: string | null = null
+          if (/do you trust the (?:files|authors)|trust this folder|trust the files/i.test(tail)) {
+            dismissChar = isCodex ? '1\r' : '\r'
+          } else if (/press\s+(?:enter|return)\s+to\s+continue/i.test(tail)) {
+            dismissChar = '\r'
+          } else if (/\[Y\/n\]|\(Y\/n\)/i.test(tail)) {
+            dismissChar = 'y\r'
+          } else if (isCodex && /select\s+(?:a\s+)?(?:option|choice)|type\s+1\s+to/i.test(tail)) {
+            dismissChar = '1\r'
+          } else if (isGemini && /accept\s+(?:the\s+)?terms|authenticate\s+with/i.test(tail)) {
+            // Gemini shows an onboarding menu — Enter selects the default
+            dismissChar = '\r'
+          } else if (isAider && /\(y\)es.*\(n\)o/i.test(tail)) {
+            dismissChar = 'y\r'
+          }
+
+          if (dismissChar && !alreadyDismissed) {
+            lastDismissedPrompt.set(agent.terminalId, dismissKey)
+            window.termpolis.writeToTerminal(agent.terminalId, dismissChar)
+            // Give the agent a beat to register the input before the next poll
+            // runs the status detector
+            continue
+          }
+
           const result = detectAgentStatus(recent, agent.agentName, agent.status)
 
           // Only update if status or summary actually changed
           if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {
             store.updateSwarmAgentStatus(agent.terminalId, result.status, result.summary)
 
-            // Notify user when agent needs input
+            // Notify user when agent needs input — but only once per prompt
             if (result.status === 'waiting_for_input' && agent.status !== 'waiting_for_input') {
-              store.setSwarmNotification({
-                message: `${agent.agentName} (${agent.role}) needs your input: ${result.summary}`,
-                type: 'error',
-              })
+              const notifKey = `${agent.terminalId}:${result.summary}`
+              if (priorNotifKey.get(agent.terminalId) !== notifKey) {
+                priorNotifKey.set(agent.terminalId, notifKey)
+                store.setSwarmNotification({
+                  message: `${agent.agentName} (${agent.role}) needs your input: ${result.summary}`,
+                  type: 'error',
+                })
+              }
+            }
+            // Clear any lingering "needs input" notification when the agent
+            // moves back to working/thinking after we dismissed a prompt.
+            if (result.status !== 'waiting_for_input' && agent.status === 'waiting_for_input') {
+              priorNotifKey.delete(agent.terminalId)
+              const n = store.swarmNotification
+              if (n && n.message.includes(agent.agentName) && n.message.includes('needs your input')) {
+                store.setSwarmNotification(null)
+              }
             }
           }
         } catch {
@@ -677,6 +736,7 @@ export default function App() {
           <SwarmCompleteDialog
             message={swarmCompletionSummary.message}
             tasks={swarmCompletionSummary.tasks}
+            projectCwd={swarmCompletionSummary.projectCwd ?? swarmStartCwd}
             onViewDashboard={() => { setSwarmCompletionSummary(null); setShowSwarmDashboard(true) }}
             onDismiss={() => setSwarmCompletionSummary(null)}
           />

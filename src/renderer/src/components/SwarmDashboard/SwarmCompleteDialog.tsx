@@ -10,11 +10,17 @@ interface Task {
 interface SwarmCompleteDialogProps {
   message: string
   tasks: Task[]
+  projectCwd?: string | null
   onViewDashboard: () => void
   onDismiss: () => void
 }
 
-export function SwarmCompleteDialog({ message, tasks, onViewDashboard, onDismiss }: SwarmCompleteDialogProps) {
+export function SwarmCompleteDialog({ message, tasks, projectCwd, onViewDashboard, onDismiss }: SwarmCompleteDialogProps) {
+  const openInExplorer = () => {
+    if (projectCwd && window.termpolis?.openPath) {
+      window.termpolis.openPath(projectCwd)
+    }
+  }
   const completed = tasks.filter(t => t.status === 'completed')
   const failed = tasks.filter(t => t.status === 'failed')
   const hasTasks = tasks.length > 0
@@ -94,6 +100,27 @@ export function SwarmCompleteDialog({ message, tasks, onViewDashboard, onDismiss
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Project location */}
+        {projectCwd && (
+          <div className="mx-6 mb-2 px-3 py-2 bg-[#1e2a3a] border border-[#2d4a5a] rounded-lg">
+            <div className="flex items-start gap-2">
+              <i className="fa-solid fa-folder-open text-[#93c5fd] text-[11px] mt-0.5 shrink-0"></i>
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] text-[#93c5fd] font-semibold mb-0.5">Project location</p>
+                <p className="text-[11px] text-[#6b8fae] font-mono break-all">{projectCwd}</p>
+              </div>
+              <button
+                onClick={openInExplorer}
+                className="text-[10px] px-2 py-1 rounded bg-[#2d4a5a] hover:bg-[#3a5a6e] text-[#93c5fd] border border-[#2d4a5a] whitespace-nowrap flex items-center gap-1 shrink-0"
+                title="Open folder"
+              >
+                <i className="fa-solid fa-arrow-up-right-from-square text-[9px]"></i>
+                Open
+              </button>
+            </div>
           </div>
         )}
 

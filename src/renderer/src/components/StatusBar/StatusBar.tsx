@@ -72,6 +72,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li><strong>Workflows</strong> button — pre-built multi-terminal layouts (Claude + Shell, Full Stack Dev, Code Review)</li>
               <li><strong>Agent detection</strong> — status bar automatically shows a colored badge when an AI agent is running</li>
               <li><strong>Cost tracking</strong> — parses token usage and costs from AI output, shown next to the agent badge</li>
+              <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex", "Aider") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
             </ul>
           </section>
 
@@ -195,13 +196,14 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <li className="pl-4 text-xs">Gemini CLI — leads in documentation and DevOps (default)</li>
               <li className="pl-4 text-xs">Qwen AI — free local model via Ollama for bulk tasks (default)</li>
               <li className="pl-4 text-xs"><strong>Customize ratings</strong> in <strong>Settings &gt; Agent Capability Ratings</strong>. Defaults are estimates — adjust based on your experience. The conductor uses ratings as hints but makes its own judgment.</li>
-              <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress (tasks created, terminals opened) and closes automatically when agents are ready. You land on the Swarm Dashboard to watch agents work.</li>
+              <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress and closes automatically when the first task or message appears. It can take up to <strong>30 seconds</strong> for tasks to show up after launch.</li>
+              <li><strong>Agents run in the background</strong> — swarm-spawned agent terminals are <em>hidden</em> from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. You never need to watch individual agent terminals.</li>
+              <li><strong>Dashboard tabs:</strong> <strong>Tasks</strong> (kanban — Pending · In Progress · Completed · Failed) and <strong>Messages</strong> (chronological log of conductor and agent activity). The previous Agents tab was removed — per-agent status rows were misleading because the conductor does most work itself via its own native tools.</li>
               <li><strong>Clear Confirmation</strong> — clearing a swarm requires explicit confirmation to prevent accidental loss of in-progress work.</li>
-              <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results from each agent. Includes "What next?" guidance for iterating.</li>
-              <li><strong>Swarm vs Individual Agents</strong> — swarms are best for completing a well-defined task autonomously. For back-and-forth conversations or iterating on details, launch individual agents from the <strong>AI Agents</strong> section in the sidebar. After a swarm finishes, use individual agents to refine the work or start a new swarm.</li>
+              <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results. Includes "What next?" guidance for iterating.</li>
+              <li><strong>Swarm vs Individual Agents</strong> — swarms are best for completing a well-defined task autonomously (all agents run hidden). For back-and-forth conversations or iterating on details, launch individual agents from the <strong>AI Agents</strong> section in the sidebar — those terminals appear in the sidebar and work exactly as before.</li>
               <li><strong>Agent Install Status</strong> — the AI Agents sidebar shows <i className="fa-solid fa-circle-check text-green-400 text-[10px]"></i> for installed agents and <i className="fa-solid fa-circle-xmark text-red-400 text-[10px]"></i> for missing ones. Click a missing agent for setup instructions.</li>
               <li><strong>Agent Bridge</strong> — agents without native MCP (e.g., Aider) are bridged automatically. Claude Code, Codex, and Gemini all use MCP natively.</li>
-              <li><strong>Dashboard tabs:</strong> Agents (health status) · Tasks (kanban columns) · Messages (chronological log)</li>
               <li><strong>Free option:</strong> Qwen AI via Ollama — zero API cost, fully local. Qwen3-Coder-Next (64GB+ RAM) or Qwen3-Coder (16GB+ RAM)</li>
             </ul>
           </section>

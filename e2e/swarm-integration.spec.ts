@@ -333,18 +333,20 @@ test.describe.serial('Swarm Integration', () => {
     await ss('06-swarm-state-setup')
   })
 
-  test('7. Swarm dashboard shows terminals in Agents tab', async () => {
+  test('7. Swarm dashboard opens with Tasks and Messages tabs (no Agents tab)', async () => {
     await page.keyboard.press('Control+Shift+S')
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=Swarm Dashboard')).toBeVisible({ timeout: 3000 })
 
-    // Agents tab should show terminals (default tab)
-    const claudeEntry = page.locator('.fixed').locator('text=Claude Agent').first()
-    const codexEntry = page.locator('.fixed').locator('text=Codex Agent').first()
-    await expect(claudeEntry).toBeVisible({ timeout: 3000 })
-    await expect(codexEntry).toBeVisible({ timeout: 3000 })
-    await ss('07-dashboard-agents')
+    // Agents tab was removed; Tasks and Messages tabs should be present.
+    const tasksTab = page.locator('.fixed').locator('button:has-text("Tasks")').first()
+    const messagesTab = page.locator('.fixed').locator('button:has-text("Messages")').first()
+    const agentsTab = page.locator('.fixed').locator('button:has-text("Agents")').first()
+    await expect(tasksTab).toBeVisible({ timeout: 3000 })
+    await expect(messagesTab).toBeVisible({ timeout: 3000 })
+    await expect(agentsTab).not.toBeVisible()
+    await ss('07-dashboard-tabs')
   })
 
   test('8. Send swarm task prompt to mock Claude and verify response', async () => {

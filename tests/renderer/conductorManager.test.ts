@@ -372,6 +372,79 @@ describe('conductorManager', () => {
     expect(useTerminalStore.getState().terminals.find(t => t.id === 'orphan-conductor')).toBeUndefined()
   })
 
+  // ---- conductor refusal / MCP / token-limit detection ----
+
+  it('monitoring loop detects conductor refusal and sets error notification', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    // Return refusal text on the monitoring interval's buffer read
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { output: "I can't help with this task. It violates my guidelines.", length: 100 },
+    })
+
+    await sendTask('Do something sketchy', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const refusalCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('refused the task'),
+    )
+    expect(refusalCall).toBeDefined()
+    expect(refusalCall?.[0].type).toBe('error')
+    expect(getConductorState().status).toBe('error')
+  })
+
+  it('monitoring loop warns on MCP connection error in conductor output', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { output: 'Error: ECONNREFUSED connecting to MCP server', length: 50 },
+    })
+
+    await sendTask('Build', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const mcpCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('MCP tools'),
+    )
+    expect(mcpCall).toBeDefined()
+    expect(mcpCall?.[0].type).toBe('error')
+  })
+
+  it('monitoring loop warns when conductor hits token limit', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { output: 'context window exceeded — please start a new session', length: 50 },
+    })
+
+    await sendTask('Build', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const tokenCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('token limit'),
+    )
+    expect(tokenCall).toBeDefined()
+    expect(tokenCall?.[0].type).toBe('error')
+  })
+
   // ---- markSwarmDone side-effects ----
 
   it('completing swarm sets swarmActive to false, enabling new swarm start', async () => {

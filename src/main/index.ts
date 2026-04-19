@@ -1,7 +1,16 @@
 import { initMainSentry } from './sentry'
 initMainSentry()
 
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell } from 'electron'
+
+// Force a stable app name. When launched via `electron out/main/index.js`
+// (dev, E2E tests) Electron defaults to "Electron" for app.getName() and
+// therefore stores userData under ~/AppData/Roaming/Electron instead of
+// ~/AppData/Roaming/termpolis. That mismatch causes external callers
+// (MCP clients, tests) to read a stale mcp-token from the wrong dir and
+// hit 401. Pinning the name keeps userData consistent across all launch
+// modes (unpacked, packaged, CI).
+app.setName('termpolis')
 
 // Linux AppImage: the bundled chrome-sandbox lacks SUID root, which crashes on
 // launch. Use Chromium's namespace sandbox instead (no root needed).
@@ -184,8 +193,19 @@ ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+ipcMain.handle('shell:open-path', async (_, { path: pathStr }) => {
+  try {
+    const errorMsg = await shell.openPath(pathStr)
+    if (errorMsg) return err(errorMsg)
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('dialog:pick-directory', async (_, { defaultPath }) => {
   try {
+    if (process.env.TERMPOLIS_TEST_PROJECT_CWD) {
+      return ok(process.env.TERMPOLIS_TEST_PROJECT_CWD)
+    }
     const result = await dialog.showOpenDialog(mainWindow!, {
       defaultPath: defaultPath || homedir(),
       properties: ['openDirectory'],
@@ -742,9 +762,11 @@ if (!gotTheLock) {
         }, null, 2))
       }
 
-      // MCP config for the plugin
+      // MCP config for the plugin — Claude Code expects the mcpServers wrapper;
+      // without it the server silently fails to register and the conductor has
+      // no MCP tool access (symptom: swarm posts "analyzing..." then nothing).
       const pluginMcp = join(pluginDir, '.mcp.json')
-      const mcpContent = JSON.stringify({ termpolis: { command: 'node', args: [adapterPath] } }, null, 2)
+      const mcpContent = JSON.stringify({ mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }, null, 2)
       const existingMcp = require('fs').existsSync(pluginMcp) ? require('fs').readFileSync(pluginMcp, 'utf-8') : ''
       if (existingMcp !== mcpContent) {
         require('fs').writeFileSync(pluginMcp, mcpContent)

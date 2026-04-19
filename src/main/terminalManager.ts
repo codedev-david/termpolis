@@ -52,10 +52,33 @@ export function spawnTerminal(
   const existingPath = process.env.PATH || process.env.Path || ''
   const needsBundled = checkBundledToolsNeeded()
   const extraPathStr = extraPaths?.length ? extraPaths.join(sep) + sep : ''
-  const basePath = needsBundled ? `${toolsDir}${sep}${existingPath}` : existingPath
+  // On Windows, ensure System32 + PowerShell 1.0 are on PATH so nested
+  // `powershell` / `cmd` invocations resolve even when the parent Electron
+  // process was launched with a stripped-down PATH (e.g., from Git Bash /
+  // CI shells that don't include the Windows system directories).
+  const winSystemPath = process.platform === 'win32'
+    ? [
+        'C:\\Windows\\System32',
+        'C:\\Windows',
+        'C:\\Windows\\System32\\Wbem',
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+      ]
+        .filter((p) => !existingPath.toLowerCase().includes(p.toLowerCase()))
+        .join(sep)
+    : ''
+  const winSystemPrefix = winSystemPath ? winSystemPath + sep : ''
+  const basePath = needsBundled
+    ? `${toolsDir}${sep}${winSystemPrefix}${existingPath}`
+    : `${winSystemPrefix}${existingPath}`
+  // Test hook: e2e tests can prepend a shim directory that intercepts agent
+  // binaries (claude, codex, gemini, aider) and routes them to mocks. Keeps
+  // tests from accidentally invoking real agents on developer machines.
+  const testShimPath = process.env.TERMPOLIS_TEST_SHIM_DIR
+    ? `${process.env.TERMPOLIS_TEST_SHIM_DIR}${sep}`
+    : ''
   const env = {
     ...process.env,
-    PATH: `${extraPathStr}${basePath}`,
+    PATH: `${testShimPath}${extraPathStr}${basePath}`,
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
     BASH_SILENCE_DEPRECATION_WARNING: '1',
   } as Record<string, string>

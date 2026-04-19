@@ -11,15 +11,13 @@ interface SwarmDashboardProps {
   initialCwd?: string | null
 }
 
-type TabId = 'agents' | 'tasks' | 'messages'
+type TabId = 'tasks' | 'messages'
 
 export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('agents')
+  const [activeTab, setActiveTab] = useState<TabId>('tasks')
   const [messages, setMessages] = useState<SwarmMessage[]>([])
   const [tasks, setTasks] = useState<SwarmTask[]>([])
-  const terminals = useTerminalStore((s) => s.terminals)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
-  const swarmAgents = useTerminalStore((s) => s.swarmAgents)
   // Auto-open wizard if we have an initialCwd (came from Welcome/sidebar with directory already picked)
   const [showStartSwarm, setShowStartSwarm] = useState(!!initialCwd && !swarmActive)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(initialCwd ?? null)
@@ -34,19 +32,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     return () => clearInterval(interval)
   }, [])
 
-  // New task form
-  const [showNewTask, setShowNewTask] = useState(false)
-  const [taskTitle, setTaskTitle] = useState('')
-  const [taskDesc, setTaskDesc] = useState('')
-  const [taskAssignTo, setTaskAssignTo] = useState('')
-
   // Clear confirmation
   const [showClearConfirm, setShowClearConfirm] = useState(false)
-
-  // Broadcast form
-  const [showBroadcast, setShowBroadcast] = useState(false)
-  const [broadcastContent, setBroadcastContent] = useState('')
-  const [broadcastType, setBroadcastType] = useState<string>('info')
 
   const refresh = useCallback(async () => {
     try {
@@ -77,24 +64,6 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [onClose, showStartSwarm])
-
-  const handleCreateTask = async () => {
-    if (!taskTitle.trim()) return
-    await window.swarmAPI.createTask(taskTitle, taskDesc, 'dashboard', taskAssignTo || undefined)
-    setTaskTitle('')
-    setTaskDesc('')
-    setTaskAssignTo('')
-    setShowNewTask(false)
-    refresh()
-  }
-
-  const handleBroadcast = async () => {
-    if (!broadcastContent.trim()) return
-    await window.swarmAPI.sendMessage('dashboard', 'all', broadcastType, broadcastContent)
-    setBroadcastContent('')
-    setShowBroadcast(false)
-    refresh()
-  }
 
   const handleClearSwarm = async () => {
     stopAllBridges()
@@ -143,139 +112,9 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     }
   }
 
-  const agentHealthColor = (status: string) => {
-    switch (status) {
-      case 'working': return 'bg-green-500 animate-pulse'
-      case 'thinking': return 'bg-blue-500 animate-pulse'
-      case 'waiting_for_input': return 'bg-orange-500 animate-pulse'
-      case 'idle': return 'bg-green-500'
-      case 'starting': return 'bg-yellow-500 animate-pulse'
-      case 'completed': return 'bg-emerald-400'
-      case 'errored': return 'bg-red-500'
-      default: return 'bg-gray-500'
-    }
-  }
-
-  const agentHealthLabel = (status: string) => {
-    switch (status) {
-      case 'working': return 'text-green-400'
-      case 'thinking': return 'text-blue-400'
-      case 'waiting_for_input': return 'text-orange-400'
-      case 'idle': return 'text-green-400'
-      case 'starting': return 'text-yellow-400'
-      case 'completed': return 'text-emerald-400'
-      case 'errored': return 'text-red-400'
-      default: return 'text-gray-400'
-    }
-  }
-
-  const agentStatusIcon = (status: string) => {
-    switch (status) {
-      case 'working': return 'fa-solid fa-hammer'
-      case 'thinking': return 'fa-solid fa-brain'
-      case 'waiting_for_input': return 'fa-solid fa-hand'
-      case 'idle': return 'fa-solid fa-circle-check'
-      case 'starting': return 'fa-solid fa-spinner fa-spin'
-      case 'completed': return 'fa-solid fa-flag-checkered'
-      case 'errored': return 'fa-solid fa-triangle-exclamation'
-      default: return 'fa-solid fa-circle-question'
-    }
-  }
-
-  const agentStatusLabel = (status: string) => {
-    switch (status) {
-      case 'working': return 'Working'
-      case 'thinking': return 'Thinking'
-      case 'waiting_for_input': return 'Needs Input'
-      case 'idle': return 'Idle'
-      case 'starting': return 'Starting'
-      case 'completed': return 'Done'
-      case 'errored': return 'Error'
-      default: return status
-    }
-  }
-
   const pendingTasks = tasks.filter((t) => t.status === 'pending')
   const inProgressTasks = tasks.filter((t) => t.status === 'in_progress')
   const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'failed')
-
-  const swarmTerminals = terminals.filter(t => t.isSwarm && !t.hidden && !t.isConductor)
-
-  const renderAgents = () => (
-    <div className="space-y-2">
-      {/* Swarm agents section */}
-      {swarmAgents.length > 0 && (
-        <div className="mb-4">
-          <div className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-            <i className="fa-solid fa-network-wired text-[#22D3EE]"></i>
-            Swarm Agents
-          </div>
-          {swarmAgents.map((agent) => {
-            const terminal = terminals.find(t => t.id === agent.terminalId)
-            const needsAttention = agent.status === 'waiting_for_input'
-            return (
-              <div
-                key={agent.terminalId}
-                className={`flex items-center gap-3 p-3 rounded-lg mb-2 transition-colors ${
-                  needsAttention
-                    ? 'bg-orange-500/10 border border-orange-500/40 hover:border-orange-400 cursor-pointer'
-                    : 'bg-[#252526] border border-[#3c3c3c] hover:border-[#555]'
-                }`}
-                onClick={needsAttention ? () => {
-                  const store = useTerminalStore.getState()
-                  store.setActiveTerminal(agent.terminalId)
-                  onClose()
-                } : undefined}
-                title={needsAttention ? 'Click to jump to this agent\'s terminal' : undefined}
-              >
-                <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${agentHealthColor(agent.status)}`}></div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-[#d4d4d4] truncate">{agent.agentName}</span>
-                    <span className="text-[10px] text-[#9ca3af]">{agent.role}</span>
-                  </div>
-                  {agent.summary && (
-                    <div className={`text-xs truncate mt-0.5 ${needsAttention ? 'text-orange-300' : 'text-[#888]'}`}>
-                      {agent.summary}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <i className={`${agentStatusIcon(agent.status)} text-[10px] ${agentHealthLabel(agent.status)}`}></i>
-                  <span className={`text-[10px] font-semibold uppercase ${agentHealthLabel(agent.status)}`}>
-                    {agentStatusLabel(agent.status)}
-                  </span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Swarm terminals only (excluding conductor and non-swarm terminals) */}
-      {swarmTerminals.length > 0 && (
-        <div className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-          <i className="fa-solid fa-terminal"></i>
-          Swarm Terminals
-        </div>
-      )}
-      {swarmTerminals.length === 0 && swarmAgents.length === 0 ? (
-        <p className="text-[#9ca3af] text-sm text-center py-8">No swarm agents running. Start a swarm to see agents here.</p>
-      ) : (
-        swarmTerminals.map((t) => (
-          <div key={t.id} className="flex items-center gap-3 p-3 rounded-lg bg-[#2d2d2d] border border-[#3c3c3c] hover:border-[#555]">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }}></div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-[#d4d4d4] truncate">{t.name}</div>
-              <div className="text-xs text-[#9ca3af] truncate">{t.cwd}</div>
-            </div>
-            <span className="text-xs text-[#9ca3af] bg-[#1e1e1e] px-2 py-0.5 rounded font-mono">{t.shellType}</span>
-            <span className="text-xs text-[#9ca3af] font-mono truncate max-w-[80px]" title={t.id}>{t.id.slice(0, 8)}</span>
-          </div>
-        ))
-      )}
-    </div>
-  )
 
   const renderTaskColumn = (title: string, columnTasks: SwarmTask[], icon: string) => (
     <div className="flex-1 min-w-0">
@@ -288,8 +127,21 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           <p className="text-[#888] text-xs text-center py-4">None</p>
         ) : (
           columnTasks.map((task) => (
-            <div key={task.id} className={`p-2.5 rounded-lg border ${statusColor(task.status)}`}>
-              <div className="text-sm font-medium mb-1">{task.title}</div>
+            <div
+              key={task.id}
+              className={`p-2.5 rounded-lg border ${statusColor(task.status)} ${
+                task.status === 'in_progress' ? 'animate-pulse-border relative overflow-hidden' : ''
+              }`}
+            >
+              {task.status === 'in_progress' && (
+                <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-blue-400 to-transparent animate-shimmer"></div>
+              )}
+              <div className="text-sm font-medium mb-1 flex items-center gap-2">
+                {task.status === 'in_progress' && (
+                  <i className="fa-solid fa-spinner fa-spin text-blue-400 text-[10px]"></i>
+                )}
+                <span>{task.title}</span>
+              </div>
               {task.description && (
                 <div className="text-xs opacity-70 mb-1.5 line-clamp-2">{task.description}</div>
               )}
@@ -355,7 +207,6 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   )
 
   const tabs: { id: TabId; label: string; icon: string }[] = [
-    { id: 'agents', label: 'Agents', icon: 'fa-solid fa-robot' },
     { id: 'tasks', label: 'Tasks', icon: 'fa-solid fa-list-check' },
     { id: 'messages', label: 'Messages', icon: 'fa-solid fa-comments' },
   ]
@@ -396,7 +247,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
               </div>
             )}
             <span className="text-xs text-[#9ca3af]">
-              {swarmTerminals.length} agent{swarmTerminals.length !== 1 ? 's' : ''} | {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
+              {tasks.length} task{tasks.length !== 1 ? 's' : ''} | {messages.length} msg{messages.length !== 1 ? 's' : ''}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -440,28 +291,19 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
             >
               <i className={tab.icon}></i>
               {tab.label}
-              {tab.id === 'agents' && (swarmAgents.length > 0 || swarmTerminals.length > 0) && (
+              {tab.id === 'tasks' && tasks.length > 0 && (
                 <span className="ml-1 text-[10px] bg-[#22D3EE]/20 text-[#22D3EE] px-1.5 rounded-full">
-                  {swarmAgents.length || swarmTerminals.length}
+                  {tasks.length}
+                </span>
+              )}
+              {tab.id === 'messages' && messages.length > 0 && (
+                <span className="ml-1 text-[10px] bg-[#22D3EE]/20 text-[#22D3EE] px-1.5 rounded-full">
+                  {messages.length}
                 </span>
               )}
             </button>
           ))}
           <div className="flex-1"></div>
-          <button
-            onClick={() => setShowNewTask(true)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#22D3EE] hover:bg-[#37373d]"
-            title="New Task"
-          >
-            <i className="fa-solid fa-plus"></i> Task
-          </button>
-          <button
-            onClick={() => setShowBroadcast(true)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#22D3EE] hover:bg-[#37373d]"
-            title="Broadcast Message"
-          >
-            <i className="fa-solid fa-bullhorn"></i> Broadcast
-          </button>
           {swarmActive && (
             <button
               onClick={() => revealConductor()}
@@ -482,78 +324,9 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
-          {activeTab === 'agents' && renderAgents()}
           {activeTab === 'tasks' && renderTasks()}
           {activeTab === 'messages' && renderMessages()}
         </div>
-
-        {/* New Task Modal */}
-        {showNewTask && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 rounded-xl" onClick={() => setShowNewTask(false)}>
-            <div className="bg-[#252526] border border-[#3c3c3c] rounded-lg p-5 w-96 space-y-3" onClick={(e) => e.stopPropagation()}>
-              <h3 className="text-sm font-semibold text-[#d4d4d4]">New Swarm Task</h3>
-              <input
-                autoFocus
-                value={taskTitle}
-                onChange={(e) => setTaskTitle(e.target.value)}
-                placeholder="Task title"
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none"
-              />
-              <textarea
-                value={taskDesc}
-                onChange={(e) => setTaskDesc(e.target.value)}
-                placeholder="Description"
-                rows={3}
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none resize-none"
-              />
-              <select
-                value={taskAssignTo}
-                onChange={(e) => setTaskAssignTo(e.target.value)}
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] focus:border-[#22D3EE] outline-none"
-              >
-                <option value="">Unassigned (pending)</option>
-                {terminals.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name} ({t.id.slice(0, 8)})</option>
-                ))}
-              </select>
-              <div className="flex justify-end gap-2">
-                <button onClick={() => setShowNewTask(false)} className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]">Cancel</button>
-                <button onClick={handleCreateTask} className="px-3 py-1.5 text-xs bg-[#22D3EE]/20 text-[#22D3EE] rounded hover:bg-[#22D3EE]/30">Create</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Broadcast Modal */}
-        {showBroadcast && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 rounded-xl" onClick={() => setShowBroadcast(false)}>
-            <div className="bg-[#252526] border border-[#3c3c3c] rounded-lg p-5 w-96 space-y-3" onClick={(e) => e.stopPropagation()}>
-              <h3 className="text-sm font-semibold text-[#d4d4d4]">Broadcast to All Agents</h3>
-              <select
-                value={broadcastType}
-                onChange={(e) => setBroadcastType(e.target.value)}
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] focus:border-[#22D3EE] outline-none"
-              >
-                <option value="info">Info</option>
-                <option value="task">Task</option>
-                <option value="question">Question</option>
-                <option value="review">Review</option>
-              </select>
-              <textarea
-                autoFocus
-                value={broadcastContent}
-                onChange={(e) => setBroadcastContent(e.target.value)}
-                placeholder="Message content..."
-                rows={4}
-                className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none resize-none"
-              />
-              <div className="flex justify-end gap-2">
-                <button onClick={() => setShowBroadcast(false)} className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]">Cancel</button>
-                <button onClick={handleBroadcast} className="px-3 py-1.5 text-xs bg-[#22D3EE]/20 text-[#22D3EE] rounded hover:bg-[#22D3EE]/30">Send</button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Clear Confirmation Modal */}
         {showClearConfirm && (
