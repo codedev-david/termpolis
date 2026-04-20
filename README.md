@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/Windows-Code%20Signed-0078D4?logo=windows&logoColor=white" alt="Windows Code Signed">
   <img src="https://img.shields.io/badge/macOS-Notarized-000000?logo=apple&logoColor=white" alt="macOS Notarized">
   <a href="https://github.com/sponsors/codedev-david"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg" alt="Sponsor"></a>
@@ -506,7 +506,7 @@ Old sessions are automatically migrated — missing fields receive defaults on l
 
 ## Sponsor
 
-Termpolis is free, open source, and MIT licensed. Building and maintaining it (including AI token costs for development) takes time and resources.
+Termpolis is free, open source, and Apache 2.0 licensed. Building and maintaining it (including AI token costs for development) takes time and resources.
 
 If you find Termpolis useful, please consider sponsoring:
 
@@ -538,4 +538,4 @@ When reporting a bug, please include:
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Companies are free to use, modify, and redistribute Termpolis, including in commercial products, with attribution.

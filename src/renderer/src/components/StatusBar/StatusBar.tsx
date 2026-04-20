@@ -367,7 +367,7 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
   return (
     <>
       <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#9ca3af] text-xs select-none shrink-0">
-        <span>&copy; {new Date().getFullYear()} Termpolis &middot; MIT License</span>
+        <span>&copy; {new Date().getFullYear()} Termpolis &middot; Apache 2.0 License</span>
         <div className="flex items-center gap-3">
           {swarmActive && (
             <button

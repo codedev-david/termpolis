@@ -6,7 +6,7 @@ Publisher: David Engelhart
 PublisherUrl: https://github.com/codedev-david
 PackageName: Termpolis
 PackageUrl: https://github.com/codedev-david/termpolis
-License: MIT
+License: Apache-2.0
 LicenseUrl: https://github.com/codedev-david/termpolis/blob/main/LICENSE
 ShortDescription: AI-native terminal manager where Claude, Codex, Gemini, and Qwen work together as a team
 Description: |-

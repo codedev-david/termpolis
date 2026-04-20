@@ -29,9 +29,9 @@ describe('StatusBar', () => {
     expect(screen.getByText(new RegExp(`${year} Termpolis`))).toBeInTheDocument()
   })
 
-  it('renders MIT License mention', () => {
+  it('renders Apache 2.0 License mention', () => {
     render(<StatusBar />)
-    expect(screen.getByText(/MIT License/)).toBeInTheDocument()
+    expect(screen.getByText(/Apache 2\.0 License/)).toBeInTheDocument()
   })
 
   it('renders MCP server status indicator', () => {

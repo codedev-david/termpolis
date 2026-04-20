@@ -9,13 +9,18 @@ agree to them.
 
 ## 1. License
 
-Termpolis is released under the MIT License, reproduced in the `LICENSE` file
-at the root of the repository. In particular:
+Termpolis is released under the Apache License, Version 2.0, reproduced in
+the `LICENSE` file at the root of the repository. Attribution notices are in
+the `NOTICE` file. In particular:
 
-- You may use, copy, modify, merge, publish, distribute, sublicense, and sell
-  copies of the software.
-- You must include the MIT copyright notice and permission notice in
-  substantial portions of the software.
+- You may use, copy, modify, and redistribute Termpolis, including in
+  commercial products and proprietary derivative works.
+- You must retain the copyright notice, the `LICENSE` file, and the `NOTICE`
+  file in any substantial redistribution, and clearly mark any files you
+  modify.
+- Apache 2.0 includes an explicit patent license grant from contributors to
+  users, and a defensive termination clause: if you sue anyone over patents
+  you claim are infringed by Termpolis, your patent license terminates.
 - **The software is provided "as is", without warranty of any kind.** See
   section 5 below.
 
