@@ -83,33 +83,40 @@ describe('getDefaultShell', () => {
   })
 })
 
-// Separate module reload for darwin/win32 platform branches
+// Separate module reload for darwin/win32 platform branches.
+// Use explicit `vi.doMock('fs', ...)` instead of relying on the top-level
+// `vi.mock('fs')` auto-mock surviving `vi.resetModules()` — that behavior
+// is flaky on macOS runners and was letting real fs.existsSync leak
+// through, which made the win32 assertion pass on Windows (pwsh.exe
+// actually exists) and Ubuntu (nothing at C:\... exists so the filter
+// works correctly) but fail on macOS.
 describe('detectAvailableShells — darwin/win32 platform coverage', () => {
   it('darwin branch: selects darwin candidates list', async () => {
     vi.resetModules()
     vi.doMock('os', () => ({ homedir: () => '/Users/u', platform: () => 'darwin' }))
-    const fsMod = await import('fs')
-    vi.mocked(fsMod.existsSync).mockImplementation((p: any) =>
-      p === '/bin/zsh' || p === '/bin/bash',
-    )
+    vi.doMock('fs', () => ({
+      existsSync: (p: any) => p === '/bin/zsh' || p === '/bin/bash',
+    }))
     const mod = await import('../../src/main/shellDetector')
     const shells = await mod.detectAvailableShells()
     expect(shells.some(s => s.type === 'zsh')).toBe(true)
     vi.doUnmock('os')
+    vi.doUnmock('fs')
   })
 
   it('win32 branch: selects win32 candidates list', async () => {
     vi.resetModules()
     vi.doMock('os', () => ({ homedir: () => 'C:\\Users\\u', platform: () => 'win32' }))
-    const fsMod = await import('fs')
-    vi.mocked(fsMod.existsSync).mockImplementation((p: any) =>
-      p === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
-      p === 'C:\\Windows\\System32\\cmd.exe',
-    )
+    vi.doMock('fs', () => ({
+      existsSync: (p: any) =>
+        p === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
+        p === 'C:\\Windows\\System32\\cmd.exe',
+    }))
     const mod = await import('../../src/main/shellDetector')
     const shells = await mod.detectAvailableShells()
     expect(shells.some(s => s.type === 'powershell')).toBe(true)
     expect(shells.some(s => s.type === 'cmd')).toBe(true)
     vi.doUnmock('os')
+    vi.doUnmock('fs')
   })
 })
