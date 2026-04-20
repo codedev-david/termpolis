@@ -130,4 +130,69 @@ describe('CommandPalette', () => {
     fireEvent.change(input, { target: { value: 'my custom' } })
     expect(screen.getByText('My Custom')).toBeInTheDocument()
   })
+
+  it('shows "No matching command" when query has no matches', () => {
+    render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(input, { target: { value: 'zzzzzzzzz-no-such-command' } })
+    expect(screen.getByText('No matching command')).toBeInTheDocument()
+  })
+
+  it('inserts prompt template text into active terminal when selected', () => {
+    const writeToTerminal = vi.fn()
+    ;(window as any).termpolis.writeToTerminal = writeToTerminal
+    const onClose = vi.fn()
+    render(<CommandPalette onAction={vi.fn()} onClose={onClose} />)
+    // Click on our custom prompt template
+    fireEvent.click(screen.getByText('My Custom'))
+    expect(writeToTerminal).toHaveBeenCalledWith('t1', 'Custom prompt text')
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('executes run_command with captured argument', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(input, { target: { value: 'run ls -la' } })
+    fireEvent.click(screen.getByText('Run Command'))
+    expect(onAction).toHaveBeenCalledWith('run_command', 'ls -la')
+  })
+
+  it('falls back to label/description search when no pattern matches', () => {
+    render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    // 'Terminal layout' is not a pattern but matches "Save Workspace" description
+    fireEvent.change(input, { target: { value: 'layout' } })
+    expect(screen.getByText('Save Workspace')).toBeInTheDocument()
+  })
+
+  it('ArrowDown wraps around to first when already at end', () => {
+    render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    // Press ArrowDown many times to wrap around
+    for (let i = 0; i < 50; i++) fireEvent.keyDown(input, { key: 'ArrowDown' })
+  })
+
+  it('ArrowUp wraps around to last from first', () => {
+    render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    // Press ArrowUp at selectedIndex 0 — should wrap to end
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+  })
+
+  it('hovering a command updates the selection highlight', () => {
+    render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+    const splitRight = screen.getByText('Split Right').closest('button') as HTMLButtonElement
+    fireEvent.mouseEnter(splitRight)
+    expect(splitRight.className).toContain('bg-[#094771]')
+  })
+
+  it('does nothing when Enter is pressed with no matches', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(input, { target: { value: 'zzzzzzzzz-no-such-command' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onAction).not.toHaveBeenCalled()
+  })
 })

@@ -132,6 +132,20 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
           <span>Session Recording</span>
         </div>
 
+        {/* Observability Shortcuts */}
+        <div className="flex flex-col items-center gap-1 text-[11px] text-[#888] max-w-md text-center">
+          <span className="text-[#9ca3af] font-medium">AI Observability</span>
+          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+            <span><kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+Shift+A</kbd> Activity Feed</span>
+            <span className="text-[#3c3c3c]">·</span>
+            <span><kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+Shift+D</kbd> Redundancy</span>
+            <span className="text-[#3c3c3c]">·</span>
+            <span><kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+Shift+Y</kbd> Efficiency</span>
+            <span className="text-[#3c3c3c]">·</span>
+            <span><kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+Shift+S</kbd> Swarm</span>
+          </div>
+        </div>
+
         {/* Hint */}
         <p className="text-[11px] text-[#888]">
           Press <kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+K</kbd> to open the command palette, or click <strong className="text-[#9ca3af]">+ Add Terminal</strong> in the sidebar

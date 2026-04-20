@@ -140,6 +140,33 @@ contextBridge.exposeInMainWorld('swarmAPI', {
   clear: () => ipcRenderer.invoke('swarm:clear'),
 })
 
+// Context pins — per-project user-pinned snippets
+contextBridge.exposeInMainWorld('contextPins', {
+  list: (cwd: string) => ipcRenderer.invoke('contextPins:list', { cwd }),
+  add: (cwd: string, input: { label: string; body: string; source?: string; tags?: string[] }) =>
+    ipcRenderer.invoke('contextPins:add', { cwd, input }),
+  update: (cwd: string, id: string, patch: { label?: string; body?: string; source?: string; tags?: string[] }) =>
+    ipcRenderer.invoke('contextPins:update', { cwd, id, patch }),
+  remove: (cwd: string, id: string) =>
+    ipcRenderer.invoke('contextPins:remove', { cwd, id }),
+  clear: (cwd: string) => ipcRenderer.invoke('contextPins:clear', { cwd }),
+})
+
+// Agent activity event bus (live feed + query)
+contextBridge.exposeInMainWorld('agentActivity', {
+  query: (filter?: unknown) => ipcRenderer.invoke('agentActivity:query', { filter }),
+  stats: () => ipcRenderer.invoke('agentActivity:stats'),
+  attachWatcher: (terminalId: string, cwd: string, agentType: string) =>
+    ipcRenderer.invoke('agentWatcher:attach', { terminalId, cwd, agentType }),
+  detachWatcher: (terminalId: string) =>
+    ipcRenderer.invoke('agentWatcher:detach', { terminalId }),
+  onEvent: (cb: (event: unknown) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: unknown) => cb(event)
+    ipcRenderer.on('agentActivity:event', handler)
+    return () => ipcRenderer.removeListener('agentActivity:event', handler)
+  },
+})
+
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {
   onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => {

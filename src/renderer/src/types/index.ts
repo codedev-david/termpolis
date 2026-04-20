@@ -142,10 +142,70 @@ export interface SwarmAPI {
   clear: () => Promise<IpcResponse>
 }
 
+export type AgentActivityKind =
+  | 'message'
+  | 'tool_call'
+  | 'tool_result'
+  | 'token_update'
+  | 'compaction'
+  | 'error'
+  | 'status_change'
+  | 'mcp_audit'
+
+export type AgentActivityType = 'claude' | 'codex' | 'gemini' | 'aider' | 'unknown'
+
+export interface AgentActivityEvent {
+  id: string
+  ts: number
+  terminalId: string
+  agentType: AgentActivityType
+  kind: AgentActivityKind
+  taskId?: string
+  summary: string
+  payload: Record<string, unknown>
+}
+
+export interface AgentActivityFilter {
+  terminalId?: string
+  agentType?: AgentActivityType
+  kind?: AgentActivityKind | AgentActivityKind[]
+  since?: number
+  until?: number
+  limit?: number
+  search?: string
+}
+
+export interface ContextPin {
+  id: string
+  createdAt: number
+  label: string
+  body: string
+  source?: string
+  tags?: string[]
+}
+
+export interface ContextPinsAPI {
+  list: (cwd: string) => Promise<IpcResponse<ContextPin[]>>
+  add: (cwd: string, input: { label: string; body: string; source?: string; tags?: string[] }) => Promise<IpcResponse<ContextPin>>
+  update: (cwd: string, id: string, patch: { label?: string; body?: string; source?: string; tags?: string[] }) => Promise<IpcResponse<ContextPin>>
+  remove: (cwd: string, id: string) => Promise<IpcResponse<{ removed: boolean }>>
+  clear: (cwd: string) => Promise<IpcResponse>
+}
+
+export interface AgentActivityAPI {
+  query: (filter?: AgentActivityFilter) => Promise<IpcResponse<AgentActivityEvent[]>>
+  stats: () => Promise<IpcResponse<{ ringSize: number; dropped: number }>>
+  attachWatcher: (terminalId: string, cwd: string, agentType: string) => Promise<IpcResponse<{ attached: boolean }>>
+  detachWatcher: (terminalId: string) => Promise<IpcResponse>
+  onEvent: (cb: (event: AgentActivityEvent) => void) => () => void
+}
+
 declare global {
   interface Window {
     termpolis: TermpolisAPI
     swarmAPI: SwarmAPI
+    agentActivity: AgentActivityAPI
+    contextPins: ContextPinsAPI
     windowControls: {
       minimize: () => void
       maximize: () => void

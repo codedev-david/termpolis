@@ -317,3 +317,176 @@ describe('preload: mcpEvents', () => {
     expect(typeof cleanup).toBe('function')
   })
 })
+
+describe('preload: termpolis API — additional methods', () => {
+  it('openPath invokes shell:open-path', async () => {
+    await exposed.termpolis.openPath('/some/path')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('shell:open-path', { path: '/some/path' })
+  })
+
+  it('gitFindRoot invokes git:find-root', async () => {
+    await exposed.termpolis.gitFindRoot('/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:find-root', { cwd: '/repo' })
+  })
+
+  it('onTerminalData cleanup removes the listener', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.termpolis.onTerminalData(cb)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:data', expect.any(Function))
+  })
+
+  it('onTerminalData handler invokes callback with id and data', () => {
+    const cb = vi.fn()
+    exposed.termpolis.onTerminalData(cb)
+    // Grab the handler that was registered
+    const registeredHandler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:data')?.[1]
+    registeredHandler({}, 'tid-1', 'output-data')
+    expect(cb).toHaveBeenCalledWith('tid-1', 'output-data')
+  })
+})
+
+describe('preload: globalEvents cleanup handlers', () => {
+  it('onNewTerminal cleanup removes listener', () => {
+    const cleanup = exposed.globalEvents.onNewTerminal(vi.fn())
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('global:new-terminal', expect.any(Function))
+  })
+
+  it('onNewTerminal invokes callback on event', () => {
+    const cb = vi.fn()
+    exposed.globalEvents.onNewTerminal(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'global:new-terminal')?.[1]
+    handler()
+    expect(cb).toHaveBeenCalled()
+  })
+
+  it('onToggleSwarm cleanup removes listener', () => {
+    const cleanup = exposed.globalEvents.onToggleSwarm(vi.fn())
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('global:toggle-swarm', expect.any(Function))
+  })
+
+  it('onToggleSwarm invokes callback on event', () => {
+    const cb = vi.fn()
+    exposed.globalEvents.onToggleSwarm(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'global:toggle-swarm')?.[1]
+    handler()
+    expect(cb).toHaveBeenCalled()
+  })
+
+  it('onConfirmClose cleanup removes listener', () => {
+    const cleanup = exposed.globalEvents.onConfirmClose(vi.fn())
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('app:confirm-close', expect.any(Function))
+  })
+
+  it('onConfirmClose invokes callback on event', () => {
+    const cb = vi.fn()
+    exposed.globalEvents.onConfirmClose(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'app:confirm-close')?.[1]
+    handler()
+    expect(cb).toHaveBeenCalled()
+  })
+})
+
+describe('preload: mcpEvents cleanup handlers', () => {
+  it('onTerminalCreated cleanup removes listener', () => {
+    const cleanup = exposed.mcpEvents.onTerminalCreated(vi.fn())
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('mcp:terminal-created', expect.any(Function))
+  })
+
+  it('onTerminalCreated invokes callback with data', () => {
+    const cb = vi.fn()
+    exposed.mcpEvents.onTerminalCreated(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'mcp:terminal-created')?.[1]
+    handler({}, { id: 'x', name: 'n', shell: 'bash', cwd: '/home' })
+    expect(cb).toHaveBeenCalledWith({ id: 'x', name: 'n', shell: 'bash', cwd: '/home' })
+  })
+
+  it('onTerminalClosed cleanup removes listener', () => {
+    const cleanup = exposed.mcpEvents.onTerminalClosed(vi.fn())
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('mcp:terminal-closed', expect.any(Function))
+  })
+
+  it('onTerminalClosed invokes callback with id', () => {
+    const cb = vi.fn()
+    exposed.mcpEvents.onTerminalClosed(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'mcp:terminal-closed')?.[1]
+    handler({}, 'term-id')
+    expect(cb).toHaveBeenCalledWith('term-id')
+  })
+})
+
+describe('preload: contextPins API', () => {
+  it('list invokes contextPins:list', async () => {
+    await exposed.contextPins.list('/cwd')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('contextPins:list', { cwd: '/cwd' })
+  })
+
+  it('add invokes contextPins:add', async () => {
+    const input = { label: 'L', body: 'B' }
+    await exposed.contextPins.add('/cwd', input)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('contextPins:add', { cwd: '/cwd', input })
+  })
+
+  it('update invokes contextPins:update', async () => {
+    const patch = { label: 'New' }
+    await exposed.contextPins.update('/cwd', 'pin-1', patch)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('contextPins:update', { cwd: '/cwd', id: 'pin-1', patch })
+  })
+
+  it('remove invokes contextPins:remove', async () => {
+    await exposed.contextPins.remove('/cwd', 'pin-1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('contextPins:remove', { cwd: '/cwd', id: 'pin-1' })
+  })
+
+  it('clear invokes contextPins:clear', async () => {
+    await exposed.contextPins.clear('/cwd')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('contextPins:clear', { cwd: '/cwd' })
+  })
+})
+
+describe('preload: agentActivity API', () => {
+  it('query invokes agentActivity:query', async () => {
+    await exposed.agentActivity.query({ limit: 50 })
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentActivity:query', { filter: { limit: 50 } })
+  })
+
+  it('query with no filter still invokes', async () => {
+    await exposed.agentActivity.query()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentActivity:query', { filter: undefined })
+  })
+
+  it('stats invokes agentActivity:stats', async () => {
+    await exposed.agentActivity.stats()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentActivity:stats')
+  })
+
+  it('attachWatcher invokes agentWatcher:attach', async () => {
+    await exposed.agentActivity.attachWatcher('t1', '/cwd', 'claude')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentWatcher:attach', { terminalId: 't1', cwd: '/cwd', agentType: 'claude' })
+  })
+
+  it('detachWatcher invokes agentWatcher:detach', async () => {
+    await exposed.agentActivity.detachWatcher('t1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentWatcher:detach', { terminalId: 't1' })
+  })
+
+  it('onEvent registers and cleanup removes', () => {
+    const cleanup = exposed.agentActivity.onEvent(vi.fn())
+    expect(mockIpcRenderer.on).toHaveBeenCalledWith('agentActivity:event', expect.any(Function))
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('agentActivity:event', expect.any(Function))
+  })
+
+  it('onEvent handler forwards event to callback', () => {
+    const cb = vi.fn()
+    exposed.agentActivity.onEvent(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'agentActivity:event')?.[1]
+    handler({}, { id: 'ev1' })
+    expect(cb).toHaveBeenCalledWith({ id: 'ev1' })
+  })
+})

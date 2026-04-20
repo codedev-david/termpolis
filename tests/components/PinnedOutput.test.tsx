@@ -30,4 +30,24 @@ describe('PinnedOutput', () => {
     fireEvent.click(unpinButtons[0])
     expect(onUnpin).toHaveBeenCalledWith('pin-1')
   })
+
+  it('renders nothing when pins array is empty', () => {
+    const { container } = render(<PinnedOutput pins={[]} onUnpin={vi.fn()} />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('header is collapsed by default — pin content is hidden', () => {
+    render(<PinnedOutput pins={pins} onUnpin={vi.fn()} />)
+    // Content of pins should not be rendered when collapsed
+    expect(screen.queryByText('Error: module not found')).not.toBeInTheDocument()
+  })
+
+  it('collapses again when header is clicked twice', () => {
+    render(<PinnedOutput pins={pins} onUnpin={vi.fn()} />)
+    const header = screen.getByText('2 pinned')
+    fireEvent.click(header)
+    expect(screen.getByText('Error: module not found')).toBeInTheDocument()
+    fireEvent.click(header)
+    expect(screen.queryByText('Error: module not found')).not.toBeInTheDocument()
+  })
 })

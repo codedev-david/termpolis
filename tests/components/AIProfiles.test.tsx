@@ -402,6 +402,83 @@ describe('AIProfiles', () => {
     })
   })
 
+  describe('additional branch coverage', () => {
+    it('handles detectAgents rejection gracefully', async () => {
+      ;(window as any).termpolis.detectAgents = vi.fn().mockRejectedValue(new Error('boom'))
+      render(<AIProfiles availableShells={defaultShells} />)
+      // Should still render without crashing
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code')).toBeInTheDocument()
+      })
+    })
+
+    it('auto-trusts codex by sending "1\\r" after launch (codex branch)', async () => {
+      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'aider-qwen': true }
+      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
+        success: true, data: mockInstalledAgents,
+      })
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => {
+        expect(document.querySelectorAll('.fa-circle-check').length).toBe(4)
+      }, { timeout: 3000 })
+      fireEvent.click(screen.getByText('OpenAI Codex'))
+      await waitFor(() => {
+        expect((window as any).termpolis.createTerminal).toHaveBeenCalled()
+      })
+      // With testDelay=0, writeToTerminal should have been called with '1\r' for codex trust
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls
+        const hasCodexTrust = calls.some((c: any[]) => c[1] === '1\r')
+        expect(hasCodexTrust).toBe(true)
+      }, { timeout: 3000 })
+    }, 10000)
+
+    it('closes the Ollama hint when its × button is clicked', async () => {
+      mockInstalledAgents = { claude: true, codex: true, gemini: false, 'aider-qwen': true }
+      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
+        success: true, data: mockInstalledAgents,
+      })
+      globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('no'))) as any
+
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => {
+        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
+      }, { timeout: 3000 })
+      fireEvent.click(screen.getByText('Qwen AI'))
+      await waitFor(() => {
+        expect(screen.getByText('Free AI Coding with Qwen AI')).toBeInTheDocument()
+      }, { timeout: 3000 })
+      // Click the × close button within the hint container
+      const hintHeading = screen.getByText('Free AI Coding with Qwen AI')
+      const hintRoot = hintHeading.closest('div')!.parentElement as HTMLElement
+      const closeBtn = hintRoot.querySelector('button') as HTMLButtonElement
+      fireEvent.click(closeBtn)
+      expect(screen.queryByText('Free AI Coding with Qwen AI')).not.toBeInTheDocument()
+    }, 10000)
+
+    it('opens Ollama home URL when the Ollama link inside hint is clicked', async () => {
+      mockInstalledAgents = { claude: true, codex: true, gemini: false, 'aider-qwen': true }
+      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
+        success: true, data: mockInstalledAgents,
+      })
+      globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('no'))) as any
+      const openSpy = vi.fn()
+      window.open = openSpy
+
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => {
+        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
+      }, { timeout: 3000 })
+      fireEvent.click(screen.getByText('Qwen AI'))
+      await waitFor(() => {
+        expect(screen.getByText('Free AI Coding with Qwen AI')).toBeInTheDocument()
+      }, { timeout: 3000 })
+      // Click the Ollama link inside the hint
+      fireEvent.click(screen.getByText('Ollama'))
+      expect(openSpy).toHaveBeenCalledWith('https://ollama.com', '_blank')
+    }, 10000)
+  })
+
   describe('remove custom profile', () => {
     it('shows remove button on custom profiles', () => {
       mockAiProfiles = [

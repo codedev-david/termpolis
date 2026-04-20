@@ -25,4 +25,15 @@ describe('CommandFixBanner', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onDismiss).toHaveBeenCalled()
   })
+
+  it('ignores non-Enter/non-Escape keys', () => {
+    const onAccept = vi.fn()
+    const onDismiss = vi.fn()
+    render(<CommandFixBanner suggestion="ls" onAccept={onAccept} onDismiss={onDismiss} />)
+    fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(window, { key: 'Tab' })
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    expect(onAccept).not.toHaveBeenCalled()
+    expect(onDismiss).not.toHaveBeenCalled()
+  })
 })

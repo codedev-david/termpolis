@@ -23,6 +23,7 @@ import { isNaturalLanguage, getSuggestions } from '../../lib/aiSuggestions'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
+import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
 import { useContextLimit } from '../../hooks/useContextLimit'
 import type { ShellType } from '../../types'
@@ -84,6 +85,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // --- Custom hooks ---
   const completion = useCompletionDropdown(terminalId, containerRef, inputBufferRef)
   const agent = useAgentDetection()
+  useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   const recording = useSessionRecording(terminalName, shellType)
   const contextLimit = useContextLimit(
     terminalId,
@@ -707,7 +709,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           </button>
         )}
       </div>
-      <TerminalStatusBar terminalId={terminalId} shellType={shellType} cwd={parsedCwd || cwd} parsedBranch={parsedBranch} agent={agent.detectedAgent} costInfo={agent.costInfo} isRecording={recording.isRecording} />
+      <TerminalStatusBar
+        terminalId={terminalId}
+        shellType={shellType}
+        cwd={parsedCwd || cwd}
+        parsedBranch={parsedBranch}
+        agent={agent.detectedAgent}
+        costInfo={agent.costInfo}
+        isRecording={recording.isRecording}
+        onOpenContextPins={() => window.dispatchEvent(new CustomEvent('termpolis:openContextPins'))}
+      />
       {showDiffViewer && (
         <DiffViewer
           rawDiff={outputBufferRef.current}

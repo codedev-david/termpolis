@@ -232,6 +232,19 @@ describe('terminalStore', () => {
 
       expect(useTerminalStore.getState().workspaces[0].name).toBe('New Name')
     })
+
+    it('leaves other workspaces untouched when renaming by id', () => {
+      useTerminalStore.setState({
+        workspaces: [
+          { id: 'ws-a', name: 'Alpha', terminals: [] },
+          { id: 'ws-b', name: 'Beta', terminals: [] },
+        ],
+      })
+      useTerminalStore.getState().renameWorkspace('ws-a', 'Alpha2')
+      const ws = useTerminalStore.getState().workspaces
+      expect(ws.find(w => w.id === 'ws-a')!.name).toBe('Alpha2')
+      expect(ws.find(w => w.id === 'ws-b')!.name).toBe('Beta')
+    })
   })
 
   describe('updateWorkspace', () => {
@@ -244,6 +257,22 @@ describe('terminalStore', () => {
       useTerminalStore.getState().updateWorkspace(wsId)
 
       expect(useTerminalStore.getState().workspaces[0].terminals[0].name).toBe('After')
+    })
+
+    it('leaves other workspaces untouched when updating by id', () => {
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'a', name: 'TA' }))
+      useTerminalStore.setState({
+        workspaces: [
+          { id: 'ws-1', name: 'One', terminals: [] },
+          { id: 'ws-2', name: 'Two', terminals: [] },
+        ],
+      })
+      useTerminalStore.getState().updateWorkspace('ws-2')
+      const refreshed = useTerminalStore.getState().workspaces
+      // ws-1 retains zero terminals (unchanged)
+      expect(refreshed.find(w => w.id === 'ws-1')!.terminals).toHaveLength(0)
+      // ws-2 has been refreshed to current terminals (1)
+      expect(refreshed.find(w => w.id === 'ws-2')!.terminals).toHaveLength(1)
     })
   })
 
@@ -622,6 +651,125 @@ describe('terminalStore', () => {
       const tree = useTerminalStore.getState().paneTree
       // Tree should only contain 'a', not the hidden terminal
       expect(tree).toEqual({ type: 'terminal', terminalId: 'a' })
+    })
+  })
+
+  // ---- removePaneTerminal tree collapse branches ----
+
+  describe('removePaneTerminal tree collapse', () => {
+    it('returns null when both children of a split get removed', () => {
+      const tree: PaneNode = {
+        type: 'split',
+        direction: 'horizontal',
+        ratio: 0.5,
+        children: [
+          { type: 'terminal', terminalId: 'a' },
+          { type: 'terminal', terminalId: 'a' },
+        ],
+      }
+      useTerminalStore.setState({ paneTree: tree })
+      useTerminalStore.getState().removePaneTerminal('a')
+      // Both children are terminals with the same id — after removal tree is fully empty.
+      expect(useTerminalStore.getState().paneTree).toBeNull()
+    })
+
+    it('collapses a deep split when left branch is removed', () => {
+      const tree: PaneNode = {
+        type: 'split',
+        direction: 'horizontal',
+        ratio: 0.5,
+        children: [
+          { type: 'terminal', terminalId: 'a' },
+          {
+            type: 'split',
+            direction: 'vertical',
+            ratio: 0.5,
+            children: [
+              { type: 'terminal', terminalId: 'b' },
+              { type: 'terminal', terminalId: 'c' },
+            ],
+          },
+        ],
+      }
+      useTerminalStore.setState({ paneTree: tree })
+      useTerminalStore.getState().removePaneTerminal('a')
+      const after = useTerminalStore.getState().paneTree!
+      // Left branch removed — tree collapses to the right split.
+      expect(after.type).toBe('split')
+    })
+
+    it('collapses a deep split when right branch is removed', () => {
+      const tree: PaneNode = {
+        type: 'split',
+        direction: 'horizontal',
+        ratio: 0.5,
+        children: [
+          {
+            type: 'split',
+            direction: 'vertical',
+            ratio: 0.5,
+            children: [
+              { type: 'terminal', terminalId: 'a' },
+              { type: 'terminal', terminalId: 'b' },
+            ],
+          },
+          { type: 'terminal', terminalId: 'c' },
+        ],
+      }
+      useTerminalStore.setState({ paneTree: tree })
+      useTerminalStore.getState().removePaneTerminal('c')
+      const after = useTerminalStore.getState().paneTree!
+      expect(after.type).toBe('split')
+    })
+  })
+
+  // ---- splitTerminal with non-existent id (findAndReplace returns null) ----
+
+  describe('splitTerminal findAndReplace fallback', () => {
+    it('leaves pane tree unchanged when target terminal is not in the tree', () => {
+      const tree: PaneNode = {
+        type: 'split',
+        direction: 'horizontal',
+        ratio: 0.5,
+        children: [
+          { type: 'terminal', terminalId: 'x' },
+          { type: 'terminal', terminalId: 'y' },
+        ],
+      }
+      useTerminalStore.setState({ paneTree: tree })
+      useTerminalStore.getState().splitTerminal('not-in-tree', 'vertical', 'newId')
+      // Tree should remain the same since the target wasn't found.
+      expect(useTerminalStore.getState().paneTree).toEqual(tree)
+    })
+  })
+
+  // ---- setPaneTree ----
+
+  describe('setPaneTree', () => {
+    it('overwrites paneTree with the provided value', () => {
+      const tree: PaneNode = { type: 'terminal', terminalId: 'p1' }
+      useTerminalStore.getState().setPaneTree(tree)
+      expect(useTerminalStore.getState().paneTree).toEqual(tree)
+
+      useTerminalStore.getState().setPaneTree(null)
+      expect(useTerminalStore.getState().paneTree).toBeNull()
+    })
+  })
+
+  // ---- removeTerminal active terminal fallback (findRightmostLeaf) ----
+
+  describe('removeTerminal findRightmostLeaf branches', () => {
+    it('finds rightmost leaf via nested split tree', () => {
+      useTerminalStore.setState({ viewMode: 'split' })
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'a' }))
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'b' }))
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'c' }))
+      // setActiveTerminal to 'c' then remove it — should fall back to rightmost leaf
+      useTerminalStore.getState().setActiveTerminal('c')
+      useTerminalStore.getState().removeTerminal('c')
+      const state = useTerminalStore.getState()
+      // Active should be something other than null — the tree has a leaf
+      expect(state.activeTerminalId).not.toBeNull()
     })
   })
 })

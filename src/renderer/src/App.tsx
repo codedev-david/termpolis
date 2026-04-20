@@ -6,6 +6,10 @@ const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane')
 const HistorySearchModal = lazy(() => import('./components/HistorySearch/HistorySearchModal').then(m => ({ default: m.HistorySearchModal })))
 const PromptTemplates = lazy(() => import('./components/PromptTemplates/PromptTemplates').then(m => ({ default: m.PromptTemplates })))
 const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel').then(m => ({ default: m.ContextPanel })))
+const ActivityFeed = lazy(() => import('./components/ActivityFeed/ActivityFeed').then(m => ({ default: m.ActivityFeed })))
+const ContextPinsPanel = lazy(() => import('./components/ContextPins/ContextPinsPanel').then(m => ({ default: m.ContextPinsPanel })))
+const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/RedundancyPanel').then(m => ({ default: m.RedundancyPanel })))
+const EfficiencyPanel = lazy(() => import('./components/EfficiencyPanel/EfficiencyPanel').then(m => ({ default: m.EfficiencyPanel })))
 const CommandPalette = lazy(() => import('./components/CommandPalette/CommandPalette').then(m => ({ default: m.CommandPalette })))
 const ConversationSearch = lazy(() => import('./components/ConversationSearch/ConversationSearch').then(m => ({ default: m.ConversationSearch })))
 const SwarmDashboard = lazy(() => import('./components/SwarmDashboard/SwarmDashboard').then(m => ({ default: m.SwarmDashboard })))
@@ -23,6 +27,9 @@ import type { ShellInfo } from './types'
 import { resolveAgentCommand, testDelay } from './lib/testAgents'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { detectAgentStatus } from './lib/agentStatusDetector'
+import * as contextPressureLib from './lib/contextPressure'
+import * as redundancyLib from './lib/redundancyDetector'
+import * as efficiencyLib from './lib/efficiencyAnalyzer'
 
 export default function App() {
   const {
@@ -35,6 +42,10 @@ export default function App() {
   const [showPrompts, setShowPrompts] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showContextPanel, setShowContextPanel] = useState(false)
+  const [showActivityFeed, setShowActivityFeed] = useState(false)
+  const [showContextPins, setShowContextPins] = useState(false)
+  const [showRedundancyPanel, setShowRedundancyPanel] = useState(false)
+  const [showEfficiencyPanel, setShowEfficiencyPanel] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
@@ -151,6 +162,13 @@ export default function App() {
         swarmCompletionSummary: s.swarmCompletionSummary,
       }
     }
+    // Bundled observability libs, exposed for e2e tests so they exercise
+    // the real renderer build instead of a re-imported source copy.
+    ;(window as any).__termpolis_test_libs = {
+      contextPressure: contextPressureLib,
+      redundancy: redundancyLib,
+      efficiency: efficiencyLib,
+    }
   }, [terminals])
 
   // Persist session on state changes (debounced to avoid excessive writes)
@@ -259,6 +277,34 @@ export default function App() {
         return
       }
 
+      // Ctrl+Shift+A to toggle activity feed
+      if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+        e.preventDefault()
+        setShowActivityFeed(v => !v)
+        return
+      }
+
+      // Ctrl+Shift+B to toggle context pins panel
+      if (e.ctrlKey && e.shiftKey && e.key === 'B') {
+        e.preventDefault()
+        setShowContextPins(v => !v)
+        return
+      }
+
+      // Ctrl+Shift+D to toggle duplicate-work / redundancy panel
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault()
+        setShowRedundancyPanel(v => !v)
+        return
+      }
+
+      // Ctrl+Shift+Y to toggle efficiency panel
+      if (e.ctrlKey && e.shiftKey && e.key === 'Y') {
+        e.preventDefault()
+        setShowEfficiencyPanel(v => !v)
+        return
+      }
+
       // Ctrl+Shift+P to toggle prompt templates
       if (e.ctrlKey && e.shiftKey && e.key === 'P') {
         e.preventDefault()
@@ -301,8 +347,13 @@ export default function App() {
       setShowCloseConfirm(true)
     })
 
+    // Listen for request from status bar to open context pins panel
+    const onOpenPins = () => setShowContextPins(true)
+    window.addEventListener('termpolis:openContextPins', onOpenPins)
+
     return () => {
       window.removeEventListener('keydown', handler)
+      window.removeEventListener('termpolis:openContextPins', onOpenPins)
       unsubGlobal?.()
       unsubSwarm?.()
       unsubClose?.()
@@ -699,6 +750,24 @@ export default function App() {
               cwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
               onClose={() => setShowContextPanel(false)}
             />
+          )}
+          {showActivityFeed && (
+            <ActivityFeed
+              terminalId={activeTerminalId ?? undefined}
+              onClose={() => setShowActivityFeed(false)}
+            />
+          )}
+          {showContextPins && (
+            <ContextPinsPanel
+              cwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+              onClose={() => setShowContextPins(false)}
+            />
+          )}
+          {showRedundancyPanel && (
+            <RedundancyPanel onClose={() => setShowRedundancyPanel(false)} />
+          )}
+          {showEfficiencyPanel && (
+            <EfficiencyPanel onClose={() => setShowEfficiencyPanel(false)} />
           )}
         </Suspense>
       </div>

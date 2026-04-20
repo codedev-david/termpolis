@@ -1,17 +1,19 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import type { SwarmMessage, SwarmTask } from '../../types'
 import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { StartSwarmModal } from './StartSwarmModal'
 import { stopAllBridges } from '../../lib/swarmBridgeManager'
 import { stopConductor, getConductorState, revealConductor } from '../../lib/conductorManager'
+import { ConductorTrace } from '../ConductorTrace/ConductorTrace'
+import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
 
 interface SwarmDashboardProps {
   onClose: () => void
   initialCwd?: string | null
 }
 
-type TabId = 'tasks' | 'messages'
+type TabId = 'tasks' | 'messages' | 'trace'
 
 export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('tasks')
@@ -22,13 +24,20 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const [showStartSwarm, setShowStartSwarm] = useState(!!initialCwd && !swarmActive)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(initialCwd ?? null)
   const [conductorStatus, setConductorStatus] = useState<string>('idle')
+  const [conductorTerminalId, setConductorTerminalId] = useState<string | null>(null)
+  const [handoffEvent, setHandoffEvent] = useState<{ from?: string; to: string; key: string } | null>(null)
 
   // Poll conductor state every 3 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       const state = getConductorState()
       setConductorStatus(state.status)
+      setConductorTerminalId(state.terminalId)
     }, 3000)
+    // Seed immediately
+    const initial = getConductorState()
+    setConductorStatus(initial.status)
+    setConductorTerminalId(initial.terminalId)
     return () => clearInterval(interval)
   }, [])
 
@@ -55,6 +64,25 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     subscribe(pollId, refresh, 3000)
     return () => unsubscribe(pollId)
   }, [refresh])
+
+  // Detect task -> agent handoffs and fire brief animation
+  const prevTasksRef = useRef<SwarmTask[]>([])
+  useEffect(() => {
+    const prev = prevTasksRef.current
+    const prevById = new Map(prev.map((t) => [t.id, t]))
+    for (const t of tasks) {
+      const was = prevById.get(t.id)
+      if (!was && t.status === 'in_progress' && t.assignedTo) {
+        setHandoffEvent({ to: t.assignedTo, key: `${t.id}-${Date.now()}` })
+        break
+      }
+      if (was && was.status !== 'in_progress' && t.status === 'in_progress' && t.assignedTo) {
+        setHandoffEvent({ from: was.assignedTo, to: t.assignedTo, key: `${t.id}-${Date.now()}` })
+        break
+      }
+    }
+    prevTasksRef.current = tasks
+  }, [tasks])
 
   // Escape to close
   useEffect(() => {
@@ -209,6 +237,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const tabs: { id: TabId; label: string; icon: string }[] = [
     { id: 'tasks', label: 'Tasks', icon: 'fa-solid fa-list-check' },
     { id: 'messages', label: 'Messages', icon: 'fa-solid fa-comments' },
+    { id: 'trace', label: 'Trace', icon: 'fa-solid fa-wave-square' },
   ]
 
   return (
@@ -326,6 +355,9 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
         <div className="flex-1 overflow-y-auto p-5">
           {activeTab === 'tasks' && renderTasks()}
           {activeTab === 'messages' && renderMessages()}
+          {activeTab === 'trace' && (
+            <ConductorTrace conductorTerminalId={conductorTerminalId} />
+          )}
         </div>
 
         {/* Clear Confirmation Modal */}
@@ -363,6 +395,15 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
             setShowStartSwarm(false)
             // Stay on the dashboard so user can watch agents work
           }}
+        />
+      )}
+
+      {handoffEvent && (
+        <HandoffAnimation
+          key={handoffEvent.key}
+          fromAgent={handoffEvent.from}
+          toAgent={handoffEvent.to}
+          onComplete={() => setHandoffEvent(null)}
         />
       )}
     </div>

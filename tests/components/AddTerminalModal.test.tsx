@@ -62,4 +62,70 @@ describe('AddTerminalModal', () => {
       fontFamily: expect.any(String),
     }))
   })
+
+  it('updates name via input', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByDisplayValue('Terminal 1'), { target: { value: 'Custom Name' } })
+    fireEvent.click(screen.getByText('Create'))
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Custom Name' }))
+  })
+
+  it('changes shellType via select', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    const select = screen.getByDisplayValue('Bash') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'zsh' } })
+    fireEvent.click(screen.getByText('Create'))
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ shellType: 'zsh' }))
+  })
+
+  it('steps font size up and down with bounds', () => {
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={vi.fn()} onCancel={vi.fn()} />)
+    const plus = screen.getByText('+')
+    const minus = screen.getByText('−')
+    fireEvent.click(plus)
+    expect(screen.getByDisplayValue('15')).toBeInTheDocument()
+    fireEvent.click(minus)
+    fireEvent.click(minus)
+    expect(screen.getByDisplayValue('13')).toBeInTheDocument()
+  })
+
+  it('clamps font size to valid range on direct input', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    const input = screen.getByDisplayValue('14') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '100' } })
+    expect(screen.getByDisplayValue('32')).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: '1' } })
+    expect(screen.getByDisplayValue('8')).toBeInTheDocument()
+  })
+
+  it('picks a theme pill', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    fireEvent.click(screen.getByText('Nord'))
+    fireEvent.click(screen.getByText('Create'))
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ theme: 'nord' }))
+  })
+
+  it('picks a color swatch', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    const swatches = screen.getAllByLabelText(/^#/)
+    fireEvent.click(swatches[1])
+    fireEvent.click(screen.getByText('Create'))
+    expect(onCreate).toHaveBeenCalled()
+  })
+
+  it('changes font family via select', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    const fontSelect = screen.getByDisplayValue('Consolas') as HTMLSelectElement
+    fireEvent.change(fontSelect, { target: { value: 'JetBrains Mono, monospace' } })
+    fireEvent.click(screen.getByText('Create'))
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fontFamily: 'JetBrains Mono, monospace' }),
+    )
+  })
 })

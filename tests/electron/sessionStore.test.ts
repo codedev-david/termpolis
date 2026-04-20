@@ -52,6 +52,30 @@ describe('loadSession', () => {
     const result = loadSession()
     expect(result).toMatchObject(defaultSession)
   })
+
+  it('migrates legacy grid viewMode to split', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = { ...defaultSession, appVersion: '1.0.0', viewMode: 'grid' }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const result = loadSession()
+    expect(result.viewMode).toBe('split')
+  })
+
+  it('clears workspace terminals when version changes', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = {
+      ...defaultSession,
+      appVersion: '0.5.0',
+      terminals: [{ id: 't', name: 'T', color: '#fff', shellType: 'bash', cwd: '/' }],
+      workspaces: [{ id: 'w', name: 'W', terminals: [{ id: 't2', name: 'T2', color: '#fff', shellType: 'bash', cwd: '/' }] }],
+    }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const result = loadSession()
+    expect(result.terminals).toHaveLength(0)
+    expect(result.workspaces[0].terminals).toHaveLength(0)
+    logSpy.mockRestore()
+  })
 })
 
 describe('saveSession', () => {

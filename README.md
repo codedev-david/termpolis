@@ -148,6 +148,19 @@ No AI company has built a tool that brings together competing models to work as 
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
 - **Free local option** — Aider + Qwen3-Coder runs via Ollama with zero API cost. Auto-detects if Ollama is installed.
 
+### AI Observability
+
+When you're running multiple AI agents concurrently (or a whole swarm), you need to see what each is doing, spot when they duplicate work, and know when one is about to run out of context. Termpolis ships a full observability layer that doesn't require any external dashboard — everything is local, capped in memory, and tested end-to-end.
+
+- **Activity Feed** — `Ctrl+Shift+A` opens a live stream of every agent event. Captures messages, tool calls, tool results, token updates, compaction events, errors, status changes, and MCP audit entries. Filter by agent (claude/codex/gemini/aider), by kind, or search full text. Newest first.
+- **Context Gauge** — shows in the per-terminal status bar whenever an AI agent is detected. A 0–100% bar showing how full the agent's context window is, color coded (green → yellow → orange → red). Model-aware: Opus, Sonnet, Gemini, Qwen all have their correct token limits. A `~` indicates the estimate is heuristic (no transcript tokens available yet).
+- **Context Pins** — click the context gauge to open the pins panel. Pin any snippet (migration rule, test policy, API contract) scoped to the current project. Pins are re-injected on agent handoff so the new agent doesn't lose the plot. Per-project storage, full CRUD.
+- **Redundancy Detector** — `Ctrl+Shift+D` shows duplicate work across terminals. If two agents are running `npm test` at the same time or both editing the same file, you'll see a severity-ranked finding with the affected terminals.
+- **Efficiency Panel** — `Ctrl+Shift+Y` aggregates per-agent stats: token totals, cost, error rate, average tool-call duration. Spot when one agent is burning budget while another is cruising.
+- **Event Bus** — in-process, bounded ring buffer (10k events), rate-limited (500 events/sec burst) to prevent DoS from a runaway agent. Persisted to JSONL with automatic rotation. Subscriber callbacks are try/caught so a bad listener can't kill the bus. All event payloads are 64KB-capped before persistence.
+- **Transcript Watchers** — native JSONL readers for Claude Code, Codex, Gemini, and Aider transcript formats. Tail-with-rotation: if the agent rotates its log mid-run, the watcher follows. Path traversal is blocked at the watcher boundary.
+- **Swarm Dashboard enhancements** — the dashboard (`Ctrl+Shift+S`) now shows live token burn per agent, tasks in kanban columns, and the full conductor message log. Every panel streams from the same event bus — no polling lag.
+
 ### Intelligence
 - **AI Command Suggestions** — type natural language in any terminal and get instant shell command suggestions. 30+ built-in patterns covering file search, git operations, npm/yarn, Docker, process management, system info, compression, and downloads. Captures values from your input (e.g., "kill port 3000" becomes `kill $(lsof -t -i:3000)`). Tab to accept, arrow keys to navigate, Esc to dismiss. Zero latency — all local pattern matching, no API calls.
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
@@ -215,6 +228,9 @@ All shortcuts are customizable in **Settings → Keybindings**.
 | `Ctrl+Shift+E` | Smart context panel |
 | `Ctrl+Shift+I` | Conversation history search |
 | `Ctrl+Shift+S` | Swarm dashboard |
+| `Ctrl+Shift+A` | Activity feed (agent events) |
+| `Ctrl+Shift+D` | Redundancy panel (duplicate work) |
+| `Ctrl+Shift+Y` | Efficiency panel (per-agent stats) |
 | `Win+Shift+T` | New terminal (global, works when minimized) |
 
 > On macOS, use `Cmd` instead of `Ctrl`.

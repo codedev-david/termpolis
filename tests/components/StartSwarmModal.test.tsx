@@ -238,4 +238,35 @@ describe('StartSwarmModal', () => {
     vi.useRealTimers()
   })
 
+  it('includes all optional fields in the contract when provided', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    render(<StartSwarmModal onClose={vi.fn()} onLaunched={vi.fn()} projectCwd="/test/project" />)
+    await waitFor(() => {
+      expect(screen.getByText('Describe what you want built')).toBeInTheDocument()
+    }, { timeout: 3000 })
+
+    fireEvent.change(screen.getByPlaceholderText(/Add a contact form/), { target: { value: 'My goal' } })
+    fireEvent.change(screen.getByPlaceholderText(/Needs to work on Windows/), { target: { value: 'Constraint A' } })
+    fireEvent.change(screen.getByPlaceholderText(/A working contact page/), { target: { value: 'Outcome B' } })
+    fireEvent.change(screen.getByPlaceholderText(/Form submits without validating/), { target: { value: 'Fail case C' } })
+
+    fireEvent.click(screen.getByText('Launch Swarm'))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(vi.mocked(sendTask)).toHaveBeenCalledWith(
+      expect.stringMatching(/## Goal\nMy goal[\s\S]*## Constraints\nConstraint A[\s\S]*## Expected Output\nOutcome B[\s\S]*## Failure Conditions\nFail case C/),
+      '/test/project',
+    )
+    vi.useRealTimers()
+  }, 10000)
+
+  it('closes via Escape key while on describe step (not launching)', async () => {
+    const onClose = vi.fn()
+    render(<StartSwarmModal onClose={onClose} onLaunched={vi.fn()} projectCwd="/test/project" />)
+    await waitFor(() => {
+      expect(screen.getByText('Describe what you want built')).toBeInTheDocument()
+    })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalled()
+  })
+
 })

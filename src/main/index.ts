@@ -33,6 +33,20 @@ import {
   createTask, listTasks, updateTask, clearSwarm,
   type SwarmMessage, type SwarmTask,
 } from './swarmManager'
+import {
+  initEventBus, query as queryEvents, subscribe as subscribeEvents,
+  getRingSize, getDroppedCount, shutdownEventBus,
+  type AgentEvent, type EventFilter,
+} from './agentEventBus'
+import {
+  attachWatcher, detachWatchers, detachAll as detachAllWatchers,
+  type DetectedAgent,
+} from './transcriptWatchers'
+import {
+  initContextPinStore,
+  listPins, addPin, removePin, updatePin, clearPins,
+  type ContextPin,
+} from './contextPinStore'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -139,8 +153,12 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) 
 })
 
 ipcMain.handle('terminal:kill', async (_, { id }) => {
-  try { killTerminal(id); terminalOutputBuffers.delete(id); return ok() }
-  catch (e: any) { return err(e.message) }
+  try {
+    killTerminal(id)
+    terminalOutputBuffers.delete(id)
+    try { detachWatchers(id) } catch {}
+    return ok()
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.on('terminal:write', (_, { id, data }) => writeToTerminal(id, data))
@@ -516,6 +534,61 @@ ipcMain.handle('swarm:clear', async () => {
   catch (e: any) { return err(e.message) }
 })
 
+// ---- Agent Event Bus IPC ----
+// Query the recent event ring (renderer drives pagination via `since`/`limit`)
+ipcMain.handle('agentActivity:query', async (_, { filter }: { filter?: EventFilter } = {}) => {
+  try { return ok(queryEvents(filter || {})) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('agentActivity:stats', async () => {
+  try { return ok({ ringSize: getRingSize(), dropped: getDroppedCount() }) }
+  catch (e: any) { return err(e.message) }
+})
+
+// ---- Context Pin IPC ----
+ipcMain.handle('contextPins:list', async (_, { cwd }: { cwd: string }) => {
+  try { return ok(listPins(cwd)) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('contextPins:add', async (_, { cwd, input }: { cwd: string; input: { label: string; body: string; source?: string; tags?: string[] } }) => {
+  try { return ok(addPin(cwd, input)) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('contextPins:update', async (_, { cwd, id, patch }: { cwd: string; id: string; patch: Partial<ContextPin> }) => {
+  try {
+    const r = updatePin(cwd, id, patch)
+    if (!r) return err('pin not found')
+    return ok(r)
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('contextPins:remove', async (_, { cwd, id }: { cwd: string; id: string }) => {
+  try { return ok({ removed: removePin(cwd, id) }) }
+  catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('contextPins:clear', async (_, { cwd }: { cwd: string }) => {
+  try { clearPins(cwd); return ok() }
+  catch (e: any) { return err(e.message) }
+})
+
+// ---- Transcript Watcher IPC ----
+// Renderer calls these when an agent is detected / terminal closes
+ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType }: { terminalId: string; cwd: string; agentType: DetectedAgent }) => {
+  try {
+    const handle = attachWatcher(terminalId, cwd, agentType)
+    return ok({ attached: handle !== null })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('agentWatcher:detach', async (_, { terminalId }: { terminalId: string }) => {
+  try { detachWatchers(terminalId); return ok() }
+  catch (e: any) { return err(e.message) }
+})
+
 ipcMain.on('window:minimize', () => mainWindow?.minimize())
 ipcMain.on('window:maximize', () => {
   if (mainWindow?.isMaximized()) mainWindow.unmaximize()
@@ -637,6 +710,12 @@ if (!gotTheLock) {
     }
 
     initAuditLog(app.getPath('userData'))
+    initEventBus(app.getPath('userData'))
+    initContextPinStore(app.getPath('userData'))
+    // Push events to the renderer (live feed)
+    subscribeEvents((event: AgentEvent) => {
+      try { mainWindow?.webContents.send('agentActivity:event', event) } catch {}
+    })
     mcpServer = startMcpServer(mcpHandlers)
     console.log(`MCP auth token: ${getMcpAuthToken()}`)
     // Write token to a file so AI agents can discover it
@@ -891,10 +970,14 @@ if (!gotTheLock) {
   app.on('before-quit', () => {
     globalShortcut.unregisterAll()
     killAll()
+    try { detachAllWatchers() } catch {}
+    try { shutdownEventBus() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {
     killAll()
+    try { detachAllWatchers() } catch {}
+    try { shutdownEventBus() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
     if (process.platform !== 'darwin') {
       app.quit()
