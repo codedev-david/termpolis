@@ -97,6 +97,31 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('git:push', { cwd }),
   gitFileDiff: (cwd, file) =>
     ipcRenderer.invoke('git:file-diff', { cwd, file }),
+
+  // Swarm Review
+  gitRevParseHead: (cwd) =>
+    ipcRenderer.invoke('git:rev-parse-head', { cwd }),
+  gitDiffRange: (cwd, from, to) =>
+    ipcRenderer.invoke('git:diff-range', { cwd, from, to }),
+  gitFilesInRange: (cwd, from, to) =>
+    ipcRenderer.invoke('git:files-in-range', { cwd, from, to }),
+  gitApplyPatch: (cwd, patch, reverse) =>
+    ipcRenderer.invoke('git:apply-patch', { cwd, patch, reverse }),
+  gitCheckoutFile: (cwd, sha, files) =>
+    ipcRenderer.invoke('git:checkout-file', { cwd, sha, files }),
+  gitResetHard: (cwd, sha) =>
+    ipcRenderer.invoke('git:reset-hard', { cwd, sha }),
+  gitCommitAll: (cwd, message) =>
+    ipcRenderer.invoke('git:commit-all', { cwd, message }),
+  swarmRunCommand: (cwd, command) =>
+    ipcRenderer.invoke('swarm:run-command', { cwd, command }),
+
+  // Shared swarm memory (RAG)
+  memoryWrite: (input) => ipcRenderer.invoke('memory:write', input),
+  memorySearch: (opts) => ipcRenderer.invoke('memory:search', opts),
+  memoryList: (opts) => ipcRenderer.invoke('memory:list', opts ?? {}),
+  memoryCount: () => ipcRenderer.invoke('memory:count'),
+  memoryClear: () => ipcRenderer.invoke('memory:clear'),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

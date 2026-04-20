@@ -7,19 +7,21 @@ import { stopAllBridges } from '../../lib/swarmBridgeManager'
 import { stopConductor, getConductorState, revealConductor } from '../../lib/conductorManager'
 import { ConductorTrace } from '../ConductorTrace/ConductorTrace'
 import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
+import { SwarmReviewPanel } from '../SwarmReview/SwarmReviewPanel'
 
 interface SwarmDashboardProps {
   onClose: () => void
   initialCwd?: string | null
 }
 
-type TabId = 'tasks' | 'messages' | 'trace'
+type TabId = 'tasks' | 'messages' | 'trace' | 'review'
 
 export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('tasks')
   const [messages, setMessages] = useState<SwarmMessage[]>([])
   const [tasks, setTasks] = useState<SwarmTask[]>([])
   const swarmActive = useTerminalStore((s) => s.swarmActive)
+  const swarmSummary = useTerminalStore((s) => s.swarmCompletionSummary)
   // Auto-open wizard if we have an initialCwd (came from Welcome/sidebar with directory already picked)
   const [showStartSwarm, setShowStartSwarm] = useState(!!initialCwd && !swarmActive)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(initialCwd ?? null)
@@ -234,10 +236,12 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     </div>
   )
 
+  const reviewAvailable = Boolean(swarmSummary?.preSwarmSha && swarmSummary?.projectCwd)
   const tabs: { id: TabId; label: string; icon: string }[] = [
     { id: 'tasks', label: 'Tasks', icon: 'fa-solid fa-list-check' },
     { id: 'messages', label: 'Messages', icon: 'fa-solid fa-comments' },
     { id: 'trace', label: 'Trace', icon: 'fa-solid fa-wave-square' },
+    ...(reviewAvailable ? [{ id: 'review' as TabId, label: 'Review', icon: 'fa-solid fa-code-compare' }] : []),
   ]
 
   return (
@@ -357,6 +361,14 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           {activeTab === 'messages' && renderMessages()}
           {activeTab === 'trace' && (
             <ConductorTrace conductorTerminalId={conductorTerminalId} />
+          )}
+          {activeTab === 'review' && reviewAvailable && swarmSummary?.preSwarmSha && swarmSummary?.projectCwd && (
+            <SwarmReviewPanel
+              preSwarmSha={swarmSummary.preSwarmSha}
+              cwd={swarmSummary.projectCwd}
+              taskDescription={swarmSummary.message}
+              onClose={() => setActiveTab('tasks')}
+            />
           )}
         </div>
 

@@ -115,7 +115,7 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
               <i className="fa-solid fa-network-wired text-[#A5D6A7]"></i>
             </div>
             <span className="text-sm font-medium text-[#d4d4d4]">Start Swarm</span>
-            <span className="text-[10px] text-[#9ca3af] leading-tight">Multiple AI agents working together on a task</span>
+            <span className="text-[10px] text-[#9ca3af] leading-tight">Coordinate multiple AI agents to build a new project or modify an existing one — review every change before it lands.</span>
           </button>
         </div>
 

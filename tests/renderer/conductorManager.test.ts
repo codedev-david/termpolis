@@ -19,6 +19,7 @@ beforeAll(() => {
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/tmp/test' }),
     getHomedir: vi.fn().mockResolvedValue({ success: true, data: '/tmp' }),
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
+    gitRevParseHead: vi.fn().mockResolvedValue({ success: true, data: 'pre123abc' }),
   }
   ;(window as any).swarmAPI = {
     sendMessage: vi.fn().mockResolvedValue({ success: true }),
@@ -35,6 +36,7 @@ import {
   stopConductor,
   revealConductor,
   sendTask,
+  getPreSwarmSha,
 } from '../../src/renderer/src/lib/conductorManager'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
@@ -466,5 +468,105 @@ describe('conductorManager', () => {
 
     // After completion, swarmActive is false — a new swarm can start
     expect(useTerminalStore.getState().swarmActive).toBe(false)
+  })
+
+  // ---- preSwarmSha capture — all three branches in startConductor ----
+
+  it('captures preSwarmSha from gitRevParseHead when repo has commits', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true, data: 'happy1234'
+    })
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    expect(getPreSwarmSha()).toBe('happy1234')
+    expect(window.termpolis.gitRevParseHead).toHaveBeenCalledWith('/tmp/project')
+  })
+
+  it('leaves preSwarmSha null when gitRevParseHead succeeds without data (not a repo)', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true, data: null
+    })
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    expect(getPreSwarmSha()).toBeNull()
+  })
+
+  it('leaves preSwarmSha null when gitRevParseHead reports failure', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false, error: 'not a repo'
+    })
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    expect(getPreSwarmSha()).toBeNull()
+  })
+
+  it('swallows thrown errors from gitRevParseHead and leaves preSwarmSha null', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('IPC exploded')
+    )
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    expect(getPreSwarmSha()).toBeNull()
+  })
+
+  it('propagates preSwarmSha through markSwarmDone into swarmCompletionSummary', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true, data: 'preShaForSummary'
+    })
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      data: [{ id: 't1', status: 'completed' }],
+    })
+
+    await sendTask('Build a game', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const summary = useTerminalStore.getState().swarmCompletionSummary
+    expect(summary).not.toBeNull()
+    expect(summary?.preSwarmSha).toBe('preShaForSummary')
+    expect(summary?.projectCwd).toBe('/tmp/project')
+  })
+
+  it('stopConductor clears preSwarmSha back to null', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true, data: 'willBeCleared'
+    })
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+    expect(getPreSwarmSha()).toBe('willBeCleared')
+
+    stopConductor()
+    expect(getPreSwarmSha()).toBeNull()
+  })
+
+  it('createTerminal failure after SHA capture resets preSwarmSha to null', async () => {
+    ;(window.termpolis.gitRevParseHead as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true, data: 'lostSha'
+    })
+    ;(window.termpolis.createTerminal as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false, error: 'spawn ENOENT'
+    })
+    const result = await startConductor('/tmp/project')
+    expect(result.success).toBe(false)
+    expect(getPreSwarmSha()).toBeNull()
   })
 })

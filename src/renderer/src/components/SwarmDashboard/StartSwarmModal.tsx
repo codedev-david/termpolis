@@ -327,7 +327,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
         <h3 className="text-sm font-semibold text-[#d4d4d4] mb-2">Preparing Conductor</h3>
         <p className="text-xs text-[#9ca3af] text-center max-w-sm mb-4">{statusMessage}</p>
         <p className="text-[11px] text-[#d4d4d4] text-center max-w-md leading-relaxed">
-          A swarm lets multiple AI agents work together on the same project simultaneously — one builds, another writes tests, another handles docs. An AI conductor coordinates the work so you just describe what you need.
+          A swarm lets multiple AI agents work together on the same project simultaneously — one builds, another writes tests, another handles docs. Use it to create a <strong className="text-[#d4d4d4]">new project</strong> or to make changes to an <strong className="text-[#d4d4d4]">existing one</strong>. An AI conductor coordinates the work, and when it finishes you can review every hunk and accept only the changes you want.
         </p>
         {needsAuth && (
           <div className="mt-4 p-3 bg-[#1e3a1e] border border-[#2d5a2d] rounded-lg text-xs text-[#A5D6A7] max-w-sm text-center">
@@ -449,13 +449,13 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
             </p>
             <div className="text-[11px] text-[#bbb] leading-relaxed space-y-1.5">
               <p>
-                <strong className="text-[#22D3EE]">Swarm</strong> — best for completing a well-defined task autonomously. Describe what you want built, and the agents do it.
+                <strong className="text-[#22D3EE]">Swarm</strong> — best for completing a well-defined task autonomously. Works for creating a brand new project from scratch or modifying an existing one. Describe what you want built, and the agents do it.
               </p>
               <p>
                 <strong className="text-[#22D3EE]">Individual agent terminals</strong> — better for back-and-forth conversations, exploring ideas, or iterating on details. Launch them from the <strong className="text-[#d4d4d4]">AI Agents</strong> section in the sidebar.
               </p>
               <p className="text-[#9ca3af]">
-                After a swarm finishes, launch an individual agent to refine the work, or start a new swarm for the next task.
+                When a swarm finishes, the Review panel shows every file the swarm touched — accept or reject individual hunks before committing so nothing you don't want sneaks into the repo.
               </p>
             </div>
           </div>

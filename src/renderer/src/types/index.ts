@@ -109,6 +109,58 @@ export interface TermpolisAPI {
   gitPull: (cwd: string) => Promise<IpcResponse<string>>
   gitPush: (cwd: string) => Promise<IpcResponse<string>>
   gitFileDiff: (cwd: string, file: string) => Promise<IpcResponse<string>>
+
+  // Swarm Review
+  gitRevParseHead: (cwd: string) => Promise<IpcResponse<string | null>>
+  gitDiffRange: (cwd: string, from: string, to?: string) => Promise<IpcResponse<string>>
+  gitFilesInRange: (cwd: string, from: string, to?: string) => Promise<IpcResponse<{ file: string; status: string }[]>>
+  gitApplyPatch: (cwd: string, patch: string, reverse?: boolean) => Promise<IpcResponse>
+  gitCheckoutFile: (cwd: string, sha: string, files: string[]) => Promise<IpcResponse>
+  gitResetHard: (cwd: string, sha: string) => Promise<IpcResponse>
+  gitCommitAll: (cwd: string, message: string) => Promise<IpcResponse>
+  swarmRunCommand: (cwd: string, command: string) => Promise<IpcResponse<{ output: string; exitCode: number }>>
+
+  // Shared swarm memory (RAG)
+  memoryWrite: (input: MemoryWriteInput) => Promise<IpcResponse<MemoryEntry>>
+  memorySearch: (opts: MemorySearchOptions) => Promise<IpcResponse<MemorySearchResult[]>>
+  memoryList: (opts?: MemoryListOptions) => Promise<IpcResponse<MemoryEntry[]>>
+  memoryCount: () => Promise<IpcResponse<number>>
+  memoryClear: () => Promise<IpcResponse>
+}
+
+export interface MemoryEntry {
+  id: string
+  ts: number
+  agentId: string
+  kind: 'message' | 'result' | 'decision' | 'fact' | 'note'
+  content: string
+  tags?: string[]
+  taskId?: string
+}
+
+export interface MemorySearchResult extends MemoryEntry { score: number }
+
+export interface MemoryWriteInput {
+  agentId: string
+  kind?: MemoryEntry['kind']
+  content: string
+  tags?: string[]
+  taskId?: string
+}
+
+export interface MemorySearchOptions {
+  query: string
+  limit?: number
+  agentId?: string
+  kind?: MemoryEntry['kind']
+  taskId?: string
+}
+
+export interface MemoryListOptions {
+  limit?: number
+  agentId?: string
+  kind?: MemoryEntry['kind']
+  since?: number
 }
 
 export interface SwarmMessage {

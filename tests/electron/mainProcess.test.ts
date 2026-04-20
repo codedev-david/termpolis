@@ -163,6 +163,7 @@ const mockReaddirSync = vi.fn(() => [])
 const mockMkdirSync = vi.fn()
 const mockAppendFileSync = vi.fn()
 const mockRenameSync = vi.fn()
+const mockUnlinkSync = vi.fn()
 vi.mock('fs', () => ({
   writeFileSync: mockWriteFileSync,
   existsSync: mockExistsSync,
@@ -171,6 +172,7 @@ vi.mock('fs', () => ({
   mkdirSync: mockMkdirSync,
   appendFileSync: mockAppendFileSync,
   renameSync: mockRenameSync,
+  unlinkSync: mockUnlinkSync,
   default: {
     writeFileSync: mockWriteFileSync,
     existsSync: mockExistsSync,
@@ -179,6 +181,7 @@ vi.mock('fs', () => ({
     mkdirSync: mockMkdirSync,
     appendFileSync: mockAppendFileSync,
     renameSync: mockRenameSync,
+    unlinkSync: mockUnlinkSync,
   },
 }))
 
@@ -2275,5 +2278,262 @@ describe('terminal:git-info outer catch unreachable', () => {
 
     const result = await invokeHandler('terminal:git-info', { cwd: '/repo' })
     expect(result.success).toBe(true)
+  })
+})
+
+// =========================================================================
+// Swarm Review IPC handlers
+// =========================================================================
+describe('git:rev-parse-head', () => {
+  it('returns current HEAD SHA on success', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('abc1234def5678\n'))
+    const r = await invokeHandler('git:rev-parse-head', { cwd: '/repo' })
+    expect(r).toEqual({ success: true, data: 'abc1234def5678' })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      'git rev-parse HEAD',
+      expect.objectContaining({ cwd: '/repo' }),
+    )
+  })
+
+  it('returns null when not a git repo instead of erroring', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('not a git repo') })
+    const r = await invokeHandler('git:rev-parse-head', { cwd: '/tmp' })
+    expect(r).toEqual({ success: true, data: null })
+  })
+})
+
+describe('git:diff-range', () => {
+  it('diffs against working tree when `to` is omitted', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('diff --git a/x b/x\n'))
+    const r = await invokeHandler('git:diff-range', { cwd: '/r', from: 'abc123' })
+    expect(r.success).toBe(true)
+    expect(r.data).toContain('diff --git')
+    // Command should use `from` directly (no range)
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^git diff --no-color --no-ext-diff abc123$/),
+      expect.any(Object),
+    )
+  })
+
+  it('uses `from..to` range when both provided', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('diff-output\n'))
+    await invokeHandler('git:diff-range', { cwd: '/r', from: 'a', to: 'b' })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('a..b'),
+      expect.any(Object),
+    )
+  })
+
+  it('returns error on git failure', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('bad sha') })
+    const r = await invokeHandler('git:diff-range', { cwd: '/r', from: 'x' })
+    expect(r).toEqual({ success: false, error: 'bad sha' })
+  })
+})
+
+describe('git:files-in-range', () => {
+  it('parses --name-status output into {file,status} objects', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('M\tsrc/a.ts\nA\tsrc/b.ts\n'))
+    const r = await invokeHandler('git:files-in-range', { cwd: '/r', from: 'abc' })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual([
+      { file: 'src/a.ts', status: 'M' },
+      { file: 'src/b.ts', status: 'A' },
+    ])
+  })
+
+  it('handles rename lines by taking the final name', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('R100\told.ts\tnew.ts\n'))
+    const r = await invokeHandler('git:files-in-range', { cwd: '/r', from: 'a', to: 'b' })
+    expect(r.data).toEqual([{ file: 'new.ts', status: 'R100' }])
+  })
+
+  it('returns empty list when no changes', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    const r = await invokeHandler('git:files-in-range', { cwd: '/r', from: 'a' })
+    expect(r).toEqual({ success: true, data: [] })
+  })
+
+  it('returns error when git fails', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('bad range') })
+    const r = await invokeHandler('git:files-in-range', { cwd: '/r', from: 'x' })
+    expect(r).toEqual({ success: false, error: 'bad range' })
+  })
+})
+
+describe('git:apply-patch', () => {
+  it('writes patch to temp file and invokes `git apply`', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    const r = await invokeHandler('git:apply-patch', { cwd: '/r', patch: 'diff x\n+a', reverse: false })
+    expect(r).toEqual({ success: true, data: undefined })
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('.termpolis-patch-'),
+      'diff x\n+a',
+      'utf8',
+    )
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^git apply\s+--whitespace=nowarn/),
+      expect.objectContaining({ cwd: '/r' }),
+    )
+  })
+
+  it('passes -R when reverse=true', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    await invokeHandler('git:apply-patch', { cwd: '/r', patch: 'diff\n+a', reverse: true })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('git apply -R'),
+      expect.any(Object),
+    )
+  })
+
+  it('rejects empty patch', async () => {
+    const r = await invokeHandler('git:apply-patch', { cwd: '/r', patch: '   ' })
+    expect(r).toEqual({ success: false, error: 'Empty patch' })
+  })
+
+  it('surfaces git apply errors', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('does not apply') })
+    const r = await invokeHandler('git:apply-patch', { cwd: '/r', patch: 'diff\n+a' })
+    expect(r).toEqual({ success: false, error: 'does not apply' })
+  })
+})
+
+describe('git:checkout-file', () => {
+  it('runs git checkout <sha> -- <files>', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    const r = await invokeHandler('git:checkout-file', { cwd: '/r', sha: 'abc123', files: ['src/a.ts'] })
+    expect(r).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      expect.stringContaining('git checkout abc123 -- "src/a.ts"'),
+      expect.any(Object),
+    )
+  })
+
+  it('rejects empty file list', async () => {
+    const r = await invokeHandler('git:checkout-file', { cwd: '/r', sha: 'abc123', files: [] })
+    expect(r).toEqual({ success: false, error: 'No files specified' })
+  })
+
+  it('surfaces git errors', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('pathspec did not match') })
+    const r = await invokeHandler('git:checkout-file', { cwd: '/r', sha: 'abc', files: ['x'] })
+    expect(r).toEqual({ success: false, error: 'pathspec did not match' })
+  })
+})
+
+describe('git:reset-hard', () => {
+  it('runs `git reset --hard <sha>`', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    const r = await invokeHandler('git:reset-hard', { cwd: '/r', sha: 'abc1234' })
+    expect(r).toEqual({ success: true, data: undefined })
+    expect(mockExecSync).toHaveBeenCalledWith(
+      'git reset --hard abc1234',
+      expect.any(Object),
+    )
+  })
+
+  it('rejects invalid SHA (too short)', async () => {
+    const r = await invokeHandler('git:reset-hard', { cwd: '/r', sha: 'abc' })
+    expect(r).toEqual({ success: false, error: 'Invalid SHA' })
+  })
+
+  it('rejects invalid SHA (non-hex chars)', async () => {
+    const r = await invokeHandler('git:reset-hard', { cwd: '/r', sha: 'zzzzzzz' })
+    expect(r).toEqual({ success: false, error: 'Invalid SHA' })
+  })
+
+  it('rejects empty SHA', async () => {
+    const r = await invokeHandler('git:reset-hard', { cwd: '/r', sha: '' })
+    expect(r).toEqual({ success: false, error: 'Invalid SHA' })
+  })
+
+  it('surfaces git errors', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('dirty tree') })
+    const r = await invokeHandler('git:reset-hard', { cwd: '/r', sha: 'abc1234' })
+    expect(r).toEqual({ success: false, error: 'dirty tree' })
+  })
+})
+
+describe('git:commit-all', () => {
+  it('stages everything then commits', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    const r = await invokeHandler('git:commit-all', { cwd: '/r', message: 'ship it' })
+    expect(r).toEqual({ success: true, data: undefined })
+    // Two calls: add -A and commit
+    const addCall = mockExecSync.mock.calls.find(c => c[0] === 'git add -A')
+    const commitCall = mockExecSync.mock.calls.find(c => typeof c[0] === 'string' && (c[0] as string).startsWith('git commit'))
+    expect(addCall).toBeDefined()
+    expect(commitCall).toBeDefined()
+  })
+
+  it('rejects empty commit message', async () => {
+    const r = await invokeHandler('git:commit-all', { cwd: '/r', message: '   ' })
+    expect(r).toEqual({ success: false, error: 'Commit message cannot be empty' })
+  })
+
+  it('escapes double quotes in message', async () => {
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    await invokeHandler('git:commit-all', { cwd: '/r', message: 'fix "bug"' })
+    const commitCall = mockExecSync.mock.calls.find(c => typeof c[0] === 'string' && (c[0] as string).startsWith('git commit'))
+    expect(commitCall?.[0]).toContain('\\"bug\\"')
+  })
+
+  it('surfaces commit errors', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('nothing to commit') })
+    const r = await invokeHandler('git:commit-all', { cwd: '/r', message: 'msg' })
+    expect(r).toEqual({ success: false, error: 'nothing to commit' })
+  })
+})
+
+describe('swarm:run-command', () => {
+  it('runs the command and returns exitCode 0 on success', async () => {
+    mockExecSync.mockReturnValue(Buffer.from('all 42 tests passed\n'))
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'npm test' })
+    expect(r.success).toBe(true)
+    expect(r.data.exitCode).toBe(0)
+    expect(r.data.output).toContain('42 tests passed')
+  })
+
+  it('rejects empty command', async () => {
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: '  ' })
+    expect(r).toEqual({ success: false, error: 'Empty command' })
+  })
+
+  it('captures stdout + stderr + exit code on non-zero exit', async () => {
+    const err: any = new Error('failed')
+    err.status = 2
+    err.stdout = Buffer.from('some stdout ')
+    err.stderr = Buffer.from('some stderr')
+    mockExecSync.mockImplementation(() => { throw err })
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'npm test' })
+    expect(r.success).toBe(true)
+    expect(r.data.exitCode).toBe(2)
+    expect(r.data.output).toBe('some stdout some stderr')
+  })
+
+  it('defaults exitCode to 1 when error has no status', async () => {
+    mockExecSync.mockImplementation(() => { throw new Error('boom') })
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'x' })
+    expect(r.success).toBe(true)
+    expect(r.data.exitCode).toBe(1)
+    expect(r.data.output).toBe('')
+  })
+})
+
+describe('IPC handler registration - swarm review handlers', () => {
+  it('registers every swarm review IPC channel', () => {
+    const reviewChannels = [
+      'git:rev-parse-head',
+      'git:diff-range',
+      'git:files-in-range',
+      'git:apply-patch',
+      'git:checkout-file',
+      'git:reset-hard',
+      'git:commit-all',
+      'swarm:run-command',
+    ]
+    for (const channel of reviewChannels) {
+      expect(ipcHandlers.has(channel), `Missing handler for ${channel}`).toBe(true)
+    }
   })
 })

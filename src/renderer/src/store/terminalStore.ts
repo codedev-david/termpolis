@@ -80,7 +80,7 @@ interface TerminalStore {
   swarmAgents: SwarmAgentEntry[]
   launchingAgent: string | null
   swarmNotification: { message: string; type: 'success' | 'error' } | null
-  swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null } | null
+  swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null
   agentRatingOverrides: AgentRatingOverrides
 
   addTerminal: (t: TerminalSession) => void
@@ -113,7 +113,7 @@ interface TerminalStore {
   updateSwarmAgentStatus: (terminalId: string, status: SwarmAgentStatus, summary?: string) => void
   setLaunchingAgent: (name: string | null) => void
   setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
-  setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null } | null) => void
+  setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null) => void
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
 }
 

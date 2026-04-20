@@ -26,3 +26,7 @@ ui_testing/
 .superpowers/
 e2e/screenshots/
 e2e/visual-regression.spec.ts-snapshots/
+
+# Coverage + build info
+coverage/
+*.tsbuildinfo

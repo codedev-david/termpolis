@@ -8,6 +8,7 @@ import {
   type FeedFilters,
 } from '../../lib/activityFeed'
 import type { AgentActivityKind, AgentActivityType } from '../../types'
+import { InterventionControls } from './InterventionControls'
 
 interface Props {
   /** Scope to a specific terminal; omit for global feed */
@@ -65,6 +66,8 @@ export function ActivityFeed({ terminalId, onClose }: Props) {
           </button>
         )}
       </div>
+
+      {terminalId && <InterventionControls terminalId={terminalId} />}
 
       <div className="px-3 py-2 border-b border-[#3c3c3c] space-y-2">
         <input

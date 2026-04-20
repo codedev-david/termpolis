@@ -8,9 +8,10 @@ interface ConductorState {
   status: 'idle' | 'starting' | 'authenticating' | 'ready' | 'running' | 'error' | 'done'
   error: string | null
   cwd: string | null
+  preSwarmSha: string | null
 }
 
-let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null }
+let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
 
@@ -31,7 +32,16 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
     stopConductor()
   }
 
-  conductorState = { terminalId: null, status: 'starting', error: null, cwd }
+  // Mark starting synchronously so the UI can update immediately; SHA capture
+  // below happens async and is merged in once resolved.
+  conductorState = { terminalId: null, status: 'starting', error: null, cwd, preSwarmSha: null }
+
+  // Capture pre-swarm HEAD so SwarmReviewPanel can show the full delta of
+  // everything the swarm touched. Fine to be null — review UI just hides.
+  try {
+    const shaRes = await window.termpolis.gitRevParseHead(cwd)
+    if (shaRes.success) conductorState.preSwarmSha = shaRes.data ?? null
+  } catch { /* ignore — not a git repo */ }
 
   // Set swarm active immediately to prevent duplicate launches; clear any prior completion dialog
   const storeInit = useTerminalStore.getState()
@@ -44,7 +54,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   const res = await window.termpolis.createTerminal(id, shellType, cwd)
 
   if (!res.success) {
-    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null }
+    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null }
     storeInit.setSwarmActive(false)
     return { success: false, error: conductorState.error! }
   }
@@ -117,6 +127,11 @@ export async function waitForAuth(timeoutMs: number = 120000): Promise<boolean> 
 
   conductorState = { ...conductorState, status: 'error', error: 'Authentication timed out' }
   return false
+}
+
+// Expose for tests and the review panel so we can show pre-swarm SHA.
+export function getPreSwarmSha(): string | null {
+  return conductorState.preSwarmSha
 }
 
 // Step 4: Send the task to the conductor via a temp file (reliable multi-line delivery)
@@ -395,7 +410,7 @@ function markSwarmDone(
   // Allow a new swarm to be started
   store.setSwarmActive(false)
   store.setSwarmNotification({ message, type: 'success' })
-  store.setSwarmCompletionSummary({ message, tasks, projectCwd: conductorState.cwd })
+  store.setSwarmCompletionSummary({ message, tasks, projectCwd: conductorState.cwd, preSwarmSha: conductorState.preSwarmSha })
   if (monitoringInterval) {
     clearInterval(monitoringInterval)
     monitoringInterval = null
@@ -423,7 +438,7 @@ export function stopConductor(): void {
     store.removeTerminal(t.id)
   }
 
-  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null }
+  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
 }
 
 // Reveal conductor terminal for debugging

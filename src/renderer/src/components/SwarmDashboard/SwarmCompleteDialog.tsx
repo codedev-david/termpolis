@@ -11,11 +11,13 @@ interface SwarmCompleteDialogProps {
   message: string
   tasks: Task[]
   projectCwd?: string | null
+  preSwarmSha?: string | null
   onViewDashboard: () => void
+  onReviewChanges?: () => void
   onDismiss: () => void
 }
 
-export function SwarmCompleteDialog({ message, tasks, projectCwd, onViewDashboard, onDismiss }: SwarmCompleteDialogProps) {
+export function SwarmCompleteDialog({ message, tasks, projectCwd, preSwarmSha, onViewDashboard, onReviewChanges, onDismiss }: SwarmCompleteDialogProps) {
   const openInExplorer = () => {
     if (projectCwd && window.termpolis?.openPath) {
       window.termpolis.openPath(projectCwd)
@@ -133,20 +135,32 @@ export function SwarmCompleteDialog({ message, tasks, projectCwd, onViewDashboar
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-[#3c3c3c] mt-2">
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[#3c3c3c] mt-2 gap-2">
           <button
             onClick={onDismiss}
             className="px-3 py-1.5 text-xs text-[#999] hover:text-white rounded hover:bg-[#37373d]"
           >
             Dismiss
           </button>
-          <button
-            onClick={onViewDashboard}
-            className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded font-medium bg-[#22c55e]/15 text-[#22c55e] hover:bg-[#22c55e]/25 border border-[#22c55e]/30"
-          >
-            <i className="fa-solid fa-network-wired text-[10px]"></i>
-            View Dashboard
-          </button>
+          <div className="flex items-center gap-2">
+            {preSwarmSha && projectCwd && onReviewChanges && (
+              <button
+                onClick={onReviewChanges}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded font-medium bg-[#22D3EE]/15 text-[#22D3EE] hover:bg-[#22D3EE]/25 border border-[#22D3EE]/30"
+                data-testid="swarm-complete-review"
+              >
+                <i className="fa-solid fa-code-compare text-[10px]"></i>
+                Review Changes
+              </button>
+            )}
+            <button
+              onClick={onViewDashboard}
+              className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded font-medium bg-[#22c55e]/15 text-[#22c55e] hover:bg-[#22c55e]/25 border border-[#22c55e]/30"
+            >
+              <i className="fa-solid fa-network-wired text-[10px]"></i>
+              View Dashboard
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -59,6 +59,10 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 
 > **Support this project** — Termpolis is free and open source. If you find it useful, consider [sponsoring the project](https://github.com/sponsors/codedev-david) to help cover AI token costs and development time.
 
+## Documentation
+
+Full docs with screenshots: **[termpolis.com/docs](https://termpolis.com/docs.html)** — or see [`docs/DOCUMENTATION.md`](docs/DOCUMENTATION.md) in this repo. Covers every feature: terminals, splits, the swarm dashboard, AI conductor, activity feed, intervention controls, shared memory, MCP server, and the full keyboard shortcut reference.
+
 ## Downloads
 
 | Platform | Download | Format | Signed |
@@ -136,6 +140,7 @@ No AI company has built a tool that brings together competing models to work as 
 - **Swarm Wizard** — 3-step flow: prepare conductor → describe task → launch. Includes guidance on when to use a swarm (autonomous task completion) vs individual agent terminals (back-and-forth conversation). Live progress tracking shows conductor status in real time — the modal stays open until the first task or message appears (can take up to 30 seconds).
 - **Agents run in the background** — swarm-spawned agent terminals are hidden from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. For back-and-forth conversations, launch individual agents from the AI Agents sidebar section — those still appear in the sidebar and work normally.
 - **Swarm Complete Dialog** — when all tasks finish, a summary dialog appears showing completed vs failed tasks with the result from each agent. Includes "What next?" guidance for iterating with individual agents or starting a new swarm.
+- **Swarm Review Panel** — a swarm can create a brand new project or modify an existing one. When it finishes, click **Review Changes** to open a per-hunk diff viewer showing the full delta from the pre-swarm HEAD. Accept or reject individual hunks (or entire files), run the project's test command against the result, then commit only the changes you want. `git reset --hard` back to the pre-swarm SHA cleanly reverts everything.
 - **Agent Command Enforcement** — agents are guaranteed to launch correctly regardless of what the conductor attempts. A programmatic sanitizer intercepts all `run_command` calls on swarm terminals, stripping unauthorized flags (`-p`, `--sandbox`, `--print`) and enforcing the exact approved command for each agent. Claude gets `--dangerously-skip-permissions`, Codex gets `--full-auto` — no trust prompts, no permission dialogs during swarms.
 - **Interactive Agent Mode** — all agents (including Gemini CLI) launch in interactive mode so they retain full tool access, including file writing and command execution.
 - **Token Budget Estimates** — shows per-agent estimated tokens and cost before you launch, so you know what the swarm will cost

@@ -251,6 +251,50 @@ const TOOLS: McpTool[] = [
     description: 'List all active AI agents running in Termpolis terminals',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'memory_write',
+    description: 'Write a fact, decision, or result into the shared swarm memory so other agents can retrieve it later via memory_search. Use this for anything another agent would benefit from knowing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Your terminal ID or logical name' },
+        kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Entry kind' },
+        content: { type: 'string', description: 'Text content to store (max 16KB)' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for filtering' },
+        taskId: { type: 'string', description: 'Optional task correlation id' },
+      },
+      required: ['agentId', 'content'],
+    },
+  },
+  {
+    name: 'memory_search',
+    description: 'Retrieve entries from the shared swarm memory that are relevant to a query. Uses semantic vector search when Ollama is available, falls back to keyword matching otherwise.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language query' },
+        limit: { type: 'number', description: 'Max results (default 10, cap 100)' },
+        agentId: { type: 'string', description: 'Filter to a single agent (optional)' },
+        kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Filter by kind (optional)' },
+        taskId: { type: 'string', description: 'Filter by task correlation id (optional)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'memory_list',
+    description: 'List recent entries from the shared swarm memory without semantic scoring. Useful for scanning the last N writes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max results (default 50, cap 500)' },
+        agentId: { type: 'string', description: 'Filter to a single agent (optional)' },
+        kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Filter by kind (optional)' },
+        since: { type: 'number', description: 'Only entries at or after this timestamp (optional)' },
+      },
+      required: [],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -268,6 +312,9 @@ export interface McpToolHandlers {
   swarmListTasks: () => any
   swarmUpdateTask: (taskId: string, status: string, result?: string) => any
   swarmListAgents: () => any
+  memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string }) => Promise<any>
+  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string }) => Promise<any>
+  memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
 }
 
 async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -305,6 +352,29 @@ async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
       return handlers.swarmUpdateTask(args.taskId, args.status, args.result)
     case 'swarm_list_agents':
       return handlers.swarmListAgents()
+    case 'memory_write':
+      return await handlers.memoryWrite({
+        agentId: args.agentId,
+        kind: args.kind,
+        content: args.content,
+        tags: args.tags,
+        taskId: args.taskId,
+      })
+    case 'memory_search':
+      return await handlers.memorySearch({
+        query: args.query,
+        limit: args.limit,
+        agentId: args.agentId,
+        kind: args.kind,
+        taskId: args.taskId,
+      })
+    case 'memory_list':
+      return handlers.memoryList({
+        limit: args.limit,
+        agentId: args.agentId,
+        kind: args.kind,
+        since: args.since,
+      })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

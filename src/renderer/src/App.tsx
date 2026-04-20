@@ -806,7 +806,9 @@ export default function App() {
             message={swarmCompletionSummary.message}
             tasks={swarmCompletionSummary.tasks}
             projectCwd={swarmCompletionSummary.projectCwd ?? swarmStartCwd}
+            preSwarmSha={swarmCompletionSummary.preSwarmSha}
             onViewDashboard={() => { setSwarmCompletionSummary(null); setShowSwarmDashboard(true) }}
+            onReviewChanges={() => { setShowSwarmDashboard(true) }}
             onDismiss={() => setSwarmCompletionSummary(null)}
           />
         )}
