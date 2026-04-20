@@ -4,16 +4,26 @@ import * as Sentry from '@sentry/react'
 // To enable: set VITE_SENTRY_DSN in your .env file or environment
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || ''
 
+// Opt-in gate. Onboarding writes this key; if the user opted out (or never
+// made a choice), crash reporting stays off even if a DSN is configured.
+function telemetryEnabled(): boolean {
+  try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
+}
+
 export function initSentry() {
   if (!SENTRY_DSN) {
     console.log('Sentry: no DSN configured (set VITE_SENTRY_DSN to enable crash reporting)')
+    return
+  }
+  if (!telemetryEnabled()) {
+    console.log('Sentry: disabled (user has not opted in to crash reporting)')
     return
   }
 
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: import.meta.env.MODE || 'production',
-    release: `termpolis@${import.meta.env.VITE_APP_VERSION || '1.2.0'}`,
+    release: `termpolis@${import.meta.env.VITE_APP_VERSION || 'unknown'}`,
 
     // Only send errors, not performance data
     tracesSampleRate: 0,
@@ -43,6 +53,18 @@ export function initSentry() {
   })
 
   console.log('Sentry initialized for crash reporting')
+
+  // Catch unhandled promise rejections + window errors not caught by React.
+  window.addEventListener('unhandledrejection', (e) => {
+    try {
+      Sentry.captureException(e.reason ?? new Error('unhandledrejection (no reason)'))
+    } catch { /* noop */ }
+  })
+  window.addEventListener('error', (e) => {
+    try {
+      Sentry.captureException(e.error ?? new Error(e.message || 'window.onerror'))
+    } catch { /* noop */ }
+  })
 }
 
 export { Sentry }

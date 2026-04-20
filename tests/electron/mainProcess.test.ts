@@ -2189,8 +2189,8 @@ describe('terminal:status outer error handling', () => {
 // We captured it in the beforeAll before clearAllMocks wiped it
 // =========================================================================
 describe('Window close event handler', () => {
-  let closeHandler: Function | null = null
-  let closedHandler: Function | null = null
+  const closeHandler: Function | null = null
+  const closedHandler: Function | null = null
 
   beforeAll(async () => {
     // Re-read the captured on calls (they're saved in mockMainWindow.on.mock

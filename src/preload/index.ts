@@ -192,6 +192,18 @@ contextBridge.exposeInMainWorld('agentActivity', {
   },
 })
 
+// Auto-updater — status + install trigger for the update banner in the renderer.
+contextBridge.exposeInMainWorld('updater', {
+  getStatus: () => ipcRenderer.invoke('updater:status'),
+  check: () => ipcRenderer.invoke('updater:check'),
+  quitAndInstall: () => ipcRenderer.invoke('updater:quit-and-install'),
+  onState: (cb: (state: unknown) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, state: unknown) => cb(state)
+    ipcRenderer.on('updater:state', handler)
+    return () => ipcRenderer.removeListener('updater:state', handler)
+  },
+})
+
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {
   onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => {

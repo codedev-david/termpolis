@@ -68,7 +68,7 @@ export function routeTasks(
   // Ensure we have at least as many subtasks as agents so every agent gets work.
   // If the task analyzer produced fewer subtasks than agents, duplicate the most
   // complex subtask with adjusted descriptions so each agent participates.
-  let expandedSubtasks = [...subtasks]
+  const expandedSubtasks = [...subtasks]
   while (expandedSubtasks.length < agents.length) {
     // Clone the highest-complexity subtask with a variation
     const base = [...expandedSubtasks].sort((a, b) => b.complexity - a.complexity)[0]

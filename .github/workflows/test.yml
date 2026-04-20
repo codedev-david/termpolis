@@ -3,22 +3,67 @@ name: Tests
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 jobs:
-  unit-tests:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-
+  # Fast static checks — run on every push/PR.
+  static:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
 
-      - run: npx vitest run
+  # Unit tests across all three target platforms so we catch
+  # platform-specific regressions (path separators, shell detection, node-pty).
+  unit:
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Unit tests (with coverage gates)
+        run: npm run test:coverage
+
+  # E2E smoke — one platform only, because Electron + Playwright on
+  # multiple matrix runners is expensive and brittle. Linux + xvfb keeps
+  # it cheap and deterministic.
+  e2e-smoke:
+    needs: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Build
+        run: npm run build
+      - name: Smoke-click every sidebar button
+        run: xvfb-run --auto-servernum npx playwright test e2e/chrome-smoke.spec.ts
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7

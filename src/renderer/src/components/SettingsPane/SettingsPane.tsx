@@ -32,6 +32,15 @@ export function SettingsPane() {
   const [fileContents, setFileContents] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
+  const [telemetryOptIn, setTelemetryOptIn] = useState(() => {
+    try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
+  })
+
+  const toggleTelemetry = () => {
+    const next = !telemetryOptIn
+    setTelemetryOptIn(next)
+    try { localStorage.setItem('termpolis.telemetry.optIn', next ? '1' : '0') } catch {}
+  }
 
   useEffect(() => {
     window.termpolis.getAvailableShells().then(res => {
@@ -85,6 +94,26 @@ export function SettingsPane() {
             }`}
           />
         </button>
+      </div>
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+        <button
+          onClick={toggleTelemetry}
+          aria-label="Toggle crash reporting"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+            telemetryOptIn ? 'bg-[#0078d4]' : 'bg-[#555]'
+          }`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+            telemetryOptIn ? 'translate-x-4.5' : 'translate-x-0.5'
+          }`} />
+        </button>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium">Send anonymous crash reports</span>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            Error stack traces and the app version only. No terminal contents, file paths, or
+            personal data. Takes effect on next launch.
+          </span>
+        </div>
       </div>
       <KeybindingsSettings />
       <AgentRatingsSettings />

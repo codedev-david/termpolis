@@ -1,4 +1,5 @@
 import React, { Component, type ErrorInfo, type ReactNode } from 'react'
+import * as Sentry from '@sentry/react'
 
 interface Props {
   children: ReactNode
@@ -21,6 +22,14 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('Termpolis ErrorBoundary caught:', error, info.componentStack)
+    // Forward to Sentry if DSN is configured; no-op otherwise.
+    try {
+      Sentry.captureException(error, {
+        contexts: { react: { componentStack: info.componentStack } },
+      })
+    } catch {
+      // Sentry not initialized or offline — already logged to console above.
+    }
   }
 
   render() {

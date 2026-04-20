@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.10.3",
+  "version": "1.11.0",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "type": "module",
@@ -18,7 +18,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
+    "lint:strict": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "electron-vite preview"
   },
   "build": {
@@ -37,7 +38,19 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.png",
-      "publisherName": "Termpolis"
+      "publisherName": "Termpolis",
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Termpolis"
     },
     "mac": {
       "target": [
@@ -50,58 +63,70 @@
         }
       ],
       "icon": "assets/icon.png",
+      "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
       "entitlementsInherit": "entitlements.mac.inherit.plist",
-      "notarize": false
+      "notarize": {
+        "teamId": "${env.APPLE_TEAM_ID}"
+      }
     },
     "linux": {
       "target": "AppImage",
       "icon": "assets/icon.png"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "codedev-david",
+        "repo": "termpolis",
+        "releaseType": "release"
+      }
+    ]
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.2.0",
-    "@monaco-editor/react": "^4.7.0",
-    "@sentry/electron": "^7.10.0",
-    "@sentry/react": "^10.45.0",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-unicode11": "^0.9.0",
-    "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/addon-webgl": "^0.19.0",
-    "autoprefixer": "^10.4.27",
-    "node-pty": "^1.1.0",
-    "postcss": "^8.5.8",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "tailwindcss": "^3.4.19",
-    "uuid": "^13.0.0",
-    "xterm": "^5.3.0",
-    "zustand": "^5.0.12"
+    "@fortawesome/fontawesome-free": "7.2.0",
+    "@monaco-editor/react": "4.7.0",
+    "@sentry/electron": "7.10.0",
+    "@sentry/react": "10.45.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "autoprefixer": "10.4.27",
+    "electron-updater": "6.8.3",
+    "node-pty": "1.1.0",
+    "postcss": "8.5.8",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwindcss": "3.4.19",
+    "uuid": "13.0.0",
+    "xterm": "5.3.0",
+    "zustand": "5.0.12"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2",
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
-    "@types/react": "^18.2.64",
-    "@types/react-dom": "^18.2.21",
-    "@types/uuid": "^10.0.0",
-    "@typescript-eslint/eslint-plugin": "^7.1.1",
-    "@typescript-eslint/parser": "^7.1.1",
-    "@vitejs/plugin-react": "^4.7.0",
-    "@vitest/coverage-v8": "^4.1.0",
-    "electron": "^30.5.1",
-    "electron-builder": "^24.13.3",
-    "electron-vite": "^2.3.0",
-    "eslint": "^8.57.0",
-    "eslint-plugin-react-hooks": "^4.6.0",
-    "eslint-plugin-react-refresh": "^0.4.5",
-    "jsdom": "^29.0.0",
-    "sharp": "^0.34.5",
-    "typescript": "^5.2.2",
-    "vite": "^5.1.6",
-    "vitest": "^4.1.0"
+    "@playwright/test": "1.58.2",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.7",
+    "@types/uuid": "10.0.0",
+    "@typescript-eslint/eslint-plugin": "7.18.0",
+    "@typescript-eslint/parser": "7.18.0",
+    "@vitejs/plugin-react": "4.7.0",
+    "@vitest/coverage-v8": "4.1.0",
+    "electron": "30.5.1",
+    "electron-builder": "24.13.3",
+    "electron-vite": "2.3.0",
+    "eslint": "8.57.1",
+    "eslint-plugin-react-hooks": "4.6.2",
+    "eslint-plugin-react-refresh": "0.4.26",
+    "jsdom": "29.0.0",
+    "sharp": "0.34.5",
+    "typescript": "5.9.3",
+    "vite": "5.4.21",
+    "vitest": "4.1.0"
   }
 }

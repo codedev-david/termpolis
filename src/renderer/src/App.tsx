@@ -17,6 +17,8 @@ const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/Swarm
 const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
+import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
+import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
 import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { matchesKeybinding, DEFAULT_KEYBINDINGS } from './lib/keybindings'
@@ -56,6 +58,7 @@ export default function App() {
   const swarmCompletionSummary = useTerminalStore(s => s.swarmCompletionSummary)
   const setSwarmCompletionSummary = useTerminalStore(s => s.setSwarmCompletionSummary)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(() => !hasSeenOnboarding())
   const [swarmStartCwd, setSwarmStartCwd] = useState<string | null>(null)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const [restoring, setRestoring] = useState(true)
@@ -771,6 +774,7 @@ export default function App() {
           )}
         </Suspense>
       </div>
+      <UpdateBanner />
       <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />
       <Suspense fallback={null}>
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
@@ -813,6 +817,7 @@ export default function App() {
           />
         )}
       </Suspense>
+      {showOnboarding && <OnboardingModal onDone={() => setShowOnboarding(false)} />}
       {showCloseConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70">
           <div className="bg-[#252526] border border-[#3c3c3c] rounded-xl shadow-2xl w-[420px] p-6 flex flex-col gap-4" onClick={e => e.stopPropagation()}>

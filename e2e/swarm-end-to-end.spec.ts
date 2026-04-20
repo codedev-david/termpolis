@@ -313,9 +313,7 @@ test.describe.serial('Swarm End-to-End', () => {
         }
       })
 
-      // eslint-disable-next-line no-console
       console.log('[Test 8] mcp raw:', mcpRaw)
-      // eslint-disable-next-line no-console
       console.log('[Test 8] conductor buffer:', JSON.stringify(conductorBuf, null, 2))
 
       // Write the buffer to a file so we can read it directly

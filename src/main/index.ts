@@ -52,6 +52,7 @@ import {
   memoryWrite, memorySearch, memoryList, memoryCount, memoryClear,
   type MemoryEntry,
 } from './swarmMemory'
+import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -786,6 +787,10 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     createWindow()
+
+    // Check GitHub releases for updates, auto-download in background,
+    // notify renderer when ready to install.
+    initAutoUpdater(() => mainWindow)
 
     // Start MCP server for AI agent integration
     const mcpHandlers: McpToolHandlers = {

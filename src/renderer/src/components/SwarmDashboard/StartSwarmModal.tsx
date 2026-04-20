@@ -79,7 +79,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmM
     return () => {
       cancelled = true
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
   // Cancel: stop the conductor and clean up before closing
   const handleCancel = useCallback(() => {

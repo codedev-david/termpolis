@@ -60,7 +60,7 @@ export function buildInjectionPrompt(
   }
 
   const header = (opts.header || '').trim()
-  let parts: string[] = []
+  const parts: string[] = []
   let used = 0
   if (header) {
     parts.push(header)
