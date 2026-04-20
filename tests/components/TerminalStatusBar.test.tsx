@@ -64,11 +64,15 @@ describe('TerminalStatusBar', () => {
     expect(screen.getByTestId('context-gauge')).toBeInTheDocument()
   })
 
-  it('renders cost info when agent + costInfo.estimatedCost > 0', () => {
+  it('renders cost info when agent + costInfo.estimatedCost > 0', async () => {
     const agent = { name: 'Claude', color: '#c15f3c', icon: 'fa-brands fa-claude', command: 'claude' } as any
     const costInfo = { estimatedCost: 0.25, tokensIn: 12345 } as any
     render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} costInfo={costInfo} />)
-    expect(screen.getByText('$0.25')).toBeInTheDocument()
+    // Use regex + findByText: on Windows CI the exact-string getByText('$0.25')
+    // timed out at 5s (6612ms). The adjacent test at line ~131 already uses the
+    // regex pattern successfully. React splits `$` + `{toFixed}` into sibling
+    // text nodes, so normalized text content equality against '$0.25' is fragile.
+    expect(await screen.findByText(/\$0\.25/)).toBeInTheDocument()
   })
 
   it('hides cost info when estimatedCost is 0', () => {
