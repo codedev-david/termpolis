@@ -30,3 +30,6 @@ e2e/visual-regression.spec.ts-snapshots/
 # Coverage + build info
 coverage/
 *.tsbuildinfo
+
+.claude/
+test-output.json
