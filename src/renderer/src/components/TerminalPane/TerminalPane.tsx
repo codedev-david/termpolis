@@ -458,8 +458,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   useEffect(() => {
     if (isVisible && fitRef.current && termRef.current) {
       setTimeout(() => {
-        fitRef.current!.fit()
-        window.termpolis.resizeTerminal(terminalId, termRef.current!.cols, termRef.current!.rows)
+        if (!fitRef.current || !termRef.current) return
+        if (typeof window === 'undefined' || !window.termpolis?.resizeTerminal) return
+        fitRef.current.fit()
+        window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
       }, 0)
     }
   }, [isVisible, terminalId])
@@ -491,10 +493,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     window.termpolis.createTerminal(newId, shellType, parsedCwd || cwd).then(() => {
       // Wait for shell to initialize, then launch the agent and paste the handoff prompt
       setTimeout(() => {
+        if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
         // Start the agent
         window.termpolis.writeToTerminal(newId, agentCommand + '\r')
         // Wait for agent to initialize, then paste the handoff prompt
         setTimeout(() => {
+          if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
           window.termpolis.writeToTerminal(newId, prompt + '\r')
         }, 2000)
       }, 1000)

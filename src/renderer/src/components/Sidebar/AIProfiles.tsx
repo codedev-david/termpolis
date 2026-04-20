@@ -168,23 +168,30 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       fontFamily: TERMINAL_DEFAULTS.fontFamily,
       agentCommand: profile.command,
     })
+    // These timers fire seconds after the handler returns. In unit tests
+    // jsdom may tear down before they run — guard each writeToTerminal
+    // call so a gone-away window doesn't raise an unhandled exception.
+    const writeIfAlive = (data: string) => {
+      if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
+      window.termpolis.writeToTerminal(id, data)
+    }
     // Wait for shell to fully initialize before sending command
     // Git Bash on Windows can take 3-5 seconds to show the prompt
     // Send a no-op newline first to flush any partial shell init, then the real command
     setTimeout(() => {
-      window.termpolis.writeToTerminal(id, '\r')
+      writeIfAlive('\r')
       setTimeout(() => {
-        window.termpolis.writeToTerminal(id, resolveAgentCommand(profile.command) + '\r')
+        writeIfAlive(resolveAgentCommand(profile.command) + '\r')
       }, 500)
     }, testDelay(4000))
     // Auto-trust: Claude/Codex show trust prompts ~5s after launch.
     // Send Enter to confirm the pre-selected trust option.
     if (profile.command.startsWith('claude')) {
-      setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), testDelay(9000))
+      setTimeout(() => writeIfAlive('\r'), testDelay(9000))
     }
     if (profile.command.startsWith('codex')) {
       // Codex requires '1' to trust the directory
-      setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(9000))
+      setTimeout(() => writeIfAlive('1\r'), testDelay(9000))
     }
     const dismissMs = (profile.id === 'gemini' || profile.id === 'aider-qwen') ? 15000 : 8000
     setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
