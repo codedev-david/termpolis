@@ -167,8 +167,12 @@ export function WorkflowTemplates({ onClose }: Props) {
       setActiveTerminal(newIds[0])
     }
 
-    // 6. Send startup commands after a short delay
+    // 6. Send startup commands after a short delay.
+    // Guard against jsdom teardown in tests: the component unmounts via
+    // onClose() below, then this timer fires ~500ms later. In unit tests
+    // that's after vitest has torn down the jsdom window.
     setTimeout(() => {
+      if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
       for (let i = 0; i < template.terminals.length; i++) {
         const tmpl = template.terminals[i]
         const id = newIds[i]
