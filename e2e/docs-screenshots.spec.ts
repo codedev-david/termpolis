@@ -305,9 +305,11 @@ test('capture all docs screenshots', async () => {
   await clickIf('button[title="Settings"]', 1500)
   await safeWait(400)
 
-  // 11 — Command palette
-  await pressIf('Control+K')
-  await waitForText('Search', 1500)
+  // 11 — Command palette. App listens for `e.key === 'k'` (lowercase); Playwright
+  // would send 'K' for 'Control+K', so pass the key lowercase explicitly.
+  await pressIf('Control+k')
+  await page.locator('input[placeholder="Type a command..."]').first()
+    .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
   await safeWait(400)
   await ss('11-command-palette')
 
@@ -316,24 +318,31 @@ test('capture all docs screenshots', async () => {
   await safeWait(400)
   await ss('11b-command-palette-filtered')
   await pressIf('Escape')
+  await waitForHidden('input[placeholder="Type a command..."]', 2000)
   await safeWait(300)
 
   // 12 — Prompt templates
   await pressIf('Control+Shift+P')
-  await waitForText('Prompt', 1500)
+  await waitForText('Prompt Templates', 2000)
   await safeWait(400)
   await ss('12-prompt-templates')
   await pressIf('Escape')
+  await waitForHidden('text=Prompt Templates', 2000)
   await safeWait(300)
 
-  // 13 — Workflow templates
+  // 13 — Workflow templates. Sidebar "Workflows" button only *opens*; there's
+  // no Escape handler either, so close by clicking the backdrop at a coordinate
+  // that sits to the right of the sidebar and to the left of the centered modal.
   await clickIf('button[title="Workflows"]', 2000)
-  await safeWait(700)
+  await page.locator('h2:text-is("Workflow Templates")').first()
+    .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
+  await safeWait(500)
   await ss('13-workflow-templates')
-  await clickIf('button[title="Workflows"]', 1500)
+  try { await page.mouse.click(350, 400) } catch {}
+  await waitForHidden('h2:text-is("Workflow Templates")', 2000)
   await safeWait(300)
 
-  // 14 — Context panel
+  // 14 — Context panel (right-hand file tree)
   await pressIf('Control+Shift+E')
   await safeWait(700)
   await ss('14-context-panel')
@@ -354,11 +363,12 @@ test('capture all docs screenshots', async () => {
   await pressIf('Escape')
   await safeWait(300)
 
-  // 17 — Git panel
+  // 17 — Git panel. Same story as Workflows — sidebar button only opens; close
+  // via Escape (GitPanel has its own Escape handler).
   await clickIf('button[title="Git Panel"]', 2000)
   await safeWait(800)
   await ss('17-git-panel')
-  await clickIf('button[title="Git Panel"]', 1500)
+  await pressIf('Escape')
   await safeWait(300)
 
   // 18 — Swarm Dashboard with "Clear Swarm" confirmation modal open. This gives
