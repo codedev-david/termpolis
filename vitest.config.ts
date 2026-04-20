@@ -54,6 +54,7 @@ export default defineConfig({
         'src/renderer/src/lib/terminalDefaults.ts',
         'src/renderer/src/lib/outputPatterns.ts',
         'src/renderer/src/lib/homedir.ts',
+        'src/renderer/src/components/TitleBar/TitleBar.tsx',
       ],
       thresholds: {
         lines: 90,
