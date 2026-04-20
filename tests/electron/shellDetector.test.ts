@@ -84,19 +84,21 @@ describe('getDefaultShell', () => {
 })
 
 // Separate module reload for darwin/win32 platform branches.
-// Use explicit `vi.doMock('fs', ...)` instead of relying on the top-level
-// `vi.mock('fs')` auto-mock surviving `vi.resetModules()` — that behavior
-// is flaky on macOS runners and was letting real fs.existsSync leak
-// through, which made the win32 assertion pass on Windows (pwsh.exe
-// actually exists) and Ubuntu (nothing at C:\... exists so the filter
-// works correctly) but fail on macOS.
+// Must use `importOriginal` so the default export and the rest of fs's
+// surface survive — shellDetector imports `{ existsSync } from 'fs'`,
+// which vitest's cjs/esm interop needs the default export for.
 describe('detectAvailableShells — darwin/win32 platform coverage', () => {
   it('darwin branch: selects darwin candidates list', async () => {
     vi.resetModules()
     vi.doMock('os', () => ({ homedir: () => '/Users/u', platform: () => 'darwin' }))
-    vi.doMock('fs', () => ({
-      existsSync: (p: any) => p === '/bin/zsh' || p === '/bin/bash',
-    }))
+    vi.doMock('fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('fs')>()
+      return {
+        ...actual,
+        default: { ...actual, existsSync: (p: any) => p === '/bin/zsh' || p === '/bin/bash' },
+        existsSync: (p: any) => p === '/bin/zsh' || p === '/bin/bash',
+      }
+    })
     const mod = await import('../../src/main/shellDetector')
     const shells = await mod.detectAvailableShells()
     expect(shells.some(s => s.type === 'zsh')).toBe(true)
@@ -107,11 +109,17 @@ describe('detectAvailableShells — darwin/win32 platform coverage', () => {
   it('win32 branch: selects win32 candidates list', async () => {
     vi.resetModules()
     vi.doMock('os', () => ({ homedir: () => 'C:\\Users\\u', platform: () => 'win32' }))
-    vi.doMock('fs', () => ({
-      existsSync: (p: any) =>
+    vi.doMock('fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('fs')>()
+      const impl = (p: any) =>
         p === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
-        p === 'C:\\Windows\\System32\\cmd.exe',
-    }))
+        p === 'C:\\Windows\\System32\\cmd.exe'
+      return {
+        ...actual,
+        default: { ...actual, existsSync: impl },
+        existsSync: impl,
+      }
+    })
     const mod = await import('../../src/main/shellDetector')
     const shells = await mod.detectAvailableShells()
     expect(shells.some(s => s.type === 'powershell')).toBe(true)
