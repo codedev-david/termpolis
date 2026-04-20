@@ -50,6 +50,7 @@ export default defineConfig({
         'src/main/types.ts',
         'src/renderer/src/lib/sentry.ts',
         'src/main/sentry.ts',
+        'src/main/autoUpdater.ts',
         'src/renderer/src/lib/terminalDefaults.ts',
         'src/renderer/src/lib/outputPatterns.ts',
         'src/renderer/src/lib/homedir.ts',
