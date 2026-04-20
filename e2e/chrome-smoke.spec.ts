@@ -16,21 +16,26 @@ import os from 'os'
 
 let app: ElectronApplication
 let page: Page
+let isolatedUserData: string
 const errors: string[] = []
 
 test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
-  const sessionPaths = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'session.json'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron', 'session.json'),
-  ]
+  // Isolate from the developer's real ~/AppData/Roaming/termpolis profile.
+  // Without this the test's localStorage writes (e.g. onboarding.seen = 1)
+  // persist into the real install and suppress the onboarding modal on the
+  // next dev launch.
+  isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-smoke-'))
   const clean = JSON.stringify({ terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs' })
-  for (const p of sessionPaths) if (fs.existsSync(p)) fs.writeFileSync(p, clean)
+  fs.writeFileSync(path.join(isolatedUserData, 'session.json'), clean)
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: [
+      path.resolve('out/main/index.js'),
+      `--user-data-dir=${isolatedUserData}`,
+    ],
     env: {
       ...process.env,
       NODE_ENV: 'test',
@@ -69,6 +74,9 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (app) await app.close()
+  if (isolatedUserData) {
+    try { fs.rmSync(isolatedUserData, { recursive: true, force: true }) } catch {}
+  }
 })
 
 function isFatal(s: string): boolean {
