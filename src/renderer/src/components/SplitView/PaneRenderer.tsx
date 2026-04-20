@@ -126,20 +126,23 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
 }
 
 export function PaneRenderer({ node, onSplitRatioChange, path = [] }: Props) {
+  // All hooks must run in the same order on every render — do not place any
+  // hook call after a conditional early return, otherwise a node transitioning
+  // from terminal → split (e.g. after clicking Split Right) changes the hook
+  // count and React tears down the tree with "Rendered more hooks" error.
   const splitContainerRef = useRef<HTMLDivElement>(null)
-
-  if (node.type === 'terminal') {
-    return <TerminalPaneWrapper terminalId={node.terminalId} />
-  }
-
-  const isHorizontal = node.direction === 'horizontal'
-
   const handleDrag = useCallback(
     (ratio: number) => {
       onSplitRatioChange?.(path, ratio)
     },
     [onSplitRatioChange, path]
   )
+
+  if (node.type === 'terminal') {
+    return <TerminalPaneWrapper terminalId={node.terminalId} />
+  }
+
+  const isHorizontal = node.direction === 'horizontal'
 
   return (
     <div

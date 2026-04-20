@@ -321,7 +321,40 @@ test.describe.serial('View Switching', () => {
     await expect(barHeader).toBeVisible()
   })
 
-  test('15. tab switching preserves terminal content', async () => {
+  test('15. per-pane split button creates a new pane without React errors', async () => {
+    // We should currently be in split view with Foo and Bar panes from test 14.
+    // Capture any console errors during the split action.
+    const consoleErrors: string[] = []
+    const errorListener = (msg: any) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text())
+    }
+    page.on('console', errorListener)
+
+    // Count panes before
+    const xtermsBefore = await page.locator('.xterm').count()
+
+    // Click "Split Right" on Foo's pane header
+    const fooHeader = page.locator('.bg-\\[\\#2d2d2d\\]').filter({ hasText: 'Foo' }).first()
+    const splitRightBtn = fooHeader.locator('button[title="Split Right"]').first()
+    await splitRightBtn.click()
+    await page.waitForTimeout(1500)
+
+    // A new pane labeled "Foo (split)" should now be visible
+    const splitPane = page.locator('.bg-\\[\\#2d2d2d\\]').filter({ hasText: 'Foo (split)' })
+    await expect(splitPane).toBeVisible({ timeout: 3000 })
+
+    // Pane count should have increased
+    const xtermsAfter = await page.locator('.xterm').count()
+    expect(xtermsAfter).toBeGreaterThan(xtermsBefore)
+
+    // No "Rendered more hooks" or hooks-order React errors
+    const hooksErrors = consoleErrors.filter(e => /Rendered (more|fewer) hooks|order of Hooks/i.test(e))
+    expect(hooksErrors, `unexpected hooks error(s):\n${hooksErrors.join('\n')}`).toEqual([])
+
+    page.off('console', errorListener)
+  })
+
+  test('16. tab switching preserves terminal content', async () => {
     // Switch back to tab view
     await toggleView()
     await page.waitForTimeout(300)
