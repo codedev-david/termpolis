@@ -57,15 +57,15 @@ export default defineConfig({
         'src/renderer/src/components/TitleBar/TitleBar.tsx',
       ],
       thresholds: {
-        // Observed per-platform CI coverage (Windows/Ubuntu/macOS) varies
-        // by ~1% on stmt/fn/lines and ~0.8% on branches because src/main
-        // has ~19 `process.platform === 'win32'` checks whose win32 side
-        // is never hit on Linux/macOS runners. Gates sit ~2% below the
-        // lowest observed number so platform drift doesn't flap CI.
-        lines: 88,
-        functions: 88,
-        branches: 80,
-        statements: 88,
+        // Gates apply to Windows CI only (see .github/workflows/test.yml).
+        // src/main has ~19 `process.platform === 'win32'` checks whose
+        // win32 side never executes on Linux/macOS — running the gate on
+        // every platform would flap at ~1% drift. Windows hits every
+        // branch, so 90/85 here is the real ceiling the project enforces.
+        lines: 90,
+        functions: 90,
+        branches: 85,
+        statements: 90,
       },
     },
   },
