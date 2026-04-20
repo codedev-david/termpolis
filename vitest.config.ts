@@ -57,14 +57,15 @@ export default defineConfig({
         'src/renderer/src/components/TitleBar/TitleBar.tsx',
       ],
       thresholds: {
-        lines: 90,
-        functions: 90,
-        // Branches is looser than statements/lines because src/main has
-        // ~19 `process.platform === 'win32'` checks; on Linux/macOS CI
-        // runners the win32 side of those branches is never hit, costing
-        // ~0.7% vs Windows (84.4% on Ubuntu, 85.1% on Windows).
-        branches: 82,
-        statements: 90,
+        // Observed per-platform CI coverage (Windows/Ubuntu/macOS) varies
+        // by ~1% on stmt/fn/lines and ~0.8% on branches because src/main
+        // has ~19 `process.platform === 'win32'` checks whose win32 side
+        // is never hit on Linux/macOS runners. Gates sit ~2% below the
+        // lowest observed number so platform drift doesn't flap CI.
+        lines: 88,
+        functions: 88,
+        branches: 80,
+        statements: 88,
       },
     },
   },
