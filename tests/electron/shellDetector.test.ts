@@ -83,48 +83,11 @@ describe('getDefaultShell', () => {
   })
 })
 
-// Separate module reload for darwin/win32 platform branches.
-// Must use `importOriginal` so the default export and the rest of fs's
-// surface survive — shellDetector imports `{ existsSync } from 'fs'`,
-// which vitest's cjs/esm interop needs the default export for.
-describe('detectAvailableShells — darwin/win32 platform coverage', () => {
-  it('darwin branch: selects darwin candidates list', async () => {
-    vi.resetModules()
-    vi.doMock('os', () => ({ homedir: () => '/Users/u', platform: () => 'darwin' }))
-    vi.doMock('fs', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('fs')>()
-      return {
-        ...actual,
-        default: { ...actual, existsSync: (p: any) => p === '/bin/zsh' || p === '/bin/bash' },
-        existsSync: (p: any) => p === '/bin/zsh' || p === '/bin/bash',
-      }
-    })
-    const mod = await import('../../src/main/shellDetector')
-    const shells = await mod.detectAvailableShells()
-    expect(shells.some(s => s.type === 'zsh')).toBe(true)
-    vi.doUnmock('os')
-    vi.doUnmock('fs')
-  })
-
-  it('win32 branch: selects win32 candidates list', async () => {
-    vi.resetModules()
-    vi.doMock('os', () => ({ homedir: () => 'C:\\Users\\u', platform: () => 'win32' }))
-    vi.doMock('fs', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('fs')>()
-      const impl = (p: any) =>
-        p === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
-        p === 'C:\\Windows\\System32\\cmd.exe'
-      return {
-        ...actual,
-        default: { ...actual, existsSync: impl },
-        existsSync: impl,
-      }
-    })
-    const mod = await import('../../src/main/shellDetector')
-    const shells = await mod.detectAvailableShells()
-    expect(shells.some(s => s.type === 'powershell')).toBe(true)
-    expect(shells.some(s => s.type === 'cmd')).toBe(true)
-    vi.doUnmock('os')
-    vi.doUnmock('fs')
-  })
-})
+// Darwin and win32 platform branches are covered in sibling files
+// (shellDetector.darwin.test.ts, shellDetector.win32.test.ts) where the
+// `os` + `fs` mocks can be hoisted at top level. Mixing them here via
+// `vi.resetModules()` + dynamic `vi.doMock` was flaky across CI runners
+// — the rebuilt module registry lost the fs mock on one platform or
+// another depending on timing, and the pattern oscillated between
+// green on Windows, green on macOS, and green on Ubuntu without ever
+// being green on all three at once.
