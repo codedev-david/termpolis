@@ -569,4 +569,166 @@ describe('conductorManager', () => {
     expect(result.success).toBe(false)
     expect(getPreSwarmSha()).toBeNull()
   })
+
+  // ---- launch-shell wiring: Windows .cmd wrapper + pwsh fallback ----
+
+  describe('Windows launch wrapper', () => {
+    let originalPlatform: string
+
+    beforeAll(() => {
+      originalPlatform = window.navigator.platform
+      Object.defineProperty(window.navigator, 'platform', {
+        value: 'Win32',
+        configurable: true,
+      })
+    })
+
+    afterAll(() => {
+      Object.defineProperty(window.navigator, 'platform', {
+        value: originalPlatform,
+        configurable: true,
+      })
+    })
+
+    async function launchAndGetWrites() {
+      const startPromise = startConductor('/tmp/project')
+      await vi.advanceTimersByTimeAsync(2000)
+      await vi.advanceTimersByTimeAsync(5000)
+      await startPromise
+      await sendTask('Build a REST API', '/tmp/project')
+      const writeConfigCalls = (window.termpolis.writeConfigFile as ReturnType<typeof vi.fn>).mock.calls
+      const writeTerminalCalls = (window.termpolis.writeToTerminal as ReturnType<typeof vi.fn>).mock.calls
+      return { writeConfigCalls, writeTerminalCalls }
+    }
+
+    it('writes a .cmd wrapper file to the user home', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      expect(wrapperCall).toBeDefined()
+    })
+
+    it('wrapper tries Windows PowerShell 5.1 at its absolute system path first', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      const body = wrapperCall?.[1] as string
+      expect(body).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+      expect(body).toContain('-ExecutionPolicy Bypass')
+    })
+
+    it('wrapper falls back to pwsh 7 if PS 5.1 is missing', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      const body = wrapperCall?.[1] as string
+      expect(body).toMatch(/where pwsh/)
+      expect(body).toMatch(/pwsh -ExecutionPolicy Bypass/)
+    })
+
+    it('wrapper exits with a helpful error when neither interpreter is present', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      const body = wrapperCall?.[1] as string
+      expect(body).toContain('No PowerShell interpreter found')
+      expect(body).toContain('exit /b 1')
+    })
+
+    it('wrapper references the .ps1 script path with Windows backslashes', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      const body = wrapperCall?.[1] as string
+      // Wrapper sets SCRIPT=... using backslashed path; should contain both
+      // the backslashed home root and the .ps1 leaf.
+      expect(body).toMatch(/set "SCRIPT=.*\\\.termpolis-conductor-run\.ps1"/)
+    })
+
+    it('runCmd written to terminal invokes cmd /c with the wrapper path', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      const launchCall = writeTerminalCalls.find(([, data]) =>
+        typeof data === 'string' && data.includes('.termpolis-conductor-run.cmd'),
+      )
+      expect(launchCall).toBeDefined()
+      const cmd = launchCall?.[1] as string
+      expect(cmd.startsWith('cmd /c "')).toBe(true)
+      expect(cmd).toContain('.termpolis-conductor-run.cmd')
+      // Ends with close-quote + carriage return
+      expect(cmd.endsWith('"\r')).toBe(true)
+    })
+
+    it('still writes the .ps1 script alongside the .cmd wrapper', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const psCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.ps1'),
+      )
+      expect(psCall).toBeDefined()
+      const psBody = psCall?.[1] as string
+      expect(psBody).toContain('claude')
+      expect(psBody).toContain('--dangerously-skip-permissions')
+    })
+
+    it('runCmd never falls back to the bare `powershell` command (pwsh-7 breakage regression)', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      for (const [, data] of writeTerminalCalls) {
+        if (typeof data !== 'string') continue
+        // Bare `powershell -ExecutionPolicy ...` at the start of a command is
+        // what broke on pwsh 7 users. Using the absolute path inside the .cmd
+        // wrapper is fine; the literal terminal-written command must not start
+        // with `powershell ` on its own.
+        expect(data.startsWith('powershell ')).toBe(false)
+      }
+    })
+  })
+
+  describe('Unix launch wrapper', () => {
+    let originalPlatform: string
+
+    beforeAll(() => {
+      originalPlatform = window.navigator.platform
+      Object.defineProperty(window.navigator, 'platform', {
+        value: 'MacIntel',
+        configurable: true,
+      })
+    })
+
+    afterAll(() => {
+      Object.defineProperty(window.navigator, 'platform', {
+        value: originalPlatform,
+        configurable: true,
+      })
+    })
+
+    it('writes a .sh script and invokes bash directly — no .cmd wrapper', async () => {
+      const startPromise = startConductor('/tmp/project')
+      await vi.advanceTimersByTimeAsync(2000)
+      await vi.advanceTimersByTimeAsync(5000)
+      await startPromise
+      await sendTask('Build a REST API', '/tmp/project')
+
+      const writeConfigCalls = (window.termpolis.writeConfigFile as ReturnType<typeof vi.fn>).mock.calls
+      const writeTerminalCalls = (window.termpolis.writeToTerminal as ReturnType<typeof vi.fn>).mock.calls
+
+      const shCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.sh'),
+      )
+      expect(shCall).toBeDefined()
+
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      expect(wrapperCall).toBeUndefined()
+
+      const bashCall = writeTerminalCalls.find(([, data]) =>
+        typeof data === 'string' && data.startsWith('bash '),
+      )
+      expect(bashCall).toBeDefined()
+    })
+  })
 })

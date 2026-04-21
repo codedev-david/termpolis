@@ -227,10 +227,33 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
           '',
         ].join('\n')
     await window.termpolis.writeConfigFile(scriptFile, psScript)
-    // Use absolute path — pwsh 7 does not put Windows PowerShell on PATH, so
-    // bare `powershell` fails when the terminal runs pwsh. The v1.0 path is a
-    // stable Windows system location present on every Windows 10/11 install.
-    runCmd = `"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -ExecutionPolicy Bypass -File "${scriptFile}"`
+    // Launch via a .cmd wrapper that prefers Windows PowerShell 5.1 at its
+    // canonical system path (present on ~100% of Windows 10/11 installs) and
+    // falls back to pwsh 7 if PS 5.1 has been stripped from the OS. Bare
+    // `powershell` does not resolve in pwsh 7 because pwsh intentionally keeps
+    // Windows PowerShell off its PATH for side-by-side coexistence.
+    const wrapperFile = homeSlash + '/.termpolis-conductor-run.cmd'
+    const scriptFileWin = scriptFile.replace(/\//g, '\\')
+    const cmdWrapper = [
+      '@echo off',
+      'set "PS51=C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+      `set "SCRIPT=${scriptFileWin}"`,
+      'if exist "%PS51%" (',
+      '  "%PS51%" -ExecutionPolicy Bypass -File "%SCRIPT%"',
+      '  exit /b %errorlevel%',
+      ')',
+      'where pwsh >nul 2>&1',
+      'if %errorlevel% equ 0 (',
+      '  pwsh -ExecutionPolicy Bypass -File "%SCRIPT%"',
+      '  exit /b %errorlevel%',
+      ')',
+      'echo [termpolis] No PowerShell interpreter found (Windows PowerShell 5.1 nor pwsh 7). 1>&2',
+      'exit /b 1',
+      '',
+    ].join('\r\n')
+    await window.termpolis.writeConfigFile(wrapperFile, cmdWrapper)
+    const wrapperFileWin = wrapperFile.replace(/\//g, '\\')
+    runCmd = `cmd /c "${wrapperFileWin}"`
   } else {
     const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
     const shScript = isTestMode
