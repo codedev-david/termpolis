@@ -5,7 +5,7 @@
 <h1 align="center">Termpolis</h1>
 
 <p align="center">
-  <strong>The first terminal where Claude, Codex, Gemini, and Qwen work together as a team.</strong>
+  <strong>The open-source multi-agent terminal where Claude, Codex, Gemini, and Qwen work together as a team.</strong>
 </p>
 
 <p align="center">
@@ -23,8 +23,8 @@
 <p align="center">
   Smart task routing assigns the right work to the right AI model.<br>
   An intelligent conductor that knows who plays what instrument best.<br>
-  No AI company has built this — because it helps their competitors.<br>
-  <strong>We built it anyway, because it moves AI forward.</strong>
+  Local-first, no cloud, no telemetry, no subscription.<br>
+  <strong>Free and open source — your agents, your terminal, your rules.</strong>
 </p>
 
 <p align="center">
