@@ -6,7 +6,7 @@ import { useTerminalStore, buildPaneTree } from '../../src/renderer/src/store/te
 import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
 import type { TerminalSession, PaneNode } from '../../src/renderer/src/types'
 import type { ConversationTurn } from '../../src/renderer/src/lib/conversationParser'
-import type { AIProfile, PromptTemplate } from '../../src/renderer/src/types'
+import type { AIProfile, PromptTemplate, WorkflowTemplate } from '../../src/renderer/src/types'
 import type { SwarmAgentEntry } from '../../src/renderer/src/store/terminalStore'
 
 function makeTerminal(overrides: Partial<TerminalSession> = {}): TerminalSession {
@@ -439,6 +439,50 @@ describe('terminalStore', () => {
       useTerminalStore.getState().addPromptTemplate(template)
       useTerminalStore.getState().removePromptTemplate('tmpl1')
       expect(useTerminalStore.getState().promptTemplates).toHaveLength(0)
+    })
+  })
+
+  describe('userWorkflows', () => {
+    const workflow: WorkflowTemplate = {
+      id: 'wf1',
+      name: 'My Workflow',
+      description: 'A flow',
+      icon: 'fa-solid fa-bolt',
+      layout: 'vertical',
+      terminals: [{ name: 'T1', command: '', shell: 'bash', color: '#D97706' }],
+      isCustom: true,
+    }
+
+    it('adds a user workflow', () => {
+      useTerminalStore.getState().addUserWorkflow(workflow)
+      expect(useTerminalStore.getState().userWorkflows).toHaveLength(1)
+      expect(useTerminalStore.getState().userWorkflows[0]).toEqual(workflow)
+    })
+
+    it('updates an existing user workflow and preserves id', () => {
+      useTerminalStore.getState().addUserWorkflow(workflow)
+      useTerminalStore.getState().updateUserWorkflow('wf1', { name: 'Renamed', id: 'ignored-change' as any })
+      const got = useTerminalStore.getState().userWorkflows[0]
+      expect(got.name).toBe('Renamed')
+      expect(got.id).toBe('wf1')
+    })
+
+    it('updateUserWorkflow is a no-op when the id does not exist', () => {
+      useTerminalStore.getState().addUserWorkflow(workflow)
+      useTerminalStore.getState().updateUserWorkflow('missing', { name: 'Nope' })
+      expect(useTerminalStore.getState().userWorkflows[0].name).toBe('My Workflow')
+    })
+
+    it('removes a user workflow by id', () => {
+      useTerminalStore.getState().addUserWorkflow(workflow)
+      useTerminalStore.getState().removeUserWorkflow('wf1')
+      expect(useTerminalStore.getState().userWorkflows).toHaveLength(0)
+    })
+
+    it('setUserWorkflows replaces the whole list', () => {
+      useTerminalStore.getState().addUserWorkflow(workflow)
+      useTerminalStore.getState().setUserWorkflows([])
+      expect(useTerminalStore.getState().userWorkflows).toHaveLength(0)
     })
   })
 

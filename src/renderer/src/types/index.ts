@@ -50,6 +50,25 @@ export interface PromptTemplate {
   isCustom?: boolean
 }
 
+export interface WorkflowTerminal {
+  name: string
+  command: string
+  shell: string
+  color: string
+}
+
+export type WorkflowLayout = 'vertical' | 'quad'
+
+export interface WorkflowTemplate {
+  id: string
+  name: string
+  description: string
+  icon: string
+  terminals: WorkflowTerminal[]
+  layout: WorkflowLayout
+  isCustom?: boolean
+}
+
 export interface SessionData {
   terminals: TerminalSession[]
   workspaces: Workspace[]
@@ -58,6 +77,7 @@ export interface SessionData {
   keybindings?: Record<string, string>
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
+  userWorkflows?: WorkflowTemplate[]
 }
 
 export interface HistoryEntry {

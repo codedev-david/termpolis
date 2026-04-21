@@ -36,7 +36,7 @@ import * as efficiencyLib from './lib/efficiencyAnalyzer'
 export default function App() {
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
-    defaultShell, keybindings, aiProfiles, promptTemplates, agentRatingOverrides,
+    defaultShell, keybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
   } = useTerminalStore()
@@ -71,7 +71,7 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, aiProfiles: ap, promptTemplates: pt, agentRatingOverrides: aro } = res.data
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, aiProfiles: ap, promptTemplates: pt, userWorkflows: uw, agentRatingOverrides: aro } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
         // Migrate old 'grid' viewMode to 'split'
         const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
@@ -84,6 +84,7 @@ export default function App() {
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
           aiProfiles: ap ?? [],
           promptTemplates: pt ?? [],
+          userWorkflows: uw ?? [],
           agentRatingOverrides: aro ?? {},
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.filter(t => !t.hidden).map(t => t.id)) : null,
         })
@@ -189,10 +190,11 @@ export default function App() {
         keybindings: state.keybindings,
         aiProfiles: state.aiProfiles,
         promptTemplates: state.promptTemplates,
+        userWorkflows: state.userWorkflows,
         agentRatingOverrides: state.agentRatingOverrides,
       })
     }, 1000) // debounce 1 second
-  }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates, agentRatingOverrides])
+  }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides])
 
   // Global keyboard shortcuts
   useEffect(() => {

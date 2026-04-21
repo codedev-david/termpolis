@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate } from '../types'
+import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { HandoffContext } from '../lib/contextCapture'
@@ -74,6 +74,7 @@ interface TerminalStore {
   paneTree: PaneNode | null
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
+  userWorkflows: WorkflowTemplate[]
   conversations: ConversationIndex[]
   lastHandoffContext: HandoffContext | null
   swarmActive: boolean
@@ -105,6 +106,10 @@ interface TerminalStore {
   removeAIProfile: (id: string) => void
   addPromptTemplate: (template: PromptTemplate) => void
   removePromptTemplate: (id: string) => void
+  addUserWorkflow: (workflow: WorkflowTemplate) => void
+  updateUserWorkflow: (id: string, patch: Partial<Omit<WorkflowTemplate, 'id'>>) => void
+  removeUserWorkflow: (id: string) => void
+  setUserWorkflows: (workflows: WorkflowTemplate[]) => void
   addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
   clearConversations: (terminalId: string) => void
   setLastHandoffContext: (ctx: HandoffContext | null) => void
@@ -130,6 +135,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   paneTree: null,
   aiProfiles: [],
   promptTemplates: [],
+  userWorkflows: [],
   conversations: [],
   lastHandoffContext: null,
   swarmActive: false,
@@ -275,6 +281,20 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   removePromptTemplate: (id) => set(s => ({
     promptTemplates: s.promptTemplates.filter(t => t.id !== id),
   })),
+
+  addUserWorkflow: (workflow) => set(s => ({
+    userWorkflows: [...s.userWorkflows, workflow],
+  })),
+
+  updateUserWorkflow: (id, patch) => set(s => ({
+    userWorkflows: s.userWorkflows.map(w => w.id === id ? { ...w, ...patch, id } : w),
+  })),
+
+  removeUserWorkflow: (id) => set(s => ({
+    userWorkflows: s.userWorkflows.filter(w => w.id !== id),
+  })),
+
+  setUserWorkflows: (workflows) => set({ userWorkflows: workflows }),
 
   addConversationTurn: (terminalId, terminalName, agentName, turn) => set(s => {
     const existing = s.conversations.find(c => c.terminalId === terminalId)

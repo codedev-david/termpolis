@@ -131,6 +131,8 @@ Right-click any workspace row for:
 
 New workspaces are created from the **+ Workspace** button or via `Ctrl+Shift+N`.
 
+> **Workspaces vs. Workflows** — Workspaces are **long-lived containers** for your terminals, state, and layout; they persist across restarts and you switch between them as you move between projects. Workflow templates (see [§13](#13-workflow-templates)) are **one-shot recipes** that populate the *current* workspace with a pre-configured set of terminals, commands, and a split layout. Think of a workspace as the room you're working in, and a workflow as the "set the room up like this" macro.
+
 ---
 
 ## 5. Terminals
@@ -308,15 +310,31 @@ Each template supports `{{variables}}` that are filled from the current selectio
 
 ![Workflow templates](../e2e/screenshots/docs/13-workflow-templates.png)
 
-Workflows are multi-step recipes — launch a terminal, run setup, send a prompt to an agent, wait for exit, open a file. Think of them as macros with a UI.
+Workflows are **one-shot setup recipes** for a workspace. Each template describes a set of terminals — their names, colors, shell, optional startup command — and a layout (vertical splits or a 2×2 grid). Clicking **Launch** closes the terminals you have open, spawns the template's terminals in the configured split layout, and fires the startup commands after a brief delay so the shells finish initializing first.
 
-Open the Workflows panel from the sidebar or via `Ctrl+Shift+F`. Built-in flows:
+Open the Workflows panel from the **Workflows** sidebar button.
 
-- **Start a new feature** — creates a branch, opens Claude, sends a "plan this feature" prompt.
-- **Bug repro** — spawns a terminal, runs the repro command, opens an agent with the output.
-- **Pre-PR review** — runs lint + tests, opens Gemini with a review prompt against the diff.
+### Built-in templates
 
-You can edit any built-in flow or create your own with the visual editor. Flows save to `workflow-templates.json`.
+- **Claude Code + Shell** — Claude Code on the left, plain shell on the right (2-pane vertical split).
+- **Full Stack Dev** — AI agent + Frontend + Backend + Tests in a 2×2 grid.
+- **Code Review** — AI reviewer + Git pane (2-pane vertical split).
+
+Built-ins are read-only. Use **Duplicate** on a built-in to get an editable copy with the `(copy)` suffix.
+
+### Creating your own
+
+Click **+ New Workflow** at the bottom of the picker. You get a form for:
+
+- **Name** and **Description**
+- **Icon** (Font Awesome solid) and **Layout** (vertical splits or 2×2 grid — the grid requires exactly four terminals to tile cleanly)
+- **Terminals** (1–8) — per terminal: name, startup command (optional), shell, and color
+
+Saved workflows appear with a **Custom** badge in the picker, are persisted as part of your session alongside workspaces and prompt templates, and sync via the same save mechanism (`session.json` in your Termpolis data directory). You can **edit** or **delete** any custom workflow from its row. On Windows, templates that specify `bash` are auto-resolved to Git Bash.
+
+### Difference from workspaces
+
+Workflows don't *own* state the way workspaces do — they're a template you apply. After launch, the terminals they spawn live inside your current workspace and behave like any other terminals. Closing and re-launching the same workflow gives you fresh terminals, not the ones from last time.
 
 ---
 
@@ -414,7 +432,6 @@ Termpolis ships an **MCP (Model Context Protocol) server** so AI agents can cont
 | `list_workspaces`   | Enumerate workspaces                                  |
 | `switch_workspace`  | Change active workspace                               |
 | `git_status`        | JSON summary of the current repo                      |
-| `run_workflow`      | Execute a named workflow template                     |
 | `broadcast_message` | Send a swarm-wide notification                        |
 | `get_session_id`    | Returns the calling session's opaque ID               |
 | `post_activity`     | Push an AgentActivity event into the feed             |
@@ -629,18 +646,17 @@ Close Termpolis, delete the data directory (see [§2](#2-installation)), relaunc
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Renderer (React)                                    │
+│  Renderer (React)                                   │
 │  ├── Sidebar, Terminals, Panels                     │
 │  ├── Activity Feed (observability UI)               │
 │  ├── Swarm Dashboard + Conductor view               │
-│  └── IPC client → window.termpolis bridge          │
+│  └── IPC client → window.termpolis bridge           │
 └──────────────────┬──────────────────────────────────┘
                    │  Electron IPC
 ┌──────────────────▼──────────────────────────────────┐
-│  Main process (Node)                                 │
+│  Main process (Node)                                │
 │  ├── Terminal manager (node-pty)                    │
 │  ├── Session persistence (session.json)             │
-│  ├── Workflow runner                                │
 │  ├── Git adapter                                    │
 │  ├── MCP server (HTTP, 17 tools)                    │
 │  ├── Swarm memory (JSONL + embeddings)              │
@@ -680,7 +696,7 @@ All shortcuts are rebindable in Settings → Keybindings. Defaults:
 | Command palette            | `Ctrl+K`             | `⌘K`                |
 | Settings                   | `Ctrl+,`             | `⌘,`                |
 | Prompt templates           | `Ctrl+Shift+P`       | `⌘⇧P`               |
-| Workflow templates         | `Ctrl+Shift+F`       | `⌘⇧F`               |
+| Workflow templates         | Sidebar → Workflows  | Sidebar → Workflows |
 | Context panel              | `Ctrl+Shift+E`       | `⌘⇧E`               |
 | History search             | `Ctrl+Shift+H`       | `⌘⇧H`               |
 | Conversation search        | `Ctrl+Shift+I`       | `⌘⇧I`               |

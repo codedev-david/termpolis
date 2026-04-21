@@ -96,7 +96,7 @@ Full docs with screenshots: **[termpolis.com/docs](https://termpolis.com/docs.ht
 - **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Gemini CLI, and Aider with custom profiles support
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
-- **Multi-Agent Workflow Templates** — pre-built split-pane layouts for common AI workflows (Claude + Shell, Full Stack Dev, Code Review)
+- **Multi-Agent Workflow Templates** — built-in split-pane layouts (Claude + Shell, Full Stack Dev, Code Review) plus a visual editor to create, edit, and save your own custom workflows (name, icon, layout, 1–8 terminals each with shell + startup command + color, persisted across restarts)
 - **Agent Status Detection** — automatically detects when Claude Code, Codex, Gemini, or Aider is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
 - **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
