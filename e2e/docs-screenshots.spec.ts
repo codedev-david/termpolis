@@ -181,9 +181,19 @@ test('capture all docs screenshots', async () => {
   test.setTimeout(600000)
   await expect(page.locator('text=Termpolis').first()).toBeVisible({ timeout: 15000 })
 
-  // 01 — Welcome screen, fresh app
+  // 01 — Welcome screen, fresh app (capture BEFORE dismissing onboarding so
+  // screenshot 01 shows the Welcome-to-Termpolis dialog as new users see it).
   await safeWait(800)
   await ss('01-welcome-screen')
+
+  // Dismiss the onboarding modal via "Get started" so it doesn't overlay every
+  // subsequent capture. If the modal isn't visible (e.g. already acknowledged
+  // on a previous run) the clickIf returns false and we move on.
+  const onboardingDismissed = await clickIf('button:has-text("Get started")', 3000)
+  if (onboardingDismissed) {
+    await waitForHidden('h2:text-is("Welcome to Termpolis")', 3000)
+    await safeWait(400)
+  }
 
   // 02 — Sidebar default: open the Launch AI Agent dropdown to show the
   // agent picker state (visually distinct from the plain Welcome in 01).
@@ -338,6 +348,17 @@ test('capture all docs screenshots', async () => {
     .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
   await safeWait(500)
   await ss('13-workflow-templates')
+
+  // 13b — Create-workflow form (the New Workflow editor)
+  await clickIf('button:has-text("New Workflow")', 2000)
+  await page.locator('text=New Workflow').first()
+    .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
+  await safeWait(500)
+  await ss('13b-workflow-create')
+  // Back out of the editor into the list before closing the modal
+  await clickIf('button:has-text("Cancel")', 1500)
+  await safeWait(300)
+
   try { await page.mouse.click(350, 400) } catch {}
   await waitForHidden('h2:text-is("Workflow Templates")', 2000)
   await safeWait(300)
