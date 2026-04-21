@@ -227,7 +227,10 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
           '',
         ].join('\n')
     await window.termpolis.writeConfigFile(scriptFile, psScript)
-    runCmd = `powershell -ExecutionPolicy Bypass -File "${scriptFile}"`
+    // Use absolute path — pwsh 7 does not put Windows PowerShell on PATH, so
+    // bare `powershell` fails when the terminal runs pwsh. The v1.0 path is a
+    // stable Windows system location present on every Windows 10/11 install.
+    runCmd = `"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -ExecutionPolicy Bypass -File "${scriptFile}"`
   } else {
     const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
     const shScript = isTestMode
