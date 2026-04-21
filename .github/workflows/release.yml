@@ -182,6 +182,8 @@ jobs:
             dist-electron-builder/*.exe
             dist-electron-builder/*.dmg
             dist-electron-builder/*.AppImage
+            dist-electron-builder/*.blockmap
+            dist-electron-builder/latest*.yml
 
       - name: Upload installer to termpolis.com
         if: matrix.platform == 'win'
