@@ -111,18 +111,37 @@ async function createTerminalIfNeeded(name: string) {
 }
 
 async function closeAnyOpenModal() {
-  // Try Escape several times + a few backdrop clicks to guarantee a clean state.
+  // Step 1: Escape attempts. Most modals listen for it.
   for (let i = 0; i < 3; i++) {
     await page.keyboard.press('Escape').catch(() => {})
     await page.waitForTimeout(120)
   }
-  // Known modal backdrop element — click at a point clear of the sidebar
-  // (x > 240) and clear of centered modal (x < 500) at mid-height.
-  for (const y of [200, 400, 600]) {
-    await page.mouse.click(350, y).catch(() => {})
-    await page.waitForTimeout(80)
+  // Step 2: if a backdrop is still intercepting pointer events (e.g. the
+  // Workflows modal has no Escape handler), find any Close-labelled button
+  // inside the backdrop and click it directly. Coordinate-based backdrop
+  // clicks were unreliable on Ubuntu GHA where the centered modal overlaps
+  // our chosen "safe" x coordinate.
+  const backdrop = page.locator('div.fixed.inset-0.z-50').first()
+  if (await backdrop.isVisible({ timeout: 200 }).catch(() => false)) {
+    const closeBtn = backdrop
+      .locator('button[aria-label^="Close" i], button[aria-label*=" close" i]')
+      .first()
+    if (await closeBtn.isVisible({ timeout: 200 }).catch(() => false)) {
+      await closeBtn.click({ force: true }).catch(() => {})
+      await page.waitForTimeout(250)
+    }
   }
-  await page.waitForTimeout(300)
+  // Step 3: final safety net — if a backdrop is STILL visible, click it
+  // directly via the locator API at its top-left corner. Scoped to when a
+  // backdrop still exists so we don't accidentally click a sidebar button
+  // when no modal is open.
+  if (await backdrop.isVisible({ timeout: 100 }).catch(() => false)) {
+    await backdrop.click({ position: { x: 10, y: 10 }, force: true }).catch(() => {})
+    await page.waitForTimeout(200)
+  }
+  // Step 4: wait for any residual backdrop to actually detach before the
+  // next test tries to click a sidebar button.
+  await backdrop.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {})
 }
 
 async function clickAndReturn(selector: string, closeMethod: 'escape' | 'backdrop' | 'toggle' = 'escape') {
@@ -135,9 +154,21 @@ async function clickAndReturn(selector: string, closeMethod: 'escape' | 'backdro
   if (closeMethod === 'escape') {
     await page.keyboard.press('Escape').catch(() => {})
   } else if (closeMethod === 'backdrop') {
-    // Click where we're guaranteed to be outside the sidebar (x>240) and
-    // outside the centered modal panel.
-    await page.mouse.click(350, 400).catch(() => {})
+    // Click the modal's X button if present, then fall back to clicking
+    // the backdrop element itself at a corner guaranteed to be outside the
+    // centered panel. Previous `page.mouse.click(350, 400)` landed inside
+    // the Workflows modal on Ubuntu GHA and left it open for the next test.
+    const backdrop = page.locator('div.fixed.inset-0.z-50').first()
+    if (await backdrop.isVisible({ timeout: 400 }).catch(() => false)) {
+      const xBtn = backdrop.locator('button[aria-label^="Close" i]').first()
+      if (await xBtn.isVisible({ timeout: 200 }).catch(() => false)) {
+        await xBtn.click({ force: true }).catch(() => {})
+      } else {
+        // Click-through on the backdrop at top-left corner of its bounding
+        // box — bubbles to the backdrop's onClick={onClose} handler.
+        await backdrop.click({ position: { x: 10, y: 10 }, force: true }).catch(() => {})
+      }
+    }
   } else if (closeMethod === 'toggle') {
     const stillThere = await btn.isVisible().catch(() => false)
     if (stillThere) await btn.click().catch(() => {})
