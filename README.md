@@ -22,6 +22,12 @@
   <a href="https://github.com/sponsors/codedev-david"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg" alt="Sponsor"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md"><img src="https://img.shields.io/badge/%F0%9F%90%9B%20Submit%20a%20bug%20report-e53935?style=for-the-badge" alt="Submit a bug report"></a>
+  &nbsp;
+  <a href="https://github.com/codedev-david/termpolis/issues/new?template=feature_request.md"><img src="https://img.shields.io/badge/%E2%9C%A8%20Request%20a%20feature-1976D2?style=for-the-badge" alt="Request a feature"></a>
+</p>
+
 ---
 
 ### 🎯 Flagship Feature: Multi-Agent Swarm with Smart Routing

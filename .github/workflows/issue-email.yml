@@ -1,0 +1,50 @@
+# Emails engelhart.david.john@gmail.com whenever an issue is opened, reopened,
+# or edited on this repository.
+#
+# SETUP (one time):
+#   Add these two secrets in GitHub → Settings → Secrets and variables → Actions:
+#     MAIL_USERNAME  — the Gmail address that will *send* the email
+#                      (can be the same engelhart.david.john@gmail.com)
+#     MAIL_PASSWORD  — a Google App Password (NOT the regular account password)
+#                      Generate one at https://myaccount.google.com/apppasswords
+#
+# How it works:
+#   - `issues:` trigger fires when an issue is opened / reopened / edited.
+#   - `dawidd6/action-send-mail` sends SMTP mail via Gmail (smtp.gmail.com:465).
+#   - Body is built from the issue title, author, labels, and body.
+#   - No personal data leaves the runner besides what's already in the issue.
+
+name: Email on new issue
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send email notification
+        uses: dawidd6/action-send-mail@v5
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Termpolis Issues <${{ secrets.MAIL_USERNAME }}>
+          to: engelhart.david.john@gmail.com
+          subject: "[Termpolis] Issue ${{ github.event.action }}: #${{ github.event.issue.number }} — ${{ github.event.issue.title }}"
+          body: |
+            A GitHub issue was ${{ github.event.action }} on codedev-david/termpolis.
+
+            Title:   ${{ github.event.issue.title }}
+            Number:  #${{ github.event.issue.number }}
+            Author:  ${{ github.event.issue.user.login }}
+            State:   ${{ github.event.issue.state }}
+            Labels:  ${{ join(github.event.issue.labels.*.name, ', ') }}
+            URL:     ${{ github.event.issue.html_url }}
+
+            ---
+            ${{ github.event.issue.body }}
+          content_type: text/plain

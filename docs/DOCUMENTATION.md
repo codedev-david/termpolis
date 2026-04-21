@@ -123,15 +123,33 @@ The sidebar is the navigation spine of the app. From top to bottom:
 
 ### Workspaces
 
-Right-click any workspace row for:
-- Rename
-- Duplicate
-- Close (confirms if there are active terminals)
-- Show in file explorer
+Workspaces are the **project-level container** in Termpolis — think of them as the tabs in a browser, except each one holds a full set of terminals, a split/grid layout, an active agent, a scrollback history, per-workspace settings, and any panels you've left pinned (activity, context, git, swarm). You can run many workspaces side-by-side and switch between them without losing state.
 
-New workspaces are created from the **+ Workspace** button or via `Ctrl+Shift+N`.
+**What a workspace owns:**
 
-> **Workspaces vs. Workflows** — Workspaces are **long-lived containers** for your terminals, state, and layout; they persist across restarts and you switch between them as you move between projects. Workflow templates (see [§13](#13-workflow-templates)) are **one-shot recipes** that populate the *current* workspace with a pre-configured set of terminals, commands, and a split layout. Think of a workspace as the room you're working in, and a workflow as the "set the room up like this" macro.
+- **Terminals** — every open pty in that workspace, with its shell, working directory, label, color, and scrollback buffer.
+- **Layout** — tab view, split view (the full pane tree), or grid view. Restored exactly on relaunch.
+- **Focus** — which terminal was active, cursor position, selection.
+- **Agent sessions** — any Claude Code, Codex, Gemini, or Aider+Qwen runs tied to terminals in the workspace.
+- **Panel state** — which side panels are open and their size.
+- **Per-workspace overrides** — if you've changed a setting scoped to this workspace (shell default, font size, etc.).
+
+**How workspaces persist.** Everything above is written to `session.json` in the Termpolis data directory (see [§2](#2-installation) for the per-platform path) as soon as it changes — so an unclean shutdown still leaves you with last-known-good state. Re-opening the app restores the workspaces in the same order with the same terminals, split layouts, and focus.
+
+**Creating a workspace.** Use the **+ Workspace** button at the top of the sidebar or the `Ctrl+Shift+N` shortcut. Each new workspace starts empty; pick a shell to open the first terminal, or apply a workflow template (see [§13](#13-workflow-templates)) to stamp a whole pre-built layout into it.
+
+**Managing workspaces.** Right-click any workspace row in the sidebar for:
+
+- **Rename** — changes the label in the sidebar and the window title when the workspace is active.
+- **Duplicate** — creates a new workspace with the same terminal configuration (shell, cwd, label) but fresh, empty pty sessions. Handy when you want to mirror a setup for a second feature branch.
+- **Close** — removes the workspace. If any terminals in it have live child processes, you'll get a confirmation dialog listing what's still running.
+- **Show in file explorer** — opens the workspace's working directory in Finder / Explorer / your Linux file manager.
+
+**Switching between workspaces.** Click a workspace row to activate it. Keyboard users can cycle with `Ctrl+Alt+[` / `Ctrl+Alt+]`. Unsaved terminal output in background workspaces keeps streaming — nothing is paused just because it's not visible.
+
+**Workspace root directory.** Each workspace has a default working directory that new terminals start in. Set it when you create the workspace, or change it later from Settings → Workspace. Terminals started with the agent launcher or a workflow template inherit this unless they override it per-terminal.
+
+**How workspaces differ from workflows.** Workspaces are *long-lived containers* that own state across restarts; workflows are *one-shot recipes* that populate the current workspace with a pre-configured set of terminals, commands, and a split layout. You can think of a workspace as the room you're working in, and a workflow as the "set the room up like this" macro. Launching a workflow inside a workspace closes any existing terminals in that workspace and replaces them with the workflow's terminals — the workspace stays, the contents get reset. Workflows have no independent persistence beyond the template itself. See [§13](#13-workflow-templates).
 
 ---
 
@@ -619,26 +637,77 @@ The bottom strip shows, left to right:
 
 ## 28. Troubleshooting
 
-### Terminal won't start
+> **Found a bug that isn't here?** **[Open an issue on GitHub →](https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md)** Include your OS + version, Termpolis version (Settings → About), and the most recent entries from `~/.termpolis/logs/` — that's usually enough to reproduce the problem.
 
-- Check the shell path in Settings → Shells. On Windows, PowerShell 7 lives at `C:\Program Files\PowerShell\7\pwsh.exe`.
-- On macOS, if you get a "permission denied" for `zsh`, re-grant Termpolis Full Disk Access in System Preferences → Privacy.
+### Installation & first-run
 
-### Agent CLI not found
+**Windows: "Windows protected your PC" SmartScreen warning.** Click **More info** → **Run anyway**. Termpolis is code-signed (SSL.com), but newly signed builds need reputation time before SmartScreen stops flagging them. The warning disappears once enough people download the release.
 
-The launch button fails silently if the CLI isn't in your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`, `aider`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — a restart of Termpolis after updating `~/.zprofile` usually fixes it.
+**macOS: "Termpolis is damaged and can't be opened."** This means Gatekeeper couldn't verify the signature — usually a partial download. Re-download the DMG from GitHub Releases, verify the file size matches, and mount again. If it still fails, open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway** next to the Termpolis entry.
 
-### Swarm conductor can't reach MCP
+**macOS: "Permission denied" when launching a terminal.** Grant Termpolis **Full Disk Access** in System Settings → Privacy & Security → Full Disk Access. Re-launch after granting.
 
-Check the status bar MCP indicator. If it's red, look at `~/.termpolis/logs/mcp.log`. Common causes: port 48211 already in use (change it in Settings → Advanced), or firewall blocking localhost.
+**Linux: AppImage won't run.** Mark it executable: `chmod +x Termpolis-*.AppImage`. On systems with hardened FUSE, extract and run the inner binary: `./Termpolis-*.AppImage --appimage-extract && ./squashfs-root/termpolis`.
 
-### Memory search returns nothing
+**Data directory didn't appear.** Termpolis creates the data directory on first run — make sure you actually clicked "Open" rather than dismissing the first-launch dialog. Paths by platform: `%APPDATA%\termpolis\` (Windows), `~/Library/Application Support/termpolis/` (macOS), `~/.config/termpolis/` (Linux).
 
-If `memory_search` seems to ignore stored entries, embeddings probably failed (Ollama not running). Start Ollama, pull `nomic-embed-text`, and recent memory_writes will succeed. Historical entries without embeddings still match on keyword search.
+### Terminals
 
-### Reset everything
+**Terminal won't start.** Check the shell path in Settings → Shells. On Windows, PowerShell 7 lives at `C:\Program Files\PowerShell\7\pwsh.exe`; WSL needs `wsl.exe` on PATH. On macOS, if `/bin/zsh` gives "permission denied", re-grant Termpolis Full Disk Access (above) — launchd blocks unsigned/unapproved apps from spawning shells by default.
 
-Close Termpolis, delete the data directory (see [§2](#2-installation)), relaunch.
+**Terminal hangs on first prompt.** Your shell's startup files (`.bashrc`, `.zshrc`, `powershell $PROFILE`) may be waiting on input or hitting a slow network check. Open the shell outside Termpolis to confirm; the fix is in your dotfiles, not the app.
+
+**Output looks garbled / escape codes show as text.** The shell detected a non-TTY environment. Make sure the **Agent profile** field is empty if you're launching a plain shell (some agent launchers set `TERM=dumb`). Resetting via Settings → Shells → Reset defaults fixes most cases.
+
+**Copy/paste shortcuts don't work.** On Windows/Linux, use `Ctrl+Shift+C` / `Ctrl+Shift+V` inside terminals (bare `Ctrl+C` sends SIGINT). On macOS, `⌘C`/`⌘V` work as expected everywhere.
+
+**Font looks wrong / icons are boxes.** The app ships with its own icon font, but if it failed to load (usually due to an override in Settings → Themes), re-select a built-in theme or run **Reset theme** from Settings → Themes.
+
+### Agents & CLI tools
+
+**Agent launch button fails silently.** The CLI isn't on your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`, `aider`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — restart Termpolis after updating `~/.zprofile` (not just `~/.zshrc`), or relaunch from Terminal with `open -a Termpolis` so the shell PATH is inherited.
+
+**Wrong `claude` / `codex` binary runs.** If you've installed the CLI via multiple package managers (Homebrew, npm, cargo), PATH order decides the winner. Use `which claude` to see which one Termpolis will launch. Override per-agent in Settings → Agents.
+
+**Agent exits with "API key not set".** Each agent's env vars come from the login shell, not from a `.env` file in your workspace. `export ANTHROPIC_API_KEY=...` in `~/.zprofile` / `~/.bash_profile` / PowerShell `$PROFILE`, then relaunch Termpolis.
+
+### Swarm, MCP, and memory
+
+**MCP indicator in status bar is red.** The MCP server failed to start. Look at `~/.termpolis/logs/mcp.log`. Common causes:
+
+- **Port 48211 already in use.** Another instance of Termpolis (or an old crashed one) still owns the port. Kill any stray `termpolis` processes, or change the port in Settings → Advanced.
+- **Firewall blocking localhost.** Rare but possible. Add an exception for `termpolis.exe` / the Termpolis binary.
+- **Token file write failed.** `~/.termpolis/mcp-token` couldn't be written due to permissions. Fix the directory permissions (`chmod 700 ~/.termpolis`).
+
+**Swarm conductor doesn't launch.** The conductor spawns a Claude Code child process that needs `claude` on PATH (see agent troubleshooting above). Watch `~/.termpolis/logs/conductor.log` for its startup output.
+
+**Swarm hangs mid-task / agents stop posting activity.** Open Activity Feed — if the agent is still running but not emitting events, its MCP connection may have dropped. Use **Pause → Reset session** in the Swarm Dashboard to recover. If a specific agent repeatedly drops, its MCP token probably expired — restart Termpolis to issue fresh tokens.
+
+**Memory search returns nothing.** `memory_search` needs embeddings, which require Ollama running with the `nomic-embed-text` model pulled. Start Ollama (`ollama serve`) and run `ollama pull nomic-embed-text`. New writes will succeed; historical entries without embeddings still match keyword-only searches.
+
+### Updates & performance
+
+**Update notification appears but the update doesn't install.** The auto-updater needs write access to the app bundle. On Windows, run the installer manually from GitHub Releases if the in-app updater fails. On macOS, drag the new DMG contents over the existing app (it'll prompt for admin). On Linux, download and replace the AppImage.
+
+**App is slow to start / very high memory.** A corrupted session file occasionally causes runaway restoration. Back up `session.json` in your data directory, then delete it and relaunch — you lose restored workspace state but the app is back to a clean baseline.
+
+**Terminal scrollback is sluggish.** The default xterm scrollback is 10,000 lines. If you've pasted very large logs, scrolling slows down. Settings → Terminals → Clear scrollback resets without restarting.
+
+### Session corruption & reset
+
+**App opens to a blank screen.** Sign of a broken `session.json`. Close Termpolis, rename `session.json` in the data directory, relaunch — the app creates a fresh session. Your workspaces will be empty but the app is usable again; the old file is preserved if you want to diff it later.
+
+**Reset everything.** Close Termpolis, delete the entire data directory (see [§2](#2-installation)), relaunch. This wipes workspaces, settings, themes, prompt templates, custom workflows, swarm history, and memory — start from a clean slate.
+
+### Reporting a bug
+
+If none of the above fixes your problem, **[open an issue](https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md)**. Please include:
+
+1. OS + version (e.g., Windows 11 23H2, macOS 14.3, Ubuntu 22.04).
+2. Termpolis version (Settings → About).
+3. Steps to reproduce — as minimal as you can make them.
+4. Relevant log tail from `~/.termpolis/logs/` (the main log, plus `mcp.log` or `conductor.log` if the issue involves swarm/MCP).
+5. A screenshot or short screen recording if it's a UI bug.
 
 ---
 
