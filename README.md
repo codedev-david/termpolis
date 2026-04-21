@@ -9,6 +9,18 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md"><img src="https://img.shields.io/badge/%F0%9F%90%9B%20Found%20a%20bug%3F%20Report%20it-e53935?style=for-the-badge" alt="Submit a bug report"></a>
+  &nbsp;
+  <a href="https://github.com/codedev-david/termpolis/issues/new?template=feature_request.md"><img src="https://img.shields.io/badge/%E2%9C%A8%20Request%20a%20feature-1976D2?style=for-the-badge" alt="Request a feature"></a>
+  &nbsp;
+  <a href="https://github.com/codedev-david/termpolis/issues"><img src="https://img.shields.io/badge/%F0%9F%92%AC%20All%20issues-555555?style=for-the-badge" alt="All issues"></a>
+</p>
+
+<p align="center">
+  <sub>🙏 <strong>We want to fix bugs fast.</strong> If anything is broken, please open an issue — we read every one.</sub>
+</p>
+
+<p align="center">
   Smart task routing assigns the right work to the right AI model.<br>
   An intelligent conductor that knows who plays what instrument best.<br>
   No AI company has built this — because it helps their competitors.<br>
@@ -20,12 +32,6 @@
   <img src="https://img.shields.io/badge/Windows-Code%20Signed-0078D4?logo=windows&logoColor=white" alt="Windows Code Signed">
   <img src="https://img.shields.io/badge/macOS-Notarized-000000?logo=apple&logoColor=white" alt="macOS Notarized">
   <a href="https://github.com/sponsors/codedev-david"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg" alt="Sponsor"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md"><img src="https://img.shields.io/badge/%F0%9F%90%9B%20Submit%20a%20bug%20report-e53935?style=for-the-badge" alt="Submit a bug report"></a>
-  &nbsp;
-  <a href="https://github.com/codedev-david/termpolis/issues/new?template=feature_request.md"><img src="https://img.shields.io/badge/%E2%9C%A8%20Request%20a%20feature-1976D2?style=for-the-badge" alt="Request a feature"></a>
 </p>
 
 ---
