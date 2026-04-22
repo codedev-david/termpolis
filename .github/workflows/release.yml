@@ -206,6 +206,7 @@ jobs:
             dist-electron-builder/*.exe
             dist-electron-builder/*.dmg
             dist-electron-builder/*.AppImage
+            dist-electron-builder/*.deb
             dist-electron-builder/*.blockmap
             dist-electron-builder/latest*.yml
 

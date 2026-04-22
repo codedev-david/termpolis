@@ -20,8 +20,10 @@ const config: Configuration = {
     extraResources: [{ from: 'resources/tools/darwin', to: 'tools', filter: ['**/*'] }],
   },
   linux: {
-    target: 'AppImage',
+    target: ['AppImage', 'deb'],
     icon: 'assets/icon.png',
+    category: 'Development',
+    maintainer: 'Termpolis <support@termpolis.com>',
     extraResources: [{ from: 'resources/tools/linux', to: 'tools', filter: ['**/*'] }],
   },
 }
