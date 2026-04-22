@@ -21,7 +21,6 @@ import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const verifier = require('../../scripts/verifyPackagedResources.cjs')
 
 const REPO_ROOT = resolve(__dirname, '..', '..')

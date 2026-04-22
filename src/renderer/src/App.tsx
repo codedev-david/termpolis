@@ -174,6 +174,41 @@ export default function App() {
       redundancy: redundancyLib,
       efficiency: efficiencyLib,
     }
+    // Narrow, named test-only setters. The full store is intentionally NOT
+    // exposed so tests can't mutate arbitrary fields and mask regressions
+    // against the real code paths. These setters are used by
+    // e2e/ui-screens-show-results.spec.ts to seed state that normally comes
+    // from the conductor, so the dialog/banner render paths can be asserted
+    // without running a full swarm.
+    ;(window as any).__setSwarmCompletionSummary = (summary: any) =>
+      useTerminalStore.getState().setSwarmCompletionSummary(summary)
+    ;(window as any).__setSwarmNotification = (n: any) =>
+      useTerminalStore.getState().setSwarmNotification(n)
+    ;(window as any).__setShowSettings = (show: boolean) =>
+      useTerminalStore.getState().setShowSettings(show)
+    // Inject a hidden "test terminal" with a chosen cwd and mark it active.
+    // Used by e2e/ui-screens-show-results.spec.ts so panels that derive
+    // state from the active terminal's cwd (e.g. ContextPinsPanel) can be
+    // exercised without spawning a real pty.
+    ;(window as any).__openCommandPalette = (show: boolean) =>
+      setShowCommandPalette(show)
+    ;(window as any).__seedTestTerminalCwd = (cwd: string) => {
+      const store = useTerminalStore.getState()
+      const id = `__e2e_seed_${Math.random().toString(36).slice(2, 10)}`
+      store.addTerminal({
+        id,
+        name: 'e2e-seed',
+        color: '#888',
+        shellType: 'bash' as any,
+        cwd,
+        fontSize: 12,
+        theme: 'default',
+        fontFamily: 'monospace',
+        hidden: true,
+      })
+      store.setActiveTerminal(id)
+      return id
+    }
   }, [terminals])
 
   // Persist session on state changes (debounced to avoid excessive writes)

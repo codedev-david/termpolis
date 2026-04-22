@@ -956,7 +956,6 @@ if (!gotTheLock) {
       const msg = `[FATAL] MCP stdio adapter not found at ${adapterPath} — the swarm conductor will have NO MCP tools. Check electron-builder extraResources config.`
       console.error(msg)
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const Sentry = require('@sentry/electron/main')
         Sentry.captureMessage?.(msg, 'error')
       } catch {}

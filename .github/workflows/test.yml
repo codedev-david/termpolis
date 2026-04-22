@@ -149,6 +149,17 @@ jobs:
         run: npm run build
       - name: Smoke-click every sidebar button
         run: xvfb-run --auto-servernum npx playwright test e2e/chrome-smoke.spec.ts
+      # Screens-show-results gate: regression guard against "screen opens
+      # but shows nothing" (the v1.11.5 / v1.11.6 silent-spinner symptom).
+      # Seeds real data into store + IPC, asserts visible text renders.
+      - name: UI screens show visible results
+        run: xvfb-run --auto-servernum npx playwright test e2e/ui-screens-show-results.spec.ts
+      # Plugin .mcp.json variant: guards the plugin-discovery path that
+      # Claude Code uses when NO --mcp-config flag is passed. Catches
+      # the v1.11.5 class of bug (adapter args[0] points at a missing file)
+      # and ensures the mcpServers wrapper shape is preserved.
+      - name: Plugin .mcp.json shape and adapter path
+        run: xvfb-run --auto-servernum npx playwright test e2e/plugin-mcp-config.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
