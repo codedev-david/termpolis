@@ -164,6 +164,7 @@ export default function App() {
         swarmActive: s.swarmActive,
         swarmAgents: s.swarmAgents,
         swarmCompletionSummary: s.swarmCompletionSummary,
+        swarmNotification: s.swarmNotification,
       }
     }
     // Bundled observability libs, exposed for e2e tests so they exercise

@@ -938,6 +938,20 @@ if (!gotTheLock) {
       ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.cjs')
       : join(__dirname, '../../src/mcp-adapter/stdio-adapter.cjs')
 
+    // Preflight — if the adapter file isn't on disk, EVERY Claude Code session
+    // will silently fail to register the Termpolis MCP server, and the
+    // conductor will bypass the swarm. Logging this loudly on startup turns
+    // a silent packaging bug into a visible one.
+    if (!require('fs').existsSync(adapterPath)) {
+      const msg = `[FATAL] MCP stdio adapter not found at ${adapterPath} — the swarm conductor will have NO MCP tools. Check electron-builder extraResources config.`
+      console.error(msg)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const Sentry = require('@sentry/electron/main')
+        Sentry.captureMessage?.(msg, 'error')
+      } catch {}
+    }
+
     // Also write standalone config for reference
     const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
     const mcpConfig = { mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }

@@ -360,6 +360,53 @@ function startMonitoring(): void {
           })
         }
 
+        // Detect the "bypassed swarm" case — conductor couldn't see MCP tools,
+        // silently gave up on orchestration, and built/answered directly. This
+        // is distinct from a connection error: the conductor DID run to
+        // completion, just without any swarm coordination.  Without this
+        // detection the user gets no completion screen and no clear signal that
+        // the swarm didn't actually do anything multi-agent.
+        const mcpUnavailablePatterns = [
+          /MCP tools (?:weren'?t|were not|are not|aren'?t) available/i,
+          /swarm MCP tools (?:weren'?t|were not|are not|aren'?t) available/i,
+          /(?:built|did) (?:it|this) directly (?:rather than|instead of)/i,
+          /without (?:orchestrat|coordinat).*(?:agents?|swarm)/i,
+          /unable to use (?:the )?(?:swarm )?MCP/i,
+        ]
+        if (
+          mcpUnavailablePatterns.some((p) => p.test(recent)) &&
+          !/swarm_create_task|create_terminal/i.test(recent)
+        ) {
+          conductorState = {
+            ...conductorState,
+            status: 'error',
+            error: 'Conductor bypassed swarm — MCP tools unavailable',
+          }
+          store.setSwarmNotification({
+            message:
+              'Conductor ran WITHOUT swarm tools — it built directly instead of orchestrating agents. ' +
+              'Restart Termpolis so the MCP server re-registers with Claude Code, then try again.',
+            type: 'error',
+          })
+          try {
+            await window.swarmAPI.sendMessage(
+              'system',
+              'all',
+              'info',
+              'MCP tools unavailable — conductor bypassed orchestration. Restart Termpolis to re-register the MCP server.',
+            )
+          } catch {}
+          // Exit the swarm flow cleanly (mirror the refusal-handling pattern so
+          // we don't overwrite our error notification with a success one from
+          // markSwarmDone).
+          store.setSwarmActive(false)
+          if (monitoringInterval) {
+            clearInterval(monitoringInterval)
+            monitoringInterval = null
+          }
+          return
+        }
+
         // Token limit errors
         if (/context.*(limit|window|exceeded)|token.*(limit|budget)/i.test(recent)) {
           store.setSwarmNotification({

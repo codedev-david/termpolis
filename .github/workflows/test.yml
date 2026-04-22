@@ -78,6 +78,50 @@ jobs:
             coverage/
           retention-days: 7
 
+  # Packaging regression guard — builds a REAL unpacked app (no installer,
+  # no signing, ~1 min) and asserts the MCP stdio adapter was shipped.
+  #
+  # Why this exists: v1.11.5 shipped a broken installer where Claude Code's
+  # ~/.mcp.json pointed at an adapter file that did not physically exist.
+  # No unit test could catch it because the unit tests pin package.json
+  # config but not electron-builder's actual output. This job runs
+  # electron-builder --dir on Linux (cheapest), then runs our verifier
+  # against the produced dist-electron-builder/linux-unpacked tree. If
+  # the adapter is not shipped, this fails the PR.
+  package-verify:
+    needs: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      - name: Build app
+        run: npx electron-vite build
+      - name: Package (unpacked, no installer, no signing)
+        run: npx electron-builder --dir --publish never
+      - name: Verify MCP adapter shipped in packaged resources
+        run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
+      - name: Upload unpacked output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-electron-builder-linux
+          path: dist-electron-builder/linux-unpacked/
+          retention-days: 3
+
   # E2E smoke — one platform only, because Electron + Playwright on
   # multiple matrix runners is expensive and brittle. Linux + xvfb keeps
   # it cheap and deterministic.

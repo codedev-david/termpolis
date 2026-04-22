@@ -29,6 +29,22 @@ if (argv.includes('--version')) {
 // --- Mode 2: -p <prompt> (smart conductor) ---
 const pIdx = argv.indexOf('-p');
 if (pIdx !== -1) {
+  // MOCK_CLAUDE_BYPASS_MCP=1 simulates the v1.11.5 production failure mode:
+  // Claude Code runs the conductor prompt but its MCP registration failed
+  // (because ~/.mcp.json points at a missing adapter file), so the conductor
+  // answers directly without calling any MCP tools. We print the exact
+  // "swarm MCP tools weren't available" message that real Claude Code
+  // emitted in the production bug, then exit 0 — the renderer's
+  // conductorManager monitoring loop should detect this and surface an
+  // error notification to the user.
+  if (process.env.MOCK_CLAUDE_BYPASS_MCP === '1') {
+    console.log('[Mock Conductor] BYPASS mode — simulating MCP-unavailable path');
+    console.log('');
+    console.log("Note: swarm MCP tools weren't available in this session, so I built it directly rather than orchestrating multiple agents.");
+    console.log('');
+    console.log('I have completed the task. No further swarm coordination required.');
+    process.exit(0);
+  }
   runConductor(argv[pIdx + 1] || '').catch((err) => {
     console.error('[Mock Conductor] fatal:', err && err.stack ? err.stack : err);
     process.exit(1);

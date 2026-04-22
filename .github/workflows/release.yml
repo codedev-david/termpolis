@@ -104,6 +104,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      # Belt-and-suspenders: the afterPack hook (scripts/afterPack.cjs)
+      # already verifies this during the build, but we also verify the
+      # final packaged output BEFORE we upload anything to GitHub.
+      # If the adapter is missing, we fail the job here — no broken
+      # installer ever reaches users.
+      - name: Verify MCP adapter in packaged output (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: node scripts/verifyPackagedResources.cjs dist-electron-builder/win-unpacked
+      - name: Verify MCP adapter in packaged output (Linux)
+        if: matrix.platform == 'linux'
+        run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
+      - name: Verify MCP adapter in packaged output (macOS x64)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          # electron-builder produces mac/ and mac-arm64/ for universal builds.
+          for d in dist-electron-builder/mac dist-electron-builder/mac-arm64; do
+            if [ -d "$d" ]; then
+              echo "Verifying $d..."
+              node scripts/verifyPackagedResources.cjs "$d"
+            fi
+          done
+
       - name: Notarize macOS DMGs
         if: matrix.platform == 'mac'
         timeout-minutes: 30

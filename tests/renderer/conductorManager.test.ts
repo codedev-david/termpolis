@@ -424,6 +424,103 @@ describe('conductorManager', () => {
     expect(mcpCall?.[0].type).toBe('error')
   })
 
+  // ---- MCP-unavailable detection (v1.11.6) ----
+  //
+  // When Claude Code can't load the Termpolis MCP server (e.g., stdio adapter
+  // missing from the installer), the conductor silently answers the prompt
+  // directly without orchestrating any swarm. Previously this left the UI
+  // sitting in "running" forever with no completion screen — the user only
+  // noticed by opening Debug. v1.11.6 detects the bypass from the conductor's
+  // own output and raises a clear error notification + marks the swarm done.
+
+  it('monitoring loop detects "MCP tools weren\'t available" bypass and marks swarm done with error', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        output:
+          "Built the thing at C:\\Users\\me\\project. " +
+          "Note: swarm MCP tools weren't available in this session, so I built it directly rather than orchestrating multiple agents.",
+        length: 200,
+      },
+    })
+
+    await sendTask('Build a small feature', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    // Notification explains the bypass clearly and includes remediation
+    const bypassCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('WITHOUT swarm tools'),
+    )
+    expect(bypassCall).toBeDefined()
+    expect(bypassCall?.[0].type).toBe('error')
+    expect(bypassCall?.[0].message).toMatch(/Restart Termpolis/i)
+
+    // Swarm is marked done (not stuck running)
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+    expect(getConductorState().status).toBe('error')
+  })
+
+  it('MCP-unavailable detection also fires on the "built it directly" pattern', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        output: 'Finished. I built this directly rather than orchestrating agents.',
+        length: 100,
+      },
+    })
+
+    await sendTask('Build', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const bypassCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('WITHOUT swarm tools'),
+    )
+    expect(bypassCall).toBeDefined()
+  })
+
+  it('MCP-unavailable detection does NOT fire when conductor actually calls swarm_create_task', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    // Output CONTAINS "weren't available" (e.g., in a comment) but ALSO contains
+    // swarm_create_task — so the conductor did actually orchestrate. Should not
+    // falsely trigger the bypass notification.
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        output:
+          'swarm_create_task({ title: "Build" })  # some earlier runs had MCP tools weren\'t available, but here they work',
+        length: 200,
+      },
+    })
+
+    await sendTask('Build', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const bypassCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('WITHOUT swarm tools'),
+    )
+    expect(bypassCall).toBeUndefined()
+  })
+
   it('monitoring loop warns when conductor hits token limit', async () => {
     const startPromise = startConductor('/tmp/project')
     await vi.advanceTimersByTimeAsync(2000)
