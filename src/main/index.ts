@@ -196,6 +196,16 @@ ipcMain.handle('history:search', async (_, { query }) => {
 
 ipcMain.handle('fs:homedir', () => ok(homedir()))
 
+// The renderer (conductorManager) needs to pass --mcp-config <path> to
+// `claude -p` so headless Claude Code sessions actually load the Termpolis
+// MCP server. Without this, even though `claude mcp list` shows termpolis
+// as connected, -p mode bypasses user-scope plugins and the swarm runs
+// with zero tools. We write the config file at startup (see mcpConfigPath
+// below); this handler just hands the resolved absolute path to the renderer.
+ipcMain.handle('fs:mcp-config-path', () =>
+  ok(join(app.getPath('userData'), 'claude-mcp-config.json')),
+)
+
 ipcMain.handle('session:load', async () => {
   try { return ok(loadSession()) }
   catch (e: any) { return err(e.message) }

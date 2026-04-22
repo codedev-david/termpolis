@@ -18,6 +18,7 @@ beforeAll(() => {
     }),
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/tmp/test' }),
     getHomedir: vi.fn().mockResolvedValue({ success: true, data: '/tmp' }),
+    getMcpConfigPath: vi.fn().mockResolvedValue({ success: true, data: '/tmp/userData/claude-mcp-config.json' }),
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
     gitRevParseHead: vi.fn().mockResolvedValue({ success: true, data: 'pre123abc' }),
   }
@@ -467,6 +468,91 @@ describe('conductorManager', () => {
     expect(getConductorState().status).toBe('error')
   })
 
+  it('MCP-unavailable detection fires on the v1.11.6 "orchestration MCP tools aren\'t registered" phrasing', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    // This is the exact phrasing observed in v1.11.6 debug terminals —
+    // packaging was correct and the MCP server was healthy, but `claude -p`
+    // didn't auto-load the user-scope MCP plugin. The conductor bypassed the
+    // swarm and Claude described the bypass with a NEW phrasing that the
+    // original regex didn't catch.
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        output:
+          "Note: the orchestration MCP tools (`swarm_send_message`, " +
+          "`swarm_create_task`, `create_terminal`, etc.) aren't registered in " +
+          "this session, so I built the SPA directly rather than sitting idle.",
+        length: 300,
+      },
+    })
+
+    await sendTask('Build a sudoku SPA', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const bypassCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('WITHOUT swarm tools'),
+    )
+    expect(bypassCall).toBeDefined()
+    expect(bypassCall?.[0].type).toBe('error')
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+  })
+
+  it('MCP-unavailable detection fires on the "rather than sitting idle" phrasing alone', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        output: 'Went ahead and finished the work rather than sitting idle waiting for tools.',
+        length: 100,
+      },
+    })
+
+    await sendTask('Build', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const bypassCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('WITHOUT swarm tools'),
+    )
+    expect(bypassCall).toBeDefined()
+  })
+
+  it('MCP-unavailable detection fires on "built the SPA directly" object-other-than-it/this', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        output: "Built the SPA directly rather than orchestrating agents.",
+        length: 80,
+      },
+    })
+
+    await sendTask('Build SPA', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    const bypassCall = notifSpy.mock.calls.find(([arg]) =>
+      arg?.message?.includes('WITHOUT swarm tools'),
+    )
+    expect(bypassCall).toBeDefined()
+  })
+
   it('MCP-unavailable detection also fires on the "built it directly" pattern', async () => {
     const startPromise = startConductor('/tmp/project')
     await vi.advanceTimersByTimeAsync(2000)
@@ -724,6 +810,31 @@ describe('conductorManager', () => {
       expect(psBody).toContain('--dangerously-skip-permissions')
     })
 
+    // v1.11.7 — headless `claude -p` doesn't auto-load user-scope MCP plugins.
+    // Without --mcp-config the conductor spins up with zero tools even when
+    // packaging is correct, and the swarm silently bypasses orchestration.
+    it('ps1 script passes --mcp-config pointing at the userData config', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const psCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.ps1'),
+      )
+      const psBody = (psCall?.[1] as string) ?? ''
+      expect(psBody).toContain('--mcp-config')
+      // Windows-backslash form of the mocked userData path
+      expect(psBody).toMatch(/--mcp-config "[^"]*claude-mcp-config\.json"/)
+      // --mcp-config must precede --dangerously-skip-permissions so headless
+      // Claude sees the MCP config (order matters less to the CLI, but we
+      // want a deterministic shape so future edits don't silently drop it).
+      expect(psBody.indexOf('--mcp-config')).toBeLessThan(
+        psBody.indexOf('--dangerously-skip-permissions'),
+      )
+    })
+
+    it('ps1 script fetches the MCP config path via the IPC bridge at launch', async () => {
+      await launchAndGetWrites()
+      expect(window.termpolis.getMcpConfigPath).toHaveBeenCalled()
+    })
+
     it('does NOT write a .cmd wrapper (regression guard for v1.11.4 breakage)', async () => {
       const { writeConfigCalls } = await launchAndGetWrites()
       const wrapperCall = writeConfigCalls.find(([path]) =>
@@ -828,6 +939,26 @@ describe('conductorManager', () => {
         typeof data === 'string' && data.startsWith('bash '),
       )
       expect(bashCall).toBeDefined()
+    })
+
+    // v1.11.7 — same --mcp-config wiring as on Windows.
+    it('sh script passes --mcp-config pointing at the userData config', async () => {
+      const startPromise = startConductor('/tmp/project')
+      await vi.advanceTimersByTimeAsync(2000)
+      await vi.advanceTimersByTimeAsync(5000)
+      await startPromise
+      await sendTask('Build', '/tmp/project')
+
+      const writeConfigCalls = (window.termpolis.writeConfigFile as ReturnType<typeof vi.fn>).mock.calls
+      const shCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.sh'),
+      )
+      const shBody = (shCall?.[1] as string) ?? ''
+      expect(shBody).toContain('--mcp-config')
+      expect(shBody).toMatch(/--mcp-config '[^']*claude-mcp-config\.json'/)
+      expect(shBody.indexOf('--mcp-config')).toBeLessThan(
+        shBody.indexOf('--dangerously-skip-permissions'),
+      )
     })
   })
 })

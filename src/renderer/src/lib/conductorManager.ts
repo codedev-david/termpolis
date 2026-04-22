@@ -173,6 +173,17 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const tempFile = homeSlash + '/.termpolis-conductor-task.md'
   await window.termpolis.writeConfigFile(tempFile, prompt)
 
+  // Headless `claude -p` does NOT auto-load user-scope MCP plugins that
+  // `claude mcp list` reports as connected. Without an explicit
+  // --mcp-config, the conductor spins up with ZERO Termpolis tools and
+  // silently bypasses the swarm — even when the MCP server is healthy,
+  // the adapter file ships in the installer, and Claude's settings.json
+  // is fully wired. The userData-scoped claude-mcp-config.json is written
+  // on every app start (src/main/index.ts around line 966), so the path
+  // is guaranteed to point at a valid config once main is up.
+  const mcpCfgRes = await window.termpolis.getMcpConfigPath()
+  const mcpConfigPath = mcpCfgRes.success && mcpCfgRes.data ? mcpCfgRes.data : ''
+
   // Launch Claude Code with -p flag reading from the temp file.
   // Claude -p with --dangerously-skip-permissions HAS full tool access
   // (MCP tools, file read/write, bash execution) — it's just non-interactive.
@@ -195,10 +206,16 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   if (isWindows) {
     const scriptFile = homeSlash + '/.termpolis-conductor-run.ps1'
     const taskPath = tempFile.replace(/\//g, '\\')
+    const mcpConfigWin = mcpConfigPath.replace(/\//g, '\\')
+    // Only emit the --mcp-config flag when we actually have a path; an empty
+    // value would turn into `--mcp-config ""` and Claude would error out.
+    const mcpFlag = mcpConfigWin
+      ? ` --mcp-config "${mcpConfigWin}"`
+      : ''
     const psScript = isTestMode
       ? [
           `$task = Get-Content -Raw "${taskPath}"`,
-          `${claudeCmd} -p $task --dangerously-skip-permissions`,
+          `${claudeCmd} -p $task${mcpFlag} --dangerously-skip-permissions`,
           'exit $LASTEXITCODE',
           '',
         ].join('\n')
@@ -222,7 +239,7 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
           '}',
           '$claudeExe = Resolve-WorkingClaude',
           `$task = Get-Content -Raw "${taskPath}"`,
-          '& $claudeExe -p $task --dangerously-skip-permissions',
+          `& $claudeExe -p $task${mcpFlag} --dangerously-skip-permissions`,
           'exit $LASTEXITCODE',
           '',
         ].join('\n')
@@ -246,10 +263,15 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
       `& $p -ExecutionPolicy Bypass -File '${scriptFileWin}'`
   } else {
     const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
+    // Single-quote the path so bash doesn't interpret it; apostrophes in
+    // Windows-style home dirs don't happen on Unix so single-quoting is safe.
+    const mcpFlagSh = mcpConfigPath
+      ? ` --mcp-config '${mcpConfigPath}'`
+      : ''
     const shScript = isTestMode
       ? [
           '#!/bin/bash',
-          `${claudeCmd} -p "$(cat '${tempFile}')" --dangerously-skip-permissions`,
+          `${claudeCmd} -p "$(cat '${tempFile}')"${mcpFlagSh} --dangerously-skip-permissions`,
           '',
         ].join('\n')
       : [
@@ -272,7 +294,7 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
           '  echo "No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force" >&2',
           '  exit 1',
           '}',
-          `"$CLAUDE_EXE" -p "$(cat '${tempFile}')" --dangerously-skip-permissions`,
+          `"$CLAUDE_EXE" -p "$(cat '${tempFile}')"${mcpFlagSh} --dangerously-skip-permissions`,
           '',
         ].join('\n')
     await window.termpolis.writeConfigFile(scriptFile, shScript)
@@ -366,17 +388,38 @@ function startMonitoring(): void {
         // completion, just without any swarm coordination.  Without this
         // detection the user gets no completion screen and no clear signal that
         // the swarm didn't actually do anything multi-agent.
-        const mcpUnavailablePatterns = [
-          /MCP tools (?:weren'?t|were not|are not|aren'?t) available/i,
-          /swarm MCP tools (?:weren'?t|were not|are not|aren'?t) available/i,
-          /(?:built|did) (?:it|this) directly (?:rather than|instead of)/i,
-          /without (?:orchestrat|coordinat).*(?:agents?|swarm)/i,
-          /unable to use (?:the )?(?:swarm )?MCP/i,
+        // Broader "MCP tools aren't registered/available/loaded" phrasing.
+        // Claude paraphrases the bypass a dozen different ways ("the
+        // orchestration MCP tools (`a`, `b`, etc.) aren't registered in this
+        // session", "swarm MCP tools were not available", "tools are not
+        // loaded", ...). Using a lazy [\s\S] window so periods inside the
+        // list of listed tools (e.g. `etc.`) don't short-circuit the match.
+        const strongBypassSignals = [
+          /MCP\s+tools?[\s\S]{0,160}?(?:aren'?t|are not|weren'?t|were not|is not|isn'?t)\s+(?:registered|available|loaded|connected)/i,
+          /(?:aren'?t|are not|weren'?t|were not)\s+(?:registered|available|loaded|connected)[\s\S]{0,40}?MCP/i,
+          /unable to use (?:the )?(?:swarm |orchestration )?MCP/i,
         ]
-        if (
-          mcpUnavailablePatterns.some((p) => p.test(recent)) &&
-          !/swarm_create_task|create_terminal/i.test(recent)
-        ) {
+        const weakBypassSignals = [
+          // "built it directly", "built the SPA directly", "did this directly"
+          /(?:built|did|wrote|created|shipped|made) (?:it|this|the [\w-]+) directly (?:rather than|instead of)/i,
+          // "rather than sitting idle" / "instead of idling" — Claude often
+          // justifies the bypass with an idleness rationale.
+          /rather than (?:sitting |remaining )?idl(?:e|ing)/i,
+          /instead of (?:sitting |remaining )?idl(?:e|ing)/i,
+          /without (?:orchestrat|coordinat).*(?:agents?|swarm)/i,
+        ]
+        // Only treat a tool name as evidence of real invocation when it
+        // appears in invocation-shape syntax (function call `foo(`, MCP tool
+        // id `mcp__termpolis__foo`, or a "Created task:" result line) — NOT
+        // when Claude merely name-drops it inside backticks while explaining
+        // which tools were missing. The v1.11.6 prod regression hit exactly
+        // this corner: Claude listed the missing tool names by name, and the
+        // old exclusion falsely suppressed the bypass notification.
+        const lookedLikeRealInvocation = /(?:mcp__termpolis__(?:swarm_create_task|create_terminal))|(?<![`\w])(?:swarm_create_task|create_terminal)\s*(?:\(|:\s*\{)|Created task:\s*[a-z0-9-]+/i.test(recent)
+        const bypassMatch =
+          strongBypassSignals.some((p) => p.test(recent)) ||
+          weakBypassSignals.some((p) => p.test(recent))
+        if (bypassMatch && !lookedLikeRealInvocation) {
           conductorState = {
             ...conductorState,
             status: 'error',

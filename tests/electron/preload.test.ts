@@ -99,6 +99,11 @@ describe('preload: termpolis API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('fs:homedir')
   })
 
+  it('getMcpConfigPath invokes fs:mcp-config-path', async () => {
+    await exposed.termpolis.getMcpConfigPath()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('fs:mcp-config-path')
+  })
+
   it('loadSession invokes session:load', async () => {
     await exposed.termpolis.loadSession()
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('session:load')

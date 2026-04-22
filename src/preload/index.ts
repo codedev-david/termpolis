@@ -38,6 +38,9 @@ const api: TermpolisAPI = {
   getHomedir: () =>
     ipcRenderer.invoke('fs:homedir'),
 
+  getMcpConfigPath: () =>
+    ipcRenderer.invoke('fs:mcp-config-path'),
+
   loadSession: () =>
     ipcRenderer.invoke('session:load'),
 

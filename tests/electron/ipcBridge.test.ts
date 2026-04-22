@@ -82,6 +82,11 @@ describe('window.termpolis IPC channels', () => {
     expect(mockInvoke).toHaveBeenCalledWith('fs:homedir')
   })
 
+  it('getMcpConfigPath invokes fs:mcp-config-path', async () => {
+    await exposed.termpolis.getMcpConfigPath()
+    expect(mockInvoke).toHaveBeenCalledWith('fs:mcp-config-path')
+  })
+
   it('detectAgents invokes agents:detect', async () => {
     await exposed.termpolis.detectAgents()
     expect(mockInvoke).toHaveBeenCalledWith('agents:detect')

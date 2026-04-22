@@ -105,6 +105,7 @@ export interface TermpolisAPI {
   appendHistory: (terminalId: string, terminalName: string, command: string) => void
   searchHistory: (query: string) => Promise<IpcResponse<HistoryEntry[]>>
   getHomedir: () => Promise<IpcResponse<string>>
+  getMcpConfigPath: () => Promise<IpcResponse<string>>
   loadSession: () => Promise<IpcResponse<SessionData>>
   saveSession: (data: SessionData) => void
   completionPathEntries: (dirPath: string) => Promise<IpcResponse<{ name: string; isDir: boolean }[]>>

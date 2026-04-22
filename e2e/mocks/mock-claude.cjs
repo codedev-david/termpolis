@@ -40,7 +40,15 @@ if (pIdx !== -1) {
   if (process.env.MOCK_CLAUDE_BYPASS_MCP === '1') {
     console.log('[Mock Conductor] BYPASS mode — simulating MCP-unavailable path');
     console.log('');
-    console.log("Note: swarm MCP tools weren't available in this session, so I built it directly rather than orchestrating multiple agents.");
+    // Pick the phrasing based on the variant env — `1` uses the v1.11.5
+    // original phrasing, `v2` uses the v1.11.6 phrasing observed in prod
+    // (same root cause, different words). The regex in conductorManager
+    // must catch both.
+    if (process.env.MOCK_CLAUDE_BYPASS_PHRASING === 'v2') {
+      console.log("Note: the orchestration MCP tools (`swarm_send_message`, `swarm_create_task`, `create_terminal`, etc.) aren't registered in this session, so I built the SPA directly rather than sitting idle.");
+    } else {
+      console.log("Note: swarm MCP tools weren't available in this session, so I built it directly rather than orchestrating multiple agents.");
+    }
     console.log('');
     console.log('I have completed the task. No further swarm coordination required.');
     process.exit(0);
