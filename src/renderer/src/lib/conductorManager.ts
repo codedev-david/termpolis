@@ -227,33 +227,23 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
           '',
         ].join('\n')
     await window.termpolis.writeConfigFile(scriptFile, psScript)
-    // Launch via a .cmd wrapper that prefers Windows PowerShell 5.1 at its
-    // canonical system path (present on ~100% of Windows 10/11 installs) and
-    // falls back to pwsh 7 if PS 5.1 has been stripped from the OS. Bare
-    // `powershell` does not resolve in pwsh 7 because pwsh intentionally keeps
-    // Windows PowerShell off its PATH for side-by-side coexistence.
-    const wrapperFile = homeSlash + '/.termpolis-conductor-run.cmd'
+    // Launch inline from the pwsh 7 / PS 5.1 conductor terminal using a
+    // pure PowerShell one-liner. No dependency on PATH for `cmd` or bare
+    // `powershell`:
+    //   - pwsh 7 intentionally omits Windows PowerShell from its PATH, so
+    //     bare `powershell` fails.
+    //   - If the renderer process inherited a stripped PATH that's missing
+    //     System32, bare `cmd` also fails (this was the v1.11.4 regression).
+    // Invoking PS 5.1 by its canonical absolute path, with the current
+    // interpreter as a fallback, sidesteps PATH entirely. Test-Path and the
+    // call operator `&` are built-in PowerShell language — guaranteed to
+    // work in any PS session.
     const scriptFileWin = scriptFile.replace(/\//g, '\\')
-    const cmdWrapper = [
-      '@echo off',
-      'set "PS51=C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
-      `set "SCRIPT=${scriptFileWin}"`,
-      'if exist "%PS51%" (',
-      '  "%PS51%" -ExecutionPolicy Bypass -File "%SCRIPT%"',
-      '  exit /b %errorlevel%',
-      ')',
-      'where pwsh >nul 2>&1',
-      'if %errorlevel% equ 0 (',
-      '  pwsh -ExecutionPolicy Bypass -File "%SCRIPT%"',
-      '  exit /b %errorlevel%',
-      ')',
-      'echo [termpolis] No PowerShell interpreter found (Windows PowerShell 5.1 nor pwsh 7). 1>&2',
-      'exit /b 1',
-      '',
-    ].join('\r\n')
-    await window.termpolis.writeConfigFile(wrapperFile, cmdWrapper)
-    const wrapperFileWin = wrapperFile.replace(/\//g, '\\')
-    runCmd = `cmd /c "${wrapperFileWin}"`
+    const ps51Path = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+    runCmd =
+      `$p='${ps51Path}'; ` +
+      `if (-not (Test-Path $p)) { $p=(Get-Process -Id $PID).Path }; ` +
+      `& $p -ExecutionPolicy Bypass -File '${scriptFileWin}'`
   } else {
     const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
     const shScript = isTestMode
@@ -289,6 +279,9 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
     runCmd = `bash "${scriptFile}"`
   }
   window.termpolis.writeToTerminal(id, runCmd + '\r')
+  // Diagnostic hook — E2E tests read this to verify the launch command shape
+  // without having to monkey-patch the frozen contextBridge-exposed termpolis API.
+  try { (window as any).__termpolis_last_launch_cmd = runCmd } catch {}
 
   // Post initial message to swarm bus
   await window.swarmAPI.sendMessage(

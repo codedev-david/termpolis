@@ -56,15 +56,27 @@ export function spawnTerminal(
   // `powershell` / `cmd` invocations resolve even when the parent Electron
   // process was launched with a stripped-down PATH (e.g., from Git Bash /
   // CI shells that don't include the Windows system directories).
+  // Use exact-entry comparison, not substring-includes — otherwise
+  // `C:\Windows\System32` is falsely considered present when the PATH
+  // only contains the longer `C:\Windows\System32\WindowsPowerShell\v1.0`,
+  // which leaves `cmd.exe` and `powershell.exe` unresolvable.
   const winSystemPath = process.platform === 'win32'
-    ? [
-        'C:\\Windows\\System32',
-        'C:\\Windows',
-        'C:\\Windows\\System32\\Wbem',
-        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
-      ]
-        .filter((p) => !existingPath.toLowerCase().includes(p.toLowerCase()))
-        .join(sep)
+    ? (() => {
+        const existingEntries = new Set(
+          existingPath
+            .split(sep)
+            .map((e) => e.replace(/[\\/]+$/, '').trim().toLowerCase())
+            .filter(Boolean)
+        )
+        return [
+          'C:\\Windows\\System32',
+          'C:\\Windows',
+          'C:\\Windows\\System32\\Wbem',
+          'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+        ]
+          .filter((p) => !existingEntries.has(p.toLowerCase()))
+          .join(sep)
+      })()
     : ''
   const winSystemPrefix = winSystemPath ? winSystemPath + sep : ''
   const basePath = needsBundled

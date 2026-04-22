@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
 
 // Mock uuid before importing the module under test
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'conductor-uuid-1') }))
@@ -570,9 +570,17 @@ describe('conductorManager', () => {
     expect(getPreSwarmSha()).toBeNull()
   })
 
-  // ---- launch-shell wiring: Windows .cmd wrapper + pwsh fallback ----
+  // ---- launch-shell wiring: Windows inline PS launch ----
+  //
+  // v1.11.2 used bare `powershell` → broke on pwsh 7 (powershell not on PATH).
+  // v1.11.3 used absolute PS 5.1 path. v1.11.4 added a .cmd belt-and-suspenders
+  // wrapper → broke when System32 wasn't on PATH (cmd.exe not resolvable).
+  // v1.11.5 drops the .cmd wrapper entirely: a pure PowerShell one-liner runs
+  // inline in the already-running pwsh/PS 5.1 conductor terminal, using the
+  // call operator `&` with an absolute PS 5.1 path + `(Get-Process -Id $PID).Path`
+  // fallback. Zero PATH dependencies.
 
-  describe('Windows launch wrapper', () => {
+  describe('Windows launch command', () => {
     let originalPlatform: string
 
     beforeAll(() => {
@@ -601,69 +609,14 @@ describe('conductorManager', () => {
       return { writeConfigCalls, writeTerminalCalls }
     }
 
-    it('writes a .cmd wrapper file to the user home', async () => {
-      const { writeConfigCalls } = await launchAndGetWrites()
-      const wrapperCall = writeConfigCalls.find(([path]) =>
-        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
-      )
-      expect(wrapperCall).toBeDefined()
-    })
-
-    it('wrapper tries Windows PowerShell 5.1 at its absolute system path first', async () => {
-      const { writeConfigCalls } = await launchAndGetWrites()
-      const wrapperCall = writeConfigCalls.find(([path]) =>
-        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
-      )
-      const body = wrapperCall?.[1] as string
-      expect(body).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
-      expect(body).toContain('-ExecutionPolicy Bypass')
-    })
-
-    it('wrapper falls back to pwsh 7 if PS 5.1 is missing', async () => {
-      const { writeConfigCalls } = await launchAndGetWrites()
-      const wrapperCall = writeConfigCalls.find(([path]) =>
-        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
-      )
-      const body = wrapperCall?.[1] as string
-      expect(body).toMatch(/where pwsh/)
-      expect(body).toMatch(/pwsh -ExecutionPolicy Bypass/)
-    })
-
-    it('wrapper exits with a helpful error when neither interpreter is present', async () => {
-      const { writeConfigCalls } = await launchAndGetWrites()
-      const wrapperCall = writeConfigCalls.find(([path]) =>
-        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
-      )
-      const body = wrapperCall?.[1] as string
-      expect(body).toContain('No PowerShell interpreter found')
-      expect(body).toContain('exit /b 1')
-    })
-
-    it('wrapper references the .ps1 script path with Windows backslashes', async () => {
-      const { writeConfigCalls } = await launchAndGetWrites()
-      const wrapperCall = writeConfigCalls.find(([path]) =>
-        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
-      )
-      const body = wrapperCall?.[1] as string
-      // Wrapper sets SCRIPT=... using backslashed path; should contain both
-      // the backslashed home root and the .ps1 leaf.
-      expect(body).toMatch(/set "SCRIPT=.*\\\.termpolis-conductor-run\.ps1"/)
-    })
-
-    it('runCmd written to terminal invokes cmd /c with the wrapper path', async () => {
-      const { writeTerminalCalls } = await launchAndGetWrites()
+    function getLaunchCmd(writeTerminalCalls: any[]): string {
       const launchCall = writeTerminalCalls.find(([, data]) =>
-        typeof data === 'string' && data.includes('.termpolis-conductor-run.cmd'),
+        typeof data === 'string' && data.includes('.termpolis-conductor-run.ps1'),
       )
-      expect(launchCall).toBeDefined()
-      const cmd = launchCall?.[1] as string
-      expect(cmd.startsWith('cmd /c "')).toBe(true)
-      expect(cmd).toContain('.termpolis-conductor-run.cmd')
-      // Ends with close-quote + carriage return
-      expect(cmd.endsWith('"\r')).toBe(true)
-    })
+      return (launchCall?.[1] as string) ?? ''
+    }
 
-    it('still writes the .ps1 script alongside the .cmd wrapper', async () => {
+    it('writes the .ps1 script to the user home', async () => {
       const { writeConfigCalls } = await launchAndGetWrites()
       const psCall = writeConfigCalls.find(([path]) =>
         typeof path === 'string' && path.endsWith('.termpolis-conductor-run.ps1'),
@@ -674,16 +627,65 @@ describe('conductorManager', () => {
       expect(psBody).toContain('--dangerously-skip-permissions')
     })
 
-    it('runCmd never falls back to the bare `powershell` command (pwsh-7 breakage regression)', async () => {
+    it('does NOT write a .cmd wrapper (regression guard for v1.11.4 breakage)', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const wrapperCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.cmd'),
+      )
+      expect(wrapperCall).toBeUndefined()
+    })
+
+    it('launch command uses PS call operator with absolute PS 5.1 path', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      const cmd = getLaunchCmd(writeTerminalCalls)
+      expect(cmd).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+      expect(cmd).toContain('-ExecutionPolicy Bypass')
+      expect(cmd).toMatch(/& \$p /)
+    })
+
+    it('launch command falls back to current PS interpreter if PS 5.1 is absent', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      const cmd = getLaunchCmd(writeTerminalCalls)
+      expect(cmd).toMatch(/if \(-not \(Test-Path \$p\)\)/)
+      expect(cmd).toContain('(Get-Process -Id $PID).Path')
+    })
+
+    it('launch command references the .ps1 script path with Windows backslashes', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      const cmd = getLaunchCmd(writeTerminalCalls)
+      expect(cmd).toMatch(/-File '[^']*\\\.termpolis-conductor-run\.ps1'/)
+    })
+
+    it('launch command ends with carriage return so PS executes it', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      const cmd = getLaunchCmd(writeTerminalCalls)
+      expect(cmd.endsWith('\r')).toBe(true)
+    })
+
+    it('launch command never starts with bare `powershell ` (v1.11.2 regression)', async () => {
       const { writeTerminalCalls } = await launchAndGetWrites()
       for (const [, data] of writeTerminalCalls) {
         if (typeof data !== 'string') continue
-        // Bare `powershell -ExecutionPolicy ...` at the start of a command is
-        // what broke on pwsh 7 users. Using the absolute path inside the .cmd
-        // wrapper is fine; the literal terminal-written command must not start
-        // with `powershell ` on its own.
         expect(data.startsWith('powershell ')).toBe(false)
       }
+    })
+
+    it('launch command never starts with `cmd ` or uses `cmd /c` (v1.11.4 regression)', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      for (const [, data] of writeTerminalCalls) {
+        if (typeof data !== 'string') continue
+        expect(data.startsWith('cmd ')).toBe(false)
+        expect(data.includes('cmd /c')).toBe(false)
+      }
+    })
+
+    it('full launch command shape is a single inline PS statement (no multi-line, no semicolons in unsafe places)', async () => {
+      const { writeTerminalCalls } = await launchAndGetWrites()
+      const cmd = getLaunchCmd(writeTerminalCalls).trimEnd()
+      // One line (no embedded \n or \r within body)
+      expect(cmd.includes('\n')).toBe(false)
+      // Has the three-part structure we expect: $p= ; if ; &
+      expect(cmd).toMatch(/^\$p='[^']+'; if \(-not \(Test-Path \$p\)\) \{ \$p=\(Get-Process -Id \$PID\)\.Path \}; & \$p -ExecutionPolicy Bypass -File '[^']+\.ps1'$/)
     })
   })
 

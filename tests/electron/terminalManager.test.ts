@@ -334,4 +334,96 @@ describe('terminalManager', () => {
     else process.env.OLLAMA_API_BASE = original
   })
 
+  // ---- Windows PATH composition: the v1.11.4 regression guard ----
+  //
+  // Before the fix, winSystemPath used `existingPath.includes(p)`, which meant
+  // `C:\Windows\System32` was considered already-present whenever the longer
+  // `C:\Windows\System32\WindowsPowerShell\v1.0` was on PATH — even though the
+  // shorter System32 entry (where cmd.exe and powershell.exe actually live)
+  // was NOT. Result on affected systems: `cmd` and `powershell` unresolvable.
+
+  describe('Windows system PATH injection', () => {
+    let origPlatform: PropertyDescriptor | undefined
+    let origPath: string | undefined
+
+    beforeEach(() => {
+      origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+      origPath = process.env.PATH
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true, writable: true })
+    })
+
+    afterEach(() => {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform)
+      if (origPath === undefined) delete process.env.PATH
+      else process.env.PATH = origPath
+    })
+
+    function getPath(): string {
+      const call = vi.mocked(pty.spawn).mock.calls[0]
+      return (call[2]?.env as any)?.PATH || ''
+    }
+
+    it('injects System32 when PATH only has the PS 1.0 subdirectory (regression)', () => {
+      process.env.PATH = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0'
+      spawnTerminal('win-reg-1', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      const finalPath = getPath()
+      // System32 must appear before the substring-colliding PS 1.0 entry
+      expect(finalPath).toContain('C:\\Windows\\System32;')
+      // And both should be on PATH
+      expect(finalPath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    })
+
+    it('does not duplicate System32 when it is already on PATH exactly', () => {
+      process.env.PATH = 'C:\\Windows\\System32;C:\\Windows'
+      spawnTerminal('win-reg-2', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      const finalPath = getPath()
+      // The original System32 entry stays; the injector must skip re-adding.
+      // Count occurrences of the exact entry surrounded by separator boundaries.
+      const segments = finalPath.split(';').map((e: string) =>
+        e.replace(/[\\/]+$/, '').toLowerCase(),
+      )
+      const dupes = segments.filter((e: string) => e === 'c:\\windows\\system32').length
+      expect(dupes).toBe(1)
+    })
+
+    it('does not duplicate when PATH entry has trailing backslash', () => {
+      process.env.PATH = 'C:\\Windows\\System32\\;C:\\Windows\\'
+      spawnTerminal('win-reg-3', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      const finalPath = getPath()
+      const segments = finalPath.split(';').map((e: string) =>
+        e.replace(/[\\/]+$/, '').toLowerCase(),
+      )
+      expect(segments.filter((e: string) => e === 'c:\\windows\\system32').length).toBe(1)
+      expect(segments.filter((e: string) => e === 'c:\\windows').length).toBe(1)
+    })
+
+    it('does not duplicate when case differs (Windows PATH is case-insensitive)', () => {
+      process.env.PATH = 'c:\\windows\\system32;c:\\windows'
+      spawnTerminal('win-reg-4', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      const finalPath = getPath()
+      const segments = finalPath.split(';').map((e: string) =>
+        e.replace(/[\\/]+$/, '').toLowerCase(),
+      )
+      expect(segments.filter((e: string) => e === 'c:\\windows\\system32').length).toBe(1)
+    })
+
+    it('injects all four system dirs when PATH is empty', () => {
+      process.env.PATH = ''
+      spawnTerminal('win-reg-5', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      const finalPath = getPath()
+      expect(finalPath).toContain('C:\\Windows\\System32')
+      expect(finalPath).toContain('C:\\Windows')
+      expect(finalPath).toContain('C:\\Windows\\System32\\Wbem')
+      expect(finalPath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    })
+
+    it('does not inject anything on non-Windows platforms', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true, writable: true })
+      process.env.PATH = '/usr/bin:/bin'
+      spawnTerminal('non-win-1', '/bin/bash', '/tmp', vi.fn())
+      const finalPath = getPath()
+      expect(finalPath).not.toContain('C:\\Windows\\System32')
+    })
+  })
+
 })
