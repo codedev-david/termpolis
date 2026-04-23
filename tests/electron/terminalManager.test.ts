@@ -426,4 +426,61 @@ describe('terminalManager', () => {
     })
   })
 
+  // ---- Git Bash /usr/bin injection — v1.11.10 regression guard ----
+  //
+  // Symptom: bash-wrapped CLIs (Claude Code's `claude`, gh completion, etc.)
+  // fail with "sed: command not found" / "dirname: command not found" inside
+  // a Git Bash terminal. Root cause: users whose ~/.bash_profile does not
+  // chain to ~/.bashrc end up in a login shell where Git's /usr/bin is not
+  // on PATH. Termpolis now injects it up-front so those helpers always work.
+
+  describe('Git Bash /usr/bin injection', () => {
+    let origPlatform: PropertyDescriptor | undefined
+    let origPath: string | undefined
+
+    beforeEach(() => {
+      origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+      origPath = process.env.PATH
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true, writable: true })
+    })
+
+    afterEach(() => {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform)
+      if (origPath === undefined) delete process.env.PATH
+      else process.env.PATH = origPath
+    })
+
+    function getPath(): string {
+      const call = vi.mocked(pty.spawn).mock.calls[0]
+      return (call[2]?.env as any)?.PATH || ''
+    }
+
+    it('injects Git usr\\bin when launching Git Bash and it is not on PATH', () => {
+      process.env.PATH = 'C:\\Windows\\System32;C:\\Windows'
+      spawnTerminal('gb-1', 'C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\tmp', vi.fn())
+      expect(getPath()).toContain('C:\\Program Files\\Git\\usr\\bin')
+    })
+
+    it('does not duplicate when Git usr\\bin is already on PATH', () => {
+      process.env.PATH = 'C:\\Program Files\\Git\\usr\\bin;C:\\Windows\\System32'
+      spawnTerminal('gb-2', 'C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\tmp', vi.fn())
+      const segments = getPath().split(';').map((e: string) =>
+        e.replace(/[\\/]+$/, '').toLowerCase(),
+      )
+      expect(segments.filter((e: string) => e === 'c:\\program files\\git\\usr\\bin').length).toBe(1)
+    })
+
+    it('does not inject when launching a non-Git-Bash shell', () => {
+      process.env.PATH = 'C:\\Windows\\System32'
+      spawnTerminal('gb-3', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      expect(getPath()).not.toContain('\\Git\\usr\\bin')
+    })
+
+    it('derives usr\\bin from a non-standard Git install path', () => {
+      process.env.PATH = 'C:\\Windows\\System32'
+      spawnTerminal('gb-4', 'D:\\tools\\Git\\bin\\bash.exe', 'C:\\tmp', vi.fn())
+      expect(getPath()).toContain('D:\\tools\\Git\\usr\\bin')
+    })
+  })
+
 })

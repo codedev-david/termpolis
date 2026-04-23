@@ -79,9 +79,29 @@ export function spawnTerminal(
       })()
     : ''
   const winSystemPrefix = winSystemPath ? winSystemPath + sep : ''
+  // Git Bash hardening: if the user is launching `C:\Program Files\Git\bin\bash.exe`,
+  // make sure Git's sibling `/usr/bin` is on PATH so POSIX helpers (sed, dirname,
+  // uname) are always resolvable. Default Git Bash pulls these in via /etc/profile,
+  // but users whose ~/.bash_profile doesn't chain to ~/.bashrc (or whose .bashrc
+  // does `PATH=...` without `:$PATH`) can end up in a login shell where /usr/bin
+  // is missing — which silently breaks every shell-wrapped CLI (Claude Code's
+  // `claude`, gh's completion, node's npm-exec wrappers, etc.).
+  const gitBashUsrBin: string = (() => {
+    if (process.platform !== 'win32') return ''
+    if (!/[\\/]git[\\/]+bin[\\/]+bash\.exe$/i.test(executable)) return ''
+    // Derive the sibling usr\bin from the executable. Git for Windows always
+    // ships <install>\bin\bash.exe alongside <install>\usr\bin, so if we got
+    // here the derived path is guaranteed to exist.
+    const derived = executable.replace(/[\\/]+bin[\\/]+bash\.exe$/i, '\\usr\\bin')
+    const existingEntries = new Set(
+      existingPath.split(sep).map((e) => e.replace(/[\\/]+$/, '').trim().toLowerCase()).filter(Boolean),
+    )
+    return existingEntries.has(derived.toLowerCase()) ? '' : derived
+  })()
+  const gitBashPrefix = gitBashUsrBin ? gitBashUsrBin + sep : ''
   const basePath = needsBundled
-    ? `${toolsDir}${sep}${winSystemPrefix}${existingPath}`
-    : `${winSystemPrefix}${existingPath}`
+    ? `${toolsDir}${sep}${winSystemPrefix}${gitBashPrefix}${existingPath}`
+    : `${winSystemPrefix}${gitBashPrefix}${existingPath}`
   // Test hook: e2e tests can prepend a shim directory that intercepts agent
   // binaries (claude, codex, gemini, aider) and routes them to mocks. Keeps
   // tests from accidentally invoking real agents on developer machines.
