@@ -28,6 +28,18 @@ async function screenshot(name: string) {
 }
 
 async function closeAnyModal() {
+  // Try the X button inside any open full-screen overlay first — more reliable
+  // than Escape, which doesn't fire when keyboard focus is inside a terminal.
+  // Loop because some flows can stack modals.
+  for (let i = 0; i < 3; i++) {
+    const xBtn = page.locator('div.fixed.inset-0 button:has(i.fa-xmark)').first()
+    const visible = await xBtn.isVisible({ timeout: 500 }).catch(() => false)
+    if (!visible) break
+    await xBtn.click({ force: true }).catch(() => {})
+    await page.waitForTimeout(250)
+  }
+  // Fall back to Escape so the Add Terminal / Settings modals (which lack an
+  // X button tied to fa-xmark) still get a chance to close.
   await page.keyboard.press('Escape')
   await page.waitForTimeout(300)
 }
@@ -73,13 +85,17 @@ test('04 - sidebar collapse and expand', async () => {
 })
 
 test('05 - AI Agents section visible', async () => {
-  // AI Agents might be collapsed — try expanding
-  const agents = page.locator('button:has-text("AI Agents")').first()
-  if (await agents.isVisible().catch(() => false)) {
-    await agents.click()
-    await page.waitForTimeout(300)
+  // Only toggle the AI Agents header if the list is currently hidden —
+  // unconditional click can collapse an already-expanded section.
+  const claudeText = page.locator('text=Claude Code').first()
+  const alreadyExpanded = await claudeText.isVisible().catch(() => false)
+  if (!alreadyExpanded) {
+    const agents = page.locator('button:has-text("AI Agents")').first()
+    if (await agents.isVisible().catch(() => false)) {
+      await agents.click()
+      await page.waitForTimeout(300)
+    }
   }
-  // Check for at least one agent (might use different text)
   const hasAgents = await page.locator('text=Claude Code').first().isVisible().catch(() => false) ||
     await page.locator('text=OpenAI Codex').first().isVisible().catch(() => false)
   expect(hasAgents).toBeTruthy()

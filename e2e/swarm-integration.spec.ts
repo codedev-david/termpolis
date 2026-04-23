@@ -220,6 +220,20 @@ async function clickDashboardTab(tabName: string) {
   await page.waitForTimeout(300)
 }
 
+/** Close the Swarm Dashboard via its header X button. Escape is unreliable
+ *  when keyboard focus is inside a terminal — the window-level handler never
+ *  fires and the overlay keeps intercepting subsequent clicks. */
+async function closeDashboardIfVisible() {
+  const dashboardHeading = page.locator('h2:has-text("Swarm Dashboard")')
+  if (await dashboardHeading.isVisible().catch(() => false)) {
+    const xBtn = dashboardHeading
+      .locator('xpath=ancestor::div[contains(@class,"fixed")][1]//button[.//i[contains(@class,"fa-xmark")]]')
+      .first()
+    await xBtn.click({ force: true })
+    await page.waitForTimeout(400)
+  }
+}
+
 /** Close the Start Swarm wizard if it auto-opened on top of the dashboard */
 async function dismissWizardIfVisible() {
   const wizardXBtn = page.locator('h2:has-text("Start Swarm")').locator('..').locator('..').locator('button:last-child')
@@ -350,9 +364,7 @@ test.describe.serial('Swarm Integration', () => {
   })
 
   test('8. Send swarm task prompt to mock Claude and verify response', async () => {
-    // Close dashboard first
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await closeDashboardIfVisible()
 
     // Activate Claude terminal
     await activateTerminal('Claude Agent')
@@ -459,9 +471,7 @@ test.describe.serial('Swarm Integration', () => {
   })
 
   test('13. Split view layout with 2 agent terminals', async () => {
-    // Close dashboard
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await closeDashboardIfVisible()
 
     // Switch to split view
     await toggleView()
@@ -523,9 +533,14 @@ test.describe.serial('Swarm Integration', () => {
     expect(beforeClear.taskCount).toBeGreaterThan(0)
     expect(beforeClear.msgCount).toBeGreaterThan(0)
 
-    // Click the Clear button in the dashboard
+    // Click the Clear button in the dashboard (opens confirmation dialog)
     const clearBtn = page.locator('.fixed').locator('button:has-text("Clear")').first()
     await clearBtn.click()
+    await page.waitForTimeout(300)
+
+    // Confirm via the "Clear Swarm" button inside the dialog
+    const confirmBtn = page.locator('.fixed').locator('button:has-text("Clear Swarm")').first()
+    await confirmBtn.click()
     await page.waitForTimeout(1000)
 
     // Verify tasks and messages are empty

@@ -7,6 +7,10 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+// Import the renderer-side helper directly in Node test context. The
+// alternative (dynamic import from page.evaluate) doesn't work because the
+// renderer bundle doesn't ship source files at those paths.
+import { buildConductorPrompt } from '../src/renderer/src/lib/conductorPrompt'
 
 let app: ElectronApplication
 let page: Page
@@ -104,19 +108,12 @@ test('5. Check if MCP server is running', async () => {
 })
 
 test('6. Check conductor prompt file generation', async () => {
-  // Verify the conductor prompt builder works
-  const promptContent = await page.evaluate(async () => {
-    try {
-      const { buildConductorPrompt } = await import('../src/renderer/src/lib/conductorPrompt')
-      return buildConductorPrompt({
-        taskDescription: 'Test task',
-        installedAgents: { claude: true, codex: false, gemini: false, 'aider-qwen': false },
-        projectCwd: 'C:\\test',
-        shellType: 'powershell',
-      })
-    } catch (e: any) {
-      return `ERROR: ${e.message}`
-    }
+  // Build the conductor prompt in Node (no bundling or dynamic import needed).
+  const promptContent = buildConductorPrompt({
+    taskDescription: 'Test task',
+    installedAgents: { claude: true, codex: false, gemini: false, 'aider-qwen': false },
+    projectCwd: 'C:\\test',
+    shellType: 'powershell',
   })
   console.log('[Conductor Prompt Length]', promptContent.length)
   console.log('[Conductor Prompt Preview]', promptContent.slice(0, 500))
@@ -159,17 +156,17 @@ test('8. Check Claude Code availability', async () => {
 })
 
 test('9. Test terminal creation', async () => {
-  // Create a terminal to verify PTY works
-  const createResult = await page.evaluate(async () => {
+  // Generate the terminal id in Node — the renderer bundle doesn't expose
+  // `uuid` as a dynamic import target. crypto.randomUUID is in Node 16+.
+  const id = (globalThis as any).crypto?.randomUUID?.() ?? `e2e-${Date.now()}`
+  const createResult = await page.evaluate(async (terminalId: string) => {
     try {
-      const { v4: uuid } = await import('uuid')
-      const id = uuid()
-      const res = await (window as any).termpolis.createTerminal(id, 'powershell', 'C:\\Users')
-      return { success: res.success, error: res.error, id }
+      const res = await (window as any).termpolis.createTerminal(terminalId, 'powershell', 'C:\\Users')
+      return { success: res.success, error: res.error, id: terminalId }
     } catch (e: any) {
       return { success: false, error: e.message }
     }
-  })
+  }, id)
   console.log('[Terminal Create]', JSON.stringify(createResult))
   expect(createResult.success).toBeTruthy()
   await page.waitForTimeout(2000)

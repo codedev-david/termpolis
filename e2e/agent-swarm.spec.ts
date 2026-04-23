@@ -54,6 +54,8 @@ test.beforeAll(async () => {
       NODE_ENV: 'test',
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
+      // Bypass the native directory picker so the wizard advances past Preparing.
+      TERMPOLIS_TEST_PROJECT_CWD: path.resolve('.'),
     },
   })
   page = await app.firstWindow()
@@ -92,17 +94,20 @@ test.describe.serial('Agent Swarm', () => {
     await ss('02-start-swarm-btn')
   })
 
-  test('3. Swarm dashboard has tabs: Agents, Tasks, Messages', async () => {
-    for (const tab of ['Agents', 'Tasks', 'Messages']) {
-      const tabBtn = page.locator(`button:has-text("${tab}")`).first()
+  test('3. Swarm dashboard has tabs: Tasks, Messages, Trace', async () => {
+    // The Agents tab was removed in the redesign — the conductor owns agent
+    // lifecycle, so a per-agent tab was misleading. Trace replaced it.
+    for (const tab of ['Tasks', 'Messages', 'Trace']) {
+      const tabBtn = page.locator('.fixed').locator(`button:has-text("${tab}")`).first()
       await expect(tabBtn).toBeVisible()
     }
     await ss('03-dashboard-tabs')
   })
 
   test('4. Start Swarm button opens wizard', async () => {
-    // The wizard no longer auto-opens; click "Start Swarm" to open it
-    const startBtn = page.locator('button:has-text("Start Swarm")').first()
+    // Scope to the Dashboard panel so we don't match Welcome's Start Swarm
+    // tile — the Welcome button is still in the DOM underneath the dashboard.
+    const startBtn = page.locator('.fixed').locator('button:has-text("Start Swarm")').first()
     await expect(startBtn).toBeVisible({ timeout: 3000 })
     await startBtn.click()
     await page.waitForTimeout(500)
@@ -112,156 +117,115 @@ test.describe.serial('Agent Swarm', () => {
     await ss('04-wizard-opened')
   })
 
-  // ---- SECTION 2: WIZARD STEP 1 - AGENT SELECTION ----
+  // ---- SECTION 2: WIZARD PREPARING STEP ----
+  // The wizard was redesigned: no more agent-selection grid / multi-step
+  // breakdown. The conductor picks agents itself. The new flow is
+  // preparing → describe → launching, and the describe step takes a Goal
+  // (required) plus optional Constraints / Expected Output / Failure
+  // Conditions.
 
-  test('5. Wizard step 1 shows agent selection grid with checkboxes', async () => {
-    // The wizard select step shows a grid-cols-2 grid of agent buttons
-    const grid = page.locator('.grid.grid-cols-2')
-    await expect(grid).toBeVisible({ timeout: 5000 })
-    await ss('05-agent-grid')
+  test('5. Wizard preparing step shows spinner and "Preparing Conductor" heading', async () => {
+    // Preparing step renders before startConductor resolves. We scope to the
+    // wizard modal so we don't pick up the dashboard behind it.
+    const prep = page.locator('h3:has-text("Preparing Conductor")')
+    // This may already have flipped to Describe if conductor was fast — accept either.
+    const describe = page.locator('textarea')
+    await expect(prep.or(describe)).toBeVisible({ timeout: 5000 })
+    await ss('05-wizard-preparing-or-describe')
   })
 
-  test('6. Agents listed include Claude Code, OpenAI Codex, Gemini CLI, Qwen AI', async () => {
-    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Qwen AI']
-    for (const agent of agents) {
-      const el = page.locator(`text=${agent}`).first()
-      await expect(el).toBeVisible({ timeout: 3000 })
+  test('6. Wizard advances from preparing → describe (Goal textarea appears)', async () => {
+    // Goal textarea is the first field in the describe step and auto-focuses.
+    // Allow generous time — preparing calls mock claude + waits for shell init.
+    const goalTextarea = page.locator('textarea').first()
+    await expect(goalTextarea).toBeVisible({ timeout: 30000 })
+    await ss('06-describe-step')
+  })
+
+  // ---- SECTION 3: WIZARD DESCRIBE STEP FIELDS ----
+
+  test('7. Describe step shows Goal field', async () => {
+    // The Goal label is the first field in the describe step. The modal shows
+    // a "Describe what you want built" heading above the fields.
+    const goalLabel = page.locator('label:has-text("Goal")').first()
+    await expect(goalLabel).toBeVisible()
+    // The overall describe step prompt should also be visible
+    await expect(page.locator('text=Describe what you want built')).toBeVisible()
+    await ss('07-goal-field')
+  })
+
+  test('8. Describe step shows Constraints, Expected Output, Failure Conditions fields', async () => {
+    for (const label of ['Constraints', 'Expected Output', 'Failure Conditions']) {
+      const field = page.locator(`label:has-text("${label}")`).first()
+      await expect(field).toBeVisible()
     }
-    await ss('06-all-agents-listed')
+    await ss('08-optional-fields')
   })
 
-  test('7. Can select agents by clicking (checkbox toggles)', async () => {
-    // Click on Claude Code in the wizard grid to select it
-    const claudeBtn = page.locator('.grid.grid-cols-2 button:has-text("Claude Code")')
-    await claudeBtn.click()
-    await page.waitForTimeout(300)
-
-    // The checkbox div should now have the selected background color
-    const checkbox = claudeBtn.locator('.bg-\\[\\#22D3EE\\]')
-    await expect(checkbox).toBeVisible()
-    await ss('07-agent-selected')
+  test('9. Launch Swarm button disabled when Goal is empty', async () => {
+    const launchBtn = page.locator('button:has-text("Launch Swarm")').first()
+    await expect(launchBtn).toBeVisible()
+    await expect(launchBtn).toBeDisabled()
+    await ss('09-launch-disabled')
   })
 
-  test('8. "Next" button disabled until 2+ agents selected', async () => {
-    // Only 1 agent selected so far -- Next should be disabled
-    const nextBtn = page.locator('button:has-text("Next")').first()
-    await expect(nextBtn).toBeDisabled()
-
-    // Also check the warning text
-    const warning = page.locator('text=Select at least 2 agents')
-    await expect(warning).toBeVisible()
-    await ss('08-next-disabled')
+  test('10. Typing a Goal enables Launch Swarm', async () => {
+    // The Goal textarea is the first textarea in the describe step
+    const goalTextarea = page.locator('textarea').first()
+    await goalTextarea.fill('Refactor the auth module, write comprehensive tests, and review for security issues')
+    // waitForTimeout isn't needed — disabled state derives directly from value
+    const launchBtn = page.locator('button:has-text("Launch Swarm")').first()
+    await expect(launchBtn).toBeEnabled()
+    await ss('10-launch-enabled')
   })
 
-  test('9. Select 2 agents, click Next -- shows task description textarea', async () => {
-    // Select a second agent (OpenAI Codex) in the wizard grid
-    const codexBtn = page.locator('.grid.grid-cols-2 button:has-text("OpenAI Codex")')
-    await codexBtn.click()
-    await page.waitForTimeout(300)
-
-    // Next should now be enabled
-    const nextBtn = page.locator('button:has-text("Next")').first()
-    await expect(nextBtn).toBeEnabled()
-
-    // Click Next
-    await nextBtn.click()
-    await page.waitForTimeout(500)
-
-    // Should now see the describe step with a textarea
-    const textarea = page.locator('textarea')
-    await expect(textarea).toBeVisible()
-    await ss('09-describe-step')
+  test('11. Describe step shows AI Conductor info box', async () => {
+    const aiConductor = page.locator('text=AI Conductor').first()
+    await expect(aiConductor).toBeVisible()
+    await ss('11-ai-conductor-box')
   })
 
-  // ---- SECTION 3: WIZARD STEP 2 - TASK DESCRIPTION ----
-
-  test('10. Step 2 shows textarea for task description and selected agents as chips', async () => {
-    const textarea = page.locator('textarea')
-    await expect(textarea).toBeVisible()
-
-    // Selected agents shown as chips below the textarea
-    const claudeChip = page.locator('text=Claude Code').first()
-    const codexChip = page.locator('text=OpenAI Codex').first()
-    await expect(claudeChip).toBeVisible()
-    await expect(codexChip).toBeVisible()
-    await ss('10-task-description-step')
+  test('12. Describe step shows "Swarm vs individual agents" info box', async () => {
+    const box = page.locator('text=Swarm vs individual agents').first()
+    await expect(box).toBeVisible()
+    await ss('12-swarm-vs-individual-box')
   })
 
-  test('11. "Next" disabled until task description entered', async () => {
-    const nextBtn = page.locator('button:has-text("Next")').first()
-    await expect(nextBtn).toBeDisabled()
-    await ss('11-next-disabled-no-task')
-  })
+  // ---- SECTION 4: WIZARD CANCEL FLOW ----
 
-  test('12. Enter task, click Next -- shows breakdown with subtask assignments and scores', async () => {
-    const textarea = page.locator('textarea')
-    await textarea.fill('Refactor the auth module, write comprehensive tests, and review for security issues')
-    await page.waitForTimeout(300)
-
-    const nextBtn = page.locator('button:has-text("Next")').first()
-    await expect(nextBtn).toBeEnabled()
-
-    await nextBtn.click()
-    await page.waitForTimeout(500)
-
-    // Should now see the breakdown step
-    const smartRouting = page.locator('text=Smart routing analyzed your task')
-    await expect(smartRouting).toBeVisible()
-    await ss('12-breakdown-step')
-  })
-
-  // ---- SECTION 4: WIZARD STEP 3 - TASK BREAKDOWN ----
-
-  test('13. Step 3 shows agent assignments with score numbers and reassign buttons', async () => {
-    // Look for score indicators (e.g., "85/100")
-    const scorePattern = page.locator('text=/\\d+\\/100/')
-    const count = await scorePattern.count()
-    expect(count).toBeGreaterThanOrEqual(1)
-
-    // Look for "Assigned to:" labels
-    const assignedTo = page.locator('text=Assigned to:').first()
-    await expect(assignedTo).toBeVisible()
-    await ss('13-assignments-with-scores')
-  })
-
-  test('14. Step 3 shows token budget estimate section', async () => {
-    const tokenBudget = page.locator('text=Token Budget Estimate')
-    await expect(tokenBudget).toBeVisible()
-    await ss('14-token-budget')
-  })
-
-  test('15. "Back" button returns to previous step (breakdown -> describe)', async () => {
-    const backBtn = page.locator('button:has-text("Back")').first()
-    await expect(backBtn).toBeVisible()
-
-    await backBtn.click()
-    await page.waitForTimeout(500)
-
-    // Should be back on the describe step with the textarea
-    const textarea = page.locator('textarea')
-    await expect(textarea).toBeVisible()
-    await ss('15-back-to-describe')
-  })
-
-  test('16. "Cancel" closes the wizard', async () => {
-    // Go back to select step first
-    const backBtn = page.locator('button:has-text("Back")').first()
-    await backBtn.click()
-    await page.waitForTimeout(500)
-
-    // On the select step, the left button says "Cancel"
+  test('13. Cancel button is visible in describe step', async () => {
+    // The describe step footer has Cancel on the left, Launch on the right.
     const cancelBtn = page.locator('button:has-text("Cancel")').first()
     await expect(cancelBtn).toBeVisible()
+    await ss('13-cancel-visible')
+  })
 
+  test('14. Constraints field is optional (not required marker)', async () => {
+    // Each optional field has an "optional" badge next to the label.
+    const constraintsLabel = page.locator('label:has-text("Constraints")').first()
+    await expect(constraintsLabel.locator('text=optional')).toBeVisible()
+    await ss('14-optional-badge')
+  })
+
+  test('15. Typing in Constraints does not affect Launch button state', async () => {
+    // Second textarea is Constraints.
+    const constraints = page.locator('textarea').nth(1)
+    await constraints.fill('Must work on Windows and macOS')
+    const launchBtn = page.locator('button:has-text("Launch Swarm")').first()
+    await expect(launchBtn).toBeEnabled()
+    await ss('15-constraints-filled')
+  })
+
+  test('16. Cancel closes the wizard (dashboard stays visible)', async () => {
+    const cancelBtn = page.locator('button:has-text("Cancel")').first()
     await cancelBtn.click()
     await page.waitForTimeout(500)
 
-    // The wizard heading "Start Swarm" h2 should no longer be visible
-    // (the dashboard may still be showing behind it)
+    // Wizard h2 should be gone. The dashboard underneath should still be up.
     const wizardHeading = page.locator('h2:has-text("Start Swarm")')
-    const wizardVisible = await wizardHeading.isVisible().catch(() => false)
-    // If the dashboard is still open, the "Start Swarm" button text exists but not the h2
-    // The key is that the wizard overlay is gone
+    await expect(wizardHeading).toHaveCount(0, { timeout: 3000 })
+    // Dashboard is still visible
+    await expect(page.locator('text=Swarm Dashboard')).toBeVisible()
     await ss('16-wizard-cancelled')
   })
 
