@@ -29,6 +29,7 @@ import type { ShellInfo } from './types'
 import { resolveAgentCommand, testDelay } from './lib/testAgents'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { detectAgentStatus } from './lib/agentStatusDetector'
+import { detectDismissChar, tailSlice } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
@@ -481,33 +482,14 @@ export default function App() {
 
           const output = bufferRes.data.output || ''
           const recent = output.slice(-3000)
-          const tail = recent.slice(-1500)
+          const tail = tailSlice(recent)
 
-          // Pattern-based auto-dismiss for trust / onboarding prompts. The
-          // same pattern only fires once per prompt instance — we key on the
-          // last ~200 chars of the buffer so we don't re-dismiss after it
-          // scrolls off the visible region.
+          // Pattern-based auto-dismiss for trust / onboarding / MCP prompts.
+          // Keyed on the last ~200 chars of the buffer so we don't re-dismiss
+          // after a prompt has scrolled off the visible region.
           const dismissKey = tail.slice(-200)
           const alreadyDismissed = lastDismissedPrompt.get(agent.terminalId) === dismissKey
-          const isCodex = /codex/i.test(agent.agentName)
-          const isGemini = /gemini/i.test(agent.agentName)
-          const isAider = /aider/i.test(agent.agentName)
-
-          let dismissChar: string | null = null
-          if (/do you trust the (?:files|authors)|trust this folder|trust the files/i.test(tail)) {
-            dismissChar = isCodex ? '1\r' : '\r'
-          } else if (/press\s+(?:enter|return)\s+to\s+continue/i.test(tail)) {
-            dismissChar = '\r'
-          } else if (/\[Y\/n\]|\(Y\/n\)/i.test(tail)) {
-            dismissChar = 'y\r'
-          } else if (isCodex && /select\s+(?:a\s+)?(?:option|choice)|type\s+1\s+to/i.test(tail)) {
-            dismissChar = '1\r'
-          } else if (isGemini && /accept\s+(?:the\s+)?terms|authenticate\s+with/i.test(tail)) {
-            // Gemini shows an onboarding menu — Enter selects the default
-            dismissChar = '\r'
-          } else if (isAider && /\(y\)es.*\(n\)o/i.test(tail)) {
-            dismissChar = 'y\r'
-          }
+          const dismissChar = detectDismissChar(tail, { agentName: agent.agentName })
 
           if (dismissChar && !alreadyDismissed) {
             lastDismissedPrompt.set(agent.terminalId, dismissKey)
@@ -549,6 +531,43 @@ export default function App() {
         }
       }
     }, testDelay(5000))
+
+    return () => clearInterval(interval)
+  }, [])
+
+  // Prompt auto-dismiss for regular (non-swarm) AI agent terminals.
+  // When a user launches Claude / Codex / Gemini / Aider from the sidebar,
+  // each tool shows first-run prompts (folder trust, MCP server trust,
+  // "Press Enter to continue" splash). The swarm loop above handles this for
+  // swarm-tracked agents; this loop covers everyone else. Two small loops
+  // are simpler than merging them since the swarm loop also tracks status.
+  useEffect(() => {
+    const lastDismissedPrompt = new Map<string, string>()
+    const interval = setInterval(async () => {
+      const store = useTerminalStore.getState()
+      const swarmIds = new Set(store.swarmAgents.map((a) => a.terminalId))
+      const agentTerminals = store.terminals.filter(
+        (t) => t.agentCommand && !swarmIds.has(t.id),
+      )
+      if (agentTerminals.length === 0) return
+
+      for (const term of agentTerminals) {
+        try {
+          const bufferRes = await window.termpolis.readTerminalBuffer(term.id)
+          if (!bufferRes.success || !bufferRes.data) continue
+          const output = bufferRes.data.output || ''
+          const tail = tailSlice(output.slice(-3000))
+          const dismissKey = tail.slice(-200)
+          if (lastDismissedPrompt.get(term.id) === dismissKey) continue
+          const dismissChar = detectDismissChar(tail, { agentName: term.name })
+          if (!dismissChar) continue
+          lastDismissedPrompt.set(term.id, dismissKey)
+          window.termpolis.writeToTerminal(term.id, dismissChar)
+        } catch {
+          // Terminal gone — skip
+        }
+      }
+    }, testDelay(2000))
 
     return () => clearInterval(interval)
   }, [])
