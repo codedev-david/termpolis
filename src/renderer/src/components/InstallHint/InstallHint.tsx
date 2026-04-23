@@ -6,9 +6,17 @@ interface InstallHintProps {
   onClose: () => void
 }
 
+interface InstallInstructions {
+  steps: string[]
+  warning?: string
+  sections?: Array<{ title: string; lines: string[] }>
+  url: string
+  pricing: string | null
+}
+
 const isWindows = navigator.platform.startsWith('Win')
 
-function getInstallInstructions(agentId: string): { steps: string[]; url: string; pricing: string | null } {
+function getInstallInstructions(agentId: string): InstallInstructions {
   switch (agentId) {
     case 'claude':
       return {
@@ -16,6 +24,7 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
           'npm install -g @anthropic-ai/claude-code',
           'claude --version  (to verify)',
         ],
+        warning: 'The Claude Desktop app (GUI) is NOT the same as the Claude Code CLI. Termpolis needs the CLI above — installing only the Desktop app will not work.',
         url: 'https://docs.anthropic.com/en/docs/claude-code',
         pricing: 'Requires an Anthropic API plan or Claude Pro/Max subscription.',
       }
@@ -55,10 +64,16 @@ function getInstallInstructions(agentId: string): { steps: string[]; url: string
             '   ollama pull qwen3-coder-next    (advanced, 64GB+ RAM)',
           ]),
           `${isWindows ? '5' : '4'}. Restart Termpolis to detect the changes`,
-          '',
-          'To use qwen3-coder-next instead (64GB+ RAM):',
-          '  Click + in AI Agents to add a custom profile',
-          '  Set command to: aider --model ollama/qwen3-coder-next --no-show-model-warnings',
+        ],
+        sections: [
+          {
+            title: 'Use qwen3-coder-next instead (64GB+ RAM)',
+            lines: [
+              'Click + in AI Agents to add a custom profile',
+              'Set command to:',
+              'aider --model ollama/qwen3-coder-next --no-show-model-warnings',
+            ],
+          },
         ],
         url: 'https://ollama.com',
         pricing: 'Free — runs locally on your machine with no API costs. Default model works with 16GB+ RAM.',
@@ -83,8 +98,16 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn" onClick={onClose}>
-      <div className="bg-[#252526] rounded-lg p-6 w-96 shadow-xl border border-[#3c3c3c] flex flex-col gap-4" onClick={e => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn"
+      onClick={onClose}
+      data-testid="install-hint-backdrop"
+    >
+      <div
+        className="bg-[#252526] rounded-lg p-6 w-96 shadow-xl border border-[#3c3c3c] flex flex-col gap-4 max-h-[85vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+        data-testid="install-hint-modal"
+      >
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold flex items-center gap-2">
             <i className="fa-solid fa-download text-[#22D3EE]"></i>
@@ -97,7 +120,17 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
           {agentName} is not installed on your system. Run these commands to install it:
         </p>
 
-        <div className="flex flex-col gap-2">
+        {info.warning && (
+          <div
+            className="flex items-start gap-2 p-3 bg-[#2a1f1a] border border-[#5a3a2d] rounded-lg"
+            data-testid="install-hint-warning"
+          >
+            <i className="fa-solid fa-circle-info text-[#FFB74D] text-sm mt-0.5"></i>
+            <p className="text-xs text-[#FFB74D] leading-relaxed">{info.warning}</p>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-2" data-testid="install-hint-steps">
           {info.steps.map((step, i) => (
             <div key={i} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">
               <span className="font-mono text-xs text-[#d4d4d4] flex-1 select-all">{step}</span>
@@ -111,6 +144,38 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
             </div>
           ))}
         </div>
+
+        {info.sections?.map((section, si) => (
+          <div
+            key={`section-${si}`}
+            className="flex flex-col gap-2 pt-1 border-t border-[#3c3c3c]"
+            data-testid={`install-hint-section-${si}`}
+          >
+            <h3 className="text-xs font-semibold text-[#d4d4d4] uppercase tracking-wide mt-2">
+              {section.title}
+            </h3>
+            {section.lines.map((line, li) => {
+              const isCommand = /^(aider|ollama|npm|pip|npx|claude|codex|gemini|setx|sudo|apt|brew)\b/.test(line.trim())
+              if (isCommand) {
+                return (
+                  <div key={li} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">
+                    <span className="font-mono text-xs text-[#d4d4d4] flex-1 select-all">{line}</span>
+                    <button
+                      onClick={() => handleCopy(line, 1000 + si * 100 + li)}
+                      className="shrink-0 text-[#9ca3af] hover:text-[#22D3EE] px-1.5 py-0.5 rounded hover:bg-[#37373d] transition-colors"
+                      title="Copy to clipboard"
+                    >
+                      <i className={`fa-solid ${copiedIndex === 1000 + si * 100 + li ? 'fa-check text-green-400' : 'fa-copy'} text-[10px]`}></i>
+                    </button>
+                  </div>
+                )
+              }
+              return (
+                <p key={li} className="text-xs text-[#bbb] leading-relaxed">{line}</p>
+              )
+            })}
+          </div>
+        ))}
 
         {info.pricing && (
           <div className="flex items-start gap-2 p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded">

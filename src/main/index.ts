@@ -671,6 +671,14 @@ ipcMain.handle('agents:detect', async () => {
   results['aider'] = findAiderInstalled()
   // Aider+Qwen needs both aider AND ollama
   results['aider-qwen'] = results['aider'] && findOllamaPath() !== null
+  // Test hook: force a comma-separated list of agent ids to report as not installed,
+  // so Playwright can deterministically open the InstallHint modal for that agent.
+  const forceMissing = process.env.TERMPOLIS_FORCE_MISSING_AGENTS
+  if (forceMissing) {
+    for (const id of forceMissing.split(',').map((s) => s.trim()).filter(Boolean)) {
+      results[id] = false
+    }
+  }
   return ok(results)
 })
 

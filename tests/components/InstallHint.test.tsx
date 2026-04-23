@@ -188,4 +188,61 @@ describe('InstallHint', () => {
     const pricingIcon = document.querySelector('.fa-credit-card')
     expect(pricingIcon).toBeNull()
   })
+
+  // -----------------------------------------------------------------------
+  // Claude Desktop vs CLI warning (users often confuse them)
+  // -----------------------------------------------------------------------
+  it('shows Claude Desktop app vs CLI warning for claude', () => {
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    const warning = screen.getByTestId('install-hint-warning')
+    expect(warning).toBeInTheDocument()
+    expect(warning.textContent).toMatch(/Desktop app.*NOT the same.*CLI/)
+  })
+
+  it('does not show Desktop-vs-CLI warning for non-claude agents', () => {
+    render(<InstallHint agentId="codex" agentName="OpenAI Codex" onClose={vi.fn()} />)
+    expect(screen.queryByTestId('install-hint-warning')).toBeNull()
+  })
+
+  // -----------------------------------------------------------------------
+  // Qwen modal structure — no empty gap, sections render as sections
+  // -----------------------------------------------------------------------
+  it('renders qwen steps without empty gap rows', () => {
+    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    const stepRows = screen.getByTestId('install-hint-steps').children
+    for (let i = 0; i < stepRows.length; i++) {
+      const row = stepRows[i] as HTMLElement
+      expect(row.textContent?.trim().length).toBeGreaterThan(0)
+    }
+  })
+
+  it('renders qwen "use qwen3-coder-next" block as a section, not a step box', () => {
+    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    const section = screen.getByTestId('install-hint-section-0')
+    expect(section).toBeInTheDocument()
+    expect(section.textContent).toMatch(/qwen3-coder-next/)
+    expect(section.textContent).toMatch(/Click \+ in AI Agents/)
+  })
+
+  it('renders aider command in qwen section with copy button', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    const section = screen.getByTestId('install-hint-section-0')
+    const copyBtns = section.querySelectorAll('button[title="Copy to clipboard"]')
+    expect(copyBtns.length).toBeGreaterThan(0)
+    fireEvent.click(copyBtns[0])
+    expect(writeText).toHaveBeenCalledWith('aider --model ollama/qwen3-coder-next --no-show-model-warnings')
+  })
+
+  // -----------------------------------------------------------------------
+  // Modal scrollability — the root card must allow vertical scroll so long
+  // agent instructions (qwen has ~10 steps + section) don't overflow screen.
+  // -----------------------------------------------------------------------
+  it('modal card has max-height and vertical overflow scroll', () => {
+    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    const modal = screen.getByTestId('install-hint-modal')
+    expect(modal.className).toMatch(/max-h-/)
+    expect(modal.className).toMatch(/overflow-y-auto/)
+  })
 })
