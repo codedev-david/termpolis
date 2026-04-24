@@ -57,6 +57,10 @@ vi.mock('electron', () => ({
   Menu: { setApplicationMenu: vi.fn() },
   nativeImage: { createFromPath: vi.fn(() => ({})) },
   globalShortcut: { register: vi.fn(), unregisterAll: vi.fn() },
+  shell: {
+    openExternal: vi.fn(async () => undefined),
+    openPath: vi.fn(async () => ''),
+  },
 }))
 
 // ---------------------------------------------------------------------------
@@ -452,6 +456,98 @@ describe('shell:available', () => {
 
     const result = await invokeHandler('shell:available')
     expect(result).toEqual({ success: false, error: 'no shells' })
+  })
+})
+
+// =========================================================================
+// shell:open-external — protocol allowlist guards the Report-a-Problem flow
+// =========================================================================
+describe('shell:open-external', () => {
+  let mockShellOpenExternal: any
+  beforeEach(async () => {
+    const { shell } = (await import('electron')) as any
+    mockShellOpenExternal = shell.openExternal as any
+    mockShellOpenExternal.mockClear()
+    mockShellOpenExternal.mockResolvedValue(undefined)
+  })
+
+  it('opens https URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'https://github.com/foo/bar' })
+    expect(result).toEqual({ success: true })
+    expect(mockShellOpenExternal).toHaveBeenCalledWith('https://github.com/foo/bar')
+  })
+
+  it('opens http URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'http://example.com' })
+    expect(result).toEqual({ success: true })
+    expect(mockShellOpenExternal).toHaveBeenCalledWith('http://example.com')
+  })
+
+  it('rejects file:// URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'file:///etc/passwd' })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('disallowed protocol: file:')
+    expect(mockShellOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects javascript: URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'javascript:alert(1)' })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('disallowed protocol: javascript:')
+    expect(mockShellOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects chrome: URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'chrome://flags' })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('disallowed protocol: chrome:')
+    expect(mockShellOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects data: URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'data:text/html,<script>alert(1)</script>' })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('disallowed protocol: data:')
+    expect(mockShellOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed URLs', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 'not a url at all' })
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('invalid url')
+    expect(mockShellOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-string url argument', async () => {
+    const result = await invokeHandler('shell:open-external', { url: 12345 })
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('url must be a string')
+    expect(mockShellOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('surfaces shell.openExternal rejection as a failure response', async () => {
+    mockShellOpenExternal.mockRejectedValueOnce(new Error('no browser'))
+    const result = await invokeHandler('shell:open-external', { url: 'https://example.com' })
+    expect(result).toEqual({ success: false, error: 'no browser' })
+  })
+})
+
+// =========================================================================
+// diagnostics:collect — feeds the Report-a-Problem modal
+// =========================================================================
+describe('diagnostics:collect', () => {
+  it('returns a populated diagnostics payload', async () => {
+    const result = await invokeHandler('diagnostics:collect')
+    expect(result.success).toBe(true)
+    expect(result.data).toMatchObject({
+      appVersion: expect.any(String),
+      platform: expect.any(String),
+      osRelease: expect.any(String),
+      arch: expect.any(String),
+      electronVersion: expect.any(String),
+      nodeVersion: expect.any(String),
+      chromeVersion: expect.any(String),
+    })
   })
 })
 
@@ -1117,6 +1213,8 @@ describe('IPC handler registration', () => {
       'swarm:create-task',
       'swarm:update-task',
       'swarm:clear',
+      'diagnostics:collect',
+      'shell:open-external',
     ]
 
     for (const channel of expectedHandleChannels) {

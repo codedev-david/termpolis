@@ -107,11 +107,11 @@ function parseArgs(argv) {
   return args
 }
 
-async function fetchText(url, timeoutMs) {
+async function fetchText(url, timeoutMs, fetchImpl = fetch) {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+    const res = await fetchImpl(url, { signal: controller.signal, redirect: 'follow' })
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
     return await res.text()
   } finally {
@@ -119,38 +119,42 @@ async function fetchText(url, timeoutMs) {
   }
 }
 
-async function headOk(url, timeoutMs) {
+async function headOk(url, timeoutMs, fetchImpl = fetch) {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, { method: 'HEAD', signal: controller.signal, redirect: 'follow' })
+    const res = await fetchImpl(url, { method: 'HEAD', signal: controller.signal, redirect: 'follow' })
     return res.ok
   } catch { return false } finally {
     clearTimeout(t)
   }
 }
 
-async function runCli() {
-  const args = parseArgs(process.argv.slice(2))
-  if (!args.version || !args.base) {
-    console.error('usage: validateLatestYml.cjs --version <vX.Y.Z> --base <releases/download-url>')
-    process.exit(2)
+/**
+ * Pure orchestrator — fetches every latest*.yml from the release base,
+ * validates structure, and HEAD-checks advertised assets. Returns
+ * `{ exitCode, findings, log }` so the CLI and tests share one codepath.
+ *
+ * `fetchImpl` defaults to global fetch; tests pass a mock.
+ */
+async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fetch } = {}) {
+  const log = []
+  if (!version || !base) {
+    log.push('usage: validateLatestYml.cjs --version <vX.Y.Z> --base <releases/download-url>')
+    return { exitCode: 2, findings: [], log }
   }
-
-  const releaseBase = `${args.base.replace(/\/$/, '')}/${args.version}`
-  let allFindings = []
+  const releaseBase = `${base.replace(/\/$/, '')}/${version}`
+  const allFindings = []
   let checkedAtLeastOne = false
 
   for (const name of YML_FILES) {
     const ymlUrl = `${releaseBase}/${name}`
-    console.log(`→ ${ymlUrl}`)
+    log.push(`→ ${ymlUrl}`)
     let text
     try {
-      text = await fetchText(ymlUrl, args.timeoutMs)
+      text = await fetchText(ymlUrl, timeoutMs, fetchImpl)
     } catch (e) {
-      // Not every release publishes all three (e.g. early releases may
-      // skip linux). Missing is only a fatal finding if NONE were found.
-      console.log(`  (skip: ${e.message})`)
+      log.push(`  (skip: ${e.message})`)
       continue
     }
     checkedAtLeastOne = true
@@ -161,37 +165,53 @@ async function runCli() {
       allFindings.push(`${name}: YAML parse error — ${e.message}`)
       continue
     }
-    const findings = validateParsed(parsed, args.version)
-    findings.forEach(f => allFindings.push(`${name}: ${f}`))
+    for (const f of validateParsed(parsed, version)) allFindings.push(`${name}: ${f}`)
 
-    // Verify every files[].url resolves on the release
-    if (Array.isArray(parsed?.files)) {
+    if (Array.isArray(parsed && parsed.files)) {
       for (const f of parsed.files) {
-        if (!f?.url) continue
+        if (!f || !f.url) continue
         const assetUrl = `${releaseBase}/${f.url}`
-        const ok = await headOk(assetUrl, args.timeoutMs)
+        const ok = await headOk(assetUrl, timeoutMs, fetchImpl)
         if (!ok) allFindings.push(`${name}: asset not reachable — ${assetUrl}`)
       }
     }
   }
 
   if (!checkedAtLeastOne) {
-    console.error('FAIL: no latest*.yml files were reachable at', releaseBase)
-    process.exit(1)
+    log.push(`FAIL: no latest*.yml files were reachable at ${releaseBase}`)
+    return { exitCode: 1, findings: allFindings, log }
   }
   if (allFindings.length > 0) {
-    console.error('FAIL: validation findings:')
-    for (const f of allFindings) console.error(' -', f)
-    process.exit(1)
+    log.push('FAIL: validation findings:')
+    for (const f of allFindings) log.push(` - ${f}`)
+    return { exitCode: 1, findings: allFindings, log }
   }
-  console.log('OK: all latest*.yml files valid for', args.version)
+  log.push(`OK: all latest*.yml files valid for ${version}`)
+  return { exitCode: 0, findings: [], log }
 }
 
-module.exports = { validateParsed, parseArgs }
+async function runCli() {
+  const args = parseArgs(process.argv.slice(2))
+  const { exitCode, log } = await runValidation({
+    version: args.version,
+    base: args.base,
+    timeoutMs: args.timeoutMs,
+  })
+  for (const line of log) {
+    if (exitCode !== 0 && (line.startsWith('FAIL') || line.startsWith(' -') || line.startsWith('usage:'))) {
+      console.error(line)
+    } else {
+      console.log(line)
+    }
+  }
+  process.exit(exitCode)
+}
+
+module.exports = { validateParsed, parseArgs, fetchText, headOk, runValidation }
 
 if (require.main === module) {
   runCli().catch(err => {
-    console.error('UNEXPECTED:', err?.message || err)
+    console.error('UNEXPECTED:', err && err.message ? err.message : err)
     process.exit(1)
   })
 }

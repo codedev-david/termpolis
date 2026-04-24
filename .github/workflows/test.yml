@@ -162,6 +162,11 @@ jobs:
       # and ensures the mcpServers wrapper shape is preserved.
       - name: Plugin .mcp.json shape and adapter path
         run: xvfb-run --auto-servernum npx playwright test e2e/plugin-mcp-config.spec.ts
+      # Report-a-Problem gate: proves the Help-modal entry point, the
+      # diagnostics IPC round-trip, and the openExternal handler are all
+      # wired. Stubs shell.openExternal so no real browser launches.
+      - name: Report-a-Problem flow
+        run: xvfb-run --auto-servernum npx playwright test e2e/report-problem.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
@@ -209,6 +214,8 @@ jobs:
         run: npx playwright test e2e/chrome-smoke.spec.ts
       - name: First-run with zero AI agents installed (macOS)
         run: npx playwright test e2e/first-run-zero-agents.spec.ts
+      - name: Report-a-Problem flow (macOS)
+        run: npx playwright test e2e/report-problem.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
