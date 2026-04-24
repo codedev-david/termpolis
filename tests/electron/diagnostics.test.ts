@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import os from 'os'
 
 vi.mock('electron', () => ({
   app: {
@@ -6,16 +7,9 @@ vi.mock('electron', () => ({
   },
 }))
 
-vi.mock('os', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('os')>()
-  return {
-    ...actual,
-    release: vi.fn(() => '10.0.22631'),
-    arch: vi.fn(() => 'x64'),
-  }
-})
-
-// Import after mocks
+// We don't mock `os` — vitest's mock of a Node builtin is unreliable
+// across platforms (on macOS CI the real `release()` leaked through),
+// so instead we assert against the real os values and valid shapes.
 const { collectDiagnostics, formatDiagnosticsMarkdown } = await import('../../src/main/diagnostics')
 
 describe('collectDiagnostics', () => {
@@ -25,8 +19,12 @@ describe('collectDiagnostics', () => {
     const d = collectDiagnostics()
     expect(d.appVersion).toBe('9.9.9')
     expect(d.platform).toBe(process.platform)
-    expect(d.osRelease).toBe('10.0.22631')
-    expect(d.arch).toBe('x64')
+    expect(d.osRelease).toBe(os.release())
+    expect(d.arch).toBe(os.arch())
+    expect(typeof d.osRelease).toBe('string')
+    expect(d.osRelease.length).toBeGreaterThan(0)
+    expect(typeof d.arch).toBe('string')
+    expect(d.arch.length).toBeGreaterThan(0)
     expect(typeof d.electronVersion).toBe('string')
     expect(typeof d.nodeVersion).toBe('string')
     expect(typeof d.chromeVersion).toBe('string')

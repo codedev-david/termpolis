@@ -31,7 +31,13 @@ test.beforeAll(async () => {
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: [
+      path.resolve('out/main/index.js'),
+      // Linux CI (xvfb) rejects chrome-sandbox because the binary isn't
+      // SUID-owned by root. App code later sets --no-sandbox, but by then
+      // chromium has already aborted. Mirror the pattern used by chrome-smoke.
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+    ],
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()
