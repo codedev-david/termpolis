@@ -33,3 +33,8 @@ coverage/
 
 .claude/
 test-output.json
+
+# Stray debug artifacts
+.playwright-mcp/
+/*.png
+test-results/
