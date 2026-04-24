@@ -261,3 +261,32 @@ jobs:
           cd packaging/chocolatey
           choco pack
           choco push "termpolis.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+
+  # Auto-update metadata gate — runs AFTER all platform builds have
+  # published their artifacts to the GitHub release. Hits the live URLs
+  # electron-updater will later hit and verifies that every advertised
+  # file is reachable, that sha512 digests aren't truncated, and that
+  # the `version` field matches the tag. If any of those fails, the
+  # release is effectively broken for auto-update even though installs
+  # succeeded — so we flag the workflow red and page the maintainer
+  # before users start trying to update.
+  validate-update-metadata:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm install --omit=optional --no-audit --no-fund
+      # Give GitHub a beat to finalize asset uploads — the upload step
+      # returns before CDN edges can serve the new assets consistently.
+      - name: Wait for release CDN consistency
+        run: sleep 30
+      - name: Validate latest*.yml against live release
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BASE="https://github.com/codedev-david/termpolis/releases/download"
+          node scripts/validateLatestYml.cjs --version "$VERSION" --base "$BASE"

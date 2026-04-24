@@ -61,7 +61,8 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Termpolis"
+      "shortcutName": "Termpolis",
+      "artifactName": "${productName}.Setup.${version}.${ext}"
     },
     "mac": {
       "target": [

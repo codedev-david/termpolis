@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
+import { ReportProblemModal } from './ReportProblemModal'
 
-function HelpModal({ onClose }: { onClose: () => void }) {
+function HelpModal({ onClose, onReportProblem }: { onClose: () => void; onReportProblem: () => void }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg shadow-xl border border-[#3c3c3c] w-[560px] max-h-[85vh] flex flex-col">
@@ -341,6 +342,14 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               <i className="fa-solid fa-heart"></i>
               Sponsor this project
             </a>
+            <button
+              onClick={onReportProblem}
+              className="text-[#D97706] hover:underline text-sm flex items-center gap-1.5"
+              data-testid="help-report-problem"
+            >
+              <i className="fa-solid fa-bug"></i>
+              Report a problem
+            </button>
           </div>
           <button
             onClick={onClose}
@@ -358,6 +367,7 @@ interface StatusBarProps {
 
 export function StatusBar({ onSwarmClick }: StatusBarProps) {
   const [showHelp, setShowHelp] = useState(false)
+  const [showReport, setShowReport] = useState(false)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
 
@@ -405,7 +415,13 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
           >Help / Support</button>
         </div>
       </div>
-      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {showHelp && (
+        <HelpModal
+          onClose={() => setShowHelp(false)}
+          onReportProblem={() => { setShowHelp(false); setShowReport(true) }}
+        />
+      )}
+      {showReport && <ReportProblemModal onClose={() => setShowReport(false)} />}
     </>
   )
 }

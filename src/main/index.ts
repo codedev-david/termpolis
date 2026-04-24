@@ -243,6 +243,30 @@ ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+ipcMain.handle('diagnostics:collect', async () => {
+  try {
+    const { collectDiagnostics } = await import('./diagnostics')
+    return ok(collectDiagnostics())
+  } catch (e: any) { return err(e.message) }
+})
+
+// Open a URL in the user's default browser. Scoped to http(s) only —
+// refuse file://, javascript:, chrome:, etc. so a misbehaving renderer
+// cannot use this surface to launch local helpers or navigate to a
+// dangerous scheme. The Report-a-Problem flow is the only current caller.
+ipcMain.handle('shell:open-external', async (_, { url }: { url: string }) => {
+  try {
+    if (typeof url !== 'string') return err('url must be a string')
+    let parsed: URL
+    try { parsed = new URL(url) } catch { return err('invalid url') }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return err(`disallowed protocol: ${parsed.protocol}`)
+    }
+    await shell.openExternal(url)
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('shell:open-path', async (_, { path: pathStr }) => {
   try {
     const errorMsg = await shell.openPath(pathStr)

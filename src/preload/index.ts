@@ -62,6 +62,12 @@ const api: TermpolisAPI = {
   openPath: (path: string) =>
     ipcRenderer.invoke('shell:open-path', { path }),
 
+  collectDiagnostics: () =>
+    ipcRenderer.invoke('diagnostics:collect'),
+
+  openExternal: (url: string) =>
+    ipcRenderer.invoke('shell:open-external', { url }),
+
   completionPathEntries: (dirPath) =>
     ipcRenderer.invoke('completion:path-entries', { dirPath }),
 

@@ -116,6 +116,16 @@ export interface TermpolisAPI {
   getOllamaPath: () => Promise<IpcResponse<string | null>>
   pickDirectory: (defaultPath?: string) => Promise<IpcResponse<string | null>>
   openPath: (path: string) => Promise<IpcResponse>
+  openExternal: (url: string) => Promise<IpcResponse>
+  collectDiagnostics: () => Promise<IpcResponse<{
+    appVersion: string
+    platform: string
+    osRelease: string
+    arch: string
+    electronVersion: string
+    nodeVersion: string
+    chromeVersion: string
+  }>>
   getTerminalStatus: (terminalId: string, fallbackCwd: string) => Promise<IpcResponse<{ cwd: string; gitBranch: string }>>
   getGitInfo: (cwd: string) => Promise<IpcResponse<{ status: string; recentCommits: string }>>
   getGitDiff: (cwd: string) => Promise<IpcResponse<string>>
