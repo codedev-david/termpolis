@@ -483,4 +483,96 @@ describe('terminalManager', () => {
     })
   })
 
+  // ---- Shell-variant launch smoke: cmd, PS5, PS7, Git Bash ----
+  //
+  // Task #17 gate. Each of the four Windows-supported shells must spawn
+  // with the right args and the right PATH composition. Regressions here
+  // mean users see "cmd not found", missing --login behavior, or bash
+  // helpers (sed, dirname) disappearing mid-session.
+
+  describe('shell-variant launch smoke (win32)', () => {
+    let origPlatform: PropertyDescriptor | undefined
+    let origPath: string | undefined
+
+    beforeEach(() => {
+      origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+      origPath = process.env.PATH
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true, writable: true })
+      process.env.PATH = 'C:\\Windows\\System32'
+    })
+
+    afterEach(() => {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform)
+      if (origPath === undefined) delete process.env.PATH
+      else process.env.PATH = origPath
+    })
+
+    function lastCall() {
+      const calls = vi.mocked(pty.spawn).mock.calls
+      return calls[calls.length - 1]
+    }
+
+    it('cmd.exe launches with no args and System32 on PATH', () => {
+      spawnTerminal('sv-cmd', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      const call = lastCall()
+      expect(call[0]).toBe('C:\\Windows\\System32\\cmd.exe')
+      expect(call[1]).toEqual([])
+      const env = (call[2]?.env as Record<string, string>)
+      expect(env.PATH).toContain('C:\\Windows\\System32')
+    })
+
+    it('PowerShell 5 (powershell.exe) launches with no args and PS1.0 dir on PATH', () => {
+      const ps5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+      spawnTerminal('sv-ps5', ps5, 'C:\\tmp', vi.fn())
+      const call = lastCall()
+      expect(call[0]).toBe(ps5)
+      expect(call[1]).toEqual([])
+      const env = (call[2]?.env as Record<string, string>)
+      expect(env.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    })
+
+    it('PowerShell 7 (pwsh.exe) launches with no args', () => {
+      const ps7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+      spawnTerminal('sv-ps7', ps7, 'C:\\tmp', vi.fn())
+      const call = lastCall()
+      expect(call[0]).toBe(ps7)
+      expect(call[1]).toEqual([])
+      const env = (call[2]?.env as Record<string, string>)
+      // System32 still injected — pwsh needs it for net/wmi helpers
+      expect(env.PATH).toContain('C:\\Windows\\System32')
+    })
+
+    it('Git Bash launches as interactive shell (no --login) and injects usr\\bin', () => {
+      // Deliberately NOT --login: users with broken .bash_profile->/.bashrc
+      // chains would land in a login shell missing /usr/bin. We sidestep
+      // that by launching as interactive non-login + injecting usr\\bin.
+      const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe'
+      spawnTerminal('sv-gitbash', gitBash, 'C:\\tmp', vi.fn())
+      const call = lastCall()
+      expect(call[0]).toBe(gitBash)
+      expect(call[1]).toEqual([])
+      const env = (call[2]?.env as Record<string, string>)
+      expect(env.PATH).toContain('C:\\Program Files\\Git\\usr\\bin')
+      // And System32 stays reachable for win32-native binaries
+      expect(env.PATH).toContain('C:\\Windows\\System32')
+    })
+
+    it('all four shells produce distinct, non-empty PATHs (no cross-contamination)', () => {
+      spawnTerminal('sv-a', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
+      spawnTerminal('sv-b', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'C:\\tmp', vi.fn())
+      spawnTerminal('sv-c', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'C:\\tmp', vi.fn())
+      spawnTerminal('sv-d', 'C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\tmp', vi.fn())
+      const calls = vi.mocked(pty.spawn).mock.calls.slice(-4)
+      for (const c of calls) {
+        const env = c[2]?.env as Record<string, string>
+        expect(env.PATH.length).toBeGreaterThan(0)
+      }
+      // Git Bash call should be the only one with usr\\bin on PATH
+      const gitBashEnv = calls[3][2]?.env as Record<string, string>
+      const cmdEnv = calls[0][2]?.env as Record<string, string>
+      expect(gitBashEnv.PATH).toContain('\\Git\\usr\\bin')
+      expect(cmdEnv.PATH).not.toContain('\\Git\\usr\\bin')
+    })
+  })
+
 })

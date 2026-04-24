@@ -122,9 +122,11 @@ jobs:
           path: dist-electron-builder/linux-unpacked/
           retention-days: 3
 
-  # E2E smoke — one platform only, because Electron + Playwright on
-  # multiple matrix runners is expensive and brittle. Linux + xvfb keeps
-  # it cheap and deterministic.
+  # E2E smoke — Linux is the primary runner (xvfb keeps it cheap and
+  # deterministic). macOS piggybacks on chrome-smoke only (see e2e-smoke-macos
+  # below) so we can catch Darwin-specific regressions — node-pty native
+  # build drift, shell-detection path mismatches, Electron-on-arm64 quirks
+  # — without blowing CI minutes on the full suite.
   e2e-smoke:
     needs: static
     runs-on: ubuntu-latest
@@ -165,5 +167,46 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces
+          path: test-results/
+          retention-days: 7
+
+  # macOS e2e smoke: runs just the chrome-smoke spec on a real Darwin
+  # runner. We gate on a single spec because Electron+Playwright on macOS
+  # is slower per-spec than Linux (no xvfb — uses the native display), and
+  # the value is "prove it boots on Darwin" rather than "retest every
+  # screen." Failures here have historically surfaced node-pty rebuild
+  # issues and Info.plist / quarantine quirks that Linux never sees.
+  # Marked continue-on-error for the first few rollouts so macOS-runner
+  # flake doesn't block PRs while we stabilize the job.
+  e2e-smoke-macos:
+    needs: static
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Build
+        run: npm run build
+      - name: Smoke-click every sidebar button (macOS)
+        run: npx playwright test e2e/chrome-smoke.spec.ts
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces-macos
           path: test-results/
           retention-days: 7
