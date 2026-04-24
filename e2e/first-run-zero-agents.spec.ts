@@ -31,12 +31,21 @@ test.beforeAll(async () => {
   // Force a first-run-like session: no terminals, no workspaces. The
   // onboarding modal is keyed on a localStorage flag we don't touch, so
   // it may or may not appear — the tests tolerate either.
-  const sessionPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'session.json')
+  const userDataDir =
+    process.platform === 'win32'
+      ? path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis')
+      : process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
+        : path.join(os.homedir(), '.config', 'termpolis')
+  const sessionPath = path.join(userDataDir, 'session.json')
+  const cleanSession = JSON.stringify({
+    terminals: [],
+    workspaces: [],
+    defaultShell: process.platform === 'win32' ? 'powershell' : 'bash',
+    viewMode: 'tabs',
+  })
   if (fs.existsSync(sessionPath)) {
-    fs.writeFileSync(
-      sessionPath,
-      JSON.stringify({ terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs' }),
-    )
+    fs.writeFileSync(sessionPath, cleanSession)
   }
 
   app = await electron.launch({

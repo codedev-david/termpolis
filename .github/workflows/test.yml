@@ -170,14 +170,17 @@ jobs:
           path: test-results/
           retention-days: 7
 
-  # macOS e2e smoke: runs just the chrome-smoke spec on a real Darwin
-  # runner. We gate on a single spec because Electron+Playwright on macOS
-  # is slower per-spec than Linux (no xvfb — uses the native display), and
-  # the value is "prove it boots on Darwin" rather than "retest every
-  # screen." Failures here have historically surfaced node-pty rebuild
-  # issues and Info.plist / quarantine quirks that Linux never sees.
+  # macOS e2e smoke: Darwin runner exercising the core boot + first-run
+  # flows. Two specs intentionally:
+  #   - chrome-smoke: clicks every sidebar button, catches hooks/render
+  #     regressions and node-pty rebuild drift.
+  #   - first-run-zero-agents: proves a brand-new macOS user — no Claude,
+  #     no Codex, no Gemini, no Qwen — can still boot the app and open a
+  #     terminal. This is the path a first-time TestFlight reviewer hits.
+  #
   # Marked continue-on-error for the first few rollouts so macOS-runner
-  # flake doesn't block PRs while we stabilize the job.
+  # flake or platform-specific surprises don't block PRs while we stabilize.
+  # Flip this off once we've seen ~3 consecutive green runs on main.
   e2e-smoke-macos:
     needs: static
     runs-on: macos-latest
@@ -203,6 +206,8 @@ jobs:
         run: npm run build
       - name: Smoke-click every sidebar button (macOS)
         run: npx playwright test e2e/chrome-smoke.spec.ts
+      - name: First-run with zero AI agents installed (macOS)
+        run: npx playwright test e2e/first-run-zero-agents.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
