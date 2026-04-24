@@ -10,6 +10,8 @@ const {
   resetRateLimits,
   startMcpServer,
   stopMcpServer,
+  awaitMcpPortBound,
+  _resetPortStateForTest,
 } = await import('../../src/main/mcpServer')
 
 // --- Helpers ---
@@ -163,16 +165,11 @@ describe('MCP HTTP server', () => {
   const token = getMcpAuthToken()
 
   beforeAll(async () => {
+    _resetPortStateForTest()
     server = startMcpServer(handlers)
-    // Wait for the server to be listening and grab the actual port
-    await new Promise<void>((resolve, reject) => {
-      server.on('listening', () => {
-        const addr = server.address() as { port: number }
-        port = addr.port
-        resolve()
-      })
-      server.on('error', reject)
-    })
+    // Use the port-bound helper — it survives EADDRINUSE fallback so tests
+    // still pass when port 9315 is occupied by a running dev Termpolis.
+    port = await awaitMcpPortBound()
   })
 
   afterAll(async () => {

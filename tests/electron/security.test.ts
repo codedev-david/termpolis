@@ -196,6 +196,7 @@ vi.mock('../../src/main/mcpServer', () => ({
   startMcpServer: vi.fn(), stopMcpServer: vi.fn(),
   getMcpAuthToken: vi.fn(() => 'fake-token'), getMcpPort: vi.fn(() => 9315),
   initAuditLog: vi.fn(),
+  awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
 }))
 vi.mock('../../src/main/swarmManager', () => ({
   sendMessage: vi.fn(), readMessages: vi.fn(() => []), getAllMessages: vi.fn(() => []),

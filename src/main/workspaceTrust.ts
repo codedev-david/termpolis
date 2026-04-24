@@ -56,6 +56,11 @@ function save() {
   if (!storePath) return
   try {
     ensureDir(storePath)
+    // Intra-process: Node sync I/O can't interleave, so rapid
+    // trust/revoke calls serialize safely.
+    // Cross-process: if two Termpolis instances race, last-writer-wins.
+    // That's acceptable — each instance's in-memory Set is authoritative
+    // for that instance, and the disk copy is just a boot-time cache.
     writeSecureFile(storePath, JSON.stringify({ paths: [...trusted] }, null, 2))
   } catch {
     // Non-fatal: trust becomes in-memory only for this session.

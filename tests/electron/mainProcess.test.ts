@@ -145,6 +145,9 @@ vi.mock('../../src/main/mcpServer', () => ({
   getMcpAuthToken: vi.fn(() => 'fake-token'),
   getMcpPort: vi.fn(() => 9315),
   initAuditLog: vi.fn(),
+  // Port-bound readiness — resolve immediately so index.ts's .then(...)
+  // runs synchronously during module import without a real server bind.
+  awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
 }))
 
 vi.mock('../../src/main/agentCommandSanitizer', () => ({

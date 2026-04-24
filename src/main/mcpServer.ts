@@ -3,7 +3,14 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 
-const MCP_PORT = 9315 // "TERM" on phone keypad
+const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
+
+// Read base port on each call so tests can override via env var without
+// having to reload the module. Production always falls through to 9315.
+function getBasePort(): number {
+  const v = parseInt(process.env.TERMPOLIS_MCP_BASE_PORT ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : MCP_PORT_DEFAULT
+}
 
 // Generate a random auth token on each app launch — prevents unauthorized access
 const MCP_AUTH_TOKEN = crypto.randomBytes(32).toString('hex')
@@ -437,10 +444,49 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
   }
 }
 
-let actualPort = MCP_PORT
+let actualPort: number | null = null
+let portBoundResolvers: Array<(port: number) => void> = []
+let portBoundRejectors: Array<(err: Error) => void> = []
+// Max consecutive fallback ports to try. 5 covers reasonable
+// multi-instance cases without trying the entire ephemeral range.
+const MCP_PORT_FALLBACK_LIMIT = 5
+
+// Promise-based port readiness — callers that need the bound port
+// (writing mcp-port file, auto-registering with AI agents) should await
+// this instead of racing against server.listen().
+export function awaitMcpPortBound(): Promise<number> {
+  if (actualPort !== null) return Promise.resolve(actualPort)
+  return new Promise<number>((resolve, reject) => {
+    portBoundResolvers.push(resolve)
+    portBoundRejectors.push(reject)
+  })
+}
+
+function resolvePortBound(port: number) {
+  actualPort = port
+  for (const r of portBoundResolvers) r(port)
+  portBoundResolvers = []
+  portBoundRejectors = []
+}
+
+function rejectPortBound(err: Error) {
+  for (const r of portBoundRejectors) r(err)
+  portBoundResolvers = []
+  portBoundRejectors = []
+}
 
 export function getMcpPort(): number {
-  return actualPort
+  // Returns the base port as a best-effort fallback before the server has bound.
+  // Callers that need the definitive port should await awaitMcpPortBound().
+  return actualPort ?? getBasePort()
+}
+
+// Exported for test visibility — resets port state between test cases
+// so server.listen → port-bound promise can be re-observed from a fresh slate.
+export function _resetPortStateForTest(): void {
+  actualPort = null
+  portBoundResolvers = []
+  portBoundRejectors = []
 }
 
 export function startMcpServer(handlers: McpToolHandlers): http.Server {
@@ -558,23 +604,53 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     res.end()
   })
 
-  server.listen(MCP_PORT, '127.0.0.1', () => {
-    actualPort = MCP_PORT
-    console.log(`Termpolis MCP server listening on http://127.0.0.1:${MCP_PORT}`)
-  })
+  // Port-fallback loop: walk basePort..basePort+FALLBACK_LIMIT-1 until one
+  // binds. Each EADDRINUSE re-attaches a fresh listener on the next port;
+  // running out of candidates rejects awaitMcpPortBound so callers can
+  // surface a clear failure instead of hanging forever.
+  //
+  // Note: we register the 'listening' handler manually (not via server.listen's
+  // callback arg) because listen's callback is added as a persistent listener —
+  // a failed listen leaves it registered, so a later successful retry would
+  // fire stale handlers with the wrong port closure. We detach on EADDRINUSE.
+  const basePort = getBasePort()
+  let attempt = 0
+  let currentOnListening: (() => void) | null = null
 
-  // Don't crash if port is taken — try next port
+  const tryListen = () => {
+    const candidate = basePort + attempt
+    currentOnListening = () => {
+      console.log(`Termpolis MCP server listening on http://127.0.0.1:${candidate}`)
+      resolvePortBound(candidate)
+    }
+    server.once('listening', currentOnListening)
+    server.listen(candidate, '127.0.0.1')
+  }
+
   server.on('error', (e: any) => {
     if (e.code === 'EADDRINUSE') {
-      const nextPort = MCP_PORT + 1
-      console.warn(`MCP port ${MCP_PORT} in use, trying ${nextPort}`)
-      server.listen(nextPort, '127.0.0.1', () => {
-        actualPort = nextPort
-        console.log(`Termpolis MCP server listening on http://127.0.0.1:${nextPort}`)
-      })
+      if (currentOnListening) {
+        server.removeListener('listening', currentOnListening)
+        currentOnListening = null
+      }
+      attempt += 1
+      if (attempt >= MCP_PORT_FALLBACK_LIMIT) {
+        const err = new Error(
+          `MCP server could not bind any port in range ${basePort}..${basePort + MCP_PORT_FALLBACK_LIMIT - 1}`,
+        )
+        console.error(err.message)
+        rejectPortBound(err)
+        return
+      }
+      console.warn(`MCP port ${basePort + attempt - 1} in use, trying ${basePort + attempt}`)
+      tryListen()
+    } else {
+      console.error('MCP server error:', e)
+      rejectPortBound(e)
     }
   })
 
+  tryListen()
   return server
 }
 

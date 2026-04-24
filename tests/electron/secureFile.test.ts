@@ -32,8 +32,8 @@ describe('writeSecureFile', () => {
   let originalUser: string | undefined
 
   beforeEach(() => {
-    mockWriteFileSync.mockClear()
-    mockExecFileSync.mockClear()
+    mockWriteFileSync.mockReset()
+    mockExecFileSync.mockReset()
     originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
     originalUsername = process.env.USERNAME
     originalUser = process.env.USER
@@ -137,5 +137,136 @@ describe('writeSecureFile', () => {
       expect(call[2].shell).toBe(false)
       expect(call[2].windowsHide).toBe(true)
     }
+  })
+
+  // OneDrive sync, AV scanners, backup agents briefly lock files on Windows.
+  // writeSecureFile must retry transient EBUSY/EPERM/EACCES instead of
+  // crashing the main process during MCP token write on boot.
+  describe('write retry on transient Windows locks', () => {
+    it('retries EBUSY and succeeds within MAX_WRITE_ATTEMPTS', async () => {
+      setPlatform('linux')
+      let calls = 0
+      mockWriteFileSync.mockImplementation(() => {
+        calls++
+        if (calls < 3) {
+          const e: any = new Error('resource busy')
+          e.code = 'EBUSY'
+          throw e
+        }
+      })
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      const r = writeSecureFile('/tmp/t', 'x')
+      expect(calls).toBe(3)
+      expect(r.writeRetries).toBe(2)
+    })
+
+    it('retries EPERM (OneDrive) and succeeds', async () => {
+      setPlatform('linux')
+      let calls = 0
+      mockWriteFileSync.mockImplementation(() => {
+        calls++
+        if (calls === 1) {
+          const e: any = new Error('EPERM: operation not permitted')
+          e.code = 'EPERM'
+          throw e
+        }
+      })
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      const r = writeSecureFile('/tmp/t', 'x')
+      expect(r.writeRetries).toBe(1)
+    })
+
+    it('gives up after MAX_WRITE_ATTEMPTS and rethrows', async () => {
+      setPlatform('linux')
+      mockWriteFileSync.mockImplementation(() => {
+        const e: any = new Error('still locked')
+        e.code = 'EBUSY'
+        throw e
+      })
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      expect(() => writeSecureFile('/tmp/t', 'x')).toThrowError(/still locked/)
+      // Hard-coded to the retry budget in secureFile.ts (4 attempts)
+      expect(mockWriteFileSync).toHaveBeenCalledTimes(4)
+    }, 10000)
+
+    it('non-retryable errors bubble immediately (no retry)', async () => {
+      setPlatform('linux')
+      mockWriteFileSync.mockImplementation(() => {
+        const e: any = new Error('ENOSPC: no space left')
+        e.code = 'ENOSPC'
+        throw e
+      })
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      expect(() => writeSecureFile('/tmp/t', 'x')).toThrowError(/ENOSPC/)
+      expect(mockWriteFileSync).toHaveBeenCalledTimes(1)
+    })
+
+    it('writeRetries is 0 on first-try success', async () => {
+      setPlatform('linux')
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      const r = writeSecureFile('/tmp/t', 'x')
+      expect(r.writeRetries).toBe(0)
+    })
+  })
+
+  // Real Windows usernames can contain unicode, spaces, backslashes (DOMAIN\user),
+  // or be shell-meta-like. We strip to [A-Za-z0-9._\\-]: safe for icacls argv,
+  // degrades gracefully (aclApplied:false) for non-ASCII accounts.
+  describe('USERNAME edge cases', () => {
+    it('preserves DOMAIN\\user', async () => {
+      setPlatform('win32')
+      process.env.USERNAME = 'CORP\\jane'
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      writeSecureFile('C:\\f', 'x')
+      expect(mockExecFileSync.mock.calls[1][1][2]).toBe('CORP\\jane:F')
+    })
+
+    it('strips spaces (real account "David Engelhart" → "DavidEngelhart")', async () => {
+      setPlatform('win32')
+      process.env.USERNAME = 'David Engelhart'
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      writeSecureFile('C:\\f', 'x')
+      expect(mockExecFileSync.mock.calls[1][1][2]).toBe('DavidEngelhart:F')
+    })
+
+    it('strips unicode (José → Jos); icacls will fail, aclApplied:false', async () => {
+      setPlatform('win32')
+      process.env.USERNAME = 'José'
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error('icacls: No mapping between account names')
+      })
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      const r = writeSecureFile('C:\\f', 'x')
+      expect(r.aclApplied).toBe(false)
+      expect(r.aclError).toContain('No mapping')
+      expect(mockWriteFileSync).toHaveBeenCalled()
+    })
+
+    it('strips shell metacharacters ($me%admin`)', async () => {
+      setPlatform('win32')
+      process.env.USERNAME = '$me%admin`'
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      writeSecureFile('C:\\f', 'x')
+      expect(mockExecFileSync.mock.calls[1][1][2]).toBe('meadmin:F')
+    })
+
+    it('all-unicode USERNAME becomes empty → no icacls call, not thrown', async () => {
+      setPlatform('win32')
+      process.env.USERNAME = 'やまだ'
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      const r = writeSecureFile('C:\\f', 'x')
+      expect(r.aclApplied).toBe(false)
+      expect(r.aclError).toContain('USERNAME')
+      expect(mockExecFileSync).not.toHaveBeenCalled()
+    })
+
+    it('falls back to USER if USERNAME absent (MSYS/Git Bash on Windows)', async () => {
+      setPlatform('win32')
+      delete process.env.USERNAME
+      process.env.USER = 'david'
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      writeSecureFile('C:\\f', 'x')
+      expect(mockExecFileSync.mock.calls[1][1][2]).toBe('david:F')
+    })
   })
 })

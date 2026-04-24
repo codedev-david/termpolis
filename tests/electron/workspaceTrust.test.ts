@@ -125,6 +125,42 @@ describe('workspaceTrust store', () => {
     expect(list[0]).toContain('ok')
   })
 
+  it('50 rapid trust calls all persist (no lost updates)', async () => {
+    const m = await freshModule()
+    m.initWorkspaceTrust(dir)
+    const paths = Array.from({ length: 50 }, (_, i) => join(dir, `proj-${i}`))
+    for (const p of paths) m.trustWorkspace(p)
+    const list = m.listTrustedWorkspaces()
+    expect(list).toHaveLength(50)
+    // Reload from disk — verify every one hit the store
+    const reloaded = await freshModule()
+    reloaded.initWorkspaceTrust(dir)
+    const fromDisk = new Set(reloaded.listTrustedWorkspaces())
+    for (const p of paths) expect(fromDisk.has(p)).toBe(true)
+  })
+
+  it('long path (>260 chars) does not break trust check', async () => {
+    const m = await freshModule()
+    m.initWorkspaceTrust(dir)
+    // Windows historically caps at MAX_PATH=260 without LongPathsEnabled.
+    // We never open the folder — just store the string — so this should
+    // round-trip regardless of OS path-length limits.
+    const long = join(dir, 'a'.repeat(120), 'b'.repeat(120), 'c'.repeat(120))
+    m.trustWorkspace(long)
+    expect(m.isWorkspaceTrusted(long)).toBe(true)
+  })
+
+  it('cwd with spaces and unicode persists round-trip', async () => {
+    const m = await freshModule()
+    m.initWorkspaceTrust(dir)
+    const weird = join(dir, 'First Last', 'プロジェクト', 'my repo')
+    m.trustWorkspace(weird)
+    expect(m.isWorkspaceTrusted(weird)).toBe(true)
+    const reloaded = await freshModule()
+    reloaded.initWorkspaceTrust(dir)
+    expect(reloaded.isWorkspaceTrusted(weird)).toBe(true)
+  })
+
   it('rejects non-string cwd gracefully', async () => {
     const m = await freshModule()
     m.initWorkspaceTrust(dir)

@@ -27,7 +27,7 @@ import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, initAuditLog, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
 import {
   sendMessage, readMessages, getAllMessages,
   createTask, listTasks, updateTask, clearSwarm,
@@ -79,6 +79,12 @@ import {
   listTrustedWorkspaces,
   ensureWorkspaceTrust,
 } from './workspaceTrust'
+import {
+  registerInClaudeSettings,
+  registerInGlobalMcp,
+  registerInCodex,
+  registerInGemini,
+} from './agentMcpRegistry'
 
 function createWindow() {
   const iconPath = join(__dirname, '../../assets/logo-termpolis.png')
@@ -978,16 +984,19 @@ if (!gotTheLock) {
       console.warn(`[mcp-token] ACL not applied on ${tokenPath}: ${tokenWrite.aclError}`)
     }
     console.log(`MCP token written to: ${tokenPath}`)
-    // Write the actual port (may differ from 9315 if port was taken)
+    // Write the actual port (may differ from 9315 if port was taken).
+    // awaitMcpPortBound resolves when server.listen succeeds on any of the
+    // 5 candidate ports — unlike the old setTimeout(500, ...) this can't race.
     const portPath = join(app.getPath('userData'), 'mcp-port')
-    // Port is written after a short delay to ensure the server has bound (including fallback)
-    setTimeout(() => {
-      const portWrite = writeSecureFile(portPath, String(getMcpPort()))
+    awaitMcpPortBound().then((boundPort) => {
+      const portWrite = writeSecureFile(portPath, String(boundPort))
       if (!portWrite.aclApplied) {
         console.warn(`[mcp-port] ACL not applied on ${portPath}: ${portWrite.aclError}`)
       }
-      console.log(`MCP port written to: ${portPath} (port ${getMcpPort()})`)
-    }, 1000)
+      console.log(`MCP port written to: ${portPath} (port ${boundPort})`)
+    }).catch((err) => {
+      console.error(`[mcp-port] Failed to bind MCP server, port file not written: ${err.message}`)
+    })
 
     // Auto-register Termpolis as an MCP server in Claude Code's settings
     const adapterPath = app.isPackaged
@@ -1012,87 +1021,22 @@ if (!gotTheLock) {
     const mcpConfig = { mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }
     require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
 
-    // Auto-inject into Claude Code's global settings (~/.claude/settings.json)
-    // Registers MCP server + auto-trusts all Termpolis tools
-    // Uses atomic write (write to temp, then rename) to avoid race conditions
-    try {
+    // Auto-inject into Claude Code's global settings (~/.claude/settings.json).
+    // Registers MCP server + auto-trusts all Termpolis tools. All robustness
+    // (corrupt JSON, missing file, wrong types, atomic write) lives in the helper.
+    {
       const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
-      if (require('fs').existsSync(claudeSettingsPath)) {
-        const settings = JSON.parse(require('fs').readFileSync(claudeSettingsPath, 'utf-8'))
-        let changed = false
-
-        // Register MCP server
-        if (!settings.mcpServers) settings.mcpServers = {}
-        const existing = settings.mcpServers.termpolis
-        if (!existing || existing.args?.[0] !== adapterPath) {
-          settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
-          changed = true
-        }
-
-        // Auto-trust all Termpolis MCP tools so Claude doesn't prompt every time
-        if (!settings.permissions) settings.permissions = {}
-        if (!settings.permissions.allow) settings.permissions.allow = []
-        const termpolisTools = [
-          'mcp__termpolis__list_terminals',
-          'mcp__termpolis__create_terminal',
-          'mcp__termpolis__run_command',
-          'mcp__termpolis__read_output',
-          'mcp__termpolis__close_terminal',
-          'mcp__termpolis__write_to_terminal',
-          'mcp__termpolis__get_file_tree',
-          'mcp__termpolis__get_git_status',
-          'mcp__termpolis__swarm_send_message',
-          'mcp__termpolis__swarm_read_messages',
-          'mcp__termpolis__swarm_create_task',
-          'mcp__termpolis__swarm_list_tasks',
-          'mcp__termpolis__swarm_update_task',
-          'mcp__termpolis__swarm_list_agents',
-        ]
-        // Remove old (*) style entries (no longer valid in Claude Code)
-        const oldEntries = settings.permissions.allow.filter((p: string) => p.startsWith('mcp__termpolis__') && p.endsWith('(*)'))
-        if (oldEntries.length > 0) {
-          settings.permissions.allow = settings.permissions.allow.filter((p: string) => !oldEntries.includes(p))
-          changed = true
-        }
-
-        // Use wildcard rule — covers all current and future termpolis tools
-        if (!settings.permissions.allow.includes('mcp__termpolis__*')) {
-          settings.permissions.allow.push('mcp__termpolis__*')
-          changed = true
-        }
-
-        if (changed) {
-          const tmpPath = claudeSettingsPath + '.tmp'
-          require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
-          require('fs').renameSync(tmpPath, claudeSettingsPath)
-          console.log('Auto-registered Termpolis MCP server and tool permissions in Claude Code settings')
-        }
-      }
-    } catch (e) {
-      console.log('Could not auto-register in Claude Code settings (non-fatal):', (e as any).message)
+      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath)
+      if (r.changed) console.log('Auto-registered Termpolis MCP server and tool permissions in Claude Code settings')
+      else if (r.error) console.log('Could not auto-register in Claude Code settings (non-fatal):', r.skipped, r.error)
     }
 
-    // Also write to ~/.mcp.json (global MCP config that Claude Code actually loads)
-    try {
+    // Also write to ~/.mcp.json (global MCP config that Claude Code actually loads).
+    {
       const globalMcpPath = join(homedir(), '.mcp.json')
-      let globalMcp: any = {}
-      if (require('fs').existsSync(globalMcpPath)) {
-        try { globalMcp = JSON.parse(require('fs').readFileSync(globalMcpPath, 'utf-8')) } catch {}
-      }
-      // Claude Code expects { mcpServers: { name: { command, args } } }
-      if (!globalMcp.mcpServers) globalMcp.mcpServers = {}
-      const existingGlobal = globalMcp.mcpServers.termpolis
-      if (!existingGlobal || existingGlobal.args?.[0] !== adapterPath) {
-        globalMcp.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
-        // Clean up old root-level entry if present (from previous versions)
-        delete globalMcp.termpolis
-        const tmpPath = globalMcpPath + '.tmp'
-        require('fs').writeFileSync(tmpPath, JSON.stringify(globalMcp, null, 2), 'utf-8')
-        require('fs').renameSync(tmpPath, globalMcpPath)
-        console.log('Auto-registered Termpolis in global ~/.mcp.json')
-      }
-    } catch (e) {
-      console.log('Could not write ~/.mcp.json (non-fatal):', (e as any).message)
+      const r = registerInGlobalMcp(globalMcpPath, adapterPath)
+      if (r.changed) console.log('Auto-registered Termpolis in global ~/.mcp.json')
+      else if (r.error) console.log('Could not write ~/.mcp.json (non-fatal):', r.skipped, r.error)
     }
 
     // Register as a Claude Code local plugin (this is how Claude actually loads MCP servers)
@@ -1185,39 +1129,19 @@ if (!gotTheLock) {
     }
 
     // Auto-register in Codex CLI (~/.codex/config.toml)
-    try {
+    {
       const codexConfigPath = join(homedir(), '.codex', 'config.toml')
-      if (require('fs').existsSync(codexConfigPath)) {
-        const content = require('fs').readFileSync(codexConfigPath, 'utf-8')
-        if (!content.includes('[mcp_servers.termpolis]')) {
-          const tomlEntry = `\n[mcp_servers.termpolis]\ncommand = "node"\nargs = ["${adapterPath.replace(/\\/g, '\\\\')}"]\n`
-          require('fs').appendFileSync(codexConfigPath, tomlEntry, 'utf-8')
-          console.log('Auto-registered Termpolis MCP server in Codex CLI config')
-        }
-      }
-    } catch (e) {
-      console.log('Could not register in Codex config (non-fatal):', (e as any).message)
+      const r = registerInCodex(codexConfigPath, adapterPath)
+      if (r.changed) console.log('Auto-registered Termpolis MCP server in Codex CLI config')
+      else if (r.error) console.log('Could not register in Codex config (non-fatal):', r.skipped, r.error)
     }
 
     // Auto-register in Gemini CLI (~/.gemini/settings.json)
-    try {
+    {
       const geminiSettingsPath = join(homedir(), '.gemini', 'settings.json')
-      if (require('fs').existsSync(geminiSettingsPath)) {
-        const settings = JSON.parse(require('fs').readFileSync(geminiSettingsPath, 'utf-8'))
-        if (!settings.mcpServers) settings.mcpServers = {}
-        if (!settings.mcpServers.termpolis) {
-          settings.mcpServers.termpolis = {
-            command: 'node',
-            args: [adapterPath],
-          }
-          const tmpPath = geminiSettingsPath + '.tmp'
-          require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
-          require('fs').renameSync(tmpPath, geminiSettingsPath)
-          console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
-        }
-      }
-    } catch (e) {
-      console.log('Could not register in Gemini settings (non-fatal):', (e as any).message)
+      const r = registerInGemini(geminiSettingsPath, adapterPath)
+      if (r.changed) console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
+      else if (r.error) console.log('Could not register in Gemini settings (non-fatal):', r.skipped, r.error)
     }
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
