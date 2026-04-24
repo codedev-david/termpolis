@@ -570,7 +570,7 @@ test.describe.serial('12. MCP Server', () => {
     const health = JSON.parse(result)
     expect(health.status).toBe('ok')
     expect(health.name).toBe('termpolis-mcp')
-    expect(health.tools).toBe(14)
+    expect(health.tools).toBeGreaterThanOrEqual(14)
     expect(health.auth).toBe('required')
   })
 

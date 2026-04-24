@@ -119,6 +119,16 @@ const api: TermpolisAPI = {
   swarmRunCommand: (cwd, command) =>
     ipcRenderer.invoke('swarm:run-command', { cwd, command }),
 
+  // Workspace trust
+  workspaceIsTrusted: (cwd) =>
+    ipcRenderer.invoke('workspace:is-trusted', { cwd }),
+  workspaceTrust: (cwd) =>
+    ipcRenderer.invoke('workspace:trust', { cwd }),
+  workspaceRevokeTrust: (cwd) =>
+    ipcRenderer.invoke('workspace:revoke-trust', { cwd }),
+  workspaceListTrusted: () =>
+    ipcRenderer.invoke('workspace:list-trusted'),
+
   // Shared swarm memory (RAG)
   memoryWrite: (input) => ipcRenderer.invoke('memory:write', input),
   memorySearch: (opts) => ipcRenderer.invoke('memory:search', opts),

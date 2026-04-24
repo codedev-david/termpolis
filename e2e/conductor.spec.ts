@@ -57,6 +57,10 @@ test.beforeAll(async () => {
       NODE_ENV: 'test',
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
+      // Bypass the native directory picker: pickDirectory returns this path
+      // directly so the wizard can advance past the Preparing step without a
+      // real OS dialog (which Playwright can't dismiss).
+      TERMPOLIS_TEST_PROJECT_CWD: path.resolve('.'),
     },
   })
   page = await app.firstWindow()
@@ -101,8 +105,11 @@ test.describe.serial('Conductor Wizard', () => {
   })
 
   test('2. Start Swarm button opens wizard', async () => {
-    // The wizard no longer auto-opens; click "Start Swarm" to open it
-    const startBtn = page.locator('button:has-text("Start Swarm")').first()
+    // The wizard no longer auto-opens; click the Dashboard's "Start Swarm"
+    // button. Scope to the fixed-positioned dashboard panel to avoid matching
+    // the Welcome screen's Start Swarm tile (test 1 opened the dashboard,
+    // so both are in the DOM).
+    const startBtn = page.locator('.fixed').locator('button:has-text("Start Swarm")').first()
     await expect(startBtn).toBeVisible({ timeout: 3000 })
     await startBtn.click()
     await page.waitForTimeout(500)
@@ -168,7 +175,11 @@ test.describe.serial('Conductor Wizard', () => {
       // Create a mock wizard overlay for the describe step
       const overlay = document.createElement('div')
       overlay.id = 'mock-wizard-overlay'
-      overlay.className = 'fixed inset-0 z-[60] flex items-center justify-center bg-black/60'
+      overlay.className = 'fixed inset-0 flex items-center justify-center bg-black/60'
+      // Use inline z-index — Tailwind JIT doesn't see dynamically-injected
+      // arbitrary-value classes like z-[60], so the class alone would compute
+      // to auto and the overlay would stack below the real wizard's z-50.
+      overlay.style.zIndex = '9999'
       overlay.innerHTML = `
         <div class="bg-[#1e1e1e] border border-[#3c3c3c] rounded-xl shadow-2xl w-[640px] max-w-[90vw] max-h-[85vh] flex flex-col">
           <div class="flex items-center justify-between px-5 py-3 border-b border-[#3c3c3c]">
@@ -315,8 +326,14 @@ test.describe.serial('Conductor Wizard', () => {
       )
     })
 
-    // Click Clear
+    // Click Clear — this now shows a confirmation dialog
     await clearBtn.click()
+    await page.waitForTimeout(300)
+    // Confirm the clear (dialog shows a "Clear Swarm" confirm button)
+    const confirmBtn = page.locator('button:has-text("Clear Swarm")').last()
+    if (await confirmBtn.isVisible().catch(() => false)) {
+      await confirmBtn.click()
+    }
     await page.waitForTimeout(1000)
 
     // Verify tasks were cleared

@@ -48,9 +48,14 @@ exports.default = async function notarizing(context) {
     console.error(`[notarize] ✗ Notarization FAILED after ${elapsed}s`)
     console.error(`[notarize] Error message: ${e.message}`)
     console.error(`[notarize] Full error:`, e)
-    // Don't throw — let the build continue so DMGs still upload
-    // The error is logged above for diagnosis
-    console.error(`[notarize] Build will continue WITHOUT notarization`)
+    // In CI we re-throw so the release build fails loudly rather than shipping
+    // an un-notarized DMG that triggers Gatekeeper warnings for every user.
+    // Local/dev builds keep the soft-fail so engineers iterating without an
+    // Apple ID aren't blocked.
+    if (process.env.CI === 'true' || process.env.CI === '1') {
+      throw new Error(`Notarization failed in CI: ${e.message}`)
+    }
+    console.error(`[notarize] Dev build — continuing WITHOUT notarization`)
     console.error(`[notarize] Users will need to right-click > Open to bypass Gatekeeper`)
   }
 }

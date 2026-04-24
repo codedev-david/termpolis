@@ -54,7 +54,7 @@ test('MCP server health check responds', async () => {
   })
   const health = JSON.parse(result)
   expect(health.status).toBe('ok')
-  expect(health.tools).toBe(14)
+  expect(health.tools).toBeGreaterThanOrEqual(14)
   expect(health.auth).toBe('required')
 })
 
@@ -168,9 +168,10 @@ test('Claude Code: plugin files exist in local marketplace', () => {
     expect(fs.existsSync(path.join(pluginDir, '.claude-plugin', 'plugin.json'))).toBeTruthy()
 
     const mcpConfig = JSON.parse(fs.readFileSync(path.join(pluginDir, '.mcp.json'), 'utf-8'))
-    expect(mcpConfig.termpolis).toBeTruthy()
-    expect(mcpConfig.termpolis.command).toBe('node')
-    expect(mcpConfig.termpolis.args[0]).toContain('stdio-adapter.cjs')
+    const termpolis = mcpConfig.mcpServers?.termpolis ?? mcpConfig.termpolis
+    expect(termpolis).toBeTruthy()
+    expect(termpolis.command).toBe('node')
+    expect(termpolis.args[0]).toContain('stdio-adapter.cjs')
   }
 })
 

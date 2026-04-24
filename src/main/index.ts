@@ -69,6 +69,16 @@ const mcpCreatedTerminals = new Set<string>()
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
+import { safeGit, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
+import { writeSecureFile } from './secureFile'
+import {
+  initWorkspaceTrust,
+  isWorkspaceTrusted,
+  trustWorkspace,
+  revokeWorkspaceTrust,
+  listTrustedWorkspaces,
+  ensureWorkspaceTrust,
+} from './workspaceTrust'
 
 function createWindow() {
   const iconPath = join(__dirname, '../../assets/logo-termpolis.png')
@@ -238,6 +248,7 @@ ipcMain.handle('shell:open-path', async (_, { path: pathStr }) => {
 ipcMain.handle('dialog:pick-directory', async (_, { defaultPath }) => {
   try {
     if (process.env.TERMPOLIS_TEST_PROJECT_CWD) {
+      trustWorkspace(process.env.TERMPOLIS_TEST_PROJECT_CWD)
       return ok(process.env.TERMPOLIS_TEST_PROJECT_CWD)
     }
     const result = await dialog.showOpenDialog(mainWindow!, {
@@ -246,6 +257,10 @@ ipcMain.handle('dialog:pick-directory', async (_, { defaultPath }) => {
       title: 'Choose project directory',
     })
     if (result.canceled || !result.filePaths[0]) return ok(null)
+    // Picking a folder through the native dialog is an explicit user
+    // action — auto-trust so the user isn't double-prompted before the
+    // first swarm run.
+    trustWorkspace(result.filePaths[0])
     return ok(result.filePaths[0])
   } catch (e: any) { return err(e.message) }
 })
@@ -267,7 +282,7 @@ ipcMain.handle('completion:env-vars', async () => {
 
 ipcMain.handle('terminal:git-diff', async (_, { cwd }) => {
   try {
-    const diff = execSync('git diff --stat', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString().trim()
+    const diff = safeGit(['diff', '--stat'], { cwd, timeout: 5000 }).trim()
     return ok(diff)
   } catch { return ok('') }
 })
@@ -275,16 +290,16 @@ ipcMain.handle('terminal:git-diff', async (_, { cwd }) => {
 // Git operations for the Git Panel
 ipcMain.handle('git:stage', async (_, { cwd, files }: { cwd: string; files: string[] }) => {
   try {
-    const args = files.length > 0 ? files.map(f => `"${f}"`).join(' ') : '.'
-    execSync(`git add ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true })
+    const args = files.length > 0 ? ['add', '--', ...files] : ['add', '.']
+    safeGit(args, { cwd, timeout: 10000 })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: string[] }) => {
   try {
-    const args = files.length > 0 ? files.map(f => `"${f}"`).join(' ') : '.'
-    execSync(`git reset HEAD ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true })
+    const args = files.length > 0 ? ['reset', 'HEAD', '--', ...files] : ['reset', 'HEAD', '.']
+    safeGit(args, { cwd, timeout: 10000 })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -292,35 +307,35 @@ ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: st
 ipcMain.handle('git:commit', async (_, { cwd, message }: { cwd: string; message: string }) => {
   try {
     if (!message.trim()) return err('Commit message cannot be empty')
-    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000, windowsHide: true })
+    safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:pull', async (_, { cwd }: { cwd: string }) => {
   try {
-    const output = execSync('git pull', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000, windowsHide: true }).toString().trim()
+    const output = safeGit(['pull'], { cwd, timeout: 60000 }).trim()
     return ok(output)
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:push', async (_, { cwd }: { cwd: string }) => {
   try {
-    const output = execSync('git push', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000, windowsHide: true }).toString().trim()
+    const output = safeGit(['push'], { cwd, timeout: 60000 }).trim()
     return ok(output)
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:file-diff', async (_, { cwd, file }: { cwd: string; file: string }) => {
   try {
-    const diff = execSync(`git diff -- "${file}"`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString()
+    const diff = safeGit(['diff', '--', file], { cwd, timeout: 5000 })
     return ok(diff)
   } catch { return ok('') }
 })
 
 ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
   try {
-    const root = execSync('git rev-parse --show-toplevel', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+    const root = safeGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }).trim()
     return ok(root)
   } catch { return ok(null) }
 })
@@ -330,7 +345,7 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
 // review mode cleanly.
 ipcMain.handle('git:rev-parse-head', async (_, { cwd }: { cwd: string }) => {
   try {
-    const sha = execSync('git rev-parse HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+    const sha = safeGit(['rev-parse', 'HEAD'], { cwd, timeout: 3000 }).trim()
     return ok(sha)
   } catch { return ok(null) }
 })
@@ -339,15 +354,12 @@ ipcMain.handle('git:rev-parse-head', async (_, { cwd }: { cwd: string }) => {
 // working tree + index so uncommitted swarm changes are included.
 ipcMain.handle('git:diff-range', async (_, { cwd, from, to }: { cwd: string; from: string; to?: string }) => {
   try {
+    if (!isValidGitRef(from)) return err('Invalid "from" ref')
+    if (to !== undefined && !isValidGitRef(to)) return err('Invalid "to" ref')
     const range = to ? `${from}..${to}` : from
-    // --no-color keeps the output parseable; --no-ext-diff avoids user diff drivers
-    const args = to
-      ? ['diff', '--no-color', '--no-ext-diff', range]
-      : ['diff', '--no-color', '--no-ext-diff', from]
-    const diff = execSync(`git ${args.join(' ')}`, {
-      cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000, windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024, // 16MB for large diffs
-    }).toString()
+    const diff = safeGit(['diff', '--no-color', '--no-ext-diff', range], {
+      cwd, timeout: 15000, maxBuffer: 16 * 1024 * 1024,
+    })
     return ok(diff)
   } catch (e: any) { return err(e.message) }
 })
@@ -356,10 +368,10 @@ ipcMain.handle('git:diff-range', async (_, { cwd, from, to }: { cwd: string; fro
 // Returns [{file, status}] where status is A/M/D/R100/etc.
 ipcMain.handle('git:files-in-range', async (_, { cwd, from, to }: { cwd: string; from: string; to?: string }) => {
   try {
-    const args = to
-      ? ['diff', '--name-status', `${from}..${to}`]
-      : ['diff', '--name-status', from]
-    const raw = execSync(`git ${args.join(' ')}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString().trim()
+    if (!isValidGitRef(from)) return err('Invalid "from" ref')
+    if (to !== undefined && !isValidGitRef(to)) return err('Invalid "to" ref')
+    const range = to ? `${from}..${to}` : from
+    const raw = safeGit(['diff', '--name-status', range], { cwd, timeout: 5000 }).trim()
     const files: { file: string; status: string }[] = []
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue
@@ -381,10 +393,10 @@ ipcMain.handle('git:apply-patch', async (_, { cwd, patch, reverse }: { cwd: stri
     const tmpPath = join(homedir(), `.termpolis-patch-${Date.now()}.diff`)
     writeFileSync(tmpPath, patch, 'utf8')
     try {
-      const flags = reverse ? '-R' : ''
-      execSync(`git apply ${flags} --whitespace=nowarn "${tmpPath}"`, {
-        cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true,
-      })
+      const args = reverse
+        ? ['apply', '-R', '--whitespace=nowarn', tmpPath]
+        : ['apply', '--whitespace=nowarn', tmpPath]
+      safeGit(args, { cwd, timeout: 10000 })
       return ok()
     } finally {
       try { require('fs').unlinkSync(tmpPath) } catch {}
@@ -397,8 +409,8 @@ ipcMain.handle('git:apply-patch', async (_, { cwd, patch, reverse }: { cwd: stri
 ipcMain.handle('git:checkout-file', async (_, { cwd, sha, files }: { cwd: string; sha: string; files: string[] }) => {
   try {
     if (!files.length) return err('No files specified')
-    const args = files.map(f => `"${f}"`).join(' ')
-    execSync(`git checkout ${sha} -- ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true })
+    if (!isValidGitRef(sha)) return err('Invalid SHA')
+    safeGit(['checkout', sha, '--', ...files], { cwd, timeout: 10000 })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -408,7 +420,7 @@ ipcMain.handle('git:checkout-file', async (_, { cwd, sha, files }: { cwd: string
 ipcMain.handle('git:reset-hard', async (_, { cwd, sha }: { cwd: string; sha: string }) => {
   try {
     if (!sha || !/^[a-f0-9]{7,40}$/i.test(sha)) return err('Invalid SHA')
-    execSync(`git reset --hard ${sha}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000, windowsHide: true })
+    safeGit(['reset', '--hard', sha], { cwd, timeout: 10000 })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -418,8 +430,8 @@ ipcMain.handle('git:reset-hard', async (_, { cwd, sha }: { cwd: string; sha: str
 ipcMain.handle('git:commit-all', async (_, { cwd, message }: { cwd: string; message: string }) => {
   try {
     if (!message.trim()) return err('Commit message cannot be empty')
-    execSync('git add -A', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000, windowsHide: true })
-    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000, windowsHide: true })
+    safeGit(['add', '-A'], { cwd, timeout: 15000 })
+    safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -467,28 +479,47 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 ipcMain.handle('memory:count', () => ok(memoryCount()))
 ipcMain.handle('memory:clear', () => { memoryClear(); return ok() })
 
-// Swarm Review: run an arbitrary command (typically the project's test runner)
-// and capture stdout/stderr/exitCode. 10 minute cap.
+// Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
+// Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
+// with zero shell metacharacters, so a compromised renderer or MCP client
+// can't turn this into arbitrary RCE. 10 minute cap.
+ipcMain.handle('workspace:is-trusted', async (_, { cwd }: { cwd: string }) => {
+  try { return ok(isWorkspaceTrusted(cwd)) } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('workspace:trust', async (_, { cwd }: { cwd: string }) => {
+  try { trustWorkspace(cwd); return ok() } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('workspace:revoke-trust', async (_, { cwd }: { cwd: string }) => {
+  try { revokeWorkspaceTrust(cwd); return ok() } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('workspace:list-trusted', async () => {
+  try { return ok(listTrustedWorkspaces()) } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('swarm:run-command', async (_, { cwd, command }: { cwd: string; command: string }) => {
-  try {
-    if (!command || !command.trim()) return err('Empty command')
-    const output = execSync(command, {
-      cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 10 * 60 * 1000, windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024,
-    }).toString()
-    return ok({ output, exitCode: 0 })
-  } catch (e: any) {
-    // execSync throws on non-zero exit — capture both streams
-    const output = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
-    return ok({ output, exitCode: typeof e.status === 'number' ? e.status : 1 })
-  }
+  const parsed = parseSafeCommand(command)
+  if ('error' in parsed) return err(parsed.error)
+  // Workspace trust gate: repo-controlled scripts (e.g. npm test) run whatever
+  // the package.json author put in the script, so an untrusted repo could
+  // execute arbitrary code. Prompt once per folder; auto-trust on dialog pick.
+  const trusted = await ensureWorkspaceTrust({
+    cwd,
+    reason: `Running "${command}"`,
+    parentWindow: mainWindow,
+  })
+  if (!trusted) return err('Workspace not trusted — command cancelled')
+  const result = runSafeCommand(parsed, { cwd, timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
+  return ok(result)
 })
 
 ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
   try {
     let branch = ''
-    try { branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000, windowsHide: true }).toString().trim() } catch {}
-    const statusRaw = execSync('git status --porcelain', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, windowsHide: true }).toString().trim()
+    try { branch = safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).trim() } catch {}
+    const statusRaw = safeGit(['status', '--porcelain'], { cwd, timeout: 5000 }).trim()
     const staged: { file: string; status: string }[] = []
     const unstaged: { file: string; status: string }[] = []
     for (const line of statusRaw.split('\n')) {
@@ -508,10 +539,10 @@ ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
     let status = ''
     let recentCommits = ''
     try {
-      status = execSync('git status --short', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+      status = safeGit(['status', '--short'], { cwd, timeout: 3000 }).trim()
     } catch {}
     try {
-      recentCommits = execSync('git log --oneline -5', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim()
+      recentCommits = safeGit(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).trim()
     } catch {}
     return ok({ status, recentCommits })
   } catch (e: any) { return err(e.message) }
@@ -524,9 +555,7 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
     const cwd = liveCwd || fallbackCwd
     let gitBranch = ''
     try {
-      gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000, windowsHide: true
-      }).toString().trim()
+      gitBranch = safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).trim()
     } catch {}
     return ok({ cwd, gitBranch })
   } catch (e: any) { return err(e.message) }
@@ -866,9 +895,9 @@ if (!gotTheLock) {
       },
       getGitStatus: (cwd) => {
         let status = '', recentCommits = '', branch = ''
-        try { status = execSync('git status --short', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
-        try { recentCommits = execSync('git log --oneline -5', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
-        try { branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000, windowsHide: true }).toString().trim() } catch {}
+        try { status = safeGit(['status', '--short'], { cwd, timeout: 3000 }).trim() } catch {}
+        try { recentCommits = safeGit(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).trim() } catch {}
+        try { branch = safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 3000 }).trim() } catch {}
         return { status, recentCommits, branch }
       },
       swarmSendMessage: (from, to, type, content) => {
@@ -920,6 +949,7 @@ if (!gotTheLock) {
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
     initSwarmMemory(app.getPath('userData'))
+    initWorkspaceTrust()
     // Push events to the renderer (live feed)
     subscribeEvents((event: AgentEvent) => {
       try { mainWindow?.webContents.send('agentActivity:event', event) } catch {}
@@ -939,15 +969,23 @@ if (!gotTheLock) {
     })
     mcpServer = startMcpServer(mcpHandlers)
     console.log(`MCP auth token: ${getMcpAuthToken()}`)
-    // Write token to a file so AI agents can discover it
+    // Write token to a file so AI agents can discover it. On Windows the
+    // 0o600 mode is a no-op, so writeSecureFile also applies an NTFS ACL
+    // restricting the file to the current user.
     const tokenPath = join(app.getPath('userData'), 'mcp-token')
-    require('fs').writeFileSync(tokenPath, getMcpAuthToken(), { encoding: 'utf-8', mode: 0o600 })
+    const tokenWrite = writeSecureFile(tokenPath, getMcpAuthToken())
+    if (!tokenWrite.aclApplied) {
+      console.warn(`[mcp-token] ACL not applied on ${tokenPath}: ${tokenWrite.aclError}`)
+    }
     console.log(`MCP token written to: ${tokenPath}`)
     // Write the actual port (may differ from 9315 if port was taken)
     const portPath = join(app.getPath('userData'), 'mcp-port')
     // Port is written after a short delay to ensure the server has bound (including fallback)
     setTimeout(() => {
-      require('fs').writeFileSync(portPath, String(getMcpPort()), { encoding: 'utf-8', mode: 0o600 })
+      const portWrite = writeSecureFile(portPath, String(getMcpPort()))
+      if (!portWrite.aclApplied) {
+        console.warn(`[mcp-port] ACL not applied on ${portPath}: ${portWrite.aclError}`)
+      }
       console.log(`MCP port written to: ${portPath} (port ${getMcpPort()})`)
     }, 1000)
 

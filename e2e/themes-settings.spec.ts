@@ -99,11 +99,22 @@ test.describe.serial('Themes & Settings', () => {
   })
 
   test('3. settings panel shows Autocomplete toggle', async () => {
-    const autocompleteLabel = page.locator('label:has-text("Enable Autocomplete")')
-    await expect(autocompleteLabel).toBeVisible()
+    // Re-open settings if it closed after earlier tests (the panel can be
+    // dismissed by some clicks/keys, so don't assume it's still open).
+    const heading = page.locator('h1:has-text("Settings")')
+    if (!(await heading.isVisible().catch(() => false))) {
+      await page.locator('button[title="Settings"]').click()
+      await page.waitForTimeout(500)
+    }
+    // "Enable Autocomplete" is rendered as plain text (not a <label>), so
+    // we match on text content instead of the label element.
+    const autocompleteLabel = page.getByText('Enable Autocomplete', { exact: true }).first()
+    await expect(autocompleteLabel).toBeVisible({ timeout: 5000 })
 
-    // The toggle button should be next to it (inline-flex rounded-full)
-    const toggleBtn = page.locator('button.rounded-full')
+    // A toggle button sits in the same row as the label. We don't require a
+    // specific Tailwind class — just verify there's a button next to it.
+    const toggleRow = autocompleteLabel.locator('..')
+    const toggleBtn = toggleRow.locator('button').first()
     await expect(toggleBtn).toBeVisible()
   })
 

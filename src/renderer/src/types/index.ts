@@ -141,6 +141,12 @@ export interface TermpolisAPI {
   gitCommitAll: (cwd: string, message: string) => Promise<IpcResponse>
   swarmRunCommand: (cwd: string, command: string) => Promise<IpcResponse<{ output: string; exitCode: number }>>
 
+  // Workspace trust
+  workspaceIsTrusted: (cwd: string) => Promise<IpcResponse<boolean>>
+  workspaceTrust: (cwd: string) => Promise<IpcResponse>
+  workspaceRevokeTrust: (cwd: string) => Promise<IpcResponse>
+  workspaceListTrusted: () => Promise<IpcResponse<string[]>>
+
   // Shared swarm memory (RAG)
   memoryWrite: (input: MemoryWriteInput) => Promise<IpcResponse<MemoryEntry>>
   memorySearch: (opts: MemorySearchOptions) => Promise<IpcResponse<MemorySearchResult[]>>

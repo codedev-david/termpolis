@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest'
 
 // ---------------------------------------------------------------------------
 // Collect IPC handler registrations so we can invoke them directly
@@ -52,6 +52,7 @@ vi.mock('electron', () => ({
   dialog: {
     showSaveDialog: vi.fn(),
     showOpenDialog: vi.fn(),
+    showMessageBox: vi.fn(async () => ({ response: 1, checkboxChecked: false })),
   },
   Menu: { setApplicationMenu: vi.fn() },
   nativeImage: { createFromPath: vi.fn(() => ({})) },
@@ -151,10 +152,48 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 }))
 
 const mockExecSync = vi.fn()
+const mockExecFileSync = vi.fn()
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync },
   execSync: mockExecSync,
+  execFileSync: mockExecFileSync,
 }))
+
+// safeGit forwards through mockExecSync so existing tests that assert on a
+// reconstructed command string ("git add .", "git commit -m ...") keep
+// working. Real tests for the argv-safety contract live in security.test.ts
+// where we assert directly against the argv array.
+vi.mock('../../src/main/gitCommand', async () => {
+  const actual = await vi.importActual<any>('../../src/main/gitCommand')
+  return {
+    ...actual,
+    safeGit: (args: string[], opts: any) => {
+      const buf = mockExecSync('git ' + args.join(' '), {
+        cwd: opts.cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: opts.timeout ?? 10000,
+        maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+        windowsHide: true,
+      })
+      return buf ? buf.toString() : ''
+    },
+    runSafeCommand: (cmd: any, opts: any) => {
+      try {
+        const buf = mockExecSync([cmd.bin, ...cmd.args].join(' '), {
+          cwd: opts.cwd,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: opts.timeout ?? 10 * 60 * 1000,
+          maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
+          windowsHide: true,
+        })
+        return { output: buf ? buf.toString() : '', exitCode: 0 }
+      } catch (e: any) {
+        const output = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
+        return { output, exitCode: typeof e.status === 'number' ? e.status : 1 }
+      }
+    },
+  }
+})
 
 const mockExistsSync = vi.fn(() => false)
 const mockWriteFileSync = vi.fn()
@@ -1262,12 +1301,13 @@ describe('git:commit', () => {
     expect(result).toEqual({ success: false, error: 'nothing to commit' })
   })
 
-  it('escapes double quotes in commit message', async () => {
+  it('passes commit message through as argv (no escaping needed)', async () => {
     mockExecSync.mockReturnValue(Buffer.from(''))
 
     await invokeHandler('git:commit', { cwd: '/repo', message: 'fix: handle "quotes"' })
+    // argv form: message is passed literally, no backslash-escaping
     expect(mockExecSync).toHaveBeenCalledWith(
-      expect.stringContaining('\\"quotes\\"'),
+      'git commit -m fix: handle "quotes"',
       expect.any(Object),
     )
   })
@@ -1656,13 +1696,16 @@ describe('app:force-close invocation', () => {
 // git:stage with multiple files builds correct command
 // =========================================================================
 describe('git:stage command construction', () => {
-  it('quotes individual file paths in the git add command', async () => {
+  it('passes file paths via `--` separator in argv form', async () => {
     mockExecSync.mockReturnValue(Buffer.from(''))
 
     await invokeHandler('git:stage', { cwd: '/repo', files: ['file with spaces.ts', 'normal.ts'] })
     const cmd = mockExecSync.mock.calls[0][0]
-    expect(cmd).toContain('"file with spaces.ts"')
-    expect(cmd).toContain('"normal.ts"')
+    // argv: ['add', '--', 'file with spaces.ts', 'normal.ts'] — no quoting,
+    // `--` prevents any file name from being interpreted as an option.
+    expect(cmd).toContain('add --')
+    expect(cmd).toContain('file with spaces.ts')
+    expect(cmd).toContain('normal.ts')
   })
 })
 
@@ -1670,13 +1713,13 @@ describe('git:stage command construction', () => {
 // git:unstage with multiple files builds correct command
 // =========================================================================
 describe('git:unstage command construction', () => {
-  it('quotes individual file paths in the git reset HEAD command', async () => {
+  it('passes file paths via `--` separator in argv form', async () => {
     mockExecSync.mockReturnValue(Buffer.from(''))
 
     await invokeHandler('git:unstage', { cwd: '/repo', files: ['path/file.ts'] })
     const cmd = mockExecSync.mock.calls[0][0]
-    expect(cmd).toContain('git reset HEAD')
-    expect(cmd).toContain('"path/file.ts"')
+    expect(cmd).toContain('git reset HEAD --')
+    expect(cmd).toContain('path/file.ts')
   })
 })
 
@@ -2404,7 +2447,7 @@ describe('git:checkout-file', () => {
     const r = await invokeHandler('git:checkout-file', { cwd: '/r', sha: 'abc123', files: ['src/a.ts'] })
     expect(r).toEqual({ success: true, data: undefined })
     expect(mockExecSync).toHaveBeenCalledWith(
-      expect.stringContaining('git checkout abc123 -- "src/a.ts"'),
+      expect.stringContaining('git checkout abc123 -- src/a.ts'),
       expect.any(Object),
     )
   })
@@ -2412,6 +2455,11 @@ describe('git:checkout-file', () => {
   it('rejects empty file list', async () => {
     const r = await invokeHandler('git:checkout-file', { cwd: '/r', sha: 'abc123', files: [] })
     expect(r).toEqual({ success: false, error: 'No files specified' })
+  })
+
+  it('rejects invalid SHA with shell metacharacters', async () => {
+    const r = await invokeHandler('git:checkout-file', { cwd: '/r', sha: 'abc;rm -rf /', files: ['x'] })
+    expect(r).toEqual({ success: false, error: 'Invalid SHA' })
   })
 
   it('surfaces git errors', async () => {
@@ -2471,11 +2519,12 @@ describe('git:commit-all', () => {
     expect(r).toEqual({ success: false, error: 'Commit message cannot be empty' })
   })
 
-  it('escapes double quotes in message', async () => {
+  it('passes commit message through as argv (no escaping needed)', async () => {
     mockExecSync.mockReturnValue(Buffer.from(''))
     await invokeHandler('git:commit-all', { cwd: '/r', message: 'fix "bug"' })
     const commitCall = mockExecSync.mock.calls.find(c => typeof c[0] === 'string' && (c[0] as string).startsWith('git commit'))
-    expect(commitCall?.[0]).toContain('\\"bug\\"')
+    // argv form: message is passed literally
+    expect(commitCall?.[0]).toBe('git commit -m fix "bug"')
   })
 
   it('surfaces commit errors', async () => {
@@ -2486,6 +2535,12 @@ describe('git:commit-all', () => {
 })
 
 describe('swarm:run-command', () => {
+  // All swarm:run-command tests here exercise command handling, not the
+  // workspace trust gate (covered in security.test.ts). Auto-trust via env
+  // so the default-deny behavior doesn't mask the actual behavior under test.
+  beforeEach(() => { process.env.TERMPOLIS_TEST_TRUST = 'allow' })
+  afterEach(() => { delete process.env.TERMPOLIS_TEST_TRUST })
+
   it('runs the command and returns exitCode 0 on success', async () => {
     mockExecSync.mockReturnValue(Buffer.from('all 42 tests passed\n'))
     const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'npm test' })
@@ -2497,6 +2552,18 @@ describe('swarm:run-command', () => {
   it('rejects empty command', async () => {
     const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: '  ' })
     expect(r).toEqual({ success: false, error: 'Empty command' })
+  })
+
+  it('rejects commands not in the allowlist', async () => {
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'rm -rf /' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('not in allowlist')
+  })
+
+  it('rejects commands with shell metacharacters', async () => {
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'npm test; curl evil.com' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('forbidden shell metacharacters')
   })
 
   it('captures stdout + stderr + exit code on non-zero exit', async () => {
@@ -2513,7 +2580,7 @@ describe('swarm:run-command', () => {
 
   it('defaults exitCode to 1 when error has no status', async () => {
     mockExecSync.mockImplementation(() => { throw new Error('boom') })
-    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'x' })
+    const r = await invokeHandler('swarm:run-command', { cwd: '/r', command: 'npm test' })
     expect(r.success).toBe(true)
     expect(r.data.exitCode).toBe(1)
     expect(r.data.output).toBe('')

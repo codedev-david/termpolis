@@ -2,6 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Content-Security-Policy. Defense-in-depth even with contextIsolation:true
+      and nodeIntegration:false — if a dependency ever injects DOM content
+      from terminal output or user config, the renderer still can't load a
+      remote script or exfiltrate data to an arbitrary host.
+
+      'unsafe-inline' for style-src is required by Tailwind's JIT runtime and
+      Monaco editor (both inject <style> tags at runtime). connect-src allows
+      localhost + 127.0.0.1 (Vite HMR in dev + local MCP server bound to 127.0.0.1)
+      and Sentry ingest. worker-src allows blob: for Monaco's web workers.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:* http://127.0.0.1:* ws://127.0.0.1:* https://*.ingest.sentry.io https://*.sentry.io; worker-src 'self' blob:; object-src 'none'; base-uri 'self';"
+    />
     <link rel="icon" type="image/svg+xml" href="/logo-termpolis.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Termpolis</title>

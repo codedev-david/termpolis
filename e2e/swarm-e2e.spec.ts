@@ -139,8 +139,9 @@ test('10. Agents tab is removed from dashboard', async () => {
   }
   // Agents tab no longer exists — conductor (claude --dangerously-skip-permissions)
   // has native tools and typically does work itself, so per-agent idle rows were
-  // misleading. Dashboard now surfaces Tasks and Messages only.
-  const agentsTab = page.locator('button:has-text("Agents")').first()
+  // misleading. Dashboard now surfaces Tasks and Messages only. Scope to the
+  // dashboard (fixed positioned panel) to avoid matching the sidebar's "AI Agents".
+  const agentsTab = page.locator('.fixed').locator('button:has-text("Agents")').first()
   await expect(agentsTab).not.toBeVisible()
   await ss('10-no-agents-tab')
 })
