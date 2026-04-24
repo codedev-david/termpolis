@@ -16,8 +16,11 @@ afterEach(() => {
 describe('useEfficiencyReport', () => {
   it('queries on mount', async () => {
     const { result } = renderHook(() => useEfficiencyReport())
-    await waitFor(() => expect(api.query).toHaveBeenCalled())
-    expect(result.current.report).not.toBeNull()
+    // waitFor for `api.query` being called is not enough — the mocked
+    // resolved promise still needs a microtask flush before setReport runs
+    // and React commits the state. Wait on the observed state directly.
+    await waitFor(() => expect(result.current.report).not.toBeNull())
+    expect(api.query).toHaveBeenCalled()
     expect(result.current.report!.perAgent).toEqual([])
   })
 
