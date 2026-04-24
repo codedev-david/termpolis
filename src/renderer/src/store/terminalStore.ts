@@ -50,7 +50,7 @@ function findRightmostLeaf(node: PaneNode): string | null {
   return findRightmostLeaf(node.children[1])
 }
 
-export type SwarmAgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed'
+export type SwarmAgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed' | 'blocked'
 
 export interface SwarmAgentEntry {
   terminalId: string

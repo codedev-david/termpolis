@@ -5,7 +5,13 @@
  * Used by the swarm monitoring loop to update dashboard status indicators.
  */
 
-export type AgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed'
+// 'blocked' = agent process has exited or is stalled and needs manual restart
+// (e.g. Codex printed "Please restart Codex" after a self-update, the CLI
+// segfaulted silently, or the shell is back at a plain prompt with no agent
+// running). Distinct from 'errored' (fatal error message) and
+// 'waiting_for_input' (agent is alive and asking the user something) — a
+// blocked agent will silently ignore swarm tasks until someone relaunches it.
+export type AgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed' | 'blocked'
 
 export interface AgentStatusResult {
   status: AgentStatus
@@ -37,13 +43,23 @@ export function detectAgentStatus(
   // Focus on the tail for recency — most signals are at the end
   const tail = clean.slice(-1500)
 
-  // --- Priority 1: Waiting for user input (needs attention) ---
+  // --- Priority 1: Blocked — agent is dead/stalled, needs restart ---
+  // Must outrank waiting_for_input: a "please re-authenticate" or
+  // "gemini auth"-hint message contains auth keywords but the agent
+  // process isn't actually alive to receive terminal input — the user
+  // has to relaunch the CLI. Also precedes isIdle for the same reason.
+  if (isBlocked(tail, agentName)) {
+    const summary = extractBlockedSummary(tail, agentName)
+    return { status: 'blocked', summary }
+  }
+
+  // --- Priority 2: Waiting for user input (needs attention) ---
   if (isWaitingForInput(tail, agentName)) {
     const summary = extractInputPrompt(tail, agentName)
     return { status: 'waiting_for_input', summary }
   }
 
-  // --- Priority 2: Error state ---
+  // --- Priority 3: Error state ---
   if (isErrored(tail)) {
     const summary = extractErrorSummary(tail)
     return { status: 'errored', summary }
@@ -94,6 +110,26 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
   if (/codex/i.test(agentName) && /press.*to confirm|select.*option/i.test(tail)) return true
   if (/gemini/i.test(agentName) && /\?\s*$/m.test(tail.slice(-200))) return true
   if (/aider/i.test(agentName) && /\(y\)es.*\(n\)o/i.test(tail)) return true
+  return false
+}
+
+function isBlocked(tail: string, agentName: string): boolean {
+  // Codex self-update completed — the CLI exits and leaves this banner.
+  // Without a restart the terminal is back to a plain shell prompt and
+  // will silently ignore every MCP/swarm instruction sent to it.
+  if (/update ran successfully.*please restart codex/i.test(tail)) return true
+  if (/please restart codex/i.test(tail)) return true
+  // Claude Code equivalent — it prints this when an in-place upgrade
+  // finishes or when the account session has been invalidated.
+  if (/claude/i.test(agentName) && /please restart claude|please re-?launch/i.test(tail)) return true
+  // Gemini CLI rejects every command until auth is provided. The explicit
+  // "gemini auth" hint is what the CLI prints when it detects no creds.
+  if (/gemini/i.test(agentName) && /gemini\s+auth|run.*gemini auth|not authenticated/i.test(tail)) return true
+  // Any agent: "session expired / please re-authenticate" messages.
+  if (/session (?:has )?expired|please (?:re-?)?authenticate/i.test(tail)) return true
+  // npm/pnpm installed new agent binary behind agent's back — another
+  // "you need to restart" signal seen in the wild with auto-update paths.
+  if (/restart (?:the )?(?:agent|cli|process) to (?:apply|continue|use)/i.test(tail)) return true
   return false
 }
 
@@ -191,6 +227,26 @@ function extractInputPrompt(tail: string, _agentName: string): string {
     }
   }
   return 'Agent needs input'
+}
+
+function extractBlockedSummary(tail: string, agentName: string): string {
+  if (/update ran successfully.*please restart codex/i.test(tail)) {
+    return 'Codex self-updated — needs restart to resume'
+  }
+  if (/please restart codex/i.test(tail)) return 'Codex needs restart'
+  if (/claude/i.test(agentName) && /please restart claude|please re-?launch/i.test(tail)) {
+    return 'Claude Code needs restart'
+  }
+  if (/gemini/i.test(agentName) && /gemini\s+auth|run.*gemini auth|not authenticated/i.test(tail)) {
+    return 'Gemini CLI not authenticated — run: gemini auth'
+  }
+  if (/session (?:has )?expired|please (?:re-?)?authenticate/i.test(tail)) {
+    return 'Session expired — re-authenticate required'
+  }
+  if (/restart (?:the )?(?:agent|cli|process) to (?:apply|continue|use)/i.test(tail)) {
+    return 'Agent needs restart to apply update'
+  }
+  return 'Agent blocked — manual intervention required'
 }
 
 function extractErrorSummary(tail: string): string {

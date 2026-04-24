@@ -56,6 +56,83 @@ describe('detectAgentStatus', () => {
     })
   })
 
+  describe('blocked (dead agent / needs restart)', () => {
+    it('detects Codex self-update needs-restart message', () => {
+      // Exact text from a real Codex self-update in the wild — CLI exits,
+      // terminal is back to a plain PS prompt, agent silently ignores MCP.
+      const output = filler(10) + `
+npm warn cleanup Failed to remove some directories
+changed 2 packages in 4s 🎉 Update ran successfully! Please restart Codex.
+PS C:\\Users\\DavidEngelhart\\project>
+`
+      const result = detectAgentStatus(output, 'Codex')
+      expect(result.status).toBe('blocked')
+      expect(result.summary).toMatch(/codex/i)
+      expect(result.summary).toMatch(/restart/i)
+    })
+
+    it('detects "Please restart Codex" alone (without update preamble)', () => {
+      const output = filler(10) + '\nPlease restart Codex to continue.\n'
+      const result = detectAgentStatus(output, 'Codex')
+      expect(result.status).toBe('blocked')
+    })
+
+    it('detects Gemini "not authenticated" state', () => {
+      const output = filler(10) + '\nError: not authenticated. Run: gemini auth\n'
+      const result = detectAgentStatus(output, 'Gemini')
+      expect(result.status).toBe('blocked')
+      expect(result.summary).toMatch(/gemini auth/i)
+    })
+
+    it('detects Gemini auth CLI hint', () => {
+      const output = filler(10) + '\nTo get started, please run: gemini auth\n'
+      const result = detectAgentStatus(output, 'Gemini')
+      expect(result.status).toBe('blocked')
+    })
+
+    it('detects Claude Code "please restart" post-update', () => {
+      const output = filler(10) + '\nUpgrade complete. Please restart Claude.\n'
+      const result = detectAgentStatus(output, 'Claude')
+      expect(result.status).toBe('blocked')
+    })
+
+    it('detects generic session-expired message', () => {
+      const output = filler(10) + '\nYour session has expired. Please re-authenticate.\n'
+      const result = detectAgentStatus(output, 'Claude')
+      expect(result.status).toBe('blocked')
+    })
+
+    it('detects "restart the cli to apply" update messages', () => {
+      const output = filler(10) + '\nNew version installed. Restart the CLI to apply changes.\n'
+      const result = detectAgentStatus(output, 'Codex')
+      expect(result.status).toBe('blocked')
+    })
+
+    it('blocked wins over idle — shell prompt after "restart codex"', () => {
+      // The key failure mode: Codex exits, terminal settles at a prompt.
+      // A plain isIdle detector would call this "idle" and miss that the
+      // agent is actually dead. Blocked must take precedence.
+      const output = filler(10) + '\n🎉 Update ran successfully! Please restart Codex.\n$ '
+      const result = detectAgentStatus(output, 'Codex')
+      expect(result.status).toBe('blocked')
+    })
+
+    it('blocked does not fire for ordinary "restart" word in code', () => {
+      // "restart" inside normal file content shouldn't trigger blocked
+      const output = filler(10) + '\nfunction restartServer() { return new Server() }\n'
+      const result = detectAgentStatus(output, 'Claude', 'working')
+      expect(result.status).not.toBe('blocked')
+    })
+
+    it('Gemini auth hint is NOT treated as blocked for non-Gemini agents', () => {
+      // "gemini auth" in Claude's output is just text — only Gemini agent
+      // itself should map this to blocked.
+      const output = filler(10) + '\nThe user should run: gemini auth\n'
+      const result = detectAgentStatus(output, 'Claude', 'working')
+      expect(result.status).not.toBe('blocked')
+    })
+  })
+
   describe('errored', () => {
     it('detects fatal errors', () => {
       const output = filler(10) + '\nfatal error: unhandled exception in main thread\n'

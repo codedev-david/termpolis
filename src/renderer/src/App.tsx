@@ -473,7 +473,9 @@ export default function App() {
       if (store.swarmAgents.length === 0) return
 
       for (const agent of store.swarmAgents) {
-        // Don't re-detect completed or errored agents
+        // Don't re-detect completed or errored agents. We DO keep polling
+        // blocked agents so we can clear the status if the user restarts
+        // the CLI and it starts producing fresh output again.
         if (agent.status === 'completed' || agent.status === 'errored') continue
 
         try {
@@ -512,6 +514,18 @@ export default function App() {
                 priorNotifKey.set(agent.terminalId, notifKey)
                 store.setSwarmNotification({
                   message: `${agent.agentName} (${agent.role}) needs your input: ${result.summary}`,
+                  type: 'error',
+                })
+              }
+            }
+            // Blocked agent — dead process, user needs to relaunch. Surface
+            // once per transition; notifKey changes if the cause changes.
+            if (result.status === 'blocked' && agent.status !== 'blocked') {
+              const notifKey = `${agent.terminalId}:blocked:${result.summary}`
+              if (priorNotifKey.get(agent.terminalId) !== notifKey) {
+                priorNotifKey.set(agent.terminalId, notifKey)
+                store.setSwarmNotification({
+                  message: `${agent.agentName} (${agent.role}) is blocked: ${result.summary}`,
                   type: 'error',
                 })
               }
