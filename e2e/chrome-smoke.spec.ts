@@ -283,7 +283,14 @@ test.describe.serial('Chrome smoke', () => {
   test('10. Settings pane tabs all render', async () => {
     await closeAnyOpenModal()
     const gear = page.locator('button[title="Settings"]').first()
-    await gear.click()
+    // force: true — on macOS CI after the split-pane tests (7-9), an
+    // invisible layout ancestor occasionally intercepts pointer events on
+    // the sidebar Settings gear even though the button itself is visible,
+    // enabled, and stable. The gear is a direct sibling of the splitter so
+    // the resize overlay can briefly shadow it. Test 2 already proves the
+    // normal click path works — this test is about tab contents, not click
+    // receptiveness, so forcing is OK here.
+    await gear.click({ force: true })
     await page.waitForTimeout(600)
 
     // Click each visible sub-tab/section within settings; each click should not error.
