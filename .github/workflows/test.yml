@@ -178,13 +178,14 @@ jobs:
   #     no Codex, no Gemini, no Qwen — can still boot the app and open a
   #     terminal. This is the path a first-time TestFlight reviewer hits.
   #
-  # Marked continue-on-error for the first few rollouts so macOS-runner
-  # flake or platform-specific surprises don't block PRs while we stabilize.
-  # Flip this off once we've seen ~3 consecutive green runs on main.
+  # Required on main as of v1.11.15 — first green seen on 0342333.
+  # If macOS starts flaking after a runner-image bump or similar, flip
+  # continue-on-error back to true while we stabilize rather than
+  # papering over a real regression.
   e2e-smoke-macos:
     needs: static
     runs-on: macos-latest
-    continue-on-error: true
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
