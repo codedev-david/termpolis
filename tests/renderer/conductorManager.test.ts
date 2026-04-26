@@ -3,6 +3,14 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } 
 // Mock uuid before importing the module under test
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'conductor-uuid-1') }))
 
+// Mock the renderer Sentry module so we can assert recordSwarmError calls
+const mockRecordSwarmError = vi.fn()
+vi.mock('../../src/renderer/src/lib/sentry', () => ({
+  recordSwarmError: (...args: any[]) => mockRecordSwarmError(...args),
+  Sentry: { addBreadcrumb: vi.fn(), captureException: vi.fn() },
+  initSentry: vi.fn(),
+}))
+
 beforeAll(() => {
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockResolvedValue({
@@ -174,6 +182,30 @@ describe('conductorManager', () => {
     expect(window.termpolis.writeConfigFile).toHaveBeenCalledWith(
       expect.stringContaining('.termpolis-conductor-run'),
       expect.stringContaining('claude'),
+    )
+  })
+
+  // ---- Monitoring loop: error reporting ----
+
+  it('monitoring loop reports unexpected crashes to Sentry', async () => {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+
+    mockRecordSwarmError.mockClear()
+    // Simulate the monitoring loop hitting an exception inside the try block
+    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('IPC bus crashed mid-swarm'),
+    )
+
+    await sendTask('Build something', '/tmp/project')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(mockRecordSwarmError).toHaveBeenCalledWith(
+      'conductor.monitor.failed',
+      expect.objectContaining({ message: 'IPC bus crashed mid-swarm' }),
+      expect.objectContaining({ status: expect.any(String) }),
     )
   })
 

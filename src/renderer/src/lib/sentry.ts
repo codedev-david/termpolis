@@ -68,3 +68,39 @@ export function initSentry() {
 }
 
 export { Sentry }
+
+// Swarm-specific error reporter. Mirrors src/main/telemetry.ts:recordSwarmError
+// but runs in the renderer using the renderer Sentry SDK. Used in catch blocks
+// where the failure indicates a real bug (bridge polling broken, monitoring
+// loop crashed) — NOT for expected silent fallbacks.
+//
+// Safe no-op when Sentry isn't initialized (i.e. user opted out, or no DSN).
+export function recordSwarmError(
+  name: string,
+  err: unknown,
+  ctx?: Record<string, unknown>,
+): void {
+  try {
+    const error = err instanceof Error
+      ? err
+      : new Error(`${name}: ${errMessage(err)}`)
+    Sentry.addBreadcrumb({
+      category: 'swarm',
+      level: 'error',
+      message: name,
+      data: { ...(ctx ?? {}), errorMessage: errMessage(err) },
+    })
+    Sentry.captureException(error, {
+      tags: { swarm: name },
+      extra: ctx,
+    })
+  } catch {
+    // never let telemetry crash the swarm
+  }
+}
+
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  try { return JSON.stringify(err) } catch { return String(err) }
+}

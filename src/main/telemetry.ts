@@ -161,6 +161,43 @@ export function recordEvent(name: string, props?: Record<string, unknown>): void
   }
 }
 
+// Swarm-specific error reporter. Used in catch blocks where the failure
+// indicates a real bug (data loss, comms broken, monitoring loop crash) —
+// NOT for expected silent fallbacks like "Ollama isn't running". Adds a
+// breadcrumb AND captures an exception so we get a stack trace.
+//
+// Why a dedicated helper instead of recordEvent: we want stack traces and
+// the `swarm` tag so these errors are easy to filter in Sentry.
+export function recordSwarmError(
+  name: string,
+  err: unknown,
+  ctx?: Record<string, unknown>,
+): void {
+  const Sentry = sentryOrNull()
+  if (!Sentry) return
+  try {
+    Sentry.addBreadcrumb?.({
+      category: 'swarm',
+      level: 'error',
+      message: name,
+      data: { ...(ctx ?? {}), errorMessage: errMessage(err) },
+    })
+    const error = err instanceof Error ? err : new Error(`${name}: ${errMessage(err)}`)
+    Sentry.captureException?.(error, {
+      tags: { swarm: name },
+      extra: ctx,
+    })
+  } catch {
+    // never let telemetry crash the swarm
+  }
+}
+
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  try { return JSON.stringify(err) } catch { return String(err) }
+}
+
 // Today's date as YYYY-MM-DD. Exposed for tests so they can stub time.
 export function todayKey(now: Date = new Date()): string {
   const y = now.getUTCFullYear()

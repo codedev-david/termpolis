@@ -7,6 +7,7 @@
  */
 
 import { detectSwarmSignals, formatIncomingMessage } from './swarmBridge'
+import { recordSwarmError } from './sentry'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -64,8 +65,15 @@ export function startBridgeForAgent(terminalId: string, agentName: string): void
       // We do NOT inject messages into the terminal via writeToTerminal because
       // that sends keystrokes to the shell — bash would interpret them as commands.
       // MCP-capable agents (Claude Code) read messages via swarm_read_messages directly.
-    } catch {
-      // Swallow errors — the terminal may have been closed
+    } catch (err) {
+      // The most common cause is "terminal closed mid-poll" which we expect.
+      // But anything else (IPC bridge broken, swarm API throws) means agent
+      // comms are silently dead — surface it so we can fix it.
+      const msg = err instanceof Error ? err.message : String(err)
+      const isExpectedClose = /closed|destroyed|not found|killed/i.test(msg)
+      if (!isExpectedClose) {
+        recordSwarmError('swarmBridge.poll.failed', err, { terminalId, agentName })
+      }
     }
   }, POLL_INTERVAL_MS)
 

@@ -2,6 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+
+// Capture recordSwarmError calls so we can assert that real failures
+// (not expected silent fallbacks) get surfaced to Sentry.
+const mockRecordSwarmError = vi.fn()
+vi.mock('../../src/main/telemetry', () => ({
+  recordSwarmError: (...args: any[]) => mockRecordSwarmError(...args),
+}))
+
 import {
   initSwarmMemory,
   memoryWrite,
@@ -23,6 +31,7 @@ beforeEach(() => {
   _resetForTests()
   initSwarmMemory(tmpDir)
   _setEmbeddingsAvailable(false)  // force keyword fallback unless a test overrides
+  mockRecordSwarmError.mockReset()
 })
 
 afterEach(() => {
@@ -366,5 +375,54 @@ describe('embedding graceful failure', () => {
     _setEmbedFnForTests(async () => new Array(99999).fill(0.1))
     const entry = await memoryWrite({ agentId: 'a', kind: 'note', content: 'big' })
     expect(entry.embedding).toBeUndefined()
+  })
+})
+
+describe('swarm error reporting', () => {
+  it('reports init failure to Sentry when the parent directory does not exist', () => {
+    _resetForTests()
+    // Path inside a nonexistent directory — fs.writeFileSync will throw ENOENT,
+    // which is exactly the kind of real failure we want surfaced.
+    const ghost = path.join(os.tmpdir(), `does-not-exist-${Date.now()}`, 'nested', 'deeper')
+    initSwarmMemory(ghost)
+    expect(mockRecordSwarmError).toHaveBeenCalledWith(
+      'swarmMemory.init.failed',
+      expect.any(Error),
+      expect.objectContaining({ memPath: expect.stringContaining('swarm-memory.jsonl') }),
+    )
+  })
+
+  it('reports persist failure to Sentry when the memory file is replaced with a directory', async () => {
+    // Simulate disk-level failure: replace the memory file with a directory of
+    // the same name so appendFileSync fails with EISDIR.
+    const memFile = path.join(tmpDir, 'swarm-memory.jsonl')
+    fs.unlinkSync(memFile)
+    fs.mkdirSync(memFile)
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'will fail to persist' })
+    expect(mockRecordSwarmError).toHaveBeenCalledWith(
+      'swarmMemory.persist.failed',
+      expect.any(Error),
+      expect.objectContaining({ entryId: expect.stringContaining('mem-') }),
+    )
+  })
+
+  it('does NOT report a malformed JSONL line as a swarm error (expected)', () => {
+    _resetForTests()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-malformed-'))
+    fs.writeFileSync(path.join(dir, 'swarm-memory.jsonl'),
+      '{"id":"valid","ts":1,"agentId":"a","kind":"note","content":"ok"}\nNOT JSON\n',
+    )
+    initSwarmMemory(dir)
+    expect(mockRecordSwarmError).not.toHaveBeenCalled()
+    expect(memoryCount()).toBe(1)
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+  })
+
+  it('does NOT report Ollama embedding failures as swarm errors (expected fallback)', async () => {
+    _setEmbedFnForTests(async () => { throw new Error('ECONNREFUSED 11434') })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'survives' })
+    // Embedding failure goes to its own catch with no telemetry — explicit
+    // design choice (Ollama-not-running is expected, not a bug).
+    expect(mockRecordSwarmError).not.toHaveBeenCalled()
   })
 })

@@ -1,4 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+const mockRecordSwarmError = vi.fn()
+vi.mock('../../src/renderer/src/lib/sentry', () => ({
+  recordSwarmError: (...args: any[]) => mockRecordSwarmError(...args),
+  Sentry: { addBreadcrumb: vi.fn(), captureException: vi.fn() },
+  initSentry: vi.fn(),
+}))
+
 import {
   startBridgeForAgent,
   stopBridgeForAgent,
@@ -7,6 +15,7 @@ import {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  mockRecordSwarmError.mockReset()
   ;(window as any).termpolis = {
     readTerminalBuffer: vi.fn().mockResolvedValue({
       success: true,
@@ -116,12 +125,56 @@ describe('startBridgeForAgent', () => {
     expect(window.swarmAPI.updateTask).not.toHaveBeenCalled()
   })
 
-  it('swallows errors silently if readTerminalBuffer fails', async () => {
+  it('does not crash when readTerminalBuffer rejects with an unexpected error', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockRejectedValue(new Error('IPC error'))
 
     startBridgeForAgent('t1', 'Claude')
     await expect(vi.advanceTimersByTimeAsync(5000)).resolves.not.toThrow()
+  })
+
+  it('reports unexpected bridge errors to Sentry', async () => {
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(new Error('IPC bus exploded'))
+
+    startBridgeForAgent('t1', 'Claude')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mockRecordSwarmError).toHaveBeenCalledWith(
+      'swarmBridge.poll.failed',
+      expect.objectContaining({ message: 'IPC bus exploded' }),
+      expect.objectContaining({ terminalId: 't1', agentName: 'Claude' }),
+    )
+  })
+
+  it('does NOT report expected "terminal closed" errors as bugs', async () => {
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(new Error('terminal closed'))
+
+    startBridgeForAgent('t1', 'Claude')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mockRecordSwarmError).not.toHaveBeenCalled()
+  })
+
+  it('does NOT report "terminal not found" as a bug', async () => {
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(new Error('terminal not found'))
+
+    startBridgeForAgent('t1', 'Claude')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mockRecordSwarmError).not.toHaveBeenCalled()
+  })
+
+  it('reports non-Error rejections too', async () => {
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
+      .mockRejectedValue('plain string failure')
+
+    startBridgeForAgent('t1', 'Claude')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mockRecordSwarmError).toHaveBeenCalledWith(
+      'swarmBridge.poll.failed',
+      'plain string failure',
+      expect.any(Object),
+    )
   })
 })
 

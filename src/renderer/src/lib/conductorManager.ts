@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../store/terminalStore'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
+import { recordSwarmError } from './sentry'
 
 interface ConductorState {
   terminalId: string | null
@@ -504,8 +505,14 @@ function startMonitoring(): void {
           })
         }
       }
-    } catch {
-      // Monitoring error — continue silently
+    } catch (err) {
+      // The monitoring loop is what drives the entire swarm — if it
+      // crashes silently, the user sees a swarm that "did nothing" with
+      // no error message. Surface it so we can fix the underlying bug.
+      recordSwarmError('conductor.monitor.failed', err, {
+        terminalId: conductorState.terminalId,
+        status: conductorState.status,
+      })
     }
   }, testDelay(15000))
 }

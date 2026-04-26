@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as http from 'http'
 import * as crypto from 'crypto'
+import { recordSwarmError } from './telemetry'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -71,7 +72,11 @@ export function initSwarmMemory(userDataPath: string): void {
     } else {
       fs.writeFileSync(memPath, '')
     }
-  } catch {
+  } catch (err) {
+    // Real failure — disk unwritable, perms broken, etc. memPath -> null
+    // means subsequent writes silently disappear, which is data loss for
+    // the user's swarm context. Worth surfacing.
+    recordSwarmError('swarmMemory.init.failed', err, { memPath })
     memPath = null
   }
 }
@@ -130,7 +135,11 @@ function persist(entry: MemoryEntry): void {
   if (!memPath) return
   try {
     fs.appendFileSync(memPath, JSON.stringify(entry) + '\n')
-  } catch { /* persistence best-effort */ }
+  } catch (err) {
+    // Append failure means this swarm fact never reaches disk — agents
+    // will lose context on next launch. Surface it.
+    recordSwarmError('swarmMemory.persist.failed', err, { entryId: entry.id })
+  }
 }
 
 // ---- Search ----
