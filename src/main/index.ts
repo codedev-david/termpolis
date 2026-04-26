@@ -1,7 +1,12 @@
-import { initMainSentry } from './sentry'
-initMainSentry()
-
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell } from 'electron'
+import { initMainSentry } from './sentry'
+import {
+  initTelemetry,
+  setOptIn as setTelemetryOptIn,
+  isEnabled as isTelemetryEnabled,
+  dailyLaunchPing,
+  recordEvent as recordTelemetryEvent,
+} from './telemetry'
 
 // Force a stable app name. When launched via `electron out/main/index.js`
 // (dev, E2E tests) Electron defaults to "Electron" for app.getName() and
@@ -11,6 +16,13 @@ import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage,
 // hit 401. Pinning the name keeps userData consistent across all launch
 // modes (unpacked, packaged, CI).
 app.setName('termpolis')
+
+// Telemetry must initialize before Sentry — Sentry's gate reads from the
+// persisted opt-in state. Without this ordering, the very first launch
+// after install would never enable Sentry even after the user opts in,
+// because the gate reads stale "false" before persisted state is loaded.
+initTelemetry(app.getPath('userData'))
+initMainSentry()
 
 // Linux AppImage: the bundled chrome-sandbox lacks SUID root, which crashes on
 // launch. Use Chromium's namespace sandbox instead (no root needed).
@@ -247,6 +259,29 @@ ipcMain.handle('diagnostics:collect', async () => {
   try {
     const { collectDiagnostics } = await import('./diagnostics')
     return ok(collectDiagnostics())
+  } catch (e: any) { return err(e.message) }
+})
+
+// Crash-reporting opt-in. The renderer is the source of truth for the
+// initial choice (Onboarding/SettingsPane), but the main process needs
+// to know to gate Sentry, updater pings, and feature events. Persisted
+// to userData/telemetry.json so it survives across launches.
+ipcMain.handle('telemetry:set-opt-in', async (_, { value }: { value: boolean }) => {
+  try {
+    setTelemetryOptIn(value === true)
+    return ok({ optIn: isTelemetryEnabled() })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
+
+// Tier 3: anonymous usage events from the renderer (e.g. report-problem.submit,
+// swarm.start). Caller is responsible for keeping props PII-free.
+ipcMain.handle('telemetry:record-event', async (_, { name, props }: { name: string; props?: Record<string, unknown> }) => {
+  try {
+    if (typeof name !== 'string' || !name.trim()) return err('event name required')
+    recordTelemetryEvent(name, props)
+    return ok()
   } catch (e: any) { return err(e.message) }
 })
 
@@ -864,6 +899,10 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     createWindow()
+
+    // Tier 3 heartbeat — counts unique daily launches. Internally de-duped
+    // to once per UTC day, so re-opening the window does not re-fire.
+    try { dailyLaunchPing(app.getVersion()) } catch {}
 
     // Check GitHub releases for updates, auto-download in background,
     // notify renderer when ready to install.

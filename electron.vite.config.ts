@@ -6,6 +6,12 @@ import pkg from './package.json'
 // Injected so Sentry and the About modal always report the shipped version.
 process.env.VITE_APP_VERSION = pkg.version
 
+// Bake the Sentry DSN into the bundle. The user's machine has no env vars
+// set, so we replace `process.env.SENTRY_DSN` references at build time with
+// the literal string. Empty string when SENTRY_DSN isn't set in CI, which
+// makes Sentry init a no-op (see src/main/sentry.ts).
+const sentryDsn = JSON.stringify(process.env.SENTRY_DSN || '')
+
 export default defineConfig({
   main: {
     build: {
@@ -14,6 +20,9 @@ export default defineConfig({
           index: resolve(__dirname, 'src/main/index.ts'),
         },
       },
+    },
+    define: {
+      'process.env.SENTRY_DSN': sentryDsn,
     },
     plugins: [externalizeDepsPlugin()]
   },

@@ -163,6 +163,11 @@ export interface TermpolisAPI {
   memoryList: (opts?: MemoryListOptions) => Promise<IpcResponse<MemoryEntry[]>>
   memoryCount: () => Promise<IpcResponse<number>>
   memoryClear: () => Promise<IpcResponse>
+
+  // Telemetry — opt-in mirror to main process
+  setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
+  getTelemetryOptIn: () => Promise<IpcResponse<boolean>>
+  recordTelemetryEvent: (name: string, props?: Record<string, unknown>) => Promise<IpcResponse>
 }
 
 export interface MemoryEntry {

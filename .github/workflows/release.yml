@@ -91,6 +91,14 @@ jobs:
 
       - name: Build app
         run: npx electron-vite build
+        env:
+          # Crash reporting + light usage telemetry. Both gated by an in-app
+          # opt-in (see src/main/telemetry.ts); even with the DSN baked in,
+          # nothing leaves the user's machine until they consent. Empty when
+          # the secret isn't set, which makes Sentry init a no-op.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VITE_APP_VERSION: ${{ github.ref_name }}
 
       - name: Fix spawn-helper permissions (macOS)
         if: matrix.platform == 'mac'

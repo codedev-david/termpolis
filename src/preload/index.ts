@@ -141,6 +141,14 @@ const api: TermpolisAPI = {
   memoryList: (opts) => ipcRenderer.invoke('memory:list', opts ?? {}),
   memoryCount: () => ipcRenderer.invoke('memory:count'),
   memoryClear: () => ipcRenderer.invoke('memory:clear'),
+
+  // Telemetry — push opt-in changes to main so Sentry/updater pings can gate.
+  setTelemetryOptIn: (value: boolean) =>
+    ipcRenderer.invoke('telemetry:set-opt-in', { value }),
+  getTelemetryOptIn: () =>
+    ipcRenderer.invoke('telemetry:get-opt-in'),
+  recordTelemetryEvent: (name: string, props?: Record<string, unknown>) =>
+    ipcRenderer.invoke('telemetry:record-event', { name, props }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

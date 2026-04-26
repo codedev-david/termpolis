@@ -40,6 +40,10 @@ export function SettingsPane() {
     const next = !telemetryOptIn
     setTelemetryOptIn(next)
     try { localStorage.setItem('termpolis.telemetry.optIn', next ? '1' : '0') } catch {}
+    // Mirror to main so Sentry init, updater pings, and feature events
+    // all see the new state without a relaunch. Best-effort — preload may
+    // not have hot-reloaded in dev.
+    try { window.termpolis.setTelemetryOptIn?.(next) } catch {}
   }
 
   useEffect(() => {

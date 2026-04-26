@@ -7,6 +7,7 @@
 // restart to install.
 
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { recordUpdaterEvent } from './telemetry'
 
 export interface UpdateState {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -19,6 +20,16 @@ export interface UpdateState {
 
 let currentState: UpdateState = { status: 'idle' }
 
+// Injectable resolver so unit tests can swap in a fake autoUpdater without
+// vi.mock() intercepting our lazy require() (which it doesn't for ESM tests).
+let updaterProvider: () => any = () => {
+  try { return require('electron-updater').autoUpdater } catch { return null }
+}
+
+export function __setUpdaterProviderForTests(fn: () => any): void {
+  updaterProvider = fn
+}
+
 export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
   // Skip in dev / test runs — electron-updater can't verify unsigned builds
   // and would either no-op or error loudly. We still want the IPC surface
@@ -29,10 +40,10 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle('updater:status', () => currentState)
   ipcMain.handle('updater:quit-and-install', () => {
     if (currentState.status !== 'downloaded') return { success: false, error: 'no update ready' }
-    // Dynamically require to avoid bundling in dev.
     try {
-      const { autoUpdater } = require('electron-updater')
-      autoUpdater.quitAndInstall(false, true)
+      const au = updaterProvider()
+      if (!au) return { success: false, error: 'electron-updater unavailable' }
+      au.quitAndInstall(false, true)
       return { success: true }
     } catch (e) {
       return { success: false, error: String((e as Error).message || e) }
@@ -41,8 +52,9 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle('updater:check', async () => {
     if (skipUpdater) return { success: false, error: 'auto-update disabled in dev/test' }
     try {
-      const { autoUpdater } = require('electron-updater')
-      await autoUpdater.checkForUpdates()
+      const au = updaterProvider()
+      if (!au) return { success: false, error: 'electron-updater unavailable' }
+      await au.checkForUpdates()
       return { success: true }
     } catch (e) {
       return { success: false, error: String((e as Error).message || e) }
@@ -51,10 +63,8 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
 
   if (skipUpdater) return
 
-  let autoUpdater: any
-  try {
-    autoUpdater = require('electron-updater').autoUpdater
-  } catch {
+  const autoUpdater = updaterProvider()
+  if (!autoUpdater) {
     // electron-updater not available in this environment — give up quietly.
     return
   }
@@ -67,6 +77,17 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
     currentState = s
     const win = getMainWindow()
     win?.webContents.send('updater:state', s)
+    // Tier 2: forward to telemetry as a breadcrumb (or captureMessage on
+    // hard error). Internally no-ops when the user hasn't opted in.
+    try {
+      recordUpdaterEvent({
+        status: s.status,
+        ...(s.version ? { version: s.version } : {}),
+        ...(s.error ? { error: s.error } : {}),
+        ...(typeof s.downloadedBytes === 'number' ? { downloadedBytes: s.downloadedBytes } : {}),
+        ...(typeof s.totalBytes === 'number' ? { totalBytes: s.totalBytes } : {}),
+      })
+    } catch { /* never let telemetry crash the updater */ }
   }
 
   autoUpdater.on('checking-for-update', () => setState({ status: 'checking' }))

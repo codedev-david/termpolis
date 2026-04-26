@@ -1183,6 +1183,53 @@ describe('window:close', () => {
 })
 
 // =========================================================================
+// Telemetry IPC — opt-in mirror + event capture
+// =========================================================================
+describe('telemetry IPC', () => {
+  it('telemetry:set-opt-in flips main-process state and persists', async () => {
+    const result = await invokeHandler('telemetry:set-opt-in', { value: true })
+    expect(result.success).toBe(true)
+    expect(result.data?.optIn).toBe(true)
+
+    const get1 = await invokeHandler('telemetry:get-opt-in')
+    expect(get1).toEqual({ success: true, data: true })
+
+    const off = await invokeHandler('telemetry:set-opt-in', { value: false })
+    expect(off.success).toBe(true)
+    expect(off.data?.optIn).toBe(false)
+
+    const get2 = await invokeHandler('telemetry:get-opt-in')
+    expect(get2).toEqual({ success: true, data: false })
+  })
+
+  it('telemetry:set-opt-in coerces non-true values to false', async () => {
+    const result = await invokeHandler('telemetry:set-opt-in', { value: '1' })
+    expect(result.success).toBe(true)
+    expect(result.data?.optIn).toBe(false)
+  })
+
+  it('telemetry:record-event accepts a name + props (no-op when opted out)', async () => {
+    // Default: opted out — but the handler still returns ok (no-op internally)
+    const result = await invokeHandler('telemetry:record-event', {
+      name: 'feature.click',
+      props: { area: 'sidebar' },
+    })
+    expect(result).toEqual({ success: true, data: undefined })
+  })
+
+  it('telemetry:record-event rejects empty/missing names', async () => {
+    const r1 = await invokeHandler('telemetry:record-event', { name: '', props: {} })
+    expect(r1).toEqual({ success: false, error: 'event name required' })
+
+    const r2 = await invokeHandler('telemetry:record-event', { name: '   ', props: {} })
+    expect(r2).toEqual({ success: false, error: 'event name required' })
+
+    const r3 = await invokeHandler('telemetry:record-event', { name: 42 as any })
+    expect(r3).toEqual({ success: false, error: 'event name required' })
+  })
+})
+
+// =========================================================================
 // Handler registration completeness
 // =========================================================================
 describe('IPC handler registration', () => {
@@ -1215,6 +1262,9 @@ describe('IPC handler registration', () => {
       'swarm:clear',
       'diagnostics:collect',
       'shell:open-external',
+      'telemetry:set-opt-in',
+      'telemetry:get-opt-in',
+      'telemetry:record-event',
     ]
 
     for (const channel of expectedHandleChannels) {

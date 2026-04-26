@@ -18,6 +18,7 @@ beforeAll(() => {
     getHomedir: vi.fn().mockResolvedValue({ success: true, data: '/home/test' }),
     readConfigFile: vi.fn().mockResolvedValue({ success: true, data: '# config content' }),
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
+    setTelemetryOptIn: vi.fn().mockResolvedValue({ success: true, data: { optIn: true } }),
   }
 })
 
@@ -240,6 +241,40 @@ describe('SettingsPane', () => {
       { type: 'powershell', label: 'PowerShell' },
       { type: 'zsh', label: 'Zsh' },
     ] })
+  })
+
+  it('toggling crash reporting writes localStorage AND mirrors to main', async () => {
+    localStorage.removeItem('termpolis.telemetry.optIn')
+    render(<SettingsPane />)
+    // The crash-reporting toggle is the button with aria-label "Toggle crash reporting"
+    const toggle = await screen.findByRole('button', { name: /Toggle crash reporting/i })
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBe('1')
+    expect((window as any).termpolis.setTelemetryOptIn).toHaveBeenCalledWith(true)
+    // Toggle off
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBe('0')
+    expect((window as any).termpolis.setTelemetryOptIn).toHaveBeenLastCalledWith(false)
+  })
+
+  it('telemetry toggle reflects current localStorage value on mount', () => {
+    localStorage.setItem('termpolis.telemetry.optIn', '1')
+    render(<SettingsPane />)
+    // We can't easily inspect button state, but a click should now toggle it OFF
+    const toggle = screen.getByRole('button', { name: /Toggle crash reporting/i })
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBe('0')
+    localStorage.removeItem('termpolis.telemetry.optIn')
+  })
+
+  it('telemetry toggle still works if main bridge is missing (graceful)', () => {
+    const original = (window as any).termpolis.setTelemetryOptIn
+    delete (window as any).termpolis.setTelemetryOptIn
+    expect(() => {
+      render(<SettingsPane />)
+      fireEvent.click(screen.getByRole('button', { name: /Toggle crash reporting/i }))
+    }).not.toThrow()
+    ;(window as any).termpolis.setTelemetryOptIn = original
   })
 
   it('handles readConfigFile returning no data (?? fallback)', async () => {

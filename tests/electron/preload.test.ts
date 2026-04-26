@@ -454,6 +454,39 @@ describe('preload: contextPins API', () => {
   })
 })
 
+describe('preload: telemetry API', () => {
+  it('setTelemetryOptIn invokes telemetry:set-opt-in with value', async () => {
+    await exposed.termpolis.setTelemetryOptIn(true)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:set-opt-in', { value: true })
+  })
+
+  it('setTelemetryOptIn passes false through unchanged', async () => {
+    await exposed.termpolis.setTelemetryOptIn(false)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:set-opt-in', { value: false })
+  })
+
+  it('getTelemetryOptIn invokes telemetry:get-opt-in', async () => {
+    await exposed.termpolis.getTelemetryOptIn()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:get-opt-in')
+  })
+
+  it('recordTelemetryEvent invokes telemetry:record-event with name + props', async () => {
+    await exposed.termpolis.recordTelemetryEvent('feature.click', { area: 'sidebar' })
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:record-event', {
+      name: 'feature.click',
+      props: { area: 'sidebar' },
+    })
+  })
+
+  it('recordTelemetryEvent with no props sends undefined', async () => {
+    await exposed.termpolis.recordTelemetryEvent('boot')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:record-event', {
+      name: 'boot',
+      props: undefined,
+    })
+  })
+})
+
 describe('preload: agentActivity API', () => {
   it('query invokes agentActivity:query', async () => {
     await exposed.agentActivity.query({ limit: 50 })

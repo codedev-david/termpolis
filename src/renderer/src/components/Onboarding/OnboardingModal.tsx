@@ -31,6 +31,10 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
       localStorage.setItem(SEEN_KEY, '1')
       localStorage.setItem(TELEMETRY_KEY, telemetry ? '1' : '0')
     } catch {}
+    // Mirror the opt-in to the main process so Sentry/updater pings see it
+    // immediately. Without this, the user has to relaunch before crash
+    // reporting actually engages.
+    try { window.termpolis?.setTelemetryOptIn?.(telemetry) } catch {}
     onDone()
   }
 

@@ -103,6 +103,35 @@ describe('OnboardingModal', () => {
     expect(onDone).toHaveBeenCalled()
   })
 
+  it('mirrors opt-in choice to main process via setTelemetryOptIn IPC', () => {
+    const setTelemetryOptIn = vi.fn().mockResolvedValue({ success: true })
+    ;(window as any).termpolis = { setTelemetryOptIn }
+    render(<OnboardingModal onDone={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Get started' }))
+    expect(setTelemetryOptIn).toHaveBeenCalledWith(true)
+    delete (window as any).termpolis
+  })
+
+  it('mirrors opt-out choice to main process', () => {
+    const setTelemetryOptIn = vi.fn().mockResolvedValue({ success: true })
+    ;(window as any).termpolis = { setTelemetryOptIn }
+    render(<OnboardingModal onDone={() => {}} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /Send anonymous crash reports/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Get started' }))
+    expect(setTelemetryOptIn).toHaveBeenCalledWith(false)
+    delete (window as any).termpolis
+  })
+
+  it('does not throw when window.termpolis bridge is missing', () => {
+    delete (window as any).termpolis
+    const onDone = vi.fn()
+    expect(() => {
+      render(<OnboardingModal onDone={onDone} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Get started' }))
+    }).not.toThrow()
+    expect(onDone).toHaveBeenCalled()
+  })
+
   it('links to the privacy policy, terms, and license on GitHub', () => {
     render(<OnboardingModal onDone={() => {}} />)
     const privacy = screen.getByText('Privacy policy').closest('a')
