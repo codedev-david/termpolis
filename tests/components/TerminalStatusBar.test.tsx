@@ -9,12 +9,6 @@ vi.mock('../../src/renderer/src/lib/pollingService', () => ({
   unsubscribe: vi.fn(),
 }))
 
-// Mock ContextGauge — it requires window.termpolis.agentActivity which we don't
-// want to set up for every test here.
-vi.mock('../../src/renderer/src/components/ContextGauge/ContextGauge', () => ({
-  ContextGauge: () => <div data-testid="context-gauge">ContextGauge</div>,
-}))
-
 beforeAll(() => {
   ;(window as any).termpolis = {
     ...(window as any).termpolis,
@@ -61,7 +55,12 @@ describe('TerminalStatusBar', () => {
     } as any
     render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} />)
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
-    expect(screen.getByTestId('context-gauge')).toBeInTheDocument()
+  })
+
+  it('does not render the context gauge', () => {
+    const agent = { name: 'Claude', color: '#c15f3c', icon: 'fa-brands fa-claude', command: 'claude' } as any
+    render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} />)
+    expect(screen.queryByTestId('context-gauge')).not.toBeInTheDocument()
   })
 
   it('renders cost info when agent + costInfo.estimatedCost > 0', async () => {

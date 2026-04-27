@@ -3,7 +3,6 @@ import type { ShellType } from '../../types'
 import type { AgentInfo } from '../../lib/agentDetector'
 import { formatTokens, type CostInfo } from '../../lib/costTracker'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
-import { ContextGauge } from '../ContextGauge/ContextGauge'
 
 interface Props {
   terminalId: string
@@ -13,10 +12,9 @@ interface Props {
   agent?: AgentInfo | null
   costInfo?: CostInfo | null
   isRecording?: boolean
-  onOpenContextPins?: () => void
 }
 
-export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, agent, costInfo, isRecording, onOpenContextPins }: Props) {
+export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, agent, costInfo, isRecording }: Props) {
   const [ipcBranch, setIpcBranch] = useState('')
 
   // IPC-based git branch lookup as fallback (works on macOS/Linux with live cwd)
@@ -70,9 +68,6 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
           <i className={`${agent.icon} text-[10px]`}></i>
           {agent.name}
         </span>
-      )}
-      {agent && (
-        <ContextGauge terminalId={terminalId} model={agent.name} onClick={onOpenContextPins} />
       )}
       {agent && costInfo && costInfo.estimatedCost > 0 && (
         <span className="flex items-center gap-1 shrink-0" title={`Estimated cost: $${costInfo.estimatedCost.toFixed(2)}${costInfo.tokensIn ? ` (${costInfo.tokensIn.toLocaleString()} tokens)` : ''}`}>

@@ -718,7 +718,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         agent={agent.detectedAgent}
         costInfo={agent.costInfo}
         isRecording={recording.isRecording}
-        onOpenContextPins={() => window.dispatchEvent(new CustomEvent('termpolis:openContextPins'))}
       />
       {showDiffViewer && (
         <DiffViewer
