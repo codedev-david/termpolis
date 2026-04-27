@@ -19,6 +19,7 @@ function mk(over: Partial<AgentActivityEvent>): AgentActivityEvent {
     kind: over.kind ?? 'message',
     summary: over.summary ?? '',
     payload: over.payload ?? {},
+    ...(over.taskId !== undefined ? { taskId: over.taskId } : {}),
   }
 }
 
@@ -86,6 +87,51 @@ describe('extractTokensFromEvents', () => {
   it('tolerates malformed payload', () => {
     const e = mk({ kind: 'token_update', payload: { inputTokens: 'x' as any } })
     expect(extractTokensFromEvents([e])).toBe(0)
+  })
+
+  it('isolates by latest taskId so a previous Claude session does not bleed in', () => {
+    // Old session with high token count, then a fresh session with low count.
+    // The fresh session should win — the prior peak must NOT bleed through.
+    const old = mk({
+      id: 'old', ts: 100, taskId: 'session-old', kind: 'token_update',
+      payload: { inputTokens: 160_000, outputTokens: 0 },
+    })
+    const fresh = mk({
+      id: 'fresh', ts: 200, taskId: 'session-fresh', kind: 'token_update',
+      payload: { inputTokens: 5_000, outputTokens: 0 },
+    })
+    expect(extractTokensFromEvents([old, fresh])).toBe(5_000)
+  })
+
+  it('still uses max within the latest session', () => {
+    const a = mk({
+      id: 'a', ts: 100, taskId: 's1', kind: 'token_update',
+      payload: { inputTokens: 8_000 },
+    })
+    const b = mk({
+      id: 'b', ts: 200, taskId: 's1', kind: 'token_update',
+      payload: { inputTokens: 12_000 },
+    })
+    expect(extractTokensFromEvents([a, b])).toBe(12_000)
+  })
+
+  it('falls back to max across all events when no taskId is present', () => {
+    // Codex-style events without sessionIds — preserve prior behavior.
+    const a = mk({ id: 'a', ts: 1, kind: 'token_update', payload: { inputTokens: 50 } })
+    const b = mk({ id: 'b', ts: 2, kind: 'token_update', payload: { inputTokens: 90 } })
+    expect(extractTokensFromEvents([a, b])).toBe(90)
+  })
+
+  it('treats events with no taskId as part of latest session when one exists', () => {
+    // Mixed: one old taskless event + a current scoped session.
+    const stray = mk({ id: 's', ts: 50, kind: 'token_update', payload: { inputTokens: 99_999 } })
+    const scoped = mk({
+      id: 'c', ts: 200, taskId: 's-current', kind: 'token_update',
+      payload: { inputTokens: 1_000 },
+    })
+    // Stray event has no taskId so the current-session filter does not exclude it
+    // (we only exclude events whose taskId differs). Max wins.
+    expect(extractTokensFromEvents([stray, scoped])).toBe(99_999)
   })
 })
 

@@ -58,14 +58,35 @@ export function resolveWindowSize(model: string): { tokens: number; label: strin
 
 /**
  * Extract tokens used from the most-recent token_update event. Returns 0
- * if none present. We use the *maximum* observed total rather than the
- * last one, because transcript writers sometimes emit deltas.
+ * if none present.
+ *
+ * When events carry a taskId (Claude Code sessionId), we isolate the
+ * latest session's events. Transcript watchers tail jsonl files from
+ * offset 0 and replay all historical events — without this filter,
+ * opening a fresh Claude session in a heavily-used project would show
+ * the previous session's peak token count instead of the current 0.
+ *
+ * Within scope, we use max(total) since Claude emits cumulative counts.
+ * For events without taskId we fall back to max across all events to
+ * preserve prior behavior for non-Claude watchers.
  */
 export function extractTokensFromEvents(events: AgentActivityEvent[]): number {
   if (!events || events.length === 0) return 0
+
+  let latestTaskId: string | undefined
+  let latestTaskTs = -Infinity
+  for (const e of events) {
+    if (e.kind !== 'token_update' || !e.taskId) continue
+    if (e.ts > latestTaskTs) {
+      latestTaskTs = e.ts
+      latestTaskId = e.taskId
+    }
+  }
+
   let max = 0
   for (const e of events) {
     if (e.kind !== 'token_update') continue
+    if (latestTaskId && e.taskId && e.taskId !== latestTaskId) continue
     const p = (e.payload ?? {}) as Record<string, unknown>
     const inTok = Number(p.inputTokens ?? p.input ?? p.prompt_tokens ?? 0)
     const outTok = Number(p.outputTokens ?? p.output ?? p.completion_tokens ?? 0)
