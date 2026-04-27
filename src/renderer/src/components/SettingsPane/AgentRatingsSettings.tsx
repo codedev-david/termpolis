@@ -1,11 +1,10 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import {
   DEFAULT_AGENT_CAPABILITIES,
   CATEGORY_LABELS,
   STRENGTH_CATEGORIES,
   getEffectiveCapabilities,
-  type AgentRatingOverrides,
   type StrengthCategory,
 } from '../../lib/agentCapabilities'
 

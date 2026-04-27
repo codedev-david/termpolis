@@ -78,6 +78,7 @@ export interface SessionData {
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]
+  agentRatingOverrides?: Record<string, Record<string, number>>
 }
 
 export interface HistoryEntry {
@@ -168,6 +169,8 @@ export interface TermpolisAPI {
   setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
   getTelemetryOptIn: () => Promise<IpcResponse<boolean>>
   recordTelemetryEvent: (name: string, props?: Record<string, unknown>) => Promise<IpcResponse>
+
+  getAppVersion: () => Promise<IpcResponse<{ version: string }>>
 }
 
 export interface MemoryEntry {

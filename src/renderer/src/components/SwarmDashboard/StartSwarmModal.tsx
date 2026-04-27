@@ -8,16 +8,20 @@ interface StartSwarmModalProps {
   onClose: () => void
   onLaunched: () => void
   projectCwd: string
+  initialGoal?: string
+  initialConstraints?: string
+  initialExpectedOutput?: string
+  initialFailureConditions?: string
 }
 
 type Step = 'preparing' | 'describe' | 'launching'
 
-export function StartSwarmModal({ onClose, onLaunched, projectCwd }: StartSwarmModalProps) {
+export function StartSwarmModal({ onClose, onLaunched, projectCwd, initialGoal = '', initialConstraints = '', initialExpectedOutput = '', initialFailureConditions = '' }: StartSwarmModalProps) {
   const [step, setStep] = useState<Step>('preparing')
-  const [goal, setGoal] = useState('')
-  const [constraints, setConstraints] = useState('')
-  const [expectedOutput, setExpectedOutput] = useState('')
-  const [failureConditions, setFailureConditions] = useState('')
+  const [goal, setGoal] = useState(initialGoal)
+  const [constraints, setConstraints] = useState(initialConstraints)
+  const [expectedOutput, setExpectedOutput] = useState(initialExpectedOutput)
+  const [failureConditions, setFailureConditions] = useState(initialFailureConditions)
   const [statusMessage, setStatusMessage] = useState('Checking Claude Code...')
   const [needsAuth, setNeedsAuth] = useState(false)
   const [error, setError] = useState<string | null>(null)

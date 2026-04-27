@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ContextPin } from '../../types'
 import { buildInjectionPrompt, estimateTokens } from '../../lib/contextInjection'
 

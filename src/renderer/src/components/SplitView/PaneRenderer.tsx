@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalPane } from '../TerminalPane/TerminalPane'
 import { SplitDivider } from './SplitDivider'

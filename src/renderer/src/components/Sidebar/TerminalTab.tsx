@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import { useState, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { TabPopover } from '../TabPopover/TabPopover'
 import type { TerminalSession } from '../../types'

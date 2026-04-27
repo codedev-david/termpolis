@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { parseUnifiedDiff, type DiffFile, type DiffHunk } from '../../lib/diffParser'
 import { detectTestCommand, reviewProgress, reviewStat, runTests, suggestCommitMessage, type ReviewState } from '../../lib/swarmReview'
 
@@ -8,11 +8,13 @@ interface Props {
   taskDescription?: string
   onClose: () => void
   onCommitted?: (commitMessage: string) => void
+  onRefineWithSwarm?: (refinement: string) => void
 }
 
 type DecisionMap = Record<string, 'accept' | 'reject'>
 
-export function SwarmReviewPanel({ preSwarmSha, cwd, taskDescription, onClose, onCommitted }: Props) {
+export function SwarmReviewPanel({ preSwarmSha, cwd, taskDescription, onClose, onCommitted, onRefineWithSwarm }: Props) {
+  const [refinement, setRefinement] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [files, setFiles] = useState<DiffFile[]>([])
@@ -345,6 +347,32 @@ export function SwarmReviewPanel({ preSwarmSha, cwd, taskDescription, onClose, o
           {testOutput && (
             <div className="max-h-24 overflow-y-auto font-mono text-[10px] bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 whitespace-pre-wrap text-[#bbb]">
               {testOutput.slice(-2000)}
+            </div>
+          )}
+          {onRefineWithSwarm && (
+            <div className="flex items-start gap-2 pb-2 border-b border-[#3c3c3c]">
+              <i className="fa-solid fa-rotate text-[#22D3EE] text-[10px] mt-1.5 shrink-0" title="Refine with another swarm"></i>
+              <textarea
+                value={refinement}
+                onChange={e => setRefinement(e.target.value)}
+                rows={2}
+                className="flex-1 bg-[#1e1e1e] border border-[#3c3c3c] text-[#d4d4d4] text-[11px] font-mono rounded px-2 py-1"
+                placeholder="Don't like the result? Describe what to fix and run another swarm…"
+                data-testid="review-refine-input"
+              />
+              <button
+                onClick={() => {
+                  if (!refinement.trim()) return
+                  onRefineWithSwarm(refinement.trim())
+                }}
+                disabled={!refinement.trim() || running}
+                className="text-[11px] px-3 py-1 rounded bg-[#22D3EE]/15 text-[#22D3EE] hover:bg-[#22D3EE]/25 border border-[#22D3EE]/30 disabled:opacity-40 self-stretch flex items-center gap-1.5"
+                data-testid="review-refine-btn"
+                title="Launch a new swarm to refine these results"
+              >
+                <i className="fa-solid fa-rotate text-[10px]"></i>
+                Refine
+              </button>
             </div>
           )}
           <div className="flex items-center gap-2">

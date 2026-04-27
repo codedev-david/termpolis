@@ -18,12 +18,10 @@ interface ContextLimitState {
 }
 
 export function useContextLimit(
-  terminalId: string,
-  shellType: string,
   cwd: string,
   parsedCwd: string | null,
   detectedAgentName: string | null,
-  outputBufferRef: React.RefObject<string>,
+  outputBufferRef: React.MutableRefObject<string>,
 ): ContextLimitState {
   const [contextLimitReached, setContextLimitReached] = useState(false)
   const [showHandoffModal, setShowHandoffModal] = useState(false)

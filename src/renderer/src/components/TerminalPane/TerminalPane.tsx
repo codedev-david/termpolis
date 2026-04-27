@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
@@ -88,8 +87,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   const recording = useSessionRecording(terminalName, shellType)
   const contextLimit = useContextLimit(
-    terminalId,
-    shellType,
     cwd,
     parsedCwd,
     agent.detectedAgent?.name ?? null,
@@ -239,7 +236,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     }).catch(() => { /* terminal may have been killed before replay */ })
 
     // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste)
-    const keyHandler = term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') {
         const selection = term.getSelection()
         if (selection) navigator.clipboard.writeText(selection)
@@ -528,7 +525,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           const files = Array.from(e.dataTransfer.files)
           if (files.length > 0) {
             // Paste file paths into terminal, quoted and space-separated
-            const paths = files.map(f => `"${f.path}"`).join(' ')
+            const paths = files.map(f => `"${(f as File & { path?: string }).path ?? ''}"`).join(' ')
             window.termpolis.writeToTerminal(terminalId, paths)
           }
         }}

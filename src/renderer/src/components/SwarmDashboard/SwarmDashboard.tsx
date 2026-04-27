@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import type { SwarmMessage, SwarmTask } from '../../types'
 import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
@@ -25,6 +25,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   // Auto-open wizard if we have an initialCwd (came from Welcome/sidebar with directory already picked)
   const [showStartSwarm, setShowStartSwarm] = useState(!!initialCwd && !swarmActive)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(initialCwd ?? null)
+  // Prefilled values when relaunching to refine the previous swarm's output
+  const [prefill, setPrefill] = useState<{ goal: string; constraints: string; expectedOutput: string; failureConditions: string } | null>(null)
   const [conductorStatus, setConductorStatus] = useState<string>('idle')
   const [conductorTerminalId, setConductorTerminalId] = useState<string | null>(null)
   const [handoffEvent, setHandoffEvent] = useState<{ from?: string; to: string; key: string } | null>(null)
@@ -368,6 +370,24 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
               cwd={swarmSummary.projectCwd}
               taskDescription={swarmSummary.message}
               onClose={() => setActiveTab('tasks')}
+              onRefineWithSwarm={(refinement) => {
+                if (swarmActive) return
+                const cwd = swarmSummary?.projectCwd
+                if (!cwd) return
+                const prior = (swarmSummary?.message ?? '').replace(/^SWARM COMPLETE:\s*/i, '').trim()
+                const goal = [
+                  refinement.trim(),
+                  prior ? `Prior swarm goal:\n${prior}` : '',
+                ].filter(Boolean).join('\n\n')
+                setPrefill({
+                  goal,
+                  constraints: 'Refine the previous swarm output. Keep accepted hunks, address only the issues described above.',
+                  expectedOutput: '',
+                  failureConditions: '',
+                })
+                setSwarmCwd(cwd)
+                setShowStartSwarm(true)
+              }}
             />
           )}
         </div>
@@ -402,9 +422,14 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
       {showStartSwarm && swarmCwd && (
         <StartSwarmModal
           projectCwd={swarmCwd}
-          onClose={() => setShowStartSwarm(false)}
+          initialGoal={prefill?.goal}
+          initialConstraints={prefill?.constraints}
+          initialExpectedOutput={prefill?.expectedOutput}
+          initialFailureConditions={prefill?.failureConditions}
+          onClose={() => { setShowStartSwarm(false); setPrefill(null) }}
           onLaunched={() => {
             setShowStartSwarm(false)
+            setPrefill(null)
             // Stay on the dashboard so user can watch agents work
           }}
         />

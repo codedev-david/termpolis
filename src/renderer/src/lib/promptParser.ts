@@ -7,9 +7,6 @@
 // or: "user@host MINGW64 /c/Users/name/repos (branch)"
 const GIT_BASH_PROMPT = /MINGW\d*\s+([^\s(]+(?:\s[^\s(]+)*)\s*(?:\(([^)]+)\))?/
 
-// Zsh/Bash with git: common patterns like "~/project (main)" or "[user@host ~/project (main)]"
-const BASH_PROMPT_BRANCH = /[~\/][^\s(]*\s*\(([^)]+)\)/
-
 // PowerShell prompt: "PS C:\Users\name\repos\project>"
 const PS_PROMPT = /PS\s+([A-Za-z]:\\[^>]+)>/
 

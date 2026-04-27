@@ -1,4 +1,3 @@
-import React from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalPane } from '../TerminalPane/TerminalPane'
 

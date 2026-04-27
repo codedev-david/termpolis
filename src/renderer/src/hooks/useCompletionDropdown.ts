@@ -26,7 +26,7 @@ interface CompletionDropdownState {
 export function useCompletionDropdown(
   terminalId: string,
   containerRef: React.RefObject<HTMLDivElement | null>,
-  inputBufferRef: React.RefObject<string>,
+  inputBufferRef: React.MutableRefObject<string>,
 ): CompletionDropdownState {
   const [suggestions, setSuggestions] = useState<CompletionResult[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)

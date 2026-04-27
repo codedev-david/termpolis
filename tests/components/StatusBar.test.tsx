@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { StatusBar } from '../../src/renderer/src/components/StatusBar/StatusBar'
 
@@ -20,6 +20,9 @@ beforeEach(() => {
   mockSwarmActive = false
   mockSwarmAgents = []
   ;(window as any).open = vi.fn()
+  ;(window as any).termpolis = {
+    getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
+  }
 })
 
 describe('StatusBar', () => {
@@ -90,8 +93,8 @@ describe('StatusBar', () => {
   it('shows running/total agent count when swarm agents exist', () => {
     mockSwarmActive = true
     mockSwarmAgents = [
-      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
-      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'running' },
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'working' },
+      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'working' },
     ]
     render(<StatusBar />)
     expect(screen.getByText('(2/2)')).toBeInTheDocument()
@@ -100,9 +103,9 @@ describe('StatusBar', () => {
   it('shows partial running count correctly', () => {
     mockSwarmActive = true
     mockSwarmAgents = [
-      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'working' },
       { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'done' },
-      { terminalId: 't3', agentName: 'Gemini', role: 'Docs', status: 'running' },
+      { terminalId: 't3', agentName: 'Gemini', role: 'Docs', status: 'working' },
     ]
     render(<StatusBar />)
     expect(screen.getByText('(2/3)')).toBeInTheDocument()
@@ -111,8 +114,8 @@ describe('StatusBar', () => {
   it('shows error count when swarm agents have errors', () => {
     mockSwarmActive = true
     mockSwarmAgents = [
-      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
-      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'error' },
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'working' },
+      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'errored' },
     ]
     render(<StatusBar />)
     expect(screen.getByText('1 err')).toBeInTheDocument()
@@ -121,8 +124,8 @@ describe('StatusBar', () => {
   it('shows multiple error count', () => {
     mockSwarmActive = true
     mockSwarmAgents = [
-      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'error' },
-      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'error' },
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'errored' },
+      { terminalId: 't2', agentName: 'Codex', role: 'Tests', status: 'errored' },
     ]
     render(<StatusBar />)
     expect(screen.getByText('2 err')).toBeInTheDocument()
@@ -131,7 +134,7 @@ describe('StatusBar', () => {
   it('does not show error count when there are no errors', () => {
     mockSwarmActive = true
     mockSwarmAgents = [
-      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'running' },
+      { terminalId: 't1', agentName: 'Claude', role: 'Build', status: 'working' },
     ]
     render(<StatusBar />)
     expect(screen.queryByText(/err/)).not.toBeInTheDocument()
@@ -246,5 +249,28 @@ describe('StatusBar', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.getByText('Accessibility')).toBeInTheDocument()
+  })
+
+  // -- Version display (auto-update verification) --
+
+  it('renders installed app version in the footer next to the Apache license', async () => {
+    render(<StatusBar />)
+    await waitFor(() => {
+      expect(screen.getByTestId('footer-app-version')).toHaveTextContent('v9.9.9')
+    })
+  })
+
+  it('renders installed app version in the help dialog header', async () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    await waitFor(() => {
+      expect(screen.getByTestId('help-app-version')).toHaveTextContent('v9.9.9')
+    })
+  })
+
+  it('hides version when getAppVersion is unavailable', () => {
+    ;(window as any).termpolis = {}
+    render(<StatusBar />)
+    expect(screen.queryByTestId('footer-app-version')).not.toBeInTheDocument()
   })
 })

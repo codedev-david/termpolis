@@ -275,6 +275,8 @@ ipcMain.handle('telemetry:set-opt-in', async (_, { value }: { value: boolean }) 
 
 ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
 
+ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
+
 // Tier 3: anonymous usage events from the renderer (e.g. report-problem.submit,
 // swarm.start). Caller is responsible for keeping props PII-free.
 ipcMain.handle('telemetry:record-event', async (_, { name, props }: { name: string; props?: Record<string, unknown> }) => {
@@ -629,7 +631,7 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
 // Check which AI agent commands are installed on the system
 // Find Ollama executable — checks PATH first, then common install locations on Windows
 function findOllamaPath(): string | null {
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true }
   try {
     execSync(process.platform === 'win32' ? 'where ollama' : 'which ollama', execOpts)
     return 'ollama' // found in PATH
@@ -654,7 +656,7 @@ function findOllamaPath(): string | null {
 
 // Check common pip/Python install locations for aider on Windows
 function findAiderInstalled(): boolean {
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true }
   try {
     execSync(process.platform === 'win32' ? 'where aider' : 'which aider', execOpts)
     return true
@@ -723,7 +725,7 @@ function getExtendedPath(): string {
 
 // Check if a command exists — tries `where`/`which` first, then scans known install dirs
 function findAgentInstalled(command: string): boolean {
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true, shell: true }
+  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true }
   // Try system where/which first (works when launched from terminal)
   try {
     execSync(process.platform === 'win32' ? `where ${command}` : `which ${command}`, execOpts)
@@ -1025,7 +1027,7 @@ if (!gotTheLock) {
       // Auto-ingest swarm messages/results into shared memory so other agents
       // can RAG-retrieve context without re-running the same tools.
       try {
-        if ((event.kind === 'message' || event.kind === 'tool-result') && event.summary) {
+        if ((event.kind === 'message' || event.kind === 'tool_result') && event.summary) {
           memoryWrite({
             agentId: event.terminalId || event.agentType || 'unknown',
             kind: event.kind === 'message' ? 'message' : 'result',

@@ -149,6 +149,8 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('telemetry:get-opt-in'),
   recordTelemetryEvent: (name: string, props?: Record<string, unknown>) =>
     ipcRenderer.invoke('telemetry:record-event', { name, props }),
+
+  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

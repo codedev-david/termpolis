@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellInfo, ShellType } from '../../types'
@@ -35,6 +35,7 @@ export function SettingsPane() {
   const [telemetryOptIn, setTelemetryOptIn] = useState(() => {
     try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
   })
+  const [appVersion, setAppVersion] = useState<string>('')
 
   const toggleTelemetry = () => {
     const next = !telemetryOptIn
@@ -47,6 +48,9 @@ export function SettingsPane() {
   }
 
   useEffect(() => {
+    window.termpolis.getAppVersion?.().then(res => {
+      if (res?.success && res.data) setAppVersion(res.data.version)
+    }).catch(() => {})
     window.termpolis.getAvailableShells().then(res => {
       if (res.success && res.data) setShells(res.data)
     })
@@ -73,7 +77,18 @@ export function SettingsPane() {
 
   return (
     <div className="flex flex-col h-full p-6 gap-6 overflow-y-auto bg-[#1e1e1e]">
-      <h1 className="text-lg font-semibold">Settings</h1>
+      <div className="flex items-baseline justify-between">
+        <h1 className="text-lg font-semibold">Settings</h1>
+        {appVersion && (
+          <span
+            data-testid="settings-app-version"
+            className="text-xs text-[#9ca3af]"
+            title="Installed Termpolis version. Auto-update is on by default."
+          >
+            v{appVersion}
+          </span>
+        )}
+      </div>
       <div className="flex flex-col gap-2">
         <label className="text-sm font-medium">Default Shell</label>
         <select

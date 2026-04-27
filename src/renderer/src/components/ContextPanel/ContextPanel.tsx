@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 
 interface Props {

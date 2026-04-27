@@ -1,4 +1,3 @@
-import React from 'react'
 import { useRedundancyFindings } from '../../hooks/useRedundancyFindings'
 import { describeFinding } from '../../lib/redundancyDetector'
 

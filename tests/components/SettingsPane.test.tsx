@@ -19,6 +19,7 @@ beforeAll(() => {
     readConfigFile: vi.fn().mockResolvedValue({ success: true, data: '# config content' }),
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
     setTelemetryOptIn: vi.fn().mockResolvedValue({ success: true, data: { optIn: true } }),
+    getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
   }
 })
 

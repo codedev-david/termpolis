@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalTab } from './TerminalTab'
 import { AddTerminalModal } from './AddTerminalModal'

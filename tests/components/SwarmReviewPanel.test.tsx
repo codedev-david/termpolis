@@ -243,4 +243,41 @@ describe('SwarmReviewPanel', () => {
     fireEvent.click(screen.getByTestId('review-commit'))
     await waitFor(() => expect(props.onCommitted).toHaveBeenCalledWith('final'))
   })
+
+  // -- Refine-with-new-swarm flow --
+
+  it('hides the refine input when no onRefineWithSwarm handler is provided', async () => {
+    await renderPanel()
+    expect(screen.queryByTestId('review-refine-input')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('review-refine-btn')).not.toBeInTheDocument()
+  })
+
+  it('shows the refine input when onRefineWithSwarm is provided', async () => {
+    await renderPanel({ onRefineWithSwarm: vi.fn() })
+    expect(screen.getByTestId('review-refine-input')).toBeInTheDocument()
+    expect(screen.getByTestId('review-refine-btn')).toBeInTheDocument()
+  })
+
+  it('disables the refine button until the user types something', async () => {
+    await renderPanel({ onRefineWithSwarm: vi.fn() })
+    expect(screen.getByTestId('review-refine-btn')).toBeDisabled()
+    fireEvent.change(screen.getByTestId('review-refine-input'), { target: { value: 'tighten the prompt' } })
+    expect(screen.getByTestId('review-refine-btn')).toBeEnabled()
+  })
+
+  it('does not fire onRefineWithSwarm for whitespace-only input', async () => {
+    const onRefine = vi.fn()
+    await renderPanel({ onRefineWithSwarm: onRefine })
+    fireEvent.change(screen.getByTestId('review-refine-input'), { target: { value: '   \n  ' } })
+    fireEvent.click(screen.getByTestId('review-refine-btn'))
+    expect(onRefine).not.toHaveBeenCalled()
+  })
+
+  it('fires onRefineWithSwarm with the trimmed refinement text on click', async () => {
+    const onRefine = vi.fn()
+    await renderPanel({ onRefineWithSwarm: onRefine })
+    fireEvent.change(screen.getByTestId('review-refine-input'), { target: { value: '  fix the type errors  ' } })
+    fireEvent.click(screen.getByTestId('review-refine-btn'))
+    expect(onRefine).toHaveBeenCalledWith('fix the type errors')
+  })
 })

@@ -6,7 +6,7 @@
  * injects incoming swarm messages into the terminal.
  */
 
-import { detectSwarmSignals, formatIncomingMessage } from './swarmBridge'
+import { detectSwarmSignals } from './swarmBridge'
 import { recordSwarmError } from './sentry'
 
 const POLL_INTERVAL_MS = 5000

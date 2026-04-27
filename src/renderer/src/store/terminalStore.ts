@@ -118,7 +118,7 @@ interface TerminalStore {
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
 }
 
-export const useTerminalStore = create<TerminalStore>((set, get) => ({
+export const useTerminalStore = create<TerminalStore>((set) => ({
   terminals: [],
   workspaces: [],
   activeTerminalId: null,

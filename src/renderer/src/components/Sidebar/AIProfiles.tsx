@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
-import { getHomedir } from '../../lib/homedir'
 import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
@@ -113,7 +112,6 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
   useEffect(() => {
     const check = async () => {
       try {
-        const { execSync } = window as any
         // Try via fetch to Ollama's local API (runs on port 11434)
         const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) }).catch(() => null)
         if (res?.ok) {

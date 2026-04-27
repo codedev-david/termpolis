@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react'
+import { useCallback } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { PaneRenderer } from './PaneRenderer'
 import type { PaneNode } from '../../types'

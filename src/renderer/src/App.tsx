@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, lazy, Suspense } from 'react'
+import { useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
 import { SplitView } from './components/SplitView/SplitView'
@@ -224,7 +224,7 @@ export default function App() {
         workspaces: state.workspaces,
         defaultShell: state.defaultShell,
         viewMode: state.viewMode,
-        keybindings: state.keybindings,
+        keybindings: { ...state.keybindings },
         aiProfiles: state.aiProfiles,
         promptTemplates: state.promptTemplates,
         userWorkflows: state.userWorkflows,

@@ -1,4 +1,3 @@
-import React from 'react'
 import { useEfficiencyReport } from '../../hooks/useEfficiencyReport'
 import { formatErrorRate, formatAvg } from '../../lib/efficiencyAnalyzer'
 import { formatTokens } from '../../lib/costTracker'

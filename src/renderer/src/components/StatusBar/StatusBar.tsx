@@ -1,8 +1,8 @@
-import React, { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { ReportProblemModal } from './ReportProblemModal'
 
-function HelpModal({ onClose, onReportProblem }: { onClose: () => void; onReportProblem: () => void }) {
+function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => void; onReportProblem: () => void; appVersion: string }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg shadow-xl border border-[#3c3c3c] w-[560px] max-h-[85vh] flex flex-col">
@@ -11,6 +11,11 @@ function HelpModal({ onClose, onReportProblem }: { onClose: () => void; onReport
           <h2 className="text-base font-semibold flex items-center gap-2">
             <i className="fa-solid fa-book-open text-[#22D3EE]"></i>
             Quick Start Guide
+            {appVersion && (
+              <span data-testid="help-app-version" className="text-xs text-[#9ca3af] font-normal ml-2">
+                v{appVersion}
+              </span>
+            )}
           </h2>
           <button onClick={onClose} className="text-[#9ca3af] hover:text-white text-lg px-1">&times;</button>
         </div>
@@ -368,16 +373,30 @@ interface StatusBarProps {
 export function StatusBar({ onSwarmClick }: StatusBarProps) {
   const [showHelp, setShowHelp] = useState(false)
   const [showReport, setShowReport] = useState(false)
+  const [appVersion, setAppVersion] = useState<string>('')
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
 
-  const runningCount = swarmAgents.filter(a => a.status === 'running').length
-  const errorCount = swarmAgents.filter(a => a.status === 'error').length
+  useEffect(() => {
+    window.termpolis.getAppVersion?.().then(res => {
+      if (res?.success && res.data) setAppVersion(res.data.version)
+    }).catch(() => {})
+  }, [])
+
+  const runningCount = swarmAgents.filter(a => a.status === 'thinking' || a.status === 'working').length
+  const errorCount = swarmAgents.filter(a => a.status === 'errored').length
 
   return (
     <>
       <div className="flex items-center justify-between px-3 py-1 bg-[#1a1a1a] border-t border-[#3c3c3c] text-[#9ca3af] text-xs select-none shrink-0">
-        <span>&copy; {new Date().getFullYear()} Termpolis &middot; Apache 2.0 License</span>
+        <span>
+          &copy; {new Date().getFullYear()} Termpolis &middot; Apache 2.0 License
+          {appVersion && (
+            <span data-testid="footer-app-version" className="ml-2 text-[#6b7280]">
+              &middot; v{appVersion}
+            </span>
+          )}
+        </span>
         <div className="flex items-center gap-3">
           {swarmActive && (
             <button
@@ -419,6 +438,7 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
         <HelpModal
           onClose={() => setShowHelp(false)}
           onReportProblem={() => { setShowHelp(false); setShowReport(true) }}
+          appVersion={appVersion}
         />
       )}
       {showReport && <ReportProblemModal onClose={() => setShowReport(false)} />}

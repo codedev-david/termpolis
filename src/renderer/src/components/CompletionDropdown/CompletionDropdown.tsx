@@ -9,7 +9,7 @@ interface Props {
   onDismiss: () => void
 }
 
-export const CompletionDropdown = React.memo(function CompletionDropdown({ suggestions, selectedIndex, position, onAccept, onDismiss }: Props) {
+export const CompletionDropdown = React.memo(function CompletionDropdown({ suggestions, selectedIndex, position, onAccept }: Props) {
   if (suggestions.length === 0) return null
 
   return (

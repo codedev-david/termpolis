@@ -78,7 +78,7 @@ export function detectAgentStatus(
   }
 
   // --- Priority 5: Still starting (check before thinking — startup output looks like thinking) ---
-  if (isStarting(tail, agentName, previousStatus)) {
+  if (isStarting(tail, previousStatus)) {
     return { status: 'starting', summary: 'Agent initializing...' }
   }
 
@@ -204,7 +204,7 @@ function isIdle(tail: string, agentName: string): boolean {
   return false
 }
 
-function isStarting(tail: string, agentName: string, previousStatus: AgentStatus): boolean {
+function isStarting(tail: string, previousStatus: AgentStatus): boolean {
   // Only stay in starting if we were starting and haven't seen much output
   if (previousStatus !== 'starting') return false
   if (tail.trim().length < 100) return true

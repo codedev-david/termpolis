@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ShellType } from '../../types'
 import type { AgentInfo } from '../../lib/agentDetector'
 import { formatTokens, type CostInfo } from '../../lib/costTracker'
