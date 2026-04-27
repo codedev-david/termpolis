@@ -75,6 +75,23 @@ describe('terminalStore', () => {
       expect(state2.paneTree!.type).toBe('split')
     })
 
+    it('produces a balanced 2x2 grid when 4 terminals are added in split mode', () => {
+      useTerminalStore.setState({ viewMode: 'split' })
+      for (const id of ['a', 'b', 'c', 'd']) {
+        useTerminalStore.getState().addTerminal(makeTerminal({ id }))
+      }
+      // Walk the tree and verify every leaf gets exactly 1/4 of the area.
+      function leafAreas(node: any, area = 1): Record<string, number> {
+        if (node.type === 'terminal') return { [node.terminalId]: area }
+        return {
+          ...leafAreas(node.children[0], area * node.ratio),
+          ...leafAreas(node.children[1], area * (1 - node.ratio)),
+        }
+      }
+      const areas = leafAreas(useTerminalStore.getState().paneTree!)
+      for (const id of ['a', 'b', 'c', 'd']) expect(areas[id]).toBeCloseTo(0.25)
+    })
+
     it('does not modify pane tree in tabs mode', () => {
       useTerminalStore.getState().addTerminal(makeTerminal())
       expect(useTerminalStore.getState().paneTree).toBeNull()
@@ -116,6 +133,23 @@ describe('terminalStore', () => {
       useTerminalStore.getState().removeTerminal('b')
 
       expect(useTerminalStore.getState().activeTerminalId).toBe('a')
+    })
+
+    it('rebalances the pane tree to equal areas in split mode after closing one', () => {
+      useTerminalStore.setState({ viewMode: 'split' })
+      for (const id of ['a', 'b', 'c', 'd']) {
+        useTerminalStore.getState().addTerminal(makeTerminal({ id }))
+      }
+      useTerminalStore.getState().removeTerminal('b')
+      function leafAreas(node: any, area = 1): Record<string, number> {
+        if (node.type === 'terminal') return { [node.terminalId]: area }
+        return {
+          ...leafAreas(node.children[0], area * node.ratio),
+          ...leafAreas(node.children[1], area * (1 - node.ratio)),
+        }
+      }
+      const areas = leafAreas(useTerminalStore.getState().paneTree!)
+      for (const id of ['a', 'c', 'd']) expect(areas[id]).toBeCloseTo(1 / 3)
     })
   })
 
@@ -164,6 +198,39 @@ describe('terminalStore', () => {
       const tree = useTerminalStore.getState().paneTree
       expect(tree).not.toBeNull()
       expect(tree!.type).toBe('split')
+    })
+
+    it('rebuilds the pane tree to equal areas every time split mode is entered', () => {
+      // Pre-existing degenerate tree (e.g. user had a custom split arrangement).
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'a' }))
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'b' }))
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'c' }))
+      useTerminalStore.setState({
+        viewMode: 'tabs',
+        paneTree: {
+          type: 'split', direction: 'horizontal', ratio: 0.9,
+          children: [
+            { type: 'terminal', terminalId: 'a' },
+            {
+              type: 'split', direction: 'horizontal', ratio: 0.1,
+              children: [
+                { type: 'terminal', terminalId: 'b' },
+                { type: 'terminal', terminalId: 'c' },
+              ],
+            },
+          ],
+        },
+      })
+      useTerminalStore.getState().toggleViewMode()
+      function leafAreas(node: any, area = 1): Record<string, number> {
+        if (node.type === 'terminal') return { [node.terminalId]: area }
+        return {
+          ...leafAreas(node.children[0], area * node.ratio),
+          ...leafAreas(node.children[1], area * (1 - node.ratio)),
+        }
+      }
+      const areas = leafAreas(useTerminalStore.getState().paneTree!)
+      for (const id of ['a', 'b', 'c']) expect(areas[id]).toBeCloseTo(1 / 3)
     })
   })
 
@@ -303,11 +370,12 @@ describe('terminalStore', () => {
       expect(tree.type).toBe('split')
       if (tree.type === 'split') {
         expect(tree.direction).toBe('horizontal')
-        expect(tree.ratio).toBe(0.5)
-        // 3 ids: ceil(3/2)=2 left, 1 right
+        // 3 ids: ceil(3/2)=2 left, 1 right → ratio = 2/3 so each pane gets equal area
+        expect(tree.ratio).toBeCloseTo(2 / 3)
         expect(tree.children[0].type).toBe('split')
         if (tree.children[0].type === 'split') {
           expect(tree.children[0].direction).toBe('vertical')
+          expect(tree.children[0].ratio).toBe(0.5)
         }
         expect(tree.children[1]).toEqual({ type: 'terminal', terminalId: 'c' })
       }
@@ -317,9 +385,42 @@ describe('terminalStore', () => {
       const tree = buildPaneTree(['a', 'b'])!
       expect(tree.type).toBe('split')
       if (tree.type === 'split') {
+        expect(tree.ratio).toBe(0.5)
         expect(tree.children[0]).toEqual({ type: 'terminal', terminalId: 'a' })
         expect(tree.children[1]).toEqual({ type: 'terminal', terminalId: 'b' })
       }
+    })
+
+    it('gives every leaf equal area regardless of N', () => {
+      // Walk the tree and accumulate the area each leaf gets. With weighted
+      // ratios, every leaf should end up with area 1/N.
+      function leafAreas(node: any, area = 1): Record<string, number> {
+        if (node.type === 'terminal') return { [node.terminalId]: area }
+        const leftArea = area * node.ratio
+        const rightArea = area * (1 - node.ratio)
+        return {
+          ...leafAreas(node.children[0], leftArea),
+          ...leafAreas(node.children[1], rightArea),
+        }
+      }
+      for (const n of [2, 3, 4, 5, 7, 9]) {
+        const ids = Array.from({ length: n }, (_, i) => `t${i}`)
+        const areas = leafAreas(buildPaneTree(ids)!)
+        for (const id of ids) expect(areas[id]).toBeCloseTo(1 / n)
+      }
+    })
+
+    it('produces a clean 2x2 grid for 4 terminals', () => {
+      const tree = buildPaneTree(['a', 'b', 'c', 'd'])!
+      // Top-level split is horizontal (rows), with ratio 0.5
+      expect(tree.type).toBe('split')
+      if (tree.type !== 'split') return
+      expect(tree.direction).toBe('horizontal')
+      expect(tree.ratio).toBe(0.5)
+      // Each row is a vertical split (columns), ratio 0.5
+      const [top, bottom] = tree.children
+      expect(top.type).toBe('split'); if (top.type === 'split') expect(top.ratio).toBe(0.5)
+      expect(bottom.type).toBe('split'); if (bottom.type === 'split') expect(bottom.ratio).toBe(0.5)
     })
   })
 

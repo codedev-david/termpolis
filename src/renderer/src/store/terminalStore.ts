@@ -11,14 +11,16 @@ import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 export function buildPaneTree(terminalIds: string[], depth = 0): PaneNode | null {
   if (terminalIds.length === 0) return null
   if (terminalIds.length === 1) return { type: 'terminal', terminalId: terminalIds[0] }
-  // Alternate directions for a grid layout: rows first (horizontal), then columns (vertical)
+  // Alternate directions for a grid layout: rows first (horizontal), then columns (vertical).
+  // Weight the ratio by leaf count so every terminal gets equal area regardless of N.
   const direction = depth % 2 === 0 ? 'horizontal' : 'vertical'
   const mid = Math.ceil(terminalIds.length / 2)
   const left = buildPaneTree(terminalIds.slice(0, mid), depth + 1)
   const right = buildPaneTree(terminalIds.slice(mid), depth + 1)
   if (!left) return right
   if (!right) return left
-  return { type: 'split', direction, ratio: 0.5, children: [left, right] }
+  const ratio = mid / terminalIds.length
+  return { type: 'split', direction, ratio, children: [left, right] }
 }
 
 function findAndReplace(node: PaneNode, terminalId: string, replacement: PaneNode): PaneNode | null {
@@ -42,12 +44,6 @@ function removeFromTree(node: PaneNode, terminalId: string): PaneNode | null {
   if (!leftResult) return rightResult
   if (!rightResult) return leftResult
   return { ...node, children: [leftResult, rightResult] }
-}
-
-function findRightmostLeaf(node: PaneNode): string | null {
-  if (node.type === 'terminal') return node.terminalId
-  if (!node.children?.[1]) return node.children?.[0] ? findRightmostLeaf(node.children[0]) : null
-  return findRightmostLeaf(node.children[1])
 }
 
 export type SwarmAgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed' | 'blocked'
@@ -153,22 +149,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const newTerminals = [...s.terminals, t]
     let newTree = s.paneTree
     if (s.viewMode === 'split' && !t.hidden) {
-      const newLeaf: PaneNode = { type: 'terminal', terminalId: t.id }
-      if (!newTree) {
-        newTree = newLeaf
-      } else {
-        // Append as a vertical split to the rightmost leaf
-        const rightmost = findRightmostLeaf(newTree)
-        if (rightmost) {
-          const replacement: PaneNode = {
-            type: 'split',
-            direction: 'horizontal',
-            ratio: 0.5,
-            children: [{ type: 'terminal', terminalId: rightmost }, newLeaf],
-          }
-          newTree = findAndReplace(newTree, rightmost, replacement) || newTree
-        }
-      }
+      const visibleIds = newTerminals.filter(x => !x.hidden).map(x => x.id)
+      newTree = buildPaneTree(visibleIds)
     }
     return {
       terminals: newTerminals,
@@ -183,7 +165,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const nextActive = s.activeTerminalId === id
       ? (remaining[remaining.length - 1]?.id ?? null)
       : s.activeTerminalId
-    const newTree = s.paneTree ? removeFromTree(s.paneTree, id) : null
+    // Rebuild from scratch so every remaining pane gets equal area in split view.
+    const newTree = s.viewMode === 'split'
+      ? buildPaneTree(remaining.filter(t => !t.hidden).map(t => t.id))
+      : (s.paneTree ? removeFromTree(s.paneTree, id) : null)
     return { terminals: remaining, activeTerminalId: nextActive, paneTree: newTree }
   }),
 
@@ -195,10 +180,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   toggleViewMode: () => set(s => {
     const newMode: ViewMode = s.viewMode === 'tabs' ? 'split' : 'tabs'
-    let newTree = s.paneTree
-    if (newMode === 'split' && !newTree) {
-      newTree = buildPaneTree(s.terminals.filter(t => !t.hidden).map(t => t.id))
-    }
+    // Always rebuild the pane tree on entering split mode so every pane gets equal area.
+    const newTree = newMode === 'split'
+      ? buildPaneTree(s.terminals.filter(t => !t.hidden).map(t => t.id))
+      : s.paneTree
     return { viewMode: newMode, paneTree: newTree }
   }),
 
