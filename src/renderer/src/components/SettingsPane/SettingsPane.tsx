@@ -36,6 +36,29 @@ export function SettingsPane() {
     try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
   })
   const [appVersion, setAppVersion] = useState<string>('')
+  const [updateStatus, setUpdateStatus] = useState<string>('')
+  const [updateChecking, setUpdateChecking] = useState(false)
+
+  const handleCheckForUpdates = async () => {
+    const updater = (window as any).updater
+    if (!updater?.check) {
+      setUpdateStatus('Updater unavailable in this build (dev mode?).')
+      return
+    }
+    setUpdateChecking(true)
+    setUpdateStatus('Checking…')
+    try {
+      const res = await updater.check()
+      if (!res?.success) {
+        setUpdateStatus(`Failed: ${res?.error || 'unknown error'}`)
+      }
+      // Success: the onState subscription below will report what happened.
+    } catch (e) {
+      setUpdateStatus(`Failed: ${(e as Error).message || String(e)}`)
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
 
   const toggleTelemetry = () => {
     const next = !telemetryOptIn
@@ -65,6 +88,32 @@ export function SettingsPane() {
         })
       })
     })
+    const updater = (window as any).updater
+    if (!updater?.onState) return
+    const unsub = updater.onState((s: { status: string; version?: string; error?: string }) => {
+      if (!s) return
+      switch (s.status) {
+        case 'checking':
+          setUpdateStatus('Checking…')
+          break
+        case 'available':
+          setUpdateStatus(`Update available${s.version ? ` (v${s.version})` : ''} — downloading…`)
+          break
+        case 'downloading':
+          setUpdateStatus(`Downloading update${s.version ? ` v${s.version}` : ''}…`)
+          break
+        case 'downloaded':
+          setUpdateStatus(`Update v${s.version} ready — restart Termpolis to install.`)
+          break
+        case 'not-available':
+          setUpdateStatus('You are on the latest version.')
+          break
+        case 'error':
+          setUpdateStatus(`Update error: ${s.error || 'unknown'}`)
+          break
+      }
+    })
+    return () => { try { unsub?.() } catch {} }
   }, [])
 
   const handleSave = async (filePath: string) => {
@@ -79,16 +128,35 @@ export function SettingsPane() {
     <div className="flex flex-col h-full p-6 gap-6 overflow-y-auto bg-[#1e1e1e]">
       <div className="flex items-baseline justify-between">
         <h1 className="text-lg font-semibold">Settings</h1>
-        {appVersion && (
-          <span
-            data-testid="settings-app-version"
-            className="text-xs text-[#9ca3af]"
-            title="Installed Termpolis version. Auto-update is on by default."
+        <div className="flex items-center gap-3">
+          {appVersion && (
+            <span
+              data-testid="settings-app-version"
+              className="text-xs text-[#9ca3af]"
+              title="Installed Termpolis version. Auto-update is on by default."
+            >
+              v{appVersion}
+            </span>
+          )}
+          <button
+            data-testid="settings-check-updates"
+            onClick={handleCheckForUpdates}
+            disabled={updateChecking}
+            className="text-xs px-2 py-1 rounded bg-[#2d2d2d] hover:bg-[#3c3c3c] border border-[#3c3c3c] disabled:opacity-60"
+            title="Force a check against the GitHub releases feed"
           >
-            v{appVersion}
-          </span>
-        )}
+            {updateChecking ? 'Checking…' : 'Check for updates'}
+          </button>
+        </div>
       </div>
+      {updateStatus && (
+        <div
+          data-testid="settings-update-status"
+          className="text-xs text-[#9ca3af] -mt-3"
+        >
+          {updateStatus}
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         <label className="text-sm font-medium">Default Shell</label>
         <select

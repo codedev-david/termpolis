@@ -21,6 +21,12 @@ beforeAll(() => {
     setTelemetryOptIn: vi.fn().mockResolvedValue({ success: true, data: { optIn: true } }),
     getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
   }
+  ;(window as any).updater = {
+    getStatus: vi.fn().mockResolvedValue({ status: 'idle' }),
+    check: vi.fn().mockResolvedValue({ success: true }),
+    quitAndInstall: vi.fn().mockResolvedValue({ success: true }),
+    onState: vi.fn(() => () => {}),
+  }
 })
 
 beforeEach(() => {
@@ -72,6 +78,48 @@ describe('SettingsPane', () => {
   it('renders settings panel with heading', () => {
     render(<SettingsPane />)
     expect(screen.getByText('Settings')).toBeInTheDocument()
+  })
+
+  it('renders the Check for updates button', () => {
+    render(<SettingsPane />)
+    expect(screen.getByTestId('settings-check-updates')).toBeInTheDocument()
+  })
+
+  it('invokes updater.check when the button is clicked', async () => {
+    const checkMock = (window as any).updater.check as ReturnType<typeof vi.fn>
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('settings-check-updates'))
+    await waitFor(() => expect(checkMock).toHaveBeenCalled())
+  })
+
+  it('reports "latest version" message when updater pushes not-available state', async () => {
+    let cb: (s: any) => void = () => {}
+    ;(window as any).updater.onState = vi.fn((fn: any) => { cb = fn; return () => {} })
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('settings-check-updates'))
+    cb({ status: 'not-available' })
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-update-status')).toHaveTextContent(/latest version/i)
+    })
+  })
+
+  it('shows "ready — restart" message when an update is downloaded', async () => {
+    let cb: (s: any) => void = () => {}
+    ;(window as any).updater.onState = vi.fn((fn: any) => { cb = fn; return () => {} })
+    render(<SettingsPane />)
+    cb({ status: 'downloaded', version: '9.9.9' })
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-update-status')).toHaveTextContent(/v9\.9\.9 ready/i)
+    })
+  })
+
+  it('surfaces an error when the IPC check call fails', async () => {
+    ;(window as any).updater.check = vi.fn().mockResolvedValue({ success: false, error: 'no internet' })
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('settings-check-updates'))
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-update-status')).toHaveTextContent(/no internet/i)
+    })
   })
 
   it('shows Default Shell section', () => {
