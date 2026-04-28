@@ -1,0 +1,42 @@
+# Emails the maintainer whenever the auto-triage script opens a draft PR.
+#
+# Triggers only on PRs that carry the `auto-triage` label so manually-opened
+# PRs don't generate noise. Reuses the same MAIL_USERNAME / MAIL_PASSWORD
+# Gmail app-password secrets that issue-email.yml uses.
+
+name: Email on auto-triage PR
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, labeled]
+
+jobs:
+  notify:
+    if: contains(github.event.pull_request.labels.*.name, 'auto-triage')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send email notification
+        uses: dawidd6/action-send-mail@v5
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Termpolis Auto-Triage <${{ secrets.MAIL_USERNAME }}>
+          to: engelhart.david.john@gmail.com
+          subject: "[Termpolis] Auto-triage PR opened: #${{ github.event.pull_request.number }} — ${{ github.event.pull_request.title }}"
+          body: |
+            The auto-triage script opened a draft pull request that needs your review.
+
+            Title:   ${{ github.event.pull_request.title }}
+            Number:  #${{ github.event.pull_request.number }}
+            Branch:  ${{ github.event.pull_request.head.ref }}
+            Draft:   ${{ github.event.pull_request.draft }}
+            URL:     ${{ github.event.pull_request.html_url }}
+
+            Tests + typecheck passed at push time, but a passing suite can mask an incorrect fix. Review the diff before merging.
+
+            ---
+            ${{ github.event.pull_request.body }}
+          content_type: text/plain
