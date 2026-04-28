@@ -13,7 +13,7 @@ vi.mock('@sentry/react', () => ({
   browserTracingIntegration: vi.fn(() => ({})),
 }))
 
-import { recordSwarmError } from '../../src/renderer/src/lib/sentry'
+import { recordSwarmError, normalizeRejection } from '../../src/renderer/src/lib/sentry'
 
 beforeEach(() => {
   mockAddBreadcrumb.mockReset()
@@ -78,5 +78,61 @@ describe('renderer recordSwarmError', () => {
     recordSwarmError('swarm.test', new Error('inner'), { agent: 'claude', taskId: 'abc' })
     const opts = mockCaptureException.mock.calls[0][1]
     expect(opts.extra).toEqual({ agent: 'claude', taskId: 'abc' })
+  })
+})
+
+describe('normalizeRejection', () => {
+  it('passes Error instances through unchanged', () => {
+    const err = new Error('boom')
+    expect(normalizeRejection(err)).toBe(err)
+  })
+
+  it('coerces strings to Error', () => {
+    const e = normalizeRejection('something failed')
+    expect(e).toBeInstanceOf(Error)
+    expect(e!.message).toBe('something failed')
+  })
+
+  it('coerces null/undefined to a labeled Error', () => {
+    expect(normalizeRejection(null)?.message).toMatch(/no reason/)
+    expect(normalizeRejection(undefined)?.message).toMatch(/no reason/)
+  })
+
+  it('drops empty DOM "error" events with no target (the GH issue #3 case)', () => {
+    // jsdom Event has no target unless dispatched against an element
+    const e = new Event('error')
+    expect(normalizeRejection(e)).toBeNull()
+  })
+
+  it('extracts target tag and src from an image-load failure event', () => {
+    const img = document.createElement('img')
+    img.src = 'https://example.com/x.png'
+    const evt = new Event('error')
+    Object.defineProperty(evt, 'target', { value: img })
+    const e = normalizeRejection(evt)
+    expect(e).toBeInstanceOf(Error)
+    expect(e!.message).toContain('error')
+    expect(e!.message).toContain('<img>')
+    expect(e!.message).toContain('example.com/x.png')
+  })
+
+  it('keeps non-error event types even without a target', () => {
+    const evt = new Event('abort')
+    const e = normalizeRejection(evt)
+    expect(e).toBeInstanceOf(Error)
+    expect(e!.message).toContain('abort')
+  })
+
+  it('json-stringifies plain objects', () => {
+    const e = normalizeRejection({ code: 42, where: 'bridge' })
+    expect(e!.message).toContain('42')
+    expect(e!.message).toContain('bridge')
+  })
+
+  it('falls back to String() for unstringifiable values', () => {
+    const c: any = {}; c.self = c
+    const e = normalizeRejection(c)
+    expect(e).toBeInstanceOf(Error)
+    expect(e!.message).toMatch(/unhandledrejection/)
   })
 })

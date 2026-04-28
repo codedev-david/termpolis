@@ -57,7 +57,9 @@ export function initSentry() {
   // Catch unhandled promise rejections + window errors not caught by React.
   window.addEventListener('unhandledrejection', (e) => {
     try {
-      Sentry.captureException(e.reason ?? new Error('unhandledrejection (no reason)'))
+      const normalized = normalizeRejection(e.reason)
+      if (!normalized) return
+      Sentry.captureException(normalized)
     } catch { /* noop */ }
   })
   window.addEventListener('error', (e) => {
@@ -65,6 +67,34 @@ export function initSentry() {
       Sentry.captureException(e.error ?? new Error(e.message || 'window.onerror'))
     } catch { /* noop */ }
   })
+}
+
+// Normalize a Promise rejection reason into an Error suitable for Sentry.
+// Browsers sometimes reject promises with raw DOM `Event` objects (image
+// loads, fetch failures, addon init). Sentry can't symbolicate those — they
+// arrive as the unhelpful "Event `Event` (type=error)" issue. We extract
+// whatever context exists (event type, target tag/src) into a real Error,
+// and drop completely empty events so they don't burn issue tracker noise.
+export function normalizeRejection(reason: unknown): Error | null {
+  if (reason instanceof Error) return reason
+  if (typeof Event !== 'undefined' && reason instanceof Event) {
+    const target = reason.target as (HTMLElement & { src?: string; href?: string }) | null
+    const tag = target?.tagName?.toLowerCase()
+    const src = target?.src || target?.href
+    // No target + plain "error" event = nothing actionable. Skip.
+    if (!tag && reason.type === 'error') return null
+    const parts = [`DOM ${reason.type} event`]
+    if (tag) parts.push(`on <${tag}>`)
+    if (src) parts.push(`(${src})`)
+    return new Error(parts.join(' '))
+  }
+  if (typeof reason === 'string') return new Error(reason)
+  if (reason == null) return new Error('unhandledrejection (no reason)')
+  try {
+    return new Error(`unhandledrejection: ${JSON.stringify(reason)}`)
+  } catch {
+    return new Error(`unhandledrejection: ${String(reason)}`)
+  }
 }
 
 export { Sentry }
