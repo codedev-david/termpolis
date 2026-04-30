@@ -151,6 +151,50 @@ describe('refreshLatestYml — refreshOnDisk', () => {
   })
 })
 
+describe('refreshLatestYml — sequential refreshes (latest-mac.yml use case)', () => {
+  // After `xcrun stapler staple`, both .dmg files are modified independently.
+  // The release workflow refreshes them by calling refreshLatestYml.cjs once
+  // per .dmg against the same latest-mac.yml. This test gates that scenario:
+  // updating one entry must not clobber the other, and the second call must
+  // see the committed first update.
+  it('updates two distinct files[] entries via two sequential refreshOnDisk calls', () => {
+    const dir = tmpDir()
+    const x64 = path.join(dir, 'Termpolis-1.11.27.dmg')
+    const arm64 = path.join(dir, 'Termpolis-1.11.27-arm64.dmg')
+    const yml = path.join(dir, 'latest-mac.yml')
+
+    fs.writeFileSync(x64, Buffer.from('STAPLED-X64-DMG-BYTES'))
+    fs.writeFileSync(arm64, Buffer.from('STAPLED-ARM64-DMG-BYTES-LONGER'))
+    const expectedX64 = crypto.createHash('sha512').update(fs.readFileSync(x64)).digest('base64')
+    const expectedArm64 = crypto.createHash('sha512').update(fs.readFileSync(arm64)).digest('base64')
+
+    fs.writeFileSync(yml, [
+      'version: 1.11.27',
+      'files:',
+      '  - url: Termpolis-1.11.27.dmg',
+      '    sha512: STALE-X64',
+      '    size: 1',
+      '  - url: Termpolis-1.11.27-arm64.dmg',
+      '    sha512: STALE-ARM64',
+      '    size: 1',
+      'path: Termpolis-1.11.27.dmg',
+      'sha512: STALE-X64',
+      "releaseDate: '2026-04-30T00:00:00.000Z'",
+    ].join('\n'))
+
+    expect(refreshOnDisk({ installer: x64, yml }).ok).toBe(true)
+    expect(refreshOnDisk({ installer: arm64, yml }).ok).toBe(true)
+
+    const text = fs.readFileSync(yml, 'utf8')
+    expect(text).toContain(`sha512: ${expectedX64}`)
+    expect(text).toContain(`sha512: ${expectedArm64}`)
+    expect(text).not.toContain('STALE-X64')
+    expect(text).not.toContain('STALE-ARM64')
+    expect(text).toContain(`size: ${fs.readFileSync(x64).length}`)
+    expect(text).toContain(`size: ${fs.readFileSync(arm64).length}`)
+  })
+})
+
 describe('refreshLatestYml — parseArgs', () => {
   it('parses --installer and --yml', () => {
     const args = parseArgs(['--installer', '/a.exe', '--yml', '/b.yml'])

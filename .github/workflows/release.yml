@@ -184,6 +184,19 @@ jobs:
             echo "Notarization complete for $DMG"
           done
 
+      # `xcrun stapler staple` writes the notarization ticket into each .dmg
+      # AFTER electron-builder wrote latest-mac.yml, so the recorded SHA512
+      # + size are stale by ~2KB per dmg. Recompute them now or
+      # validate-update-metadata fails (and Mac auto-update breaks).
+      - name: Refresh latest-mac.yml after notarization (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          for DMG in dist-electron-builder/*.dmg; do
+            echo "Refreshing latest-mac.yml entry for $DMG"
+            node scripts/refreshLatestYml.cjs --installer "$DMG" --yml dist-electron-builder/latest-mac.yml
+          done
+
       - name: Find Windows installer
         if: matrix.platform == 'win'
         id: find-exe
