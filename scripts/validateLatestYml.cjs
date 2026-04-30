@@ -25,6 +25,7 @@
  */
 
 const yaml = require('js-yaml')
+const crypto = require('crypto')
 
 const YML_FILES = ['latest.yml', 'latest-mac.yml', 'latest-linux.yml']
 const SHA512_B64_LEN = 88 // base64 of 64-byte digest — 88 chars with padding
@@ -131,6 +132,25 @@ async function headOk(url, timeoutMs, fetchImpl = fetch) {
 }
 
 /**
+ * Downloads the asset and returns its actual SHA512 (base64) + size in
+ * bytes. Used to verify the YAML's claimed digest matches the bytes the
+ * user will actually receive — the gap that broke v1.11.23/24 auto-update.
+ */
+async function fetchHashAndSize(url, timeoutMs, fetchImpl = fetch) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetchImpl(url, { signal: controller.signal, redirect: 'follow' })
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    const sha512 = crypto.createHash('sha512').update(buf).digest('base64')
+    return { sha512, size: buf.length }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/**
  * Pure orchestrator — fetches every latest*.yml from the release base,
  * validates structure, and HEAD-checks advertised assets. Returns
  * `{ exitCode, findings, log }` so the CLI and tests share one codepath.
@@ -172,7 +192,24 @@ async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fet
         if (!f || !f.url) continue
         const assetUrl = `${releaseBase}/${f.url}`
         const ok = await headOk(assetUrl, timeoutMs, fetchImpl)
-        if (!ok) allFindings.push(`${name}: asset not reachable — ${assetUrl}`)
+        if (!ok) {
+          allFindings.push(`${name}: asset not reachable — ${assetUrl}`)
+          continue
+        }
+        // Byte-level integrity check — download + hash and compare against
+        // the YAML claim. This is the check that would have caught the
+        // v1.11.23/24 post-signing SHA mismatch before users hit it.
+        try {
+          const { sha512, size } = await fetchHashAndSize(assetUrl, timeoutMs * 4, fetchImpl)
+          if (typeof f.size === 'number' && size !== f.size) {
+            allFindings.push(`${name}: size mismatch for ${f.url} — yml says ${f.size}, asset is ${size}`)
+          }
+          if (f.sha512 && sha512 !== f.sha512) {
+            allFindings.push(`${name}: sha512 mismatch for ${f.url} — yml claims ${f.sha512.slice(0, 16)}..., asset hashes to ${sha512.slice(0, 16)}...`)
+          }
+        } catch (e) {
+          allFindings.push(`${name}: could not verify hash of ${f.url} — ${e.message}`)
+        }
       }
     }
   }
@@ -207,7 +244,7 @@ async function runCli() {
   process.exit(exitCode)
 }
 
-module.exports = { validateParsed, parseArgs, fetchText, headOk, runValidation }
+module.exports = { validateParsed, parseArgs, fetchText, headOk, fetchHashAndSize, runValidation }
 
 if (require.main === module) {
   runCli().catch(err => {

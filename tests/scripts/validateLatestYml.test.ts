@@ -1,12 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
+import * as crypto from 'node:crypto'
 // @ts-expect-error — untyped CJS script
-import { validateParsed, parseArgs, fetchText, headOk, runValidation } from '../../scripts/validateLatestYml.cjs'
+import { validateParsed, parseArgs, fetchText, headOk, fetchHashAndSize, runValidation } from '../../scripts/validateLatestYml.cjs'
 
 // Realistic sha512 base64 digest length — 88 chars (64-byte digest,
 // base64 with padding). Using a deterministic filler keeps snapshots
 // stable while passing the length check.
 const GOOD_SHA512 =
   'A'.repeat(86) + '=='
+
+// Deterministic fixture for byte-level hash tests below. We use the actual
+// SHA512 of this buffer in the YAML so the validator's new asset-hash
+// check passes for the "happy path" tests.
+const ASSET_BYTES = Buffer.from('termpolis-test-installer-bytes')
+const ASSET_SHA512 = crypto.createHash('sha512').update(ASSET_BYTES).digest('base64')
+const ASSET_SIZE = ASSET_BYTES.length
 
 function validYaml(overrides: Record<string, unknown> = {}) {
   return {
@@ -155,23 +163,32 @@ const GOOD_YML = [
   'version: 1.11.15',
   'files:',
   '  - url: Termpolis.Setup.1.11.15.exe',
-  `    sha512: ${'A'.repeat(86)}==`,
-  '    size: 100',
+  `    sha512: ${ASSET_SHA512}`,
+  `    size: ${ASSET_SIZE}`,
   'path: Termpolis.Setup.1.11.15.exe',
-  `sha512: ${'A'.repeat(86)}==`,
+  `sha512: ${ASSET_SHA512}`,
   "releaseDate: '2026-04-24T00:00:00.000Z'",
 ].join('\n')
 
-function fakeFetch(map: Record<string, { status?: number; body?: string; ok?: boolean; reject?: boolean; method?: string }>) {
+function fakeFetch(map: Record<string, { status?: number; body?: string; bytes?: Buffer; ok?: boolean; reject?: boolean; method?: string }>) {
   return vi.fn(async (url: string, opts: any = {}) => {
     const method = (opts.method || 'GET').toUpperCase()
     const key = `${method} ${url}`
     const entry = map[key] ?? map[url]
-    if (!entry) return { ok: false, status: 404, async text() { return '' } }
+    if (!entry) return {
+      ok: false, status: 404,
+      async text() { return '' },
+      async arrayBuffer() { return new ArrayBuffer(0) },
+    }
     if (entry.reject) throw new Error('network down')
     const status = entry.status ?? 200
     const ok = entry.ok ?? (status >= 200 && status < 300)
-    return { ok, status, async text() { return entry.body ?? '' } }
+    const buf = entry.bytes ?? (entry.body ? Buffer.from(entry.body) : ASSET_BYTES)
+    return {
+      ok, status,
+      async text() { return entry.body ?? buf.toString('utf8') },
+      async arrayBuffer() { return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) },
+    }
   })
 }
 
@@ -191,6 +208,20 @@ describe('fetchText', () => {
   it('propagates network errors', async () => {
     const f = fakeFetch({ 'https://x/dead.yml': { reject: true } })
     await expect(fetchText('https://x/dead.yml', 1000, f)).rejects.toThrow('network down')
+  })
+})
+
+describe('fetchHashAndSize', () => {
+  it('returns the SHA512 (base64) and byte size of the response body', async () => {
+    const f = fakeFetch({ 'https://x/a.exe': { bytes: ASSET_BYTES } })
+    const result = await fetchHashAndSize('https://x/a.exe', 1000, f)
+    expect(result.sha512).toBe(ASSET_SHA512)
+    expect(result.size).toBe(ASSET_SIZE)
+  })
+
+  it('throws on HTTP error so the caller surfaces a finding', async () => {
+    const f = fakeFetch({ 'https://x/missing.exe': { status: 500 } })
+    await expect(fetchHashAndSize('https://x/missing.exe', 1000, f)).rejects.toThrow('HTTP 500')
   })
 })
 
@@ -241,6 +272,7 @@ describe('runValidation', () => {
     const f = fakeFetch({
       [`${releaseBase}/latest.yml`]: { body: GOOD_YML },
       [`HEAD ${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { status: 200 },
+      [`${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { bytes: ASSET_BYTES },
     })
     const r = await runValidation({ version: V, base: BASE, fetchImpl: f })
     expect(r.findings).toEqual([])
@@ -252,6 +284,7 @@ describe('runValidation', () => {
     const f = fakeFetch({
       [`${releaseBase}/latest.yml`]: { body: GOOD_YML },
       [`HEAD ${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { status: 200 },
+      [`${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { bytes: ASSET_BYTES },
     })
     const r = await runValidation({ version: V, base: `${BASE}/`, fetchImpl: f })
     expect(r.exitCode).toBe(0)
@@ -289,12 +322,49 @@ describe('runValidation', () => {
     const f = fakeFetch({
       [`${releaseBase}/latest.yml`]: { body: GOOD_YML },
       [`HEAD ${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { status: 200 },
+      [`${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { bytes: ASSET_BYTES },
       // latest-mac.yml and latest-linux.yml return 404 by default
     })
     const r = await runValidation({ version: V, base: BASE, fetchImpl: f })
     expect(r.exitCode).toBe(0)
     expect(r.log.some((l: string) => l.includes('latest-mac.yml') && l.includes('skip'))).toBe(true)
     expect(r.log.some((l: string) => l.includes('latest-linux.yml') && l.includes('skip'))).toBe(true)
+  })
+
+  it('flags an asset whose actual SHA512 does not match the YAML claim (the v1.11.23/24 bug)', async () => {
+    // YAML claims one hash, asset bytes hash to something different (the
+    // exact mismatch the post-signing release pipeline produced).
+    const f = fakeFetch({
+      [`${releaseBase}/latest.yml`]: { body: GOOD_YML },
+      [`HEAD ${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { status: 200 },
+      [`${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { bytes: Buffer.from('different-bytes-after-signing') },
+    })
+    const r = await runValidation({ version: V, base: BASE, fetchImpl: f })
+    expect(r.exitCode).toBe(1)
+    expect(r.findings.some((x: string) => x.includes('sha512 mismatch'))).toBe(true)
+  })
+
+  it('flags an asset whose actual size does not match the YAML claim', async () => {
+    const wrongSizeYml = GOOD_YML.replace(`size: ${ASSET_SIZE}`, 'size: 999999')
+    const f = fakeFetch({
+      [`${releaseBase}/latest.yml`]: { body: wrongSizeYml },
+      [`HEAD ${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { status: 200 },
+      [`${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { bytes: ASSET_BYTES },
+    })
+    const r = await runValidation({ version: V, base: BASE, fetchImpl: f })
+    expect(r.exitCode).toBe(1)
+    expect(r.findings.some((x: string) => x.includes('size mismatch'))).toBe(true)
+  })
+
+  it('passes the byte-level check when YAML and asset agree', async () => {
+    const f = fakeFetch({
+      [`${releaseBase}/latest.yml`]: { body: GOOD_YML },
+      [`HEAD ${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { status: 200 },
+      [`${releaseBase}/Termpolis.Setup.1.11.15.exe`]: { bytes: ASSET_BYTES },
+    })
+    const r = await runValidation({ version: V, base: BASE, fetchImpl: f })
+    expect(r.findings).toEqual([])
+    expect(r.exitCode).toBe(0)
   })
 
   it('aggregates findings across multiple platform ymls', async () => {

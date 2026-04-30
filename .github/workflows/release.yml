@@ -206,6 +206,15 @@ jobs:
           malware_block: false
           override: true
 
+      # Code-signing modifies the .exe in place, so the SHA512 in latest.yml
+      # (written by electron-builder before signing) is now stale. Recompute
+      # it against the signed binary or auto-update will fail with
+      # "sha512 checksum mismatch" on every install.
+      - name: Refresh latest.yml after signing (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: node scripts/refreshLatestYml.cjs --installer "${{ steps.find-exe.outputs.EXE_PATH }}" --yml dist-electron-builder/latest.yml
+
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2.6.1
         with:
