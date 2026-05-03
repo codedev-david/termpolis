@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.11.29",
+  "version": "1.11.30",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "license": "Apache-2.0",
@@ -90,7 +90,14 @@
       ],
       "icon": "build/icons",
       "category": "Development",
-      "maintainer": "Termpolis <support@termpolis.com>"
+      "maintainer": "Termpolis <support@termpolis.com>",
+      "executableArgs": [
+        "--no-sandbox",
+        "--disable-gpu"
+      ]
+    },
+    "deb": {
+      "afterInstall": "build/linux/after-install.sh"
     },
     "publish": [
       {
