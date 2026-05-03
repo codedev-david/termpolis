@@ -93,8 +93,15 @@ Use `dpkg`, **not** `sudo apt install ./termpolis*.deb`. On Ubuntu 22.04+ apt dr
 
 ```bash
 sudo dpkg -i ./termpolis_*.deb
-sudo apt-get install -f   # only if dpkg complains about missing deps
 ```
+
+That's the only command you need on v1.11.30+. The package's postinst takes care of the rest automatically:
+
+- runs `apt-get install -f -y` to pull any missing transitive deps (libgtk, libnss3, …),
+- refreshes the desktop + hicolor icon caches so the launcher icon shows up without a logout, and
+- the .desktop entry ships with `--no-sandbox --disable-gpu` baked into the `Exec=` line, so clicking the dock icon launches a working window on NVIDIA / Wayland setups where Chromium's GPU compositor would otherwise produce a blank black box.
+
+If you ever need to launch from a shell with the same flags applied: `/opt/Termpolis/termpolis --no-sandbox --disable-gpu`.
 
 > **\* Windows SmartScreen note:** SmartScreen may show a "Windows protected your PC" warning for newly signed software. Click **"More info"** then **"Run anyway"** to proceed. Termpolis is digitally signed and safe to install — the warning disappears as download reputation builds.
 
