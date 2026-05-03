@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.11.27",
+  "version": "1.11.28",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "license": "Apache-2.0",
@@ -56,8 +56,7 @@
       "signAndEditExecutable": true
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
