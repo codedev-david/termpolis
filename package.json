@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.11.28",
+  "version": "1.11.29",
   "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
   "author": "Termpolis",
   "license": "Apache-2.0",
@@ -88,7 +88,7 @@
         "AppImage",
         "deb"
       ],
-      "icon": "assets/icon.png",
+      "icon": "build/icons",
       "category": "Development",
       "maintainer": "Termpolis <support@termpolis.com>"
     },

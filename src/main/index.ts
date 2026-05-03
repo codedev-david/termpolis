@@ -29,6 +29,24 @@ initMainSentry()
 if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME_DEVEL_SANDBOX)) {
   app.commandLine.appendSwitch('no-sandbox')
 }
+
+// Linux blank/black-window safety net. Reported by .deb users on Ubuntu after
+// the initial install (no UI, just a black box). Two fixes layered here:
+//
+// 1. Disable VAAPI video decode/encode features. We don't play video — these
+//    Chromium features are opt-out unstable on many Ubuntu setups (especially
+//    NVIDIA proprietary drivers + Wayland) and are the most-reported cause of
+//    "blank Electron window on Linux". Disabling costs us nothing.
+// 2. TERMPOLIS_DISABLE_GPU=1 escape hatch — forces software rendering for users
+//    on broken GPU drivers. Slower (xterm falls back to canvas) but reliable.
+//    Documented in troubleshooting so users hitting the black-box issue can
+//    `TERMPOLIS_DISABLE_GPU=1 termpolis` from a terminal.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
+  if (process.env.TERMPOLIS_DISABLE_GPU === '1') {
+    app.disableHardwareAcceleration()
+  }
+}
 import { join } from 'path'
 import { homedir } from 'os'
 import { writeFileSync } from 'fs'
