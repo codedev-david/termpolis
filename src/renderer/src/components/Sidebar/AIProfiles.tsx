@@ -5,7 +5,7 @@ import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { resolveAgentCommand, testDelay } from '../../lib/testAgents'
-import qwenIcon from '../../assets/qwen.png'
+import qwenIcon from '../../assets/qwen.webp'
 
 const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
