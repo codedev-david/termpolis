@@ -38,6 +38,7 @@ describe('AgentRatingsSettings', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
+    expect(screen.getByText('Qwen Code')).toBeInTheDocument()
     expect(screen.getByText('Qwen AI')).toBeInTheDocument()
   })
 
@@ -50,7 +51,7 @@ describe('AgentRatingsSettings', () => {
   it('shows MCP badge for agents that have MCP', () => {
     render(<AgentRatingsSettings />)
     const mcpBadges = screen.getAllByText('MCP')
-    expect(mcpBadges.length).toBe(3)
+    expect(mcpBadges.length).toBe(4)
   })
 
   it('does NOT show Reset All when no overrides', () => {

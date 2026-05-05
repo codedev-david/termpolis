@@ -68,6 +68,28 @@ describe('InstallHint', () => {
     expect(screen.getByText(/gemini --version/)).toBeInTheDocument()
   })
 
+  it('shows qwen-code install instructions with npm and verify steps', () => {
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    expect(screen.getByText('npm install -g @qwen-code/qwen-code')).toBeInTheDocument()
+    expect(screen.getByText(/qwen --version/)).toBeInTheDocument()
+  })
+
+  it('shows MCP auto-registration note for qwen-code', () => {
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    expect(screen.getByText(/~\/\.qwen\/settings\.json/)).toBeInTheDocument()
+  })
+
+  it('shows pricing info for qwen-code (Qwen-OAuth free tier)', () => {
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    expect(screen.getByText(/2,000 requests\/day/)).toBeInTheDocument()
+  })
+
+  it('opens correct URL for qwen-code documentation', () => {
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText('Documentation'))
+    expect(window.open).toHaveBeenCalledWith('https://github.com/QwenLM/qwen-code', '_blank')
+  })
+
   it('shows aider-qwen install instructions with aider and ollama steps', () => {
     render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
     expect(screen.getAllByText(/Aider/).length).toBeGreaterThanOrEqual(1)

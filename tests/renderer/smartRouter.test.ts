@@ -8,8 +8,8 @@ import { AGENT_CAPABILITIES, CATEGORY_LABELS } from '../../src/renderer/src/lib/
 // ═══════════════════════════════════════════════════════
 
 describe('agentCapabilities', () => {
-  it('has 4 agents defined', () => {
-    expect(AGENT_CAPABILITIES.length).toBe(4)
+  it('has 5 agents defined', () => {
+    expect(AGENT_CAPABILITIES.length).toBe(5)
   })
 
   it('each agent has all 10 strength categories', () => {
@@ -45,10 +45,11 @@ describe('agentCapabilities', () => {
     expect(qwen.strengths.bulkTasks).toBe(5)
   })
 
-  it('Claude, Codex, Gemini have MCP; Aider does not', () => {
+  it('Claude, Codex, Gemini, Qwen Code have MCP; Aider does not', () => {
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'claude')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'codex')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'gemini')!.hasMcp).toBe(true)
+    expect(AGENT_CAPABILITIES.find(a => a.agentId === 'qwen-code')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'aider-qwen')!.hasMcp).toBe(false)
   })
 

@@ -11,6 +11,7 @@ const AGENT_OPTIONS = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', color: '#4285F4' },
+  { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', color: '#A855F7' },
   { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', color: '#06B6D4' },
 ]
 

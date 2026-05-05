@@ -782,6 +782,8 @@ ipcMain.handle('agents:detect', async () => {
   for (const agent of agents) {
     results[agent] = findAgentInstalled(agent)
   }
+  // Qwen-Code: id 'qwen-code', binary 'qwen' (Alibaba's Gemini-CLI fork)
+  results['qwen-code'] = findAgentInstalled('qwen')
   // Aider detection with fallback to common pip install paths
   results['aider'] = findAiderInstalled()
   // Aider+Qwen needs both aider AND ollama

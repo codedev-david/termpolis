@@ -100,6 +100,24 @@ export const DEFAULT_AGENT_CAPABILITIES: AgentCapability[] = [
     hasMcp: true,
   },
   {
+    agentId: 'qwen-code',
+    agentName: 'Qwen Code',
+    strengths: {
+      refactoring: 4,
+      architecture: 3,
+      testing: 3,
+      documentation: 3,
+      codeReview: 3,
+      debugging: 3,
+      frontend: 3,
+      devops: 3,
+      dataAnalysis: 4,
+      bulkTasks: 5,
+    },
+    tokenCost: 'low',
+    hasMcp: true,
+  },
+  {
     agentId: 'aider-qwen',
     agentName: 'Qwen AI',
     strengths: {

@@ -711,6 +711,7 @@ export default function App() {
     claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
     codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
     gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
+    'qwen-code': { name: 'Qwen Code', command: 'qwen', color: '#A855F7' },
     'aider-qwen': { name: 'Qwen AI', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', color: '#06B6D4' },
   }
 
@@ -737,7 +738,7 @@ export default function App() {
       if (config.command.startsWith('codex')) {
         setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(10000))
       }
-      const dismissMs = (agentId === 'gemini' || agentId === 'aider-qwen') ? 15000 : 8000
+      const dismissMs = (agentId === 'gemini' || agentId === 'qwen-code' || agentId === 'aider-qwen') ? 15000 : 8000
       setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
     } else {
       setLaunchingAgent(null)

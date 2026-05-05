@@ -90,8 +90,8 @@ describe('getEffectiveCapabilities', () => {
       'nonexistent-agent': { refactoring: 5 },
     }
     const result = getEffectiveCapabilities(overrides)
-    // Should still return 4 agents, unchanged
-    expect(result.length).toBe(4)
+    // Should still return 5 agents, unchanged
+    expect(result.length).toBe(5)
     for (const agent of result) {
       const def = DEFAULT_AGENT_CAPABILITIES.find(a => a.agentId === agent.agentId)!
       expect(agent.strengths).toEqual(def.strengths)

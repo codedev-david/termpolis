@@ -910,6 +910,7 @@ describe('agents:detect', () => {
     expect(result.data).toHaveProperty('claude')
     expect(result.data).toHaveProperty('codex')
     expect(result.data).toHaveProperty('gemini')
+    expect(result.data).toHaveProperty('qwen-code')
     expect(result.data).toHaveProperty('aider')
     expect(result.data).toHaveProperty('aider-qwen')
   })
@@ -924,6 +925,7 @@ describe('agents:detect', () => {
     expect(result.data.claude).toBe(true)
     expect(result.data.codex).toBe(true)
     expect(result.data.gemini).toBe(true)
+    expect(result.data['qwen-code']).toBe(true)
   })
 })
 
@@ -1781,6 +1783,7 @@ describe('findAgentInstalled fallback paths', () => {
     expect(typeof result.data.claude).toBe('boolean')
     expect(typeof result.data.codex).toBe('boolean')
     expect(typeof result.data.gemini).toBe('boolean')
+    expect(typeof result.data['qwen-code']).toBe('boolean')
     expect(typeof result.data.aider).toBe('boolean')
     expect(typeof result.data['aider-qwen']).toBe('boolean')
   })

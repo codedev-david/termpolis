@@ -10,6 +10,7 @@ const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
+  { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', command: 'qwen', shell: 'bash', color: '#A855F7' },
   { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
 ]
 
@@ -191,7 +192,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       // Codex requires '1' to trust the directory
       setTimeout(() => writeIfAlive('1\r'), testDelay(9000))
     }
-    const dismissMs = (profile.id === 'gemini' || profile.id === 'aider-qwen') ? 15000 : 8000
+    const dismissMs = (profile.id === 'gemini' || profile.id === 'qwen-code' || profile.id === 'aider-qwen') ? 15000 : 8000
     setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
   }
 

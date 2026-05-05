@@ -92,7 +92,7 @@ describe('sanitizeAgentCommand', () => {
 
   // ---- Allowlist has all expected agents ----
 
-  it('has entries for all four agent types', () => {
-    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'gemini', 'aider'])
+  it('has entries for all five agent types', () => {
+    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'gemini', 'qwen', 'aider'])
   })
 })

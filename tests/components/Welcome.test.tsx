@@ -5,13 +5,13 @@ import { Welcome } from '../../src/renderer/src/components/Welcome/Welcome'
 
 let mockDetectAgentsResult: any = {
   success: true,
-  data: { claude: true, codex: false, gemini: true, 'aider-qwen': false },
+  data: { claude: true, codex: false, gemini: true, 'qwen-code': false, 'aider-qwen': false },
 }
 
 beforeEach(() => {
   mockDetectAgentsResult = {
     success: true,
-    data: { claude: true, codex: false, gemini: true, 'aider-qwen': false },
+    data: { claude: true, codex: false, gemini: true, 'qwen-code': false, 'aider-qwen': false },
   }
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockImplementation(() => Promise.resolve(mockDetectAgentsResult)),
@@ -86,6 +86,7 @@ describe('Welcome', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
+    expect(screen.getByText('Qwen Code')).toBeInTheDocument()
     expect(screen.getByText('Qwen AI')).toBeInTheDocument()
   })
 
@@ -157,7 +158,7 @@ describe('Welcome', () => {
   it('shows FREE badge for aider-qwen when installed', async () => {
     mockDetectAgentsResult = {
       success: true,
-      data: { claude: true, codex: true, gemini: true, 'aider-qwen': true },
+      data: { claude: true, codex: true, gemini: true, 'qwen-code': true, 'aider-qwen': true },
     }
     ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue(mockDetectAgentsResult)
 
@@ -176,7 +177,7 @@ describe('Welcome', () => {
     })
     fireEvent.click(screen.getByText('Launch AI Agent'))
     const installBadges = screen.getAllByText('Install')
-    // codex and aider-qwen are not installed
-    expect(installBadges.length).toBe(2)
+    // codex, qwen-code, and aider-qwen are not installed
+    expect(installBadges.length).toBe(3)
   })
 })

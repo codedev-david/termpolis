@@ -47,6 +47,33 @@ function getInstallInstructions(agentId: string): InstallInstructions {
         url: 'https://github.com/google-gemini/gemini-cli',
         pricing: 'Free tier available. Paid Google AI API plan for higher usage.',
       }
+    case 'qwen-code':
+      return {
+        steps: [
+          'npm install -g @qwen-code/qwen-code',
+          'qwen --version  (to verify)',
+        ],
+        sections: [
+          {
+            title: 'Authenticate Qwen Code',
+            lines: [
+              'On first launch, Qwen prompts for an auth method:',
+              'Qwen-OAuth (free, browser sign-in) — recommended',
+              'OpenRouter — bring-your-own API key',
+              'API Key — direct DashScope / Alibaba Cloud key',
+            ],
+          },
+          {
+            title: 'MCP Tools (auto-registered)',
+            lines: [
+              'Termpolis writes its MCP server entry to ~/.qwen/settings.json on startup.',
+              'After install, run "qwen mcp list" — you should see "termpolis" listed.',
+            ],
+          },
+        ],
+        url: 'https://github.com/QwenLM/qwen-code',
+        pricing: 'Free with Qwen-OAuth (2,000 requests/day). API-key tier billed by Alibaba Cloud / OpenRouter.',
+      }
     case 'aider-qwen':
       return {
         steps: [
@@ -155,7 +182,7 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
               {section.title}
             </h3>
             {section.lines.map((line, li) => {
-              const isCommand = /^(aider|ollama|npm|pip|npx|claude|codex|gemini|setx|sudo|apt|brew)\b/.test(line.trim())
+              const isCommand = /^(aider|ollama|npm|pip|npx|claude|codex|gemini|qwen|setx|sudo|apt|brew)\b/.test(line.trim())
               if (isCommand) {
                 return (
                   <div key={li} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">
