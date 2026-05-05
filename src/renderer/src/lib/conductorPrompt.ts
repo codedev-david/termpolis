@@ -13,10 +13,7 @@ export function buildConductorPrompt(options: ConductorPromptOptions): string {
 
   // Build list of installed agents with their capabilities (using user overrides if any)
   const agentDescriptions = getEffectiveCapabilities(options.agentRatingOverrides)
-    .filter(a => {
-      if (a.agentId === 'aider-qwen') return options.installedAgents['aider-qwen']
-      return options.installedAgents[a.agentId] !== false
-    })
+    .filter(a => options.installedAgents[a.agentId] !== false)
     .map(a => {
       const strengths = Object.entries(a.strengths)
         .filter(([_, score]) => score >= 4)
@@ -72,10 +69,9 @@ STEP 4 — Start agents in INTERACTIVE mode:
     Codex       → 'codex --full-auto'
     Gemini CLI  → 'gemini'
     Qwen Code   → 'qwen'
-    Qwen AI     → 'aider --model ollama/qwen3-coder --no-show-model-warnings'
   Then post a status update via swarm_send_message.
 
-  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Qwen Code, Aider):
+  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Qwen Code):
     ✗ claude -p "prompt"                    — loses tool access (no file writes)
     ✗ gemini -p "prompt"                    — loses tool access (no file writes)
     ✗ gemini --sandbox                      — restricts capabilities, do NOT use
@@ -143,7 +139,7 @@ IMPORTANT RULES:
 - Be decisive. Do not ask the user for input.
 - If only one agent type is installed, run multiple instances with different roles.
 - NEVER add -p, --sandbox, --print, or ANY extra flags to agent commands. The commands in STEP 4 are complete.
-- NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex, not Aider).
+- NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex, not Qwen Code).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
 - If you are tempted to add flags, use -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.

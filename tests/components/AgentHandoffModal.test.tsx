@@ -34,7 +34,7 @@ describe('AgentHandoffModal', () => {
     // Available agents should not include Claude Code (the previous agent)
     expect(screen.getByText('Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini')).toBeInTheDocument()
-    expect(screen.getByText('Aider')).toBeInTheDocument()
+    expect(screen.getByText('Qwen Code')).toBeInTheDocument()
   })
 
   it('shows handoff context info and editable prompt', () => {

@@ -73,12 +73,12 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <i className="fa-solid fa-robot text-xs"></i> AI Agents
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><strong>AI Agents</strong> section in the sidebar — one-click launch for Claude Code, Codex, Aider, Copilot</li>
+              <li><strong>AI Agents</strong> section in the sidebar — one-click launch for Claude Code, Codex, Gemini CLI, Qwen Code</li>
               <li><strong>+</strong> button to add custom AI agent profiles with name, command, shell, and color</li>
               <li><strong>Workflows</strong> button — pre-built multi-terminal layouts (Claude + Shell, Full Stack Dev, Code Review)</li>
               <li><strong>Agent detection</strong> — status bar automatically shows a colored badge when an AI agent is running</li>
               <li><strong>Cost tracking</strong> — parses token usage and costs from AI output, shown next to the agent badge</li>
-              <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex", "Aider") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
+              <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex", "Qwen Code") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
             </ul>
           </section>
 
@@ -179,7 +179,7 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li>When an AI agent <strong>runs out of context/tokens</strong>, an amber banner appears automatically</li>
-              <li>Click <strong>Switch to Codex</strong>, <strong>Gemini</strong>, or <strong>Aider</strong> to hand off instantly</li>
+              <li>Click <strong>Switch to Codex</strong>, <strong>Gemini</strong>, or <strong>Qwen Code</strong> to hand off instantly</li>
               <li>Your working context transfers automatically: task description, git branch, modified files, recent commands, and diff summary</li>
               <li>Click <strong>More Options</strong> to preview/edit the handoff prompt before switching</li>
               <li>Choose to keep the old terminal open for reference or close it</li>
@@ -200,7 +200,7 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li className="pl-4 text-xs">Claude Code — strongest at refactoring and code review (default)</li>
               <li className="pl-4 text-xs">Codex — best at test writing (default)</li>
               <li className="pl-4 text-xs">Gemini CLI — leads in documentation and DevOps (default)</li>
-              <li className="pl-4 text-xs">Qwen AI — free local model via Ollama for bulk tasks (default)</li>
+              <li className="pl-4 text-xs">Qwen Code — Alibaba Gemini-CLI fork, strong on bulk tasks (default)</li>
               <li className="pl-4 text-xs"><strong>Customize ratings</strong> in <strong>Settings &gt; Agent Capability Ratings</strong>. Defaults are estimates — adjust based on your experience. The conductor uses ratings as hints but makes its own judgment.</li>
               <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress and closes automatically when the first task or message appears. It can take up to <strong>30 seconds</strong> for tasks to show up after launch.</li>
               <li><strong>Agents run in the background</strong> — swarm-spawned agent terminals are <em>hidden</em> from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. You never need to watch individual agent terminals.</li>
@@ -209,8 +209,7 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results. Includes "What next?" guidance for iterating.</li>
               <li><strong>Swarm vs Individual Agents</strong> — swarms are best for completing a well-defined task autonomously (all agents run hidden). For back-and-forth conversations or iterating on details, launch individual agents from the <strong>AI Agents</strong> section in the sidebar — those terminals appear in the sidebar and work exactly as before.</li>
               <li><strong>Agent Install Status</strong> — the AI Agents sidebar shows <i className="fa-solid fa-circle-check text-green-400 text-[10px]"></i> for installed agents and <i className="fa-solid fa-circle-xmark text-red-400 text-[10px]"></i> for missing ones. Click a missing agent for setup instructions.</li>
-              <li><strong>Agent Bridge</strong> — agents without native MCP (e.g., Aider) are bridged automatically. Claude Code, Codex, and Gemini all use MCP natively.</li>
-              <li><strong>Free option:</strong> Qwen AI via Ollama — zero API cost, fully local. Qwen3-Coder-Next (64GB+ RAM) or Qwen3-Coder (16GB+ RAM)</li>
+              <li><strong>MCP-native swarm</strong> — every supported agent (Claude Code, Codex, Gemini, Qwen Code) talks to Termpolis via MCP. A bridge proxies non-MCP-native agents into the same protocol so the conductor's tool surface is uniform.</li>
             </ul>
           </section>
 

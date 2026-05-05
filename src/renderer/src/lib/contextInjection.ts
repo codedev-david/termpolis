@@ -6,7 +6,7 @@ import type { ContextPin } from '../types'
  *
  * Design:
  * - Output is pure text that can be pasted into any agent (Claude, Codex,
- *   Gemini, Aider, Qwen). No tool-specific syntax.
+ *   Gemini, Qwen Code). No tool-specific syntax.
  * - Respects a max character budget so we never blow out the next session's
  *   context window on the first turn.
  * - Dedupe by id in case callers pass duplicates.

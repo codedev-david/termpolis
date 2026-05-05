@@ -1,6 +1,6 @@
 // Auto-dismiss AI agent onboarding/trust prompts.
 //
-// When the user launches Claude Code / Codex / Gemini / Aider, each tool shows
+// When the user launches Claude Code / Codex / Gemini / Qwen Code, each tool shows
 // one or more blocking prompts on first run that Termpolis should answer
 // automatically so users don't have to remember which key dismisses which
 // tool's safety dialog.
@@ -18,8 +18,8 @@
 //     - "Select an option" / "Type 1 to..."              -> "1"
 //   Gemini CLI
 //     - "Accept the terms" / "Authenticate with"         -> Enter (default)
-//   Aider
-//     - "(y)es / (n)o"                                   -> "y"
+//   Qwen Code (Gemini-CLI fork)
+//     - "Accept the terms" / "Authenticate with"         -> Enter (default)
 //
 // This module is pure: no IPC, no state. Callers decide when to poll and how
 // to track "already dismissed" so the same prompt isn't re-answered on every
@@ -51,7 +51,6 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
   const name = (ctx.agentName || '').toLowerCase()
   const isCodex = /codex/.test(name)
   const isGemini = /gemini/.test(name)
-  const isAider = /aider|qwen/.test(name)
   const isClaude = /claude/.test(name)
 
   // 1. Folder trust prompts (all tools)
@@ -117,11 +116,6 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
   // 9. Gemini-specific — onboarding auth menu
   if (isGemini && /accept\s+(?:the\s+)?terms|authenticate\s+with/i.test(tail)) {
     return '\r'
-  }
-
-  // 10. Aider-specific — its interactive prompts use lowercase (y)es/(n)o
-  if (isAider && /\(y\)es.*\(n\)o/i.test(tail)) {
-    return 'y\r'
   }
 
   return null

@@ -8,8 +8,8 @@ import { AGENT_CAPABILITIES, CATEGORY_LABELS } from '../../src/renderer/src/lib/
 // ═══════════════════════════════════════════════════════
 
 describe('agentCapabilities', () => {
-  it('has 5 agents defined', () => {
-    expect(AGENT_CAPABILITIES.length).toBe(5)
+  it('has 4 agents defined', () => {
+    expect(AGENT_CAPABILITIES.length).toBe(4)
   })
 
   it('each agent has all 10 strength categories', () => {
@@ -39,18 +39,16 @@ describe('agentCapabilities', () => {
     expect(gemini.strengths.devops).toBe(5)
   })
 
-  it('Qwen AI is free and strongest at bulk tasks', () => {
-    const qwen = AGENT_CAPABILITIES.find(a => a.agentId === 'aider-qwen')!
-    expect(qwen.tokenCost).toBe('free')
+  it('Qwen Code is strongest at bulk tasks', () => {
+    const qwen = AGENT_CAPABILITIES.find(a => a.agentId === 'qwen-code')!
     expect(qwen.strengths.bulkTasks).toBe(5)
   })
 
-  it('Claude, Codex, Gemini, Qwen Code have MCP; Aider does not', () => {
+  it('Claude, Codex, Gemini, Qwen Code all have MCP', () => {
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'claude')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'codex')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'gemini')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'qwen-code')!.hasMcp).toBe(true)
-    expect(AGENT_CAPABILITIES.find(a => a.agentId === 'aider-qwen')!.hasMcp).toBe(false)
   })
 
   it('has labels for all categories', () => {
@@ -213,13 +211,12 @@ describe('smartRouter', () => {
     expect(total).toContain('$')
   })
 
-  it('prefers free agents for bulk/token-heavy work', () => {
+  it('prefers Qwen Code for bulk tasks based on its 5/5 strength', () => {
     const breakdown = analyzeTask('Batch convert all the files in the project')
-    const assignments = routeTasks(breakdown.subtasks, ['claude', 'aider-qwen'])
+    const assignments = routeTasks(breakdown.subtasks, ['claude', 'qwen-code'])
     const bulkTask = assignments.find(a => a.subtask.category === 'bulkTasks')
-    // Qwen should win bulk tasks due to 5/5 rating + free token cost bonus
     if (bulkTask) {
-      expect(bulkTask.agentId).toBe('aider-qwen')
+      expect(bulkTask.agentId).toBe('qwen-code')
     }
   })
 })

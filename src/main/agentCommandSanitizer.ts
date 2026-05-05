@@ -5,7 +5,6 @@ export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
   'codex': 'codex --full-auto',
   'gemini': 'gemini',
   'qwen': 'qwen',
-  'aider': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
 }
 
 export function sanitizeAgentCommand(command: string): string {

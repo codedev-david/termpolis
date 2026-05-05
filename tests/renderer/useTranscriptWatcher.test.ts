@@ -71,11 +71,11 @@ describe('useTranscriptWatcher', () => {
     expect(api.attachWatcher).toHaveBeenCalledWith('t1', '/cwd', 'gemini')
   })
 
-  it('attaches aider watcher for Aider', () => {
+  it('does nothing for Qwen Code (no transcript watcher yet)', () => {
     renderHook(() =>
-      useTranscriptWatcher('t1', '/cwd', { name: 'Aider', icon: '', color: '' }),
+      useTranscriptWatcher('t1', '/cwd', { name: 'Qwen Code', icon: '', color: '' }),
     )
-    expect(api.attachWatcher).toHaveBeenCalledWith('t1', '/cwd', 'aider')
+    expect(api.attachWatcher).not.toHaveBeenCalled()
   })
 
   it('detaches on unmount', () => {

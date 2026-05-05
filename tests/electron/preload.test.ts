@@ -125,11 +125,6 @@ describe('preload: termpolis API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agents:detect')
   })
 
-  it('getOllamaPath invokes agents:ollama-path', async () => {
-    await exposed.termpolis.getOllamaPath()
-    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agents:ollama-path')
-  })
-
   it('pickDirectory invokes dialog:pick-directory', async () => {
     await exposed.termpolis.pickDirectory('/home')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('dialog:pick-directory', { defaultPath: '/home' })

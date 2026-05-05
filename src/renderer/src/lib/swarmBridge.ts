@@ -1,7 +1,7 @@
 /**
  * Swarm Bridge — signal detection and message formatting for non-MCP agents.
  *
- * Non-MCP agents (Codex, Gemini, Aider) cannot call swarm tools directly.
+ * Non-MCP agents (Codex, Gemini, Qwen Code) cannot call swarm tools directly.
  * This module parses their terminal output to detect meaningful signals
  * (completions, questions, errors) and formats incoming swarm messages
  * for injection into their terminals.

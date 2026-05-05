@@ -10,11 +10,10 @@ import type { AgentInfo } from '../lib/agentDetector'
  * (JSONL) rather than fragile buffer heuristics.
  */
 
-const AGENT_TYPE_MAP: Record<string, 'claude' | 'codex' | 'gemini' | 'aider'> = {
+const AGENT_TYPE_MAP: Record<string, 'claude' | 'codex' | 'gemini'> = {
   'Claude Code': 'claude',
   Codex: 'codex',
   'Gemini CLI': 'gemini',
-  Aider: 'aider',
 }
 
 export function useTranscriptWatcher(

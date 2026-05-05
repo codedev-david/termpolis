@@ -104,12 +104,6 @@ describe('InstallHint', () => {
     expect(window.open).toHaveBeenCalledWith('https://qwen.ai/qwencode', '_blank')
   })
 
-  it('shows aider-qwen install instructions with aider and ollama steps', () => {
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
-    expect(screen.getAllByText(/Aider/).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getAllByText(/Ollama/).length).toBeGreaterThanOrEqual(1)
-  })
-
   it('shows default instructions for unknown agent', () => {
     render(<InstallHint agentId="unknown-agent" agentName="Unknown" onClose={vi.fn()} />)
     expect(screen.getByText('Install Unknown')).toBeInTheDocument()
@@ -170,18 +164,6 @@ describe('InstallHint', () => {
     expect(checkIcon).toBeTruthy()
   })
 
-  it('strips step numbers when copying aider-qwen steps', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
-
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
-    const copyButtons = screen.getAllByTitle('Copy to clipboard')
-    // The first step starts with "1. Install Aider: ..."
-    fireEvent.click(copyButtons[0])
-    // The leading number prefix "1. " should be stripped
-    expect(writeText).toHaveBeenCalledWith('Install Aider: pip install aider-chat')
-  })
-
   // -----------------------------------------------------------------------
   // Restart warning banner
   // -----------------------------------------------------------------------
@@ -213,11 +195,6 @@ describe('InstallHint', () => {
     expect(screen.getByText(/Free tier available/)).toBeInTheDocument()
   })
 
-  it('shows pricing info for aider-qwen (free local)', () => {
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
-    expect(screen.getByText(/Free.*runs locally/)).toBeInTheDocument()
-  })
-
   it('does not show pricing for unknown agent', () => {
     render(<InstallHint agentId="unknown-agent" agentName="Unknown" onClose={vi.fn()} />)
     // No credit card icon should be present since pricing is null
@@ -241,42 +218,11 @@ describe('InstallHint', () => {
   })
 
   // -----------------------------------------------------------------------
-  // Qwen modal structure — no empty gap, sections render as sections
-  // -----------------------------------------------------------------------
-  it('renders qwen steps without empty gap rows', () => {
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
-    const stepRows = screen.getByTestId('install-hint-steps').children
-    for (let i = 0; i < stepRows.length; i++) {
-      const row = stepRows[i] as HTMLElement
-      expect(row.textContent?.trim().length).toBeGreaterThan(0)
-    }
-  })
-
-  it('renders qwen "use qwen3-coder-next" block as a section, not a step box', () => {
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
-    const section = screen.getByTestId('install-hint-section-0')
-    expect(section).toBeInTheDocument()
-    expect(section.textContent).toMatch(/qwen3-coder-next/)
-    expect(section.textContent).toMatch(/Click \+ in AI Agents/)
-  })
-
-  it('renders aider command in qwen section with copy button', () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
-    const section = screen.getByTestId('install-hint-section-0')
-    const copyBtns = section.querySelectorAll('button[title="Copy to clipboard"]')
-    expect(copyBtns.length).toBeGreaterThan(0)
-    fireEvent.click(copyBtns[0])
-    expect(writeText).toHaveBeenCalledWith('aider --model ollama/qwen3-coder-next --no-show-model-warnings')
-  })
-
-  // -----------------------------------------------------------------------
   // Modal scrollability — the root card must allow vertical scroll so long
-  // agent instructions (qwen has ~10 steps + section) don't overflow screen.
+  // agent instructions don't overflow screen.
   // -----------------------------------------------------------------------
   it('modal card has max-height and vertical overflow scroll', () => {
-    render(<InstallHint agentId="aider-qwen" agentName="Aider + Qwen" onClose={vi.fn()} />)
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
     const modal = screen.getByTestId('install-hint-modal')
     expect(modal.className).toMatch(/max-h-/)
     expect(modal.className).toMatch(/overflow-y-auto/)

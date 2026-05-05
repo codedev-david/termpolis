@@ -1,7 +1,6 @@
 import { attachClaudeCodeWatcher, type ClaudeCodeWatcherHandle } from './claudeCodeWatcher'
 import { attachCodexWatcher, type CodexWatcherHandle } from './codexWatcher'
 import { attachGeminiWatcher, type GeminiWatcherHandle } from './geminiWatcher'
-import { attachAiderWatcher, type AiderWatcherHandle } from './aiderWatcher'
 
 /**
  * Central watcher manager — attaches the right transcript watcher(s) for a
@@ -23,11 +22,10 @@ export type AttachedWatcher =
   | ClaudeCodeWatcherHandle
   | CodexWatcherHandle
   | GeminiWatcherHandle
-  | AiderWatcherHandle
 
 const active = new Map<string, AttachedWatcher[]>()
 
-export type DetectedAgent = 'claude' | 'codex' | 'gemini' | 'aider'
+export type DetectedAgent = 'claude' | 'codex' | 'gemini'
 
 export function attachWatcher(terminalId: string, cwd: string, agentType: DetectedAgent): AttachedWatcher | null {
   if (!terminalId || typeof terminalId !== 'string') return null
@@ -43,9 +41,6 @@ export function attachWatcher(terminalId: string, cwd: string, agentType: Detect
       break
     case 'gemini':
       handle = attachGeminiWatcher(terminalId)
-      break
-    case 'aider':
-      handle = attachAiderWatcher(terminalId, cwd)
       break
     default:
       return null

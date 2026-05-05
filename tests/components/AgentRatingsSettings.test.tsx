@@ -39,12 +39,10 @@ describe('AgentRatingsSettings', () => {
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
     expect(screen.getByText('Qwen Code')).toBeInTheDocument()
-    expect(screen.getByText('Qwen AI')).toBeInTheDocument()
   })
 
   it('shows token cost labels', () => {
     render(<AgentRatingsSettings />)
-    expect(screen.getByText('Free')).toBeInTheDocument()
     expect(screen.getAllByText(/cost/).length).toBeGreaterThanOrEqual(3)
   })
 

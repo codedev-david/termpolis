@@ -117,24 +117,6 @@ export const DEFAULT_AGENT_CAPABILITIES: AgentCapability[] = [
     tokenCost: 'low',
     hasMcp: true,
   },
-  {
-    agentId: 'aider-qwen',
-    agentName: 'Qwen AI',
-    strengths: {
-      refactoring: 3,
-      architecture: 2,
-      testing: 3,
-      documentation: 2,
-      codeReview: 2,
-      debugging: 3,
-      frontend: 2,
-      devops: 2,
-      dataAnalysis: 2,
-      bulkTasks: 5,
-    },
-    tokenCost: 'free',
-    hasMcp: false,
-  },
 ]
 
 // Custom overrides stored per-agent: { [agentId]: { [category]: score } }

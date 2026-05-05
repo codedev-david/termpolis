@@ -85,37 +85,6 @@ function getInstallInstructions(agentId: string): InstallInstructions {
         url: 'https://qwen.ai/qwencode',
         pricing: 'Free if pointed at local Ollama / vLLM. Paid tiers: Alibaba Coding Plan (monthly), or pay-per-token via OpenRouter / Fireworks / BYO API key.',
       }
-    case 'aider-qwen':
-      return {
-        steps: [
-          '1. Install Aider: pip install aider-chat',
-          '2. Install Ollama: https://ollama.com',
-          ...(isWindows ? [
-            '3. Add Ollama to PATH (PowerShell as Admin):',
-            '   setx PATH "%PATH%;%LOCALAPPDATA%\\Programs\\Ollama" /M',
-            '4. Restart your terminal, then pull a model:',
-            '   ollama pull qwen3-coder         (default, 16GB+ RAM)',
-            '   ollama pull qwen3-coder-next    (advanced, 64GB+ RAM)',
-          ] : [
-            '3. Pull a model:',
-            '   ollama pull qwen3-coder         (default, 16GB+ RAM)',
-            '   ollama pull qwen3-coder-next    (advanced, 64GB+ RAM)',
-          ]),
-          `${isWindows ? '5' : '4'}. Restart Termpolis to detect the changes`,
-        ],
-        sections: [
-          {
-            title: 'Use qwen3-coder-next instead (64GB+ RAM)',
-            lines: [
-              'Click + in AI Agents to add a custom profile',
-              'Set command to:',
-              'aider --model ollama/qwen3-coder-next --no-show-model-warnings',
-            ],
-          },
-        ],
-        url: 'https://ollama.com',
-        pricing: 'Free — runs locally on your machine with no API costs. Default model works with 16GB+ RAM.',
-      }
     default:
       return {
         steps: ['Check the documentation for install instructions.'],

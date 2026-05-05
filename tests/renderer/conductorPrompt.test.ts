@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { buildConductorPrompt } from '../../src/renderer/src/lib/conductorPrompt'
 
-const allInstalled = { claude: true, codex: true, gemini: true, 'qwen-code': true, aider: false, 'aider-qwen': true }
-const onlyClaude = { claude: true, codex: false, gemini: false, 'qwen-code': false, aider: false, 'aider-qwen': false }
+const allInstalled = { claude: true, codex: true, gemini: true, 'qwen-code': true }
+const onlyClaude = { claude: true, codex: false, gemini: false, 'qwen-code': false }
 
 function buildDefault(overrides: Partial<Parameters<typeof buildConductorPrompt>[0]> = {}) {
   return buildConductorPrompt({
@@ -29,20 +29,19 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('Claude Code')
     expect(prompt).toContain('OpenAI Codex')
     expect(prompt).toContain('Gemini CLI')
-    expect(prompt).toContain('Qwen AI')
+    expect(prompt).toContain('Qwen Code')
   })
 
   it('excludes agents that are not installed (installedAgents[id] === false)', () => {
     const prompt = buildDefault({
-      installedAgents: { claude: true, codex: false, gemini: false, 'qwen-code': false, aider: false, 'aider-qwen': false },
+      installedAgents: { claude: true, codex: false, gemini: false, 'qwen-code': false },
     })
     // Extract just the INSTALLED AGENTS section
     const agentsSection = prompt.split('INSTALLED AGENTS:')[1].split('YOUR MCP TOOLS:')[0]
     expect(agentsSection).toContain('Claude Code')
     expect(agentsSection).not.toContain('OpenAI Codex')
     expect(agentsSection).not.toContain('Gemini CLI')
-    // aider-qwen is special — only included when explicitly true
-    expect(agentsSection).not.toContain('Qwen AI')
+    expect(agentsSection).not.toContain('Qwen Code')
   })
 
   it('includes MCP tool names', () => {
@@ -83,7 +82,7 @@ describe('buildConductorPrompt', () => {
     expect(agentsSection).toContain('Claude Code')
     expect(agentsSection).not.toContain('OpenAI Codex')
     expect(agentsSection).not.toContain('Gemini CLI')
-    expect(agentsSection).not.toContain('Qwen AI')
+    expect(agentsSection).not.toContain('Qwen Code')
     // Should still be a valid prompt with tools section
     expect(prompt).toContain('swarm_create_task')
   })

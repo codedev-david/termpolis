@@ -12,7 +12,7 @@ const AGENT_OPTIONS = [
   { name: 'Claude Code', command: 'claude', icon: 'fa-solid fa-robot', color: '#D97706' },
   { name: 'Codex', command: 'codex', icon: 'fa-solid fa-microchip', color: '#10B981' },
   { name: 'Gemini', command: 'gemini', icon: 'fa-brands fa-google', color: '#4285F4' },
-  { name: 'Aider', command: 'aider', icon: 'fa-solid fa-code', color: '#8B5CF6' },
+  { name: 'Qwen Code', command: 'qwen', icon: 'fa-solid fa-feather', color: '#A855F7' },
 ]
 
 export function AgentHandoffModal({ context, onConfirm, onCancel }: Props) {

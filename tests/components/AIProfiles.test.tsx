@@ -62,7 +62,7 @@ let mockInstalledAgents: Record<string, boolean> = {}
 beforeEach(() => {
   vi.clearAllMocks()
   mockAiProfiles = []
-  mockInstalledAgents = { claude: true, codex: true, gemini: false, 'qwen-code': false, 'aider-qwen': false }
+  mockInstalledAgents = { claude: true, codex: true, gemini: false, 'qwen-code': false }
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockImplementation(() =>
       Promise.resolve({ success: true, data: mockInstalledAgents })
@@ -70,10 +70,7 @@ beforeEach(() => {
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/test/project' }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
-    getOllamaPath: vi.fn().mockResolvedValue({ success: true, data: null }),
   }
-  // Mock fetch for Ollama API check (default: not reachable)
-  globalThis.fetch = vi.fn().mockRejectedValue(new Error('not reachable')) as any
 })
 
 import { AIProfiles } from '../../src/renderer/src/components/Sidebar/AIProfiles'
@@ -85,13 +82,12 @@ const defaultShells = [
 
 describe('AIProfiles', () => {
   describe('rendering', () => {
-    it('renders all five default AI agent profiles', async () => {
+    it('renders all four default AI agent profiles', async () => {
       render(<AIProfiles availableShells={defaultShells} />)
       expect(screen.getByText('Claude Code')).toBeInTheDocument()
       expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
       expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
       expect(screen.getByText('Qwen Code')).toBeInTheDocument()
-      expect(screen.getByText('Qwen AI')).toBeInTheDocument()
     })
 
     it('renders custom profiles alongside defaults', async () => {
@@ -106,11 +102,6 @@ describe('AIProfiles', () => {
     it('shows AI Agents section header', () => {
       render(<AIProfiles availableShells={defaultShells} />)
       expect(screen.getByText('AI Agents')).toBeInTheDocument()
-    })
-
-    it('shows FREE badge on Qwen AI', () => {
-      render(<AIProfiles availableShells={defaultShells} />)
-      expect(screen.getByText('FREE')).toBeInTheDocument()
     })
 
     it('shows + button to add custom profile', () => {
@@ -132,12 +123,12 @@ describe('AIProfiles', () => {
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
         const xMarks = document.querySelectorAll('.fa-circle-xmark')
-        expect(xMarks.length).toBe(3) // gemini, qwen-code, aider-qwen
+        expect(xMarks.length).toBe(2) // gemini, qwen-code
       })
     })
 
     it('shows all green checks when all agents installed', async () => {
-      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'qwen-code': true, 'aider-qwen': true }
+      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'qwen-code': true }
       ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
         success: true,
         data: mockInstalledAgents,
@@ -145,7 +136,7 @@ describe('AIProfiles', () => {
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
         const checks = document.querySelectorAll('.fa-circle-check')
-        expect(checks.length).toBe(5)
+        expect(checks.length).toBe(4)
       })
       expect(document.querySelectorAll('.fa-circle-xmark').length).toBe(0)
     })
@@ -269,84 +260,6 @@ describe('AIProfiles', () => {
     })
   })
 
-  describe('Ollama path detection for Aider', () => {
-    it('fetches Ollama path when launching Qwen AI', async () => {
-      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'qwen-code': true, 'aider-qwen': true }
-      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
-        success: true,
-        data: mockInstalledAgents,
-      })
-      // Mock Ollama as reachable so aider-qwen doesn't show ollama hint
-      globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve({ ok: true })) as any
-      ;(window as any).termpolis.getOllamaPath = vi.fn().mockResolvedValue({
-        success: true,
-        data: '/usr/local/bin',
-      })
-      render(<AIProfiles availableShells={defaultShells} />)
-      await waitFor(() => {
-        expect(document.querySelectorAll('.fa-circle-check').length).toBe(5)
-      }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Qwen AI'))
-      await waitFor(() => {
-        expect((window as any).termpolis.getOllamaPath).toHaveBeenCalled()
-      }, { timeout: 3000 })
-      await waitFor(() => {
-        expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.any(String),
-          '/test/project',
-          ['/usr/local/bin'],
-        )
-      }, { timeout: 3000 })
-    }, 10000)
-
-    it('does not pass extraPaths when getOllamaPath returns default', async () => {
-      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'qwen-code': true, 'aider-qwen': true }
-      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
-        success: true,
-        data: mockInstalledAgents,
-      })
-      globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve({ ok: true })) as any
-      ;(window as any).termpolis.getOllamaPath = vi.fn().mockResolvedValue({
-        success: true,
-        data: 'ollama', // default — means it's on PATH already
-      })
-      render(<AIProfiles availableShells={defaultShells} />)
-      await waitFor(() => {
-        expect(document.querySelectorAll('.fa-circle-check').length).toBe(5)
-      }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Qwen AI'))
-      await waitFor(() => {
-        expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.any(String),
-          '/test/project',
-          undefined,
-        )
-      }, { timeout: 3000 })
-    }, 10000)
-
-    it('shows Ollama hint when Ollama is not installed and Aider is clicked', async () => {
-      // aider-qwen is installed but Ollama is not reachable
-      mockInstalledAgents = { claude: true, codex: true, gemini: false, 'qwen-code': false, 'aider-qwen': true }
-      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
-        success: true,
-        data: mockInstalledAgents,
-      })
-      // Ollama not reachable — fetch rejects immediately
-      globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('not reachable'))) as any
-
-      render(<AIProfiles availableShells={defaultShells} />)
-      await waitFor(() => {
-        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
-      }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Qwen AI'))
-      await waitFor(() => {
-        expect(screen.getByText('Free AI Coding with Qwen AI')).toBeInTheDocument()
-      }, { timeout: 3000 })
-    }, 10000)
-  })
-
   describe('collapse/expand', () => {
     it('collapses agent list when header is clicked', () => {
       render(<AIProfiles availableShells={defaultShells} />)
@@ -414,69 +327,23 @@ describe('AIProfiles', () => {
     })
 
     it('auto-trusts codex by sending "1\\r" after launch (codex branch)', async () => {
-      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'qwen-code': true, 'aider-qwen': true }
+      mockInstalledAgents = { claude: true, codex: true, gemini: true, 'qwen-code': true }
       ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
         success: true, data: mockInstalledAgents,
       })
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
-        expect(document.querySelectorAll('.fa-circle-check').length).toBe(5)
+        expect(document.querySelectorAll('.fa-circle-check').length).toBe(4)
       }, { timeout: 3000 })
       fireEvent.click(screen.getByText('OpenAI Codex'))
       await waitFor(() => {
         expect((window as any).termpolis.createTerminal).toHaveBeenCalled()
       })
-      // With testDelay=0, writeToTerminal should have been called with '1\r' for codex trust
       await waitFor(() => {
         const calls = (window as any).termpolis.writeToTerminal.mock.calls
         const hasCodexTrust = calls.some((c: any[]) => c[1] === '1\r')
         expect(hasCodexTrust).toBe(true)
       }, { timeout: 3000 })
-    }, 10000)
-
-    it('closes the Ollama hint when its × button is clicked', async () => {
-      mockInstalledAgents = { claude: true, codex: true, gemini: false, 'qwen-code': false, 'aider-qwen': true }
-      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
-        success: true, data: mockInstalledAgents,
-      })
-      globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('no'))) as any
-
-      render(<AIProfiles availableShells={defaultShells} />)
-      await waitFor(() => {
-        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
-      }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Qwen AI'))
-      await waitFor(() => {
-        expect(screen.getByText('Free AI Coding with Qwen AI')).toBeInTheDocument()
-      }, { timeout: 3000 })
-      // Click the × close button within the hint container
-      const hintHeading = screen.getByText('Free AI Coding with Qwen AI')
-      const hintRoot = hintHeading.closest('div')!.parentElement as HTMLElement
-      const closeBtn = hintRoot.querySelector('button') as HTMLButtonElement
-      fireEvent.click(closeBtn)
-      expect(screen.queryByText('Free AI Coding with Qwen AI')).not.toBeInTheDocument()
-    }, 10000)
-
-    it('opens Ollama home URL when the Ollama link inside hint is clicked', async () => {
-      mockInstalledAgents = { claude: true, codex: true, gemini: false, 'qwen-code': false, 'aider-qwen': true }
-      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
-        success: true, data: mockInstalledAgents,
-      })
-      globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('no'))) as any
-      const openSpy = vi.fn()
-      window.open = openSpy
-
-      render(<AIProfiles availableShells={defaultShells} />)
-      await waitFor(() => {
-        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
-      }, { timeout: 3000 })
-      fireEvent.click(screen.getByText('Qwen AI'))
-      await waitFor(() => {
-        expect(screen.getByText('Free AI Coding with Qwen AI')).toBeInTheDocument()
-      }, { timeout: 3000 })
-      // Click the Ollama link inside the hint
-      fireEvent.click(screen.getByText('Ollama'))
-      expect(openSpy).toHaveBeenCalledWith('https://ollama.com', '_blank')
     }, 10000)
   })
 

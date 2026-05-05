@@ -31,7 +31,7 @@ function stripAnsi(text: string): string {
  * Detect the current status of a swarm agent from its terminal output.
  *
  * @param recentOutput - The last ~2-4KB of the terminal's output buffer
- * @param agentName - The agent type (e.g. "Claude", "Codex", "Gemini", "Aider")
+ * @param agentName - The agent type (e.g. "Claude", "Codex", "Gemini", "Qwen Code")
  * @param previousStatus - The agent's previous status (for hysteresis)
  */
 export function detectAgentStatus(

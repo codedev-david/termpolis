@@ -3,7 +3,6 @@ const TEST_AGENT_MAP: Record<string, string> = {
   'codex': 'node e2e/mocks/mock-codex.cjs',
   'gemini': 'node e2e/mocks/mock-gemini.cjs',
   'qwen': 'node e2e/mocks/mock-qwen.cjs',
-  'aider --model ollama/qwen3-coder --no-show-model-warnings': 'node e2e/mocks/mock-aider.cjs',
 }
 
 export function resolveAgentCommand(command: string): string {

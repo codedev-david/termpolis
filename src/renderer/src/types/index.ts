@@ -114,7 +114,6 @@ export interface TermpolisAPI {
   completionEnvVars: () => Promise<IpcResponse<Record<string, string>>>
   exportTerminal: (opts: { content: string; defaultFilename: string }) => Promise<IpcResponse<{ filePath: string }>>
   detectAgents: () => Promise<IpcResponse<Record<string, boolean>>>
-  getOllamaPath: () => Promise<IpcResponse<string | null>>
   pickDirectory: (defaultPath?: string) => Promise<IpcResponse<string | null>>
   openPath: (path: string) => Promise<IpcResponse>
   openExternal: (url: string) => Promise<IpcResponse>

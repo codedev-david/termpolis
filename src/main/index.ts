@@ -648,75 +648,6 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
 })
 
 // Check which AI agent commands are installed on the system
-// Find Ollama executable — checks PATH first, then common install locations on Windows
-function findOllamaPath(): string | null {
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true }
-  try {
-    execSync(process.platform === 'win32' ? 'where ollama' : 'which ollama', execOpts)
-    return 'ollama' // found in PATH
-  } catch {
-    // Not in PATH — check common Windows install locations
-    if (process.platform === 'win32') {
-      const { existsSync } = require('fs')
-      const { join } = require('path')
-      const home = require('os').homedir()
-      const candidates = [
-        join(home, 'AppData', 'Local', 'Programs', 'Ollama'),
-        'C:\\Program Files\\Ollama',
-        join(home, 'AppData', 'Local', 'Ollama'),
-      ]
-      for (const dir of candidates) {
-        if (existsSync(join(dir, 'ollama.exe'))) return dir
-      }
-    }
-    return null
-  }
-}
-
-// Check common pip/Python install locations for aider on Windows
-function findAiderInstalled(): boolean {
-  const execOpts = { stdio: 'ignore' as const, timeout: 3000, windowsHide: true }
-  try {
-    execSync(process.platform === 'win32' ? 'where aider' : 'which aider', execOpts)
-    return true
-  } catch {
-    if (process.platform === 'win32') {
-      const { existsSync } = require('fs')
-      const { join } = require('path')
-      const home = require('os').homedir()
-      const localPackages = join(home, 'AppData', 'Local', 'Packages')
-      // Check Microsoft Store Python installs
-      try {
-        const { readdirSync } = require('fs')
-        const packages = readdirSync(localPackages).filter((d: string) => d.startsWith('PythonSoftwareFoundation'))
-        for (const pkg of packages) {
-          const scriptsDir = join(localPackages, pkg, 'LocalCache', 'local-packages')
-          // Check Python 3.x Scripts directories
-          try {
-            const subDirs = readdirSync(scriptsDir).filter((d: string) => d.startsWith('Python'))
-            for (const sub of subDirs) {
-              if (existsSync(join(scriptsDir, sub, 'Scripts', 'aider.exe'))) return true
-            }
-          } catch {}
-        }
-      } catch {}
-      // Check standard pip install locations
-      const candidates = [
-        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'Scripts', 'aider.exe'),
-        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python312', 'Scripts', 'aider.exe'),
-        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python313', 'Scripts', 'aider.exe'),
-        join(home, 'AppData', 'Roaming', 'Python', 'Python311', 'Scripts', 'aider.exe'),
-        join(home, 'AppData', 'Roaming', 'Python', 'Python312', 'Scripts', 'aider.exe'),
-        join(home, 'AppData', 'Roaming', 'Python', 'Python313', 'Scripts', 'aider.exe'),
-      ]
-      for (const p of candidates) {
-        if (existsSync(p)) return true
-      }
-    }
-    return false
-  }
-}
-
 // Common agent install locations that GUI apps may not have in PATH
 // Terminals spawned from Start Menu/desktop don't inherit user shell PATH
 function getAgentExtraPaths(): string[] {
@@ -784,10 +715,6 @@ ipcMain.handle('agents:detect', async () => {
   }
   // Qwen-Code: id 'qwen-code', binary 'qwen' (Alibaba's Gemini-CLI fork)
   results['qwen-code'] = findAgentInstalled('qwen')
-  // Aider detection with fallback to common pip install paths
-  results['aider'] = findAiderInstalled()
-  // Aider+Qwen needs both aider AND ollama
-  results['aider-qwen'] = results['aider'] && findOllamaPath() !== null
   // Test hook: force a comma-separated list of agent ids to report as not installed,
   // so Playwright can deterministically open the InstallHint modal for that agent.
   const forceMissing = process.env.TERMPOLIS_FORCE_MISSING_AGENTS
@@ -797,11 +724,6 @@ ipcMain.handle('agents:detect', async () => {
     }
   }
   return ok(results)
-})
-
-// Expose Ollama path for terminal environment injection
-ipcMain.handle('agents:ollama-path', async () => {
-  return ok(findOllamaPath())
 })
 
 // Swarm IPC handlers for the dashboard

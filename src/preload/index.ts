@@ -53,9 +53,6 @@ const api: TermpolisAPI = {
   detectAgents: () =>
     ipcRenderer.invoke('agents:detect'),
 
-  getOllamaPath: () =>
-    ipcRenderer.invoke('agents:ollama-path'),
-
   pickDirectory: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', { defaultPath }),
 

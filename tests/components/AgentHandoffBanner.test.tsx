@@ -24,10 +24,10 @@ describe('AgentHandoffBanner', () => {
         onDismiss={vi.fn()}
       />
     )
-    // Claude Code is filtered out; Codex, Gemini, Aider should remain
+    // Claude Code is filtered out; Codex, Gemini, Qwen Code should remain
     expect(screen.getByText('Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini')).toBeInTheDocument()
-    expect(screen.getByText('Aider')).toBeInTheDocument()
+    expect(screen.getByText('Qwen Code')).toBeInTheDocument()
     expect(screen.queryByText('Claude Code', { exact: false, selector: 'button' })).not.toBeInTheDocument()
     expect(screen.getByText('Dismiss')).toBeInTheDocument()
   })

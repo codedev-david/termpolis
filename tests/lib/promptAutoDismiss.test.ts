@@ -71,12 +71,12 @@ describe('promptAutoDismiss.detectDismissChar', () => {
   describe('generic Y/n prompts', () => {
     it('answers [Y/n] with y', () => {
       const tail = 'Install additional tools? [Y/n]'
-      expect(detectDismissChar(tail, { agentName: 'Aider + Qwen' })).toBe('y\r')
+      expect(detectDismissChar(tail, { agentName: 'Qwen Code' })).toBe('y\r')
     })
 
     it('answers (Y/n) with y', () => {
       const tail = 'Continue? (Y/n)'
-      expect(detectDismissChar(tail, { agentName: 'Aider + Qwen' })).toBe('y\r')
+      expect(detectDismissChar(tail, { agentName: 'Qwen Code' })).toBe('y\r')
     })
   })
 
@@ -106,18 +106,6 @@ describe('promptAutoDismiss.detectDismissChar', () => {
     it('answers "authenticate with" prompt', () => {
       const tail = 'How would you like to authenticate with Google?'
       expect(detectDismissChar(tail, { agentName: 'Gemini CLI' })).toBe('\r')
-    })
-  })
-
-  describe('Aider-specific', () => {
-    it('answers aider "(y)es (n)o" with y', () => {
-      const tail = 'Add new dependency? (y)es / (n)o'
-      expect(detectDismissChar(tail, { agentName: 'Aider + Qwen' })).toBe('y\r')
-    })
-
-    it('treats "qwen" agent as aider for y/n prompts', () => {
-      const tail = '(y)es  (n)o'
-      expect(detectDismissChar(tail, { agentName: 'Qwen AI' })).toBe('y\r')
     })
   })
 

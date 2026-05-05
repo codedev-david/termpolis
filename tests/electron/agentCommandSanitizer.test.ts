@@ -16,9 +16,8 @@ describe('sanitizeAgentCommand', () => {
     expect(sanitizeAgentCommand('codex --full-auto')).toBe('codex --full-auto')
   })
 
-  it('passes through correct aider command', () => {
-    expect(sanitizeAgentCommand('aider --model ollama/qwen3-coder --no-show-model-warnings'))
-      .toBe('aider --model ollama/qwen3-coder --no-show-model-warnings')
+  it('passes through correct qwen command', () => {
+    expect(sanitizeAgentCommand('qwen')).toBe('qwen')
   })
 
   // ---- Strips -p flag from all agents ----
@@ -92,7 +91,7 @@ describe('sanitizeAgentCommand', () => {
 
   // ---- Allowlist has all expected agents ----
 
-  it('has entries for all five agent types', () => {
-    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'gemini', 'qwen', 'aider'])
+  it('has entries for all four MCP-native agent types', () => {
+    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'gemini', 'qwen'])
   })
 })

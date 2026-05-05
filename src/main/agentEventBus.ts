@@ -5,7 +5,7 @@ import * as path from 'path'
  * Agent Event Bus — in-process aggregation of all AI agent activity.
  *
  * Three data sources feed events in:
- * - Provider transcript watchers (Claude Code, Codex, Gemini, Aider)
+ * - Provider transcript watchers (Claude Code, Codex, Gemini)
  * - MCP audit log (tool calls routed through Termpolis's MCP server)
  * - Terminal buffer heuristics (fallback, via agentStatusDetector)
  *

@@ -12,7 +12,6 @@ const AGENT_OPTIONS = [
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', color: '#4285F4' },
   { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', color: '#A855F7' },
-  { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', color: '#06B6D4' },
 ]
 
 export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeProps) {
@@ -97,9 +96,6 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
                       )}
                       {notInstalled && (
                         <span className="text-[8px] px-1 py-0.5 rounded bg-red-900/30 text-red-400">Install</span>
-                      )}
-                      {agent.id === 'aider-qwen' && installed && (
-                        <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4]">FREE</span>
                       )}
                     </button>
                   )

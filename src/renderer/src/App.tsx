@@ -94,8 +94,7 @@ export default function App() {
           'Claude Code': 'claude',
           'OpenAI Codex': 'codex',
           'Gemini CLI': 'gemini',
-          'Qwen AI': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
-          'Aider + Qwen3': 'aider --model ollama/qwen3-coder --no-show-model-warnings',
+          'Qwen Code': 'qwen',
         }
         const resolvedSaved = saved.map(t => ({
           ...t,
@@ -439,7 +438,7 @@ export default function App() {
       const isClaudeAgent = /claude/i.test(agentName)
 
       // Start bridge for non-MCP agents (output monitoring + signal detection)
-      // Claude Code has native MCP, but others (Codex, Gemini, Aider) need the bridge
+      // Claude Code has native MCP, but others (Codex, Gemini, Qwen Code) need the bridge
       if (!isClaudeAgent) {
         startBridgeForAgent(data.id, agentName)
       }
@@ -550,7 +549,7 @@ export default function App() {
   }, [])
 
   // Prompt auto-dismiss for regular (non-swarm) AI agent terminals.
-  // When a user launches Claude / Codex / Gemini / Aider from the sidebar,
+  // When a user launches Claude / Codex / Gemini / Qwen Code from the sidebar,
   // each tool shows first-run prompts (folder trust, MCP server trust,
   // "Press Enter to continue" splash). The swarm loop above handles this for
   // swarm-tracked agents; this loop covers everyone else. Two small loops
@@ -712,7 +711,6 @@ export default function App() {
     codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
     gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
     'qwen-code': { name: 'Qwen Code', command: 'qwen', color: '#A855F7' },
-    'aider-qwen': { name: 'Qwen AI', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', color: '#06B6D4' },
   }
 
   const handleWelcomeLaunchAgent = async (agentId: string) => {
@@ -738,7 +736,7 @@ export default function App() {
       if (config.command.startsWith('codex')) {
         setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(10000))
       }
-      const dismissMs = (agentId === 'gemini' || agentId === 'qwen-code' || agentId === 'aider-qwen') ? 15000 : 8000
+      const dismissMs = (agentId === 'gemini' || agentId === 'qwen-code') ? 15000 : 8000
       setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
     } else {
       setLaunchingAgent(null)

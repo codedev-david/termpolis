@@ -911,8 +911,6 @@ describe('agents:detect', () => {
     expect(result.data).toHaveProperty('codex')
     expect(result.data).toHaveProperty('gemini')
     expect(result.data).toHaveProperty('qwen-code')
-    expect(result.data).toHaveProperty('aider')
-    expect(result.data).toHaveProperty('aider-qwen')
   })
 
   it('detects agents when commands exist on PATH', async () => {
@@ -926,35 +924,6 @@ describe('agents:detect', () => {
     expect(result.data.codex).toBe(true)
     expect(result.data.gemini).toBe(true)
     expect(result.data['qwen-code']).toBe(true)
-  })
-})
-
-// =========================================================================
-// agents:ollama-path
-// =========================================================================
-describe('agents:ollama-path', () => {
-  it('returns ollama path when found on PATH', async () => {
-    mockExecSync.mockReturnValue(Buffer.from(''))
-
-    const result = await invokeHandler('agents:ollama-path')
-    expect(result.success).toBe(true)
-    // When execSync succeeds (where/which finds ollama), returns 'ollama'
-    // Note: findOllamaPath uses require('fs') for fallback checks which bypasses
-    // vi.mock — so on machines with ollama installed, result.data may be a path.
-    expect(result.data).toBe('ollama')
-  })
-
-  it('returns a string or null depending on system state', async () => {
-    // findOllamaPath uses require('fs').existsSync internally (not mockable via vi.mock)
-    // so the result depends on whether ollama is actually installed on this machine.
-    // We verify the handler returns a valid response shape.
-    mockExecSync.mockImplementation(() => {
-      throw new Error('not found')
-    })
-
-    const result = await invokeHandler('agents:ollama-path')
-    expect(result.success).toBe(true)
-    expect(result.data === null || typeof result.data === 'string').toBe(true)
   })
 })
 
@@ -1254,7 +1223,6 @@ describe('IPC handler registration', () => {
       'terminal:git-info',
       'terminal:status',
       'agents:detect',
-      'agents:ollama-path',
       'terminal:read-buffer',
       'swarm:messages',
       'swarm:tasks',
@@ -1784,8 +1752,6 @@ describe('findAgentInstalled fallback paths', () => {
     expect(typeof result.data.codex).toBe('boolean')
     expect(typeof result.data.gemini).toBe('boolean')
     expect(typeof result.data['qwen-code']).toBe('boolean')
-    expect(typeof result.data.aider).toBe('boolean')
-    expect(typeof result.data['aider-qwen']).toBe('boolean')
   })
 })
 
@@ -2419,7 +2385,7 @@ describe('All IPC handler registration including new handlers', () => {
       'dialog:pick-directory', 'completion:path-entries',
       'completion:path-commands', 'completion:env-vars',
       'terminal:git-diff', 'terminal:git-info', 'terminal:status',
-      'agents:detect', 'agents:ollama-path', 'terminal:read-buffer',
+      'agents:detect', 'terminal:read-buffer',
       'swarm:messages', 'swarm:tasks', 'swarm:send-message',
       'swarm:create-task', 'swarm:update-task', 'swarm:clear',
       'git:stage', 'git:unstage', 'git:commit', 'git:pull',

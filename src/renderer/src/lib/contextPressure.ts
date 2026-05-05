@@ -101,7 +101,7 @@ export function extractTokensFromEvents(events: AgentActivityEvent[]): number {
 /**
  * Heuristic fallback — count message events + multiply by avg tokens.
  * Coarse, but lets us render *some* pressure even when transcript tokens
- * aren't available (Aider, early Gemini versions, etc).
+ * aren't available (early Gemini versions, etc).
  */
 export function heuristicTokensFromEvents(
   events: AgentActivityEvent[],

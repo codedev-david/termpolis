@@ -33,10 +33,10 @@ describe('agentDetector', () => {
       expect(result!.name).toBe('Gemini CLI')
     })
 
-    it('detects Aider from output containing "aider"', () => {
-      const result = detectAgent('aider v0.35.0')
+    it('detects Qwen Code from output containing "qwen"', () => {
+      const result = detectAgent('qwen v0.35.0')
       expect(result).not.toBeNull()
-      expect(result!.name).toBe('Aider')
+      expect(result!.name).toBe('Qwen Code')
     })
 
     it('returns null for regular terminal output', () => {
@@ -58,7 +58,7 @@ describe('agentDetector', () => {
 
     it('is case insensitive and first match wins', () => {
       // "CLAUDE" should match Claude Code first, even if other patterns could match later
-      const result = detectAgent('CLAUDE and AIDER running')
+      const result = detectAgent('CLAUDE and QWEN running')
       expect(result).not.toBeNull()
       expect(result!.name).toBe('Claude Code')
     })

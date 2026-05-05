@@ -59,7 +59,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
         <div className="flex flex-col gap-3 text-sm text-[#d4d4d4] leading-relaxed">
           <p>
             Termpolis manages terminal sessions, split panes, and AI coding agents (Claude, Codex,
-            Gemini, Aider) in one window. A built-in MCP server lets those agents drive the
+            Gemini, Qwen Code) in one window. A built-in MCP server lets those agents drive the
             terminals directly.
           </p>
           <ul className="text-xs text-[#9ca3af] list-disc pl-5 space-y-1">

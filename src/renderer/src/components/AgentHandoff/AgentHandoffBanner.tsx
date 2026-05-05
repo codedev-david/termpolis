@@ -10,7 +10,7 @@ const SWITCH_TARGETS = [
   { name: 'Codex', icon: 'fa-solid fa-microchip', command: 'codex' },
   { name: 'Gemini', icon: 'fa-brands fa-google', command: 'gemini' },
   { name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude' },
-  { name: 'Aider', icon: 'fa-solid fa-code', command: 'aider' },
+  { name: 'Qwen Code', icon: 'fa-solid fa-feather', command: 'qwen' },
 ]
 
 export const AgentHandoffBanner = React.memo(function AgentHandoffBanner({ previousAgent, onSwitchTo, onDismiss }: Props) {

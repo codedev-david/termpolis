@@ -11,7 +11,6 @@ const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
   { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', command: 'qwen', shell: 'bash', color: '#A855F7' },
-  { id: 'aider-qwen', name: 'Qwen AI', icon: 'fa-solid fa-bolt', command: 'aider --model ollama/qwen3-coder --no-show-model-warnings', shell: 'bash', color: '#06B6D4' },
 ]
 
 function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -103,29 +102,11 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
   const { aiProfiles, addAIProfile, removeAIProfile, addTerminal, setLaunchingAgent } = useTerminalStore()
   const [showAddModal, setShowAddModal] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
-  const [ollamaStatus, setOllamaStatus] = useState<'checking' | 'installed' | 'not-installed'>('checking')
-  const [showOllamaHint, setShowOllamaHint] = useState(false)
   const [installedAgents, setInstalledAgents] = useState<Record<string, boolean>>({})
   const [detectingAgents, setDetectingAgents] = useState(true)
   const [installHint, setInstallHint] = useState<{ id: string; name: string } | null>(null)
 
-  // Check if Ollama is installed on mount
   useEffect(() => {
-    const check = async () => {
-      try {
-        // Try via fetch to Ollama's local API (runs on port 11434)
-        const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) }).catch(() => null)
-        if (res?.ok) {
-          setOllamaStatus('installed')
-        } else {
-          setOllamaStatus('not-installed')
-        }
-      } catch {
-        setOllamaStatus('not-installed')
-      }
-    }
-    check()
-    // Also detect all agent installations
     window.termpolis.detectAgents().then(res => {
       if (res.success && res.data) setInstalledAgents(res.data)
       setDetectingAgents(false)
@@ -142,15 +123,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
     setLaunchingAgent(profile.name)
     const id = uuid()
     const shellType = resolveShellType(profile.shell, availableShells)
-    // Inject Ollama path for Aider + Qwen so it can find the ollama binary
-    let extraPaths: string[] | undefined
-    if (profile.id === 'aider-qwen') {
-      const ollamaRes = await window.termpolis.getOllamaPath()
-      if (ollamaRes.success && ollamaRes.data && ollamaRes.data !== 'ollama') {
-        extraPaths = [ollamaRes.data]
-      }
-    }
-    const res = await window.termpolis.createTerminal(id, shellType, cwd, extraPaths)
+    const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (!res.success) {
       setLaunchingAgent(null)
       alert(`Failed to open terminal: ${res.error}`)
@@ -192,7 +165,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       // Codex requires '1' to trust the directory
       setTimeout(() => writeIfAlive('1\r'), testDelay(9000))
     }
-    const dismissMs = (profile.id === 'gemini' || profile.id === 'qwen-code' || profile.id === 'aider-qwen') ? 15000 : 8000
+    const dismissMs = (profile.id === 'gemini' || profile.id === 'qwen-code') ? 15000 : 8000
     setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
   }
 
@@ -223,34 +196,23 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
         <div className="px-2 pb-1 flex flex-col gap-0.5">
           {allProfiles.map(profile => {
             const isCustom = aiProfiles.some(p => p.id === profile.id)
-            const isAiderQwen = profile.id === 'aider-qwen'
             return (
               <div key={profile.id} className="group flex flex-col">
                 <div className="flex items-center">
                   <button
                     className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-[#37373d] flex-1 text-left"
                     onClick={() => {
-                      // Check if agent is installed
                       const notInstalled = !detectingAgents && installedAgents[profile.id] === false
                       if (notInstalled) {
                         setInstallHint({ id: profile.id, name: profile.name })
                         return
                       }
-                      if (isAiderQwen && ollamaStatus === 'not-installed') {
-                        setShowOllamaHint(true)
-                        return
-                      }
                       handleLaunch(profile)
                     }}
-                    title={isAiderQwen
-                      ? 'Free & local — runs Qwen3-Coder-Next via Ollama (no API costs)'
-                      : `Launch ${profile.name}: ${profile.command}`}
+                    title={`Launch ${profile.name}: ${profile.command}`}
                   >
                     <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
                     <span className="text-[#d4d4d4] truncate">{profile.name}</span>
-                    {isAiderQwen && (
-                      <span className="text-[8px] px-1 py-0.5 rounded bg-[#06B6D4]/20 text-[#06B6D4] ml-auto shrink-0">FREE</span>
-                    )}
                   </button>
                   {!detectingAgents && (
                     installedAgents[profile.id] === false ? (
@@ -283,21 +245,6 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
               </div>
             )
           })}
-          {showOllamaHint && (
-            <div className="mx-2 mt-1 p-2 bg-[#1e3a1e] border border-[#2d5a2d] rounded text-[10px] text-[#A5D6A7] leading-relaxed">
-              <div className="flex justify-between items-start mb-1">
-                <strong className="text-[#22D3EE]">Free AI Coding with Qwen AI</strong>
-                <button onClick={() => setShowOllamaHint(false)} className="text-[#999] hover:text-white">×</button>
-              </div>
-              <p className="mb-1">Qwen AI runs completely free and local via Ollama — no API keys, no cloud, no costs.</p>
-              <p className="mb-1">To set up:</p>
-              <ol className="list-decimal ml-3 flex flex-col gap-0.5">
-                <li>Install <a href="https://ollama.com" className="text-[#22D3EE] underline" onClick={e => { e.preventDefault(); window.open('https://ollama.com', '_blank') }}>Ollama</a></li>
-                <li>Run: <code className="bg-[#0d1b0d] px-1 rounded">ollama pull qwen3-coder</code></li>
-                <li>Click "Qwen AI" above to start coding</li>
-              </ol>
-            </div>
-          )}
         </div>
       )}
       {showAddModal && <AddProfileModal onSave={handleAddProfile} onCancel={() => setShowAddModal(false)} />}

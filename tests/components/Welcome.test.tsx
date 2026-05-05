@@ -5,13 +5,13 @@ import { Welcome } from '../../src/renderer/src/components/Welcome/Welcome'
 
 let mockDetectAgentsResult: any = {
   success: true,
-  data: { claude: true, codex: false, gemini: true, 'qwen-code': false, 'aider-qwen': false },
+  data: { claude: true, codex: false, gemini: true, 'qwen-code': false },
 }
 
 beforeEach(() => {
   mockDetectAgentsResult = {
     success: true,
-    data: { claude: true, codex: false, gemini: true, 'qwen-code': false, 'aider-qwen': false },
+    data: { claude: true, codex: false, gemini: true, 'qwen-code': false },
   }
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockImplementation(() => Promise.resolve(mockDetectAgentsResult)),
@@ -87,7 +87,6 @@ describe('Welcome', () => {
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
     expect(screen.getByText('Qwen Code')).toBeInTheDocument()
-    expect(screen.getByText('Qwen AI')).toBeInTheDocument()
   })
 
   it('toggles agent picker open and closed', () => {
@@ -155,21 +154,6 @@ describe('Welcome', () => {
     })
   })
 
-  it('shows FREE badge for aider-qwen when installed', async () => {
-    mockDetectAgentsResult = {
-      success: true,
-      data: { claude: true, codex: true, gemini: true, 'qwen-code': true, 'aider-qwen': true },
-    }
-    ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue(mockDetectAgentsResult)
-
-    render(<Welcome {...defaultProps()} />)
-    await waitFor(() => {
-      expect((window as any).termpolis.detectAgents).toHaveBeenCalled()
-    })
-    fireEvent.click(screen.getByText('Launch AI Agent'))
-    expect(screen.getByText('FREE')).toBeInTheDocument()
-  })
-
   it('shows Install badge for uninstalled agents', async () => {
     render(<Welcome {...defaultProps()} />)
     await waitFor(() => {
@@ -177,7 +161,7 @@ describe('Welcome', () => {
     })
     fireEvent.click(screen.getByText('Launch AI Agent'))
     const installBadges = screen.getAllByText('Install')
-    // codex, qwen-code, and aider-qwen are not installed
-    expect(installBadges.length).toBe(3)
+    // codex and qwen-code are not installed
+    expect(installBadges.length).toBe(2)
   })
 })
