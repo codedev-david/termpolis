@@ -50,29 +50,40 @@ function getInstallInstructions(agentId: string): InstallInstructions {
     case 'qwen-code':
       return {
         steps: [
-          'npm install -g @qwen-code/qwen-code',
+          isWindows
+            ? 'curl -fsSL -o %TEMP%\\install-qwen.bat https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.bat && %TEMP%\\install-qwen.bat --source qwenchat'
+            : 'bash -c "$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)" -s --source qwenchat',
           'qwen --version  (to verify)',
         ],
         sections: [
           {
+            title: 'Official install page',
+            lines: [
+              'These commands come from the official Qwen Code site:',
+              'https://qwen.ai/qwencode',
+            ],
+          },
+          {
             title: 'Authenticate Qwen Code',
             lines: [
-              'On first launch, Qwen prompts for an auth method:',
-              'Qwen-OAuth (free, browser sign-in) — recommended',
-              'OpenRouter — bring-your-own API key',
-              'API Key — direct DashScope / Alibaba Cloud key',
+              'On first launch, Qwen prompts for an auth method. Pick one:',
+              'Local Ollama / vLLM — free, offline, no account',
+              'Alibaba Cloud Coding Plan — subscription, hosted Qwen3-Coder',
+              'OpenRouter / Fireworks AI — bring-your-own API key',
+              'Any OpenAI / Anthropic / Gemini-compatible endpoint — BYO key',
+              'Note: Qwen-OAuth was discontinued April 15, 2026.',
             ],
           },
           {
             title: 'MCP Tools (auto-registered)',
             lines: [
               'Termpolis writes its MCP server entry to ~/.qwen/settings.json on startup.',
-              'After install, run "qwen mcp list" — you should see "termpolis" listed.',
+              'After install, run "qwen mcp list" — you should see "termpolis" listed as Connected.',
             ],
           },
         ],
-        url: 'https://github.com/QwenLM/qwen-code',
-        pricing: 'Free with Qwen-OAuth (2,000 requests/day). API-key tier billed by Alibaba Cloud / OpenRouter.',
+        url: 'https://qwen.ai/qwencode',
+        pricing: 'Free if pointed at local Ollama / vLLM. Paid tiers: Alibaba Coding Plan (monthly), or pay-per-token via OpenRouter / Fireworks / BYO API key.',
       }
     case 'aider-qwen':
       return {

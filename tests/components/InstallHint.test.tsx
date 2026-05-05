@@ -68,9 +68,11 @@ describe('InstallHint', () => {
     expect(screen.getByText(/gemini --version/)).toBeInTheDocument()
   })
 
-  it('shows qwen-code install instructions with npm and verify steps', () => {
+  it('shows qwen-code install instructions using the official installer script', () => {
     render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    expect(screen.getByText('npm install -g @qwen-code/qwen-code')).toBeInTheDocument()
+    // Either the bash or the .bat installer line is present depending on platform
+    expect(screen.getByText(/install-qwen\.(sh|bat)/)).toBeInTheDocument()
+    expect(screen.getByText(/--source qwenchat/)).toBeInTheDocument()
     expect(screen.getByText(/qwen --version/)).toBeInTheDocument()
   })
 
@@ -79,15 +81,27 @@ describe('InstallHint', () => {
     expect(screen.getByText(/~\/\.qwen\/settings\.json/)).toBeInTheDocument()
   })
 
-  it('shows pricing info for qwen-code (Qwen-OAuth free tier)', () => {
+  it('shows pricing info for qwen-code (local-Ollama-free, paid otherwise)', () => {
     render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    expect(screen.getByText(/2,000 requests\/day/)).toBeInTheDocument()
+    expect(screen.getByText(/local Ollama/)).toBeInTheDocument()
+    expect(screen.getByText(/Alibaba Coding Plan/)).toBeInTheDocument()
+  })
+
+  it('flags that Qwen-OAuth was discontinued', () => {
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    expect(screen.getByText(/Qwen-OAuth was discontinued/)).toBeInTheDocument()
+  })
+
+  it('shows the official install page URL inline for qwen-code', () => {
+    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    expect(screen.getByText('Official install page')).toBeInTheDocument()
+    expect(screen.getByText('https://qwen.ai/qwencode')).toBeInTheDocument()
   })
 
   it('opens correct URL for qwen-code documentation', () => {
     render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
     fireEvent.click(screen.getByText('Documentation'))
-    expect(window.open).toHaveBeenCalledWith('https://github.com/QwenLM/qwen-code', '_blank')
+    expect(window.open).toHaveBeenCalledWith('https://qwen.ai/qwencode', '_blank')
   })
 
   it('shows aider-qwen install instructions with aider and ollama steps', () => {
