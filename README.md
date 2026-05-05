@@ -55,15 +55,15 @@ Termpolis Smart Router:
 
 A dedicated Claude Code instance acts as the conductor — it reasons about your task, delegates subtasks to agents via MCP tools, and monitors completion. You watch it happen in the Swarm Dashboard. Every assignment is transparent and overridable. When the swarm finishes, a summary dialog shows what each agent accomplished.
 
-| Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
-|-----------|:-----------:|:-----:|:----------:|:----------:|
+| Capability | Claude Code | Codex | Gemini CLI | Qwen Code |
+|-----------|:-----------:|:-----:|:----------:|:---------:|
 | Refactoring | ★★★★★ | ★★★★ | ★★★ | ★★★ |
 | Testing | ★★★★ | ★★★★★ | ★★★ | ★★★ |
-| Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★ |
-| Code Review | ★★★★★ | ★★★ | ★★★★ | ★★ |
-| DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★ |
-| Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
-| Token Cost | $$$$ | $$$ | $$ | **Free** |
+| Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★★ |
+| Code Review | ★★★★★ | ★★★ | ★★★★ | ★★★ |
+| DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★★ |
+| Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★ |
+| Token Cost | $$$$ | $$$ | $$ | $$ |
 
 ---
 
@@ -122,11 +122,11 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Shell config editor** — edit .bashrc, .zshrc, PowerShell profiles with Monaco Editor
 
 ### AI-Native Features
-- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Gemini CLI, and Aider with custom profiles support
+- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Gemini CLI, and Qwen Code with custom profiles support
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
 - **Multi-Agent Workflow Templates** — built-in split-pane layouts (Claude + Shell, Full Stack Dev, Code Review) plus a visual editor to create, edit, and save your own custom workflows (name, icon, layout, 1–8 terminals each with shell + startup command + color, persisted across restarts)
-- **Agent Status Detection** — automatically detects when Claude Code, Codex, Gemini, or Aider is running and shows a colored badge in the status bar
+- **Agent Status Detection** — automatically detects when Claude Code, Codex, Gemini, or Qwen Code is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
 - **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
 - **Output Pinning** — pin important output blocks to a persistent panel that stays visible as the terminal scrolls
@@ -144,7 +144,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 ### Context Handoff
 - **Seamless agent switching** — when an AI agent runs out of context/tokens, an amber banner offers to switch to another agent
 - **Automatic context capture** — captures your task, git branch, modified files, recent commands, diff summary, and recent output
-- **One-click handoff** — click "Switch to Codex" (or Gemini/Aider) to launch the new agent with your full context pre-loaded
+- **One-click handoff** — click "Switch to Codex" (or Gemini/Qwen Code) to launch the new agent with your full context pre-loaded
 - **Editable handoff prompt** — preview and customize the context before switching via the "More Options" modal
 - **Keep or close** — choose whether to keep the old terminal for reference or close it
 
@@ -156,15 +156,15 @@ No AI company has built a tool that brings together competing models to work as 
 
 - **Smart Task Routing** — the conductor assigns subtasks to the best agent based on a customizable capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden. Default ratings are estimates based on general model capabilities — customize them in **Settings > Agent Capability Ratings** based on your experience. The conductor uses ratings as hints but makes its own judgment.
 
-  | Capability | Claude Code | Codex | Gemini CLI | Aider+Qwen |
-  |-----------|:-----------:|:-----:|:----------:|:----------:|
+  | Capability | Claude Code | Codex | Gemini CLI | Qwen Code |
+  |-----------|:-----------:|:-----:|:----------:|:---------:|
   | Refactoring | ★★★★★ | ★★★★ | ★★★ | ★★★ |
   | Testing | ★★★★ | ★★★★★ | ★★★ | ★★★ |
-  | Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★ |
-  | Code Review | ★★★★★ | ★★★ | ★★★★ | ★★ |
-  | DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★ |
-  | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★★ |
-  | Token Cost | $$$$ | $$$ | $$ | Free |
+  | Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★★ |
+  | Code Review | ★★★★★ | ★★★ | ★★★★ | ★★★ |
+  | DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★★ |
+  | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★ |
+  | Token Cost | $$$$ | $$$ | $$ | $$ |
 
 - **Swarm Wizard** — 3-step flow: prepare conductor → describe task → launch. Includes guidance on when to use a swarm (autonomous task completion) vs individual agent terminals (back-and-forth conversation). Live progress tracking shows conductor status in real time — the modal stays open until the first task or message appears (can take up to 30 seconds).
 - **Agents run in the background** — swarm-spawned agent terminals are hidden from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. For back-and-forth conversations, launch individual agents from the AI Agents sidebar section — those still appear in the sidebar and work normally.
@@ -178,21 +178,21 @@ No AI company has built a tool that brings together competing models to work as 
 - **Agent Install Status** — the AI Agents sidebar shows green checkmarks for installed agents and red X icons for missing ones. Clicking a missing agent's icon shows installation instructions.
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
-- **Agent Bridge** — agents without native MCP (e.g., Aider) are automatically bridged via terminal output parsing. Claude Code, Codex, and Gemini CLI all use MCP natively.
+- **MCP-native end to end** — Claude Code, Codex, Gemini CLI, and Qwen Code all speak MCP. No terminal-output bridges, no parser glue, no special-case code paths.
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
-- **Free local option** — Aider + Qwen3-Coder runs via Ollama with zero API cost. Auto-detects if Ollama is installed.
+- **Open-weight Qwen option** — Qwen Code is Alibaba's MCP-native CLI for the Qwen3-Coder family, a non-Anthropic, non-Google option in the swarm.
 
 ### AI Observability
 
 When you're running multiple AI agents concurrently (or a whole swarm), you need to see what each is doing, spot when they duplicate work, and know when one is about to run out of context. Termpolis ships a full observability layer that doesn't require any external dashboard — everything is local, capped in memory, and tested end-to-end.
 
-- **Activity Feed** — `Ctrl+Shift+A` opens a live stream of every agent event. Captures messages, tool calls, tool results, token updates, compaction events, errors, status changes, and MCP audit entries. Filter by agent (claude/codex/gemini/aider), by kind, or search full text. Newest first.
+- **Activity Feed** — `Ctrl+Shift+A` opens a live stream of every agent event. Captures messages, tool calls, tool results, token updates, compaction events, errors, status changes, and MCP audit entries. Filter by agent (claude/codex/gemini/qwen-code), by kind, or search full text. Newest first.
 - **Context Gauge** — shows in the per-terminal status bar whenever an AI agent is detected. A 0–100% bar showing how full the agent's context window is, color coded (green → yellow → orange → red). Model-aware: Opus, Sonnet, Gemini, Qwen all have their correct token limits. A `~` indicates the estimate is heuristic (no transcript tokens available yet).
 - **Context Pins** — click the context gauge to open the pins panel. Pin any snippet (migration rule, test policy, API contract) scoped to the current project. Pins are re-injected on agent handoff so the new agent doesn't lose the plot. Per-project storage, full CRUD.
 - **Redundancy Detector** — `Ctrl+Shift+D` shows duplicate work across terminals. If two agents are running `npm test` at the same time or both editing the same file, you'll see a severity-ranked finding with the affected terminals.
 - **Efficiency Panel** — `Ctrl+Shift+Y` aggregates per-agent stats: token totals, cost, error rate, average tool-call duration. Spot when one agent is burning budget while another is cruising.
 - **Event Bus** — in-process, bounded ring buffer (10k events), rate-limited (500 events/sec burst) to prevent DoS from a runaway agent. Persisted to JSONL with automatic rotation. Subscriber callbacks are try/caught so a bad listener can't kill the bus. All event payloads are 64KB-capped before persistence.
-- **Transcript Watchers** — native JSONL readers for Claude Code, Codex, Gemini, and Aider transcript formats. Tail-with-rotation: if the agent rotates its log mid-run, the watcher follows. Path traversal is blocked at the watcher boundary.
+- **Transcript Watchers** — native JSONL readers for Claude Code, Codex, and Gemini transcript formats. Tail-with-rotation: if the agent rotates its log mid-run, the watcher follows. Path traversal is blocked at the watcher boundary.
 - **Swarm Dashboard enhancements** — the dashboard (`Ctrl+Shift+S`) now shows live token burn per agent, tasks in kanban columns, and the full conductor message log. Every panel streams from the same event bus — no polling lag.
 
 ### Intelligence

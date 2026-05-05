@@ -24,7 +24,7 @@ Smart task routing assigns the right work to the right AI model. An intelligent 
 ### Features
 - Multi-terminal sessions with split panes and workspaces
 - AI swarm with smart routing — describe a task and agents collaborate automatically
-- Support for Claude Code, OpenAI Codex, Gemini CLI, and Aider+Qwen
+- Support for Claude Code, OpenAI Codex, Gemini CLI, and Qwen Code
 - Built-in MCP server for AI agent integration
 - Command palette, prompt templates, and tab completion
 - WCAG AA accessible

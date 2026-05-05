@@ -61,9 +61,10 @@ Termpolis itself only makes network requests for:
    ID. Before the report is sent, any Windows user-folder paths in
    breadcrumbs are redacted to `C:\Users\<redacted>`.
 
-Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini,
-Aider, your own shells) make their own network requests according to their
-own privacy policies. Termpolis does not proxy or intercept that traffic.
+Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini
+CLI, Qwen Code, your own shells) make their own network requests according
+to their own privacy policies. Termpolis does not proxy or intercept that
+traffic.
 
 ## What We Never Collect
 
@@ -76,7 +77,7 @@ own privacy policies. Termpolis does not proxy or intercept that traffic.
 ## Third-Party Services
 
 Termpolis integrates with third-party AI tools (such as Claude Code, OpenAI
-Codex, Gemini CLI, and Aider) that you choose to install and run
+Codex, Gemini CLI, and Qwen Code) that you choose to install and run
 independently. These tools have their own privacy policies and may
 communicate with their respective cloud services. Termpolis does not control
 or intercept these communications — it simply provides a terminal environment

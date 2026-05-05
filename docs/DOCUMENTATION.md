@@ -49,13 +49,13 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 
 **What makes it different:**
 
-- **Multi-agent swarm**: Claude, Codex, Gemini, and Aider + Qwen can work together on a task. A dedicated Claude Code instance acts as the conductor.
+- **Multi-agent swarm**: Claude Code, Codex, Gemini CLI, and Qwen Code work together on a task. A dedicated Claude Code instance acts as the conductor.
 - **MCP server** baked in: AI agents can control Termpolis via Model Context Protocol — open terminals, run commands, send messages.
 - **Transparent routing**: every subtask shows *which* agent got it, *why*, and *what it cost*.
 - **Activity observability**: every token, every tool call, every message from every agent is visible in real time.
 - **Intervention controls**: pause, cancel, or steer any agent mid-task without leaving the feed.
 - **Shared memory**: a RAG-backed memory store that any agent can read and write via MCP.
-- **Free local agent**: Aider + Qwen3-Coder via Ollama means zero-cost work is always on the menu.
+- **MCP-native end to end**: all four agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
 
 Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well.
 
@@ -130,7 +130,7 @@ Workspaces are the **project-level container** in Termpolis — think of them as
 - **Terminals** — every open pty in that workspace, with its shell, working directory, label, color, and scrollback buffer.
 - **Layout** — tab view, split view (the full pane tree), or grid view. Restored exactly on relaunch.
 - **Focus** — which terminal was active, cursor position, selection.
-- **Agent sessions** — any Claude Code, Codex, Gemini, or Aider+Qwen runs tied to terminals in the workspace.
+- **Agent sessions** — any Claude Code, Codex, Gemini, or Qwen Code runs tied to terminals in the workspace.
 - **Panel state** — which side panels are open and their size.
 - **Per-workspace overrides** — if you've changed a setting scoped to this workspace (shell default, font size, etc.).
 
@@ -268,7 +268,7 @@ See [§30](#30-keyboard-shortcut-reference) for the complete default list.
 
 ![Agent capability ratings](../e2e/screenshots/docs/10-agent-capability-ratings.png)
 
-The heart of smart swarm routing. This tab lets you score each agent (Claude, Codex, Gemini, Aider+Qwen) across 10 categories:
+The heart of smart swarm routing. This tab lets you score each agent (Claude Code, Codex, Gemini CLI, Qwen Code) across 10 categories:
 
 1. Refactoring
 2. Testing
@@ -283,7 +283,7 @@ The heart of smart swarm routing. This tab lets you score each agent (Claude, Co
 
 Scores are 0–100. Defaults reflect model-family strengths as of release. You can tune them to match your own experience — the conductor uses these weights when it decides who gets what subtask.
 
-The **Token Cost** column is a relative indicator ($, $$, $$$, Free) used for cost-aware routing.
+The **Token Cost** column is a relative indicator ($, $$, $$$) used for cost-aware routing.
 
 ---
 
@@ -394,7 +394,7 @@ Click a result to copy, re-run in the focused terminal, or pin to context.
 
 `Ctrl+Shift+I` opens conversation search — the AI-session equivalent of history search. Search across every agent session Termpolis has recorded:
 
-- Filter by agent (Claude / Codex / Gemini / Aider).
+- Filter by agent (Claude / Codex / Gemini / Qwen Code).
 - Filter by kind (prompt, tool call, tool result, error).
 - Full-text search with highlighting.
 - Time range.
@@ -421,11 +421,11 @@ Every action runs as a real git command in a spawned process — no reimplementa
 
 ## 18. AI Agent Profiles
 
-Launch any AI CLI as a profiled terminal: Claude Code, Codex, Gemini CLI, Aider. Profiles come pre-configured with:
+Launch any AI CLI as a profiled terminal: Claude Code, Codex, Gemini CLI, Qwen Code. Profiles come pre-configured with:
 
 - The correct shell + startup command.
 - A color + label for visual distinction.
-- An MCP bootstrap (where supported) so the agent can control Termpolis.
+- An MCP bootstrap so the agent can control Termpolis.
 - A distinct working directory if you want one.
 
 Custom profiles take any command — if it's in your PATH, you can profile it. Add them in Settings → Agents.
@@ -665,7 +665,7 @@ The bottom strip shows, left to right:
 
 ### Agents & CLI tools
 
-**Agent launch button fails silently.** The CLI isn't on your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`, `aider`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — restart Termpolis after updating `~/.zprofile` (not just `~/.zshrc`), or relaunch from Terminal with `open -a Termpolis` so the shell PATH is inherited.
+**Agent launch button fails silently.** The CLI isn't on your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`, `qwen`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — restart Termpolis after updating `~/.zprofile` (not just `~/.zshrc`), or relaunch from Terminal with `open -a Termpolis` so the shell PATH is inherited.
 
 **Wrong `claude` / `codex` binary runs.** If you've installed the CLI via multiple package managers (Homebrew, npm, cargo), PATH order decides the winner. Use `which claude` to see which one Termpolis will launch. Override per-agent in Settings → Agents.
 
@@ -734,7 +734,7 @@ If none of the above fixes your problem, **[open an issue](https://github.com/co
 └──────────────────┬──────────────────────────────────┘
                    │  localhost:48211 (MCP)
 ┌──────────────────▼──────────────────────────────────┐
-│  AI agents (Claude, Codex, Gemini, Aider+Qwen)      │
+│  AI agents (Claude, Codex, Gemini, Qwen Code)       │
 │  Each in its own pty-backed terminal                │
 └─────────────────────────────────────────────────────┘
 ```

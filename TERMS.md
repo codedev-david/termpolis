@@ -27,7 +27,7 @@ the `NOTICE` file. In particular:
 ## 2. Third-party tools
 
 Termpolis is a frame around tools you already run — shells, AI coding agents
-(Claude Code, Codex, Gemini, Aider), compilers, git, your own scripts. Your
+(Claude Code, Codex, Gemini CLI, Qwen Code), compilers, git, your own scripts. Your
 use of those tools is governed by their own licenses and terms of service,
 not these terms. Termpolis does not endorse or make guarantees about any
 third-party tool.
