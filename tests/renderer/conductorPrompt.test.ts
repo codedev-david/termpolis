@@ -168,4 +168,19 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain("gemini -p")
     expect(prompt).toContain("gemini --sandbox -p")
   })
+
+  it('includes Qwen Code launch command in STEP 4', () => {
+    const prompt = buildDefault()
+    const step4Idx = prompt.indexOf('STEP 4')
+    const step5Idx = prompt.indexOf('STEP 5')
+    const step4Block = prompt.slice(step4Idx, step5Idx)
+    expect(step4Block).toContain("Qwen Code")
+    expect(step4Block).toContain("'qwen'")
+  })
+
+  it('warns against headless flags for Qwen Code (Gemini-fork)', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain('qwen -p "prompt"')
+    expect(prompt).toContain('qwen --sandbox')
+  })
 })

@@ -71,15 +71,18 @@ STEP 4 — Start agents in INTERACTIVE mode:
     Claude Code → 'claude --dangerously-skip-permissions'
     Codex       → 'codex --full-auto'
     Gemini CLI  → 'gemini'
+    Qwen Code   → 'qwen'
     Qwen AI     → 'aider --model ollama/qwen3-coder --no-show-model-warnings'
   Then post a status update via swarm_send_message.
 
-  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Aider):
+  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Qwen Code, Aider):
     ✗ claude -p "prompt"                    — loses tool access (no file writes)
     ✗ gemini -p "prompt"                    — loses tool access (no file writes)
     ✗ gemini --sandbox                      — restricts capabilities, do NOT use
     ✗ gemini --sandbox -p "prompt"          — even worse, no tools at all
     ✗ codex -p "prompt"                     — loses tool access
+    ✗ qwen -p "prompt"                      — loses tool access (Gemini-CLI fork, same restriction)
+    ✗ qwen --sandbox                        — restricts capabilities, do NOT use
     ✗ echo "prompt" | claude                — piping breaks stdin (Ink raw mode error)
     ✗ agent_command "prompt as argument"    — positional args not supported
     ✗ Any flag not listed in STEP 4         — do NOT add -p, --sandbox, --print, or any other flag
@@ -130,6 +133,7 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   ✗ WRONG: run_command(command='claude -p "Build the login page"')     — no -p flag!
   ✗ WRONG: run_command(command='gemini -p "Write docs"')               — no -p flag!
   ✗ WRONG: run_command(command='gemini --sandbox -p "Write docs"')     — no --sandbox or -p!
+  ✗ WRONG: run_command(command='qwen -p "Refactor module"')            — no -p flag (Gemini-fork, same rule)!
   ✗ WRONG: run_command(command='Build the login page')                 — raw text in shell!
   ✗ WRONG: write_to_terminal BEFORE run_command                        — agent must be started first!
 
