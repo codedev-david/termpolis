@@ -43,9 +43,9 @@ describe('detectAgentStatus', () => {
       expect(result.status).toBe('waiting_for_input')
     })
 
-    it('detects Aider yes/no prompts', () => {
-      const output = filler(10) + '\nApply changes? (y)es (n)o\n'
-      const result = detectAgentStatus(output, 'Aider')
+    it('detects Qwen Code question prompts', () => {
+      const output = filler(10) + '\nApply this change?\n'
+      const result = detectAgentStatus(output, 'Qwen Code')
       expect(result.status).toBe('waiting_for_input')
     })
 

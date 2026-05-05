@@ -103,7 +103,7 @@ export function spawnTerminal(
     ? `${toolsDir}${sep}${winSystemPrefix}${gitBashPrefix}${existingPath}`
     : `${winSystemPrefix}${gitBashPrefix}${existingPath}`
   // Test hook: e2e tests can prepend a shim directory that intercepts agent
-  // binaries (claude, codex, gemini, aider) and routes them to mocks. Keeps
+  // binaries (claude, codex, gemini, qwen) and routes them to mocks. Keeps
   // tests from accidentally invoking real agents on developer machines.
   const testShimPath = process.env.TERMPOLIS_TEST_SHIM_DIR
     ? `${process.env.TERMPOLIS_TEST_SHIM_DIR}${sep}`

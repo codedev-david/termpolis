@@ -249,7 +249,7 @@ export type AgentActivityKind =
   | 'status_change'
   | 'mcp_audit'
 
-export type AgentActivityType = 'claude' | 'codex' | 'gemini' | 'aider' | 'unknown'
+export type AgentActivityType = 'claude' | 'codex' | 'gemini' | 'qwen-code' | 'unknown'
 
 export interface AgentActivityEvent {
   id: string

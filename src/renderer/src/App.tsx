@@ -132,7 +132,7 @@ export default function App() {
             for (const t of codexTerminals) {
               setTimeout(() => window.termpolis.writeToTerminal(t.id, '1\r'), testDelay(10000))
             }
-            const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini' || t.agentCommand?.startsWith('aider'))
+            const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini' || t.agentCommand?.startsWith('qwen'))
             setTimeout(() => setLaunchingAgent(null), testDelay(hasSlowAgent ? 15000 : 8000))
           } else {
             // No agent terminals — just show terminals after a brief shell init

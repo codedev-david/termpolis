@@ -162,7 +162,7 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
               {section.title}
             </h3>
             {section.lines.map((line, li) => {
-              const isCommand = /^(aider|ollama|npm|pip|npx|claude|codex|gemini|qwen|setx|sudo|apt|brew)\b/.test(line.trim())
+              const isCommand = /^(npm|pip|npx|claude|codex|gemini|qwen|setx|sudo|apt|brew)\b/.test(line.trim())
               if (isCommand) {
                 return (
                   <div key={li} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">

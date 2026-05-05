@@ -10,7 +10,7 @@ const AGENT_COLOR: Record<string, string> = {
   claude: '#d7a45a',
   codex: '#10a37f',
   gemini: '#4285f4',
-  aider: '#ce9178',
+  'qwen-code': '#a855f7',
   unknown: '#858585',
 }
 

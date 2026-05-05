@@ -18,7 +18,7 @@ import * as path from 'path'
  * - Event payloads are size-capped (MAX_PAYLOAD_BYTES) before persistence
  */
 
-export type AgentType = 'claude' | 'codex' | 'gemini' | 'aider' | 'unknown'
+export type AgentType = 'claude' | 'codex' | 'gemini' | 'qwen-code' | 'unknown'
 
 export type AgentEventKind =
   | 'message'        // user or assistant message
