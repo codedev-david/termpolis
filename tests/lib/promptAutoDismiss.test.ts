@@ -145,6 +145,67 @@ describe('promptAutoDismiss.detectDismissChar', () => {
       expect(detectDismissChar(tail, { agentName: 'OpenAI Codex' })).toBe('1\r')
     })
   })
+
+  describe('CRLF + ANSI normalization', () => {
+    it('matches folder-trust through Windows CRLF line endings', () => {
+      const tail = 'Do you trust the files in this folder?\r\n❯ 1. Yes, proceed\r\n  2. No, exit'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches folder-trust through ANSI color codes', () => {
+      // Real Claude Code wraps the prompt in SGR escapes — without stripping
+      // these, the regex misses the question entirely.
+      const tail = '\x1b[33mDo you trust the files in this folder?\x1b[0m\n\x1b[32m❯ 1. Yes\x1b[0m'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches MCP trust through cursor-position escape sequences', () => {
+      const tail = '\x1b[2J\x1b[H\x1b[1mEnable MCP server termpolis?\x1b[0m'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches "Use this MCP server" newer Claude Code wording', () => {
+      const tail = 'Use this MCP server (termpolis) for the session?'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+  })
+
+  describe('newer Claude Code onboarding (fresh-install variants)', () => {
+    it('matches "Would you like to trust"', () => {
+      const tail = 'Would you like to trust this folder?'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches "Trust this workspace"', () => {
+      const tail = 'Trust this workspace and run on it?'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches theme picker on fresh install', () => {
+      const tail = 'Choose a color theme:\n❯ 1. Dark\n  2. Light'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches "select your style" theme picker', () => {
+      const tail = 'Select your style:\n❯ Default'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches "How would you like to login"', () => {
+      const tail = 'How would you like to login?\n❯ 1. Anthropic Console'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches arrow-indicator numbered menu via Claude-only fallback', () => {
+      const tail = 'Pick an option below\n❯ 1. Continue\n  2. Exit'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('matches "press Enter to begin"', () => {
+      const tail = 'All set! Press Enter to begin.'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    })
+  })
 })
 
 describe('promptAutoDismiss.tailSlice', () => {

@@ -13,6 +13,7 @@ import {
   registerInGlobalMcp,
   registerInCodex,
   registerInGemini,
+  registerInQwen,
 } from '../../src/main/agentMcpRegistry'
 
 const ADAPTER = '/path/to/stdio-adapter.cjs'
@@ -257,6 +258,59 @@ describe('agentMcpRegistry', () => {
     })
   })
 
+  describe('registerInQwen', () => {
+    it('returns skipped=missing when settings absent', () => {
+      const r = registerInQwen(join(dir, 'settings.json'), ADAPTER)
+      expect(r.skipped).toBe('missing')
+    })
+
+    it('returns skipped=corrupt on malformed JSON', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{"mcp": broken}')
+      const r = registerInQwen(p, ADAPTER)
+      expect(r.skipped).toBe('corrupt')
+    })
+
+    it('registers into empty {} file', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{}')
+      const r = registerInQwen(p, ADAPTER)
+      expect(r.changed).toBe(true)
+      const v = JSON.parse(readFileSync(p, 'utf-8'))
+      expect(v.mcpServers.termpolis.args[0]).toBe(ADAPTER)
+    })
+
+    it('preserves unrelated MCP servers', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, JSON.stringify({
+        mcpServers: { someone_else: { command: 'other', args: [] } },
+      }))
+      const r = registerInQwen(p, ADAPTER)
+      expect(r.changed).toBe(true)
+      const v = JSON.parse(readFileSync(p, 'utf-8'))
+      expect(v.mcpServers.someone_else).toBeDefined()
+      expect(v.mcpServers.termpolis).toBeDefined()
+    })
+
+    it('is idempotent when already registered', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, JSON.stringify({
+        mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } },
+      }))
+      const r = registerInQwen(p, ADAPTER)
+      expect(r.skipped).toBe('already-registered')
+    })
+
+    it('recovers when root JSON is array (not an object)', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '[1,2,3]')
+      const r = registerInQwen(p, ADAPTER)
+      expect(r.changed).toBe(true)
+      const v = JSON.parse(readFileSync(p, 'utf-8'))
+      expect(v.mcpServers.termpolis.args[0]).toBe(ADAPTER)
+    })
+  })
+
   // Cross-cutting invariant: every helper must NEVER throw, even under
   // deliberately sabotaged input. Main process boot relies on these.
   describe('never-throws invariant', () => {
@@ -282,6 +336,14 @@ describe('agentMcpRegistry', () => {
       for (const input of inputs) {
         writeFileSync(p, input)
         expect(() => registerInGemini(p, ADAPTER)).not.toThrow()
+      }
+    })
+    it('qwen: returns RegistryResult on every input', () => {
+      const inputs = ['', '{', 'null', 'xxx', '[]', 'true']
+      const p = join(dir, 'settings.json')
+      for (const input of inputs) {
+        writeFileSync(p, input)
+        expect(() => registerInQwen(p, ADAPTER)).not.toThrow()
       }
     })
   })

@@ -426,7 +426,14 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           initialConstraints={prefill?.constraints}
           initialExpectedOutput={prefill?.expectedOutput}
           initialFailureConditions={prefill?.failureConditions}
-          onClose={() => { setShowStartSwarm(false); setPrefill(null) }}
+          onClose={() => {
+            setShowStartSwarm(false)
+            setPrefill(null)
+            // If no swarm is running, the dashboard would just show an empty
+            // shell — bubble the close up so the user lands back where they
+            // were instead of staring at a blank dashboard.
+            if (!swarmActive) onClose()
+          }}
           onLaunched={() => {
             setShowStartSwarm(false)
             setPrefill(null)

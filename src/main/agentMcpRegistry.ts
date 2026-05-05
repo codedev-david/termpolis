@@ -167,3 +167,30 @@ export function registerInGemini(settingsPath: string, adapterPath: string): Reg
     return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
   }
 }
+
+// Qwen-Code (Alibaba's Gemini CLI fork) uses ~/.qwen/settings.json with the
+// same mcpServers schema as Gemini. Mirror registerInGemini.
+export function registerInQwen(settingsPath: string, adapterPath: string): RegistryResult {
+  const read = safeReadJson(settingsPath)
+  if (!read.ok) {
+    if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
+    return { changed: false, skipped: 'corrupt', error: read.error }
+  }
+  const settings: any = (read.value && typeof read.value === 'object' && !Array.isArray(read.value))
+    ? read.value
+    : {}
+  if (!settings.mcpServers || typeof settings.mcpServers !== 'object') settings.mcpServers = {}
+
+  const existing = settings.mcpServers.termpolis
+  if (existing && existing.args?.[0] === adapterPath) {
+    return { changed: false, skipped: 'already-registered' }
+  }
+
+  settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
+  try {
+    atomicWriteJson(settingsPath, settings)
+    return { changed: true }
+  } catch (e: any) {
+    return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
+  }
+}

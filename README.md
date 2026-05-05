@@ -95,7 +95,7 @@ Use `dpkg`, **not** `sudo apt install ./termpolis*.deb`. On Ubuntu 22.04+ apt dr
 sudo dpkg -i ./termpolis_*.deb
 ```
 
-That's the only command you need on v1.11.30+. The package's postinst takes care of the rest automatically:
+That's the only command you need on v1.11.31+. The package's postinst takes care of the rest automatically:
 
 - runs `apt-get install -f -y` to pull any missing transitive deps (libgtk, libnss3, …),
 - refreshes the desktop + hicolor icon caches so the launcher icon shows up without a logout, and

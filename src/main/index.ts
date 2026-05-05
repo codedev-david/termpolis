@@ -114,6 +114,7 @@ import {
   registerInGlobalMcp,
   registerInCodex,
   registerInGemini,
+  registerInQwen,
 } from './agentMcpRegistry'
 
 function createWindow() {
@@ -1225,6 +1226,14 @@ if (!gotTheLock) {
       const r = registerInGemini(geminiSettingsPath, adapterPath)
       if (r.changed) console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
       else if (r.error) console.log('Could not register in Gemini settings (non-fatal):', r.skipped, r.error)
+    }
+
+    // Auto-register in Qwen-Code CLI (~/.qwen/settings.json)
+    {
+      const qwenSettingsPath = join(homedir(), '.qwen', 'settings.json')
+      const r = registerInQwen(qwenSettingsPath, adapterPath)
+      if (r.changed) console.log('Auto-registered Termpolis MCP server in Qwen-Code CLI settings')
+      else if (r.error) console.log('Could not register in Qwen settings (non-fatal):', r.skipped, r.error)
     }
 
     // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
