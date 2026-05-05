@@ -395,6 +395,19 @@ describe('MCP HTTP server', () => {
     expect(body.result).toEqual({})
   })
 
+  it('ping returns empty result (Qwen Code mcp list connection check)', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'ping',
+      id: 10,
+    })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.result).toEqual({})
+    expect(body.error).toBeUndefined()
+    expect(body.id).toBe(10)
+  })
+
   // --- 404 for unknown routes ---
 
   it('unknown route returns 404', async () => {
