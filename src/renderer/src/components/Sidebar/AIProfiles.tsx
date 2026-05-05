@@ -5,12 +5,13 @@ import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { resolveAgentCommand, testDelay } from '../../lib/testAgents'
+import qwenIcon from '../../assets/qwen.png'
 
 const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
-  { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', command: 'qwen', shell: 'bash', color: '#A855F7' },
+  { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', iconImage: qwenIcon, command: 'qwen', shell: 'bash', color: '#A855F7' },
 ]
 
 function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -211,7 +212,11 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                     }}
                     title={`Launch ${profile.name}: ${profile.command}`}
                   >
-                    <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
+                    {profile.iconImage ? (
+                      <img src={profile.iconImage} alt={profile.name} style={{ height: '14px', width: 'auto', objectFit: 'contain' }} />
+                    ) : (
+                      <i className={profile.icon} style={{ color: profile.color, fontSize: '11px', width: '14px', textAlign: 'center' }}></i>
+                    )}
                     <span className="text-[#d4d4d4] truncate">{profile.name}</span>
                   </button>
                   {!detectingAgents && (

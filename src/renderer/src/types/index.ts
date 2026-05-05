@@ -37,6 +37,7 @@ export interface AIProfile {
   id: string
   name: string
   icon: string
+  iconImage?: string
   command: string
   shell: string
   color: string
