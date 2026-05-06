@@ -46,17 +46,68 @@ export function reflowSoftWraps(text: string, cols: number): string {
   return out.join('\n')
 }
 
+// Cleaned plain-text body shared by all formatters: strip ANSI, reflow
+// soft wraps, drop trailing whitespace per line, and trim outer blank lines.
+function cleanForExport(text: string, cols: number): string {
+  return reflowSoftWraps(stripAnsi(text), cols)
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^\n+|\n+$/g, '')
+}
+
 // Format terminal selection for pasting into Slack / Teams / GitHub. Strips
 // ANSI, reflows soft wraps, trims trailing blank lines, and wraps in a
 // triple-backtick fence so the destination chat client renders it as code.
+// Adds an explicit `text` language hint to stop Teams' aggressive
+// language-auto-detection (it loves picking SQL otherwise).
 export function formatAsCodeBlock(text: string, cols: number): string {
-  const cleaned = reflowSoftWraps(stripAnsi(text), cols).replace(/[ \t]+$/gm, '')
-  const trimmed = cleaned.replace(/^\n+|\n+$/g, '')
-  return '```\n' + trimmed + '\n```'
+  return '```text\n' + cleanForExport(text, cols) + '\n```'
+}
+
+// HTML form of the code block. Teams, Outlook, Word, and most rich-text
+// editors honor a pasted <pre><code> block and render it as a real code box
+// with newlines preserved — bypassing both the SQL auto-detect and the
+// "every \n is a paragraph break" problem you hit with markdown-in-plaintext.
+export function formatAsCodeBlockHtml(text: string, cols: number): string {
+  const escaped = cleanForExport(text, cols)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  return (
+    '<pre style="font-family:Consolas,Menlo,Monaco,\'Courier New\',monospace;'
+    + 'background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;'
+    + 'white-space:pre;line-height:1.4;font-size:13px;'
+    + 'border:1px solid #3c3c3c;overflow-x:auto;">'
+    + '<code>' + escaped + '</code></pre>'
+  )
 }
 
 // Format terminal selection as plain text — strip ANSI and reflow soft wraps,
 // but no fencing. Use for paste targets that don't render markdown.
 export function formatAsPlainText(text: string, cols: number): string {
-  return reflowSoftWraps(stripAnsi(text), cols).replace(/[ \t]+$/gm, '').replace(/^\n+|\n+$/g, '')
+  return cleanForExport(text, cols)
+}
+
+// Write a code block to the clipboard in BOTH text/html and text/plain so
+// rich-text targets (Teams, Outlook) get a real code box and plain-text
+// targets (Slack compose, GitHub MD source, terminals) get the markdown
+// fence. Falls back to plain-text-only when ClipboardItem isn't available
+// (e.g. older browsers / jsdom test envs).
+export async function writeCodeBlockToClipboard(text: string, cols: number): Promise<void> {
+  const plain = formatAsCodeBlock(text, cols)
+  const html = formatAsCodeBlockHtml(text, cols)
+  const w = typeof window !== 'undefined' ? (window as unknown as { ClipboardItem?: typeof ClipboardItem }) : undefined
+  if (w?.ClipboardItem && navigator.clipboard?.write) {
+    try {
+      await navigator.clipboard.write([
+        new w.ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([plain], { type: 'text/plain' }),
+        }),
+      ])
+      return
+    } catch {
+      // fall through to plain-text writer
+    }
+  }
+  await navigator.clipboard.writeText(plain)
 }

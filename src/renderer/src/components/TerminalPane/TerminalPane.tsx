@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename, formatAsCodeBlock, formatAsPlainText } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlock, formatAsPlainText, writeCodeBlockToClipboard } from '../../lib/exportTerminal'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
@@ -152,8 +152,24 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    setContextMenu({ visible: true, x: e.clientX, y: e.clientY })
-  }, [])
+    // Mintty / Git-Bash style:
+    //   right-click with selection  → copy + clear selection
+    //   right-click with no selection → paste from clipboard
+    //   Shift + right-click          → open the full context menu
+    if (e.shiftKey) {
+      setContextMenu({ visible: true, x: e.clientX, y: e.clientY })
+      return
+    }
+    const selection = termRef.current?.getSelection()
+    if (selection) {
+      navigator.clipboard.writeText(selection).catch(() => {})
+      termRef.current?.clearSelection()
+      return
+    }
+    navigator.clipboard.readText().then(text => {
+      if (text) window.termpolis.writeToTerminal(terminalId, text)
+    }).catch(() => {})
+  }, [terminalId])
 
   useEffect(() => {
     if (!contextMenu.visible) return
@@ -184,7 +200,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       theme: getTheme(theme),
       fontFamily,
       fontSize,
-      cursorBlink: true,
+      cursorBlink: false,
+      cursorStyle: 'underline',
+      cursorInactiveStyle: 'outline',
       scrollback,
     })
 
@@ -235,25 +253,64 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (res.data.output) term.write(res.data.output)
     }).catch(() => { /* terminal may have been killed before replay */ })
 
-    // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste,
-    // Ctrl+Shift+M to copy as Slack/Teams-friendly code block)
+    // Copy/paste support:
+    //   Ctrl+C        → smart: copy selection if any, else passthrough (SIGINT)
+    //   Ctrl+V        → paste
+    //   Ctrl+Shift+C  → always copy (legacy, for power users)
+    //   Ctrl+Shift+V  → always paste (legacy)
+    //   Ctrl+Shift+M  → copy as Slack/Teams-friendly code block (HTML+plain)
+    //   Shift+Enter   → backslash + Enter (bash line continuation; many AI CLIs
+    //                   treat \<Enter> as multi-line continuation as well)
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') {
-        const selection = term.getSelection()
-        if (selection) navigator.clipboard.writeText(selection)
-        return false // prevent terminal from processing
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'M') {
-        const selection = term.getSelection()
-        if (selection) {
-          navigator.clipboard.writeText(formatAsCodeBlock(selection, term.cols))
-        }
+      if (e.type !== 'keydown') return true
+
+      // Shift+Enter → newline-without-submit. Two flavors:
+      //   AI agents (Claude/Codex/Gemini/Qwen) read Esc+Enter (\x1b\r) as the
+      //     multi-line sequence — sends a literal LF inside the input box
+      //     without firing the submit keybind.
+      //   Plain shells (bash/zsh/fish on git-bash, mintty, etc.) treat
+      //     backslash-Enter as line continuation, prompting `> ` for more.
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Enter') {
+        const seq = agent.agentDetectedRef.current ? '\x1b\r' : '\\\r'
+        window.termpolis.writeToTerminal(terminalId, seq)
         return false
       }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
+
+      // Ctrl+Shift+M — copy as code block (HTML + markdown plain-text)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'M') {
+        const selection = term.getSelection()
+        if (selection) writeCodeBlockToClipboard(selection, term.cols).catch(() => {})
+        return false
+      }
+      // Ctrl+Shift+C — always copy (legacy explicit form)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        const selection = term.getSelection()
+        if (selection) navigator.clipboard.writeText(selection).catch(() => {})
+        return false
+      }
+      // Ctrl+Shift+V — always paste (legacy explicit form)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
         navigator.clipboard.readText().then(text => {
           if (text) window.termpolis.writeToTerminal(terminalId, text)
-        })
+        }).catch(() => {})
+        return false
+      }
+      // Ctrl+C (no Shift) — smart copy: if selection, copy + clear; else
+      // let it through so it reaches the shell as SIGINT.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'C' || e.key === 'c')) {
+        const selection = term.getSelection()
+        if (selection) {
+          navigator.clipboard.writeText(selection).catch(() => {})
+          term.clearSelection()
+          return false
+        }
+        return true
+      }
+      // Ctrl+V (no Shift) — paste
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
+        navigator.clipboard.readText().then(text => {
+          if (text) window.termpolis.writeToTerminal(terminalId, text)
+        }).catch(() => {})
         return false
       }
       return true // let terminal handle all other keys
@@ -560,11 +617,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                 const term = termRef.current
                 const selection = term?.getSelection()
                 if (term && selection) {
-                  navigator.clipboard.writeText(formatAsCodeBlock(selection, term.cols))
+                  writeCodeBlockToClipboard(selection, term.cols).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
-              title="Strip ANSI, reflow soft-wraps, wrap in triple backticks. Pastes cleanly into Slack, Teams, GitHub, Discord."
+              title="Strip ANSI, reflow soft-wraps, write both rich-text (HTML) and markdown forms. Pastes as a real code box in Slack, Teams, Outlook, GitHub, Discord."
             >
               Copy as Code Block<span className="float-right text-[#999]">Ctrl+Shift+M</span>
             </button>
@@ -591,7 +648,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                   const cmd = lastCommandRef.current
                   const body = formatAsCodeBlock(selection, term.cols)
                   const withCmd = cmd ? '`$ ' + cmd + '`\n' + body : body
-                  navigator.clipboard.writeText(withCmd)
+                  navigator.clipboard.writeText(withCmd).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     onData: vi.fn(),
     attachCustomKeyEventHandler: vi.fn(),
     getSelection: vi.fn(() => ''),
+    clearSelection: vi.fn(),
     selectAll: vi.fn(),
     loadAddon: vi.fn(),
     unicode: { activeVersion: '11', register: vi.fn() },
@@ -138,8 +139,14 @@ vi.mock('../../src/renderer/src/lib/aiSuggestions', () => ({
 vi.mock('../../src/renderer/src/lib/exportTerminal', () => ({
   stripAnsi: vi.fn((s: string) => s),
   generateFilename: vi.fn(() => 'terminal-export.txt'),
-  formatAsCodeBlock: vi.fn((s: string) => '```\n' + s + '\n```'),
+  formatAsCodeBlock: vi.fn((s: string) => '```text\n' + s + '\n```'),
+  formatAsCodeBlockHtml: vi.fn((s: string) => '<pre><code>' + s + '</code></pre>'),
   formatAsPlainText: vi.fn((s: string) => s),
+  writeCodeBlockToClipboard: vi.fn((s: string) => {
+    // Default mock: emulate the real function's plain-text fallback path so
+    // tests that assert clipboard.writeText still see the markdown form.
+    return navigator.clipboard.writeText('```text\n' + s + '\n```')
+  }),
 }))
 
 // --- Mock outputThrottle ---
@@ -557,6 +564,87 @@ describe('TerminalPane', () => {
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(true)
     })
+
+    it('Ctrl+C with selection copies and clears selection (does not pass through)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('selected-text')
+      const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'C' })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(false)
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('selected-text')
+      expect(mocks.mockTerminal.clearSelection).toHaveBeenCalled()
+    })
+
+    it('Ctrl+C with no selection passes through (so shells get SIGINT)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'C' })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(true)
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+V pastes clipboard text into terminal', async () => {
+      render(<TerminalPane {...defaultProps} />)
+      const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'V' })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(false)
+      await waitFor(() => {
+        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+      })
+    })
+
+    it('Shift+Enter sends backslash+CR for shell line continuation when no agent detected', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const event = new KeyboardEvent('keydown', { shiftKey: true, key: 'Enter' })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(false)
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\\\r')
+    })
+
+    it('non-keydown events bypass the custom handler', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const event = new KeyboardEvent('keyup', { ctrlKey: true, key: 'C' })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(true)
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
+  // 5b. Right-click auto-paste / auto-copy (mintty/git-bash style)
+  // =====================================================
+  describe('right-click smart paste/copy', () => {
+    it('right-click with no selection pastes from clipboard', async () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      // Context menu should NOT open
+      expect(screen.queryByText('Select All')).not.toBeInTheDocument()
+      // Should have read clipboard and written to terminal
+      await waitFor(() => {
+        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+      })
+    })
+
+    it('right-click with selection copies and clears it', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('selected-text')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      expect(screen.queryByText('Select All')).not.toBeInTheDocument()
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('selected-text')
+      expect(mocks.mockTerminal.clearSelection).toHaveBeenCalled()
+    })
+
+    it('Shift + right-click opens the full context menu', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
+      expect(screen.getByText('Select All')).toBeInTheDocument()
+      expect(screen.getByText('Copy as Code Block')).toBeInTheDocument()
+    })
   })
 
   // =====================================================
@@ -724,7 +812,7 @@ describe('TerminalPane', () => {
     it('right-click shows context menu', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
 
       expect(screen.getByText('Copy')).toBeInTheDocument()
       expect(screen.getByText('Paste')).toBeInTheDocument()
@@ -737,7 +825,7 @@ describe('TerminalPane', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       mocks.mockTerminal.getSelection.mockReturnValue('copied-text')
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy'))
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('copied-text')
     })
@@ -745,7 +833,7 @@ describe('TerminalPane', () => {
     it('clicking Paste in context menu pastes from clipboard', async () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Paste'))
       await waitFor(() => {
         expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
@@ -755,7 +843,7 @@ describe('TerminalPane', () => {
     it('clicking Select All calls selectAll on terminal', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Select All'))
       expect(mocks.mockTerminal.selectAll).toHaveBeenCalled()
     })
@@ -763,7 +851,7 @@ describe('TerminalPane', () => {
     it('clicking export full scrollback triggers export', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Export Full Scrollback...'))
       expect(mockExportTerminal).toHaveBeenCalledWith(
         expect.objectContaining({ defaultFilename: 'terminal-export.txt' })
@@ -773,7 +861,7 @@ describe('TerminalPane', () => {
     it('clicking export visible output triggers export', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Export Visible Output...'))
       expect(mockExportTerminal).toHaveBeenCalledWith(
         expect.objectContaining({ defaultFilename: 'terminal-export.txt' })
@@ -783,7 +871,7 @@ describe('TerminalPane', () => {
     it('context menu closes on document click', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       expect(screen.getByText('Copy')).toBeInTheDocument()
       fireEvent.click(document)
       expect(screen.queryByText(/^Copy$/)).not.toBeInTheDocument()
@@ -792,7 +880,7 @@ describe('TerminalPane', () => {
     it('context menu closes on Escape key', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       expect(screen.getByText('Copy')).toBeInTheDocument()
       fireEvent.keyDown(document, { key: 'Escape' })
       expect(screen.queryByText(/^Copy$/)).not.toBeInTheDocument()
@@ -805,7 +893,7 @@ describe('TerminalPane', () => {
         <TerminalPane {...defaultProps} onSplitRight={onSplitRight} onSplitDown={onSplitDown} />
       )
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       expect(screen.getByText('Split Right')).toBeInTheDocument()
       expect(screen.getByText('Split Down')).toBeInTheDocument()
     })
@@ -816,7 +904,7 @@ describe('TerminalPane', () => {
         <TerminalPane {...defaultProps} onSplitRight={onSplitRight} />
       )
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Split Right'))
       expect(onSplitRight).toHaveBeenCalled()
     })
@@ -827,7 +915,7 @@ describe('TerminalPane', () => {
         <TerminalPane {...defaultProps} onSplitDown={onSplitDown} />
       )
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Split Down'))
       expect(onSplitDown).toHaveBeenCalled()
     })
@@ -835,7 +923,7 @@ describe('TerminalPane', () => {
     it('shows Start Recording when not recording', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       expect(screen.getByText('Start Recording')).toBeInTheDocument()
     })
   })
@@ -848,7 +936,7 @@ describe('TerminalPane', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('pinned-text')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Pin Selection'))
 
       expect(screen.getByText('pinned-text')).toBeInTheDocument()
@@ -859,7 +947,7 @@ describe('TerminalPane', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
 
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Pin Selection'))
 
       expect(screen.getByText('to-remove')).toBeInTheDocument()
@@ -965,7 +1053,7 @@ describe('TerminalPane', () => {
     it('View as Diff from context menu opens DiffViewer', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('View as Diff'))
       expect(screen.getByTestId('diff-viewer')).toBeInTheDocument()
     })
@@ -1471,7 +1559,7 @@ describe('TerminalPane', () => {
 
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       expect(screen.getByText(/Stop Recording/)).toBeInTheDocument()
 
       // Click Stop Recording
@@ -1491,7 +1579,7 @@ describe('TerminalPane', () => {
     it('clicking Start Recording calls startRecording and closes context menu', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Start Recording'))
       expect(mocks.mockStartRecording).toHaveBeenCalled()
       // Context menu should close
@@ -1504,8 +1592,7 @@ describe('TerminalPane', () => {
   // =====================================================
   describe('copy as code block / plain text / image', () => {
     it('Ctrl+Shift+M with selection copies fenced output to clipboard', async () => {
-      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlock as any).mockReturnValue('```\nhello\n```')
+      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
       mocks.mockTerminal.getSelection.mockReturnValue('hello')
 
       render(<TerminalPane {...defaultProps} />)
@@ -1516,11 +1603,12 @@ describe('TerminalPane', () => {
       })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
-      expect(formatAsCodeBlock).toHaveBeenCalledWith('hello', 80)
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```\nhello\n```')
+      expect(writeCodeBlockToClipboard).toHaveBeenCalledWith('hello', 80)
     })
 
-    it('Ctrl+Shift+M with no selection does not write to clipboard', () => {
+    it('Ctrl+Shift+M with no selection does not write to clipboard', async () => {
+      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(writeCodeBlockToClipboard as any).mockClear()
       mocks.mockTerminal.getSelection.mockReturnValue('')
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
@@ -1529,30 +1617,30 @@ describe('TerminalPane', () => {
         key: 'M',
       })
       mockKeyHandlerCb?.(event)
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(writeCodeBlockToClipboard).not.toHaveBeenCalled()
     })
 
     it('Copy as Code Block submenu item formats and copies', async () => {
-      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlock as any).mockReturnValue('```\nselected\n```')
+      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
       mocks.mockTerminal.getSelection.mockReturnValue('selected')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
 
-      expect(formatAsCodeBlock).toHaveBeenCalledWith('selected', 80)
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```\nselected\n```')
+      expect(writeCodeBlockToClipboard).toHaveBeenCalledWith('selected', 80)
     })
 
-    it('Copy as Code Block with empty selection does nothing', () => {
+    it('Copy as Code Block with empty selection does nothing', async () => {
+      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(writeCodeBlockToClipboard as any).mockClear()
       mocks.mockTerminal.getSelection.mockReturnValue('')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(writeCodeBlockToClipboard).not.toHaveBeenCalled()
     })
 
     it('Copy as Plain Text strips ANSI and copies', async () => {
@@ -1562,7 +1650,7 @@ describe('TerminalPane', () => {
 
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Plain Text'))
 
       expect(formatAsPlainText).toHaveBeenCalledWith('plain output', 80)
@@ -1573,14 +1661,14 @@ describe('TerminalPane', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Plain Text'))
       expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
     })
 
     it('Copy with Command prepends last command and copies fence', async () => {
       const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlock as any).mockReturnValue('```\nresult\n```')
+      ;(formatAsCodeBlock as any).mockReturnValue('```text\nresult\n```')
       mocks.mockTerminal.getSelection.mockReturnValue('result')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
@@ -1588,30 +1676,30 @@ describe('TerminalPane', () => {
       act(() => { mockOnDataCb?.('l'); mockOnDataCb?.('s'); mockOnDataCb?.('\r') })
 
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
 
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('`$ ls`\n```\nresult\n```')
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('`$ ls`\n```text\nresult\n```')
     })
 
     it('Copy with Command falls back to plain fence when no last command', async () => {
       const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlock as any).mockReturnValue('```\nresult\n```')
+      ;(formatAsCodeBlock as any).mockReturnValue('```text\nresult\n```')
       mocks.mockTerminal.getSelection.mockReturnValue('result')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
 
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```\nresult\n```')
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```text\nresult\n```')
     })
 
     it('Copy with Command with empty selection does nothing', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
       expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
     })
@@ -1631,7 +1719,7 @@ describe('TerminalPane', () => {
       ;(window as any).ClipboardItem = class { constructor(public data: any) {} }
       ;(navigator.clipboard as any).write = vi.fn(() => Promise.resolve())
 
-      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Image'))
 
       await waitFor(() => {
@@ -1643,7 +1731,7 @@ describe('TerminalPane', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const inner = container.querySelector('.flex-1.relative') as HTMLElement
       ;(navigator.clipboard as any).write = vi.fn(() => Promise.resolve())
-      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Image'))
       expect((navigator.clipboard as any).write).not.toHaveBeenCalled()
     })
@@ -1658,7 +1746,7 @@ describe('TerminalPane', () => {
       xtermDiv.appendChild(canvas)
       inner.appendChild(xtermDiv)
 
-      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200 })
+      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
       // Should not throw
       expect(() => fireEvent.click(screen.getByText('Copy as Image'))).not.toThrow()
     })
