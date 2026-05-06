@@ -52,7 +52,8 @@ import { homedir } from 'os'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid } from './terminalManager'
+import { startEgressPolling, stopEgressPolling, stopAllEgressPolling, getRecentEgress, clearEgress } from './egressAudit'
 import {
   initAiSecurity,
   getSettings as getAiSecuritySettings,
@@ -259,7 +260,17 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     }
     aiTerminalFlag.delete(id)
     aiInputStaging.delete(id)
+    try { stopEgressPolling(id); clearEgress(id) } catch {}
     return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
+// Renderer-facing read of the per-terminal egress cache. The Security panel
+// queries this to render "this agent talked to X hosts" without needing to
+// re-shell to netstat itself.
+ipcMain.handle('ai-security:egress', async (_, { terminalId }: { terminalId: string }) => {
+  try {
+    return ok({ endpoints: getRecentEgress(terminalId) })
   } catch (e: any) { return err(e.message) }
 })
 
@@ -307,7 +318,17 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
     if (typeof data === 'string' && auditLaunchPattern.test(data)) {
       const m = data.match(auditLaunchPattern)
       detectedAgent = m ? m[1] : null
-      if (detectedAgent) aiTerminalFlag.add(id)
+      if (detectedAgent) {
+        aiTerminalFlag.add(id)
+        // Spin up an egress poller for the agent process so the Security panel
+        // can show "Claude talked to api.anthropic.com today, nothing else".
+        // PID = the shell PID; the AI agent runs as its child but inherits the
+        // socket-tracking we want via the OS connection table.
+        try {
+          const pid = getTerminalPid(id)
+          if (pid && pid > 0) startEgressPolling(id, pid)
+        } catch {}
+      }
     }
   } catch {}
 
@@ -345,6 +366,43 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
     }
     if (decision.action === 'flush') {
       aiInputStaging.set(id, decision.newStaging)
+    }
+    // Notify the renderer when a code-shaped or env-shaped prompt fires so
+    // the UI can surface a one-time "X lines of code detected" banner. We
+    // never block here — the prompt has already been forwarded (or redacted)
+    // and the user can use the banner to cancel future similar sends.
+    if (decision.action === 'flush' || decision.action === 'redact') {
+      if (decision.codeChunk?.isCode) {
+        aiSecurityAppend({
+          agent: detectedAgent ?? 'unknown',
+          event: 'redaction_hit',
+          terminalId: id,
+          byteCount: decision.codeChunk.byteSize,
+          notes: 'code-chunk:' + decision.codeChunk.signals.join(','),
+        }).catch(() => {})
+        mainWindow?.webContents.send('terminal:code-chunk-detected', {
+          id,
+          agent: detectedAgent ?? null,
+          byteSize: decision.codeChunk.byteSize,
+          lineCount: decision.codeChunk.lineCount,
+          signals: decision.codeChunk.signals,
+        })
+      }
+      if (decision.envDump?.isEnvDump) {
+        aiSecurityAppend({
+          agent: detectedAgent ?? 'unknown',
+          event: 'redaction_hit',
+          terminalId: id,
+          byteCount: (aiInputStaging.get(id) ?? '').length + data.length,
+          notes: 'env-dump:' + decision.envDump.varCount + ':' + decision.envDump.variableNames.slice(0, 5).join(','),
+        }).catch(() => {})
+        mainWindow?.webContents.send('terminal:env-dump-detected', {
+          id,
+          agent: detectedAgent ?? null,
+          varCount: decision.envDump.varCount,
+          variableNames: decision.envDump.variableNames,
+        })
+      }
     }
     // 'pass' or 'flush' both fall through to the normal write path below.
   } catch {}
@@ -1422,12 +1480,14 @@ if (!gotTheLock) {
   app.on('before-quit', () => {
     globalShortcut.unregisterAll()
     killAll()
+    try { stopAllEgressPolling() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {
     killAll()
+    try { stopAllEgressPolling() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }

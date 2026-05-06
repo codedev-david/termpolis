@@ -254,6 +254,27 @@ contextBridge.exposeInMainWorld('aiSecurity', {
     ipcRenderer.on('terminal:secrets-redacted', handler)
     return () => ipcRenderer.removeListener('terminal:secrets-redacted', handler)
   },
+  onCodeChunkDetected: (
+    cb: (data: { id: string; agent: string | null; byteSize: number; lineCount: number; signals: string[] }) => void,
+  ) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      data: { id: string; agent: string | null; byteSize: number; lineCount: number; signals: string[] },
+    ) => cb(data)
+    ipcRenderer.on('terminal:code-chunk-detected', handler)
+    return () => ipcRenderer.removeListener('terminal:code-chunk-detected', handler)
+  },
+  onEnvDumpDetected: (
+    cb: (data: { id: string; agent: string | null; varCount: number; variableNames: string[] }) => void,
+  ) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      data: { id: string; agent: string | null; varCount: number; variableNames: string[] },
+    ) => cb(data)
+    ipcRenderer.on('terminal:env-dump-detected', handler)
+    return () => ipcRenderer.removeListener('terminal:env-dump-detected', handler)
+  },
+  egress: (terminalId: string) => ipcRenderer.invoke('ai-security:egress', { terminalId }),
 })
 
 // MCP server events — terminals created/closed by AI agents

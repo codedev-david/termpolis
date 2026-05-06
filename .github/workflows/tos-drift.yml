@@ -1,0 +1,114 @@
+# Weekly check that the AI provider terms / data-controls pages we cite in
+# the in-app AI Security Center still match what we committed. Surfaces any
+# drift as a GitHub issue so a human can decide whether to update the
+# snapshot or update the AGENT_FACTS in src/main/aiSecurity.ts.
+#
+# Why a snapshot instead of "did they change a sentence I care about":
+#   Provider ToS markup churns weekly (CDN, build IDs, A/B test wrappers,
+#   cookie banners), but the legally-meaningful prose changes maybe once a
+#   quarter. The script normalizes HTML aggressively and only fails on
+#   real text drift. If selectors-based extraction broke, we'd silently
+#   miss real changes; this approach can be noisier but it can never
+#   miss a change that affects the rendered text.
+#
+# Triggered:
+#   - Weekly (Mondays 13:00 UTC)
+#   - Manually from the Actions tab
+#   - On PRs that touch scripts/verifyTosSnapshots.cjs or the snapshots
+#     themselves (so PR authors can see the script still works)
+
+name: AI provider ToS drift watcher
+
+on:
+  schedule:
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/verifyTosSnapshots.cjs'
+      - 'docs/security-snapshots/**'
+      - '.github/workflows/tos-drift.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify ToS snapshots
+        id: verify
+        run: |
+          set +e
+          node scripts/verifyTosSnapshots.cjs --json > tos-report.json
+          echo "exit=$?" >> $GITHUB_OUTPUT
+          cat tos-report.json
+        continue-on-error: true
+      - name: Upload report on drift
+        if: steps.verify.outputs.exit != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tos-drift-report
+          path: tos-report.json
+          retention-days: 90
+      - name: Open / update drift issue
+        if: github.event_name == 'schedule' && steps.verify.outputs.exit != '0'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs')
+            const report = JSON.parse(fs.readFileSync('tos-report.json', 'utf8'))
+            const drifted = report.results.filter(r => r.status === 'drift' || r.status === 'error')
+            if (!drifted.length) return
+            const lines = drifted.map(r => {
+              const head = `- **${r.label}** (${r.status}): [${r.url}](${r.url})`
+              const why = r.reason ? `\n  - reason: ${r.reason}` : ''
+              const kw = r.missingKeywords && r.missingKeywords.length
+                ? `\n  - missing expected keywords: ${r.missingKeywords.join(', ')}`
+                : ''
+              const hashes = r.newHash ? `\n  - new hash: \`${r.newHash}\`\n  - old hash: \`${r.oldHash || '(none)'}\`` : ''
+              return head + why + kw + hashes
+            })
+            const body = [
+              'The ToS / data-controls page for one or more providers has changed since the last committed snapshot. Review the page, update either the snapshot (`docs/security-snapshots/<id>.txt`+`.hash`) or `AGENT_FACTS` in `src/main/aiSecurity.ts` if the data-training language has materially changed, then close this issue.',
+              '',
+              '## Drift report',
+              ...lines,
+              '',
+              `Run: ${context.runId} — ${new Date().toISOString()}`,
+            ].join('\n')
+            const title = `[security] AI provider ToS drift detected`
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,tos-drift',
+              per_page: 5,
+            })
+            const existing = issues.find(i => i.title === title)
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              })
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['security', 'tos-drift'],
+              })
+            }
+      - name: Fail the job on drift (so PRs see it)
+        if: steps.verify.outputs.exit != '0'
+        run: |
+          echo "::error::ToS drift detected — see tos-report.json artifact"
+          exit 1

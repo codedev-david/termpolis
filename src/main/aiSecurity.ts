@@ -240,6 +240,8 @@ export interface OutboundDecision {
   writeChunk: string
   newStaging: string
   scan?: ScanResult
+  codeChunk?: CodeChunkSignals
+  envDump?: EnvDumpSignals
   isSubmit: boolean
   isPaste: boolean
 }
@@ -275,6 +277,8 @@ export function processOutboundChunk(
     return { action: 'stage', writeChunk: '', newStaging: buf, isSubmit, isPaste }
   }
   const scan = scanText(buf)
+  const codeChunk = detectCodeChunk(buf)
+  const envDump = detectEnvDump(buf)
   if (scan.hitCount > 0) {
     const redactedTail = scan.redacted.slice((prevStaging || '').length)
     return {
@@ -282,6 +286,8 @@ export function processOutboundChunk(
       writeChunk: redactedTail,
       newStaging: isSubmit ? '' : scan.redacted,
       scan,
+      codeChunk: codeChunk.isCode ? codeChunk : undefined,
+      envDump: envDump.isEnvDump ? envDump : undefined,
       isSubmit,
       isPaste,
     }
@@ -291,9 +297,75 @@ export function processOutboundChunk(
     writeChunk: data,
     newStaging: isSubmit ? '' : buf,
     scan,
+    codeChunk: codeChunk.isCode ? codeChunk : undefined,
+    envDump: envDump.isEnvDump ? envDump : undefined,
     isSubmit,
     isPaste,
   }
+}
+
+// Result of inspecting an outbound prompt for code-shaped or env-shaped content.
+// We surface this *as a hint* — never as a hard block — because legitimate
+// "explain this snippet" prompts are exactly the workflow Termpolis exists to
+// support. The renderer is expected to show a one-time confirm UI when this
+// fires, log the user's choice, and proceed. Defaults are conservative
+// (>2 KB AND multiple structural signals) to avoid alert fatigue.
+export interface CodeChunkSignals {
+  isCode: boolean
+  byteSize: number
+  lineCount: number
+  signals: string[]
+}
+
+const CODE_KEYWORDS = [
+  'function', 'class', 'import', 'export', 'const ', 'let ', 'var ',
+  'def ', 'return', 'public ', 'private ', 'package ', 'interface ',
+  'struct ', 'fn ', 'async ', 'await ', '=>', '<?php', '#include',
+]
+
+export function detectCodeChunk(text: string, byteThreshold = 2048): CodeChunkSignals {
+  const out: CodeChunkSignals = { isCode: false, byteSize: 0, lineCount: 0, signals: [] }
+  if (typeof text !== 'string' || !text) return out
+  out.byteSize = Buffer.byteLength(text, 'utf8')
+  const lines = text.split(/\r?\n/)
+  out.lineCount = lines.length
+  if (out.byteSize < byteThreshold) return out
+  const indented = lines.filter((l) => /^[ \t]{2,}\S/.test(l)).length
+  if (indented >= 5 && indented / Math.max(lines.length, 1) >= 0.2) out.signals.push('indentation')
+  const braces = (text.match(/[{}();]/g) || []).length
+  if (braces / Math.max(text.length, 1) >= 0.02) out.signals.push('punctuation')
+  const lower = text.toLowerCase()
+  const kwHits = CODE_KEYWORDS.reduce((n, kw) => (lower.includes(kw) ? n + 1 : n), 0)
+  if (kwHits >= 3) out.signals.push('keywords')
+  if (/^\s*(import|from|using|package|#include)\b/m.test(text)) out.signals.push('module-decl')
+  out.isCode = out.signals.length >= 2
+  return out
+}
+
+// Detect a shell-style env dump (KEY=VALUE lines) — the catch-all for "user
+// pasted their .env into the prompt". Per-line regex hits aren't enough alone;
+// require N+ lines of UPPER_SNAKE=value to fire so unrelated `export FOO=1`
+// snippets don't trip it.
+export interface EnvDumpSignals {
+  isEnvDump: boolean
+  varCount: number
+  variableNames: string[]
+}
+
+export function detectEnvDump(text: string, threshold = 5): EnvDumpSignals {
+  const out: EnvDumpSignals = { isEnvDump: false, varCount: 0, variableNames: [] }
+  if (typeof text !== 'string' || !text) return out
+  const lines = text.split(/\r?\n/)
+  const re = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]{2,})\s*=\s*\S/
+  for (const ln of lines) {
+    const m = re.exec(ln)
+    if (m) {
+      out.varCount++
+      if (out.variableNames.length < 20) out.variableNames.push(m[1])
+    }
+  }
+  out.isEnvDump = out.varCount >= threshold
+  return out
 }
 
 export function scanText(input: string): ScanResult {

@@ -567,3 +567,140 @@ describe('processOutboundChunk (auto-scan staging)', () => {
     expect(r.isPaste).toBe(true)
   })
 })
+
+describe('aiSecurity.detectCodeChunk', () => {
+  it('returns isCode=false for short text', async () => {
+    const m = await freshModule()
+    const r = m.detectCodeChunk('hi there')
+    expect(r.isCode).toBe(false)
+    expect(r.byteSize).toBeGreaterThan(0)
+  })
+
+  it('flags a >2 KB JS-shaped paste with multiple signals', async () => {
+    const m = await freshModule()
+    const code = Array.from({ length: 80 }, (_, i) =>
+      `  function thing${i}(arg) {\n    const x = arg + 1;\n    return x;\n  }`,
+    ).join('\n')
+    const r = m.detectCodeChunk(code)
+    expect(r.byteSize).toBeGreaterThan(2048)
+    expect(r.isCode).toBe(true)
+    expect(r.signals.length).toBeGreaterThanOrEqual(2)
+    expect(r.signals).toContain('keywords')
+  })
+
+  it('does NOT flag a >2 KB plain prose paste', async () => {
+    const m = await freshModule()
+    // Long lorem-ipsum without indentation, braces, or code keywords.
+    const prose = 'The quick brown fox jumps over the lazy dog. '.repeat(80)
+    const r = m.detectCodeChunk(prose)
+    expect(r.byteSize).toBeGreaterThan(2048)
+    expect(r.isCode).toBe(false)
+  })
+
+  it('detects a Python-style paste', async () => {
+    const m = await freshModule()
+    const code =
+      'import os\nfrom typing import List\n\n' +
+      Array.from({ length: 50 }, (_, i) =>
+        `def fn${i}(x):\n    if x > 0:\n        return x * 2\n    return 0`,
+      ).join('\n\n')
+    const r = m.detectCodeChunk(code)
+    expect(r.isCode).toBe(true)
+    expect(r.signals).toContain('module-decl')
+  })
+
+  it('honors a custom byte threshold', async () => {
+    const m = await freshModule()
+    const code = '  function f() { return 1; }\n'.repeat(20)
+    const small = m.detectCodeChunk(code, 10_000)
+    expect(small.isCode).toBe(false)
+    const big = m.detectCodeChunk(code, 100)
+    expect(big.isCode).toBe(true)
+  })
+})
+
+describe('aiSecurity.detectEnvDump', () => {
+  it('returns isEnvDump=false for empty input', async () => {
+    const m = await freshModule()
+    const r = m.detectEnvDump('')
+    expect(r.isEnvDump).toBe(false)
+    expect(r.varCount).toBe(0)
+  })
+
+  it('flags a 5+ line env dump', async () => {
+    const m = await freshModule()
+    const env = [
+      'DATABASE_URL=postgres://x',
+      'API_KEY=abc',
+      'SECRET_KEY=def',
+      'NODE_ENV=production',
+      'PORT=3000',
+      'REDIS_URL=redis://x',
+    ].join('\n')
+    const r = m.detectEnvDump(env)
+    expect(r.isEnvDump).toBe(true)
+    expect(r.varCount).toBe(6)
+    expect(r.variableNames).toContain('DATABASE_URL')
+  })
+
+  it('handles "export FOO=bar" prefix', async () => {
+    const m = await freshModule()
+    const env = Array.from({ length: 6 }, (_, i) => `export VAR_${i}=value${i}`).join('\n')
+    const r = m.detectEnvDump(env)
+    expect(r.isEnvDump).toBe(true)
+    expect(r.varCount).toBe(6)
+  })
+
+  it('does NOT flag a single export FOO=bar line', async () => {
+    const m = await freshModule()
+    const r = m.detectEnvDump('export FOO=bar\nexport BAZ=qux')
+    expect(r.isEnvDump).toBe(false)
+  })
+
+  it('caps stored variable names at 20 to avoid runaway memory', async () => {
+    const m = await freshModule()
+    const env = Array.from({ length: 50 }, (_, i) => `VAR_${i}=value${i}`).join('\n')
+    const r = m.detectEnvDump(env)
+    expect(r.varCount).toBe(50)
+    expect(r.variableNames.length).toBe(20)
+  })
+})
+
+describe('aiSecurity.processOutboundChunk — code/env hints', () => {
+  it('attaches codeChunk on flush when prompt looks like code', async () => {
+    const m = await freshModule()
+    const code = Array.from({ length: 80 }, (_, i) =>
+      `  function thing${i}(a) {\n    const x = a + 1;\n    return x;\n  }`,
+    ).join('\n')
+    const r = m.processOutboundChunk('', code + '\r', {
+      redactionEnabled: true,
+      isAiTerminal: true,
+    })
+    expect(r.action).toBe('flush')
+    expect(r.codeChunk?.isCode).toBe(true)
+  })
+
+  it('attaches envDump on flush when prompt looks like a .env paste', async () => {
+    const m = await freshModule()
+    const env =
+      ['DATABASE_URL=p://x', 'API_KEY=a', 'SECRET_KEY=s', 'NODE_ENV=p', 'PORT=3000', 'REDIS_URL=r://x'].join('\n') +
+      '\r'
+    const r = m.processOutboundChunk('', env, {
+      redactionEnabled: true,
+      isAiTerminal: true,
+    })
+    expect(r.action).toBe('flush')
+    expect(r.envDump?.isEnvDump).toBe(true)
+  })
+
+  it('omits codeChunk/envDump when prompt is plain prose', async () => {
+    const m = await freshModule()
+    const r = m.processOutboundChunk('', 'hello world this is a normal prompt\r', {
+      redactionEnabled: true,
+      isAiTerminal: true,
+    })
+    expect(r.action).toBe('flush')
+    expect(r.codeChunk).toBeUndefined()
+    expect(r.envDump).toBeUndefined()
+  })
+})

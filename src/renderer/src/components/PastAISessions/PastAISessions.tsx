@@ -38,6 +38,23 @@ function projectLabel(cwd: string): string {
   return parts.slice(-2).join('/') || cwd
 }
 
+// Wrap a multi-line prompt in xterm bracketed-paste markers so the receiving
+// AI CLI (Claude Code, Codex, Gemini CLI, Qwen Code — all of which run TUI
+// frontends with bracketed-paste enabled) treats it as a single paste rather
+// than dispatching one keypress / submit per embedded newline. This is the
+// fix for "the AI got confused by what looked like a bunch of random commands"
+// when injecting a long context handoff blob.
+//
+// Newlines normalised to `\r` because that's what most TTY-driven input
+// readers expect inside paste content; the bracketed markers prevent any of
+// them from being interpreted as Enter at the application layer.
+const BRACKETED_PASTE_START = '\x1b[200~'
+const BRACKETED_PASTE_END = '\x1b[201~'
+export function wrapAsBracketedPaste(text: string): string {
+  const normalised = text.replace(/\r\n|\r|\n/g, '\r')
+  return BRACKETED_PASTE_START + normalised + BRACKETED_PASTE_END
+}
+
 export function PastAISessions({ open, onClose }: Props) {
   const [sessions, setSessions] = useState<AISessionSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -168,7 +185,10 @@ export function PastAISessions({ open, onClose }: Props) {
           return
         }
         // Write the prompt without a trailing CR — let the user review and submit.
-        window.termpolis.writeToTerminal(activeTerminalId, prompt)
+        // Bracketed-paste wrapping keeps the agent from treating each embedded
+        // newline as Enter, which used to fragment the handoff into a stream
+        // of random "commands".
+        window.termpolis.writeToTerminal(activeTerminalId, wrapAsBracketedPaste(prompt))
         onClose()
         return
       }
@@ -198,8 +218,10 @@ export function PastAISessions({ open, onClose }: Props) {
           setTimeout(() => {
             // Write the prompt without auto-submit. User reads + presses Enter
             // when they're satisfied — gives them an "abort" lever if the
-            // digest looks wrong.
-            window.termpolis.writeToTerminal(newId, prompt)
+            // digest looks wrong. Bracketed-paste keeps the multi-paragraph
+            // CONTEXT HANDOFF blob landing in the agent's input box as one
+            // pasted chunk, not N submissions.
+            window.termpolis.writeToTerminal(newId, wrapAsBracketedPaste(prompt))
           }, 2500)
         }, 800)
       } catch (e) {

@@ -76,22 +76,25 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 
 ---
 
-### 🛡 Source-Code Safety: AI Security Center
+### 🛡 AI Security Center — what it actually does
 
-CTOs ask: *"How do I let my team use Claude/Codex/Gemini/Qwen without my proprietary code ending up in someone's training pipeline?"* — Termpolis is the answer.
+**Honest framing first.** Any tool that lets you talk to a hosted model (Claude, Codex, Gemini, Qwen) is, by definition, sending your prompt to that provider. Termpolis cannot air-gap a prompt you choose to send, cannot guarantee a provider's stated retention policy is enforced server-side, and cannot stop a provider from later changing their terms. If your threat model requires those guarantees, run a local model — but accept the quality + hardware trade-off that comes with it.
 
-**Settings → Security** ships a complete control panel built on these principles:
+What Termpolis **can** do is make the hosted path *substantially* safer than typing into a stock terminal, a browser, or a VS Code plug-in:
 
-- **No browser or IDE extension.** Termpolis is a native terminal — not a Chrome plugin or VS Code extension shipping your buffer to a SaaS backend.
-- **Per-provider training-disposition facts, sourced from live ToS pages.** Claude (default-off), Codex (default-off), Gemini (opt-out-required — flagged yellow), Qwen Code (default-off paid / local Ollama mode).
-- **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify whether you're on a paid (safe) tier or the free OAuth tier (Google may use prompts for product improvement).
-- **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts `gemini` invocations and refuses to forward them unless paid-tier env vars are detected. The blocked launch is recorded in the audit log.
-- **Auto-scan on every prompt (v1.11.44+).** Once you launch `claude`, `codex`, `gemini`, or `qwen` in a terminal, every Enter and every paste-sized chunk (≥32 bytes) is scanned against **70+ regex rules** before it reaches the PTY. Hits get redacted in place and a dismissable banner tells you which rules fired. Coverage: AWS (access/secret/session), GitHub (PAT/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage / SAS / conn-string / AD client secret / DevOps PAT), GCP (service-account JSON, OAuth client ID), Stripe, PayPal Braintree, Square, Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark, Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi, CircleCI, Travis, Codecov, Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Lightstep, Mapbox, Okta, Auth0, Linear, Notion, Asana, Jira, Figma, npm, PyPI, Docker Hub, HashiCorp Vault, Doppler, 1Password Connect, Postgres / MySQL / MongoDB / Redis URLs, HTTP basic-auth URLs, JWT, PEM, DSA, GPG, Bearer, Coinbase, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead).
-- **Local JSONL audit log.** Append-only, 10MB-rotated. Every AI-agent terminal launch records timestamp, agent, byte count, optional notes. Stays on the machine. Wipeable.
-- **Built-in legal disclaimer.** Apache 2.0 "AS IS" — full disclaimer in Settings → Security and in [`TERMS.md`](TERMS.md).
-- **Zero accounts. Zero telemetry.** No login. No phone-home. MCP server bound to 127.0.0.1 only.
+| Risk | What Termpolis does | Limit |
+| --- | --- | --- |
+| Pasted secret leaves the machine | Auto-scan: every Enter / paste in an AI terminal is matched against **70+ regex rules** (AWS, GitHub PATs, Stripe, GCP service accounts, JWTs, PEM keys, `.env`-style URLs…) before it reaches the PTY. Hits are redacted, banner shown. | Regex-shaped secrets only — a custom-format token nobody publishes a pattern for can still slip through. |
+| Whole `.env` or source file pasted | **Code-chunk + env-dump detectors (v1.11.52)** flag prompts >2 KB that look like code (indentation + braces + keywords) or contain 5+ `KEY=value` lines. The renderer surfaces a notice + audit entry. | Heuristic — false negatives possible on minified or unusual code shapes. The prompt is not blocked; you decide. |
+| Free-tier Gemini sending prompts to Google for product improvement | **Gemini account-mode auto-detection** reads `GEMINI_API_KEY` / `GOOGLE_GENAI_USE_GCA` / `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to classify the active session. **Strict Mode** intercepts `gemini` launches that look free-tier and refuses to forward them. Blocked launches are audited. | Detection is env-var based; if you ship credentials some other way the heuristic can't see, it can't classify them. |
+| Provider quietly changes their ToS / data-controls page | **Weekly ToS drift watcher (v1.11.52)** GitHub Action fetches the four provider pages we cite (Anthropic, OpenAI, Google, Alibaba), normalizes the HTML, hashes it, and opens a tracking issue when the hash changes — so the docs in *this* repo stay aligned with what the providers actually publish. | Detects rendered-text changes, not legal intent. A human still reads the diff. |
+| Agent silently talking to an unexpected endpoint | **Egress audit (v1.11.52)** polls `netstat` (Windows) / `ss` (Linux) / `lsof` (macOS) once a minute for the AI agent's PID and records each unique remote `host:port` to the audit log + Security panel. So you can answer "did Claude talk to anything other than `api.anthropic.com` today?". | Polling, not packet capture — sub-minute bursts can be missed. No DNS reverse-lookup, no payload inspection. |
+| Tampering surface beyond the terminal itself | No browser extension, no IDE plug-in, no ad-hoc cloud sync. The MCP server is bound to `127.0.0.1` with a token that rotates on every restart. No Termpolis telemetry, no Termpolis cloud accounts. | Termpolis is itself an Electron app — same caveats apply as any local desktop process running with your privileges. |
+| Forensic record of what was typed at agents | **Local JSONL audit log**: every AI terminal open/close, every redaction hit, every code-chunk / env-dump detection, every Strict-Mode block. 10 MB rotated, append-only, on disk only, wipeable. | Local. We don't ship it anywhere. If your machine is compromised, so is the log. |
 
-See [`PRIVACY.md`](PRIVACY.md) for the data-handling spec and [`TERMS.md`](TERMS.md) for the licence + liability disclaimer.
+**What this is and isn't:** Termpolis is *defense in depth* for the hosted-model path — it raises the cost of accidental disclosure and gives you a record to audit. It is **not** a guarantee that source code cannot reach a provider — only not running the agent at all gives you that. The honest answer to *"can a hosted model leak my code?"* is "yes, if you send it; the question is whether the controls catch the obvious accidents and whether you trust the provider's terms for the rest." Termpolis is built for the engineers who've decided that trade-off is acceptable for the productivity hosted models give them.
+
+See [`PRIVACY.md`](PRIVACY.md) for the data-flow spec, [`TERMS.md`](TERMS.md) for the Apache-2.0 / "AS IS" disclaimer.
 
 ---
 

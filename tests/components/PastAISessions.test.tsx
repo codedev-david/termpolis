@@ -287,6 +287,15 @@ describe('PastAISessions', () => {
       'active-term-1',
       expect.stringContaining('CONTEXT HANDOFF'),
     )
+    // Bracketed-paste wrapping keeps the multi-line prompt landing in the
+    // agent's input box as one paste event, instead of being chopped into
+    // per-line submits.
+    const writeArg: string = (window as any).termpolis.writeToTerminal.mock.calls[0][1]
+    expect(writeArg.startsWith('\x1b[200~')).toBe(true)
+    expect(writeArg.endsWith('\x1b[201~')).toBe(true)
+    // Newlines inside the paste must be normalised to \r so the agent does
+    // not see literal LF that some readline-based TUIs interpret oddly.
+    expect(writeArg.includes('\n')).toBe(false)
     expect(onClose).toHaveBeenCalled()
     // Did NOT spawn a new terminal — pure inject
     expect(mockAddTerminal).not.toHaveBeenCalled()
@@ -391,7 +400,9 @@ describe('PastAISessions', () => {
     }, { timeout: 2000 })
     await waitFor(() => {
       const calls = (window as any).termpolis.writeToTerminal.mock.calls
-      const hasPromptCall = calls.some((c: any[]) => typeof c[1] === 'string' && c[1].includes('CONTEXT HANDOFF'))
+      const hasPromptCall = calls.some(
+        (c: any[]) => typeof c[1] === 'string' && c[1].includes('CONTEXT HANDOFF') && c[1].startsWith('\x1b[200~'),
+      )
       expect(hasPromptCall).toBe(true)
     }, { timeout: 5000 })
   })
@@ -409,6 +420,23 @@ describe('PastAISessions', () => {
     await waitFor(() => {
       expect(screen.getByTestId('past-ai-sessions-status').textContent).toMatch(/parse fail/)
     })
+  })
+
+  it('wrapAsBracketedPaste: wraps text in DCS markers and normalises newlines to \\r', async () => {
+    const mod = await import('../../src/renderer/src/components/PastAISessions/PastAISessions')
+    const wrapped = mod.wrapAsBracketedPaste('line one\nline two\r\nline three\rline four')
+    expect(wrapped.startsWith('\x1b[200~')).toBe(true)
+    expect(wrapped.endsWith('\x1b[201~')).toBe(true)
+    expect(wrapped.includes('\n')).toBe(false)
+    // 4 lines = 3 separators
+    const inner = wrapped.slice('\x1b[200~'.length, -'\x1b[201~'.length)
+    expect(inner.split('\r').length).toBe(4)
+  })
+
+  it('wrapAsBracketedPaste: leaves text without newlines untouched between markers', async () => {
+    const mod = await import('../../src/renderer/src/components/PastAISessions/PastAISessions')
+    const wrapped = mod.wrapAsBracketedPaste('one-line prompt')
+    expect(wrapped).toBe('\x1b[200~one-line prompt\x1b[201~')
   })
 
   it('formatRelative branches: "just now", "Xm ago", "Xh ago", "Xd ago", absolute date', async () => {
