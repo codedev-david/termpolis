@@ -55,7 +55,7 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
             data-testid="welcome-security-tagline"
           >
             <i className="fa-solid fa-shield-halved"></i>
-            Local-first · No browser extension · Auditable outbound traffic · Pre-paste secret scanner
+            Local-first · Auto-scan on every prompt · 70+ secret patterns · Auditable outbound traffic
           </p>
         </div>
 

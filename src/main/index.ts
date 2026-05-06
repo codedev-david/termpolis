@@ -59,6 +59,7 @@ import {
   setRedactionEnabled,
   setAuditEnabled,
   scanText as aiSecurityScan,
+  processOutboundChunk,
   appendAudit as aiSecurityAppend,
   getRecentAudit as aiSecurityRecent,
   clearAudit as aiSecurityClear,
@@ -231,6 +232,22 @@ const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini|qwen)(?:\s|$)
 const strictBlockPattern = /(?:^|[\r\n;&|])\s*gemini(?:\s|$|\r|\n)/
 const recentlyAuditedTerminals = new Map<string, number>()
 
+// Per-terminal "this is an AI session" flag. We set this the first time a
+// terminal:write matches auditLaunchPattern (the user typed `claude` /
+// `codex` / `gemini` / `qwen`). All subsequent writes on that terminal are
+// then auto-scanned for secrets before they reach the PTY.
+const aiTerminalFlag = new Set<string>()
+// Per-terminal staging buffer: characters typed since the last submit. We
+// flush + scan when the user presses Enter (\r or \n) OR when a single
+// chunked write is large enough to look like a paste (≥32 chars). This
+// keeps the regex pass amortized — at most one per submit / per paste.
+const aiInputStaging = new Map<string, string>()
+// Per-terminal "we already prompted on this submit" — when redaction fires
+// we hold the write and emit a renderer event; the user resolves with allow
+// or block. Until they do, we drop further writes for that submit.
+const PASTE_THRESHOLD = 32
+const STAGE_CAP = 64 * 1024 // 64 KB per terminal — safety bound on staging
+
 ipcMain.handle('terminal:kill', async (_, { id }) => {
   try {
     killTerminal(id)
@@ -240,6 +257,8 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
       recentlyAuditedTerminals.delete(id)
       aiSecurityAppend({ agent: 'unknown', event: 'terminal_close', terminalId: id }).catch(() => {})
     }
+    aiTerminalFlag.delete(id)
+    aiInputStaging.delete(id)
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -279,6 +298,55 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
         }
       }
     }
+  } catch {}
+
+  // Mark the terminal as an AI session if the user just typed an agent name —
+  // this gates auto-scan to only the terminals where the leak risk lives.
+  let detectedAgent: string | null = null
+  try {
+    if (typeof data === 'string' && auditLaunchPattern.test(data)) {
+      const m = data.match(auditLaunchPattern)
+      detectedAgent = m ? m[1] : null
+      if (detectedAgent) aiTerminalFlag.add(id)
+    }
+  } catch {}
+
+  // Auto-scan: every prompt typed into an AI terminal is screened for
+  // well-shaped secrets BEFORE it reaches the PTY. The decision logic lives
+  // in processOutboundChunk so it can be unit-tested without IPC.
+  try {
+    const s = getAiSecuritySettings()
+    const decision = processOutboundChunk(aiInputStaging.get(id) ?? '', data, {
+      redactionEnabled: s.redactionEnabled,
+      isAiTerminal: aiTerminalFlag.has(id),
+    })
+    if (decision.action === 'stage') {
+      aiInputStaging.set(id, decision.newStaging)
+      return
+    }
+    if (decision.action === 'redact') {
+      const r = decision.scan!
+      aiSecurityAppend({
+        agent: detectedAgent ?? 'unknown',
+        event: 'redaction_hit',
+        terminalId: id,
+        hitCount: r.hitCount,
+        byteCount: (aiInputStaging.get(id) ?? '').length + data.length,
+        notes: r.hits.map((h) => h.rule).join(','),
+      }).catch(() => {})
+      writeToTerminal(id, decision.writeChunk)
+      mainWindow?.webContents.send('terminal:secrets-redacted', {
+        id,
+        hits: r.hits,
+        agent: detectedAgent ?? null,
+      })
+      aiInputStaging.set(id, decision.newStaging)
+      return
+    }
+    if (decision.action === 'flush') {
+      aiInputStaging.set(id, decision.newStaging)
+    }
+    // 'pass' or 'flush' both fall through to the normal write path below.
   } catch {}
 
   writeToTerminal(id, data)

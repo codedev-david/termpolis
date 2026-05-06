@@ -355,10 +355,10 @@ export function SecuritySettings() {
       <div className="flex flex-col gap-2 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
         <h3 className="text-sm font-semibold flex items-center gap-2">
           <i className="fa-solid fa-magnifying-glass-arrow-right text-[#FFB74D]"></i>
-          Pre-paste secret scan
+          Manual pre-paste secret scan
         </h3>
         <p className="text-xs text-[#9ca3af] leading-relaxed">
-          Paste any text you're about to send to an AI agent. Termpolis will flag well-shaped secrets and show a redacted preview.
+          AI terminals are auto-scanned on every Enter and every paste. Use this box for one-off checks of clipboard text before pasting elsewhere — Termpolis will flag well-shaped secrets and show a redacted preview.
         </p>
         <textarea
           value={scanInput}

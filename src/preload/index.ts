@@ -241,6 +241,16 @@ contextBridge.exposeInMainWorld('aiSecurity', {
   clearAudit: () => ipcRenderer.invoke('aiSecurity:clear-audit'),
   append: (entry: { agent: string; event: string; terminalId?: string; byteCount?: number; hitCount?: number; notes?: string }) =>
     ipcRenderer.invoke('aiSecurity:append', entry),
+  onSecretsRedacted: (
+    cb: (data: { id: string; hits: { rule: string; label: string; sample: string }[]; agent: string | null }) => void,
+  ) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      data: { id: string; hits: { rule: string; label: string; sample: string }[]; agent: string | null },
+    ) => cb(data)
+    ipcRenderer.on('terminal:secrets-redacted', handler)
+    return () => ipcRenderer.removeListener('terminal:secrets-redacted', handler)
+  },
 })
 
 // MCP server events — terminals created/closed by AI agents

@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: May 5, 2026
+Last updated: May 5, 2026 (auto-scan added in v1.11.44)
 
 ## Overview
 
@@ -91,9 +91,27 @@ locally and every log stays on the machine.
 - **Strict Mode — block free-tier Gemini.** When enabled, Termpolis
   intercepts `gemini` invocations from any terminal and refuses to forward
   them unless paid-tier credentials are detected.
-- **Pre-paste secret scanner.** Regex-based detection of well-shaped
-  secrets (AWS keys, GitHub PATs, OpenAI/Anthropic/Google API keys, JWTs,
-  PEM private keys, `.env` assignments). Returns redacted preview.
+- **Auto-scan on every prompt.** Once the user types `claude`, `codex`,
+  `gemini`, or `qwen` in a terminal, every subsequent keystroke is staged
+  in main-process memory and scanned with a 70+ rule regex catalog
+  on each Enter or paste-sized chunk (≥32 bytes). Hits are redacted in
+  place before reaching the PTY, audited as `redaction_hit` events, and
+  surfaced via a dismissable banner in the renderer. Catalog covers AWS
+  (access keys, secrets, session tokens), GitHub (classic + fine-grained
+  PATs, OAuth client secrets), GitLab, Bitbucket, Azure (Storage, SAS,
+  AD client secret, DevOps PAT, connection strings), GCP (service-account
+  JSON, OAuth client IDs), AI providers (OpenAI, Anthropic, Google AI,
+  HuggingFace, Cohere, Replicate), payments (Stripe, PayPal Braintree,
+  Square), comms (Slack, Discord, Telegram, Twilio, SendGrid, Mailgun,
+  Mailchimp, Postmark), cloud (Cloudflare, DigitalOcean, Heroku, Netlify,
+  Vercel, Fly.io, Render, Pulumi), CI/CD (CircleCI, Travis, Codecov),
+  observability (Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb,
+  Mapbox, Okta, Auth0), package registries (npm, PyPI, Docker Hub),
+  secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database
+  connection strings (Postgres, MySQL, MongoDB, Redis), HTTP basic-auth
+  URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all.
+- **Manual pre-paste scanner.** The Settings → Security panel includes
+  a paste-and-scan box and a "Scan clipboard" button for one-off checks.
 - **Local audit log** (`ai-security-audit.jsonl` in `userData`) — every
   AI-agent terminal launch, optionally with byte counts and hit counts.
   Append-only, 10MB-rotated, wipeable from Settings.

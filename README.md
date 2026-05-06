@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/🛡_Local--first-no_cloud_no_telemetry-1f6e3a?style=for-the-badge" alt="Local-first">
   <img src="https://img.shields.io/badge/🔒_No_browser/IDE_extension-0078d4?style=for-the-badge" alt="No extension">
-  <img src="https://img.shields.io/badge/📋_Pre--paste_secret_scanner-FFB74D?style=for-the-badge" alt="Secret scanner">
+  <img src="https://img.shields.io/badge/🔎_Auto--scan_every_prompt_(70+_patterns)-FFB74D?style=for-the-badge" alt="Auto-scan every prompt">
   <img src="https://img.shields.io/badge/📜_Auditable_outbound_log-7ee2a3?style=for-the-badge" alt="Audit log">
 </p>
 
@@ -86,7 +86,7 @@ CTOs ask: *"How do I let my team use Claude/Codex/Gemini/Qwen without my proprie
 - **Per-provider training-disposition facts, sourced from live ToS pages.** Claude (default-off), Codex (default-off), Gemini (opt-out-required — flagged yellow), Qwen Code (default-off paid / local Ollama mode).
 - **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify whether you're on a paid (safe) tier or the free OAuth tier (Google may use prompts for product improvement).
 - **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts `gemini` invocations and refuses to forward them unless paid-tier env vars are detected. The blocked launch is recorded in the audit log.
-- **Pre-paste secret scanner.** Regex-based detection of AWS keys, GitHub PATs, OpenAI/Anthropic/Google API keys, JWTs, PEM private keys, and `.env`-style assignments — with redacted-preview copy.
+- **Auto-scan on every prompt (v1.11.44+).** Once you launch `claude`, `codex`, `gemini`, or `qwen` in a terminal, every Enter and every paste-sized chunk (≥32 bytes) is scanned against **70+ regex rules** before it reaches the PTY. Hits get redacted in place and a dismissable banner tells you which rules fired. Coverage: AWS (access/secret/session), GitHub (PAT/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage / SAS / conn-string / AD client secret / DevOps PAT), GCP (service-account JSON, OAuth client ID), Stripe, PayPal Braintree, Square, Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark, Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi, CircleCI, Travis, Codecov, Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Lightstep, Mapbox, Okta, Auth0, Linear, Notion, Asana, Jira, Figma, npm, PyPI, Docker Hub, HashiCorp Vault, Doppler, 1Password Connect, Postgres / MySQL / MongoDB / Redis URLs, HTTP basic-auth URLs, JWT, PEM, DSA, GPG, Bearer, Coinbase, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead).
 - **Local JSONL audit log.** Append-only, 10MB-rotated. Every AI-agent terminal launch records timestamp, agent, byte count, optional notes. Stays on the machine. Wipeable.
 - **Built-in legal disclaimer.** Apache 2.0 "AS IS" — full disclaimer in Settings → Security and in [`TERMS.md`](TERMS.md).
 - **Zero accounts. Zero telemetry.** No login. No phone-home. MCP server bound to 127.0.0.1 only.
@@ -215,8 +215,7 @@ No AI company has built a tool that brings together competing models to work as 
 When you're running multiple AI agents concurrently (or a whole swarm), you need to see what each is doing, spot when they duplicate work, and know when one is about to run out of context. Termpolis ships a full observability layer that doesn't require any external dashboard — everything is local, capped in memory, and tested end-to-end.
 
 - **Activity Feed** — `Ctrl+Shift+A` opens a live stream of every agent event. Captures messages, tool calls, tool results, token updates, compaction events, errors, status changes, and MCP audit entries. Filter by agent (claude/codex/gemini/qwen-code), by kind, or search full text. Newest first.
-- **Context Gauge** — shows in the per-terminal status bar whenever an AI agent is detected. A 0–100% bar showing how full the agent's context window is, color coded (green → yellow → orange → red). Model-aware: Opus, Sonnet, Gemini, Qwen all have their correct token limits. A `~` indicates the estimate is heuristic (no transcript tokens available yet).
-- **Context Pins** — click the context gauge to open the pins panel. Pin any snippet (migration rule, test policy, API contract) scoped to the current project. Pins are re-injected on agent handoff so the new agent doesn't lose the plot. Per-project storage, full CRUD.
+- **Context Pins** — pin any snippet (migration rule, test policy, API contract) scoped to the current project. Pins are re-injected on agent handoff so the new agent doesn't lose the plot. Per-project storage, full CRUD.
 - **Redundancy Detector** — `Ctrl+Shift+D` shows duplicate work across terminals. If two agents are running `npm test` at the same time or both editing the same file, you'll see a severity-ranked finding with the affected terminals.
 - **Efficiency Panel** — `Ctrl+Shift+Y` aggregates per-agent stats: token totals, cost, error rate, average tool-call duration. Spot when one agent is burning budget while another is cruising.
 - **Event Bus** — in-process, bounded ring buffer (10k events), rate-limited (500 events/sec burst) to prevent DoS from a runaway agent. Persisted to JSONL with automatic rotation. Subscriber callbacks are try/caught so a bad listener can't kill the bus. All event payloads are 64KB-capped before persistence.

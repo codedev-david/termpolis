@@ -42,7 +42,8 @@ describe('Welcome', () => {
     const pill = screen.getByTestId('welcome-security-tagline')
     expect(pill).toBeInTheDocument()
     expect(pill.textContent || '').toMatch(/Local-first/)
-    expect(pill.textContent || '').toMatch(/secret scanner/i)
+    expect(pill.textContent || '').toMatch(/secret patterns/i)
+    expect(pill.textContent || '').toMatch(/Auto-scan/i)
   })
 
   it('shows all three action cards', () => {
