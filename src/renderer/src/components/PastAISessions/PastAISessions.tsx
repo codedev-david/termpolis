@@ -47,9 +47,16 @@ export function PastAISessions({ open, onClose }: Props) {
   const addTerminal = useTerminalStore(s => s.addTerminal)
   const setActiveTerminal = useTerminalStore(s => s.setActiveTerminal)
   const activeTerminalId = useTerminalStore(s => s.activeTerminalId)
+  const terminals = useTerminalStore(s => s.terminals)
   const [handoffMenu, setHandoffMenu] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
+
+  // Inject only works when the focused tab is actually an AI agent — pasting
+  // a multi-paragraph CONTEXT HANDOFF prompt into bash/PowerShell just dumps
+  // a giant garbled command at the prompt. `agentCommand` is set on terminals
+  // launched as Claude / Codex / Gemini / Qwen.
+  const activeIsAIShell = !!terminals?.find(t => t.id === activeTerminalId)?.agentCommand
 
   useEffect(() => {
     if (!open) return
@@ -120,6 +127,23 @@ export function PastAISessions({ open, onClose }: Props) {
     }
   }
 
+  // Resume a session in the currently focused terminal (no new tab) — only
+  // makes sense when that terminal is a plain shell, since typing
+  // `claude --resume <id>` inside a running AI agent just sends those bytes
+  // as a prompt to whatever is already there.
+  const resumeInActiveShell = (session: AISessionSummary) => {
+    if (!activeTerminalId) {
+      setStatusMsg('No active terminal. Open one first.')
+      return
+    }
+    if (activeIsAIShell) {
+      setStatusMsg('Active shell is already an AI agent — use Resume (new tab) or Inject instead.')
+      return
+    }
+    window.termpolis.writeToTerminal(activeTerminalId, 'claude --resume ' + session.id + '\r')
+    onClose()
+  }
+
   // Cross-AI context handoff: load the full JSONL, render a portable
   // prompt, then either inject it into the active shell or spawn a new
   // terminal with the chosen agent and paste the prompt as its first turn.
@@ -137,6 +161,10 @@ export function PastAISessions({ open, onClose }: Props) {
       if (target === 'inject') {
         if (!activeTerminalId) {
           setStatusMsg('No active terminal to inject into. Open one first.')
+          return
+        }
+        if (!activeIsAIShell) {
+          setStatusMsg('Active shell is not an AI agent — open a Claude/Codex/Gemini/Qwen tab first.')
           return
         }
         // Write the prompt without a trailing CR — let the user review and submit.
@@ -293,10 +321,31 @@ export function PastAISessions({ open, onClose }: Props) {
                         ))}
                         <div className="border-t border-[#3c3c3c] my-1" />
                         <button
+                          onClick={() => { setHandoffMenu(null); resumeInActiveShell(s) }}
+                          className="w-full text-left text-xs px-3 py-1.5 hover:bg-[#094771] text-[#d4d4d4] disabled:opacity-50"
+                          disabled={!activeTerminalId || activeIsAIShell}
+                          title={
+                            !activeTerminalId
+                              ? 'Open a terminal first'
+                              : activeIsAIShell
+                                ? 'Active shell is already an AI agent — use Resume (new tab) or Inject instead'
+                                : 'Run claude --resume in the focused terminal (no new tab)'
+                          }
+                          data-testid="past-ai-session-resume-here-btn"
+                        >
+                          Resume in active shell
+                        </button>
+                        <button
                           onClick={() => { setHandoffMenu(null); handoff(s, 'inject') }}
                           className="w-full text-left text-xs px-3 py-1.5 hover:bg-[#094771] text-[#d4d4d4] disabled:opacity-50"
-                          disabled={!activeTerminalId}
-                          title={activeTerminalId ? 'Paste this session\'s context summary into the focused terminal' : 'Open a terminal first'}
+                          disabled={!activeTerminalId || !activeIsAIShell}
+                          title={
+                            !activeTerminalId
+                              ? 'Open an AI agent terminal first'
+                              : !activeIsAIShell
+                                ? 'Active shell is not an AI agent — open a Claude/Codex/Gemini/Qwen tab first'
+                                : 'Paste this session\'s context summary into the focused AI terminal'
+                          }
                           data-testid="past-ai-session-inject-btn"
                         >
                           Inject context into active shell

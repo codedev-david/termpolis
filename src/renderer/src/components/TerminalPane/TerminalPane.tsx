@@ -154,24 +154,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    // Mintty / Git-Bash style:
-    //   right-click with selection  → copy + clear selection
-    //   right-click with no selection → paste from clipboard
-    //   Shift + right-click          → open the full context menu
-    if (e.shiftKey) {
-      setContextMenu({ visible: true, x: e.clientX, y: e.clientY })
-      return
-    }
-    const selection = termRef.current?.getSelection()
-    if (selection) {
-      navigator.clipboard.writeText(selection).catch(() => {})
-      termRef.current?.clearSelection()
-      return
-    }
-    navigator.clipboard.readText().then(text => {
-      if (text) window.termpolis.writeToTerminal(terminalId, text)
-    }).catch(() => {})
-  }, [terminalId])
+    // Right-click always opens the context menu (Windows/Linux convention).
+    // The Copy-as-Code-Block / Paste / Plain Text options are the whole point
+    // of having the menu — hiding it behind a Shift+right-click modifier (the
+    // old mintty-style fast-copy behavior) made the Teams/Slack workflow
+    // invisible to users who weren't power users. Ctrl+C / Ctrl+V still
+    // provide the keyboard fast path; Ctrl+Shift+M still copies as code block.
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY })
+  }, [])
 
   useEffect(() => {
     if (!contextMenu.visible) return

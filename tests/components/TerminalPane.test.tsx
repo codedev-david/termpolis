@@ -681,33 +681,35 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
-  // 5b. Right-click auto-paste / auto-copy (mintty/git-bash style)
+  // 5b. Right-click opens the context menu (Windows/Linux convention).
+  // The mintty-style "right-click = quick copy/paste" was discoverability-
+  // hostile because it hid the Copy-as-Code-Block menu entirely.
   // =====================================================
-  describe('right-click smart paste/copy', () => {
-    it('right-click with no selection pastes from clipboard', async () => {
+  describe('right-click opens context menu', () => {
+    it('plain right-click with no selection opens the full menu (no auto-paste)', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
-      // Context menu should NOT open
-      expect(screen.queryByText('Select All')).not.toBeInTheDocument()
-      // Should have read clipboard and written to terminal
-      await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
-      })
+      expect(screen.getByText('Select All')).toBeInTheDocument()
+      expect(screen.getByText('Copy as Code Block')).toBeInTheDocument()
+      // Did NOT auto-paste
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
 
-    it('right-click with selection copies and clears it', () => {
+    it('plain right-click with selection opens menu (no auto-copy)', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('selected-text')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
-      expect(screen.queryByText('Select All')).not.toBeInTheDocument()
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('selected-text')
-      expect(mocks.mockTerminal.clearSelection).toHaveBeenCalled()
+      expect(screen.getByText('Select All')).toBeInTheDocument()
+      expect(screen.getByText('Copy as Code Block')).toBeInTheDocument()
+      // Did NOT auto-copy or clear
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mocks.mockTerminal.clearSelection).not.toHaveBeenCalled()
     })
 
-    it('Shift + right-click opens the full context menu', () => {
+    it('Shift + right-click also opens the full context menu (legacy alias)', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })

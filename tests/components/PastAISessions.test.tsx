@@ -6,6 +6,11 @@ const mockAddTerminal = vi.fn()
 const mockSetActiveTerminal = vi.fn()
 
 let activeTerminalIdValue: string | null = 'active-term-1'
+// Default: active terminal is an AI shell (Claude). Tests that need a plain
+// shell or a missing terminal flip these before render.
+let terminalsValue: Array<{ id: string; agentCommand?: string }> = [
+  { id: 'active-term-1', agentCommand: 'claude' },
+]
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: Object.assign(
     (selector: any) => {
@@ -14,6 +19,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         addTerminal: mockAddTerminal,
         setActiveTerminal: mockSetActiveTerminal,
         activeTerminalId: activeTerminalIdValue,
+        terminals: terminalsValue,
       }
       return selector(state)
     },
@@ -63,6 +69,7 @@ const sampleSessions: AISessionSummary[] = [
 beforeEach(() => {
   vi.clearAllMocks()
   activeTerminalIdValue = 'active-term-1'
+  terminalsValue = [{ id: 'active-term-1', agentCommand: 'claude' }]
   ;(window as any).termpolis = {
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: sampleSessions }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
@@ -249,7 +256,7 @@ describe('PastAISessions', () => {
     await waitFor(() => expect(screen.getByText('(no user message)')).toBeInTheDocument())
   })
 
-  it('Continue ▾ button reveals the handoff menu with cross-AI options + inject', async () => {
+  it('Continue ▾ button reveals the handoff menu with cross-AI options + inject + resume-here', async () => {
     render(<PastAISessions open={true} onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
     const continueBtns = screen.getAllByTestId('past-ai-session-handoff-btn')
@@ -260,6 +267,7 @@ describe('PastAISessions', () => {
     expect(menu.textContent).toMatch(/Continue in Gemini CLI/)
     expect(menu.textContent).toMatch(/Continue in Qwen Code/)
     expect(menu.textContent).toMatch(/Continue in Claude Code/)
+    expect(menu.textContent).toMatch(/Resume in active shell/)
     expect(menu.textContent).toMatch(/Inject context into active shell/)
   })
 
@@ -286,6 +294,7 @@ describe('PastAISessions', () => {
 
   it('Inject context: shows status when no active terminal exists', async () => {
     activeTerminalIdValue = null
+    terminalsValue = []
     render(<PastAISessions open={true} onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
     fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
@@ -293,6 +302,67 @@ describe('PastAISessions', () => {
     // so we assert the disabled state instead.
     const injectBtn = await screen.findByTestId('past-ai-session-inject-btn')
     expect((injectBtn as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('Inject context: button is DISABLED when active terminal is a plain shell (no agentCommand)', async () => {
+    terminalsValue = [{ id: 'active-term-1' /* no agentCommand → plain bash/PS */ }]
+    render(<PastAISessions open={true} onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+    fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+    const injectBtn = await screen.findByTestId('past-ai-session-inject-btn')
+    expect((injectBtn as HTMLButtonElement).disabled).toBe(true)
+    expect(injectBtn.getAttribute('title')).toMatch(/not an AI agent/)
+  })
+
+  it('Inject context: button is ENABLED when active terminal is an AI shell', async () => {
+    terminalsValue = [{ id: 'active-term-1', agentCommand: 'codex' }]
+    render(<PastAISessions open={true} onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+    fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+    const injectBtn = await screen.findByTestId('past-ai-session-inject-btn')
+    expect((injectBtn as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('Resume in active shell: writes claude --resume into focused plain terminal and closes modal', async () => {
+    terminalsValue = [{ id: 'active-term-1' /* plain shell */ }]
+    const onClose = vi.fn()
+    render(<PastAISessions open={true} onClose={onClose} />)
+    await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+    fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+    const resumeHereBtn = await screen.findByTestId('past-ai-session-resume-here-btn')
+    expect((resumeHereBtn as HTMLButtonElement).disabled).toBe(false)
+    await act(async () => {
+      fireEvent.click(resumeHereBtn)
+      await Promise.resolve()
+    })
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledWith(
+      'active-term-1',
+      'claude --resume sess-alpha\r',
+    )
+    expect(onClose).toHaveBeenCalled()
+    expect(mockAddTerminal).not.toHaveBeenCalled()
+    // Did not need to digest the JSONL — resume-here is a pure passthrough
+    expect((window as any).termpolis.digestAISession).not.toHaveBeenCalled()
+  })
+
+  it('Resume in active shell: button is DISABLED when active terminal is already an AI shell', async () => {
+    terminalsValue = [{ id: 'active-term-1', agentCommand: 'claude' }]
+    render(<PastAISessions open={true} onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+    fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+    const resumeHereBtn = await screen.findByTestId('past-ai-session-resume-here-btn')
+    expect((resumeHereBtn as HTMLButtonElement).disabled).toBe(true)
+    expect(resumeHereBtn.getAttribute('title')).toMatch(/already an AI agent/)
+  })
+
+  it('Resume in active shell: button is DISABLED when no active terminal exists', async () => {
+    activeTerminalIdValue = null
+    terminalsValue = []
+    render(<PastAISessions open={true} onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+    fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+    const resumeHereBtn = await screen.findByTestId('past-ai-session-resume-here-btn')
+    expect((resumeHereBtn as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('Continue in Codex: spawns new terminal with codex command and posts prompt', async () => {
