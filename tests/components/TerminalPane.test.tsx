@@ -288,6 +288,7 @@ beforeAll(() => {
     resizeTerminal: mockResizeTerminal,
     createTerminal: mockCreateTerminal,
     killTerminal: mockKillTerminal,
+    listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
   }
 
   // Mock ResizeObserver
@@ -399,6 +400,23 @@ describe('TerminalPane', () => {
     it('renders PinnedOutput component', () => {
       render(<TerminalPane {...defaultProps} />)
       expect(screen.getByTestId('pinned-output')).toBeInTheDocument()
+    })
+
+    it('renders the Past AI Sessions overlay button on every terminal pane', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const btn = screen.getByTestId('past-ai-sessions-btn')
+      expect(btn).toBeInTheDocument()
+      expect(btn.textContent).toMatch(/Past AI Sessions/i)
+    })
+
+    it('clicking the Past AI Sessions button opens the modal overlay', async () => {
+      render(<TerminalPane {...defaultProps} />)
+      // Modal should not be mounted before click
+      expect(screen.queryByTestId('past-ai-sessions-overlay')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('past-ai-sessions-btn'))
+      await waitFor(() => {
+        expect(screen.getByTestId('past-ai-sessions-overlay')).toBeInTheDocument()
+      })
     })
   })
 
@@ -600,6 +618,40 @@ describe('TerminalPane', () => {
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\\\r')
+    })
+
+    it('Shift+Enter sends Esc+CR (ESC \\r = \\x1b\\r) when an AI agent is detected', async () => {
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      ;(useAgentDetection as any).mockReturnValue({
+        detectedAgent: { name: 'claude' },
+        costInfo: null,
+        processAgentDetection: mocks.mockProcessAgentDetection,
+        agentDetectedRef: { current: true },
+      })
+      render(<TerminalPane {...defaultProps} />)
+      const event = new KeyboardEvent('keydown', { shiftKey: true, key: 'Enter' })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(false)
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\x1b\r')
+
+      // Reset for subsequent tests in this describe.
+      ;(useAgentDetection as any).mockReturnValue({
+        detectedAgent: null,
+        costInfo: null,
+        processAgentDetection: mocks.mockProcessAgentDetection,
+        agentDetectedRef: { current: false },
+      })
+    })
+
+    it('Shift+Enter ignores Ctrl/Alt/Meta modifiers (does not write)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const event = new KeyboardEvent('keydown', { shiftKey: true, ctrlKey: true, key: 'Enter' })
+      const result = mockKeyHandlerCb?.(event)
+      // Ctrl+Shift+Enter is not the documented Shift+Enter — let it through.
+      expect(result).toBe(true)
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', '\x1b\r')
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', '\\\r')
     })
 
     it('non-keydown events bypass the custom handler', () => {

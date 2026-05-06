@@ -361,6 +361,14 @@ export default function App() {
         return
       }
 
+      // Ctrl+/ opens the Keybindings/Shortcuts panel
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === '/' || e.key === '?')) {
+        e.preventDefault()
+        setShowSettings(true)
+        window.dispatchEvent(new CustomEvent('termpolis:openShortcuts'))
+        return
+      }
+
       // Alt+1 through Alt+9 to jump to terminal by index
       if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()

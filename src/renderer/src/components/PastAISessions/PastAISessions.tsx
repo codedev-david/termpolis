@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { AISessionSummary, ShellType } from '../../types'
@@ -6,6 +6,22 @@ import type { AISessionSummary, ShellType } from '../../types'
 interface Props {
   open: boolean
   onClose: () => void
+}
+
+type HandoffAgent = 'claude' | 'codex' | 'gemini' | 'qwen'
+
+const AGENT_COMMANDS: Record<HandoffAgent, string> = {
+  claude: 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+  qwen: 'qwen',
+}
+
+const AGENT_LABELS: Record<HandoffAgent, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini CLI',
+  qwen: 'Qwen Code',
 }
 
 function formatRelative(ts: number): string {
@@ -30,6 +46,10 @@ export function PastAISessions({ open, onClose }: Props) {
   const defaultShell = useTerminalStore(s => s.defaultShell)
   const addTerminal = useTerminalStore(s => s.addTerminal)
   const setActiveTerminal = useTerminalStore(s => s.setActiveTerminal)
+  const activeTerminalId = useTerminalStore(s => s.activeTerminalId)
+  const [handoffMenu, setHandoffMenu] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [statusMsg, setStatusMsg] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -97,6 +117,68 @@ export function PastAISessions({ open, onClose }: Props) {
       }, 800)
     } catch (e) {
       console.error('[PastAISessions] resume failed', e)
+    }
+  }
+
+  // Cross-AI context handoff: load the full JSONL, render a portable
+  // prompt, then either inject it into the active shell or spawn a new
+  // terminal with the chosen agent and paste the prompt as its first turn.
+  const handoff = async (session: AISessionSummary, target: 'inject' | HandoffAgent) => {
+    setBusy(true)
+    setStatusMsg(null)
+    try {
+      const res = await window.termpolis.digestAISession(session.filePath)
+      if (!res.success || !res.data) {
+        setStatusMsg('Could not digest session: ' + (res.error || 'unknown'))
+        return
+      }
+      const prompt = res.data.prompt
+
+      if (target === 'inject') {
+        if (!activeTerminalId) {
+          setStatusMsg('No active terminal to inject into. Open one first.')
+          return
+        }
+        // Write the prompt without a trailing CR — let the user review and submit.
+        window.termpolis.writeToTerminal(activeTerminalId, prompt)
+        onClose()
+        return
+      }
+
+      // Spawn a new terminal at the source cwd with the chosen agent.
+      const newId = uuidv4()
+      const cmd = AGENT_COMMANDS[target]
+      addTerminal({
+        id: newId,
+        name: cmd + ' (handoff)',
+        color: '#7ee2a3',
+        shellType: defaultShell as ShellType,
+        cwd: session.cwd,
+        fontSize: 14,
+        theme: 'dark',
+        fontFamily: 'Consolas, Menlo, monospace',
+        agentCommand: cmd,
+      })
+      setActiveTerminal(newId)
+      onClose()
+      try {
+        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd)
+        // 1. Boot the agent. 2. Wait for it to be ready. 3. Paste the prompt.
+        // Two-step delay because agents take time to print their banner.
+        setTimeout(() => {
+          window.termpolis.writeToTerminal(newId, cmd + '\r')
+          setTimeout(() => {
+            // Write the prompt without auto-submit. User reads + presses Enter
+            // when they're satisfied — gives them an "abort" lever if the
+            // digest looks wrong.
+            window.termpolis.writeToTerminal(newId, prompt)
+          }, 2500)
+        }, 800)
+      } catch (e) {
+        console.error('[PastAISessions] handoff failed', e)
+      }
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -176,12 +258,52 @@ export function PastAISessions({ open, onClose }: Props) {
                     </div>
                     <div className="text-[10px] text-[#666] mt-0.5 font-mono">{s.id}</div>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); resume(s) }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] bg-[#0e639c] hover:bg-[#1177bb] text-white rounded px-2 py-1 self-center shrink-0"
-                  >
-                    Resume
-                  </button>
+                  <div className="relative flex items-center gap-1 shrink-0 self-center">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); resume(s) }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] bg-[#0e639c] hover:bg-[#1177bb] text-white rounded px-2 py-1"
+                      title="Resume this session natively in Claude Code"
+                    >
+                      Resume
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setHandoffMenu(handoffMenu === s.id ? null : s.id) }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] bg-[#3c3c3c] hover:bg-[#4d4d4d] text-white rounded px-2 py-1"
+                      title="Continue this context in a different AI agent or inject it into the active shell"
+                      data-testid="past-ai-session-handoff-btn"
+                      disabled={busy}
+                    >
+                      Continue ▾
+                    </button>
+                    {handoffMenu === s.id && (
+                      <div
+                        className="absolute right-0 top-full mt-1 z-40 bg-[#252526] border border-[#3c3c3c] rounded shadow-xl py-1 min-w-[210px]"
+                        onClick={(e) => e.stopPropagation()}
+                        data-testid="past-ai-session-handoff-menu"
+                      >
+                        <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-[#7ee2a3]">Cross-AI handoff</div>
+                        {(['codex', 'gemini', 'qwen', 'claude'] as HandoffAgent[]).map(target => (
+                          <button
+                            key={target}
+                            onClick={() => { setHandoffMenu(null); handoff(s, target) }}
+                            className="w-full text-left text-xs px-3 py-1.5 hover:bg-[#094771] text-[#d4d4d4]"
+                          >
+                            Continue in {AGENT_LABELS[target]}
+                          </button>
+                        ))}
+                        <div className="border-t border-[#3c3c3c] my-1" />
+                        <button
+                          onClick={() => { setHandoffMenu(null); handoff(s, 'inject') }}
+                          className="w-full text-left text-xs px-3 py-1.5 hover:bg-[#094771] text-[#d4d4d4] disabled:opacity-50"
+                          disabled={!activeTerminalId}
+                          title={activeTerminalId ? 'Paste this session\'s context summary into the focused terminal' : 'Open a terminal first'}
+                          data-testid="past-ai-session-inject-btn"
+                        >
+                          Inject context into active shell
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -190,7 +312,11 @@ export function PastAISessions({ open, onClose }: Props) {
 
         <div className="px-4 py-2 border-t border-[#3c3c3c] text-[10px] text-[#666] flex items-center justify-between">
           <span>{sessions.length} session{sessions.length === 1 ? '' : 's'} across {new Set(sessions.map(s => s.cwd)).size} project{new Set(sessions.map(s => s.cwd)).size === 1 ? '' : 's'}</span>
-          <span>Resume opens a new terminal at the session's original cwd and runs <code className="text-[#7ee2a3]">claude --resume &lt;id&gt;</code></span>
+          {statusMsg ? (
+            <span className="text-[#e57373]" data-testid="past-ai-sessions-status">{statusMsg}</span>
+          ) : (
+            <span>Resume = native <code className="text-[#7ee2a3]">claude --resume</code>. Continue ▾ = inject context into another AI.</span>
+          )}
         </div>
       </div>
     </div>

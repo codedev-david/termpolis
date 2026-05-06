@@ -14,7 +14,7 @@
 // scans — assumes ~100 sessions × 64 KB = a few MB total when the picker
 // opens. No state held — recomputed each call.
 
-import { readdirSync, statSync, openSync, readSync, closeSync } from 'fs'
+import { readdirSync, statSync, openSync, readSync, closeSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -140,4 +140,154 @@ export function listAISessions(opts?: { projectsRoot?: string }): AISessionSumma
 
   out.sort((a, b) => b.lastModified - a.lastModified)
   return out
+}
+
+// =====================================================
+// Cross-AI context handoff
+// =====================================================
+// Produces a portable summary of a past Claude Code session that can be
+// injected as the first prompt to ANY AI agent (Codex, Gemini, Qwen, or
+// even back into Claude). The goal is to give the new agent enough context
+// to "pick up where the last one left off" without re-reading the full
+// JSONL — that file can be megabytes.
+//
+// What we extract:
+//   • cwd + gitBranch + version (where the work was happening)
+//   • The first user message (intent — what the user originally asked for)
+//   • The last few user messages (most recent direction)
+//   • The last assistant text turn (current state of play)
+// All concatenated into a markdown block with a clear "context handoff"
+// preamble so the receiving agent treats it as background, not a new task.
+
+export interface AISessionDigest {
+  id: string
+  filePath: string
+  cwd: string
+  gitBranch?: string
+  version?: string
+  firstUserMessage?: string
+  recentUserMessages: string[]
+  lastAssistantText?: string
+  totalUserTurns: number
+  totalAssistantTurns: number
+}
+
+const MAX_CONTEXT_FILE_BYTES = 8 * 1024 * 1024 // 8 MB safety cap
+const MAX_PREVIEW_CHARS = 1200 // per excerpted message
+const RECENT_USER_MESSAGES = 3
+
+export function digestAISession(filePath: string): AISessionDigest | null {
+  let stat
+  try { stat = statSync(filePath) } catch { return null }
+  if (stat.size > MAX_CONTEXT_FILE_BYTES) {
+    // For oversized files, fall back to the lightweight head-only summary.
+    // The digest is still useful — just less complete.
+  }
+
+  let raw = ''
+  try {
+    raw = readFileSync(filePath, 'utf8')
+  } catch { return null }
+
+  const id = filePath.replace(/^.*[\\/]/, '').replace(/\.jsonl$/i, '')
+  if (!id) return null
+
+  const lines = raw.split('\n')
+  let cwd: string | undefined
+  let gitBranch: string | undefined
+  let version: string | undefined
+  let firstUserMessage: string | undefined
+  const userMessages: string[] = []
+  let lastAssistantText: string | undefined
+  let totalUserTurns = 0
+  let totalAssistantTurns = 0
+
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let obj: Record<string, unknown>
+    try { obj = JSON.parse(line) as Record<string, unknown> } catch { continue }
+
+    if (!cwd && typeof obj.cwd === 'string') cwd = obj.cwd
+    if (!gitBranch && typeof obj.gitBranch === 'string') gitBranch = obj.gitBranch
+    if (!version && typeof obj.version === 'string') version = obj.version
+
+    if (obj.type === 'user' && obj.message && typeof obj.message === 'object') {
+      const msg = obj.message as { content?: unknown; role?: string }
+      if (msg.role === 'user' || msg.role === undefined) {
+        const text = extractContentString(msg.content)
+        if (text && !text.startsWith('<command-name>') && !text.startsWith('<local-command-')) {
+          totalUserTurns++
+          if (!firstUserMessage) firstUserMessage = truncate(text, MAX_PREVIEW_CHARS)
+          userMessages.push(truncate(text, MAX_PREVIEW_CHARS))
+        }
+      }
+    }
+
+    if (obj.type === 'assistant' && obj.message && typeof obj.message === 'object') {
+      const msg = obj.message as { content?: unknown }
+      const text = extractContentString(msg.content)
+      if (text) {
+        totalAssistantTurns++
+        lastAssistantText = truncate(text, MAX_PREVIEW_CHARS)
+      }
+    }
+  }
+
+  if (!cwd) return null
+
+  return {
+    id,
+    filePath,
+    cwd,
+    gitBranch,
+    version,
+    firstUserMessage,
+    recentUserMessages: userMessages.slice(-RECENT_USER_MESSAGES),
+    lastAssistantText,
+    totalUserTurns,
+    totalAssistantTurns,
+  }
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 3) + '...' : s
+}
+
+// Render a digest into a portable prompt that any AI agent can consume.
+// Designed to be shell-paste-safe: no backticks (the AI shells we target
+// often interpret backticks as command substitution if not single-quoted),
+// uses simple "---" dividers and indented blocks.
+export function renderDigestAsPrompt(d: AISessionDigest): string {
+  const out: string[] = []
+  out.push('Context handoff from a previous Claude Code session.')
+  out.push('Continue where the previous AI left off — do not start from scratch.')
+  out.push('')
+  out.push('Project: ' + d.cwd + (d.gitBranch ? '  (branch: ' + d.gitBranch + ')' : ''))
+  out.push('Source session: ' + d.id)
+  out.push('Turns: ' + d.totalUserTurns + ' user / ' + d.totalAssistantTurns + ' assistant')
+  out.push('')
+
+  if (d.firstUserMessage) {
+    out.push('--- Original goal (first user message) ---')
+    out.push(d.firstUserMessage)
+    out.push('')
+  }
+
+  if (d.recentUserMessages.length > 1) {
+    out.push('--- Most recent user direction ---')
+    for (const m of d.recentUserMessages.slice(-2)) {
+      out.push(m)
+      out.push('')
+    }
+  }
+
+  if (d.lastAssistantText) {
+    out.push('--- Last assistant turn (current state of play) ---')
+    out.push(d.lastAssistantText)
+    out.push('')
+  }
+
+  out.push('--- Your task ---')
+  out.push('Acknowledge this context briefly, then continue the work.')
+  return out.join('\n')
 }

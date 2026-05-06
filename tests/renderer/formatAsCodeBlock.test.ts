@@ -138,6 +138,53 @@ describe('writeCodeBlockToClipboard', () => {
     await writeCodeBlockToClipboard('hello', 80)
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```text\nhello\n```')
   })
+
+  it('HTML blob contains <pre><code> with monospace styling so Teams/Outlook render a real code box', async () => {
+    class FakeClipboardItem {
+      constructor(public readonly types: Record<string, Blob>) {}
+    }
+    ;(window as unknown as { ClipboardItem: typeof FakeClipboardItem }).ClipboardItem = FakeClipboardItem
+    await writeCodeBlockToClipboard('echo hello\nworld', 80)
+    const writeMock = navigator.clipboard.write as unknown as ReturnType<typeof vi.fn>
+    const item = writeMock.mock.calls[0][0][0] as FakeClipboardItem
+    const htmlBlob = item.types['text/html']
+    const html = await htmlBlob.text()
+    expect(html).toContain('<pre')
+    expect(html).toContain('<code>')
+    expect(html).toContain('Consolas')
+    expect(html).toContain('white-space:pre')
+    expect(html).toContain('echo hello')
+    expect(html).toContain('world')
+  })
+
+  it('plain blob uses ```text fence (not bare ```) so Teams skips SQL auto-detect', async () => {
+    class FakeClipboardItem {
+      constructor(public readonly types: Record<string, Blob>) {}
+    }
+    ;(window as unknown as { ClipboardItem: typeof FakeClipboardItem }).ClipboardItem = FakeClipboardItem
+    await writeCodeBlockToClipboard('SELECT * FROM x', 80)
+    const writeMock = navigator.clipboard.write as unknown as ReturnType<typeof vi.fn>
+    const item = writeMock.mock.calls[0][0][0] as FakeClipboardItem
+    const plainBlob = item.types['text/plain']
+    const plain = await plainBlob.text()
+    expect(plain.startsWith('```text\n')).toBe(true)
+    expect(plain.endsWith('\n```')).toBe(true)
+    expect(plain).toContain('SELECT * FROM x')
+  })
+
+  it('escapes <, >, & in HTML so terminal output containing tags renders as text', async () => {
+    class FakeClipboardItem {
+      constructor(public readonly types: Record<string, Blob>) {}
+    }
+    ;(window as unknown as { ClipboardItem: typeof FakeClipboardItem }).ClipboardItem = FakeClipboardItem
+    await writeCodeBlockToClipboard('<script>alert("xss")</script> & co', 80)
+    const writeMock = navigator.clipboard.write as unknown as ReturnType<typeof vi.fn>
+    const item = writeMock.mock.calls[0][0][0] as FakeClipboardItem
+    const html = await (item.types['text/html']).text()
+    expect(html).toContain('&lt;script&gt;')
+    expect(html).toContain('&amp;')
+    expect(html).not.toContain('<script>alert')
+  })
 })
 
 describe('formatAsPlainText', () => {

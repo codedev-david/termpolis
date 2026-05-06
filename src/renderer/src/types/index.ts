@@ -173,6 +173,7 @@ export interface TermpolisAPI {
   getAppVersion: () => Promise<IpcResponse<{ version: string }>>
 
   listAISessions: () => Promise<IpcResponse<AISessionSummary[]>>
+  digestAISession: (filePath: string) => Promise<IpcResponse<{ digest: AISessionDigest; prompt: string }>>
 }
 
 export interface AISessionSummary {
@@ -186,6 +187,19 @@ export interface AISessionSummary {
   startTime?: string
   lastModified: number
   sizeBytes: number
+}
+
+export interface AISessionDigest {
+  id: string
+  filePath: string
+  cwd: string
+  gitBranch?: string
+  version?: string
+  firstUserMessage?: string
+  recentUserMessages: string[]
+  lastAssistantText?: string
+  totalUserTurns: number
+  totalAssistantTurns: number
 }
 
 export interface MemoryEntry {

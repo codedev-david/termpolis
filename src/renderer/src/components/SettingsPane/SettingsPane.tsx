@@ -41,6 +41,12 @@ export function SettingsPane() {
   const [updateChecking, setUpdateChecking] = useState(false)
   const [activeTab, setActiveTab] = useState<'general' | 'security' | 'keybindings' | 'agents' | 'shell'>('general')
 
+  useEffect(() => {
+    const onOpenShortcuts = () => setActiveTab('keybindings')
+    window.addEventListener('termpolis:openShortcuts', onOpenShortcuts)
+    return () => window.removeEventListener('termpolis:openShortcuts', onOpenShortcuts)
+  }, [])
+
   const handleCheckForUpdates = async () => {
     const updater = (window as any).updater
     if (!updater?.check) {

@@ -379,4 +379,14 @@ describe('SettingsPane', () => {
       expect(screen.getByTestId('security-settings')).toBeInTheDocument()
     })
   })
+
+  it('switches to keybindings tab when termpolis:openShortcuts event fires (Ctrl+/ hotkey)', async () => {
+    render(<SettingsPane />)
+    // Default tab is 'general' — keybindings panel should not yet be the active one.
+    expect(screen.getByTestId('settings-tab-general').className).toMatch(/border-\[#0078d4\]/)
+    window.dispatchEvent(new CustomEvent('termpolis:openShortcuts'))
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-tab-keybindings').className).toMatch(/border-\[#0078d4\]/)
+    })
+  })
 })

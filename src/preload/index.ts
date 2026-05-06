@@ -150,6 +150,7 @@ const api: TermpolisAPI = {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
 
   listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
+  digestAISession: (filePath: string) => ipcRenderer.invoke('aiSessions:digest', filePath),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

@@ -456,6 +456,31 @@ ipcMain.handle('aiSessions:list', async () => {
   }
 })
 
+// Context handoff: read a full Claude Code JSONL and return a prompt
+// the renderer can inject into any AI shell (Codex, Gemini, Qwen, or
+// even a fresh Claude). Filepath is supplied by the renderer and must
+// match a file under ~/.claude/projects/ — we sanity-check that.
+ipcMain.handle('aiSessions:digest', async (_evt, filePath: string) => {
+  try {
+    if (typeof filePath !== 'string' || !filePath) {
+      return err('filePath is required')
+    }
+    const { homedir } = await import('os')
+    const { join, normalize } = await import('path')
+    const expectedRoot = normalize(join(homedir(), '.claude', 'projects'))
+    const requested = normalize(filePath)
+    if (!requested.startsWith(expectedRoot)) {
+      return err('filePath must be inside ~/.claude/projects')
+    }
+    const { digestAISession, renderDigestAsPrompt } = await import('./aiSessions')
+    const digest = digestAISession(requested)
+    if (!digest) return err('Could not digest session (missing cwd or unreadable)')
+    return ok({ digest, prompt: renderDigestAsPrompt(digest) })
+  } catch (e) {
+    return err((e as Error).message)
+  }
+})
+
 // AI Security Center — verifiable outbound-data controls.
 ipcMain.handle('aiSecurity:get-status', () => {
   try {
