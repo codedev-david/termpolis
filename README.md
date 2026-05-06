@@ -30,7 +30,7 @@
 <p align="center">
   Smart task routing assigns the right work to the right AI model.<br>
   An intelligent conductor that knows who plays what instrument best.<br>
-  Local-first, no cloud, no telemetry, no subscription.<br>
+  Local-first app — no Termpolis backend, no telemetry by default, no subscription.<br>
   <strong>Free and open source — your agents, your terminal, your rules.</strong>
 </p>
 
@@ -395,7 +395,7 @@ Termpolis takes security seriously, especially with AI agent integration.
 - Terminal sessions run with your user permissions — same as any terminal application
 - AI agents launched through profiles (Claude Code, Codex, etc.) have the same access as if you ran them manually
 - The MCP token rotates on every app restart — a compromised token becomes invalid when you close the app
-- No telemetry, no analytics, no cloud accounts — everything stays on your machine
+- No Termpolis telemetry, no analytics, no Termpolis cloud accounts — Termpolis stores everything (sessions, history, pins, audit log, settings) locally. (AI agents you launch still talk to their own providers per those providers' privacy policies; see [`PRIVACY.md`](PRIVACY.md) for the full data-flow spec.)
 
 ## Quick Start
 

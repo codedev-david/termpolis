@@ -157,7 +157,7 @@ export function SecuritySettings() {
           <h2 className="text-sm font-semibold text-[#7ee2a3]">AI-Assisted Development with Source-Code Safety</h2>
         </div>
         <ul className="text-xs text-[#cfead8] leading-relaxed list-disc pl-5">
-          <li><strong>Native terminal — no browser/IDE extensions.</strong> Termpolis is not a Chrome extension or VS Code plugin shipping your code to a SaaS backend. It runs locally; your repo never leaves the machine.</li>
+          <li><strong>Native terminal — no browser/IDE extensions.</strong> Termpolis itself ships nothing to any backend — there is no Termpolis cloud and no Termpolis telemetry by default. (AI agents you launch obviously still communicate with their own providers under those providers' privacy terms — see the per-agent training-disposition facts above.)</li>
           <li><strong>You control which agents see your code.</strong> Each agent below is launched as its own terminal. If you don't run it, it never reads anything.</li>
           <li><strong>Auditable outbound traffic.</strong> Enable the audit log to record every AI-agent terminal session locally — agent, timestamp, byte count.</li>
           <li><strong>Verifiable training-disposition facts.</strong> Per-provider, sourced from the live ToS pages.</li>

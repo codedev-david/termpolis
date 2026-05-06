@@ -15,7 +15,7 @@ export function TitleBar() {
         <span className="text-sm font-semibold tracking-wide text-[#e0e0e0]">Termpolis</span>
         <span
           className="hidden sm:inline-flex items-center gap-1 text-[10px] font-medium text-[#7ee2a3] bg-[#0d2418] border border-[#1f6e3a] rounded px-1.5 py-0.5"
-          title="Local-first AI terminal — your source code never leaves the machine"
+          title="Local-first terminal — no Termpolis backend, no Termpolis telemetry. AI agents you launch still talk to their own providers under those providers' terms."
           data-testid="titlebar-security-tagline"
         >
           <i className="fa-solid fa-shield-halved text-[9px]"></i>

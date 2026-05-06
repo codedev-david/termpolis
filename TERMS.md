@@ -102,8 +102,12 @@ above.
 
 ## 6. Privacy
 
-Privacy practices are documented separately in `PRIVACY.md`. In short: all of
-your data stays on your machine unless you opt in to crash reporting.
+Privacy practices are documented separately in `PRIVACY.md`. In short:
+Termpolis itself does not transmit your data anywhere unless you opt in to
+crash reporting. AI agents you launch from Termpolis (Claude Code, Codex,
+Gemini CLI, Qwen Code) communicate directly with their respective providers
+under those providers' own privacy terms — Termpolis is the local terminal
+host, not a privacy shield over those agents.
 
 ## 7. Changes to these terms
 
