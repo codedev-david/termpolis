@@ -23,11 +23,11 @@ describe('listAISessions', () => {
     try { rmSync(projectsRoot, { recursive: true, force: true }) } catch { /* best effort */ }
   })
 
-  it('returns empty array when ~/.claude/projects/ does not exist', () => {
-    expect(list()).toEqual([])
+  it('returns empty array when ~/.claude/projects/ does not exist', async () => {
+    expect(await list()).toEqual([])
   })
 
-  it('summarizes a basic session with cwd, branch, version, first user message', () => {
+  it('summarizes a basic session with cwd, branch, version, first user message', async () => {
     makeSession('C--Users-foo-bar-myrepo', 'sess-1', [
       { type: 'permission-mode', sessionId: 'sess-1' },
       {
@@ -39,7 +39,7 @@ describe('listAISessions', () => {
         timestamp: '2026-05-06T10:00:00Z',
       },
     ])
-    const sessions = list()
+    const sessions = await list()
     expect(sessions).toHaveLength(1)
     expect(sessions[0]).toMatchObject({
       id: 'sess-1',
@@ -52,15 +52,15 @@ describe('listAISessions', () => {
     expect(sessions[0].sizeBytes).toBeGreaterThan(0)
   })
 
-  it('skips sessions without a cwd (cannot resume confidently)', () => {
+  it('skips sessions without a cwd (cannot resume confidently)', async () => {
     makeSession('orphan', 'sess-2', [
       { type: 'permission-mode', sessionId: 'sess-2' },
       { type: 'user', message: { role: 'user', content: 'hi' } },
     ])
-    expect(list()).toHaveLength(0)
+    expect(await list()).toHaveLength(0)
   })
 
-  it('extracts text from array-shape content blocks', () => {
+  it('extracts text from array-shape content blocks', async () => {
     makeSession('C--repos-x', 'sess-3', [
       {
         type: 'user',
@@ -68,46 +68,63 @@ describe('listAISessions', () => {
         cwd: '/repos/x',
       },
     ])
-    const [s] = list()
+    const [s] = await list()
     expect(s.firstUserMessage).toBe('array-shape message')
   })
 
-  it('truncates long first messages to 240 chars', () => {
+  it('truncates long first messages to 240 chars', async () => {
     const long = 'a'.repeat(500)
     makeSession('C--repos-y', 'sess-4', [
       { type: 'user', message: { role: 'user', content: long }, cwd: '/repos/y' },
     ])
-    const [s] = list()
+    const [s] = await list()
     expect(s.firstUserMessage!.length).toBeLessThanOrEqual(240)
     expect(s.firstUserMessage!.endsWith('...')).toBe(true)
   })
 
-  it('ignores synthetic <command-name> entries when picking first user message', () => {
+  it('ignores synthetic <command-name> entries when picking first user message', async () => {
     makeSession('C--repos-z', 'sess-5', [
       { type: 'user', message: { role: 'user', content: '<command-name>/exit</command-name>' }, cwd: '/repos/z' },
       { type: 'user', message: { role: 'user', content: 'real prompt' }, cwd: '/repos/z' },
     ])
-    const [s] = list()
+    const [s] = await list()
     expect(s.firstUserMessage).toBe('real prompt')
   })
 
-  it('returns sessions sorted by lastModified descending', () => {
+  it('returns sessions sorted by lastModified descending', async () => {
     makeSession('A', 'older', [{ type: 'user', message: { role: 'user', content: 'old' }, cwd: '/A' }])
-    // Spread mtime — write file with backdated time.
     makeSession('B', 'newer', [{ type: 'user', message: { role: 'user', content: 'new' }, cwd: '/B' }])
-    const sessions = list()
+    const sessions = await list()
     expect(sessions.length).toBe(2)
     expect(sessions[0].lastModified).toBeGreaterThanOrEqual(sessions[1].lastModified)
   })
 
-  it('skips non-jsonl files in project folders', () => {
+  it('skips non-jsonl files in project folders', async () => {
     const dir = join(projectsRoot, 'C--repos-mixed')
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'README.txt'), 'not a session', 'utf8')
     writeFileSync(join(dir, 'real.jsonl'), JSON.stringify({ type: 'user', message: { role: 'user', content: 'ok' }, cwd: '/repos/mixed' }) + '\n', 'utf8')
-    const sessions = list()
+    const sessions = await list()
     expect(sessions).toHaveLength(1)
     expect(sessions[0].id).toBe('real')
+  })
+
+  it('parallelizes file reads (large fan-out completes promptly)', async () => {
+    // Create 100 tiny sessions across 10 folders to exercise the bounded-
+    // concurrency map. Should still complete in well under a second; this
+    // test mostly guards against reverting to a serial loop.
+    for (let f = 0; f < 10; f++) {
+      for (let i = 0; i < 10; i++) {
+        makeSession('proj-' + f, 'sess-' + f + '-' + i, [
+          { type: 'user', message: { role: 'user', content: 'hi ' + f + i }, cwd: '/proj/' + f },
+        ])
+      }
+    }
+    const start = Date.now()
+    const sessions = await list()
+    const elapsed = Date.now() - start
+    expect(sessions.length).toBe(100)
+    expect(elapsed).toBeLessThan(2000)
   })
 })
 
@@ -122,18 +139,18 @@ describe('digestAISession', () => {
     return filePath
   }
 
-  it('returns null when filePath does not exist', () => {
-    expect(digestAISession(join(tempRoot, 'nope.jsonl'))).toBeNull()
+  it('returns null when filePath does not exist', async () => {
+    expect(await digestAISession(join(tempRoot, 'nope.jsonl'))).toBeNull()
   })
 
-  it('returns null when no cwd is recoverable from the session', () => {
+  it('returns null when no cwd is recoverable from the session', async () => {
     const fp = writeSession('orphan.jsonl', [
       { type: 'user', message: { role: 'user', content: 'no cwd here' } },
     ])
-    expect(digestAISession(fp)).toBeNull()
+    expect(await digestAISession(fp)).toBeNull()
   })
 
-  it('captures cwd, branch, version, first message, recent user msgs, last assistant text', () => {
+  it('captures cwd, branch, version, first message, recent user msgs, last assistant text', async () => {
     const fp = writeSession('rich.jsonl', [
       { type: 'permission-mode', sessionId: 'rich' },
       { type: 'user', message: { role: 'user', content: 'first goal' }, cwd: '/repos/proj', gitBranch: 'main', version: '1.2.3' },
@@ -142,7 +159,7 @@ describe('digestAISession', () => {
       { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'second reply (current)' }] } },
       { type: 'user', message: { role: 'user', content: 'third nudge' } },
     ])
-    const d = digestAISession(fp)!
+    const d = (await digestAISession(fp))!
     expect(d).toBeTruthy()
     expect(d.cwd).toBe('/repos/proj')
     expect(d.gitBranch).toBe('main')
@@ -154,30 +171,30 @@ describe('digestAISession', () => {
     expect(d.totalAssistantTurns).toBe(2)
   })
 
-  it('ignores synthetic <command-name> entries when picking first user message', () => {
+  it('ignores synthetic <command-name> entries when picking first user message', async () => {
     const fp = writeSession('syn.jsonl', [
       { type: 'user', message: { role: 'user', content: '<command-name>/exit</command-name>' }, cwd: '/x' },
       { type: 'user', message: { role: 'user', content: 'real prompt' }, cwd: '/x' },
     ])
-    const d = digestAISession(fp)!
+    const d = (await digestAISession(fp))!
     expect(d.firstUserMessage).toBe('real prompt')
   })
 
-  it('truncates very long user messages to MAX_PREVIEW_CHARS', () => {
+  it('truncates very long user messages to MAX_PREVIEW_CHARS', async () => {
     const long = 'x'.repeat(5000)
     const fp = writeSession('long.jsonl', [
       { type: 'user', message: { role: 'user', content: long }, cwd: '/x' },
     ])
-    const d = digestAISession(fp)!
+    const d = (await digestAISession(fp))!
     expect(d.firstUserMessage!.length).toBeLessThan(5000)
     expect(d.firstUserMessage!.endsWith('...')).toBe(true)
   })
 
-  it('skips malformed JSON lines without aborting', () => {
+  it('skips malformed JSON lines without aborting', async () => {
     const filePath = join(tempRoot, 'mixed.jsonl')
     const goodLine = JSON.stringify({ type: 'user', message: { role: 'user', content: 'good' }, cwd: '/x' })
     writeFileSync(filePath, '{not json\n' + goodLine + '\n', 'utf8')
-    const d = digestAISession(filePath)!
+    const d = (await digestAISession(filePath))!
     expect(d.firstUserMessage).toBe('good')
   })
 })

@@ -450,7 +450,7 @@ ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
 ipcMain.handle('aiSessions:list', async () => {
   try {
     const { listAISessions } = await import('./aiSessions')
-    return ok(listAISessions({}))
+    return ok(await listAISessions({}))
   } catch (e) {
     return err((e as Error).message)
   }
@@ -473,7 +473,7 @@ ipcMain.handle('aiSessions:digest', async (_evt, filePath: string) => {
       return err('filePath must be inside ~/.claude/projects')
     }
     const { digestAISession, renderDigestAsPrompt } = await import('./aiSessions')
-    const digest = digestAISession(requested)
+    const digest = await digestAISession(requested)
     if (!digest) return err('Could not digest session (missing cwd or unreadable)')
     return ok({ digest, prompt: renderDigestAsPrompt(digest) })
   } catch (e) {

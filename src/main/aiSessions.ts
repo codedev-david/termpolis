@@ -13,12 +13,19 @@
 // extract cwd, version, gitBranch, and the first user message. Skips full
 // scans — assumes ~100 sessions × 64 KB = a few MB total when the picker
 // opens. No state held — recomputed each call.
+//
+// IMPORTANT: All fs is async (fs.promises). Real users have hundreds of
+// session files (the author hit 803 / 515 MB on his own machine), so a
+// synchronous scan blocks the main process for seconds — looks like the
+// whole app is frozen because keystroke and terminal-output IPC queues
+// can't drain. Stay non-blocking.
 
-import { readdirSync, statSync, openSync, readSync, closeSync, readFileSync } from 'fs'
+import { promises as fsp } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
 const HEAD_BYTES = 64 * 1024
+const SCAN_CONCURRENCY = 16
 
 export interface AISessionSummary {
   id: string
@@ -46,26 +53,26 @@ function extractContentString(content: unknown): string | undefined {
   return undefined
 }
 
-function readHead(filePath: string, maxBytes: number): string {
-  const fd = openSync(filePath, 'r')
+async function readHead(filePath: string, maxBytes: number): Promise<string> {
+  const fh = await fsp.open(filePath, 'r')
   try {
     const buf = Buffer.alloc(maxBytes)
-    const n = readSync(fd, buf, 0, maxBytes, 0)
-    return buf.subarray(0, n).toString('utf8')
+    const { bytesRead } = await fh.read(buf, 0, maxBytes, 0)
+    return buf.subarray(0, bytesRead).toString('utf8')
   } finally {
-    closeSync(fd)
+    await fh.close()
   }
 }
 
-function summarizeFile(filePath: string, projectFolder: string): AISessionSummary | null {
+async function summarizeFile(filePath: string, projectFolder: string): Promise<AISessionSummary | null> {
   let stat
-  try { stat = statSync(filePath) } catch { return null }
+  try { stat = await fsp.stat(filePath) } catch { return null }
 
   const id = filePath.replace(/^.*[\\/]/, '').replace(/\.jsonl$/i, '')
   if (!id) return null
 
   let head = ''
-  try { head = readHead(filePath, HEAD_BYTES) } catch { return null }
+  try { head = await readHead(filePath, HEAD_BYTES) } catch { return null }
 
   const lines = head.split('\n')
   // The last line of a partial-head read may be truncated mid-JSON — drop it.
@@ -117,27 +124,45 @@ function summarizeFile(filePath: string, projectFolder: string): AISessionSummar
   }
 }
 
-export function listAISessions(opts?: { projectsRoot?: string }): AISessionSummary[] {
-  const root = opts?.projectsRoot ?? join(homedir(), '.claude', 'projects')
-  let folders: string[]
-  try { folders = readdirSync(root) } catch { return [] }
-
-  const out: AISessionSummary[] = []
-  for (const folder of folders) {
-    const folderPath = join(root, folder)
-    let entries: string[]
-    try {
-      const s = statSync(folderPath)
-      if (!s.isDirectory()) continue
-      entries = readdirSync(folderPath)
-    } catch { continue }
-    for (const entry of entries) {
-      if (!entry.endsWith('.jsonl')) continue
-      const summary = summarizeFile(join(folderPath, entry), folder)
-      if (summary) out.push(summary)
+// Bounded-concurrency map: limits how many file reads happen at once so
+// we don't spawn 800 parallel fd opens (Windows ulimit, AV scanning).
+async function mapWithConcurrency<T, U>(items: T[], limit: number, fn: (t: T) => Promise<U>): Promise<U[]> {
+  const out: U[] = new Array(items.length)
+  let i = 0
+  const workers: Promise<void>[] = []
+  const next = async (): Promise<void> => {
+    while (i < items.length) {
+      const idx = i++
+      out[idx] = await fn(items[idx])
     }
   }
+  for (let w = 0; w < Math.min(limit, items.length); w++) workers.push(next())
+  await Promise.all(workers)
+  return out
+}
 
+export async function listAISessions(opts?: { projectsRoot?: string }): Promise<AISessionSummary[]> {
+  const root = opts?.projectsRoot ?? join(homedir(), '.claude', 'projects')
+  let folders: string[]
+  try { folders = await fsp.readdir(root) } catch { return [] }
+
+  // Collect (filePath, projectFolder) pairs first, then process in parallel.
+  const targets: { filePath: string; projectFolder: string }[] = []
+  await Promise.all(folders.map(async folder => {
+    const folderPath = join(root, folder)
+    try {
+      const s = await fsp.stat(folderPath)
+      if (!s.isDirectory()) return
+      const entries = await fsp.readdir(folderPath)
+      for (const entry of entries) {
+        if (!entry.endsWith('.jsonl')) continue
+        targets.push({ filePath: join(folderPath, entry), projectFolder: folder })
+      }
+    } catch { /* unreadable folder — skip */ }
+  }))
+
+  const summaries = await mapWithConcurrency(targets, SCAN_CONCURRENCY, t => summarizeFile(t.filePath, t.projectFolder))
+  const out = summaries.filter((s): s is AISessionSummary => s !== null)
   out.sort((a, b) => b.lastModified - a.lastModified)
   return out
 }
@@ -172,21 +197,15 @@ export interface AISessionDigest {
   totalAssistantTurns: number
 }
 
-const MAX_CONTEXT_FILE_BYTES = 8 * 1024 * 1024 // 8 MB safety cap
 const MAX_PREVIEW_CHARS = 1200 // per excerpted message
 const RECENT_USER_MESSAGES = 3
 
-export function digestAISession(filePath: string): AISessionDigest | null {
-  let stat
-  try { stat = statSync(filePath) } catch { return null }
-  if (stat.size > MAX_CONTEXT_FILE_BYTES) {
-    // For oversized files, fall back to the lightweight head-only summary.
-    // The digest is still useful — just less complete.
-  }
+export async function digestAISession(filePath: string): Promise<AISessionDigest | null> {
+  try { await fsp.stat(filePath) } catch { return null }
 
   let raw = ''
   try {
-    raw = readFileSync(filePath, 'utf8')
+    raw = await fsp.readFile(filePath, 'utf8')
   } catch { return null }
 
   const id = filePath.replace(/^.*[\\/]/, '').replace(/\.jsonl$/i, '')
