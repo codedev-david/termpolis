@@ -34,7 +34,15 @@ describe('Welcome', () => {
 
   it('renders subtitle', () => {
     render(<Welcome {...defaultProps()} />)
-    expect(screen.getByText('The AI-native terminal for developers')).toBeInTheDocument()
+    expect(screen.getByText('Secure AI-Assisted Development')).toBeInTheDocument()
+  })
+
+  it('renders security tagline pill', () => {
+    render(<Welcome {...defaultProps()} />)
+    const pill = screen.getByTestId('welcome-security-tagline')
+    expect(pill).toBeInTheDocument()
+    expect(pill.textContent || '').toMatch(/Local-first/)
+    expect(pill.textContent || '').toMatch(/secret scanner/i)
   })
 
   it('shows all three action cards', () => {

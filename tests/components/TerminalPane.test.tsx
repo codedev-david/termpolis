@@ -138,6 +138,8 @@ vi.mock('../../src/renderer/src/lib/aiSuggestions', () => ({
 vi.mock('../../src/renderer/src/lib/exportTerminal', () => ({
   stripAnsi: vi.fn((s: string) => s),
   generateFilename: vi.fn(() => 'terminal-export.txt'),
+  formatAsCodeBlock: vi.fn((s: string) => '```\n' + s + '\n```'),
+  formatAsPlainText: vi.fn((s: string) => s),
 }))
 
 // --- Mock outputThrottle ---
@@ -1494,6 +1496,171 @@ describe('TerminalPane', () => {
       expect(mocks.mockStartRecording).toHaveBeenCalled()
       // Context menu should close
       expect(screen.queryByText('Start Recording')).not.toBeInTheDocument()
+    })
+  })
+
+  // =====================================================
+  // 25. Slack/Teams copy submenu (v1.11.43)
+  // =====================================================
+  describe('copy as code block / plain text / image', () => {
+    it('Ctrl+Shift+M with selection copies fenced output to clipboard', async () => {
+      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsCodeBlock as any).mockReturnValue('```\nhello\n```')
+      mocks.mockTerminal.getSelection.mockReturnValue('hello')
+
+      render(<TerminalPane {...defaultProps} />)
+      const event = new KeyboardEvent('keydown', {
+        ctrlKey: true,
+        shiftKey: true,
+        key: 'M',
+      })
+      const result = mockKeyHandlerCb?.(event)
+      expect(result).toBe(false)
+      expect(formatAsCodeBlock).toHaveBeenCalledWith('hello', 80)
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```\nhello\n```')
+    })
+
+    it('Ctrl+Shift+M with no selection does not write to clipboard', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      render(<TerminalPane {...defaultProps} />)
+      const event = new KeyboardEvent('keydown', {
+        ctrlKey: true,
+        shiftKey: true,
+        key: 'M',
+      })
+      mockKeyHandlerCb?.(event)
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('Copy as Code Block submenu item formats and copies', async () => {
+      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsCodeBlock as any).mockReturnValue('```\nselected\n```')
+      mocks.mockTerminal.getSelection.mockReturnValue('selected')
+
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy as Code Block'))
+
+      expect(formatAsCodeBlock).toHaveBeenCalledWith('selected', 80)
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```\nselected\n```')
+    })
+
+    it('Copy as Code Block with empty selection does nothing', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy as Code Block'))
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('Copy as Plain Text strips ANSI and copies', async () => {
+      const { formatAsPlainText } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsPlainText as any).mockReturnValue('plain output')
+      mocks.mockTerminal.getSelection.mockReturnValue('plain output')
+
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy as Plain Text'))
+
+      expect(formatAsPlainText).toHaveBeenCalledWith('plain output', 80)
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain output')
+    })
+
+    it('Copy as Plain Text with empty selection does nothing', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy as Plain Text'))
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('Copy with Command prepends last command and copies fence', async () => {
+      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsCodeBlock as any).mockReturnValue('```\nresult\n```')
+      mocks.mockTerminal.getSelection.mockReturnValue('result')
+
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      // Type a command and submit so lastCommandRef captures it
+      act(() => { mockOnDataCb?.('l'); mockOnDataCb?.('s'); mockOnDataCb?.('\r') })
+
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy with Command'))
+
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('`$ ls`\n```\nresult\n```')
+    })
+
+    it('Copy with Command falls back to plain fence when no last command', async () => {
+      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsCodeBlock as any).mockReturnValue('```\nresult\n```')
+      mocks.mockTerminal.getSelection.mockReturnValue('result')
+
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy with Command'))
+
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```\nresult\n```')
+    })
+
+    it('Copy with Command with empty selection does nothing', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy with Command'))
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('Copy as Image attempts canvas.toBlob and writes ClipboardItem', async () => {
+      // Set up a fake canvas inside the .xterm element
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const inner = container.querySelector('.flex-1.relative') as HTMLElement
+      const xtermDiv = document.createElement('div')
+      xtermDiv.className = 'xterm'
+      const canvas = document.createElement('canvas') as HTMLCanvasElement
+      ;(canvas as any).toBlob = (cb: (b: Blob) => void) => cb(new Blob(['fake-png'], { type: 'image/png' }))
+      xtermDiv.appendChild(canvas)
+      inner.appendChild(xtermDiv)
+
+      // Stub ClipboardItem
+      ;(window as any).ClipboardItem = class { constructor(public data: any) {} }
+      ;(navigator.clipboard as any).write = vi.fn(() => Promise.resolve())
+
+      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy as Image'))
+
+      await waitFor(() => {
+        expect((navigator.clipboard as any).write).toHaveBeenCalled()
+      })
+    })
+
+    it('Copy as Image is a no-op when there is no canvas', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const inner = container.querySelector('.flex-1.relative') as HTMLElement
+      ;(navigator.clipboard as any).write = vi.fn(() => Promise.resolve())
+      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy as Image'))
+      expect((navigator.clipboard as any).write).not.toHaveBeenCalled()
+    })
+
+    it('Copy as Image swallows toBlob errors', async () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const inner = container.querySelector('.flex-1.relative') as HTMLElement
+      const xtermDiv = document.createElement('div')
+      xtermDiv.className = 'xterm'
+      const canvas = document.createElement('canvas') as HTMLCanvasElement
+      ;(canvas as any).toBlob = () => { throw new Error('boom') }
+      xtermDiv.appendChild(canvas)
+      inner.appendChild(xtermDiv)
+
+      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200 })
+      // Should not throw
+      expect(() => fireEvent.click(screen.getByText('Copy as Image'))).not.toThrow()
     })
   })
 })

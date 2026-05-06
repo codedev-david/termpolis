@@ -4,6 +4,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellInfo, ShellType } from '../../types'
 import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
+import { SecuritySettings } from './SecuritySettings'
 
 function getConfigFiles(home: string): { label: string; path: string; lang: string }[] {
   const isWin = /^[A-Za-z]:\\/.test(home)
@@ -38,6 +39,7 @@ export function SettingsPane() {
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
+  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'keybindings' | 'agents' | 'shell'>('general')
 
   const handleCheckForUpdates = async () => {
     const updater = (window as any).updater
@@ -157,84 +159,120 @@ export function SettingsPane() {
           {updateStatus}
         </div>
       )}
-      <div className="flex flex-col gap-2">
-        <label className="text-sm font-medium">Default Shell</label>
-        <select
-          value={defaultShell}
-          onChange={e => setDefaultShell(e.target.value as ShellType)}
-          className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-none"
-        >
-          {shells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
-        </select>
-      </div>
-      <div className="flex items-center gap-3">
-        <label className="text-sm font-medium">Enable Autocomplete</label>
-        <button
-          onClick={() => setAutocompleteEnabled(!autocompleteEnabled)}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-            autocompleteEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'
-          }`}
-        >
-          <span
-            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-              autocompleteEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
-            }`}
-          />
-        </button>
-      </div>
-      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
-        <button
-          onClick={toggleTelemetry}
-          aria-label="Toggle crash reporting"
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
-            telemetryOptIn ? 'bg-[#0078d4]' : 'bg-[#555]'
-          }`}
-        >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-            telemetryOptIn ? 'translate-x-4.5' : 'translate-x-0.5'
-          }`} />
-        </button>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Send anonymous crash reports</span>
-          <span className="text-xs text-[#9ca3af] leading-relaxed">
-            Error stack traces and the app version only. No terminal contents, file paths, or
-            personal data. Takes effect on next launch.
-          </span>
-        </div>
-      </div>
-      <KeybindingsSettings />
-      <AgentRatingsSettings />
-      <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>
-        <label className="text-sm font-medium">Shell Config Files</label>
-        <div className="flex gap-1 border-b border-[#3c3c3c] pb-1">
-          {configFiles.map(f => (
-            <button
-              key={f.path}
-              onClick={() => setActiveFile(f.path)}
-              className={`text-sm px-3 py-1 rounded-t ${activeFile === f.path ? 'bg-[#2d2d2d] text-white' : 'text-[#9ca3af] hover:text-white'}`}
-            >{f.label}</button>
-          ))}
-        </div>
-        <div className="border border-[#3c3c3c] rounded overflow-hidden" style={{ height: 300 }}>
-          {activeFile && (
-            <Editor
-              height="100%"
-              language={configFiles.find(f => f.path === activeFile)?.lang ?? 'shell'}
-              theme="vs-dark"
-              value={fileContents[activeFile] ?? ''}
-              onChange={val => setFileContents(prev => ({ ...prev, [activeFile]: val ?? '' }))}
-              options={{ fontSize: 13, minimap: { enabled: false }, scrollBeyondLastLine: false }}
-            />
-          )}
-        </div>
-        <div className="flex justify-end">
+
+      <div className="flex gap-1 border-b border-[#3c3c3c] -mt-2" data-testid="settings-tabs">
+        {[
+          { id: 'general', label: 'General' },
+          { id: 'security', label: 'AI Security' },
+          { id: 'keybindings', label: 'Keybindings' },
+          { id: 'agents', label: 'Agent Ratings' },
+          { id: 'shell', label: 'Shell Config' },
+        ].map(t => (
           <button
-            onClick={() => handleSave(activeFile)}
-            disabled={saving[activeFile] || !activeFile}
-            className="px-4 py-1.5 text-sm rounded bg-[#0078d4] hover:bg-[#106ebe] text-white disabled:opacity-50"
-          >{saved[activeFile] ? '✓ Saved' : saving[activeFile] ? 'Saving…' : 'Save'}</button>
-        </div>
+            key={t.id}
+            onClick={() => setActiveTab(t.id as typeof activeTab)}
+            data-testid={`settings-tab-${t.id}`}
+            className={`text-sm px-4 py-2 -mb-px border-b-2 ${
+              activeTab === t.id
+                ? 'border-[#0078d4] text-white'
+                : 'border-transparent text-[#9ca3af] hover:text-white'
+            }`}
+          >
+            {t.id === 'security' && <i className="fa-solid fa-shield-halved text-[10px] mr-1.5 text-[#7ee2a3]"></i>}
+            {t.label}
+          </button>
+        ))}
       </div>
+
+      {activeTab === 'general' && (
+        <>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium">Default Shell</label>
+            <select
+              value={defaultShell}
+              onChange={e => setDefaultShell(e.target.value as ShellType)}
+              className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-none"
+            >
+              {shells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-medium">Enable Autocomplete</label>
+            <button
+              onClick={() => setAutocompleteEnabled(!autocompleteEnabled)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                autocompleteEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  autocompleteEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={toggleTelemetry}
+              aria-label="Toggle crash reporting"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                telemetryOptIn ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                telemetryOptIn ? 'translate-x-4.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Send anonymous crash reports</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                Error stack traces and the app version only. No terminal contents, file paths, or
+                personal data. Takes effect on next launch.
+              </span>
+            </div>
+          </div>
+        </>
+      )}
+
+      {activeTab === 'security' && <SecuritySettings />}
+
+      {activeTab === 'keybindings' && <KeybindingsSettings />}
+
+      {activeTab === 'agents' && <AgentRatingsSettings />}
+
+      {activeTab === 'shell' && (
+        <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>
+          <label className="text-sm font-medium">Shell Config Files</label>
+          <div className="flex gap-1 border-b border-[#3c3c3c] pb-1">
+            {configFiles.map(f => (
+              <button
+                key={f.path}
+                onClick={() => setActiveFile(f.path)}
+                className={`text-sm px-3 py-1 rounded-t ${activeFile === f.path ? 'bg-[#2d2d2d] text-white' : 'text-[#9ca3af] hover:text-white'}`}
+              >{f.label}</button>
+            ))}
+          </div>
+          <div className="border border-[#3c3c3c] rounded overflow-hidden" style={{ height: 300 }}>
+            {activeFile && (
+              <Editor
+                height="100%"
+                language={configFiles.find(f => f.path === activeFile)?.lang ?? 'shell'}
+                theme="vs-dark"
+                value={fileContents[activeFile] ?? ''}
+                onChange={val => setFileContents(prev => ({ ...prev, [activeFile]: val ?? '' }))}
+                options={{ fontSize: 13, minimap: { enabled: false }, scrollBeyondLastLine: false }}
+              />
+            )}
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={() => handleSave(activeFile)}
+              disabled={saving[activeFile] || !activeFile}
+              className="px-4 py-1.5 text-sm rounded bg-[#0078d4] hover:bg-[#106ebe] text-white disabled:opacity-50"
+            >{saved[activeFile] ? '✓ Saved' : saving[activeFile] ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,8 +1,8 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.11.42",
-  "description": "AI-native cross-platform terminal manager with split panes, command autocomplete, AI agent profiles, MCP server, and built-in tools",
+  "version": "1.11.43",
+  "description": "Secure AI-Assisted Development. Local-first multi-agent terminal for Claude, Codex, Gemini, and Qwen with a built-in AI Security Center (pre-paste secret scanner, Gemini paid-tier enforcement, auditable outbound log), MCP server, split panes, and live observability.",
   "author": "Termpolis",
   "license": "Apache-2.0",
   "type": "module",

@@ -230,6 +230,19 @@ contextBridge.exposeInMainWorld('updater', {
   },
 })
 
+// AI Security Center — outbound-data controls (redaction, audit, agent facts).
+contextBridge.exposeInMainWorld('aiSecurity', {
+  getStatus: () => ipcRenderer.invoke('aiSecurity:get-status'),
+  setRedaction: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-redaction', { value }),
+  setAudit: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-audit', { value }),
+  setStrictGemini: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-strict-gemini', { value }),
+  scan: (text: string) => ipcRenderer.invoke('aiSecurity:scan', { text }),
+  recentAudit: (limit?: number) => ipcRenderer.invoke('aiSecurity:recent-audit', { limit }),
+  clearAudit: () => ipcRenderer.invoke('aiSecurity:clear-audit'),
+  append: (entry: { agent: string; event: string; terminalId?: string; byteCount?: number; hitCount?: number; notes?: string }) =>
+    ipcRenderer.invoke('aiSecurity:append', entry),
+})
+
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {
   onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => {

@@ -1,6 +1,6 @@
 # Termpolis Terms of Use
 
-_Last updated: 2026-04-20_
+_Last updated: 2026-05-05_
 
 Thanks for trying Termpolis. These terms govern your use of the Termpolis
 desktop application and the source code published at
@@ -63,6 +63,42 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## 5a. AI Security Center — scope and limits
+
+Termpolis ships an in-app **AI Security Center** (Settings → Security) with
+the goal of giving administrators visibility into outbound AI traffic.
+**These features are best-effort, not regulatory-grade controls.** In
+particular:
+
+- The **per-agent training-disposition facts** displayed in the panel are
+  summaries of public provider Terms of Service as of the build date.
+  Provider terms can change without notice. Termpolis does not, and cannot,
+  guarantee that any third-party AI provider (Anthropic, OpenAI, Google,
+  Alibaba/DashScope, Ollama, or any future provider) will honor the data-
+  handling commitments described. **You must verify provider terms via the
+  links provided before transmitting confidential data.**
+- The **redaction scanner** uses regular expressions targeted at well-shaped
+  secrets (AWS keys, GitHub PATs, OpenAI/Anthropic/Google keys, JWTs, PEM
+  private keys, `.env`-style assignments). It is **not** a comprehensive Data
+  Loss Prevention (DLP) solution. Custom or unusual secret formats — including
+  many internal corporate tokens — will not be detected.
+- The **audit log** records what Termpolis observes locally. It does not
+  capture activity that bypasses Termpolis (for example, an AI agent run
+  from a separate native terminal window or a different application).
+- **Strict Mode** for Gemini intercepts shell-level invocations of the
+  `gemini` binary. It does not block out-of-band paths (a different binary
+  name, a script that invokes the underlying Google API directly, etc.).
+
+To the maximum extent permitted by law, the authors and contributors of
+Termpolis disclaim all liability for any data leak, breach, regulatory
+violation, contractual breach, or business loss arising from your use of any
+AI agent launched through this application — including but not limited to:
+use of free-tier AI accounts that send prompts to provider training
+pipelines; use of corporate code under personal AI accounts; misconfiguration
+of provider-side data controls; reliance on the redaction scanner for
+secrets it does not detect; or any other circumstance covered by section 5
+above.
 
 ## 6. Privacy
 

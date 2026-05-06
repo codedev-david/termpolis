@@ -2,10 +2,17 @@
   <img src="assets/logo-termpolis.png" alt="Termpolis Logo" width="200">
 </p>
 
-<h1 align="center">Termpolis</h1>
+<h1 align="center">Termpolis — Secure AI-Assisted Development</h1>
 
 <p align="center">
-  <strong>The open-source multi-agent terminal where Claude, Codex, Gemini, and Qwen work together as a team.</strong>
+  <strong>The open-source multi-agent terminal where Claude, Codex, Gemini, and Qwen work together as a team — without your source code leaving the machine.</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/🛡_Local--first-no_cloud_no_telemetry-1f6e3a?style=for-the-badge" alt="Local-first">
+  <img src="https://img.shields.io/badge/🔒_No_browser/IDE_extension-0078d4?style=for-the-badge" alt="No extension">
+  <img src="https://img.shields.io/badge/📋_Pre--paste_secret_scanner-FFB74D?style=for-the-badge" alt="Secret scanner">
+  <img src="https://img.shields.io/badge/📜_Auditable_outbound_log-7ee2a3?style=for-the-badge" alt="Audit log">
 </p>
 
 <p align="center">
@@ -64,6 +71,27 @@ A dedicated Claude Code instance acts as the conductor — it reasons about your
 | DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★★ |
 | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★ |
 | Token Cost | $$$$ | $$$ | $$ | $$ |
+
+---
+
+---
+
+### 🛡 Source-Code Safety: AI Security Center
+
+CTOs ask: *"How do I let my team use Claude/Codex/Gemini/Qwen without my proprietary code ending up in someone's training pipeline?"* — Termpolis is the answer.
+
+**Settings → Security** ships a complete control panel built on these principles:
+
+- **No browser or IDE extension.** Termpolis is a native terminal — not a Chrome plugin or VS Code extension shipping your buffer to a SaaS backend.
+- **Per-provider training-disposition facts, sourced from live ToS pages.** Claude (default-off), Codex (default-off), Gemini (opt-out-required — flagged yellow), Qwen Code (default-off paid / local Ollama mode).
+- **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify whether you're on a paid (safe) tier or the free OAuth tier (Google may use prompts for product improvement).
+- **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts `gemini` invocations and refuses to forward them unless paid-tier env vars are detected. The blocked launch is recorded in the audit log.
+- **Pre-paste secret scanner.** Regex-based detection of AWS keys, GitHub PATs, OpenAI/Anthropic/Google API keys, JWTs, PEM private keys, and `.env`-style assignments — with redacted-preview copy.
+- **Local JSONL audit log.** Append-only, 10MB-rotated. Every AI-agent terminal launch records timestamp, agent, byte count, optional notes. Stays on the machine. Wipeable.
+- **Built-in legal disclaimer.** Apache 2.0 "AS IS" — full disclaimer in Settings → Security and in [`TERMS.md`](TERMS.md).
+- **Zero accounts. Zero telemetry.** No login. No phone-home. MCP server bound to 127.0.0.1 only.
+
+See [`PRIVACY.md`](PRIVACY.md) for the data-handling spec and [`TERMS.md`](TERMS.md) for the licence + liability disclaimer.
 
 ---
 

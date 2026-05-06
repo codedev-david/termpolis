@@ -52,7 +52,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
           </div>
           <div>
             <h2 id="onboarding-title" className="text-lg font-semibold text-[#d4d4d4]">Welcome to Termpolis</h2>
-            <p className="text-xs text-[#9ca3af]">The AI-native terminal for developers</p>
+            <p className="text-xs text-[#9ca3af]">Secure AI-Assisted Development</p>
           </div>
         </div>
 

@@ -8,7 +8,7 @@ PackageName: Termpolis
 PackageUrl: https://github.com/codedev-david/termpolis
 License: Apache-2.0
 LicenseUrl: https://github.com/codedev-david/termpolis/blob/main/LICENSE
-ShortDescription: AI-native terminal manager where Claude, Codex, Gemini, and Qwen work together as a team
+ShortDescription: Secure AI-Assisted Development — local-first multi-agent terminal where Claude, Codex, Gemini, and Qwen work together as a team
 Description: |-
   The first terminal where Claude, Codex, Gemini, and Qwen work together as a team.
   Smart task routing assigns the right work to the right AI model. An intelligent

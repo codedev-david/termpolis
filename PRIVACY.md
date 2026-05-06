@@ -1,7 +1,7 @@
 # Privacy Policy
 
-**Termpolis**
-Last updated: April 20, 2026
+**Termpolis — Secure AI-Assisted Development**
+Last updated: May 5, 2026
 
 ## Overview
 
@@ -73,6 +73,35 @@ traffic.
 - Your username, email, machine name, or hostname.
 - Git repository contents, remotes, or commit metadata.
 - AI agent prompts or responses.
+
+## AI Security Center (Settings → Security)
+
+Starting in v1.11.43, Termpolis ships an in-app **AI Security Center** that
+gives administrators verifiable controls over outbound AI traffic. None of
+these features send data to Termpolis or any third party — every check runs
+locally and every log stays on the machine.
+
+- **Per-agent training-disposition facts**, sourced from the published
+  commercial-tier ToS pages of each provider. Updated with each release.
+- **Gemini account-mode auto-detection.** Reads
+  `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_GCA`,
+  `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify whether
+  the Gemini CLI will use a paid tier (training-excluded) or fall back to
+  free OAuth (which Google may use for product improvement).
+- **Strict Mode — block free-tier Gemini.** When enabled, Termpolis
+  intercepts `gemini` invocations from any terminal and refuses to forward
+  them unless paid-tier credentials are detected.
+- **Pre-paste secret scanner.** Regex-based detection of well-shaped
+  secrets (AWS keys, GitHub PATs, OpenAI/Anthropic/Google API keys, JWTs,
+  PEM private keys, `.env` assignments). Returns redacted preview.
+- **Local audit log** (`ai-security-audit.jsonl` in `userData`) — every
+  AI-agent terminal launch, optionally with byte counts and hit counts.
+  Append-only, 10MB-rotated, wipeable from Settings.
+
+The redaction scanner is **not a comprehensive DLP solution** — it targets
+high-confidence patterns to keep false-positive rates low. Custom corporate
+secrets must be vetted separately. See `TERMS.md` for the full liability
+disclaimer.
 
 ## Third-Party Services
 

@@ -49,7 +49,14 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
         {/* Title */}
         <div className="text-center">
           <h1 className="text-xl font-semibold text-[#d4d4d4] mb-1">Welcome to Termpolis</h1>
-          <p className="text-sm text-[#9ca3af]">The AI-native terminal for developers</p>
+          <p className="text-sm text-[#9ca3af]">Secure AI-Assisted Development</p>
+          <p
+            className="text-[11px] text-[#7ee2a3] mt-1 inline-flex items-center gap-1"
+            data-testid="welcome-security-tagline"
+          >
+            <i className="fa-solid fa-shield-halved"></i>
+            Local-first · No browser extension · Auditable outbound traffic · Pre-paste secret scanner
+          </p>
         </div>
 
         {/* Action Cards */}

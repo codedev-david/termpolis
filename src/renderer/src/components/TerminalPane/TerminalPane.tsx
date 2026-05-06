@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlock, formatAsPlainText } from '../../lib/exportTerminal'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
@@ -235,12 +235,20 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (res.data.output) term.write(res.data.output)
     }).catch(() => { /* terminal may have been killed before replay */ })
 
-    // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste)
+    // Copy/paste support (Ctrl+Shift+C to copy, Ctrl+Shift+V to paste,
+    // Ctrl+Shift+M to copy as Slack/Teams-friendly code block)
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') {
         const selection = term.getSelection()
         if (selection) navigator.clipboard.writeText(selection)
         return false // prevent terminal from processing
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'M') {
+        const selection = term.getSelection()
+        if (selection) {
+          navigator.clipboard.writeText(formatAsCodeBlock(selection, term.cols))
+        }
+        return false
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
         navigator.clipboard.readText().then(text => {
@@ -545,6 +553,72 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               }}
             >
               Copy<span className="float-right text-[#999]">Ctrl+Shift+C</span>
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                const term = termRef.current
+                const selection = term?.getSelection()
+                if (term && selection) {
+                  navigator.clipboard.writeText(formatAsCodeBlock(selection, term.cols))
+                }
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+              title="Strip ANSI, reflow soft-wraps, wrap in triple backticks. Pastes cleanly into Slack, Teams, GitHub, Discord."
+            >
+              Copy as Code Block<span className="float-right text-[#999]">Ctrl+Shift+M</span>
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                const term = termRef.current
+                const selection = term?.getSelection()
+                if (term && selection) {
+                  navigator.clipboard.writeText(formatAsPlainText(selection, term.cols))
+                }
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+              title="Strip ANSI colors and reflow soft-wraps. No markdown fence."
+            >
+              Copy as Plain Text
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                const term = termRef.current
+                const selection = term?.getSelection()
+                if (term && selection) {
+                  const cmd = lastCommandRef.current
+                  const body = formatAsCodeBlock(selection, term.cols)
+                  const withCmd = cmd ? '`$ ' + cmd + '`\n' + body : body
+                  navigator.clipboard.writeText(withCmd)
+                }
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+              title="Prepend the last command that produced this output."
+            >
+              Copy with Command
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={async () => {
+                const xtermEl = containerRef.current?.querySelector('.xterm') as HTMLElement | null
+                if (xtermEl) {
+                  try {
+                    const canvas = xtermEl.querySelector('canvas') as HTMLCanvasElement | null
+                    if (canvas) {
+                      const blob: Blob | null = await new Promise(res => canvas.toBlob(b => res(b), 'image/png'))
+                      if (blob && navigator.clipboard && (window as any).ClipboardItem) {
+                        await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': blob })])
+                      }
+                    }
+                  } catch {}
+                }
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+              title="Copy a PNG of the visible terminal area to the clipboard."
+            >
+              Copy as Image
             </button>
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"

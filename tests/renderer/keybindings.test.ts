@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesKeybinding, eventToKeybinding } from '../../src/renderer/src/lib/keybindings'
+import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS } from '../../src/renderer/src/lib/keybindings'
 
 function key(overrides: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -125,5 +125,30 @@ describe('eventToKeybinding', () => {
 
   it('metaKey produces Ctrl+ prefix', () => {
     expect(eventToKeybinding(key({ metaKey: true, key: 'z' }))).toBe('Ctrl+Z')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// copyAsCodeBlock binding (added v1.11.43)
+// ---------------------------------------------------------------------------
+
+describe('copyAsCodeBlock binding', () => {
+  it('defaults to Ctrl+Shift+M', () => {
+    expect(DEFAULT_KEYBINDINGS.copyAsCodeBlock).toBe('Ctrl+Shift+M')
+  })
+
+  it('has a Slack/Teams-flavored label', () => {
+    expect(KEYBINDING_LABELS.copyAsCodeBlock).toMatch(/Slack/i)
+    expect(KEYBINDING_LABELS.copyAsCodeBlock).toMatch(/Teams/i)
+  })
+
+  it('matches a real Ctrl+Shift+M event', () => {
+    expect(matchesKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'M' }), 'Ctrl+Shift+M')).toBe(true)
+  })
+
+  it('every default has a label', () => {
+    for (const k of Object.keys(DEFAULT_KEYBINDINGS)) {
+      expect(KEYBINDING_LABELS[k as keyof typeof KEYBINDING_LABELS]).toBeTruthy()
+    }
   })
 })

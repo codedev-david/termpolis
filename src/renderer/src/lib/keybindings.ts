@@ -1,5 +1,6 @@
 export interface KeybindingMap {
   copy: string
+  copyAsCodeBlock: string
   paste: string
   historySearch: string
   newTerminal: string
@@ -13,6 +14,7 @@ export interface KeybindingMap {
 
 export const DEFAULT_KEYBINDINGS: KeybindingMap = {
   copy: 'Ctrl+Shift+C',
+  copyAsCodeBlock: 'Ctrl+Shift+M',
   paste: 'Ctrl+Shift+V',
   historySearch: 'Ctrl+Shift+H',
   newTerminal: 'Ctrl+Shift+T',
@@ -26,6 +28,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingMap = {
 
 export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   copy: 'Copy',
+  copyAsCodeBlock: 'Copy as Code Block (Slack/Teams)',
   paste: 'Paste',
   historySearch: 'Search History',
   newTerminal: 'New Terminal',

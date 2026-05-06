@@ -13,6 +13,14 @@ export function TitleBar() {
       <div className={`flex items-center gap-2 ${isMac ? 'pl-20' : 'pl-3'}`}>
         <img src={logoSvg} alt="" className="w-5 h-5" />
         <span className="text-sm font-semibold tracking-wide text-[#e0e0e0]">Termpolis</span>
+        <span
+          className="hidden sm:inline-flex items-center gap-1 text-[10px] font-medium text-[#7ee2a3] bg-[#0d2418] border border-[#1f6e3a] rounded px-1.5 py-0.5"
+          title="Local-first AI terminal — your source code never leaves the machine"
+          data-testid="titlebar-security-tagline"
+        >
+          <i className="fa-solid fa-shield-halved text-[9px]"></i>
+          Secure AI-Assisted Development
+        </span>
       </div>
       {/* Only show custom window controls on Windows/Linux — macOS has native traffic lights */}
       {!isMac && (

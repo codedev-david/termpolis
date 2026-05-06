@@ -27,7 +27,21 @@ beforeAll(() => {
     quitAndInstall: vi.fn().mockResolvedValue({ success: true }),
     onState: vi.fn(() => () => {}),
   }
+  ;(window as any).aiSecurity = {
+    getStatus: vi.fn().mockResolvedValue({ success: true, data: { settings: { redactionEnabled: false, auditEnabled: false }, facts: [], auditPath: '/tmp/audit.jsonl' } }),
+    setRedaction: vi.fn().mockResolvedValue({ success: true, data: { redactionEnabled: true, auditEnabled: false } }),
+    setAudit: vi.fn().mockResolvedValue({ success: true, data: { redactionEnabled: false, auditEnabled: true } }),
+    scan: vi.fn().mockResolvedValue({ success: true, data: { hitCount: 0, hits: [], redacted: '' } }),
+    recentAudit: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    clearAudit: vi.fn().mockResolvedValue({ success: true }),
+    append: vi.fn().mockResolvedValue({ success: true }),
+  }
 })
+
+// Helper: click a settings tab so its content renders.
+function openTab(tabId: 'general' | 'security' | 'keybindings' | 'agents' | 'shell') {
+  fireEvent.click(screen.getByTestId(`settings-tab-${tabId}`))
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -163,6 +177,7 @@ describe('SettingsPane', () => {
 
   it('renders Monaco editor for config files', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByTestId('monaco-editor')).toBeInTheDocument()
     })
@@ -170,6 +185,7 @@ describe('SettingsPane', () => {
 
   it('renders Shell Config Files section', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByText('Shell Config Files')).toBeInTheDocument()
     })
@@ -177,6 +193,7 @@ describe('SettingsPane', () => {
 
   it('renders a Save button for config files', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByText('Save')).toBeInTheDocument()
     })
@@ -184,6 +201,7 @@ describe('SettingsPane', () => {
 
   it('calls writeConfigFile when Save is clicked', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByText('Save')).toBeInTheDocument()
     })
@@ -195,16 +213,19 @@ describe('SettingsPane', () => {
 
   it('shows Agent Capability Ratings section', () => {
     render(<SettingsPane />)
+    openTab('agents')
     expect(screen.getByText('Agent Capability Ratings')).toBeInTheDocument()
   })
 
   it('shows Keyboard Shortcuts heading', () => {
     render(<SettingsPane />)
+    openTab('keybindings')
     expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument()
   })
 
   it('renders config file tabs after loading', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByText('.bashrc')).toBeInTheDocument()
     })
@@ -212,6 +233,7 @@ describe('SettingsPane', () => {
 
   it('switches active config file tab on click', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByText('.bashrc')).toBeInTheDocument()
     })
@@ -225,6 +247,7 @@ describe('SettingsPane', () => {
   it('renders PS7/PS5 profile entries when home is a Windows path', async () => {
     ;(window as any).termpolis.getHomedir = vi.fn().mockResolvedValue({ success: true, data: 'C:\\Users\\test' })
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByText('PS7 Profile')).toBeInTheDocument()
       expect(screen.getByText('PS5 Profile')).toBeInTheDocument()
@@ -247,6 +270,7 @@ describe('SettingsPane', () => {
 
   it('handles undefined editor onChange value via ?? fallback', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByTestId('monaco-editor')).toBeInTheDocument()
     })
@@ -259,6 +283,7 @@ describe('SettingsPane', () => {
 
   it('handles defined editor onChange value', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByTestId('monaco-editor')).toBeInTheDocument()
     })
@@ -268,6 +293,7 @@ describe('SettingsPane', () => {
 
   it('shows Saved status after save completes', async () => {
     render(<SettingsPane />)
+    openTab('shell')
     const saveBtn = await screen.findByText('Save')
     fireEvent.click(saveBtn)
     // writeConfigFile resolves, then "✓ Saved" should appear
@@ -329,10 +355,28 @@ describe('SettingsPane', () => {
   it('handles readConfigFile returning no data (?? fallback)', async () => {
     ;(window as any).termpolis.readConfigFile = vi.fn().mockResolvedValue({ success: true })
     render(<SettingsPane />)
+    openTab('shell')
     await waitFor(() => {
       expect(screen.getByTestId('monaco-editor')).toBeInTheDocument()
     })
     // Editor value should have been set to '' from the ?? fallback
     ;(window as any).termpolis.readConfigFile = vi.fn().mockResolvedValue({ success: true, data: '# config content' })
+  })
+
+  it('renders all 5 settings tabs by default', () => {
+    render(<SettingsPane />)
+    expect(screen.getByTestId('settings-tab-general')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-tab-security')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-tab-keybindings')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-tab-agents')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-tab-shell')).toBeInTheDocument()
+  })
+
+  it('AI Security tab renders the security panel', async () => {
+    render(<SettingsPane />)
+    openTab('security')
+    await waitFor(() => {
+      expect(screen.getByTestId('security-settings')).toBeInTheDocument()
+    })
   })
 })

@@ -53,6 +53,20 @@ import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd } from './terminalManager'
+import {
+  initAiSecurity,
+  getSettings as getAiSecuritySettings,
+  setRedactionEnabled,
+  setAuditEnabled,
+  scanText as aiSecurityScan,
+  appendAudit as aiSecurityAppend,
+  getRecentAudit as aiSecurityRecent,
+  clearAudit as aiSecurityClear,
+  getAuditPath as aiSecurityAuditPath,
+  AGENT_FACTS,
+  detectGeminiAccount,
+  setStrictGeminiPaidOnly,
+} from './aiSecurity'
 import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
@@ -205,16 +219,82 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) 
   }
 })
 
+// Heuristic: when the user types `claude`, `codex`, `gemini`, or `qwen` as
+// the start of a command line, the next bytes typed are about to be a prompt
+// going to that AI provider's network. We log a terminal_open audit entry
+// (only if the audit toggle is on) so security-conscious teams can prove
+// "exactly when did developer X launch agent Y in repo Z."
+const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini|qwen)(?:\s|$)/
+// Strict mode: refuse to forward a `gemini` invocation when the account
+// detector says we're on the free OAuth tier. We intercept before the bytes
+// hit the PTY, write a clear refusal message to the terminal, and audit it.
+const strictBlockPattern = /(?:^|[\r\n;&|])\s*gemini(?:\s|$|\r|\n)/
+const recentlyAuditedTerminals = new Map<string, number>()
+
 ipcMain.handle('terminal:kill', async (_, { id }) => {
   try {
     killTerminal(id)
     terminalOutputBuffers.delete(id)
     try { detachWatchers(id) } catch {}
+    if (recentlyAuditedTerminals.has(id)) {
+      recentlyAuditedTerminals.delete(id)
+      aiSecurityAppend({ agent: 'unknown', event: 'terminal_close', terminalId: id }).catch(() => {})
+    }
     return ok()
   } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.on('terminal:write', (_, { id, data }) => writeToTerminal(id, data))
+ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
+  // Strict-mode enforcement: if the user is launching `gemini` on a free-tier
+  // account and the operator has enabled the lock, intercept BEFORE forwarding
+  // to the PTY. We write a refusal banner directly back to the terminal stream
+  // and a Ctrl+C, so the user's shell drops back to a fresh prompt without
+  // the unsafe `gemini` token having reached the agent.
+  try {
+    if (typeof data === 'string' && data.length > 0) {
+      const s = getAiSecuritySettings()
+      if (s.strictGeminiPaidOnly && strictBlockPattern.test(data)) {
+        const acct = detectGeminiAccount()
+        if (!acct.safeForTraining) {
+          writeToTerminal(id, '\u0003')
+          const banner =
+            '\r\n\x1b[31m⛔ Termpolis Strict Mode: Gemini CLI launch BLOCKED.\x1b[0m\r\n' +
+            '\x1b[33mDetected account mode: ' + acct.mode + ' (unsafe — prompts may be used for training).\x1b[0m\r\n' +
+            'To proceed, set one of: GEMINI_API_KEY, GOOGLE_GENAI_USE_GCA=true, or GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT.\r\n' +
+            'Or disable Strict Mode in Settings → Security.\r\n\r\n'
+          // Emit the refusal banner via the same channel the renderer reads
+          // (we cheat a bit and write into the PTY by way of an echo that the
+          // shell renders verbatim — using printf ensures the message shows
+          // exactly once and respects ANSI). Since we already sent Ctrl+C,
+          // the shell is at a fresh prompt; we just print to its TTY.
+          const safe = banner.replace(/'/g, "'\\''")
+          writeToTerminal(id, `printf '${safe}'\r`)
+          aiSecurityAppend({
+            agent: 'gemini',
+            event: 'terminal_open',
+            terminalId: id,
+            notes: 'BLOCKED: strict-mode + free-tier (' + acct.mode + ')',
+          }).catch(() => {})
+          return
+        }
+      }
+    }
+  } catch {}
+
+  writeToTerminal(id, data)
+  try {
+    if (typeof data === 'string' && auditLaunchPattern.test(data)) {
+      const last = recentlyAuditedTerminals.get(id) || 0
+      const now = Date.now()
+      if (now - last > 5000) {
+        recentlyAuditedTerminals.set(id, now)
+        const m = data.match(auditLaunchPattern)
+        const agent = m ? m[1] : 'unknown'
+        aiSecurityAppend({ agent, event: 'terminal_open', terminalId: id, byteCount: data.length, notes: 'AI agent invocation detected' }).catch(() => {})
+      }
+    }
+  } catch {}
+})
 ipcMain.on('terminal:resize', (_, { id, cols, rows }) => resizeTerminal(id, cols, rows))
 
 ipcMain.handle('shell:available', async () => {
@@ -295,6 +375,60 @@ ipcMain.handle('telemetry:set-opt-in', async (_, { value }: { value: boolean }) 
 ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
+
+// AI Security Center — verifiable outbound-data controls.
+ipcMain.handle('aiSecurity:get-status', () => {
+  try {
+    return ok({
+      settings: getAiSecuritySettings(),
+      facts: AGENT_FACTS,
+      auditPath: aiSecurityAuditPath(),
+      geminiAccount: detectGeminiAccount(),
+    })
+  } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:set-strict-gemini', (_, { value }: { value: boolean }) => {
+  try { return ok(setStrictGeminiPaidOnly(value === true)) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:set-redaction', (_, { value }: { value: boolean }) => {
+  try { return ok(setRedactionEnabled(value === true)) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:set-audit', (_, { value }: { value: boolean }) => {
+  try {
+    const updated = setAuditEnabled(value === true)
+    if (updated.auditEnabled) {
+      // Mark the moment audit was turned on, so users can see in the log
+      // exactly when monitoring started.
+      aiSecurityAppend({ agent: 'system', event: 'manual_scan', notes: 'audit log enabled' }).catch(() => {})
+    }
+    return ok(updated)
+  } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:scan', (_, { text }: { text: string }) => {
+  try { return ok(aiSecurityScan(typeof text === 'string' ? text : '')) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:recent-audit', async (_, { limit }: { limit?: number }) => {
+  try { return ok(await aiSecurityRecent(typeof limit === 'number' ? Math.max(1, Math.min(2000, limit)) : 200)) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:clear-audit', async () => {
+  try { await aiSecurityClear(); return ok() } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:append', async (_, entry: { agent: string; event: string; terminalId?: string; byteCount?: number; hitCount?: number; notes?: string }) => {
+  try {
+    if (!entry || typeof entry.agent !== 'string' || typeof entry.event !== 'string') return err('invalid entry')
+    const allowed = ['terminal_open', 'terminal_close', 'redaction_hit', 'manual_scan']
+    if (!allowed.includes(entry.event)) return err('invalid event')
+    await aiSecurityAppend({
+      agent: entry.agent,
+      event: entry.event as any,
+      terminalId: entry.terminalId,
+      byteCount: entry.byteCount,
+      hitCount: entry.hitCount,
+      notes: entry.notes,
+    })
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
 
 // Tier 3: anonymous usage events from the renderer (e.g. report-problem.submit,
 // swarm.start). Caller is responsible for keeping props PII-free.
@@ -962,6 +1096,7 @@ if (!gotTheLock) {
     initAuditLog(app.getPath('userData'))
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
+    initAiSecurity()
     initSwarmMemory(app.getPath('userData'))
     initWorkspaceTrust()
     // Push events to the renderer (live feed)

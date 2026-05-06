@@ -1,8 +1,8 @@
 # Termpolis Documentation
 
-The definitive guide to Termpolis — an AI-native terminal where Claude, Codex, Gemini, and Qwen work together as a team, coordinated by a dedicated AI conductor.
+The definitive guide to Termpolis — **Secure AI-Assisted Development**. The local-first multi-agent terminal where Claude, Codex, Gemini, and Qwen work as a team, coordinated by a dedicated AI conductor, **without your source code leaving the machine**.
 
-This document covers installation, every feature, every panel, every keyboard shortcut, and the architecture behind the swarm. Screenshots live in `../e2e/screenshots/docs/` and are mirrored to the website at `termpolis-web/docs/screenshots/`.
+This document covers installation, the AI Security Center, the share-to-Slack/Teams workflow, every feature, every panel, every keyboard shortcut, and the architecture behind the swarm. Screenshots live in `../e2e/screenshots/docs/` and are mirrored to the website at `termpolis-web/docs/screenshots/`.
 
 ---
 
@@ -49,6 +49,7 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 
 **What makes it different:**
 
+- **Secure AI-Assisted Development**: a built-in AI Security Center (Settings → Security) ships a pre-paste secret scanner, Gemini paid-tier auto-detection, Strict Mode enforcement, a local JSONL audit log, and per-provider training-disposition facts sourced from live ToS pages. See the [Security](#security-center) section.
 - **Multi-agent swarm**: Claude Code, Codex, Gemini CLI, and Qwen Code work together on a task. A dedicated Claude Code instance acts as the conductor.
 - **MCP server** baked in: AI agents can control Termpolis via Model Context Protocol — open terminals, run commands, send messages.
 - **Transparent routing**: every subtask shows *which* agent got it, *why*, and *what it cost*.
@@ -56,8 +57,29 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 - **Intervention controls**: pause, cancel, or steer any agent mid-task without leaving the feed.
 - **Shared memory**: a RAG-backed memory store that any agent can read and write via MCP.
 - **MCP-native end to end**: all four agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
+- **Share-ready output**: a four-way Copy submenu (`Ctrl+Shift+M`) — Copy as Code Block, Plain Text, With Command, or PNG Image — turns any terminal selection into a Slack/Teams/PR-ready paste. See [Copy for Slack / Teams / PRs](#copy-for-slack-teams-prs).
 
-Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well.
+Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well, securely.
+
+## Security Center
+
+The **AI Security Center** at Settings → Security is the security backbone of Termpolis. Every check runs on the local machine. None of these features send data to Termpolis or any third party.
+
+- **Per-provider training-disposition facts.** Live ToS-sourced summaries: Claude (default off), Codex (default off), Gemini paid (excluded), Gemini free OAuth (Google may use prompts, flagged yellow), Qwen Code paid DashScope (excluded) / local Ollama (never leaves machine).
+- **Pre-paste secret scanner.** Regex detection of AWS keys, GitHub PATs, OpenAI/Anthropic/Google API keys, JWTs, PEM private keys, and `.env`-style assignments. Returns redacted preview. Not a full DLP — custom corporate tokens may not match.
+- **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_GCA`, and `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify which tier the Gemini CLI will hit (Vertex / Code Assist / Paid API key / Free OAuth).
+- **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts shell-level `gemini` invocations and refuses to forward them unless paid-tier credentials are detected. Blocked launches are recorded in the audit log as `BLOCKED: strict-mode + free-tier`.
+- **Local JSONL audit log.** Every AI-agent terminal launch can be appended to `ai-security-audit.jsonl` in userData. Append-only, 10 MB rotated. Wipeable from Settings.
+- **Legal disclaimer.** Apache 2.0 "AS IS". Full disclaimer in `TERMS.md` §5a and inline in Settings → Security.
+
+## Copy for Slack / Teams / PRs
+
+The terminal right-click menu has a **Copy →** submenu with four share-ready actions, plus the `Ctrl+Shift+M` keybinding (rebindable).
+
+- **Copy as Code Block** — wraps the selection (or the visible buffer) in triple-backtick fences. Drop into Slack, Teams, GitHub, GitLab, Notion — any markdown surface.
+- **Copy as Plain Text** — strips ANSI color escapes and copies clean text. Email-, Jira-, doc-ready.
+- **Copy with Command** — prepends the last shell command before fencing. Reproducer-ready snippets for bug reports.
+- **Copy as Image (PNG)** — renders the xterm.js canvas to a PNG with `canvas.toBlob`, writes via `ClipboardItem`. Pastes into Slack/Teams/Loom with colors, glyphs, and layout intact.
 
 ---
 
