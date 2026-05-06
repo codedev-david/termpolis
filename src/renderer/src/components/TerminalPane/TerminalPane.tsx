@@ -17,6 +17,7 @@ import { parsePromptFromOutput } from '../../lib/promptParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { AgentHandoffBanner } from '../AgentHandoff/AgentHandoffBanner'
 import { AgentHandoffModal } from '../AgentHandoff/AgentHandoffModal'
+import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { useTerminalStore } from '../../store/terminalStore'
 import { isNaturalLanguage, getSuggestions } from '../../lib/aiSuggestions'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
@@ -54,6 +55,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const fitRef = useRef<FitAddon | null>(null)
   const inputBufferRef = useRef('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
+  const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
 
   // AI command suggestion state
   const [aiSuggestions, setAiSuggestions] = useState<{ command: string; description: string }[]>([])
@@ -201,7 +203,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       fontFamily,
       fontSize,
       cursorBlink: false,
-      cursorStyle: 'underline',
+      cursorStyle: 'block',
       cursorInactiveStyle: 'outline',
       scrollback,
     })
@@ -596,6 +598,17 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }}
       >
         <PinnedOutput pins={pinnedItems} onUnpin={handleUnpin} />
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setPastSessionsOpen(true) }}
+          className="absolute top-1.5 right-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-2 py-1 transition-colors"
+          title="Browse past Claude AI sessions across every project on this machine. Click to resume any session in a new terminal at its original folder."
+          data-testid="past-ai-sessions-btn"
+        >
+          <i className="fa-solid fa-clock-rotate-left text-[9px]"></i>
+          Past AI Sessions
+        </button>
+        <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
         {contextMenu.visible && (
           <div
             className="fixed z-50 bg-[#2d2d2d] border border-[#454545] rounded shadow-lg py-1 min-w-[200px]"

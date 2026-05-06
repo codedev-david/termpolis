@@ -444,6 +444,18 @@ ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
 
+// Past AI sessions — scans ~/.claude/projects/ across all project folders so
+// the renderer can offer a "Resume any session" picker that bypasses the
+// cwd-scoping baked into `claude --resume`.
+ipcMain.handle('aiSessions:list', async () => {
+  try {
+    const { listAISessions } = await import('./aiSessions')
+    return ok(listAISessions({}))
+  } catch (e) {
+    return err((e as Error).message)
+  }
+})
+
 // AI Security Center — verifiable outbound-data controls.
 ipcMain.handle('aiSecurity:get-status', () => {
   try {

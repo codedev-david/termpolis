@@ -171,6 +171,21 @@ export interface TermpolisAPI {
   recordTelemetryEvent: (name: string, props?: Record<string, unknown>) => Promise<IpcResponse>
 
   getAppVersion: () => Promise<IpcResponse<{ version: string }>>
+
+  listAISessions: () => Promise<IpcResponse<AISessionSummary[]>>
+}
+
+export interface AISessionSummary {
+  id: string
+  filePath: string
+  projectFolder: string
+  cwd: string
+  gitBranch?: string
+  version?: string
+  firstUserMessage?: string
+  startTime?: string
+  lastModified: number
+  sizeBytes: number
 }
 
 export interface MemoryEntry {

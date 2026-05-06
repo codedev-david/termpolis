@@ -148,6 +148,8 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('telemetry:record-event', { name, props }),
 
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+
+  listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)
