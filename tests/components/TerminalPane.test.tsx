@@ -614,10 +614,13 @@ describe('TerminalPane', () => {
 
     it('Shift+Enter sends backslash+CR for shell line continuation when no agent detected', () => {
       render(<TerminalPane {...defaultProps} />)
-      const event = new KeyboardEvent('keydown', { shiftKey: true, key: 'Enter' })
+      const event = new KeyboardEvent('keydown', { shiftKey: true, key: 'Enter', cancelable: true })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\\\r')
+      // CRITICAL: must preventDefault, or xterm's hidden textarea will also
+      // fire an `input` event and inject a second \r — cancelling line continuation.
+      expect(event.defaultPrevented).toBe(true)
     })
 
     it('Shift+Enter sends Esc+CR (ESC \\r = \\x1b\\r) when an AI agent is detected', async () => {
@@ -629,10 +632,11 @@ describe('TerminalPane', () => {
         agentDetectedRef: { current: true },
       })
       render(<TerminalPane {...defaultProps} />)
-      const event = new KeyboardEvent('keydown', { shiftKey: true, key: 'Enter' })
+      const event = new KeyboardEvent('keydown', { shiftKey: true, key: 'Enter', cancelable: true })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\x1b\r')
+      expect(event.defaultPrevented).toBe(true)
 
       // Reset for subsequent tests in this describe.
       ;(useAgentDetection as any).mockReturnValue({

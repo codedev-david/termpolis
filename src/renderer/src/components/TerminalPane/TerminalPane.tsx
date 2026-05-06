@@ -266,6 +266,15 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true
 
+      // When our handler returns false, xterm.js bails out of _keyDown WITHOUT
+      // calling preventDefault — so the browser routes the keystroke to xterm's
+      // hidden textarea, which then fires xterm's `input` listener and sends a
+      // second copy to the PTY. For Shift+Enter that meant the PTY saw
+      // "\\\r" + "\r" — line continuation immediately cancelled by a bare \r.
+      // Calling preventDefault here BEFORE returning false is what stops the
+      // textarea from seeing the keystroke at all. Same fix applies to every
+      // shortcut below that returns false.
+
       // Shift+Enter → newline-without-submit. Two flavors:
       //   AI agents (Claude/Codex/Gemini/Qwen) read Esc+Enter (\x1b\r) as the
       //     multi-line sequence — sends a literal LF inside the input box
@@ -273,6 +282,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       //   Plain shells (bash/zsh/fish on git-bash, mintty, etc.) treat
       //     backslash-Enter as line continuation, prompting `> ` for more.
       if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Enter') {
+        e.preventDefault()
         const seq = agent.agentDetectedRef.current ? '\x1b\r' : '\\\r'
         window.termpolis.writeToTerminal(terminalId, seq)
         return false
@@ -280,18 +290,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
       // Ctrl+Shift+M — copy as code block (HTML + markdown plain-text)
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'M') {
+        e.preventDefault()
         const selection = term.getSelection()
         if (selection) writeCodeBlockToClipboard(selection, term.cols).catch(() => {})
         return false
       }
       // Ctrl+Shift+C — always copy (legacy explicit form)
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        e.preventDefault()
         const selection = term.getSelection()
         if (selection) navigator.clipboard.writeText(selection).catch(() => {})
         return false
       }
       // Ctrl+Shift+V — always paste (legacy explicit form)
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
+        e.preventDefault()
         navigator.clipboard.readText().then(text => {
           if (text) window.termpolis.writeToTerminal(terminalId, text)
         }).catch(() => {})
@@ -302,6 +315,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'C' || e.key === 'c')) {
         const selection = term.getSelection()
         if (selection) {
+          e.preventDefault()
           navigator.clipboard.writeText(selection).catch(() => {})
           term.clearSelection()
           return false
@@ -310,6 +324,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }
       // Ctrl+V (no Shift) — paste
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
+        e.preventDefault()
         navigator.clipboard.readText().then(text => {
           if (text) window.termpolis.writeToTerminal(terminalId, text)
         }).catch(() => {})
