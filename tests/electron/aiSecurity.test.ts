@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -226,6 +226,35 @@ describe('aiSecurity audit log', () => {
     writeFileSync(path, raw)
     const recent = await m.getRecentAudit()
     expect(recent.length).toBe(1)
+  })
+
+  it('rotates the log when it grows beyond the size cap, replacing any prior rotation', async () => {
+    const m = await freshModule()
+    m.setAuditEnabled(true)
+    const path = m.getAuditPath()
+    const prev = path.replace(/\.jsonl$/, '.prev.jsonl')
+    // Pre-seed a previous rotation so we exercise the unlink branch (lines 155-158).
+    writeFileSync(prev, '{"ts":"old"}\n')
+    // Pad current audit beyond 10 MB so rotateIfNeeded triggers.
+    const padding = 'x'.repeat(11 * 1024 * 1024)
+    writeFileSync(path, padding)
+    await m.appendAudit({ agent: 'claude', event: 'terminal_open' })
+    expect(existsSync(prev)).toBe(true)
+    // The fresh audit file should contain only the new entry, not the padding.
+    const after = readFileSync(path, 'utf8')
+    expect(after.length).toBeLessThan(1024)
+    expect(after).toContain('terminal_open')
+  })
+
+  it('returns [] when reading the audit file throws', async () => {
+    const m = await freshModule()
+    m.setAuditEnabled(true)
+    await m.appendAudit({ agent: 'claude', event: 'terminal_open' })
+    // Replace the audit file with a directory of the same name so readFile rejects (EISDIR).
+    const path = m.getAuditPath()
+    rmSync(path, { force: true })
+    mkdirSync(path)
+    expect(await m.getRecentAudit()).toEqual([])
   })
 })
 
