@@ -136,18 +136,31 @@ vi.mock('../../src/renderer/src/lib/aiSuggestions', () => ({
 }))
 
 // --- Mock exportTerminal ---
-vi.mock('../../src/renderer/src/lib/exportTerminal', () => ({
-  stripAnsi: vi.fn((s: string) => s),
-  generateFilename: vi.fn(() => 'terminal-export.txt'),
-  formatAsCodeBlock: vi.fn((s: string) => '```text\n' + s + '\n```'),
-  formatAsCodeBlockHtml: vi.fn((s: string) => '<pre><code>' + s + '</code></pre>'),
-  formatAsPlainText: vi.fn((s: string) => s),
-  writeCodeBlockToClipboard: vi.fn((s: string) => {
-    // Default mock: emulate the real function's plain-text fallback path so
-    // tests that assert clipboard.writeText still see the markdown form.
-    return navigator.clipboard.writeText('```text\n' + s + '\n```')
-  }),
-}))
+vi.mock('../../src/renderer/src/lib/exportTerminal', () => {
+  // Helper: pull text out of the fake terminal handle the way the real
+  // term-aware extractors do (just `getSelection()` here — the buffer-level
+  // logic is exercised in tests/renderer/formatAsCodeBlock.test.ts).
+  const sel = (term: any): string => (term?.getSelection?.() ?? '') as string
+  return {
+    stripAnsi: vi.fn((s: string) => s),
+    generateFilename: vi.fn(() => 'terminal-export.txt'),
+    // Legacy text-based formatters (still exported so tests of older paths keep working)
+    formatAsCodeBlock: vi.fn((s: string) => '```text\n' + s + '\n```'),
+    formatAsCodeBlockHtml: vi.fn((s: string) => '<pre><code>' + s + '</code></pre>'),
+    formatAsPlainText: vi.fn((s: string) => s),
+    writeCodeBlockToClipboard: vi.fn((s: string) => {
+      return navigator.clipboard.writeText('```text\n' + s + '\n```')
+    }),
+    // Buffer-aware variants used by TerminalPane after v1.11.49
+    extractSelectionWithLogicalNewlines: vi.fn((term: any) => sel(term)),
+    formatAsCodeBlockFromTerm: vi.fn((term: any) => '```text\n' + sel(term) + '\n```'),
+    formatAsCodeBlockHtmlFromTerm: vi.fn((term: any) => '<pre><code>' + sel(term) + '</code></pre>'),
+    formatAsPlainTextFromTerm: vi.fn((term: any) => sel(term)),
+    writeCodeBlockToClipboardFromTerm: vi.fn((term: any) => {
+      return navigator.clipboard.writeText('```text\n' + sel(term) + '\n```')
+    }),
+  }
+})
 
 // --- Mock outputThrottle ---
 vi.mock('../../src/renderer/src/lib/outputThrottle', () => ({
@@ -1648,7 +1661,7 @@ describe('TerminalPane', () => {
   // =====================================================
   describe('copy as code block / plain text / image', () => {
     it('Ctrl+Shift+M with selection copies fenced output to clipboard', async () => {
-      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
+      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
       mocks.mockTerminal.getSelection.mockReturnValue('hello')
 
       render(<TerminalPane {...defaultProps} />)
@@ -1659,12 +1672,12 @@ describe('TerminalPane', () => {
       })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
-      expect(writeCodeBlockToClipboard).toHaveBeenCalledWith('hello', 80)
+      expect(writeCodeBlockToClipboardFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
     })
 
     it('Ctrl+Shift+M with no selection does not write to clipboard', async () => {
-      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(writeCodeBlockToClipboard as any).mockClear()
+      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(writeCodeBlockToClipboardFromTerm as any).mockClear()
       mocks.mockTerminal.getSelection.mockReturnValue('')
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
@@ -1673,11 +1686,11 @@ describe('TerminalPane', () => {
         key: 'M',
       })
       mockKeyHandlerCb?.(event)
-      expect(writeCodeBlockToClipboard).not.toHaveBeenCalled()
+      expect(writeCodeBlockToClipboardFromTerm).not.toHaveBeenCalled()
     })
 
     it('Copy as Code Block submenu item formats and copies', async () => {
-      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
+      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
       mocks.mockTerminal.getSelection.mockReturnValue('selected')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
@@ -1685,23 +1698,23 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
 
-      expect(writeCodeBlockToClipboard).toHaveBeenCalledWith('selected', 80)
+      expect(writeCodeBlockToClipboardFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
     })
 
     it('Copy as Code Block with empty selection does nothing', async () => {
-      const { writeCodeBlockToClipboard } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(writeCodeBlockToClipboard as any).mockClear()
+      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(writeCodeBlockToClipboardFromTerm as any).mockClear()
       mocks.mockTerminal.getSelection.mockReturnValue('')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
-      expect(writeCodeBlockToClipboard).not.toHaveBeenCalled()
+      expect(writeCodeBlockToClipboardFromTerm).not.toHaveBeenCalled()
     })
 
     it('Copy as Plain Text strips ANSI and copies', async () => {
-      const { formatAsPlainText } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsPlainText as any).mockReturnValue('plain output')
+      const { formatAsPlainTextFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsPlainTextFromTerm as any).mockReturnValue('plain output')
       mocks.mockTerminal.getSelection.mockReturnValue('plain output')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
@@ -1709,7 +1722,7 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Plain Text'))
 
-      expect(formatAsPlainText).toHaveBeenCalledWith('plain output', 80)
+      expect(formatAsPlainTextFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain output')
     })
 
@@ -1723,8 +1736,8 @@ describe('TerminalPane', () => {
     })
 
     it('Copy with Command prepends last command and copies fence', async () => {
-      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlock as any).mockReturnValue('```text\nresult\n```')
+      const { formatAsCodeBlockFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsCodeBlockFromTerm as any).mockReturnValue('```text\nresult\n```')
       mocks.mockTerminal.getSelection.mockReturnValue('result')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
@@ -1739,8 +1752,8 @@ describe('TerminalPane', () => {
     })
 
     it('Copy with Command falls back to plain fence when no last command', async () => {
-      const { formatAsCodeBlock } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlock as any).mockReturnValue('```text\nresult\n```')
+      const { formatAsCodeBlockFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
+      ;(formatAsCodeBlockFromTerm as any).mockReturnValue('```text\nresult\n```')
       mocks.mockTerminal.getSelection.mockReturnValue('result')
 
       const { container } = render(<TerminalPane {...defaultProps} />)

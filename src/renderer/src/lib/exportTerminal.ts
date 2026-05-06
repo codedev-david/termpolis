@@ -27,6 +27,13 @@ export function generateFilename(terminalName: string): string {
 // line that wraps physically at exactly `cols` characters is almost always one
 // logical line that the user wants preserved when pasting into Slack/Teams.
 // Pure logical newlines come through as their own line, shorter than `cols`.
+//
+// NOTE: This is a heuristic fallback. xterm trims trailing whitespace before
+// returning a selection, so a wrapped line that ended in spaces shows up as
+// fewer than `cols` chars and slips through as a hard break — pasting into
+// Teams/Slack then produces "hard returns in weird places". Prefer
+// `extractSelectionWithLogicalNewlines(term)` below, which uses
+// `BufferLine.isWrapped` to know exactly which newlines were physical.
 export function reflowSoftWraps(text: string, cols: number): string {
   if (!cols || cols < 20) return text
   const lines = text.split('\n')
@@ -46,10 +53,68 @@ export function reflowSoftWraps(text: string, cols: number): string {
   return out.join('\n')
 }
 
+// Minimal subset of the xterm.js Terminal interface we need to walk the buffer
+// and recover logical newlines for a user selection. Defined here (rather than
+// importing xterm types) so this module stays a pure utility we can unit-test
+// with a fake terminal — no jsdom or DOM required.
+export interface TerminalBufferLineLike {
+  isWrapped: boolean
+  translateToString(trimRight?: boolean, startColumn?: number, endColumn?: number): string
+}
+export interface TerminalLike {
+  cols: number
+  getSelection(): string
+  getSelectionPosition?(): { start: { x: number; y: number }; end: { x: number; y: number } } | undefined
+  buffer: { active: { getLine(y: number): TerminalBufferLineLike | undefined } }
+}
+
+// Walk the xterm buffer using `BufferLine.isWrapped` to rebuild the selection
+// with ONLY logical newlines. A line whose successor reports `isWrapped: true`
+// is a physical/soft wrap and gets joined to the next line; everything else is
+// a real \n the user typed. This is the fix for the "Teams paste introduces
+// hard returns at random places" symptom — we no longer have to guess from
+// line length whether a break was soft or hard.
+//
+// Trailing whitespace handling: when a line WILL wrap into the next, we keep
+// trailing whitespace because that whitespace IS the inter-word boundary
+// ("abcd efgh " wraps to "ijkl" → joined "abcd efgh ijkl", not "abcd efghijkl").
+// When a line stands alone (no wrap continuation), trailing whitespace is
+// padding from xterm and gets trimmed.
+export function extractSelectionWithLogicalNewlines(term: TerminalLike): string {
+  const range = term.getSelectionPosition?.()
+  const fallback = term.getSelection() ?? ''
+  if (!range) return fallback
+  const buf = term.buffer?.active
+  if (!buf) return fallback
+  const parts: string[] = []
+  let cur = ''
+  for (let y = range.start.y; y <= range.end.y; y++) {
+    const line = buf.getLine(y)
+    if (!line) continue
+    const startX = y === range.start.y ? range.start.x : 0
+    const endX = y === range.end.y ? range.end.x : term.cols
+    const willWrap = y < range.end.y && !!buf.getLine(y + 1)?.isWrapped
+    cur += line.translateToString(!willWrap, startX, endX)
+    if (willWrap) continue
+    parts.push(cur)
+    cur = ''
+  }
+  if (cur) parts.push(cur)
+  return parts.join('\n')
+}
+
 // Cleaned plain-text body shared by all formatters: strip ANSI, reflow
 // soft wraps, drop trailing whitespace per line, and trim outer blank lines.
 function cleanForExport(text: string, cols: number): string {
   return reflowSoftWraps(stripAnsi(text), cols)
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^\n+|\n+$/g, '')
+}
+
+// Buffer-aware variant: skips the cols-length heuristic because the extractor
+// has already produced one string per logical line.
+function cleanForExportFromTerm(term: TerminalLike): string {
+  return stripAnsi(extractSelectionWithLogicalNewlines(term))
     .replace(/[ \t]+$/gm, '')
     .replace(/^\n+|\n+$/g, '')
 }
@@ -87,6 +152,35 @@ export function formatAsPlainText(text: string, cols: number): string {
   return cleanForExport(text, cols)
 }
 
+// =====================================================
+// Buffer-aware variants — use these when you have the xterm Terminal handle.
+// They use BufferLine.isWrapped to recover logical newlines exactly, which
+// fixes the Teams/Slack "hard returns in weird places" symptom that the
+// cols-length heuristic in cleanForExport can't always nail.
+// =====================================================
+
+export function formatAsCodeBlockFromTerm(term: TerminalLike): string {
+  return '```text\n' + cleanForExportFromTerm(term) + '\n```'
+}
+
+export function formatAsCodeBlockHtmlFromTerm(term: TerminalLike): string {
+  const escaped = cleanForExportFromTerm(term)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  return (
+    '<pre style="font-family:Consolas,Menlo,Monaco,\'Courier New\',monospace;'
+    + 'background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;'
+    + 'white-space:pre;line-height:1.4;font-size:13px;'
+    + 'border:1px solid #3c3c3c;overflow-x:auto;">'
+    + '<code>' + escaped + '</code></pre>'
+  )
+}
+
+export function formatAsPlainTextFromTerm(term: TerminalLike): string {
+  return cleanForExportFromTerm(term)
+}
+
 // Write a code block to the clipboard in BOTH text/html and text/plain so
 // rich-text targets (Teams, Outlook) get a real code box and plain-text
 // targets (Slack compose, GitHub MD source, terminals) get the markdown
@@ -95,6 +189,18 @@ export function formatAsPlainText(text: string, cols: number): string {
 export async function writeCodeBlockToClipboard(text: string, cols: number): Promise<void> {
   const plain = formatAsCodeBlock(text, cols)
   const html = formatAsCodeBlockHtml(text, cols)
+  await writeBothClipboardForms(plain, html)
+}
+
+// Buffer-aware variant — use when you have the Terminal handle. Uses
+// `isWrapped` for accurate logical newlines.
+export async function writeCodeBlockToClipboardFromTerm(term: TerminalLike): Promise<void> {
+  const plain = formatAsCodeBlockFromTerm(term)
+  const html = formatAsCodeBlockHtmlFromTerm(term)
+  await writeBothClipboardForms(plain, html)
+}
+
+async function writeBothClipboardForms(plain: string, html: string): Promise<void> {
   const w = typeof window !== 'undefined' ? (window as unknown as { ClipboardItem?: typeof ClipboardItem }) : undefined
   if (w?.ClipboardItem && navigator.clipboard?.write) {
     try {

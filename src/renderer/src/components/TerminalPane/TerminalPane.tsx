@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename, formatAsCodeBlock, formatAsPlainText, writeCodeBlockToClipboard } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsPlainTextFromTerm, writeCodeBlockToClipboardFromTerm } from '../../lib/exportTerminal'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
@@ -291,8 +291,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Ctrl+Shift+M — copy as code block (HTML + markdown plain-text)
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'M') {
         e.preventDefault()
-        const selection = term.getSelection()
-        if (selection) writeCodeBlockToClipboard(selection, term.cols).catch(() => {})
+        if (term.getSelection()) writeCodeBlockToClipboardFromTerm(term).catch(() => {})
         return false
       }
       // Ctrl+Shift+C — always copy (legacy explicit form)
@@ -643,13 +642,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
                 const term = termRef.current
-                const selection = term?.getSelection()
-                if (term && selection) {
-                  writeCodeBlockToClipboard(selection, term.cols).catch(() => {})
+                if (term && term.getSelection()) {
+                  writeCodeBlockToClipboardFromTerm(term).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
-              title="Strip ANSI, reflow soft-wraps, write both rich-text (HTML) and markdown forms. Pastes as a real code box in Slack, Teams, Outlook, GitHub, Discord."
+              title="Strip ANSI, recover logical newlines from the buffer, write both rich-text (HTML) and markdown forms. Pastes as a real code box in Slack, Teams, Outlook, GitHub, Discord."
             >
               Copy as Code Block<span className="float-right text-[#999]">Ctrl+Shift+M</span>
             </button>
@@ -657,13 +655,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
                 const term = termRef.current
-                const selection = term?.getSelection()
-                if (term && selection) {
-                  navigator.clipboard.writeText(formatAsPlainText(selection, term.cols))
+                if (term && term.getSelection()) {
+                  navigator.clipboard.writeText(formatAsPlainTextFromTerm(term))
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
-              title="Strip ANSI colors and reflow soft-wraps. No markdown fence."
+              title="Strip ANSI colors and recover logical newlines from the buffer. No markdown fence."
             >
               Copy as Plain Text
             </button>
@@ -671,10 +668,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
                 const term = termRef.current
-                const selection = term?.getSelection()
-                if (term && selection) {
+                if (term && term.getSelection()) {
                   const cmd = lastCommandRef.current
-                  const body = formatAsCodeBlock(selection, term.cols)
+                  const body = formatAsCodeBlockFromTerm(term)
                   const withCmd = cmd ? '`$ ' + cmd + '`\n' + body : body
                   navigator.clipboard.writeText(withCmd).catch(() => {})
                 }
