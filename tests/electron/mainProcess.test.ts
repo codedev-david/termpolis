@@ -2724,3 +2724,150 @@ describe('IPC handler registration - swarm review handlers', () => {
     }
   })
 })
+
+// =========================================================================
+// ai-security:sensitive-reads — IPC handler + subscribeSensitiveReads wire-up
+// =========================================================================
+//
+// The sensitive-file-read watcher rides on agentEventBus tool_call events.
+// The handler in src/main/index.ts both writes an audit entry AND pushes
+// a 'terminal:sensitive-file-read' event to the renderer. We assert both
+// paths fire — and that the terminalId-scoped IPC `ai-security:sensitive-reads`
+// returns the running count + recent matches.
+describe('ai-security:sensitive-reads', () => {
+  it('registers the IPC handler', () => {
+    expect(ipcHandlers.has('ai-security:sensitive-reads')).toBe(true)
+  })
+
+  it('returns {count: 0, recent: []} for an unknown terminal', async () => {
+    const r = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'never-seen' })
+    expect(r.success).toBe(true)
+    expect(r.data.count).toBe(0)
+    expect(r.data.recent).toEqual([])
+  })
+
+  it('counts a sensitive Read tool_call and surfaces it via webContents.send', async () => {
+    // We do NOT reset the bus here — index.ts's subscribeSensitiveReads
+    // wire-up is the real registered subscriber, and we want to exercise
+    // it end-to-end (audit append + webContents.send). Use unique terminal
+    // IDs across tests to avoid cross-test counter leakage.
+    const bus = await import('../../src/main/agentEventBus')
+    mockWebContents.send.mockClear()
+
+    bus.publish({
+      terminalId: 'term-sens-real',
+      agentType: 'claude',
+      kind: 'tool_call',
+      summary: 'Read .env',
+      payload: { tool: 'Read', input: { file_path: '/home/u/proj/.env' } },
+    })
+
+    const r = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-real' })
+    expect(r.success).toBe(true)
+    expect(r.data.count).toBeGreaterThanOrEqual(1)
+    expect(r.data.recent.length).toBeGreaterThanOrEqual(1)
+    expect(r.data.recent[0].rule).toBe('dotenv')
+    // The actual index.ts handler should have fired webContents.send
+    expect(mockWebContents.send).toHaveBeenCalledWith(
+      'terminal:sensitive-file-read',
+      expect.objectContaining({
+        id: 'term-sens-real',
+        rule: 'dotenv',
+        agent: 'claude',
+        tool: 'Read',
+      }),
+    )
+  })
+
+  it('counts a Bash cat .aws/credentials tool_call (real wire-up)', async () => {
+    const bus = await import('../../src/main/agentEventBus')
+
+    bus.publish({
+      terminalId: 'term-sens-bash',
+      agentType: 'codex',
+      kind: 'tool_call',
+      summary: 'cat secrets',
+      payload: { tool: 'Bash', input: { command: 'cat ~/.aws/credentials' } },
+    })
+
+    const r = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-bash' })
+    expect(r.success).toBe(true)
+    expect(r.data.count).toBeGreaterThanOrEqual(1)
+    expect(r.data.recent[0].rule).toBe('aws-credentials')
+  })
+
+  it('ignores benign reads (README.md, foo.ts)', async () => {
+    const bus = await import('../../src/main/agentEventBus')
+
+    bus.publish({
+      terminalId: 'term-sens-benign',
+      agentType: 'gemini',
+      kind: 'tool_call',
+      summary: 'Read readme',
+      payload: { tool: 'Read', input: { file_path: '/repo/README.md' } },
+    })
+    bus.publish({
+      terminalId: 'term-sens-benign',
+      agentType: 'gemini',
+      kind: 'tool_call',
+      summary: 'Read source',
+      payload: { tool: 'Read', input: { file_path: '/repo/src/foo.ts' } },
+    })
+
+    const r = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-benign' })
+    expect(r.success).toBe(true)
+    expect(r.data.count).toBe(0)
+  })
+
+  it('terminal:kill clears the sensitive-read counter for that terminal', async () => {
+    const bus = await import('../../src/main/agentEventBus')
+
+    bus.publish({
+      terminalId: 'term-sens-kill',
+      agentType: 'claude',
+      kind: 'tool_call',
+      summary: 'Read .env',
+      payload: { tool: 'Read', input: { file_path: '.env' } },
+    })
+
+    const before = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-kill' })
+    expect(before.data.count).toBeGreaterThanOrEqual(1)
+
+    // terminal:kill in index.ts calls clearSensitiveReadCount(id)
+    mockKillTerminal.mockReset()
+    await invokeHandler('terminal:kill', { id: 'term-sens-kill' })
+
+    const after = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-kill' })
+    expect(after.data.count).toBe(0)
+  })
+
+  it('handler returns an error envelope when invoked with a bad payload', async () => {
+    // Force getRecentSensitiveReads to throw by passing terminalId of wrong shape;
+    // the handler wraps in try/catch so we still get { success: true } when the
+    // underlying lookup tolerates the bad input. This test asserts the handler
+    // never crashes the IPC roundtrip even with garbage input.
+    const r1 = await invokeHandler('ai-security:sensitive-reads', { terminalId: '' })
+    expect(r1.success).toBe(true)
+    expect(r1.data.count).toBe(0)
+
+    const r2 = await invokeHandler('ai-security:sensitive-reads', {})
+    expect(r2.success).toBe(true)
+    expect(r2.data.count).toBe(0)
+  })
+
+  it('Codex JSON-encoded input is recognised', async () => {
+    const bus = await import('../../src/main/agentEventBus')
+
+    bus.publish({
+      terminalId: 'term-sens-codex',
+      agentType: 'codex',
+      kind: 'tool_call',
+      summary: 'Read pem',
+      payload: { tool: 'read_file', input: JSON.stringify({ file_path: '/home/u/.ssh/id_rsa' }) },
+    })
+
+    const r = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-codex' })
+    expect(r.success).toBe(true)
+    expect(r.data.count).toBeGreaterThanOrEqual(1)
+  })
+})

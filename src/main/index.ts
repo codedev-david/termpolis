@@ -55,6 +55,13 @@ import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid } from './terminalManager'
 import { startEgressPolling, stopEgressPolling, stopAllEgressPolling, getRecentEgress, clearEgress } from './egressAudit'
 import {
+  subscribeSensitiveReads,
+  getReadCount as getSensitiveReadCount,
+  getRecentReads as getRecentSensitiveReads,
+  clearReadCount as clearSensitiveReadCount,
+  type SensitiveReadEvent,
+} from './sensitiveFileWatcher'
+import {
   initAiSecurity,
   getSettings as getAiSecuritySettings,
   setRedactionEnabled,
@@ -261,6 +268,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     aiTerminalFlag.delete(id)
     aiInputStaging.delete(id)
     try { stopEgressPolling(id); clearEgress(id) } catch {}
+    try { clearSensitiveReadCount(id) } catch {}
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -271,6 +279,18 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
 ipcMain.handle('ai-security:egress', async (_, { terminalId }: { terminalId: string }) => {
   try {
     return ok({ endpoints: getRecentEgress(terminalId) })
+  } catch (e: any) { return err(e.message) }
+})
+
+// Renderer-facing read of the per-terminal sensitive-file-read counter.
+// The Security panel uses this to show "3 sensitive reads this session"
+// alongside the running list of which files / which agent.
+ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { terminalId: string }) => {
+  try {
+    return ok({
+      count: getSensitiveReadCount(terminalId),
+      recent: getRecentSensitiveReads(terminalId),
+    })
   } catch (e: any) { return err(e.message) }
 })
 
@@ -1262,6 +1282,38 @@ if (!gotTheLock) {
     initAiSecurity()
     initSwarmMemory(app.getPath('userData'))
     initWorkspaceTrust()
+
+    // Sensitive-file-read watcher: subscribe to agent tool_call events from
+    // the transcript watchers and surface a banner + audit entry when the
+    // agent autonomously reads a high-risk file (.env, *.pem, ~/.aws/*, ...).
+    // The file's already been read by the time we see the event — this is
+    // an after-the-fact alert so the user can add the path to .claudeignore
+    // (or equivalent) before the next session.
+    try {
+      subscribeSensitiveReads((ev: SensitiveReadEvent) => {
+        try {
+          aiSecurityAppend({
+            agent: ev.agent || 'unknown',
+            event: 'sensitive_file_read',
+            terminalId: ev.terminalId,
+            notes: ev.rule + ':' + ev.tool + ':' + ev.source + ':' + ev.filePath.slice(0, 200),
+          }).catch(() => {})
+        } catch {}
+        try {
+          mainWindow?.webContents.send('terminal:sensitive-file-read', {
+            id: ev.terminalId,
+            agent: ev.agent,
+            tool: ev.tool,
+            rule: ev.rule,
+            label: ev.label,
+            filePath: ev.filePath,
+            source: ev.source,
+            ts: ev.ts,
+          })
+        } catch {}
+      })
+    } catch {}
+
     // Push events to the renderer (live feed)
     subscribeEvents((event: AgentEvent) => {
       try { mainWindow?.webContents.send('agentActivity:event', event) } catch {}
@@ -1481,6 +1533,7 @@ if (!gotTheLock) {
     globalShortcut.unregisterAll()
     killAll()
     try { stopAllEgressPolling() } catch {}
+    try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
@@ -1488,6 +1541,7 @@ if (!gotTheLock) {
   app.on('window-all-closed', () => {
     killAll()
     try { stopAllEgressPolling() } catch {}
+    try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }

@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 // CommonJS interop — verifyTosSnapshots.cjs exports normalizeHtml/hash/PROVIDERS.
 // We pull the live module so this test fails the second the snapshot script
 // regresses on the rules below.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { normalizeHtml, hash, PROVIDERS } = require('../../scripts/verifyTosSnapshots.cjs') as {
   normalizeHtml: (s: string) => string
   hash: (s: string) => string

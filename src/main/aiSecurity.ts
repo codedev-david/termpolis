@@ -28,7 +28,7 @@ export interface AiSecuritySettings {
 export interface AuditEntry {
   ts: string
   agent: string
-  event: 'terminal_open' | 'terminal_close' | 'redaction_hit' | 'manual_scan'
+  event: 'terminal_open' | 'terminal_close' | 'redaction_hit' | 'manual_scan' | 'sensitive_file_read'
   terminalId?: string
   byteCount?: number
   hitCount?: number

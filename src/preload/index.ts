@@ -275,6 +275,35 @@ contextBridge.exposeInMainWorld('aiSecurity', {
     return () => ipcRenderer.removeListener('terminal:env-dump-detected', handler)
   },
   egress: (terminalId: string) => ipcRenderer.invoke('ai-security:egress', { terminalId }),
+  sensitiveReads: (terminalId: string) => ipcRenderer.invoke('ai-security:sensitive-reads', { terminalId }),
+  onSensitiveFileRead: (
+    cb: (data: {
+      id: string
+      agent: string
+      tool: string
+      rule: string
+      label: string
+      filePath: string
+      source: 'path' | 'command'
+      ts: number
+    }) => void,
+  ) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      data: {
+        id: string
+        agent: string
+        tool: string
+        rule: string
+        label: string
+        filePath: string
+        source: 'path' | 'command'
+        ts: number
+      },
+    ) => cb(data)
+    ipcRenderer.on('terminal:sensitive-file-read', handler)
+    return () => ipcRenderer.removeListener('terminal:sensitive-file-read', handler)
+  },
 })
 
 // MCP server events — terminals created/closed by AI agents
