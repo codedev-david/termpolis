@@ -19,7 +19,7 @@ export function buildConductorPrompt(options: ConductorPromptOptions): string {
         .filter(([_, score]) => score >= 4)
         .map(([cat, score]) => `${CATEGORY_LABELS[cat as keyof typeof CATEGORY_LABELS]} (${score}/5)`)
         .join(', ')
-      const costLabel = a.tokenCost === 'free' ? 'Free (local)' : a.tokenCost === 'low' ? 'Low cost' : a.tokenCost === 'medium' ? 'Medium cost' : 'High cost'
+      const costLabel = a.tokenCost === 'low' ? 'Low cost' : a.tokenCost === 'medium' ? 'Medium cost' : 'High cost'
       const mcpNote = a.hasMcp ? 'Has MCP' : 'No MCP (use swarm bridge)'
       return `- ${a.agentName} (${a.agentId}): Strengths: ${strengths}. ${costLabel}. ${mcpNote}.`
     })

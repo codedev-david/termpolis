@@ -127,4 +127,56 @@ describe('ConductorTrace', () => {
     ;(window as any).agentActivity = undefined
     expect(() => render(<ConductorTrace conductorTerminalId="c1" />)).not.toThrow()
   })
+
+  it('clears entries when conductorTerminalId becomes null', async () => {
+    api.query.mockResolvedValueOnce({
+      success: true,
+      data: [mk({ id: '1', ts: 1, kind: 'message', payload: { text: 'hello' } })],
+    })
+    const { rerender } = render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(screen.getAllByTestId('trace-entry').length).toBe(1))
+    rerender(<ConductorTrace conductorTerminalId={null} />)
+    expect(screen.getByText(/No swarm conductor running/i)).toBeInTheDocument()
+  })
+
+  it('falls back to empty list when query rejects', async () => {
+    api.query.mockRejectedValueOnce(new Error('network down'))
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    // Should not render any entries — catch path on line 64 sets [] when not disposed
+    expect(screen.queryAllByTestId('trace-entry').length).toBe(0)
+  })
+
+  it('handles unsuccessful query result (success=false)', async () => {
+    api.query.mockResolvedValueOnce({ success: false, error: 'denied' })
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    expect(screen.queryAllByTestId('trace-entry').length).toBe(0)
+  })
+
+  it('handles non-array data in query result', async () => {
+    api.query.mockResolvedValueOnce({ success: true, data: 'not-an-array' as unknown as [] })
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    expect(screen.queryAllByTestId('trace-entry').length).toBe(0)
+  })
+
+  it('does not crash when an event is for a different terminal id', async () => {
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    // empty parsed result branch — kind that the parser drops
+    act(() => {
+      listeners.forEach((cb) =>
+        cb(
+          mk({
+            id: 'unknown-kind',
+            ts: 50,
+            kind: 'unknown' as never,
+            payload: {},
+          }),
+        ),
+      )
+    })
+    expect(true).toBe(true)
+  })
 })

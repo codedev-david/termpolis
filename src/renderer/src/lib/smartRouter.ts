@@ -40,12 +40,8 @@ function generateReason(agent: AgentCapability, subtask: SubTask): string {
   }
 
   // Cost mention for token-heavy tasks
-  if (subtask.tokenIntensity === 'high') {
-    if (agent.tokenCost === 'free') {
-      parts.push('free local model for this token-heavy task')
-    } else if (agent.tokenCost === 'low') {
-      parts.push('low token cost for this text-heavy task')
-    }
+  if (subtask.tokenIntensity === 'high' && agent.tokenCost === 'low') {
+    parts.push('low token cost for this text-heavy task')
   }
 
   // Cost label

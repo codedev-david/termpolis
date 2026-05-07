@@ -36,10 +36,10 @@ export function buildPauseAction(): InterventionAction {
 export function buildSteerAction(message: string): InterventionAction {
   const trimmed = message.trim()
   if (!trimmed) throw new Error('buildSteerAction: message required')
-  const suffix = trimmed.endsWith('\n') ? '' : '\n'
+  // trim() strips trailing whitespace, so we always need a \n to submit.
   return {
     kind: 'steer',
-    payload: trimmed + suffix,
+    payload: trimmed + '\n',
     label: `Steer: ${trimmed.slice(0, 60)}${trimmed.length > 60 ? '…' : ''}`,
   }
 }

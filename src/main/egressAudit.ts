@@ -118,25 +118,37 @@ function splitHostPort(s: string): { host: string; port: number } | null {
   return { host: m[1], port: Number.parseInt(m[2], 10) }
 }
 
-export async function pollAgentEgress(pid: number, platform = process.platform): Promise<EgressEndpoint[]> {
+// Public for testing — lets a test inject a fake exec.
+export type EgressExecutor = (bin: string, args: string[]) => Promise<string>
+
+const defaultExecutor: EgressExecutor = async (bin, args) => {
+  // Lazy require — see top-of-file note. If the host has stubbed out
+  // child_process, this throws and the caller's catch returns [] gracefully.
+  const cp: typeof import('child_process') = require('child_process')
+  const { promisify } = require('util') as typeof import('util')
+  if (typeof cp.execFile !== 'function') throw new Error('execFile unavailable')
+  const pExecFile = promisify(cp.execFile)
+  const { stdout } = (await pExecFile(bin, args, { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 })) as { stdout: string }
+  return stdout
+}
+
+export async function pollAgentEgress(
+  pid: number,
+  platform = process.platform,
+  executor: EgressExecutor = defaultExecutor,
+): Promise<EgressEndpoint[]> {
   if (!pid || pid <= 0) return []
   try {
-    // Lazy require — see top-of-file note. If the host has stubbed out
-    // child_process, this throws and the catch returns [] gracefully.
-    const cp: typeof import('child_process') = require('child_process')
-    const { promisify } = require('util') as typeof import('util')
-    if (typeof cp.execFile !== 'function') return []
-    const pExecFile = promisify(cp.execFile)
     if (platform === 'win32') {
-      const { stdout } = (await pExecFile('netstat', ['-ano', '-p', 'TCP'], { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 })) as { stdout: string }
+      const stdout = await executor('netstat', ['-ano', '-p', 'TCP'])
       return parseNetstatWindows(stdout, pid)
     }
     if (platform === 'darwin') {
-      const { stdout } = (await pExecFile('lsof', ['-nP', '-iTCP', '-p', String(pid)], { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 })) as { stdout: string }
+      const stdout = await executor('lsof', ['-nP', '-iTCP', '-p', String(pid)])
       return parseLsofMac(stdout, pid)
     }
     // linux + others
-    const { stdout } = (await pExecFile('ss', ['-tnp'], { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 })) as { stdout: string }
+    const stdout = await executor('ss', ['-tnp'])
     return parseSsLinux(stdout, pid)
   } catch {
     // Any failure (tool missing, permission denied, exec timeout) → empty list.
