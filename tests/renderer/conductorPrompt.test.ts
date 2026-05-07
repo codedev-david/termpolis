@@ -182,4 +182,70 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('qwen -p "prompt"')
     expect(prompt).toContain('qwen --sandbox')
   })
+
+  // ---- shellType branch coverage (line 12) ----
+
+  it('honors explicit shellType="powershell"', () => {
+    const prompt = buildDefault({ shellType: 'powershell' })
+    expect(prompt).toContain("shell='powershell'")
+  })
+
+  it('honors explicit shellType="bash"', () => {
+    const prompt = buildDefault({ shellType: 'bash' })
+    expect(prompt).toContain("shell='bash'")
+  })
+
+  it('falls back to navigator.platform (Win → powershell, otherwise → bash)', () => {
+    const orig = Object.getOwnPropertyDescriptor(navigator, 'platform')
+    try {
+      // Force Win branch
+      Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true })
+      const winPrompt = buildConductorPrompt({
+        taskDescription: 't',
+        installedAgents: allInstalled,
+        projectCwd: '/x',
+      })
+      expect(winPrompt).toContain("shell='powershell'")
+
+      // Force non-Win branch
+      Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64', configurable: true })
+      const nixPrompt = buildConductorPrompt({
+        taskDescription: 't',
+        installedAgents: allInstalled,
+        projectCwd: '/x',
+      })
+      expect(nixPrompt).toContain("shell='bash'")
+    } finally {
+      if (orig) Object.defineProperty(navigator, 'platform', orig)
+    }
+  })
+
+  // ---- agent description branches (lines 16, 19, 22, 23) ----
+
+  it('respects agentRatingOverrides — bumping a category shows it as a strength', () => {
+    const prompt = buildConductorPrompt({
+      taskDescription: 't',
+      installedAgents: allInstalled,
+      projectCwd: '/x',
+      agentRatingOverrides: {
+        // Force a non-default value to exercise the merge path
+        claude: { Refactoring: 4 },
+      } as any,
+    })
+    expect(prompt).toContain('Refactoring')
+  })
+
+  it('treats installedAgents[id]===undefined as installed (only ===false hides)', () => {
+    // Pass a sparse map — agents not listed should still appear because
+    // the filter is `!== false`, not `=== true`.
+    const prompt = buildConductorPrompt({
+      taskDescription: 't',
+      installedAgents: {} as any,
+      projectCwd: '/x',
+    })
+    expect(prompt).toContain('Claude Code')
+    expect(prompt).toContain('OpenAI Codex')
+    expect(prompt).toContain('Gemini CLI')
+    expect(prompt).toContain('Qwen Code')
+  })
 })

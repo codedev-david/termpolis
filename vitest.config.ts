@@ -64,22 +64,14 @@ export default defineConfig({
         // platform that hits every branch, so these are the real ceilings
         // the project enforces.
         //
-        // Branches sit at 84 (not 85) because of ~0.7% slack introduced
-        // by the v1.8.3 swarm UX refactor (StartSwarmModal/SwarmDashboard
-        // branches dropped when manual task/broadcast escape hatches were
-        // removed). Raising this back to 85 would require backfilling
-        // swarm-branch tests — out of scope for the CI rescue.
-        //
-        // Functions + statements at 89 (not 90) covers ~0.06% drift seen
-        // between local and Windows-CI v8 instrumentation in v1.11.43;
-        // local Windows runs 90.13/92.72 while CI Windows reports
-        // 89.94/92.42 on the identical commit. Lifting both back to 90
-        // requires either pinning v8 coverage versions across runners or
-        // ~3 more tested functions across SwarmDashboard / TerminalPane.
+        // Hard floors set by David: lines/functions/statements must be at
+        // least 90, branches at least 85. Anything below means we stopped
+        // writing tests, not that the codebase got harder. Backfill tests
+        // on the offending file(s) — never lower the gate.
         lines: 90,
-        functions: 89,
-        branches: 84,
-        statements: 89,
+        functions: 90,
+        branches: 85,
+        statements: 90,
       },
     },
   },

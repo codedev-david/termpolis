@@ -196,3 +196,54 @@ describe('geminiWatcher attach (success path)', () => {
     handle?.stop()
   })
 })
+
+describe('watcher manager — multi-watcher per terminal + stop() error swallow', () => {
+  it('appends to existing list when a second watcher attaches to the same terminal', async () => {
+    const { attachWatcher, detachAll, getActiveWatcherCount } = await import(
+      '../../src/main/transcriptWatchers/index'
+    )
+    const { mangleCwd } = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
+    const { CODEX_SESSIONS_DIR } = await import('../../src/main/transcriptWatchers/codexWatcher')
+
+    // Plant a Claude session
+    const cwd = '/test-multi'
+    const claudeDir = path.join(tmpHome, '.claude', 'projects', mangleCwd(cwd))
+    fs.mkdirSync(claudeDir, { recursive: true })
+    fs.writeFileSync(path.join(claudeDir, 'session.jsonl'), '')
+
+    // Plant a Codex session
+    fs.mkdirSync(CODEX_SESSIONS_DIR, { recursive: true })
+    fs.writeFileSync(path.join(CODEX_SESSIONS_DIR, 'session.jsonl'), '')
+
+    const h1 = attachWatcher('t-multi', cwd, 'claude')
+    const h2 = attachWatcher('t-multi', cwd, 'codex')
+    expect(h1).not.toBeNull()
+    expect(h2).not.toBeNull()
+    expect(getActiveWatcherCount()).toBeGreaterThanOrEqual(2)
+
+    detachAll()
+    expect(getActiveWatcherCount()).toBe(0)
+  })
+
+  it('detachWatchers swallows errors thrown from a watcher.stop()', async () => {
+    const { attachWatcher, detachWatchers, getActiveWatcherCount } = await import(
+      '../../src/main/transcriptWatchers/index'
+    )
+    const { mangleCwd } = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
+    const cwd = '/test-stop-throws'
+    const claudeDir = path.join(tmpHome, '.claude', 'projects', mangleCwd(cwd))
+    fs.mkdirSync(claudeDir, { recursive: true })
+    fs.writeFileSync(path.join(claudeDir, 'session.jsonl'), '')
+
+    const handle = attachWatcher('t-throw', cwd, 'claude') as any
+    if (handle) {
+      const origStop = handle.stop.bind(handle)
+      handle.stop = (): void => {
+        origStop()
+        throw new Error('stop boom')
+      }
+    }
+    expect(() => detachWatchers('t-throw')).not.toThrow()
+    expect(getActiveWatcherCount()).toBe(0)
+  })
+})

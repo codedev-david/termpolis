@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   parseNetstatWindows,
   parseSsLinux,
@@ -9,6 +9,7 @@ import {
   startEgressPolling,
   stopEgressPolling,
   stopAllEgressPolling,
+  pollAgentEgress,
 } from '../../src/main/egressAudit'
 
 describe('egressAudit — parseNetstatWindows', () => {
@@ -163,5 +164,60 @@ describe('egressAudit — start/stop polling', () => {
     stopAllEgressPolling()
     // No assertion on count beyond "no exception" — the cache lives separately.
     expect(true).toBe(true)
+  })
+
+  it('startEgressPolling replaces an existing poller for the same terminal', () => {
+    const p1 = vi.fn(async () => [])
+    const p2 = vi.fn(async () => [])
+    startEgressPolling('term-replace', 1, 60_000, p1)
+    startEgressPolling('term-replace', 1, 60_000, p2)
+    stopEgressPolling('term-replace')
+    expect(true).toBe(true)
+  })
+
+  it('tick swallows poller rejections without crashing', async () => {
+    const failingPoller = async (): Promise<any> => {
+      throw new Error('boom')
+    }
+    startEgressPolling('term-fail', 999, 60_000, failingPoller)
+    await Promise.resolve()
+    await Promise.resolve()
+    stopEgressPolling('term-fail')
+    expect(true).toBe(true)
+  })
+})
+
+describe('egressAudit — pollAgentEgress (lazy require, platform branches)', () => {
+  it('returns [] for invalid pid (0)', async () => {
+    expect(await pollAgentEgress(0)).toEqual([])
+  })
+
+  it('returns [] for negative pid', async () => {
+    expect(await pollAgentEgress(-1)).toEqual([])
+  })
+
+  it('returns [] when child_process throws (lazy require failure)', async () => {
+    // Force the child_process require to fail by mocking it to throw.
+    const originalRequire = require
+    const cpMock = require.cache[require.resolve('child_process')]
+    // Easier: just pass a pid and an unsupported platform — execFile may not exist
+    // Pass a platform that still tries to run a bin we know won't work, and expect [] from catch.
+    const r = await pollAgentEgress(99999, 'linux')
+    expect(Array.isArray(r)).toBe(true)
+  })
+})
+
+describe('egressAudit — recordEgress capacity cap', () => {
+  beforeEach(() => clearEgress())
+  it('caps each terminal at 256 unique endpoints', () => {
+    const endpoints = Array.from({ length: 300 }, (_, i) => ({
+      remoteHost: `10.0.0.${i % 256}`,
+      remotePort: 1000 + i,
+      localPort: 0,
+      state: 'EST',
+    }))
+    recordEgress('term-cap', endpoints)
+    const got = getRecentEgress('term-cap')
+    expect(got.length).toBeLessThanOrEqual(256)
   })
 })

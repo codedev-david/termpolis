@@ -523,3 +523,274 @@ describe('preload: agentActivity API', () => {
     expect(cb).toHaveBeenCalledWith({ id: 'ev1' })
   })
 })
+
+describe('preload: termpolis API — workspace trust + memory + swarm-review git', () => {
+  it('workspaceIsTrusted', async () => {
+    await exposed.termpolis.workspaceIsTrusted('/r')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workspace:is-trusted', { cwd: '/r' })
+  })
+
+  it('workspaceTrust', async () => {
+    await exposed.termpolis.workspaceTrust('/r')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workspace:trust', { cwd: '/r' })
+  })
+
+  it('workspaceRevokeTrust', async () => {
+    await exposed.termpolis.workspaceRevokeTrust('/r')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workspace:revoke-trust', { cwd: '/r' })
+  })
+
+  it('workspaceListTrusted', async () => {
+    await exposed.termpolis.workspaceListTrusted()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workspace:list-trusted')
+  })
+
+  it('memoryWrite', async () => {
+    const input = { agentId: 'claude', kind: 'fact', body: 'b' } as any
+    await exposed.termpolis.memoryWrite(input)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:write', input)
+  })
+
+  it('memorySearch', async () => {
+    await exposed.termpolis.memorySearch({ q: 'x' } as any)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:search', { q: 'x' })
+  })
+
+  it('memoryList with explicit opts', async () => {
+    await exposed.termpolis.memoryList({ limit: 10 } as any)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:list', { limit: 10 })
+  })
+
+  it('memoryList with no opts defaults to {}', async () => {
+    await (exposed.termpolis.memoryList as any)()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:list', {})
+  })
+
+  it('memoryCount', async () => {
+    await exposed.termpolis.memoryCount()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:count')
+  })
+
+  it('memoryClear', async () => {
+    await exposed.termpolis.memoryClear()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:clear')
+  })
+
+  it('gitRevParseHead', async () => {
+    await exposed.termpolis.gitRevParseHead('/r')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:rev-parse-head', { cwd: '/r' })
+  })
+
+  it('gitDiffRange', async () => {
+    await exposed.termpolis.gitDiffRange('/r', 'a', 'b')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:diff-range', { cwd: '/r', from: 'a', to: 'b' })
+  })
+
+  it('gitFilesInRange', async () => {
+    await exposed.termpolis.gitFilesInRange('/r', 'a', 'b')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:files-in-range', { cwd: '/r', from: 'a', to: 'b' })
+  })
+
+  it('gitApplyPatch', async () => {
+    await exposed.termpolis.gitApplyPatch('/r', 'patch-text', false)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:apply-patch', { cwd: '/r', patch: 'patch-text', reverse: false })
+  })
+
+  it('gitCheckoutFile', async () => {
+    await exposed.termpolis.gitCheckoutFile('/r', 'sha', ['f.ts'])
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:checkout-file', { cwd: '/r', sha: 'sha', files: ['f.ts'] })
+  })
+
+  it('gitResetHard', async () => {
+    await exposed.termpolis.gitResetHard('/r', 'sha')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:reset-hard', { cwd: '/r', sha: 'sha' })
+  })
+
+  it('gitCommitAll', async () => {
+    await exposed.termpolis.gitCommitAll('/r', 'msg')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:commit-all', { cwd: '/r', message: 'msg' })
+  })
+
+  it('swarmRunCommand', async () => {
+    await exposed.termpolis.swarmRunCommand('/r', 'npm test')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('swarm:run-command', { cwd: '/r', command: 'npm test' })
+  })
+
+  it('getAppVersion', async () => {
+    await exposed.termpolis.getAppVersion()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app:get-version')
+  })
+
+  it('listAISessions', async () => {
+    await exposed.termpolis.listAISessions()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSessions:list')
+  })
+
+  it('digestAISession', async () => {
+    await exposed.termpolis.digestAISession('/path/to/session.jsonl')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSessions:digest', '/path/to/session.jsonl')
+  })
+
+  it('collectDiagnostics', async () => {
+    await exposed.termpolis.collectDiagnostics()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('diagnostics:collect')
+  })
+
+  it('openExternal', async () => {
+    await exposed.termpolis.openExternal('https://example.com')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('shell:open-external', { url: 'https://example.com' })
+  })
+
+  it('appendHistory', () => {
+    exposed.termpolis.appendHistory('t1', 'name', 'ls')
+    expect(mockIpcRenderer.send).toHaveBeenCalledWith('history:append', { terminalId: 't1', terminalName: 'name', command: 'ls' })
+  })
+
+  it('searchHistory', async () => {
+    await exposed.termpolis.searchHistory('foo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('history:search', { query: 'foo' })
+  })
+
+  it('getHomedir', async () => {
+    await exposed.termpolis.getHomedir()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('fs:homedir')
+  })
+})
+
+describe('preload: aiSecurity API', () => {
+  it('exposes aiSecurity', () => {
+    expect(exposed.aiSecurity).toBeDefined()
+  })
+
+  it('getStatus', async () => {
+    await exposed.aiSecurity.getStatus()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:get-status')
+  })
+
+  it('setRedaction', async () => {
+    await exposed.aiSecurity.setRedaction(true)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-redaction', { value: true })
+  })
+
+  it('setAudit', async () => {
+    await exposed.aiSecurity.setAudit(false)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-audit', { value: false })
+  })
+
+  it('setStrictGemini', async () => {
+    await exposed.aiSecurity.setStrictGemini(true)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-strict-gemini', { value: true })
+  })
+
+  it('scan', async () => {
+    await exposed.aiSecurity.scan('hello world')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:scan', { text: 'hello world' })
+  })
+
+  it('recentAudit with limit', async () => {
+    await exposed.aiSecurity.recentAudit(50)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:recent-audit', { limit: 50 })
+  })
+
+  it('recentAudit without limit', async () => {
+    await exposed.aiSecurity.recentAudit()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:recent-audit', { limit: undefined })
+  })
+
+  it('clearAudit', async () => {
+    await exposed.aiSecurity.clearAudit()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:clear-audit')
+  })
+
+  it('append', async () => {
+    const entry = { agent: 'claude', event: 'redacted' }
+    await exposed.aiSecurity.append(entry)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:append', entry)
+  })
+
+  it('onSecretsRedacted registers handler and returns cleanup', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.aiSecurity.onSecretsRedacted(cb)
+    expect(mockIpcRenderer.on).toHaveBeenCalledWith('terminal:secrets-redacted', expect.any(Function))
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:secrets-redacted')?.[1]
+    handler({}, { id: 't', hits: [], agent: 'claude' })
+    expect(cb).toHaveBeenCalledWith({ id: 't', hits: [], agent: 'claude' })
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:secrets-redacted', expect.any(Function))
+  })
+
+  it('onCodeChunkDetected registers handler and returns cleanup', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.aiSecurity.onCodeChunkDetected(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:code-chunk-detected')?.[1]
+    handler({}, { id: 't', agent: null, byteSize: 100, lineCount: 10, signals: ['x'] })
+    expect(cb).toHaveBeenCalledWith({ id: 't', agent: null, byteSize: 100, lineCount: 10, signals: ['x'] })
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:code-chunk-detected', expect.any(Function))
+  })
+
+  it('onEnvDumpDetected registers handler and returns cleanup', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.aiSecurity.onEnvDumpDetected(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:env-dump-detected')?.[1]
+    handler({}, { id: 't', agent: 'codex', varCount: 5, variableNames: ['HOME'] })
+    expect(cb).toHaveBeenCalledWith({ id: 't', agent: 'codex', varCount: 5, variableNames: ['HOME'] })
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:env-dump-detected', expect.any(Function))
+  })
+
+  it('egress', async () => {
+    await exposed.aiSecurity.egress('term-1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('ai-security:egress', { terminalId: 'term-1' })
+  })
+
+  it('sensitiveReads', async () => {
+    await exposed.aiSecurity.sensitiveReads('term-1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('ai-security:sensitive-reads', { terminalId: 'term-1' })
+  })
+
+  it('onSensitiveFileRead registers handler and forwards payload', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.aiSecurity.onSensitiveFileRead(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:sensitive-file-read')?.[1]
+    const payload = {
+      id: 't1', agent: 'claude', tool: 'Read', rule: 'dotenv',
+      label: '.env file', filePath: '/p/.env', source: 'path' as const, ts: 1234,
+    }
+    handler({}, payload)
+    expect(cb).toHaveBeenCalledWith(payload)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:sensitive-file-read', expect.any(Function))
+  })
+})
+
+describe('preload: updater API', () => {
+  it('exposes updater', () => {
+    expect(exposed.updater).toBeDefined()
+  })
+
+  it('getStatus invokes updater:status', async () => {
+    await exposed.updater.getStatus()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('updater:status')
+  })
+
+  it('check invokes updater:check', async () => {
+    await exposed.updater.check()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('updater:check')
+  })
+
+  it('quitAndInstall invokes updater:quit-and-install', async () => {
+    await exposed.updater.quitAndInstall()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('updater:quit-and-install')
+  })
+
+  it('onState registers handler, forwards state, and cleans up', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.updater.onState(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'updater:state')?.[1]
+    handler({}, { phase: 'downloading' })
+    expect(cb).toHaveBeenCalledWith({ phase: 'downloading' })
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('updater:state', expect.any(Function))
+  })
+})

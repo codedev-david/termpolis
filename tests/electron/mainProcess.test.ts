@@ -2870,4 +2870,46 @@ describe('ai-security:sensitive-reads', () => {
     expect(r.success).toBe(true)
     expect(r.data.count).toBeGreaterThanOrEqual(1)
   })
+
+  it('does not crash when webContents.send throws inside the wire-up', async () => {
+    // The subscribe-handler in index.ts wraps webContents.send in try/catch.
+    // Force send to throw and confirm the bus subscriber survives — the
+    // counter should still bump because aiSecurityAppend runs first AND
+    // sensitiveFileWatcher.recordHit is upstream of the handler call.
+    const bus = await import('../../src/main/agentEventBus')
+    const { getReadCount } = await import('../../src/main/sensitiveFileWatcher')
+    const before = getReadCount('term-sens-throw')
+
+    mockWebContents.send.mockImplementationOnce(() => {
+      throw new Error('renderer dead')
+    })
+
+    expect(() => bus.publish({
+      terminalId: 'term-sens-throw',
+      agentType: 'claude',
+      kind: 'tool_call',
+      summary: 'Read .env',
+      payload: { tool: 'Read', input: { file_path: '.env' } },
+    })).not.toThrow()
+
+    expect(getReadCount('term-sens-throw')).toBe(before + 1)
+  })
+
+  it('does not surface non-tool_call events to the watcher', async () => {
+    const bus = await import('../../src/main/agentEventBus')
+    const { getReadCount } = await import('../../src/main/sensitiveFileWatcher')
+
+    bus.publish({
+      terminalId: 'term-sens-message',
+      agentType: 'claude',
+      kind: 'message',
+      summary: 'thinking about .env',
+      payload: { text: 'cat .env was just suggested' },
+    })
+
+    const r = await invokeHandler('ai-security:sensitive-reads', { terminalId: 'term-sens-message' })
+    expect(r.success).toBe(true)
+    expect(r.data.count).toBe(0)
+    expect(getReadCount('term-sens-message')).toBe(0)
+  })
 })

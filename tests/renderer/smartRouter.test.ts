@@ -219,4 +219,45 @@ describe('smartRouter', () => {
       expect(bulkTask.agentId).toBe('qwen-code')
     }
   })
+
+  // ---- branch coverage for line 45 (free-tier mention on token-heavy) and
+  // line 200 (existing.tokens += tokens when same agent gets multiple subtasks) ----
+
+  it('reason mentions "low token cost" when a low-cost agent gets a high-intensity task', () => {
+    const subtask = {
+      id: 's1',
+      category: 'bulkTasks' as const,
+      description: 'Bulk convert',
+      complexity: 3,
+      tokenIntensity: 'high' as const,
+    }
+    // qwen-code is tokenCost='low', and we hand it the only choice so it WILL win.
+    const assignments = routeTasks([subtask], ['qwen-code'])
+    expect(assignments[0].agentId).toBe('qwen-code')
+    expect(assignments[0].reason.toLowerCase()).toContain('low token cost')
+  })
+
+  it('aggregates tokens when one agent is assigned multiple subtasks', () => {
+    const subtaskA = {
+      id: 'a',
+      category: 'refactoring' as const,
+      description: 'r',
+      complexity: 3,
+      tokenIntensity: 'medium' as const,
+    }
+    const subtaskB = {
+      id: 'b',
+      category: 'codeReview' as const,
+      description: 'cr',
+      complexity: 3,
+      tokenIntensity: 'medium' as const,
+    }
+    // Only Claude available — both subtasks must route to it, exercising the
+    // existing.tokens += tokens path (line 200).
+    const assignments = routeTasks([subtaskA, subtaskB], ['claude'])
+    expect(assignments.every(a => a.agentId === 'claude')).toBe(true)
+    const costs = estimateCosts(assignments)
+    expect(costs.length).toBe(1)
+    expect(costs[0].estimatedTokens).toBeGreaterThan(0)
+  })
 })

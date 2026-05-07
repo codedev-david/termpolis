@@ -313,4 +313,54 @@ describe('listPathCommands', () => {
     const result = listPathCommands()
     expect(result).toEqual([])
   })
+
+  it('falls back to process.env.Path (Windows-style, capitalised) when PATH is undefined', () => {
+    delete process.env.PATH
+    process.env.Path = '/c/Program Files/Git/cmd'
+    mockReaddirSync.mockReturnValue(['some-binary'])
+    mockAccessSync.mockImplementation(() => undefined)
+    const result = listPathCommands()
+    expect(result).toContain('some-binary')
+  })
+
+  it('on Windows splits PATH by ;', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    process.env.PATH = 'C:\\Windows;C:\\Tools'
+    mockReaddirSync.mockImplementation((dir: any) => {
+      if (String(dir) === 'C:\\Windows') return ['cmd.exe']
+      if (String(dir) === 'C:\\Tools') return ['rg.exe']
+      return []
+    })
+    const result = listPathCommands()
+    expect(result).toContain('cmd')
+    expect(result).toContain('rg')
+  })
+
+  it('on Windows recognises .exe / .cmd / .bat / .ps1 / .com but ignores .txt', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    process.env.PATH = 'C:\\Tools'
+    mockReaddirSync.mockReturnValue([
+      'good.exe', 'shim.cmd', 'old.bat', 'profile.ps1', 'legacy.com', 'readme.txt',
+    ])
+    const result = listPathCommands()
+    expect(result).toContain('good')
+    expect(result).toContain('shim')
+    expect(result).toContain('old')
+    expect(result).toContain('profile')
+    expect(result).toContain('legacy')
+    expect(result).not.toContain('readme')
+  })
+
+  it('on Windows deduplicates case-insensitive base names', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    process.env.PATH = 'C:\\A;C:\\B'
+    mockReaddirSync.mockImplementation((dir: any) => {
+      if (String(dir) === 'C:\\A') return ['Git.exe']
+      if (String(dir) === 'C:\\B') return ['git.cmd']
+      return []
+    })
+    const result = listPathCommands()
+    // Only one of the two should appear (first wins)
+    expect(result.filter((x: string) => x.toLowerCase() === 'git')).toHaveLength(1)
+  })
 })

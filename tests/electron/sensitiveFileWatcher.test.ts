@@ -343,6 +343,28 @@ describe('matchToolEvent — Read tool', () => {
     const m = matchToolEvent(ev)
     expect(m).toHaveLength(1)
   })
+
+  it('handles direct object input with input.path (not JSON-stringified)', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: { path: '/repo/.env' } },
+    }
+    const m = matchToolEvent(ev)
+    expect(m).toHaveLength(1)
+    expect(m[0].rule).toBe('dotenv')
+  })
+
+  it('handles direct object input with input.filename (not JSON-stringified)', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: { filename: '/repo/id_rsa' } },
+    }
+    const m = matchToolEvent(ev)
+    expect(m).toHaveLength(1)
+    expect(m[0].rule).toBe('ssh-private-key')
+  })
 })
 
 describe('matchToolEvent — Bash tool', () => {
@@ -462,6 +484,86 @@ describe('matchToolEvent — Bash tool', () => {
       id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
       kind: 'tool_call', summary: 'Bash',
       payload: { tool: 'Bash', input: { command: 42 } as unknown as Record<string, unknown> },
+    }
+    expect(matchToolEvent(ev)).toEqual([])
+  })
+
+  it('returns [] when shell input is null', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Bash',
+      payload: { tool: 'Bash', input: null } as unknown as Record<string, unknown>,
+    }
+    expect(matchToolEvent(ev)).toEqual([])
+  })
+})
+
+describe('matchToolEvent — JSON-string input fallbacks', () => {
+  it('parses input as JSON for input.path (Codex shape)', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'codex',
+      kind: 'tool_call', summary: 'read_file',
+      payload: { tool: 'read_file', input: JSON.stringify({ path: '/home/u/.aws/credentials' }) },
+    }
+    const m = matchToolEvent(ev)
+    expect(m).toHaveLength(1)
+    expect(m[0].rule).toBe('aws-credentials')
+  })
+
+  it('parses input as JSON for input.filename', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'codex',
+      kind: 'tool_call', summary: 'read_file',
+      payload: { tool: 'read_file', input: JSON.stringify({ filename: '.env.production' }) },
+    }
+    const m = matchToolEvent(ev)
+    expect(m).toHaveLength(1)
+    expect(m[0].rule).toBe('dotenv')
+  })
+
+  it('does not crash on malformed JSON input string', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: '{not-json' },
+    }
+    expect(() => matchToolEvent(ev)).not.toThrow()
+  })
+
+  it('handles plain bare-string FS-tool input that is itself the path', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: '/home/u/.aws/credentials' },
+    }
+    const m = matchToolEvent(ev)
+    expect(m).toHaveLength(1)
+    expect(m[0].rule).toBe('aws-credentials')
+  })
+
+  it('JSON parse with wrong field shape returns empty', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: JSON.stringify({ irrelevant: 'foo' }) },
+    }
+    expect(matchToolEvent(ev)).toEqual([])
+  })
+
+  it('JSON-parse falls through when parsed is not an object', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: JSON.stringify('just-a-string') },
+    }
+    expect(matchToolEvent(ev)).toEqual([])
+  })
+
+  it('JSON-parse falls through when parsed.file_path is not a string', () => {
+    const ev: AgentEvent = {
+      id: '1', ts: Date.now(), terminalId: 't1', agentType: 'claude',
+      kind: 'tool_call', summary: 'Read',
+      payload: { tool: 'Read', input: JSON.stringify({ file_path: 42 }) },
     }
     expect(matchToolEvent(ev)).toEqual([])
   })
