@@ -145,8 +145,7 @@ export function reassignTask(
 
   let score = agent.strengths[assignment.subtask.category] * 20
   if (assignment.subtask.tokenIntensity === 'high') {
-    if (agent.tokenCost === 'free') score += 15
-    else if (agent.tokenCost === 'low') score += 10
+    if (agent.tokenCost === 'low') score += 10
     else if (agent.tokenCost === 'medium') score += 5
   }
   if (agent.hasMcp) score += 5
@@ -207,7 +206,7 @@ export function estimateCosts(assignments: TaskAssignment[]): CostEstimate[] {
       agentId,
       agentName: data.name,
       estimatedTokens: roundedTokens,
-      estimatedCost: dollarCost === 0 ? 'Free' : `$${dollarCost.toFixed(2)}`,
+      estimatedCost: `$${dollarCost.toFixed(2)}`,
     })
   }
 
@@ -216,9 +215,6 @@ export function estimateCosts(assignments: TaskAssignment[]): CostEstimate[] {
 
 /** Total estimated cost formatted as a string */
 export function totalEstimatedCost(estimates: CostEstimate[]): string {
-  const total = estimates.reduce((sum, e) => {
-    const val = e.estimatedCost === 'Free' ? 0 : parseFloat(e.estimatedCost.replace('$', ''))
-    return sum + val
-  }, 0)
-  return total === 0 ? 'Free' : `$${total.toFixed(2)}`
+  const total = estimates.reduce((sum, e) => sum + parseFloat(e.estimatedCost.replace('$', '')), 0)
+  return `$${total.toFixed(2)}`
 }

@@ -237,6 +237,37 @@ describe('smartRouter', () => {
     expect(assignments[0].reason.toLowerCase()).toContain('low token cost')
   })
 
+  it('reassignTask returns the original assignment unchanged when agent id is unknown', () => {
+    const breakdown = analyzeTask('Refactor the auth module')
+    const assignments = routeTasks(breakdown.subtasks, ['claude'])
+    const original = assignments[0]
+    const result = reassignTask(original, 'made-up-agent')
+    expect(result).toBe(original)
+  })
+
+  it('estimateCosts skips assignments referencing an unknown agent', () => {
+    const breakdown = analyzeTask('Refactor the auth module')
+    const assignments = routeTasks(breakdown.subtasks, ['claude'])
+    const tampered = assignments.map(a => ({ ...a, agentId: 'made-up-agent' }))
+    const costs = estimateCosts(tampered)
+    expect(costs).toEqual([])
+  })
+
+  it('reassignTask scoring path covers medium-cost agent on high-intensity subtask', () => {
+    const subtask = {
+      id: 'r1',
+      category: 'refactoring' as const,
+      description: 'r',
+      complexity: 3,
+      tokenIntensity: 'high' as const,
+    }
+    const assignments = routeTasks([subtask], ['claude', 'codex'])
+    const original = assignments[0]
+    // Codex tokenCost is 'medium' — exercises the medium branch (line 150)
+    const r = reassignTask(original, 'codex')
+    expect(r.agentId).toBe('codex')
+  })
+
   it('aggregates tokens when one agent is assigned multiple subtasks', () => {
     const subtaskA = {
       id: 'a',
