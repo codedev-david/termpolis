@@ -320,3 +320,24 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           BASE="https://github.com/codedev-david/termpolis/releases/download"
           node scripts/validateLatestYml.cjs --version "$VERSION" --base "$BASE"
+
+  # Fires a repository_dispatch at codedev-david/homebrew-termpolis so that
+  # tap rewrites Casks/termpolis.rb against the new tag's DMG sha256s. Gated
+  # on validate-update-metadata so we only bump the tap when the release is
+  # known-good. Will silently no-op until HOMEBREW_TAP_TOKEN is set.
+  bump-homebrew-tap:
+    needs: validate-update-metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch tap update
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping tap bump"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          gh api repos/codedev-david/homebrew-termpolis/dispatches \
+            -f event_type=termpolis-release \
+            -f "client_payload[version]=$version"
