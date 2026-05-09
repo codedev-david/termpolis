@@ -69,10 +69,12 @@ test.beforeAll(async () => {
       localStorage.setItem('termpolis.telemetry.optIn', '0')
     } catch {}
   })
-  // If the modal is already mounted, click its primary button to unmount it.
-  const onboardingBtn = page.getByRole('button', { name: 'Get started' })
-  if (await onboardingBtn.isVisible().catch(() => false)) {
-    await onboardingBtn.click()
+  // If the modal is already mounted (4-step tour starts on step 1), click
+  // "Skip tour" — that button is always visible regardless of which step
+  // the tour is on. "Get started" only appears on step 4.
+  const skipBtn = page.getByRole('button', { name: /Skip tour/i })
+  if (await skipBtn.isVisible().catch(() => false)) {
+    await skipBtn.click()
     await page.waitForTimeout(300)
   }
 })

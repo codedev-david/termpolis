@@ -81,9 +81,11 @@ test.beforeAll(async () => {
       localStorage.setItem('termpolis.telemetry.optIn', '0')
     } catch {}
   })
-  const onboardingBtn = page.getByRole('button', { name: 'Get started' })
-  if (await onboardingBtn.isVisible().catch(() => false)) {
-    await onboardingBtn.click()
+  // 4-step tour starts on step 1; "Skip tour" is always visible.
+  // "Get started" only appears on step 4.
+  const skipBtn = page.getByRole('button', { name: /Skip tour/i })
+  if (await skipBtn.isVisible().catch(() => false)) {
+    await skipBtn.click()
     await page.waitForTimeout(300)
   }
 })

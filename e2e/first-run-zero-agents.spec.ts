@@ -65,14 +65,15 @@ test.beforeAll(async () => {
   await page.waitForTimeout(2500)
 
   // Dismiss the onboarding modal if it rendered — it's not under test here.
-  // The actual button text is "Get started" (see OnboardingModal.tsx). On
-  // macOS CI the modal persists until the localStorage flag is set, so we
+  // The 4-step tour starts on step 1; "Skip tour" is always visible and
+  // dismisses from any step. ("Get started" only renders on step 4.)
+  // On macOS CI the modal persists until the localStorage flag is set, so we
   // wait briefly for it to appear, then click it. If we don't dismiss it,
   // its z-[200] backdrop intercepts every click below (the visible, enabled,
   // stable button never receives the click event).
   const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
   if (await onboardDialog.isVisible({ timeout: 2000 }).catch(() => false)) {
-    await page.locator('button:has-text("Get started")').first().click().catch(() => {})
+    await page.locator('button:has-text("Skip tour")').first().click().catch(() => {})
     await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
   // Belt-and-suspenders: set the localStorage flag so the modal cannot

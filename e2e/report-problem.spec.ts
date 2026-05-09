@@ -44,10 +44,11 @@ test.beforeAll(async () => {
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(1500)
 
-  // Dismiss the onboarding modal if it's up (same pattern as other specs).
+  // Dismiss the onboarding modal if it's up. The 4-step tour starts on
+  // step 1; "Skip tour" is the always-visible dismissal control.
   const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
   if (await onboardDialog.isVisible({ timeout: 1500 }).catch(() => false)) {
-    await page.locator('button:has-text("Get started")').first().click().catch(() => {})
+    await page.locator('button:has-text("Skip tour")').first().click().catch(() => {})
     await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
   await page.evaluate(() => {

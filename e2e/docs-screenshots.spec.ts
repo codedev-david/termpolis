@@ -186,10 +186,12 @@ test('capture all docs screenshots', async () => {
   await safeWait(800)
   await ss('01-welcome-screen')
 
-  // Dismiss the onboarding modal via "Get started" so it doesn't overlay every
-  // subsequent capture. If the modal isn't visible (e.g. already acknowledged
-  // on a previous run) the clickIf returns false and we move on.
-  const onboardingDismissed = await clickIf('button:has-text("Get started")', 3000)
+  // Dismiss the onboarding modal so it doesn't overlay every subsequent
+  // capture. The 4-step tour starts on step 1, so "Skip tour" (always
+  // visible) is the right control. ("Get started" only appears on step 4.)
+  // If the modal isn't visible (e.g. already acknowledged on a previous
+  // run) the clickIf returns false and we move on.
+  const onboardingDismissed = await clickIf('button:has-text("Skip tour")', 3000)
   if (onboardingDismissed) {
     await waitForHidden('h2:text-is("Welcome to Termpolis")', 3000)
     await safeWait(400)
