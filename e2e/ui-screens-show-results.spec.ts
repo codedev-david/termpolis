@@ -82,11 +82,14 @@ test.beforeAll(async () => {
     } catch {}
   })
   // 4-step tour starts on step 1; "Skip tour" is always visible.
-  // "Get started" only appears on step 4.
-  const skipBtn = page.getByRole('button', { name: /Skip tour/i })
-  if (await skipBtn.isVisible().catch(() => false)) {
-    await skipBtn.click()
-    await page.waitForTimeout(300)
+  // Wait up to 5s for the dialog (slow Linux GHA), force-click, then wait
+  // for hidden so the next test isn't racing the backdrop. Earlier
+  // getByRole + isVisible() with no timeout silently no-op'd when the
+  // modal hadn't rendered yet at the 1500ms mark.
+  const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
+  if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
+    await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
 })
 

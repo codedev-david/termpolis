@@ -72,8 +72,8 @@ test.beforeAll(async () => {
   // its z-[200] backdrop intercepts every click below (the visible, enabled,
   // stable button never receives the click event).
   const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
-  if (await onboardDialog.isVisible({ timeout: 2000 }).catch(() => false)) {
-    await page.locator('button:has-text("Skip tour")').first().click().catch(() => {})
+  if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
     await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
   // Belt-and-suspenders: set the localStorage flag so the modal cannot
