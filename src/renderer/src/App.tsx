@@ -401,9 +401,14 @@ export default function App() {
     const onOpenPins = () => setShowContextPins(true)
     window.addEventListener('termpolis:openContextPins', onOpenPins)
 
+    // Listen for "Show tour again" from the Help modal
+    const onReopenOnboarding = () => setShowOnboarding(true)
+    window.addEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
+
     return () => {
       window.removeEventListener('keydown', handler)
       window.removeEventListener('termpolis:openContextPins', onOpenPins)
+      window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
       unsubGlobal?.()
       unsubSwarm?.()
       unsubClose?.()

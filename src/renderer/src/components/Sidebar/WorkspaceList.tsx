@@ -139,11 +139,13 @@ export function WorkspaceList() {
                 onClick={e => startRename(e, ws)}
                 className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Rename ${ws.name}`}
+                title="Rename workspace"
               >✎</button>
               <button
                 onClick={e => { e.stopPropagation(); removeWorkspace(ws.id) }}
                 className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-sm px-1 py-0.5 rounded hover:bg-[#37373d]"
                 aria-label={`Delete ${ws.name}`}
+                title="Delete workspace"
               >✕</button>
             </div>
           )}
@@ -172,6 +174,7 @@ export function WorkspaceList() {
           <button
             onClick={() => { setSaving(true); setWsName('') }}
             disabled={terminals.length === 0}
+            title={terminals.length === 0 ? 'Open a terminal first to save it as a workspace' : 'Save the current terminal layout as a reusable workspace'}
             className="w-full text-left text-sm text-[#9ca3af] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
           >+ Save Workspace</button>
         )

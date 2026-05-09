@@ -251,6 +251,80 @@ describe('StatusBar', () => {
     expect(screen.getByText('Accessibility')).toBeInTheDocument()
   })
 
+  // -- Show tour again --
+
+  it('help dialog shows a Show-tour-again link', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByTestId('help-show-tour')).toBeInTheDocument()
+  })
+
+  it('Show-tour-again link clears the seen flag', () => {
+    localStorage.setItem('termpolis.onboarding.seen.v1', '1')
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    fireEvent.click(screen.getByTestId('help-show-tour'))
+    expect(localStorage.getItem('termpolis.onboarding.seen.v1')).toBeNull()
+  })
+
+  it('Show-tour-again link closes the help modal', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('help-show-tour'))
+    expect(screen.queryByText('Quick Start Guide')).not.toBeInTheDocument()
+  })
+
+  it('Show-tour-again link dispatches termpolis:reopenOnboarding', () => {
+    const listener = vi.fn()
+    window.addEventListener('termpolis:reopenOnboarding', listener)
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    fireEvent.click(screen.getByTestId('help-show-tour'))
+    expect(listener).toHaveBeenCalledTimes(1)
+    window.removeEventListener('termpolis:reopenOnboarding', listener)
+  })
+
+  it('MCP section reflects the real 17-tool count', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/17 tools/)).toBeInTheDocument()
+  })
+
+  // -- Observability + security sections --
+
+  it('help dialog documents Past AI Sessions', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Past AI Sessions')).toBeInTheDocument()
+  })
+
+  it('help dialog documents the Live AI Observability panels', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Live AI Observability')).toBeInTheDocument()
+    expect(screen.getAllByText(/Activity Feed/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Redundancy/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Efficiency/).length).toBeGreaterThan(0)
+  })
+
+  it('help dialog documents the AI Security Center', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('AI Security Center')).toBeInTheDocument()
+    expect(screen.getByText(/Secret scanner/)).toBeInTheDocument()
+    expect(screen.getByText(/Sensitive-file watcher/)).toBeInTheDocument()
+    expect(screen.getByText(/Per-agent egress audit/)).toBeInTheDocument()
+    expect(screen.getByText(/Strict Mode/)).toBeInTheDocument()
+  })
+
+  it('keyboard-shortcuts section lists the four observability shortcuts', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/Activity feed/)).toBeInTheDocument()
+    expect(screen.getByText(/Context pins/)).toBeInTheDocument()
+  })
+
   // -- Version display (auto-update verification) --
 
   it('renders installed app version in the footer next to the Apache license', async () => {

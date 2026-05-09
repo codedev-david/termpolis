@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { ReportProblemModal } from './ReportProblemModal'
+import { resetOnboarding } from '../Onboarding/OnboardingModal'
 
-function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => void; onReportProblem: () => void; appVersion: string }) {
+function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClose: () => void; onReportProblem: () => void; onShowTour: () => void; appVersion: string }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg shadow-xl border border-[#3c3c3c] w-[560px] max-h-[85vh] flex flex-col">
@@ -157,6 +158,34 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
             </ul>
           </section>
 
+          {/* Past AI Sessions */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-clock-rotate-left text-xs"></i> Past AI Sessions
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Browse every Claude Code session ever recorded on this machine — handy for digging up an old prompt or reusing a working approach.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li>Open from the <strong>AI Agents</strong> section in the sidebar (clock-rotate-left icon)</li>
+              <li>Sessions are loaded asynchronously — opening hundreds of sessions no longer freezes the app</li>
+              <li>Click any session to inspect its full transcript and copy/inject pieces into a live agent</li>
+            </ul>
+          </section>
+
+          {/* Live Observability Panels */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-gauge-high text-xs"></i> Live AI Observability
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Four side-panels that surface what your agents are actually doing in real time:</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+A</kbd> <strong>Activity Feed</strong> — chronological log of every tool call, prompt, and response across all agent terminals</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+B</kbd> <strong>Context Pins</strong> — surface the files, snippets, and notes most relevant to your current cwd</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+D</kbd> <strong>Redundancy / Duplicate-Work</strong> — flags when two agents are about to do the same thing</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+Y</kbd> <strong>Efficiency</strong> — token + cost breakdown per agent so you can see who's burning the most</li>
+              <li>All four run locally — no data leaves your machine to feed them</li>
+            </ul>
+          </section>
+
           {/* MCP Server */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
@@ -166,9 +195,25 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li>Termpolis runs an MCP server on <strong>localhost:9315</strong> (shown in the bottom bar)</li>
               <li>AI agents can create terminals, run commands, read output, and manage your workspace</li>
               <li><strong>Auto-registers with Claude Code</strong> — on launch, Termpolis adds itself to your Claude Code settings automatically. No manual config needed.</li>
-              <li>14 tools: terminal management, file tree, git status, and swarm coordination</li>
+              <li>17 tools: terminal management, file tree, git status, swarm coordination, and shared memory</li>
               <li>Secured with a 256-bit auth token (rotates every launch, localhost only)</li>
               <li>CLI tool available: <code>termpolis-cli list</code>, <code>termpolis-cli create "Dev"</code>, etc.</li>
+            </ul>
+          </section>
+
+          {/* AI Security Center */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-shield-halved text-xs"></i> AI Security Center
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Open <strong>Settings → Security</strong>. Layered defenses for hosted-model use — everything runs locally on your machine.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>Secret scanner</strong> — every prompt you send to an AI terminal is auto-scanned against 70+ patterns (AWS keys, GitHub tokens, OpenAI keys, JWTs, private keys, …) before it leaves the app. A red banner pops up if a hit is found and lets you redact-and-resend.</li>
+              <li><strong>Sensitive-file watcher</strong> — alerts when an agent reads <code>.env</code>, PEM, cloud-credential, or SSH-directory files. ~17 conservative rules tuned to avoid false positives on normal source code.</li>
+              <li><strong>Per-agent egress audit</strong> — every outbound network connection an agent makes is logged with host + count, viewable in <strong>Settings → Security → Egress Audit</strong>. JSONL log on disk for forensics.</li>
+              <li><strong>ToS drift watcher</strong> — flags Anthropic / OpenAI / Google / Alibaba ToS changes that affect how your prompts are stored or used for training.</li>
+              <li><strong>Strict Mode (Gemini)</strong> — auto-detects when Gemini drops to the free OAuth tier (which trains on your prompts) and blocks calls until you switch to a paid API key.</li>
+              <li><strong>Code-chunk + env-dump detection</strong> — extra heuristics that catch obfuscated secrets and wholesale environment dumps the regex scanner alone might miss.</li>
             </ul>
           </section>
 
@@ -295,7 +340,8 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Tab</kbd> / <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Tab</kbd> Next / Previous &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Alt+1–9</kbd> Jump to terminal</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+B</kbd> Toggle sidebar &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+G</kbd> Toggle split view</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+P</kbd> Prompts &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+E</kbd> Context panel &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+I</kbd> Conversation search</li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+A</kbd> Activity feed &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+B</kbd> Context pins &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+D</kbd> Redundancy &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Y</kbd> Efficiency</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+/</kbd> Shortcuts panel</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Win+Shift+T</kbd> New terminal (global, works when minimized)</li>
               <li>All customizable in <strong>Settings → Keybindings</strong></li>
@@ -353,6 +399,14 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
             >
               <i className="fa-solid fa-bug"></i>
               Report a problem
+            </button>
+            <button
+              onClick={onShowTour}
+              className="text-[#22D3EE] hover:underline text-sm flex items-center gap-1.5"
+              data-testid="help-show-tour"
+            >
+              <i className="fa-solid fa-route"></i>
+              Show tour again
             </button>
           </div>
           <button
@@ -430,6 +484,7 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
           <button
             onClick={() => setShowHelp(true)}
             className="hover:text-[#22D3EE] transition-colors"
+            title="Open Help & Keyboard Shortcuts (Ctrl+/)"
           >Help / Support</button>
         </div>
       </div>
@@ -437,6 +492,11 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
         <HelpModal
           onClose={() => setShowHelp(false)}
           onReportProblem={() => { setShowHelp(false); setShowReport(true) }}
+          onShowTour={() => {
+            resetOnboarding()
+            setShowHelp(false)
+            window.dispatchEvent(new CustomEvent('termpolis:reopenOnboarding'))
+          }}
           appVersion={appVersion}
         />
       )}

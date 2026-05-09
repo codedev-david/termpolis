@@ -293,6 +293,62 @@ export function SecuritySettings() {
         </div>
       </div>
 
+      {/* Background watchers (sensitive-file + per-agent egress) */}
+      <div
+        data-testid="security-watchers"
+        className="flex flex-col gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]"
+      >
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <i className="fa-solid fa-eye text-[#22D3EE]"></i>
+          Background watchers (always on)
+        </h3>
+        <p className="text-xs text-[#9ca3af] leading-relaxed">
+          Two passive watchers run alongside every AI-agent terminal. They never block the agent — they record what was read or transmitted so you have a forensic trail and can tighten ignore-files for next session.
+        </p>
+
+        {/* Sensitive-file watcher */}
+        <div className="flex flex-col gap-1.5 pt-2 border-t border-[#3c3c3c]">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-[#d4d4d4] flex items-center gap-1.5">
+              <i className="fa-solid fa-file-shield text-[#FFB74D] text-[11px]"></i>
+              Sensitive-file read watcher
+            </span>
+            <span
+              data-testid="security-sensitive-file-count"
+              className={`text-[10px] px-2 py-0.5 rounded border ${
+                auditEntries.filter(e => e.event === 'sensitive_file_read').length > 0
+                  ? 'bg-[#3a2a0d] text-[#FFB74D] border-[#6e4d1f]'
+                  : 'bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a]'
+              }`}
+            >
+              {auditEntries.filter(e => e.event === 'sensitive_file_read').length} recent matches
+            </span>
+          </div>
+          <p className="text-[11px] text-[#9ca3af] leading-relaxed">
+            Watches the agent's tool-call stream for reads of <code>.env*</code>, PEM keys, <code>~/.aws/credentials</code>, <code>~/.ssh/*</code>, and other high-risk files (~17 conservative rules). Each match is recorded in the audit log and a banner pops up in the terminal. Add the path to <code>.claudeignore</code> (or the equivalent) before the next session.
+          </p>
+          {auditEntries.filter(e => e.event === 'sensitive_file_read').slice(0, 5).map((e, i) => (
+            <div
+              key={'sf-' + i}
+              className="text-[10px] font-mono text-[#FFB4B4] bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 break-all"
+            >
+              {new Date(e.ts).toLocaleTimeString()} · {e.agent} · {e.notes}
+            </div>
+          ))}
+        </div>
+
+        {/* Egress audit */}
+        <div className="flex flex-col gap-1.5 pt-2 border-t border-[#3c3c3c]">
+          <span className="text-xs font-medium text-[#d4d4d4] flex items-center gap-1.5">
+            <i className="fa-solid fa-network-wired text-[#22D3EE] text-[11px]"></i>
+            Per-agent egress audit
+          </span>
+          <p className="text-[11px] text-[#9ca3af] leading-relaxed">
+            Polls each agent's open TCP connections once a minute (via <code>netstat</code>/<code>ss</code>/<code>lsof</code>) and records the unique <code>host:port</code> pairs. OS-level ground truth — independent of what the agent's own logs say. Visible alongside the entries below when the audit log is enabled.
+          </p>
+        </div>
+      </div>
+
       {/* Audit log toggle */}
       <div className="flex flex-col gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
         <div className="flex items-start gap-3">

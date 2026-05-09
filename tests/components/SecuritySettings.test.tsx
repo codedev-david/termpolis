@@ -462,4 +462,61 @@ describe('SecuritySettings', () => {
     expect(disclaimer.textContent).toMatch(/disclaim all liability/i)
     expect(disclaimer.textContent).toMatch(/Apache License 2\.0/i)
   })
+
+  it('renders the Background watchers card', async () => {
+    render(<SecuritySettings />)
+    const card = await screen.findByTestId('security-watchers')
+    expect(card).toBeInTheDocument()
+    expect(card.textContent).toMatch(/Sensitive-file read watcher/i)
+    expect(card.textContent).toMatch(/Per-agent egress audit/i)
+  })
+
+  it('shows zero recent matches when no sensitive-file events are present', async () => {
+    render(<SecuritySettings />)
+    const badge = await screen.findByTestId('security-sensitive-file-count')
+    expect(badge.textContent).toMatch(/0 recent matches/)
+    expect(badge.className).toMatch(/bg-\[#0d3a1a\]/)
+  })
+
+  it('counts sensitive_file_read events from the audit log', async () => {
+    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
+      success: true,
+      data: { redactionEnabled: false, auditEnabled: true },
+    })
+    ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
+      success: true,
+      data: [
+        { ts: '2026-05-09T12:00:00.000Z', agent: 'claude', event: 'sensitive_file_read', notes: '/home/u/.env' },
+        { ts: '2026-05-09T12:01:00.000Z', agent: 'codex', event: 'sensitive_file_read', notes: '/home/u/.aws/credentials' },
+        { ts: '2026-05-09T12:02:00.000Z', agent: 'gemini', event: 'terminal_open', byteCount: 12 },
+      ],
+    })
+    render(<SecuritySettings />)
+    fireEvent.click(await screen.findByTestId('security-audit-toggle'))
+    await waitFor(() => {
+      const badge = screen.getByTestId('security-sensitive-file-count')
+      expect(badge.textContent).toMatch(/2 recent matches/)
+      expect(badge.className).toMatch(/bg-\[#3a2a0d\]/)
+    })
+  })
+
+  it('lists up to 5 recent sensitive-file matches with agent + path', async () => {
+    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
+      success: true,
+      data: { redactionEnabled: false, auditEnabled: true },
+    })
+    ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
+      success: true,
+      data: [
+        { ts: '2026-05-09T12:00:00.000Z', agent: 'claude', event: 'sensitive_file_read', notes: '/home/u/.env.production' },
+      ],
+    })
+    render(<SecuritySettings />)
+    fireEvent.click(await screen.findByTestId('security-audit-toggle'))
+    await waitFor(() => {
+      const card = screen.getByTestId('security-watchers')
+      expect(card.textContent).toMatch(/claude/)
+      expect(card.textContent).toMatch(/\.env\.production/)
+    })
+  })
 })
