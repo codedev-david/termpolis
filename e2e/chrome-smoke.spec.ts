@@ -62,20 +62,22 @@ test.beforeAll(async () => {
   await page.waitForTimeout(1500)
 
   // Pre-dismiss the first-run onboarding modal so it doesn't block clicks.
-  // We write the "seen" key directly; the modal mounts from that flag.
+  // The modal reads localStorage on mount, so a late write doesn't unmount it
+  // — we have to actively click "Skip tour" if it's already up.
   await page.evaluate(() => {
     try {
       localStorage.setItem('termpolis.onboarding.seen.v1', '1')
       localStorage.setItem('termpolis.telemetry.optIn', '0')
     } catch {}
   })
-  // If the modal is already mounted (4-step tour starts on step 1), click
-  // "Skip tour" — that button is always visible regardless of which step
-  // the tour is on. "Get started" only appears on step 4.
-  const skipBtn = page.getByRole('button', { name: /Skip tour/i })
-  if (await skipBtn.isVisible().catch(() => false)) {
-    await skipBtn.click()
-    await page.waitForTimeout(300)
+  // The 4-step tour starts on step 1; "Skip tour" is always visible. Wait
+  // up to 5s for the dialog to render (slow Linux/macOS CI), force-click,
+  // then wait for hidden so the next test's first click isn't racing the
+  // backdrop fade. Force-click defends against pointer-events races.
+  const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
+  if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
+    await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
 })
 
@@ -113,6 +115,15 @@ async function createTerminalIfNeeded(name: string) {
 }
 
 async function closeAnyOpenModal() {
+  // Step 0: belt-and-suspenders — if the onboarding modal (z-[200]) is still
+  // up after beforeAll's dismissal raced the modal's mount, force-click
+  // Skip tour. Its backdrop class is `z-[200]`, not `z-50`, so the steps
+  // below don't catch it.
+  const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
+  if (await onboardDialog.isVisible({ timeout: 100 }).catch(() => false)) {
+    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
+    await onboardDialog.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {})
+  }
   // Step 1: Escape attempts. Most modals listen for it.
   for (let i = 0; i < 3; i++) {
     await page.keyboard.press('Escape').catch(() => {})
