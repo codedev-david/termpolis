@@ -32,30 +32,43 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const https = require('node:https')
 
+// Providers flagged `manualReview: true` are known to block headless fetch
+// (Cloudflare browser challenge on openai.com) or render policy text purely
+// client-side (alibabacloud.com help SPA — the URL 200s but the normalized
+// HTML is <200 chars). For those we fall back to MANUAL.md timestamps in
+// docs/security-snapshots/ rather than letting the watcher fire forever.
 const PROVIDERS = [
   {
     id: 'anthropic',
     label: 'Anthropic / Claude',
     url: 'https://www.anthropic.com/legal/commercial-terms',
-    expectKeywords: ['training', 'commercial', 'inputs', 'outputs'],
+    // 'train' instead of 'training' — Anthropic's prose uses "may not train
+    // models on Customer Content" as the load-bearing verb; the noun form
+    // disappeared in the 2026-05 rewrite.
+    expectKeywords: ['train', 'commercial', 'inputs', 'outputs'],
   },
   {
     id: 'openai',
     label: 'OpenAI / Codex',
     url: 'https://openai.com/enterprise-privacy',
     expectKeywords: ['training', 'data', 'API', 'retention'],
+    manualReview: true,
   },
   {
     id: 'google-gemini',
     label: 'Google / Gemini API',
     url: 'https://ai.google.dev/gemini-api/terms',
-    expectKeywords: ['training', 'paid', 'free', 'gemini'],
+    // 'train' rather than 'training' for the same reason as Anthropic above —
+    // the Gemini terms now use phrasing like "You will not... train on"
+    // (Maps/Grounding) plus "improve our products" (the actual data-use clause).
+    expectKeywords: ['train', 'paid', 'free', 'gemini'],
   },
   {
     id: 'alibaba-qwen',
     label: 'Alibaba / Qwen Model Studio',
     url: 'https://www.alibabacloud.com/help/en/model-studio/legal-agreement',
     expectKeywords: ['training', 'service', 'data'],
+    manualReview: true,
   },
 ]
 
@@ -167,7 +180,7 @@ async function checkProvider(provider) {
     const text = normalizeHtml(body)
     result.sizeBytes = text.length
     if (text.length < 200) {
-      result.status = 'drift'
+      result.status = provider.manualReview ? 'manual-review' : 'drift'
       result.reason = 'fetched content too short (' + text.length + ' chars) — page may have moved or be JS-only'
       return result
     }
@@ -200,7 +213,7 @@ async function checkProvider(provider) {
       return result
     }
   } catch (e) {
-    result.status = 'error'
+    result.status = provider.manualReview ? 'manual-review' : 'error'
     result.reason = String(e && e.message ? e.message : e)
   }
   return result
@@ -222,14 +235,16 @@ async function main() {
         ? 'OK   '
         : r.status === 'updated'
           ? 'UPDT '
-          : r.status === 'drift'
-            ? 'DRIFT'
-            : 'ERR  '
+          : r.status === 'manual-review'
+            ? 'MANUL'
+            : r.status === 'drift'
+              ? 'DRIFT'
+              : 'ERR  '
       process.stdout.write(`${tag} ${r.label}\n        ${r.url}\n`)
       if (r.status !== 'ok' && r.status !== 'updated') {
         process.stdout.write(`        reason: ${r.reason}\n`)
       }
-      if (r.missingKeywords.length && r.status !== 'error') {
+      if (r.missingKeywords.length && r.status !== 'error' && r.status !== 'manual-review') {
         process.stdout.write(`        missing keywords: ${r.missingKeywords.join(', ')}\n`)
       }
     }
