@@ -257,6 +257,10 @@ describe('SwarmDashboard', () => {
       })
     })
 
+    // Bumped per-call timeouts on 2026-05-12 — windows-latest CI runners
+    // are slow enough that the default 1s waitFor / 5s test timeout flake on
+    // the getTasks promise resolving + React re-rendering with the kanban data.
+    // Local + macOS both run this in <500ms.
     it('Tasks tab shows kanban columns with data', async () => {
       ;(window.swarmAPI.getTasks as any).mockResolvedValue({
         success: true,
@@ -265,8 +269,8 @@ describe('SwarmDashboard', () => {
       render(<SwarmDashboard onClose={vi.fn()} />)
       await waitFor(() => {
         expect(screen.getByText('Kanban Task')).toBeInTheDocument()
-      })
-    })
+      }, { timeout: 8000 })
+    }, 15000)
 
     it('switches to Messages tab and shows empty message', () => {
       render(<SwarmDashboard onClose={vi.fn()} />)
