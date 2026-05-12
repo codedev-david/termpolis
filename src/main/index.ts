@@ -53,7 +53,7 @@ import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid } from './terminalManager'
-import { startEgressPolling, stopEgressPolling, stopAllEgressPolling, getRecentEgress, clearEgress } from './egressAudit'
+import { stopEgressPolling, stopAllEgressPolling, getRecentEgress, recordEgress, clearEgress, pollAgentEgress } from './egressAudit'
 import {
   subscribeSensitiveReads,
   getReadCount as getSensitiveReadCount,
@@ -274,10 +274,20 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
 })
 
 // Renderer-facing read of the per-terminal egress cache. The Security panel
-// queries this to render "this agent talked to X hosts" without needing to
-// re-shell to netstat itself.
+// queries this to render "this agent talked to X hosts". We poll on-demand
+// here rather than running a background interval per AI terminal — the
+// every-60s `netstat -ano` triad (process-enum + subprocess-spawn + signed-exe
+// from a fresh-reputation OV cert) was load-bearing in Defender's cloud-ML
+// false-positive against v1.11.55. Cost of moving to on-demand is one extra
+// shell-out the first time the user opens the Security panel; benefit is no
+// continuous behavioral signature.
 ipcMain.handle('ai-security:egress', async (_, { terminalId }: { terminalId: string }) => {
   try {
+    const pid = getTerminalPid(terminalId)
+    if (pid && pid > 0) {
+      const endpoints = await pollAgentEgress(pid)
+      if (endpoints.length) recordEgress(terminalId, endpoints)
+    }
     return ok({ endpoints: getRecentEgress(terminalId) })
   } catch (e: any) { return err(e.message) }
 })
@@ -340,14 +350,6 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
       detectedAgent = m ? m[1] : null
       if (detectedAgent) {
         aiTerminalFlag.add(id)
-        // Spin up an egress poller for the agent process so the Security panel
-        // can show "Claude talked to api.anthropic.com today, nothing else".
-        // PID = the shell PID; the AI agent runs as its child but inherits the
-        // socket-tracking we want via the OS connection table.
-        try {
-          const pid = getTerminalPid(id)
-          if (pid && pid > 0) startEgressPolling(id, pid)
-        } catch {}
       }
     }
   } catch {}
