@@ -40,8 +40,6 @@ const MAX_ENDPOINTS_PER_TERMINAL = 256
 
 // terminalId -> Set<host:port>
 const recentEgress = new Map<string, Map<string, EgressEndpoint>>()
-// terminalId -> NodeJS.Timeout
-const pollerHandles = new Map<string, NodeJS.Timeout>()
 
 // Windows `netstat -ano` lines look like:
 //   "  TCP    192.168.1.10:62015    151.101.0.81:443    ESTABLISHED   12345"
@@ -185,38 +183,3 @@ export function clearEgress(terminalId?: string): void {
   }
 }
 
-// Public for testing — lets a test inject a fake poller.
-export type EgressPoller = (pid: number) => Promise<EgressEndpoint[]>
-
-export function startEgressPolling(
-  terminalId: string,
-  pid: number,
-  intervalMs = 60_000,
-  poller: EgressPoller = pollAgentEgress,
-): void {
-  if (pollerHandles.has(terminalId)) stopEgressPolling(terminalId)
-  const tick = async (): Promise<void> => {
-    try {
-      const endpoints = await poller(pid)
-      if (endpoints.length) recordEgress(terminalId, endpoints)
-    } catch {}
-  }
-  // Fire once immediately, then on interval.
-  tick()
-  const handle = setInterval(tick, intervalMs)
-  // Don't keep the event loop alive on shutdown.
-  if (typeof handle.unref === 'function') handle.unref()
-  pollerHandles.set(terminalId, handle)
-}
-
-export function stopEgressPolling(terminalId: string): void {
-  const h = pollerHandles.get(terminalId)
-  if (h) {
-    clearInterval(h)
-    pollerHandles.delete(terminalId)
-  }
-}
-
-export function stopAllEgressPolling(): void {
-  for (const id of Array.from(pollerHandles.keys())) stopEgressPolling(id)
-}

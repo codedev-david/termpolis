@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
   parseNetstatWindows,
   parseSsLinux,
@@ -6,9 +6,6 @@ import {
   recordEgress,
   getRecentEgress,
   clearEgress,
-  startEgressPolling,
-  stopEgressPolling,
-  stopAllEgressPolling,
   pollAgentEgress,
 } from '../../src/main/egressAudit'
 
@@ -120,70 +117,6 @@ describe('egressAudit — record/get/clear', () => {
     clearEgress('term-1')
     expect(getRecentEgress('term-1')).toEqual([])
     expect(getRecentEgress('term-2')).toHaveLength(1)
-  })
-})
-
-describe('egressAudit — start/stop polling', () => {
-  beforeEach(() => {
-    clearEgress()
-    stopAllEgressPolling()
-  })
-
-  it('runs the poller once immediately on start', async () => {
-    let calls = 0
-    const fakePoller = async (): Promise<any> => {
-      calls++
-      return [{ remoteHost: '1.1.1.1', remotePort: 443, localPort: 0, state: 'EST' }]
-    }
-    startEgressPolling('term-x', 999, 60_000, fakePoller)
-    // immediate tick is queued — yield once
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(calls).toBeGreaterThanOrEqual(1)
-    expect(getRecentEgress('term-x').length).toBeGreaterThanOrEqual(1)
-    stopEgressPolling('term-x')
-  })
-
-  it('stopEgressPolling halts subsequent ticks', () => {
-    let calls = 0
-    const fakePoller = async (): Promise<any> => {
-      calls++
-      return []
-    }
-    startEgressPolling('term-y', 999, 60_000, fakePoller)
-    stopEgressPolling('term-y')
-    // second start would replace; calling stop on a stopped id is a no-op
-    stopEgressPolling('term-y')
-    expect(calls).toBeGreaterThanOrEqual(0)
-  })
-
-  it('stopAllEgressPolling clears every running poller', () => {
-    const fakePoller = async (): Promise<any> => []
-    startEgressPolling('a', 1, 60_000, fakePoller)
-    startEgressPolling('b', 2, 60_000, fakePoller)
-    stopAllEgressPolling()
-    // No assertion on count beyond "no exception" — the cache lives separately.
-    expect(true).toBe(true)
-  })
-
-  it('startEgressPolling replaces an existing poller for the same terminal', () => {
-    const p1 = vi.fn(async () => [])
-    const p2 = vi.fn(async () => [])
-    startEgressPolling('term-replace', 1, 60_000, p1)
-    startEgressPolling('term-replace', 1, 60_000, p2)
-    stopEgressPolling('term-replace')
-    expect(true).toBe(true)
-  })
-
-  it('tick swallows poller rejections without crashing', async () => {
-    const failingPoller = async (): Promise<any> => {
-      throw new Error('boom')
-    }
-    startEgressPolling('term-fail', 999, 60_000, failingPoller)
-    await Promise.resolve()
-    await Promise.resolve()
-    stopEgressPolling('term-fail')
-    expect(true).toBe(true)
   })
 })
 

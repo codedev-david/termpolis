@@ -53,7 +53,7 @@ import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid } from './terminalManager'
-import { stopEgressPolling, stopAllEgressPolling, getRecentEgress, recordEgress, clearEgress, pollAgentEgress } from './egressAudit'
+import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress } from './egressAudit'
 import {
   subscribeSensitiveReads,
   getReadCount as getSensitiveReadCount,
@@ -267,7 +267,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     }
     aiTerminalFlag.delete(id)
     aiInputStaging.delete(id)
-    try { stopEgressPolling(id); clearEgress(id) } catch {}
+    try { clearEgress(id) } catch {}
     try { clearSensitiveReadCount(id) } catch {}
     return ok()
   } catch (e: any) { return err(e.message) }
@@ -1534,7 +1534,6 @@ if (!gotTheLock) {
   app.on('before-quit', () => {
     globalShortcut.unregisterAll()
     killAll()
-    try { stopAllEgressPolling() } catch {}
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
@@ -1542,7 +1541,6 @@ if (!gotTheLock) {
   })
   app.on('window-all-closed', () => {
     killAll()
-    try { stopAllEgressPolling() } catch {}
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}

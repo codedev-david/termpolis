@@ -1,0 +1,124 @@
+name: FP submission helper
+
+# When a new release is published, open a GitHub issue with everything the
+# maintainer needs to file a Microsoft Defender false-positive submission:
+# direct download link to the signed installer, computed SHA256, asset size,
+# and the full justification text pre-interpolated for the current version.
+#
+# Microsoft's submission portal (https://www.microsoft.com/en-us/wdsi/filesubmission)
+# is web-only and gated behind interactive MS account login — there is no
+# public API to auto-submit. Best we can do is prep all the human-typing in
+# advance and reduce the maintainer's work to "click portal link, sign in,
+# upload, paste, submit".
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.11.57)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  open-submission-issue:
+    runs-on: ubuntu-latest
+    # Skip for pre-releases / drafts — only file submissions for real cuts.
+    if: github.event_name == 'workflow_dispatch' || (github.event.release.prerelease == false && github.event.release.draft == false)
+    steps:
+      - name: Checkout (for issue body template)
+        uses: actions/checkout@v4
+
+      - name: Resolve tag + version
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+          VERSION="${TAG#v}"
+          ASSET_NAME="Termpolis.Setup.${VERSION}.exe"
+          ASSET_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ASSET_NAME}"
+          echo "tag=${TAG}"             >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}"     >> "$GITHUB_OUTPUT"
+          echo "asset_name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
+          echo "asset_url=${ASSET_URL}"   >> "$GITHUB_OUTPUT"
+
+      - name: Download installer + compute SHA256
+        id: hash
+        run: |
+          set -euo pipefail
+          # Retry a few times — release assets can be eventually consistent
+          # for ~30s after a publish webhook fires.
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL -o installer.exe "${{ steps.meta.outputs.asset_url }}"; then
+              break
+            fi
+            echo "Asset not ready (attempt ${attempt}); sleeping 10s"
+            sleep 10
+          done
+          if [[ ! -s installer.exe ]]; then
+            echo "::error::Failed to download ${{ steps.meta.outputs.asset_url }}"
+            exit 1
+          fi
+          SHA256=$(sha256sum installer.exe | awk '{print $1}')
+          BYTES=$(stat -c%s installer.exe)
+          HUMAN=$(numfmt --to=iec --suffix=B "${BYTES}" 2>/dev/null || echo "${BYTES} bytes")
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          echo "size_human=${HUMAN}" >> "$GITHUB_OUTPUT"
+          echo "Installer SHA256: ${SHA256} (${HUMAN})"
+
+      - name: Render issue body from template
+        id: body
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET_NAME: ${{ steps.meta.outputs.asset_name }}
+          ASSET_URL: ${{ steps.meta.outputs.asset_url }}
+          ASSET_SIZE: ${{ steps.hash.outputs.size_human }}
+          SHA256: ${{ steps.hash.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          TEMPLATE=".github/fp-submission-issue-template.md"
+          if [[ ! -f "${TEMPLATE}" ]]; then
+            echo "::error::Template missing at ${TEMPLATE}"
+            exit 1
+          fi
+          # Strip the HTML comment header (lines starting with <!-- through -->).
+          # Use python for safe placeholder substitution (no regex special-char
+          # surprises with bash's ${var//foo/bar}).
+          python3 - <<'PYEOF' > issue-body.md
+          import os, re
+          src = open(os.environ['GITHUB_WORKSPACE'] + '/.github/fp-submission-issue-template.md', 'r', encoding='utf-8').read()
+          # Drop the leading HTML comment block (developer-only notes).
+          src = re.sub(r'^<!--.*?-->\s*', '', src, count=1, flags=re.DOTALL)
+          for key in ('TAG','VERSION','ASSET_NAME','ASSET_URL','ASSET_SIZE','SHA256'):
+              src = src.replace('__' + key + '__', os.environ[key])
+          print(src, end='')
+          PYEOF
+          echo "body_path=$(pwd)/issue-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Open submission issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Ensure the defender-fp label exists (idempotent).
+          gh label create "defender-fp" \
+            --color "B60205" \
+            --description "Action needed: file a Microsoft Defender false-positive submission" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "MSFT Defender FP submission needed for ${TAG}" \
+            --label "defender-fp" \
+            --body-file "${{ steps.body.outputs.body_path }}"
