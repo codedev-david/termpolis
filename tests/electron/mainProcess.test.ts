@@ -1699,7 +1699,8 @@ describe('getAgentExtraPaths', () => {
       id: 'term-agent-paths', shellType: 'bash', cwd: '/tmp', extraPaths: [],
     })
 
-    // getAgentExtraPaths returns at least 3 entries on any platform
+    // Unix gets the expanded version-manager list (issue #8); Windows stays
+    // at 3 (npm/pnpm/gcloud) — both well above any user-supplied paths.
     const calledPaths = mockSpawnTerminal.mock.calls[0][4]
     expect(calledPaths.length).toBeGreaterThanOrEqual(3)
     // All entries should be strings (paths)
@@ -1720,6 +1721,57 @@ describe('getAgentExtraPaths', () => {
     const calledPaths = mockSpawnTerminal.mock.calls[0][4] as string[]
     const customIdx = calledPaths.indexOf('/user/custom')
     expect(customIdx).toBe(calledPaths.length - 1) // user path is appended last
+  })
+
+  // Issue #8: macOS/Linux users on NVM had Gemini/Codex invisible because
+  // ~/.nvm/versions/node/*/bin wasn't in the fallback list and the Electron
+  // GUI launch PATH didn't include it either. The expanded list must cover
+  // Volta, asdf, n, yarn, npm-global, and bun in addition to Homebrew/local.
+  it('includes the major Unix version-manager dirs on macOS/Linux', async () => {
+    // Skip on Windows — getAgentExtraPaths returns the Windows-specific set.
+    if (process.platform === 'win32') return
+    mockDetectAvailableShells.mockResolvedValue([
+      { type: 'bash', label: 'Bash', executable: '/bin/bash' },
+    ])
+
+    await invokeHandler('terminal:create', {
+      id: 'term-vm-paths', shellType: 'bash', cwd: '/tmp', extraPaths: [],
+    })
+    const calledPaths = mockSpawnTerminal.mock.calls[0][4] as string[]
+    // Sanity: at least the static unix block (homebrew + local + 6 version
+    // managers = 9 entries before any NVM dynamic enumeration).
+    expect(calledPaths.length).toBeGreaterThanOrEqual(9)
+    expect(calledPaths).toContain('/opt/homebrew/bin')
+    expect(calledPaths).toContain('/usr/local/bin')
+    expect(calledPaths.some((p) => p.endsWith('/.volta/bin'))).toBe(true)
+    expect(calledPaths.some((p) => p.endsWith('/.asdf/shims'))).toBe(true)
+    expect(calledPaths.some((p) => p.endsWith('/.yarn/bin'))).toBe(true)
+    expect(calledPaths.some((p) => p.endsWith('/.npm-global/bin'))).toBe(true)
+    expect(calledPaths.some((p) => p.endsWith('/.bun/bin'))).toBe(true)
+  })
+
+  // The NVM scan reads ~/.nvm/versions/node/* and appends each version's bin
+  // dir. Mocking readdirSync to return version strings should result in those
+  // paths showing up in the spawn call.
+  it('enumerates NVM-installed node versions into the extra paths', async () => {
+    if (process.platform === 'win32') return
+    mockDetectAvailableShells.mockResolvedValue([
+      { type: 'bash', label: 'Bash', executable: '/bin/bash' },
+    ])
+    // statSync isn't in the fs mock; the production code wraps the call in a
+    // try/catch and treats a thrown statSync as "skip this entry". So mocking
+    // readdirSync alone won't add NVM dirs to the list under tests — but we
+    // can verify the scan at least *attempted* the right directory.
+    mockReaddirSync.mockReturnValue(['v22.0.0', 'v24.15.0'])
+
+    await invokeHandler('terminal:create', {
+      id: 'term-nvm-scan', shellType: 'bash', cwd: '/tmp', extraPaths: [],
+    })
+    // readdirSync should have been invoked with the NVM versions dir
+    const calls = mockReaddirSync.mock.calls.map((c) => String(c[0]))
+    expect(calls.some((p) => p.includes('.nvm') && p.includes('versions') && p.includes('node'))).toBe(true)
+
+    mockReaddirSync.mockReturnValue([])
   })
 })
 
@@ -1752,6 +1804,29 @@ describe('findAgentInstalled fallback paths', () => {
     expect(typeof result.data.codex).toBe('boolean')
     expect(typeof result.data.gemini).toBe('boolean')
     expect(typeof result.data['qwen-code']).toBe('boolean')
+  })
+
+  // Issue #8: the actual fix is that findAgentInstalled now passes an
+  // *extended* PATH (homebrew + version managers + interactive-shell PATH)
+  // as env.PATH to the which/where call — so binaries that aren't in
+  // process.env.PATH at GUI-launch time still resolve. Verify the env.PATH
+  // we hand to execSync includes the new directories.
+  it('threads extended PATH (including version-manager dirs) into which/where', async () => {
+    if (process.platform === 'win32') return // unix-specific PATH expectations
+    // Make execSync succeed so we exercise the which path (not the existsSync fallback).
+    mockExecSync.mockImplementation(() => Buffer.from(''))
+    mockExistsSync.mockReturnValue(false)
+
+    await invokeHandler('agents:detect')
+
+    const whichCalls = mockExecSync.mock.calls.filter((c) => /^(which|where) /.test(String(c[0])))
+    expect(whichCalls.length).toBeGreaterThan(0)
+    const env = (whichCalls[0][1] as { env: { PATH: string } }).env
+    expect(env.PATH).toContain('/opt/homebrew/bin')
+    expect(env.PATH).toContain('/usr/local/bin')
+    expect(env.PATH).toMatch(/\.volta[\\/]bin/)
+    expect(env.PATH).toMatch(/\.asdf[\\/]shims/)
+    expect(env.PATH).toMatch(/\.npm-global[\\/]bin/)
   })
 })
 
