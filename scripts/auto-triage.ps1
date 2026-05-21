@@ -55,7 +55,8 @@ foreach ($iss in $issues) {
 }
 
 if (-not $candidate) {
-    Log "No untriaged bug issues — nothing to do."
+    Log "No untriaged bug issues — running post-release notifier and exiting."
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'notify-issue-openers.ps1') 2>&1 | Tee-Object -Append -FilePath $LogFile
     exit 0
 }
 
