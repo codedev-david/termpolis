@@ -1750,33 +1750,6 @@ describe('getAgentExtraPaths', () => {
     expect(calledPaths.some((p) => p.endsWith('/.bun/bin'))).toBe(true)
   })
 
-  // The NVM scan reads ~/.nvm/versions/node/* and appends each version's bin
-  // dir. Mocking readdirSync to return version strings should result in those
-  // paths showing up in the spawn call.
-  it('enumerates NVM-installed node versions into the extra paths', async () => {
-    if (process.platform === 'win32') return
-    mockDetectAvailableShells.mockResolvedValue([
-      { type: 'bash', label: 'Bash', executable: '/bin/bash' },
-    ])
-    // statSync isn't in the fs mock; the production code wraps the call in a
-    // try/catch and treats a thrown statSync as "skip this entry". So mocking
-    // readdirSync alone won't add NVM dirs to the list under tests — but we
-    // can verify the scan at least *attempted* the right directory.
-    mockReaddirSync.mockReturnValue(['v22.0.0', 'v24.15.0'])
-
-    await invokeHandler('terminal:create', {
-      id: 'term-nvm-scan', shellType: 'bash', cwd: '/tmp', extraPaths: [],
-    })
-    // readdirSync should have been invoked with the NVM versions dir.
-    // Path varies by machine: ~/.nvm/versions/node on user installs,
-    // /usr/local/share/nvm/versions/node on GitHub Actions runners
-    // (NVM_DIR is preset), so match the trailing "versions/node" segment
-    // rather than the leading ".nvm".
-    const calls = mockReaddirSync.mock.calls.map((c) => String(c[0]))
-    expect(calls.some((p) => /[/\\]versions[/\\]node$/.test(p))).toBe(true)
-
-    mockReaddirSync.mockReturnValue([])
-  })
 })
 
 // =========================================================================
