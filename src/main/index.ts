@@ -122,6 +122,7 @@ const mcpCreatedTerminals = new Set<string>()
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
+import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
 import { safeGit, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
 import { writeSecureFile } from './secureFile'
 import {
@@ -967,104 +968,10 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
 })
 
 // Check which AI agent commands are installed on the system
-// Common agent install locations that GUI apps may not have in PATH
-// Terminals spawned from Start Menu/desktop don't inherit user shell PATH
-
-// Cache: interactive-shell PATH discovery is ~50-200ms (forks a shell).
-// We only need it once per process — paths don't change at runtime.
-let _cachedShellPath: string | null = null
-
-// On macOS in particular, Electron GUI launches inherit launchd's minimal
-// PATH (no .zshrc, no nvm.sh sourcing), so binaries installed via NVM/asdf/
-// volta/fnm are invisible to `which`. Forking the user's interactive shell
-// and grabbing its PATH closes that gap robustly — any version manager that
-// works in the user's Terminal will work here too.
-function getInteractiveShellPath(): string {
-  if (_cachedShellPath !== null) return _cachedShellPath
-  if (process.platform === 'win32') {
-    _cachedShellPath = ''
-    return _cachedShellPath
-  }
-  try {
-    const shell = process.env.SHELL || '/bin/zsh'
-    // -i sources rc files (.zshrc/.bashrc — nvm/asdf init lives here);
-    // -l sources login files (.zprofile/.bash_profile).
-    // The sentinel marker lets us strip any banner output from interactive
-    // shells that print MOTD/login messages on -i.
-    const out = execSync(`${shell} -ilc 'printf "TERMPOLIS_PATH_BEGIN:%s\\n" "$PATH"'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      windowsHide: true,
-    })
-    const m = out.match(/TERMPOLIS_PATH_BEGIN:(.*)/)
-    _cachedShellPath = m ? m[1].trim() : ''
-  } catch {
-    _cachedShellPath = ''
-  }
-  return _cachedShellPath
-}
-
-function getAgentExtraPaths(): string[] {
-  const home = homedir()
-  if (process.platform === 'win32') {
-    return [
-      join(home, 'AppData', 'Roaming', 'npm'),                    // npm global (claude, codex)
-      join(home, 'AppData', 'Local', 'pnpm'),                     // pnpm global
-      join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin'), // gemini via gcloud
-    ]
-  }
-  // macOS/Linux: cover the common locations users install agents into.
-  // Order matters slightly — Homebrew first so brew-installed binaries win
-  // over older system copies, then user-local, then version managers.
-  const paths: string[] = [
-    '/opt/homebrew/bin',                // macOS Apple Silicon Homebrew
-    '/usr/local/bin',                   // macOS Intel Homebrew / generic
-    join(home, '.local', 'bin'),        // pip --user, cargo, generic
-    join(home, '.volta', 'bin'),        // Volta
-    join(home, '.asdf', 'shims'),       // asdf
-    join(home, 'n', 'bin'),             // n
-    join(home, '.yarn', 'bin'),         // yarn global
-    join(home, '.npm-global', 'bin'),   // common `npm config set prefix` target
-    join(home, '.bun', 'bin'),          // bun
-  ]
-  // NVM: enumerate every installed node version's bin dir. Issue #8 — gemini
-  // installed via `npm i -g` under NVM lives at ~/.nvm/versions/node/<v>/bin
-  // and is invisible without this scan.
-  try {
-    const nvmRoot = process.env.NVM_DIR || join(home, '.nvm')
-    const versionsDir = join(nvmRoot, 'versions', 'node')
-    const { readdirSync, statSync } = require('fs')
-    for (const ver of readdirSync(versionsDir)) {
-      const binDir = join(versionsDir, ver, 'bin')
-      try { if (statSync(binDir).isDirectory()) paths.push(binDir) } catch {}
-    }
-  } catch {}
-  // fnm: shims live under XDG_DATA_HOME (or ~/.local/share) per-shell. We
-  // can't reliably discover the right shell instance here, but we can pick
-  // up the static install root if fnm exported FNM_DIR.
-  if (process.env.FNM_DIR) {
-    try {
-      const { readdirSync, statSync } = require('fs')
-      const versionsDir = join(process.env.FNM_DIR, 'node-versions')
-      for (const ver of readdirSync(versionsDir)) {
-        const binDir = join(versionsDir, ver, 'installation', 'bin')
-        try { if (statSync(binDir).isDirectory()) paths.push(binDir) } catch {}
-      }
-    } catch {}
-  }
-  return paths
-}
-
-// Build a complete PATH for agent detection (extends process.env.PATH).
-// Order: our known dirs first (deterministic), then the user's interactive-
-// shell PATH (catches anything dynamic — asdf shims, NVM auto-use, custom
-// bin dirs in dotfiles), then the current process PATH last.
-function getExtendedPath(): string {
-  const currentPath = process.env.PATH || ''
-  const shellPath = getInteractiveShellPath()
-  const sep = process.platform === 'win32' ? ';' : ':'
-  return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(sep)
-}
+// Agent install-path discovery lives in ./agentPaths so the unix-only
+// branches (NVM/fnm enumeration, interactive-shell PATH fork) can be unit-
+// tested with Object.defineProperty(process,'platform',...) without
+// dragging the whole Electron main module through resetModules.
 
 // Check if a command exists — tries `where`/`which` against the *extended*
 // PATH (covers NVM/asdf/volta and macOS GUI-launch PATH gaps from issue #8),
