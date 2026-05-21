@@ -93,6 +93,58 @@ describe('stdio-adapter.cjs — runtime contract', () => {
   })
 })
 
+// -----------------------------------------------------------------------
+// Degraded mode (issue #8 follow-up): when Termpolis isn't running, the
+// adapter must stay alive and respond to MCP handshake messages so the
+// host agent (Gemini CLI / Codex / etc.) doesn't surface a hard
+// "MCP server crashed" error. Tool calls return a friendly JSON-RPC error
+// directing the user to start Termpolis.
+// -----------------------------------------------------------------------
+describe('stdio-adapter.cjs — degraded-mode behavior', () => {
+  const src = readFileSync(ADAPTER, 'utf-8')
+
+  it('does NOT process.exit when the token file is missing (used to crash Gemini)', () => {
+    // Regression guard: prior version called process.exit(1) inside the
+    // catch block of findToken. That made `gemini` show a hard
+    // MCP-server-failed error and blocked all CLI use when Termpolis
+    // wasn't running.
+    const findTokenSection = src.slice(src.indexOf('function findToken'), src.indexOf('const TOKEN'))
+    expect(findTokenSection).not.toMatch(/process\.exit/)
+  })
+
+  it('returns a stub initialize result so the agent treats the server as healthy', () => {
+    // Required so the host doesn't bail out on initialize when the
+    // server is offline. Empty tools list is fine — the agent simply
+    // sees no Termpolis tools.
+    expect(src).toMatch(/initialize/)
+    expect(src).toMatch(/protocolVersion/)
+    expect(src).toMatch(/capabilities/)
+    expect(src).toMatch(/serverInfo/)
+  })
+
+  it('returns empty tools/resources/prompts lists in degraded mode', () => {
+    // tools/list must return { tools: [] } so the agent doesn't try to
+    // invoke any Termpolis tools while the server is offline.
+    expect(src).toMatch(/tools\/list/)
+    expect(src).toMatch(/resources\/list/)
+    expect(src).toMatch(/prompts\/list/)
+  })
+
+  it('returns a friendly error pointing at Termpolis on any other request', () => {
+    // The error message has to mention Termpolis so the user knows
+    // what to do — generic "internal error" leaves them stuck.
+    expect(src).toMatch(/Termpolis is not running/i)
+  })
+
+  it('flips into degraded mode on ECONNREFUSED rather than letting every call hang', () => {
+    // Once a real connection fails, subsequent requests should short-
+    // circuit through handleLocally instead of paying the full network
+    // timeout each time.
+    expect(src).toMatch(/ECONNREFUSED/)
+    expect(src).toMatch(/SERVER_ONLINE\s*=\s*false/)
+  })
+})
+
 describe('stdio-adapter.cjs — packaging invariants', () => {
   it('is a .cjs file (CommonJS) — .mjs/.js would break under Electron asarUnpack', () => {
     expect(ADAPTER.endsWith('.cjs')).toBe(true)
