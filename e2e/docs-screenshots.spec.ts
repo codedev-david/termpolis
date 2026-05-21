@@ -491,4 +491,108 @@ test('capture all docs screenshots', async () => {
   // Restore sidebar for cleanup
   await pressIf('Control+B')
   await safeWait(200)
+
+  // ---------------------------------------------------------------------
+  // v1.11.43+ additions — Help / Past Sessions / AI Security Center /
+  // Live Observability panels. These shots back the new sections in
+  // termpolis-web/docs.html so the marketing site stops being two months
+  // out of date.
+  // ---------------------------------------------------------------------
+
+  // 26 — Help modal opens via the StatusBar "Help / Support" button (the
+  // Ctrl+/ shortcut routes to Settings→Keybindings instead). Click that
+  // button and screenshot the modal showing keyboard-shortcuts + Show-tour-again
+  // affordance + observability + security sections.
+  await clickIf('button:has-text("Help / Support")', 3000)
+  await safeWait(800)
+  await ss('26-help-modal')
+  // Scroll the Help body to the AI Security Center section for a second shot
+  // documenting that surface specifically.
+  await page.evaluate(() => {
+    const h3 = Array.from(document.querySelectorAll<HTMLElement>('h3'))
+      .find(el => el.textContent?.includes('AI Security Center'))
+    if (h3) h3.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior })
+  }).catch(() => {})
+  await safeWait(400)
+  await ss('27-help-security-section')
+  await pressIf('Escape')
+  await safeWait(400)
+
+  // 28 — AI Security Center (Settings → AI Security tab, top of panel).
+  await clickIf('button[title="Settings"]', 2000)
+  await waitForText('Settings', 2000)
+  await safeWait(400)
+  await clickIf('button:has-text("AI Security")', 2000)
+  await safeWait(800)
+  {
+    // Reset scroll to top of the security panel
+    await page.evaluate(() => {
+      const panes = document.querySelectorAll<HTMLElement>('.overflow-y-auto')
+      panes.forEach(p => { p.scrollTop = 0 })
+    }).catch(() => {})
+    await safeWait(300)
+    await ss('28-security-center-top')
+
+    // 29 — Background watchers card (sensitive-file + per-agent egress).
+    await page.evaluate(() => {
+      const card = document.querySelector<HTMLElement>('[data-testid="security-watchers"]')
+      if (card) card.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
+    }).catch(() => {})
+    await safeWait(400)
+    await ss('29-security-watchers')
+
+    // 30 — Manual pre-paste scanner with a hit. Paste a fake-shape AWS key
+    // (a-repeat fails entropy heuristic locally, but the panel scan accepts
+    // any input and runs the regex set in main; we want a positive hit.)
+    await page.evaluate(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>('textarea[placeholder*="Paste the prompt"]')
+      if (ta) {
+        // Synthesize a value + dispatch React-friendly input event.
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+        setter?.call(ta, 'AKIAIOSFODNN7EXAMPLE\nghp_' + 'a'.repeat(36))
+        ta.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+    }).catch(() => {})
+    await safeWait(300)
+    await clickIf('[data-testid="security-scan-btn"]', 1500)
+    await safeWait(500)
+    // Scroll to the result list / Copy redacted button so the hits show.
+    await page.evaluate(() => {
+      const btn = document.querySelector<HTMLElement>('[data-testid="security-scan-btn"]')
+      if (btn) btn.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
+    }).catch(() => {})
+    await safeWait(300)
+    await ss('30-security-scanner-hit')
+  }
+  // Close Settings
+  await clickIf('button[title="Settings"]', 1500)
+  await safeWait(400)
+
+  // 31 — Past AI Sessions browser (button lives inside the terminal pane).
+  await clickIf('[data-testid="past-ai-sessions-btn"]', 2500)
+  await safeWait(900)
+  await ss('31-past-ai-sessions')
+  await pressIf('Escape')
+  await safeWait(300)
+
+  // 32 — Live observability: Context Pins (Ctrl+Shift+B per Help modal).
+  await pressIf('Control+Shift+B')
+  await safeWait(700)
+  await ss('32-context-pins')
+  await pressIf('Control+Shift+B')
+  await safeWait(300)
+
+  // 33 — Live observability: Redundancy (Ctrl+Shift+D).
+  await pressIf('Control+Shift+D')
+  await safeWait(700)
+  await ss('33-redundancy')
+  await pressIf('Control+Shift+D')
+  await safeWait(300)
+
+  // 34 — Live observability: Efficiency (Ctrl+Shift+Y).
+  await pressIf('Control+Shift+Y')
+  await safeWait(700)
+  await ss('34-efficiency')
+  await pressIf('Control+Shift+Y')
+  await safeWait(300)
 })
