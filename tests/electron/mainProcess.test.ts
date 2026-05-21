@@ -1767,9 +1767,13 @@ describe('getAgentExtraPaths', () => {
     await invokeHandler('terminal:create', {
       id: 'term-nvm-scan', shellType: 'bash', cwd: '/tmp', extraPaths: [],
     })
-    // readdirSync should have been invoked with the NVM versions dir
+    // readdirSync should have been invoked with the NVM versions dir.
+    // Path varies by machine: ~/.nvm/versions/node on user installs,
+    // /usr/local/share/nvm/versions/node on GitHub Actions runners
+    // (NVM_DIR is preset), so match the trailing "versions/node" segment
+    // rather than the leading ".nvm".
     const calls = mockReaddirSync.mock.calls.map((c) => String(c[0]))
-    expect(calls.some((p) => p.includes('.nvm') && p.includes('versions') && p.includes('node'))).toBe(true)
+    expect(calls.some((p) => /[/\\]versions[/\\]node$/.test(p))).toBe(true)
 
     mockReaddirSync.mockReturnValue([])
   })
