@@ -4,21 +4,28 @@
 # branch and opens a DRAFT pull request labelled `auto-triage`.
 #
 # A separate GitHub Actions workflow watches for PRs with that label and
-# emails the user. Nothing is ever merged automatically — the user reviews
+# emails the user. Nothing is ever merged automatically - the user reviews
 # every PR.
 #
 # Designed to be run by Windows Task Scheduler. All output goes to a log
 # file under %LOCALAPPDATA%\termpolis\auto-triage so failed runs leave a
 # diagnosable trail even when no human is watching.
 
-$ErrorActionPreference = 'Stop'
+# PS 5.1 promotes native-command stderr to terminating errors under
+# 'Stop', which fights us across git/gh/npx calls. Use 'Continue' and rely
+# on $LASTEXITCODE / explicit throw statements for control flow.
+$ErrorActionPreference = 'Continue'
 
 $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $LogDir     = Join-Path $env:LOCALAPPDATA 'termpolis\auto-triage'
 $LogFile    = Join-Path $LogDir ("run-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
 $Gh         = "C:\Program Files\GitHub CLI\gh.exe"
 $Claude     = Join-Path $env:USERPROFILE '.local\bin\claude.cmd'
-if (-not (Test-Path $Claude)) { $Claude = (Get-Command claude -ErrorAction SilentlyContinue)?.Source }
+if (-not (Test-Path $Claude)) {
+    # PS 5.1 has no ?. null-conditional, so do this the long way.
+    $cmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($cmd) { $Claude = $cmd.Source } else { $Claude = $null }
+}
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
@@ -55,20 +62,21 @@ foreach ($iss in $issues) {
 }
 
 if (-not $candidate) {
-    Log "No untriaged bug issues — running post-release notifier and exiting."
-    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'notify-issue-openers.ps1') 2>&1 | Tee-Object -Append -FilePath $LogFile
+    Log "No untriaged bug issues - running post-release notifier and exiting."
+    $notifyScript = Join-Path $PSScriptRoot 'notify-issue-openers.ps1'
+    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $notifyScript 2>&1 | Tee-Object -Append -FilePath $LogFile
     exit 0
 }
 
 $issueNum = $candidate.number
 $issueTitle = $candidate.title
 $branchName = "auto-triage/issue-$issueNum"
-Log "Selected issue #$issueNum: $issueTitle"
+Log "Selected issue #${issueNum}: $issueTitle"
 
 # Mark it attempted FIRST so two concurrent runs can't double-process. If the
 # label doesn't exist yet on the repo, create it.
 & $Gh label create auto-triage-attempted --description "Auto-triage script has tried to fix this issue" --color BFD4F2 2>&1 | Out-Null
-& $Gh label create auto-triage --description "PR opened by the auto-triage script — needs human review" --color 0E8A16 2>&1 | Out-Null
+& $Gh label create auto-triage --description "PR opened by the auto-triage script - needs human review" --color 0E8A16 2>&1 | Out-Null
 & $Gh issue edit $issueNum --add-label auto-triage-attempted 2>&1 | Out-Null
 
 # Work in a throwaway worktree so the user's main checkout stays clean.
@@ -99,8 +107,8 @@ Workflow:
 1. Read the issue carefully and find the root cause in the codebase.
 2. Write the minimal correct fix.
 3. Add or update unit tests that would catch this exact regression next time.
-4. Run ``npx tsc --noEmit -p tsconfig.web.json`` — must pass.
-5. Run ``npx vitest run`` — every test must pass.
+4. Run ``npx tsc --noEmit -p tsconfig.web.json`` - must pass.
+5. Run ``npx vitest run`` - every test must pass.
 6. Commit with a clear message referencing ``#$issueNum``. Do NOT push.
 
 If the issue is unclear, unreproducible, or the fix is high-risk, commit nothing and exit with a single-line summary explaining why.
@@ -109,7 +117,7 @@ If the issue is unclear, unreproducible, or the fix is high-risk, commit nothing
     Log "Invoking Claude Code (this can take several minutes)..."
     & $Claude -p $prompt --dangerously-skip-permissions 2>&1 | Tee-Object -Append -FilePath $LogFile
 
-    # Final independent verification — never trust the agent's self-report.
+    # Final independent verification - never trust the agent's self-report.
     Log "Running final typecheck..."
     & npx tsc --noEmit -p tsconfig.web.json 2>&1 | Tee-Object -Append -FilePath $LogFile
     if ($LASTEXITCODE -ne 0) { throw "typecheck failed after Claude run" }
@@ -121,7 +129,7 @@ If the issue is unclear, unreproducible, or the fix is high-risk, commit nothing
     # Did Claude actually make a commit? If not, nothing to PR.
     $commitsAhead = (& git rev-list --count "origin/main..HEAD").Trim()
     if ($commitsAhead -eq '0') {
-        Log "Claude made no commits — likely declined to fix. Commenting on issue and skipping PR."
+        Log "Claude made no commits - likely declined to fix. Commenting on issue and skipping PR."
         & $Gh issue comment $issueNum --body "Auto-triage attempted but no fix was committed. The issue may need human investigation. See run log on the maintainer's machine: ``$LogFile``" 2>&1 | Out-Null
         exit 0
     }
@@ -136,14 +144,14 @@ Auto-generated fix attempt for issue #$issueNum.
 
 This PR was opened by ``scripts/auto-triage.ps1``. Tests + typecheck were green at push time.
 
-**Do not auto-merge.** A human must review the diff before merging — passing tests can hide an incorrect fix (e.g., changed test expectations).
+**Do not auto-merge.** A human must review the diff before merging - passing tests can hide an incorrect fix (e.g., changed test expectations).
 
 Closes #$issueNum
 "@
-    & $Gh pr create --draft --base main --head $branchName --title "auto-triage: fix #$issueNum — $issueTitle" --body $prBody --label auto-triage 2>&1 | Tee-Object -Append -FilePath $LogFile
+    & $Gh pr create --draft --base main --head $branchName --title "auto-triage: fix #$issueNum - $issueTitle" --body $prBody --label auto-triage 2>&1 | Tee-Object -Append -FilePath $LogFile
     if ($LASTEXITCODE -ne 0) { throw "gh pr create failed" }
 
-    Log "Done. Draft PR opened with label 'auto-triage' — email notification will fire from GitHub Actions."
+    Log "Done. Draft PR opened with label 'auto-triage' - email notification will fire from GitHub Actions."
 }
 catch {
     Log "FAILED: $_"

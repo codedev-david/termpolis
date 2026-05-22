@@ -19,9 +19,12 @@ if (-not (Test-Path $ScriptPath)) {
     exit 1
 }
 
-# Run powershell.exe with bypass policy, no logo/profile, pointing at the script.
+# Run powershell.exe with bypass policy, no logo/profile, pointing at the
+# script. Use the absolute path - Task Scheduler doesn't reliably resolve
+# bare "powershell.exe" via PATH under all logon contexts (we saw it return
+# 0x80070002 file-not-found despite powershell.exe being on the user PATH).
 $action = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
+    -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
     -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`""
 
 # Every 30 minutes, indefinitely, starting now. Also runs once at user logon
