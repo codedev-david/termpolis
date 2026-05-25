@@ -20,6 +20,16 @@ $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $LogDir     = Join-Path $env:LOCALAPPDATA 'termpolis\auto-triage'
 $LogFile    = Join-Path $LogDir ("run-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
 $Gh         = "C:\Program Files\GitHub CLI\gh.exe"
+
+# Scheduled Task launches PS with a minimal PATH that does not include
+# Node or per-user npm globals. Prepend them so npx/tsc/vitest resolve.
+# Sentry issues #9/#10 surfaced as "term 'npx' is not recognized" in the
+# triage failure comment because of this gap.
+$nodeDir   = 'C:\Program Files\nodejs'
+$npmGlobal = Join-Path $env:APPDATA 'npm'
+foreach ($p in @($nodeDir, $npmGlobal)) {
+    if ((Test-Path $p) -and ($env:PATH -notlike "*$p*")) { $env:PATH = "$p;$env:PATH" }
+}
 $Claude     = Join-Path $env:USERPROFILE '.local\bin\claude.cmd'
 if (-not (Test-Path $Claude)) {
     # PS 5.1 has no ?. null-conditional, so do this the long way.
