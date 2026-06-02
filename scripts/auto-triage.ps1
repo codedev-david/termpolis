@@ -59,6 +59,24 @@ function Log($msg) {
     Add-Content -Path $LogFile -Value $line
 }
 
+# PS 5.1's Tee-Object has no -Encoding parameter and writes UTF-16LE. When
+# that output is appended to a log whose other lines come from Add-Content
+# (ANSI), the file becomes mixed-encoding and the UTF-16 half renders with a
+# space between every character ("S k i p p i n g"). This helper tees to
+# host + log through the SAME Add-Content path as Log(), so the whole file
+# stays single-encoding and readable. Use it instead of Tee-Object.
+function Tee-Log {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline = $true)] $InputObject)
+    process {
+        if ($null -eq $InputObject) { return }
+        $text = ($InputObject | Out-String -Width 4096).TrimEnd("`r", "`n")
+        if ($text.Length -eq 0) { return }
+        Write-Host $text
+        Add-Content -Path $LogFile -Value $text
+    }
+}
+
 # Bounded-retry wrapper for flaky external commands (gh API, git push, etc).
 # Block must return $LASTEXITCODE-conscious behavior. Returns the last block
 # output regardless of success; caller checks $LASTEXITCODE.
@@ -147,7 +165,7 @@ try {
     if (-not $candidate) {
         Log "No untriaged bug issues - running post-release notifier and exiting."
         $notifyScript = Join-Path $PSScriptRoot 'notify-issue-openers.ps1'
-        & (Join-Path $PSHOME 'powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $notifyScript 2>&1 | Tee-Object -Append -FilePath $LogFile
+        & (Join-Path $PSHOME 'powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $notifyScript 2>&1 | Tee-Log
         exit 0
     }
 
@@ -168,7 +186,7 @@ try {
     # Work in a throwaway worktree so the user's main checkout stays clean.
     $worktreeRoot = Join-Path $env:TEMP ("termpolis-triage-" + [guid]::NewGuid().ToString().Substring(0,8))
     Log "Creating worktree: $worktreeRoot"
-    & git worktree add -b $branchName $worktreeRoot main 2>&1 | Tee-Object -Append -FilePath $LogFile | Out-Null
+    & git worktree add -b $branchName $worktreeRoot main 2>&1 | Tee-Log | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Log "git worktree add failed - transient, will retry on next run."
         exit 1
@@ -203,11 +221,11 @@ If the issue is unclear, unreproducible, or the fix is high-risk, commit nothing
 "@
 
     Log "Invoking Claude Code (this can take several minutes)..."
-    & $Claude -p $prompt --dangerously-skip-permissions 2>&1 | Tee-Object -Append -FilePath $LogFile
+    & $Claude -p $prompt --dangerously-skip-permissions 2>&1 | Tee-Log
 
     # Final independent verification - never trust the agent's self-report.
     Log "Running final typecheck..."
-    & npx tsc --noEmit -p tsconfig.web.json 2>&1 | Tee-Object -Append -FilePath $LogFile
+    & npx tsc --noEmit -p tsconfig.web.json 2>&1 | Tee-Log
     if ($LASTEXITCODE -ne 0) {
         # Typecheck failure means Claude's fix was incomplete. This is
         # definitive (Claude's output was wrong), so we DO label the issue
@@ -220,7 +238,7 @@ If the issue is unclear, unreproducible, or the fix is high-risk, commit nothing
     }
 
     Log "Running full test suite..."
-    & npx vitest run 2>&1 | Tee-Object -Append -FilePath $LogFile
+    & npx vitest run 2>&1 | Tee-Log
     if ($LASTEXITCODE -ne 0) {
         Log "Tests failed after Claude run - marking issue attempted and commenting."
         $labelOnExit = $true
