@@ -163,7 +163,7 @@ export function recordEvent(name: string, props?: Record<string, unknown>): void
 
 // Swarm-specific error reporter. Used in catch blocks where the failure
 // indicates a real bug (data loss, comms broken, monitoring loop crash) —
-// NOT for expected silent fallbacks like "Ollama isn't running". Adds a
+// NOT for expected silent fallbacks like "embedder not ready". Adds a
 // breadcrumb AND captures an exception so we get a stack trace.
 //
 // Why a dedicated helper instead of recordEvent: we want stack traces and

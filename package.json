@@ -130,6 +130,7 @@
     "electron-updater": "6.8.3",
     "monaco-editor": "^0.55.1",
     "node-pty": "1.1.0",
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
     "postcss": "8.5.8",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -139,6 +140,7 @@
     "zustand": "5.0.12"
   },
   "devDependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@playwright/test": "1.58.2",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",

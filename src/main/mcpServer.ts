@@ -275,7 +275,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_search',
-    description: 'Retrieve entries from the shared swarm memory that are relevant to a query. Uses semantic vector search when Ollama is available, falls back to keyword matching otherwise.',
+    description: 'Retrieve entries from the shared swarm memory that are relevant to a query. Uses local offline semantic vector search, falling back to keyword matching when the embedding model is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {

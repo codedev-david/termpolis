@@ -418,11 +418,11 @@ describe('swarm error reporting', () => {
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
   })
 
-  it('does NOT report Ollama embedding failures as swarm errors (expected fallback)', async () => {
-    _setEmbedFnForTests(async () => { throw new Error('ECONNREFUSED 11434') })
+  it('does NOT report embedding failures as swarm errors (expected fallback)', async () => {
+    _setEmbedFnForTests(async () => { throw new Error('embedder not ready') })
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'survives' })
     // Embedding failure goes to its own catch with no telemetry — explicit
-    // design choice (Ollama-not-running is expected, not a bug).
+    // design choice (embedder-not-ready is expected, not a bug).
     expect(mockRecordSwarmError).not.toHaveBeenCalled()
   })
 })

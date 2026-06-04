@@ -617,7 +617,7 @@ The panel shows:
 
 A cross-agent memory store backed by JSONL + embeddings. Any agent can:
 
-- **Write** via `memory_write` — stores `{label, content, tags, terminalId, ts}` and computes an embedding via Ollama's `nomic-embed-text`.
+- **Write** via `memory_write` — stores `{label, content, tags, terminalId, ts}` and computes an embedding with the bundled local model (`bge-small-en-v1.5`, runs in-process via WASM — no server, fully offline).
 - **Search** via `memory_search` — cosine similarity over embeddings, blended with keyword overlap.
 - **List** via `memory_list` — recent entries with filters.
 
@@ -705,7 +705,7 @@ The bottom strip shows, left to right:
 
 **Swarm hangs mid-task / agents stop posting activity.** Open Activity Feed — if the agent is still running but not emitting events, its MCP connection may have dropped. Use **Pause → Reset session** in the Swarm Dashboard to recover. If a specific agent repeatedly drops, its MCP token probably expired — restart Termpolis to issue fresh tokens.
 
-**Memory search returns nothing.** `memory_search` needs embeddings, which require Ollama running with the `nomic-embed-text` model pulled. Start Ollama (`ollama serve`) and run `ollama pull nomic-embed-text`. New writes will succeed; historical entries without embeddings still match keyword-only searches.
+**Memory search returns nothing.** Embeddings now run in-process via a bundled offline model (`bge-small-en-v1.5`) — no Ollama or any server required. If semantic results are missing, the embedding model failed to load on this machine; keyword-only matching still works as a fallback, and writes always succeed.
 
 ### Updates & performance
 

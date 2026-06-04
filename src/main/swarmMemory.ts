@@ -1,17 +1,17 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import * as http from 'http'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
+import { embedText } from './localEmbedder'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
 // without re-discovering the same context. Storage is JSONL in userData so
 // we don't need native deps (better-sqlite3/sqlite-vec require per-Electron-
-// ABI builds that are painful to ship on Windows). Vector search is
-// opportunistic: if Ollama is up we use nomic-embed-text embeddings; if not,
-// we fall back to a keyword-overlap score that's "good enough" for small
-// corpora. Either way the API is identical.
+// ABI builds that are painful to ship on Windows). Vector search uses the
+// in-process local embedder (bge-small via WASM — see localEmbedder.ts); if
+// the model isn't ready it falls back to a keyword-overlap score that's
+// "good enough" for small corpora. Either way the API is identical.
 
 export interface MemoryEntry {
   id: string
@@ -31,9 +31,6 @@ export interface MemorySearchResult extends MemoryEntry {
 const MAX_ENTRIES = 10_000         // prevents unbounded growth
 const MAX_CONTENT = 16 * 1024      // cap per-entry content size
 const MAX_EMBEDDING_DIM = 1024
-const OLLAMA_URL = 'http://127.0.0.1:11434/api/embeddings'
-const OLLAMA_MODEL = 'nomic-embed-text'
-const OLLAMA_TIMEOUT_MS = 4000
 
 // ---- State ----
 let memPath: string | null = null
@@ -120,7 +117,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 
   // Opportunistic embedding — swallow any failure silently
   try {
-    const emb = await embed(content)
+    const emb = await embed(content, false)
     if (emb) entry.embedding = emb
   } catch { /* ignore */ }
 
@@ -165,7 +162,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
 
   // Try vector search first
   let queryEmb: number[] | null = null
-  try { queryEmb = await embed(opts.query) } catch { /* fall back */ }
+  try { queryEmb = await embed(opts.query, true) } catch { /* fall back */ }
 
   const scored: MemorySearchResult[] = []
   if (queryEmb) {
@@ -175,7 +172,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
       scored.push({ ...entry, score })
     }
     // If we didn't score anything via embeddings (entries were written before
-    // Ollama was up), mix in keyword-only matches as a safety net.
+    // the embedder was ready), mix in keyword-only matches as a safety net.
     if (scored.length === 0) {
       for (const entry of pool) scored.push({ ...entry, score: keywordScore(opts.query, entry.content) })
     }
@@ -240,8 +237,13 @@ export function memoryClear(): void {
 }
 
 // ---- Embedding helper ----
+//
+// Delegates to the in-process local embedder (bge-small via WASM). The
+// embedOverride seam lets tests inject deterministic vectors, and the
+// embeddingsAvailable flag both forces keyword-only mode in tests and caches a
+// "model is dead, stop trying" signal so we don't repeatedly attempt loads.
 
-async function embed(text: string): Promise<number[] | null> {
+async function embed(text: string, isQuery: boolean): Promise<number[] | null> {
   if (embedOverride) {
     try {
       const r = await embedOverride(text)
@@ -252,15 +254,10 @@ async function embed(text: string): Promise<number[] | null> {
       return null
     }
   }
-  if (embeddingsAvailable === false) return null  // short-circuit on known-dead
+  if (embeddingsAvailable === false) return null  // forced off / known-dead
   try {
-    const res = await postJson(OLLAMA_URL, { model: OLLAMA_MODEL, prompt: text.slice(0, 8192) }, OLLAMA_TIMEOUT_MS)
-    if (!res || !Array.isArray(res.embedding)) {
-      embeddingsAvailable = false
-      return null
-    }
-    const emb = res.embedding as number[]
-    if (emb.length > MAX_EMBEDDING_DIM) {
+    const emb = await embedText(text, { isQuery })
+    if (!emb || emb.length > MAX_EMBEDDING_DIM) {
       embeddingsAvailable = false
       return null
     }
@@ -270,31 +267,6 @@ async function embed(text: string): Promise<number[] | null> {
     embeddingsAvailable = false
     return null
   }
-}
-
-function postJson(url: string, body: any, timeoutMs: number): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const payload = JSON.stringify(body)
-    const req = http.request({
-      hostname: u.hostname,
-      port: u.port || 80,
-      path: u.pathname,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: timeoutMs,
-    }, (res) => {
-      let raw = ''
-      res.on('data', (chunk) => { raw += chunk })
-      res.on('end', () => {
-        try { resolve(JSON.parse(raw)) } catch { resolve(null) }
-      })
-    })
-    req.on('error', (e) => reject(e))
-    req.on('timeout', () => { req.destroy(new Error('timeout')) })
-    req.write(payload)
-    req.end()
-  })
 }
 
 // Exposed for tests
