@@ -7,24 +7,62 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
+import fs from 'fs'
+import os from 'os'
 
 let app: ElectronApplication
 let page: Page
+let userDataDir: string
 
 test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-mem-e2e-'))
+  fs.writeFileSync(
+    path.join(userDataDir, 'session.json'),
+    JSON.stringify({ terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs' }),
+  )
+
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
-    env: { ...process.env, NODE_ENV: 'test' },
+    args: [
+      path.resolve('out/main/index.js'),
+      `--user-data-dir=${userDataDir}`,
+      // Ubuntu CI runners ship chrome-sandbox without SUID root → Electron aborts
+      // before JS runs. Pass --no-sandbox up-front on Linux (as the other specs do).
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+    ],
+    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_SMOKE_SKIP_PICKERS: '1' },
   })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
-  await page.waitForTimeout(2000)
+  await page.waitForTimeout(1500)
+
+  // Pre-dismiss the first-run onboarding modal so it doesn't trap the keyboard.
+  await page.evaluate(() => {
+    try {
+      localStorage.setItem('termpolis.onboarding.seen.v1', '1')
+      localStorage.setItem('termpolis.telemetry.optIn', '0')
+    } catch {
+      /* ignore */
+    }
+  })
+  const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
+  if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
+    await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+  }
 })
 
 test.afterAll(async () => {
   if (app) await app.close()
+  if (userDataDir) {
+    try {
+      fs.rmSync(userDataDir, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
 })
 
 const queryInput = () => page.locator('input[aria-label="Memory query"]')
