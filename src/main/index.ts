@@ -108,6 +108,7 @@ import {
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest } from './codeIngest'
 import { startIndexer, stopIndexer } from './memoryIndexer'
+import { buildContextPrimer } from './contextPrimer'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -906,6 +907,17 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
     if (!opts?.repoRoot) return err('repoRoot required')
     const stats = await runCodeIngest({ hasHash: memoryHasHash, write: memoryWrite }, { repoRoot: opts.repoRoot })
     return ok(stats)
+  } catch (e: any) { return err(e.message) }
+})
+
+// Pre-context primer: pull the most relevant memories for a query (e.g. the
+// user's first ask or the active project) so it can be injected as an agent's
+// first input — the agent starts already knowing the context instead of the
+// user re-explaining it. Returns a shell-paste-safe string, or null.
+ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: number }) => {
+  try {
+    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit })
+    return ok(primer)
   } catch (e: any) { return err(e.message) }
 })
 
