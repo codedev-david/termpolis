@@ -106,6 +106,7 @@ import {
   type MemoryEntry,
 } from './swarmMemory'
 import { runConversationIngest } from './conversationIngest'
+import { runCodeIngest } from './codeIngest'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -892,6 +893,17 @@ ipcMain.handle('memory:clear', () => { memoryClear(); return ok() })
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
     const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite })
+    return ok(stats)
+  } catch (e: any) { return err(e.message) }
+})
+
+// Index the working repo's git-tracked source into the shared memory so agents
+// can semantically recall the codebase. Secrets are never indexed (reuses the
+// sensitive-file denylist). repoRoot is the active project directory.
+ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
+  try {
+    if (!opts?.repoRoot) return err('repoRoot required')
+    const stats = await runCodeIngest({ hasHash: memoryHasHash, write: memoryWrite }, { repoRoot: opts.repoRoot })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
