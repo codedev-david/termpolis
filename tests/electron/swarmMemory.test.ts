@@ -18,9 +18,11 @@ import {
   memoryCount,
   memoryClear,
   memoryHasHash,
+  memoryStats,
   _resetForTests,
   _setEmbeddingsAvailable,
   _setEmbedFnForTests,
+  _setMaxEntriesForTests,
 } from '../../src/main/swarmMemory'
 
 // Each test gets its own temp directory so persistence between runs can be
@@ -375,15 +377,28 @@ describe('content-hash dedup (idempotent ingest)', () => {
 })
 
 describe('ring buffer cap', () => {
-  it('drops oldest entries after 10k writes', async () => {
-    // 10002 to prove the cap works without running out of time
-    for (let i = 0; i < 10_002; i++) {
+  it('drops oldest entries past the configured cap', async () => {
+    _setMaxEntriesForTests(5)
+    for (let i = 0; i < 7; i++) {
       await memoryWrite({ agentId: 'a', kind: 'note', content: `e${i}` })
     }
-    expect(memoryCount()).toBe(10_000)
-    const list = memoryList({ limit: 1 })
-    expect(list[0].content).toBe('e10001')
-  }, 20_000)
+    expect(memoryCount()).toBe(5)
+    expect(memoryList({ limit: 1 })[0].content).toBe('e6') // newest kept
+    expect(memoryStats()).toEqual({ count: 5, capacity: 5 })
+  })
+
+  it("removes evicted entries' hashes from the dedup set", async () => {
+    _setMaxEntriesForTests(2)
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'old', hash: 'old-h' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'mid', hash: 'mid-h' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'new', hash: 'new-h' }) // evicts 'old'
+    expect(memoryHasHash('old-h')).toBe(false) // evicted hash removed from dedup set
+    expect(memoryHasHash('new-h')).toBe(true)
+  })
+
+  it('defaults to a large semantic window', () => {
+    expect(memoryStats().capacity).toBe(50_000)
+  })
 })
 
 describe('embedding graceful failure', () => {

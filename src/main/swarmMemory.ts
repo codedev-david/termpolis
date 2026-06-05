@@ -30,7 +30,15 @@ export interface MemorySearchResult extends MemoryEntry {
   score: number                   // 0..1, higher is better
 }
 
-const MAX_ENTRIES = 10_000         // prevents unbounded growth
+// Semantic-search window kept hot in memory. The durable JSONL on disk is
+// append-only and retains everything written; this only caps how many of the
+// most-recent chunks stay loaded for vector/keyword search, to bound RAM
+// (~3 KB per embedded chunk). 50k chunks is months-to-years of real usage.
+// Configurable for tests. (True-unbounded semantic recall over an arbitrarily
+// large corpus would need an on-disk ANN index — a deliberate future native-dep
+// decision; keyword recall already degrades gracefully.)
+const DEFAULT_MAX_ENTRIES = 50_000
+let maxEntries = DEFAULT_MAX_ENTRIES
 const MAX_CONTENT = 16 * 1024      // cap per-entry content size
 const MAX_EMBEDDING_DIM = 1024
 
@@ -70,7 +78,7 @@ export function initSwarmMemory(userDataPath: string): void {
         } catch { /* skip malformed line */ }
       }
       // Trim if the file grew past the cap between runs
-      while (entries.length > MAX_ENTRIES) {
+      while (entries.length > maxEntries) {
         const dropped = entries.shift()
         if (dropped?.hash) seenHashes.delete(dropped.hash)
       }
@@ -91,13 +99,23 @@ export function _resetForTests(): void {
   entries.length = 0
   seenHashes.clear()
   seq = 0
+  maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
   embedOverride = null
+}
+
+export function _setMaxEntriesForTests(n: number): void {
+  maxEntries = n
 }
 
 /** True if a chunk with this content hash is already stored (idempotent ingest). */
 export function memoryHasHash(hash: string): boolean {
   return typeof hash === 'string' && seenHashes.has(hash)
+}
+
+/** Store stats for observability / UI: current count + the hot-window capacity. */
+export function memoryStats(): { count: number; capacity: number } {
+  return { count: entries.length, capacity: maxEntries }
 }
 
 // ---- Write ----
@@ -141,7 +159,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 
   entries.push(entry)
   if (entry.hash) seenHashes.add(entry.hash)
-  if (entries.length > MAX_ENTRIES) {
+  if (entries.length > maxEntries) {
     const dropped = entries.shift()
     if (dropped?.hash) seenHashes.delete(dropped.hash)
   }
