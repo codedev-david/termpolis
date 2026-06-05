@@ -96,6 +96,24 @@ What Termpolis **can** do is make the hosted path *substantially* safer than typ
 
 See [`PRIVACY.md`](PRIVACY.md) for the data-flow spec, [`TERMS.md`](TERMS.md) for the Apache-2.0 / "AS IS" disclaimer.
 
+### 🧠 Persistent Shared Memory — context that lasts across agents, terminals, and restarts
+
+Every Claude session today starts cold; you re-explain what you're doing and burn 20–50K tokens reloading context. Termpolis fixes that with a **local memory brain that all four agents share** and that **persists between terminals, between agents, and between app restarts.**
+
+- **One memory, four agents.** Claude, Codex, Gemini, and Qwen all read and write the same store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list`). A fact one agent figures out is instantly available to the others — no copy-paste, no re-discovery.
+- **It survives quitting the app.** Stored as plain JSONL on disk (`~/.termpolis/swarm-memory.jsonl`) and reloaded with its embeddings at startup — close Termpolis, reopen it tomorrow, the context is still there.
+- **It feeds itself.** A background indexer ingests your past Claude / Codex / Gemini transcripts automatically (10 s after launch, then every 30 min). Idempotent (content-hash dedup), so it only ever embeds genuinely new content — no action required from you.
+- **Fully offline, no server, no secrets.** Embeddings run in-process via WASM with a bundled `bge-small-en-v1.5` model — **no Ollama, no native binaries, nothing leaves your machine.** The indexer reuses the same sensitive-file denylist as the read watcher, so `.env` files, keys, and cloud credentials are never embedded.
+
+**How it works:**
+
+1. **Capture** — your on-disk AI transcripts are parsed (tool-call / reasoning / system-prompt noise stripped) and split into chunks.
+2. **Embed** — each chunk becomes a 384-dim vector locally, in-process, via `onnxruntime-web` (WASM).
+3. **Store** — chunks + vectors persist in a durable on-disk log, deduplicated by content hash so re-indexing is cheap.
+4. **Recall** — any agent calls `memory_search` over MCP and gets the most relevant past context back, blending semantic vector search with keyword matching.
+
+The result: stop re-explaining context every session, and stop paying to reload it.
+
 ---
 
 > **A note on AI-assisted development:** There may be critique that this application is built in conjunction with using AI; however, if you are still exclusively using an IDE or manually writing every line of code, then you are doing it wrong. This is the new path for AI-native engineering as a programmer. Code review is often still needed, but beyond this, software engineering has a new path. Termpolis itself is built with AI and built *for* AI workflows — and that's the point.
