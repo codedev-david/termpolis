@@ -683,6 +683,9 @@ export default function App() {
       case 'show_swarm':
         setShowSwarmDashboard(v => !v)
         break
+      case 'show_memory':
+        setShowMemory(v => !v)
+        break
       case 'launch_claude':
       case 'launch_codex':
       case 'launch_gemini': {
