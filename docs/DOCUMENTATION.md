@@ -613,15 +613,24 @@ The panel shows:
 
 ---
 
-## 25. Shared Memory (RAG)
+## 25. Persistent Memory — the growing brain
 
-A cross-agent memory store backed by JSONL + embeddings. Any agent can:
+A local, cross-agent memory store that **never forgets and feeds itself**, so every agent can semantically recall past work instead of you re-explaining context each session.
 
-- **Write** via `memory_write` — stores `{label, content, tags, terminalId, ts}` and computes an embedding with the bundled local model (`bge-small-en-v1.5`, runs in-process via WASM — no server, fully offline).
-- **Search** via `memory_search` — cosine similarity over embeddings, blended with keyword overlap.
-- **List** via `memory_list` — recent entries with filters.
+### What's in it
 
-**Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to figure it out again — it searches memory, finds Claude's note, and skips the discovery step. Context sharing at the swarm level.
+- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded. Qwen is captured from the live terminal stream.
+- **Your repo's code** — git-tracked files (so `node_modules`/`dist` are excluded), chunked by line-window. The indexer reuses the **same sensitive-file denylist as the read watcher**, so `.env`, keys, and cloud credentials are never embedded.
+
+### How it works
+
+- **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
+- **Shared across all four agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`). One store backs Claude/Codex/Gemini/Qwen, so a fact one learns is instantly available to the others.
+- **Durable across restarts.** Stored as JSONL at `~/.termpolis/swarm-memory.jsonl` (plain text, hand-editable) and reloaded with embeddings at startup. A ~50k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
+- **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
+- **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver).
+
+**Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session.
 
 Memory lives at `~/.termpolis/swarm-memory.jsonl` and is readable/editable as plain text.
 
