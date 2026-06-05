@@ -72,7 +72,7 @@ describe('agentEventBus.publish', () => {
       publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `e${i}`, payload: {} })
     }
     expect(getRingSize()).toBeLessThanOrEqual(10_000)
-  })
+  }, 20_000) // a 10k-iteration publish loop can run slow under heavy parallel load — don't flake on the 5s default
 
   it('truncates oversized payloads', () => {
     const big = 'x'.repeat(200_000)

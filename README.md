@@ -114,6 +114,8 @@ Every Claude session today starts cold; you re-explain what you're doing and bur
 
 The result: stop re-explaining context every session, and stop paying to reload it.
 
+**Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), and **inject the most relevant context into the active agent** with one click.
+
 ---
 
 > **A note on AI-assisted development:** There may be critique that this application is built in conjunction with using AI; however, if you are still exclusively using an IDE or manually writing every line of code, then you are doing it wrong. This is the new path for AI-native engineering as a programmer. Code review is often still needed, but beyond this, software engineering has a new path. Termpolis itself is built with AI and built *for* AI workflows — and that's the point.

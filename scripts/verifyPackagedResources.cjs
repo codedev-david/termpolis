@@ -30,6 +30,13 @@ const path = require('path')
  */
 const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs']
 
+// The bundled offline embedding model + its WASM runtime. Verified SEPARATELY
+// (not in REQUIRED_RESOURCE_FILES) because a build without the model downloaded
+// is still valid — the app degrades to keyword search. The package-verify CI
+// job downloads the model first, then asserts it shipped.
+const EMBEDDING_MODEL_REL = path.join('models', 'bge-small-en-v1.5', 'onnx', 'model_quantized.onnx')
+const EMBEDDING_TOKENIZER_REL = path.join('models', 'bge-small-en-v1.5', 'tokenizer.json')
+
 /**
  * Resolve the platform-specific "Resources" directory that electron-builder
  * produces inside its unpacked output (e.g. `win-unpacked/resources`,
@@ -182,17 +189,64 @@ function safeListDir(dir) {
   }
 }
 
+/**
+ * Verify the bundled embedding model + onnxruntime-web WASM made it into the
+ * packaged output, so semantic memory search works offline in shipped builds.
+ * `appOutDir` is an electron-builder unpacked dir (e.g. linux-unpacked).
+ * Throws on any problem. Used by the package-verify CI job after the model
+ * download step.
+ */
+function verifyEmbeddingModelBundled(appOutDir) {
+  const resourcesDir = [
+    path.join(appOutDir, 'resources'),
+    ...safeListDir(appOutDir)
+      .filter((n) => n.endsWith('.app'))
+      .map((n) => path.join(appOutDir, n, 'Contents', 'Resources')),
+  ].find((d) => fs.existsSync(d))
+  if (!resourcesDir) {
+    throw new Error(`[verifyPackagedResources] no resources dir under ${appOutDir}`)
+  }
+
+  for (const rel of [EMBEDDING_MODEL_REL, EMBEDDING_TOKENIZER_REL]) {
+    const full = path.join(resourcesDir, rel)
+    if (!fs.existsSync(full) || fs.statSync(full).size === 0) {
+      throw new Error(`[verifyPackagedResources] FATAL: bundled embedding file missing/empty: ${full}`)
+    }
+  }
+
+  const modelSize = fs.statSync(path.join(resourcesDir, EMBEDDING_MODEL_REL)).size
+  if (modelSize < 1_000_000) {
+    throw new Error(`[verifyPackagedResources] embedding model is only ${modelSize} bytes (download failed?)`)
+  }
+
+  const ortDist = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist')
+  if (!safeListDir(ortDist).some((f) => f.endsWith('.wasm'))) {
+    throw new Error(`[verifyPackagedResources] onnxruntime-web WASM not asar-unpacked under ${ortDist}`)
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[verifyPackagedResources] OK — embedding model (${(modelSize / 1e6).toFixed(1)} MB) + onnxruntime-web WASM bundled`,
+  )
+}
+
 module.exports = {
   REQUIRED_RESOURCE_FILES,
   resolveResourcesDir,
   verifyResourcesFolder,
   verifyFromAfterPack,
+  verifyEmbeddingModelBundled,
 }
 
-// If invoked directly, run CLI mode.
+// If invoked directly, run CLI mode. `--model <appOutDir>` verifies the bundled
+// embedding model; otherwise verify the required resource files.
 if (require.main === module) {
   try {
-    verifyFromCLI(process.argv[2])
+    if (process.argv[2] === '--model') {
+      verifyEmbeddingModelBundled(process.argv[3])
+    } else {
+      verifyFromCLI(process.argv[2])
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(err.message || err)

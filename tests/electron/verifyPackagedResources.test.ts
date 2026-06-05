@@ -193,3 +193,48 @@ describe('verifyPackagedResources — REQUIRED_RESOURCE_FILES contract', () => {
     }
   })
 })
+
+describe('verifyEmbeddingModelBundled', () => {
+  const MODEL_REL = join('models', 'bge-small-en-v1.5', 'onnx', 'model_quantized.onnx')
+  const TOK_REL = join('models', 'bge-small-en-v1.5', 'tokenizer.json')
+  const WASM_REL = join('app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm')
+
+  function buildValid(outDir: string): void {
+    const res = join(outDir, 'resources')
+    mkdirSync(join(res, 'models', 'bge-small-en-v1.5', 'onnx'), { recursive: true })
+    writeFileSync(join(res, MODEL_REL), Buffer.alloc(2_000_000, 1)) // 2 MB "model"
+    writeFileSync(join(res, TOK_REL), '{}')
+    mkdirSync(join(res, 'app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist'), { recursive: true })
+    writeFileSync(join(res, WASM_REL), Buffer.alloc(16, 1))
+  }
+
+  it('passes when model + tokenizer + WASM are all present', () => {
+    buildValid(sandbox)
+    expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).not.toThrow()
+  })
+
+  it('throws when the model file is missing', () => {
+    const res = join(sandbox, 'resources')
+    mkdirSync(join(res, 'models', 'bge-small-en-v1.5'), { recursive: true })
+    writeFileSync(join(res, TOK_REL), '{}')
+    expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).toThrow(/missing\/empty/)
+  })
+
+  it('throws when the model is suspiciously small (failed download)', () => {
+    buildValid(sandbox)
+    writeFileSync(join(sandbox, 'resources', MODEL_REL), Buffer.alloc(500, 1))
+    expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).toThrow(/only \d+ bytes/)
+  })
+
+  it('throws when onnxruntime-web WASM is not asar-unpacked', () => {
+    const res = join(sandbox, 'resources')
+    mkdirSync(join(res, 'models', 'bge-small-en-v1.5', 'onnx'), { recursive: true })
+    writeFileSync(join(res, MODEL_REL), Buffer.alloc(2_000_000, 1))
+    writeFileSync(join(res, TOK_REL), '{}')
+    expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).toThrow(/WASM not asar-unpacked/)
+  })
+
+  it('throws when there is no resources dir', () => {
+    expect(() => verifier.verifyEmbeddingModelBundled(join(sandbox, 'nope'))).toThrow(/no resources dir/)
+  })
+})

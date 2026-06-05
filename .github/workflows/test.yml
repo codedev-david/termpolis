@@ -108,12 +108,16 @@ jobs:
           done
       - name: Install Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      - name: Download bundled embedding model
+        run: bash scripts/download-embedding-model.sh
       - name: Build app
         run: npx electron-vite build
       - name: Package (unpacked, no installer, no signing)
         run: npx electron-builder --dir --publish never
       - name: Verify MCP adapter shipped in packaged resources
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
+      - name: Verify embedding model + onnxruntime-web WASM bundled
+        run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
       - name: Upload unpacked output on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -167,6 +171,11 @@ jobs:
       # wired. Stubs shell.openExternal so no real browser launches.
       - name: Report-a-Problem flow
         run: xvfb-run --auto-servernum npx playwright test e2e/report-problem.spec.ts
+      # Memory panel gate: proves the persistent-memory UI opens (Ctrl+Shift+M),
+      # exposes its controls, is discoverable via the Command Palette, and the
+      # inject-primer path responds — in the real Electron app.
+      - name: Memory panel flow
+        run: xvfb-run --auto-servernum npx playwright test e2e/memory-panel.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
