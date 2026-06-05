@@ -107,6 +107,7 @@ import {
 } from './swarmMemory'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest } from './codeIngest'
+import { startIndexer, stopIndexer } from './memoryIndexer'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1293,6 +1294,17 @@ if (!gotTheLock) {
     initSwarmMemory(app.getPath('userData'))
     initWorkspaceTrust()
 
+    // Auto-feed the memory brain: ingest past AI conversations on a quiet timer
+    // (10s after launch, then every 30 min) so it grows itself with no user
+    // action. Ingestion is idempotent (content-hash dedup) — steady-state runs
+    // only embed genuinely new chunks and are cheap.
+    startIndexer({
+      run: async () => {
+        const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite })
+        return { written: stats.chunksWritten }
+      },
+    })
+
     // Sensitive-file-read watcher: subscribe to agent tool_call events from
     // the transcript watchers and surface a banner + audit entry when the
     // agent autonomously reads a high-risk file (.env, *.pem, ~/.aws/*, ...).
@@ -1545,6 +1557,7 @@ if (!gotTheLock) {
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
+    try { stopIndexer() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {
