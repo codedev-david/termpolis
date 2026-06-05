@@ -40,11 +40,16 @@
         "filter": [
           "**/*.cjs"
         ]
+      },
+      {
+        "from": "resources/models",
+        "to": "models"
       }
     ],
     "afterPack": "scripts/afterPack.cjs",
     "asarUnpack": [
       "node_modules/node-pty/**",
+      "node_modules/onnxruntime-web/**",
       "resources/tools/**"
     ],
     "win": {

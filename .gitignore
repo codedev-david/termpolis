@@ -38,3 +38,6 @@ test-output.json
 .playwright-mcp/
 /*.png
 test-results/
+
+# Bundled embedding model (downloaded at build time, ~34MB — not committed)
+resources/models/bge-small-en-v1.5/
