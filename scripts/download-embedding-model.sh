@@ -12,11 +12,21 @@ BASE="https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main"
 DIR="resources/models/bge-small-en-v1.5"
 mkdir -p "$DIR/onnx"
 
+# Resilient fetch: HuggingFace intermittently rate-limits CI runners (HTTP 429),
+# which previously failed the whole build/release on the very first request.
+# Retry transient failures (429 / 5xx / network) with backoff so a momentary
+# throttle self-heals instead of breaking the release.
+fetch() {
+  curl --fail --silent --show-error --location \
+       --retry 6 --retry-delay 5 --retry-all-errors \
+       "$1" -o "$2"
+}
+
 echo "Downloading bge-small embedding model into $DIR ..."
-curl -fsSL "$BASE/tokenizer.json"         -o "$DIR/tokenizer.json"
-curl -fsSL "$BASE/tokenizer_config.json"  -o "$DIR/tokenizer_config.json"
-curl -fsSL "$BASE/config.json"            -o "$DIR/config.json"
-curl -fsSL "$BASE/onnx/model_quantized.onnx" -o "$DIR/onnx/model_quantized.onnx"
+fetch "$BASE/tokenizer.json"              "$DIR/tokenizer.json"
+fetch "$BASE/tokenizer_config.json"       "$DIR/tokenizer_config.json"
+fetch "$BASE/config.json"                 "$DIR/config.json"
+fetch "$BASE/onnx/model_quantized.onnx"   "$DIR/onnx/model_quantized.onnx"
 
 # Sanity: the ONNX file must be a real multi-MB model, not an HTML error page.
 SIZE=$(wc -c < "$DIR/onnx/model_quantized.onnx")
