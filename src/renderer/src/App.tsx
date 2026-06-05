@@ -6,6 +6,7 @@ const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane')
 const HistorySearchModal = lazy(() => import('./components/HistorySearch/HistorySearchModal').then(m => ({ default: m.HistorySearchModal })))
 const PromptTemplates = lazy(() => import('./components/PromptTemplates/PromptTemplates').then(m => ({ default: m.PromptTemplates })))
 const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel').then(m => ({ default: m.ContextPanel })))
+const Memory = lazy(() => import('./components/Memory/Memory').then(m => ({ default: m.Memory })))
 const ActivityFeed = lazy(() => import('./components/ActivityFeed/ActivityFeed').then(m => ({ default: m.ActivityFeed })))
 const ContextPinsPanel = lazy(() => import('./components/ContextPins/ContextPinsPanel').then(m => ({ default: m.ContextPinsPanel })))
 const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/RedundancyPanel').then(m => ({ default: m.RedundancyPanel })))
@@ -53,6 +54,7 @@ export default function App() {
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
+  const [showMemory, setShowMemory] = useState(false)
   const launchingAgent = useTerminalStore(s => s.launchingAgent)
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
   const swarmNotification = useTerminalStore(s => s.swarmNotification)
@@ -344,6 +346,13 @@ export default function App() {
       if (e.ctrlKey && e.shiftKey && e.key === 'Y') {
         e.preventDefault()
         setShowEfficiencyPanel(v => !v)
+        return
+      }
+
+      // Ctrl+Shift+M to toggle the memory panel
+      if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+        e.preventDefault()
+        setShowMemory(v => !v)
         return
       }
 
@@ -855,6 +864,13 @@ export default function App() {
           )}
           {showEfficiencyPanel && (
             <EfficiencyPanel onClose={() => setShowEfficiencyPanel(false)} />
+          )}
+          {showMemory && (
+            <Memory
+              activeTerminalId={activeTerminalId}
+              activeCwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+              onClose={() => setShowMemory(false)}
+            />
           )}
         </Suspense>
       </div>

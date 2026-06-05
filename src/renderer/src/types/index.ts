@@ -164,6 +164,10 @@ export interface TermpolisAPI {
   memoryList: (opts?: MemoryListOptions) => Promise<IpcResponse<MemoryEntry[]>>
   memoryCount: () => Promise<IpcResponse<number>>
   memoryClear: () => Promise<IpcResponse>
+  memoryStats: () => Promise<IpcResponse<{ count: number; capacity: number }>>
+  memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
+  memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
+  memoryBuildPrimer: (query: string, limit?: number) => Promise<IpcResponse<string | null>>
 
   // Telemetry — opt-in mirror to main process
   setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
@@ -210,6 +214,8 @@ export interface MemoryEntry {
   content: string
   tags?: string[]
   taskId?: string
+  source?: string
+  hash?: string
 }
 
 export interface MemorySearchResult extends MemoryEntry { score: number }

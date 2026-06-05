@@ -102,7 +102,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash,
+  memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
   type MemoryEntry,
 } from './swarmMemory'
 import { runConversationIngest } from './conversationIngest'
@@ -888,6 +888,7 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 
 ipcMain.handle('memory:count', () => ok(memoryCount()))
 ipcMain.handle('memory:clear', () => { memoryClear(); return ok() })
+ipcMain.handle('memory:stats', () => ok(memoryStats()))
 
 // Ingest past AI sessions (Claude/Codex/Gemini transcripts on disk) into the
 // shared memory so every agent can semantically recall them. Idempotent — only

@@ -138,6 +138,10 @@ const api: TermpolisAPI = {
   memoryList: (opts) => ipcRenderer.invoke('memory:list', opts ?? {}),
   memoryCount: () => ipcRenderer.invoke('memory:count'),
   memoryClear: () => ipcRenderer.invoke('memory:clear'),
+  memoryStats: () => ipcRenderer.invoke('memory:stats'),
+  memoryIngestConversations: () => ipcRenderer.invoke('memory:ingest-conversations'),
+  memoryIngestCode: (repoRoot: string) => ipcRenderer.invoke('memory:ingest-code', { repoRoot }),
+  memoryBuildPrimer: (query: string, limit?: number) => ipcRenderer.invoke('memory:build-primer', { query, limit }),
 
   // Telemetry — push opt-in changes to main so Sentry/updater pings can gate.
   setTelemetryOptIn: (value: boolean) =>
