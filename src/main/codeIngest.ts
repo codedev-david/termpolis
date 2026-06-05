@@ -11,11 +11,16 @@
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { execFile } from 'child_process'
-import { promisify } from 'util'
 import { join } from 'path'
 import { matchSensitiveFile } from './sensitiveFileWatcher'
 
-const execFileAsync = promisify(execFile)
+// Promise wrapper that references execFile only when CALLED (not at module
+// load), so test files that mock child_process can still import this module.
+function execGit(args: string[], opts: { cwd?: string; maxBuffer?: number }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, opts, (err, stdout) => (err ? reject(err) : resolve(String(stdout))))
+  })
+}
 
 export interface CodeChunk {
   text: string
@@ -123,7 +128,7 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
 export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   if (!repoRoot) return []
   try {
-    const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'ls-files'], { maxBuffer: 64 * 1024 * 1024 })
+    const stdout = await execGit(['-C', repoRoot, 'ls-files'], { maxBuffer: 64 * 1024 * 1024 })
     return stdout
       .split('\n')
       .map((l) => l.trim())
