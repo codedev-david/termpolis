@@ -324,7 +324,7 @@ export interface McpToolHandlers {
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
 }
 
-async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
+export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
   switch (name) {
     case 'list_terminals':
       return handlers.listTerminals()
