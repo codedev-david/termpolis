@@ -35,7 +35,13 @@ export interface CodeIngestStats {
   filesSkipped: number
   chunksWritten: number
   chunksSkipped: number
+  truncated: boolean    // maxChunks halted this pass early — backlog remains for the next run
 }
+
+// A macrotask yield — see conversationIngest.ts. Embedding runs in-process on
+// the main thread, so we hand control back to the event loop between embeds to
+// keep IPC/UI responsive during a bulk repo index instead of freezing the app.
+const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve))
 
 // Non-text / generated artifacts that pollute a code index.
 const SKIP_EXT =
@@ -85,10 +91,20 @@ export interface CodeIngestDeps {
   hasHash: (hash: string) => boolean
   write: (chunk: CodeChunk) => Promise<void>
   chunkOptions?: CodeChunkOptions
+  /** Awaited between embeds so a bulk pass can't freeze the UI. Default: a setImmediate macrotask. */
+  yield?: () => Promise<void>
+  /** Yield after this many writes (default 1 — breathe after every embed). */
+  yieldEvery?: number
+  /** Stop after writing this many new chunks this pass; sets `truncated` (default: unbounded). */
+  maxChunks?: number
 }
 
 export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats> {
-  const stats: CodeIngestStats = { filesScanned: 0, filesSkipped: 0, chunksWritten: 0, chunksSkipped: 0 }
+  const doYield = deps.yield ?? yieldToEventLoop
+  const yieldEvery = Math.max(1, deps.yieldEvery ?? 1)
+  const maxChunks = deps.maxChunks ?? Infinity
+  const stats: CodeIngestStats = { filesScanned: 0, filesSkipped: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false }
+  let sinceYield = 0
   let files: string[]
   try {
     files = await deps.listFiles()
@@ -116,7 +132,17 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
         await deps.write(chunk)
         stats.chunksWritten++
       } catch {
-        /* skip a chunk that fails to persist */
+        continue // skip a chunk that fails to persist (no embed happened to yield for)
+      }
+      // Hand control back to the event loop between embeds so a bulk repo
+      // index stays responsive instead of pegging the main thread.
+      if (++sinceYield >= yieldEvery) {
+        sinceYield = 0
+        await doYield()
+      }
+      if (stats.chunksWritten >= maxChunks) {
+        stats.truncated = true
+        return stats
       }
     }
   }
@@ -146,10 +172,11 @@ export interface CodeIngestMemory {
 
 export async function runCodeIngest(
   memory: CodeIngestMemory,
-  opts: { repoRoot: string; chunkOptions?: CodeChunkOptions },
+  opts: { repoRoot: string; chunkOptions?: CodeChunkOptions; maxChunks?: number },
 ): Promise<CodeIngestStats> {
   return ingestCode({
     chunkOptions: opts.chunkOptions,
+    maxChunks: opts.maxChunks,
     listFiles: () => discoverRepoFiles(opts.repoRoot),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,

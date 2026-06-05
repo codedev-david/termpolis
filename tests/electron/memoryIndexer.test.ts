@@ -69,4 +69,42 @@ describe('memoryIndexer', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(run).not.toHaveBeenCalled()
   })
+
+  it('tick surfaces the more flag and hints at the backlog in the log', async () => {
+    const log = vi.fn()
+    // Huge interval/delay so nothing auto-fires — we drive tick() manually.
+    startIndexer({ run: async () => ({ written: 4, more: true }), initialDelayMs: 1e9, intervalMs: 1e9, log })
+    const r = await tick()
+    expect(r.written).toBe(4)
+    expect(r.more).toBe(true)
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('(more queued)'))
+  })
+
+  it('fast-drains a capped backlog with quick follow-ups, then settles', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({ written: 5, more: true }) // first pass hit its cap
+      .mockResolvedValueOnce({ written: 5, more: true }) // still draining
+      .mockResolvedValueOnce({ written: 2 }) // caught up — no more
+    startIndexer({ run, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 1000 })
+
+    await vi.advanceTimersByTimeAsync(0) // initial pass
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1000) // drain #1 (more was true)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1000) // drain #2 (more still true) → returns caught-up
+    expect(run).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(10_000) // caught up → no further drains
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('stopIndexer cancels a pending drain follow-up', async () => {
+    const run = vi.fn().mockResolvedValue({ written: 5, more: true })
+    startIndexer({ run, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 1000 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(run).toHaveBeenCalledTimes(1) // a drain is now scheduled in 1000ms
+    stopIndexer()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(run).toHaveBeenCalledTimes(1) // drain was cancelled
+  })
 })

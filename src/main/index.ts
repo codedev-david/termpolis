@@ -1311,10 +1311,18 @@ if (!gotTheLock) {
     // (10s after launch, then every 30 min) so it grows itself with no user
     // action. Ingestion is idempotent (content-hash dedup) — steady-state runs
     // only embed genuinely new chunks and are cheap.
+    //
+    // Each pass is capped (maxChunks) and the ingest loop yields between embeds,
+    // so a first index over months of history can't peg the main thread / freeze
+    // the UI — it drains as short, responsive bursts (the indexer reschedules a
+    // quick follow-up whenever a pass reports more backlog).
     startIndexer({
       run: async () => {
-        const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite })
-        return { written: stats.chunksWritten }
+        const stats = await runConversationIngest(
+          { hasHash: memoryHasHash, write: memoryWrite },
+          { maxChunks: 250 },
+        )
+        return { written: stats.chunksWritten, more: stats.truncated }
       },
     })
 

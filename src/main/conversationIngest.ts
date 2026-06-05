@@ -275,7 +275,15 @@ export interface IngestStats {
   filesScanned: number
   chunksWritten: number
   chunksSkipped: number // already present (content-hash dedup)
+  truncated: boolean    // maxChunks halted this pass early — backlog remains for the next run
 }
+
+// A macrotask yield. Embedding is CPU-heavy and runs in-process on the main
+// thread; without this, a tight write-loop over a large history starves the
+// libuv event loop so renderer→main IPC never gets serviced and the whole app
+// freezes. `setImmediate` returns control to the loop (poll phase → IPC) between
+// embeds, turning a multi-minute freeze into a responsive background trickle.
+const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve))
 
 export interface IngestDeps {
   listFiles: (source: ConversationSource) => Promise<string[]>
@@ -284,6 +292,12 @@ export interface IngestDeps {
   write: (chunk: IngestChunk) => Promise<void>
   sources?: ConversationSource[]
   chunkOptions?: ChunkOptions
+  /** Awaited between embeds so a bulk pass can't freeze the UI. Default: a setImmediate macrotask. */
+  yield?: () => Promise<void>
+  /** Yield after this many writes (default 1 — breathe after every embed). */
+  yieldEvery?: number
+  /** Stop after writing this many new chunks this pass; sets `truncated` (default: unbounded). */
+  maxChunks?: number
 }
 
 // Sources with stable, documented on-disk transcripts. Qwen is captured from
@@ -309,7 +323,11 @@ export function parseBySource(source: ConversationSource, content: string): Inge
 // unreadable files / sources — one failure never aborts the run.
 export async function ingestConversations(deps: IngestDeps): Promise<IngestStats> {
   const sources = deps.sources ?? DISK_SOURCES
-  const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0 }
+  const doYield = deps.yield ?? yieldToEventLoop
+  const yieldEvery = Math.max(1, deps.yieldEvery ?? 1)
+  const maxChunks = deps.maxChunks ?? Infinity
+  const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false }
+  let sinceYield = 0
   for (const source of sources) {
     let files: string[]
     try {
@@ -336,7 +354,21 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
           await deps.write(chunk)
           stats.chunksWritten++
         } catch {
-          /* skip a chunk that fails to persist */
+          continue // skip a chunk that fails to persist (no embed happened to yield for)
+        }
+        // Let the event loop service IPC/timers between embeds so a bulk
+        // first-run trickles in the background instead of freezing the app.
+        if (++sinceYield >= yieldEvery) {
+          sinceYield = 0
+          await doYield()
+        }
+        // Bound the pass so a huge first index is spread over several short
+        // bursts (the indexer reschedules a quick follow-up) rather than one
+        // long grind. The caller decides whether to cap (background) or not (
+        // an explicit user-triggered "index everything").
+        if (stats.chunksWritten >= maxChunks) {
+          stats.truncated = true
+          return stats
         }
       }
     }
@@ -397,11 +429,12 @@ export interface IngestMemory {
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
   memory: IngestMemory,
-  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions } = {},
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number } = {},
 ): Promise<IngestStats> {
   return ingestConversations({
     sources: opts.sources,
     chunkOptions: opts.chunkOptions,
+    maxChunks: opts.maxChunks,
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source]),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,

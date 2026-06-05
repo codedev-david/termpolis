@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -220,6 +220,72 @@ describe('ingestConversations', () => {
       write: async () => {},
     })
     expect(calledFor.sort()).toEqual(['claude', 'codex', 'gemini'])
+  })
+
+  // Distinct per-file content → distinct hashes → one write each (no dedup),
+  // so write/yield counts are predictable.
+  const fileTurn = (fp: string): string =>
+    `{"type":"user","message":{"role":"user","content":"hello ${fp}"}}`
+
+  it('yields to the event loop between embeds so a bulk first-run cannot freeze the app', async () => {
+    const yieldSpy = vi.fn(async () => {})
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['a.jsonl', 'b.jsonl', 'c.jsonl', 'd.jsonl'],
+      readFile: async (fp) => fileTurn(fp),
+      hasHash: () => false,
+      write: async () => {},
+      yield: yieldSpy,
+    }
+    const s = await ingestConversations(deps)
+    expect(s.chunksWritten).toBe(4)
+    expect(s.truncated).toBe(false)
+    expect(yieldSpy).toHaveBeenCalledTimes(4) // yieldEvery defaults to 1
+  })
+
+  it('honors yieldEvery (one breather per N writes)', async () => {
+    const yieldSpy = vi.fn(async () => {})
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['a.jsonl', 'b.jsonl', 'c.jsonl', 'd.jsonl', 'e.jsonl'],
+      readFile: async (fp) => fileTurn(fp),
+      hasHash: () => false,
+      write: async () => {},
+      yield: yieldSpy,
+      yieldEvery: 2,
+    }
+    const s = await ingestConversations(deps)
+    expect(s.chunksWritten).toBe(5)
+    expect(yieldSpy).toHaveBeenCalledTimes(2) // writes 2 and 4
+  })
+
+  it('stops at maxChunks and reports truncated (backlog for the next pass)', async () => {
+    const written: IngestChunk[] = []
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['a.jsonl', 'b.jsonl', 'c.jsonl', 'd.jsonl', 'e.jsonl'],
+      readFile: async (fp) => fileTurn(fp),
+      hasHash: () => false,
+      write: async (c) => { written.push(c) },
+      maxChunks: 3,
+    }
+    const s = await ingestConversations(deps)
+    expect(s.chunksWritten).toBe(3)
+    expect(s.truncated).toBe(true)
+    expect(written).toHaveLength(3) // it really stopped — didn't embed the rest
+  })
+
+  it('uses the real setImmediate yield when none is injected', async () => {
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['a.jsonl'],
+      readFile: async (fp) => fileTurn(fp),
+      hasHash: () => false,
+      write: async () => {},
+    }
+    const s = await ingestConversations(deps) // exercises the default yield path
+    expect(s.chunksWritten).toBe(1)
+    expect(s.truncated).toBe(false)
   })
 })
 

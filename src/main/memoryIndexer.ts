@@ -8,27 +8,34 @@
 // incremental + idempotent (content-hash dedup), so repeated runs only embed
 // genuinely new chunks and are cheap once warmed up.
 //
-// NOTE: embedding currently runs in-process; a first run over months of history
-// can stall the UI in bursts. Moving embedding to a worker is the planned next
-// optimization — the scheduler here is unaffected by that change.
+// Embedding runs in-process. To keep it from freezing the UI, two things work
+// together: the ingest loop yields the event loop between embeds (so a pass
+// never starves IPC), and each pass is bounded (`run` reports `more` when it hit
+// its cap). When there's more backlog we reschedule a quick follow-up rather
+// than waiting the full interval — so a first index over months of history
+// trickles in as short, responsive bursts instead of one long grind.
 
 export interface IndexRunResult {
   ranAt: number
   written: number
+  more?: boolean // the pass stopped at its cap; backlog remains to drain
   error?: string
 }
 
 interface IndexerConfig {
-  run: () => Promise<{ written: number }>
+  run: () => Promise<{ written: number; more?: boolean }>
   log?: (msg: string) => void
+  drainDelayMs: number
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60_000 // every 30 min, like a quiet autosync
 const DEFAULT_INITIAL_DELAY_MS = 10_000 // 10s after launch, once the app settles
+const DEFAULT_DRAIN_DELAY_MS = 3_000 // when a pass hit its cap, continue draining soon — not in 30 min
 
 let config: IndexerConfig | null = null
 let interval: ReturnType<typeof setInterval> | null = null
 let initial: ReturnType<typeof setTimeout> | null = null
+let drain: ReturnType<typeof setTimeout> | null = null
 let running = false
 
 /** Run one ingestion pass now. No-op (with a reason) if busy or not started. */
@@ -38,8 +45,8 @@ export async function tick(): Promise<IndexRunResult> {
   running = true
   try {
     const r = await config.run()
-    config.log?.(`memory indexer: +${r.written} new chunks`)
-    return { ranAt: Date.now(), written: r.written }
+    config.log?.(`memory indexer: +${r.written} new chunks${r.more ? ' (more queued)' : ''}`)
+    return { ranAt: Date.now(), written: r.written, more: r.more }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     config.log?.(`memory indexer error: ${msg}`)
@@ -49,11 +56,27 @@ export async function tick(): Promise<IndexRunResult> {
   }
 }
 
-export function startIndexer(cfg: IndexerConfig & { intervalMs?: number; initialDelayMs?: number }): void {
+// Timer-driven pass. Unlike a manual tick(), this self-schedules a fast
+// follow-up while a bulk backlog is still draining. Manual tick() stays pure so
+// tests/callers don't get surprise timers.
+async function scheduledTick(): Promise<void> {
+  const r = await tick()
+  if (r.more && config) scheduleDrain()
+}
+
+function scheduleDrain(): void {
+  if (drain) clearTimeout(drain)
+  drain = setTimeout(() => void scheduledTick(), config?.drainDelayMs ?? DEFAULT_DRAIN_DELAY_MS)
+  if (drain && typeof (drain as { unref?: () => void }).unref === 'function') (drain as { unref: () => void }).unref()
+}
+
+export function startIndexer(
+  cfg: { run: () => Promise<{ written: number; more?: boolean }>; log?: (msg: string) => void; intervalMs?: number; initialDelayMs?: number; drainDelayMs?: number },
+): void {
   stopIndexer()
-  config = { run: cfg.run, log: cfg.log }
-  initial = setTimeout(() => void tick(), cfg.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS)
-  interval = setInterval(() => void tick(), cfg.intervalMs ?? DEFAULT_INTERVAL_MS)
+  config = { run: cfg.run, log: cfg.log, drainDelayMs: cfg.drainDelayMs ?? DEFAULT_DRAIN_DELAY_MS }
+  initial = setTimeout(() => void scheduledTick(), cfg.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS)
+  interval = setInterval(() => void scheduledTick(), cfg.intervalMs ?? DEFAULT_INTERVAL_MS)
   // Don't keep the process alive just for the indexer (Node refs).
   if (initial && typeof (initial as { unref?: () => void }).unref === 'function') (initial as { unref: () => void }).unref()
   if (interval && typeof (interval as { unref?: () => void }).unref === 'function') (interval as { unref: () => void }).unref()
@@ -62,8 +85,10 @@ export function startIndexer(cfg: IndexerConfig & { intervalMs?: number; initial
 export function stopIndexer(): void {
   if (interval) clearInterval(interval)
   if (initial) clearTimeout(initial)
+  if (drain) clearTimeout(drain)
   interval = null
   initial = null
+  drain = null
 }
 
 export function isIndexing(): boolean {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -95,7 +95,7 @@ describe('ingestCode', () => {
       hasHash: () => false,
       write: async () => {},
     })
-    expect(s).toEqual({ filesScanned: 0, filesSkipped: 0, chunksWritten: 0, chunksSkipped: 0 })
+    expect(s).toEqual({ filesScanned: 0, filesSkipped: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false })
   })
 
   it('tolerates a readFile error and a write error', async () => {
@@ -108,6 +108,66 @@ describe('ingestCode', () => {
     const s = await ingestCode(deps)
     expect(s.filesScanned).toBe(1) // only ok.ts read successfully
     expect(s.chunksWritten).toBe(0) // write throws
+  })
+
+  it('yields to the event loop between embeds so a bulk index cannot freeze the UI', async () => {
+    const yieldSpy = vi.fn(async () => {})
+    // 5 short files → 5 chunks → 5 writes → 5 yields (yieldEvery defaults to 1).
+    const deps: CodeIngestDeps = {
+      listFiles: async () => ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
+      readFile: async () => 'export const x = 1',
+      hasHash: () => false,
+      write: async () => {},
+      yield: yieldSpy,
+      chunkOptions: { maxLines: 100 },
+    }
+    const s = await ingestCode(deps)
+    expect(s.chunksWritten).toBe(5)
+    expect(yieldSpy).toHaveBeenCalledTimes(5)
+  })
+
+  it('honors yieldEvery (one breather per N writes)', async () => {
+    const yieldSpy = vi.fn(async () => {})
+    const deps: CodeIngestDeps = {
+      listFiles: async () => ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
+      readFile: async () => 'export const x = 1',
+      hasHash: () => false,
+      write: async () => {},
+      yield: yieldSpy,
+      yieldEvery: 2,
+      chunkOptions: { maxLines: 100 },
+    }
+    const s = await ingestCode(deps)
+    expect(s.chunksWritten).toBe(5)
+    expect(yieldSpy).toHaveBeenCalledTimes(2) // writes 2 and 4
+  })
+
+  it('stops at maxChunks and reports truncated (backlog for the next pass)', async () => {
+    const written: CodeChunk[] = []
+    const deps: CodeIngestDeps = {
+      listFiles: async () => ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
+      readFile: async () => 'export const x = 1',
+      hasHash: () => false,
+      write: async (c) => { written.push(c) },
+      maxChunks: 3,
+      chunkOptions: { maxLines: 100 },
+    }
+    const s = await ingestCode(deps)
+    expect(s.chunksWritten).toBe(3)
+    expect(s.truncated).toBe(true)
+    expect(written).toHaveLength(3) // it really stopped — didn't embed the rest
+  })
+
+  it('default real yield path completes without an injected yield', async () => {
+    const deps: CodeIngestDeps = {
+      listFiles: async () => ['a.ts'],
+      readFile: async () => 'export const x = 1',
+      hasHash: () => false,
+      write: async () => {},
+    }
+    const s = await ingestCode(deps) // exercises the setImmediate default
+    expect(s.chunksWritten).toBe(1)
+    expect(s.truncated).toBe(false)
   })
 })
 
