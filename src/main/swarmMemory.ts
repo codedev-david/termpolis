@@ -22,6 +22,8 @@ export interface MemoryEntry {
   tags?: string[]
   taskId?: string
   embedding?: number[]
+  source?: string                 // provenance (e.g. 'claude'|'codex'|'gemini' for ingested transcripts)
+  hash?: string                   // content hash for idempotent ingestion dedup
 }
 
 export interface MemorySearchResult extends MemoryEntry {
@@ -35,6 +37,7 @@ const MAX_EMBEDDING_DIM = 1024
 // ---- State ----
 let memPath: string | null = null
 const entries: MemoryEntry[] = []
+const seenHashes = new Set<string>()  // content hashes present — idempotent ingest guard
 let seq = 0
 let embeddingsAvailable: boolean | null = null  // cached probe result
 let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
@@ -48,6 +51,7 @@ export function initSwarmMemory(userDataPath: string): void {
   const resolved = path.resolve(userDataPath)
   memPath = path.join(resolved, 'swarm-memory.jsonl')
   entries.length = 0
+  seenHashes.clear()
   seq = 0
   embeddingsAvailable = null
 
@@ -61,11 +65,15 @@ export function initSwarmMemory(userDataPath: string): void {
           const entry = JSON.parse(line) as MemoryEntry
           if (entry && entry.id && typeof entry.content === 'string') {
             entries.push(entry)
+            if (entry.hash) seenHashes.add(entry.hash)
           }
         } catch { /* skip malformed line */ }
       }
       // Trim if the file grew past the cap between runs
-      while (entries.length > MAX_ENTRIES) entries.shift()
+      while (entries.length > MAX_ENTRIES) {
+        const dropped = entries.shift()
+        if (dropped?.hash) seenHashes.delete(dropped.hash)
+      }
     } else {
       fs.writeFileSync(memPath, '')
     }
@@ -81,9 +89,15 @@ export function initSwarmMemory(userDataPath: string): void {
 export function _resetForTests(): void {
   memPath = null
   entries.length = 0
+  seenHashes.clear()
   seq = 0
   embeddingsAvailable = null
   embedOverride = null
+}
+
+/** True if a chunk with this content hash is already stored (idempotent ingest). */
+export function memoryHasHash(hash: string): boolean {
+  return typeof hash === 'string' && seenHashes.has(hash)
 }
 
 // ---- Write ----
@@ -94,6 +108,8 @@ export interface WriteInput {
   content: string
   tags?: string[]
   taskId?: string
+  source?: string
+  hash?: string
 }
 
 export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
@@ -113,6 +129,8 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     content,
     ...(input.tags && input.tags.length > 0 && { tags: input.tags.slice(0, 20) }),
     ...(input.taskId && { taskId: input.taskId }),
+    ...(input.source && { source: input.source }),
+    ...(input.hash && { hash: input.hash }),
   }
 
   // Opportunistic embedding — swallow any failure silently
@@ -122,7 +140,11 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   } catch { /* ignore */ }
 
   entries.push(entry)
-  if (entries.length > MAX_ENTRIES) entries.shift()
+  if (entry.hash) seenHashes.add(entry.hash)
+  if (entries.length > MAX_ENTRIES) {
+    const dropped = entries.shift()
+    if (dropped?.hash) seenHashes.delete(dropped.hash)
+  }
 
   persist(entry)
   return entry

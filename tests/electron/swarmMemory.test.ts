@@ -17,6 +17,7 @@ import {
   memoryList,
   memoryCount,
   memoryClear,
+  memoryHasHash,
   _resetForTests,
   _setEmbeddingsAvailable,
   _setEmbedFnForTests,
@@ -343,6 +344,33 @@ describe('memoryCount / memoryClear', () => {
     expect(memoryCount()).toBe(0)
     const raw = fs.readFileSync(path.join(tmpDir, 'swarm-memory.jsonl'), 'utf8')
     expect(raw).toBe('')
+  })
+})
+
+describe('content-hash dedup (idempotent ingest)', () => {
+  it('stores source + hash and reports them via memoryHasHash', async () => {
+    expect(memoryHasHash('h1')).toBe(false)
+    const e = await memoryWrite({ agentId: 'claude', kind: 'message', content: 'past convo', source: 'claude', hash: 'h1' })
+    expect(e.source).toBe('claude')
+    expect(e.hash).toBe('h1')
+    expect(memoryHasHash('h1')).toBe(true)
+  })
+
+  it('memoryHasHash is false for unknown or non-string input', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'x', hash: 'known' })
+    expect(memoryHasHash('other')).toBe(false)
+    expect(memoryHasHash(undefined as unknown as string)).toBe(false)
+  })
+
+  it('rebuilds the hash set from disk on init', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'message', content: 'c', source: 'codex', hash: 'persist-h' })
+    _resetForTests()
+    initSwarmMemory(tmpDir)
+    _setEmbeddingsAvailable(false)
+    expect(memoryHasHash('persist-h')).toBe(true)
+    const reloaded = memoryList()[0]
+    expect(reloaded.source).toBe('codex')
+    expect(reloaded.hash).toBe('persist-h')
   })
 })
 

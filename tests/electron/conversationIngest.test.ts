@@ -1,10 +1,20 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 import {
   parseClaudeTranscript,
   parseCodexRollout,
   parseGeminiSession,
   chunkTurns,
+  parseBySource,
+  ingestConversations,
+  discoverTranscriptFiles,
+  runConversationIngest,
   type IngestTurn,
+  type IngestChunk,
+  type IngestDeps,
+  type IngestMemory,
 } from '../../src/main/conversationIngest'
 
 describe('parseClaudeTranscript', () => {
@@ -130,5 +140,155 @@ describe('chunkTurns', () => {
 
   it('returns [] for no turns', () => {
     expect(chunkTurns([])).toEqual([])
+  })
+})
+
+describe('parseBySource', () => {
+  it('dispatches to the right parser; returns [] for qwen', () => {
+    expect(parseBySource('claude', '{"type":"user","message":{"role":"user","content":"hi"}}')).toHaveLength(1)
+    expect(
+      parseBySource('codex', '{"type":"session_meta","payload":{"id":"x"}}\n{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"hey"}]}}'),
+    ).toHaveLength(1)
+    expect(parseBySource('gemini', JSON.stringify({ messages: [{ type: 'user', content: [{ text: 'g' }] }] }))).toHaveLength(1)
+    expect(parseBySource('qwen', 'anything')).toEqual([])
+  })
+})
+
+describe('ingestConversations', () => {
+  const claudeContent =
+    '{"type":"user","message":{"role":"user","content":"q1"}}\n' +
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a1"}]}}'
+
+  it('writes new chunks and skips already-seen hashes (idempotent)', async () => {
+    const seen = new Set<string>()
+    const written: IngestChunk[] = []
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['f1.jsonl'],
+      readFile: async () => claudeContent,
+      hasHash: (h) => seen.has(h),
+      write: async (c) => { seen.add(c.hash); written.push(c) },
+      chunkOptions: { maxChars: 10_000 },
+    }
+    const s1 = await ingestConversations(deps)
+    expect(s1.filesScanned).toBe(1)
+    expect(s1.chunksWritten).toBe(1)
+    expect(s1.chunksSkipped).toBe(0)
+    expect(written[0].source).toBe('claude')
+
+    const s2 = await ingestConversations(deps) // identical content → all skipped
+    expect(s2.chunksWritten).toBe(0)
+    expect(s2.chunksSkipped).toBe(1)
+  })
+
+  it('tolerates listFiles/readFile errors and skips empty transcripts', async () => {
+    const deps: IngestDeps = {
+      sources: ['claude', 'codex', 'gemini'],
+      listFiles: async (src) => {
+        if (src === 'codex') throw new Error('list fail')
+        return src === 'gemini' ? ['bad.json'] : ['ok.jsonl']
+      },
+      readFile: async (fp) => {
+        if (fp === 'bad.json') throw new Error('read fail')
+        return '{"type":"user","message":{"role":"user","content":"hi"}}'
+      },
+      hasHash: () => false,
+      write: async () => {},
+    }
+    const s = await ingestConversations(deps)
+    expect(s.filesScanned).toBe(1) // only claude ok.jsonl read successfully
+    expect(s.chunksWritten).toBe(1)
+  })
+
+  it('counts a write failure as not-written', async () => {
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['f.jsonl'],
+      readFile: async () => claudeContent,
+      hasHash: () => false,
+      write: async () => { throw new Error('disk full') },
+    }
+    expect((await ingestConversations(deps)).chunksWritten).toBe(0)
+  })
+
+  it('defaults to the three disk sources when none specified', async () => {
+    const calledFor: string[] = []
+    await ingestConversations({
+      listFiles: async (src) => { calledFor.push(src); return [] },
+      readFile: async () => '',
+      hasHash: () => false,
+      write: async () => {},
+    })
+    expect(calledFor.sort()).toEqual(['claude', 'codex', 'gemini'])
+  })
+})
+
+describe('discoverTranscriptFiles', () => {
+  let root: string
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-disc-'))
+  })
+  afterEach(() => {
+    try { fs.rmSync(root, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  it('finds claude *.jsonl recursively, ignoring other files', async () => {
+    const proj = path.join(root, 'projA')
+    fs.mkdirSync(proj)
+    fs.writeFileSync(path.join(proj, 's1.jsonl'), 'x')
+    fs.writeFileSync(path.join(proj, 'notes.txt'), 'x')
+    const files = await discoverTranscriptFiles('claude', root)
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatch(/s1\.jsonl$/)
+  })
+
+  it('matches only codex rollout-*.jsonl', async () => {
+    fs.writeFileSync(path.join(root, 'rollout-2026.jsonl'), 'x')
+    fs.writeFileSync(path.join(root, 'history.jsonl'), 'x')
+    const files = await discoverTranscriptFiles('codex', root)
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatch(/rollout-/)
+  })
+
+  it('matches only gemini session-*.json', async () => {
+    const chats = path.join(root, 'proj', 'chats')
+    fs.mkdirSync(chats, { recursive: true })
+    fs.writeFileSync(path.join(chats, 'session-1.json'), 'x')
+    fs.writeFileSync(path.join(chats, 'logs.json'), 'x')
+    expect(await discoverTranscriptFiles('gemini', root)).toHaveLength(1)
+  })
+
+  it('returns [] for a missing root and for qwen', async () => {
+    expect(await discoverTranscriptFiles('claude', path.join(root, 'nope'))).toEqual([])
+    expect(await discoverTranscriptFiles('qwen', root)).toEqual([])
+  })
+})
+
+describe('runConversationIngest', () => {
+  it('discovers on disk, dedups, and writes via the memory adapter', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-run-'))
+    try {
+      const proj = path.join(root, 'p')
+      fs.mkdirSync(proj)
+      fs.writeFileSync(path.join(proj, 's.jsonl'), '{"type":"user","message":{"role":"user","content":"hello world"}}')
+      const seen = new Set<string>()
+      const writes: Parameters<IngestMemory['write']>[0][] = []
+      const memory: IngestMemory = {
+        hasHash: (h) => seen.has(h),
+        write: async (i) => { seen.add(i.hash); writes.push(i); return undefined },
+      }
+      const opts = { sources: ['claude'] as const, roots: { claude: root }, chunkOptions: { maxChars: 10_000 } }
+      const stats = await runConversationIngest(memory, opts)
+      expect(stats.chunksWritten).toBe(1)
+      expect(writes[0].agentId).toBe('claude-history')
+      expect(writes[0].source).toBe('claude')
+      expect(writes[0].kind).toBe('message')
+
+      const stats2 = await runConversationIngest(memory, opts) // idempotent re-run
+      expect(stats2.chunksWritten).toBe(0)
+      expect(stats2.chunksSkipped).toBe(1)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 })

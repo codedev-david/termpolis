@@ -14,6 +14,9 @@
 // content-derived hash so re-ingesting the same transcript is idempotent.
 
 import * as crypto from 'crypto'
+import { promises as fsp } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini' | 'qwen'
 
@@ -264,4 +267,152 @@ export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): Ingest
   }
   flush()
   return chunks
+}
+
+// ---- Orchestration ----
+
+export interface IngestStats {
+  filesScanned: number
+  chunksWritten: number
+  chunksSkipped: number // already present (content-hash dedup)
+}
+
+export interface IngestDeps {
+  listFiles: (source: ConversationSource) => Promise<string[]>
+  readFile: (filePath: string) => Promise<string>
+  hasHash: (hash: string) => boolean
+  write: (chunk: IngestChunk) => Promise<void>
+  sources?: ConversationSource[]
+  chunkOptions?: ChunkOptions
+}
+
+// Sources with stable, documented on-disk transcripts. Qwen is captured from
+// the PTY stream elsewhere (its on-disk format is undocumented/unstable).
+export const DISK_SOURCES: ConversationSource[] = ['claude', 'codex', 'gemini']
+
+export function parseBySource(source: ConversationSource, content: string): IngestTurn[] {
+  switch (source) {
+    case 'claude':
+      return parseClaudeTranscript(content)
+    case 'codex':
+      return parseCodexRollout(content)
+    case 'gemini':
+      return parseGeminiSession(content)
+    default:
+      return []
+  }
+}
+
+// Read every transcript, chunk it, and write new (unseen) chunks. Idempotent:
+// chunks whose content hash is already stored are skipped, so re-running over a
+// growing set of transcripts only embeds genuinely new content. Tolerant of
+// unreadable files / sources — one failure never aborts the run.
+export async function ingestConversations(deps: IngestDeps): Promise<IngestStats> {
+  const sources = deps.sources ?? DISK_SOURCES
+  const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0 }
+  for (const source of sources) {
+    let files: string[]
+    try {
+      files = await deps.listFiles(source)
+    } catch {
+      continue
+    }
+    for (const filePath of files) {
+      let content: string
+      try {
+        content = await deps.readFile(filePath)
+      } catch {
+        continue
+      }
+      stats.filesScanned++
+      const turns = parseBySource(source, content)
+      if (turns.length === 0) continue
+      for (const chunk of chunkTurns(turns, deps.chunkOptions)) {
+        if (deps.hasHash(chunk.hash)) {
+          stats.chunksSkipped++
+          continue
+        }
+        try {
+          await deps.write(chunk)
+          stats.chunksWritten++
+        } catch {
+          /* skip a chunk that fails to persist */
+        }
+      }
+    }
+  }
+  return stats
+}
+
+function defaultRoot(source: ConversationSource): string {
+  switch (source) {
+    case 'claude':
+      return join(homedir(), '.claude', 'projects')
+    case 'codex':
+      return join(homedir(), '.codex', 'sessions')
+    case 'gemini':
+      return join(homedir(), '.gemini', 'tmp')
+    default:
+      return ''
+  }
+}
+
+function filePattern(source: ConversationSource): RegExp {
+  if (source === 'gemini') return /^session-.*\.json$/i
+  if (source === 'codex') return /^rollout-.*\.jsonl$/i
+  return /\.jsonl$/i
+}
+
+// Recursively discover transcript files for a source (bounded depth, tolerant
+// of unreadable dirs). The on-disk roots differ per agent.
+export async function discoverTranscriptFiles(source: ConversationSource, root?: string): Promise<string[]> {
+  const base = root ?? defaultRoot(source)
+  if (!base) return []
+  const pattern = filePattern(source)
+  const out: string[] = []
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 6) return
+    let entries
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name)
+      if (e.isDirectory()) await walk(full, depth + 1)
+      else if (pattern.test(e.name)) out.push(full)
+    }
+  }
+  await walk(base, 0)
+  return out
+}
+
+export interface IngestMemory {
+  hasHash: (hash: string) => boolean
+  write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string }) => Promise<unknown>
+}
+
+// Compose real ingestion: discover on disk + dedup/write via the memory store.
+// Kept decoupled from swarmMemory so the orchestration stays unit-testable.
+export async function runConversationIngest(
+  memory: IngestMemory,
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions } = {},
+): Promise<IngestStats> {
+  return ingestConversations({
+    sources: opts.sources,
+    chunkOptions: opts.chunkOptions,
+    listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source]),
+    readFile: (fp) => fsp.readFile(fp, 'utf8'),
+    hasHash: memory.hasHash,
+    write: async (chunk) => {
+      await memory.write({
+        agentId: `${chunk.source}-history`,
+        kind: 'message',
+        content: chunk.text,
+        source: chunk.source,
+        hash: chunk.hash,
+      })
+    },
+  })
 }

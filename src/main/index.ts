@@ -102,9 +102,10 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryList, memoryCount, memoryClear,
+  memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash,
   type MemoryEntry,
 } from './swarmMemory'
+import { runConversationIngest } from './conversationIngest'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -884,6 +885,16 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 
 ipcMain.handle('memory:count', () => ok(memoryCount()))
 ipcMain.handle('memory:clear', () => { memoryClear(); return ok() })
+
+// Ingest past AI sessions (Claude/Codex/Gemini transcripts on disk) into the
+// shared memory so every agent can semantically recall them. Idempotent — only
+// genuinely new chunks are embedded, so re-running is cheap.
+ipcMain.handle('memory:ingest-conversations', async () => {
+  try {
+    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite })
+    return ok(stats)
+  } catch (e: any) { return err(e.message) }
+})
 
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
 // Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
