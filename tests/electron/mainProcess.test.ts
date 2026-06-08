@@ -2965,3 +2965,55 @@ describe('ai-security:sensitive-reads', () => {
     expect(getReadCount('term-sens-message')).toBe(0)
   })
 })
+
+// =========================================================================
+// memory:* cross-machine sync handlers (swarmMemory is real here; the store was
+// initialised in os.tmpdir() during import — see beforeAll)
+// =========================================================================
+describe('memory cross-machine sync handlers', () => {
+  const fs = require('fs') as typeof import('fs')
+  const os = require('os') as typeof import('os')
+  const path = require('path') as typeof import('path')
+
+  it('memory:sync-status returns the current sync status', async () => {
+    const res = await invokeHandler('memory:sync-status')
+    expect(res.success).toBe(true)
+    expect(typeof res.data.syncing).toBe('boolean')
+    expect(typeof res.data.deviceId).toBe('string')
+  })
+
+  it('memory:set-sync-dir turns sync on, then off again', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-sync-'))
+    try {
+      const on = await invokeHandler('memory:set-sync-dir', { dir })
+      expect(on.success).toBe(true)
+      expect(on.data.syncing).toBe(true) // setSyncDir directly controls this
+    } finally {
+      const off = await invokeHandler('memory:set-sync-dir', { dir: null })
+      expect(off.success).toBe(true)
+      expect(off.data.syncing).toBe(false)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('memory:choose-sync-dir returns success when the picker is cancelled', async () => {
+    const { dialog } = (await import('electron')) as any
+    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const res = await invokeHandler('memory:choose-sync-dir')
+    expect(res.success).toBe(true) // cancelled → returns current status, no throw
+  })
+
+  it('memory:choose-sync-dir enables sync to the picked folder', async () => {
+    const { dialog } = (await import('electron')) as any
+    const picked = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-pick-'))
+    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [picked] })
+    try {
+      const res = await invokeHandler('memory:choose-sync-dir')
+      expect(res.success).toBe(true)
+      expect(res.data.syncing).toBe(true)
+    } finally {
+      await invokeHandler('memory:set-sync-dir', { dir: null }) // restore local-only
+      fs.rmSync(picked, { recursive: true, force: true })
+    }
+  })
+})

@@ -103,6 +103,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
+  getSyncStatus, setSyncDir, reloadMemoryFromSync,
   type MemoryEntry,
 } from './swarmMemory'
 import { runConversationIngest } from './conversationIngest'
@@ -922,6 +923,30 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
   } catch (e: any) { return err(e.message) }
 })
 
+// Cross-machine sync: the brain lives in device-sharded JSONL. Pointing it at a
+// folder the user already syncs (Syncthing/Dropbox/iCloud/git) makes the same
+// memory follow them across machines — no Termpolis server, no new trust. Each
+// device writes only its own shard, so a file-sync tool never hits a conflict.
+ipcMain.handle('memory:sync-status', async () => {
+  try { return ok(getSyncStatus()) } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
+  try { return ok(setSyncDir(opts?.dir ?? null)) } catch (e: any) { return err(e.message) }
+})
+
+// Native folder picker → enable sync to the chosen folder in one step.
+ipcMain.handle('memory:choose-sync-dir', async () => {
+  try {
+    const res = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Choose a synced folder for Termpolis memory (e.g. inside Dropbox or Syncthing)',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (res.canceled || !res.filePaths[0]) return ok(getSyncStatus())
+    return ok(setSyncDir(res.filePaths[0]))
+  } catch (e: any) { return err(e.message) }
+})
+
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
 // Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
 // with zero shell metacharacters, so a compromised renderer or MCP client
@@ -1318,6 +1343,9 @@ if (!gotTheLock) {
     // quick follow-up whenever a pass reports more backlog).
     startIndexer({
       run: async () => {
+        // Pick up entries other machines synced into the shared folder (no-op
+        // when cross-machine sync is off).
+        try { reloadMemoryFromSync() } catch { /* best effort */ }
         const stats = await runConversationIngest(
           { hasHash: memoryHasHash, write: memoryWrite },
           { maxChunks: 250 },

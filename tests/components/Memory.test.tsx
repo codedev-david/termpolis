@@ -13,6 +13,9 @@ beforeEach(() => {
     memoryIngestConversations: vi.fn().mockResolvedValue({ success: true, data: { filesScanned: 3, chunksWritten: 5, chunksSkipped: 1 } }),
     memoryIngestCode: vi.fn().mockResolvedValue({ success: true, data: { filesScanned: 10, filesSkipped: 2, chunksWritten: 20, chunksSkipped: 0 } }),
     memoryBuildPrimer: vi.fn().mockResolvedValue({ success: true, data: 'PRIMER TEXT' }),
+    memorySyncStatus: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 42 } }),
+    memorySetSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 42 } }),
+    memoryChooseSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/Users/me/Dropbox/termpolis-memory', deviceId: 'dev01', devices: 2, count: 42 } }),
     writeToTerminal: vi.fn(),
   }
   ;(window as unknown as { termpolis: Api }).termpolis = api
@@ -141,5 +144,38 @@ describe('Memory panel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Index this repo/i }))
     await waitFor(() => expect(api.memoryIngestCode).toHaveBeenCalledWith('/work/app'))
     expect(await screen.findByText(/\+20 chunks from 10 files/)).toBeInTheDocument()
+  })
+
+  it('shows the cross-machine sync section, off by default', async () => {
+    renderPanel()
+    await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
+    expect(screen.getByText(/Sync across machines/i)).toBeInTheDocument()
+    expect(screen.getByTestId('memory-sync-choose')).toBeInTheDocument()
+  })
+
+  it('choosing a synced folder enables sync and shows the device count', async () => {
+    renderPanel()
+    await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
+    fireEvent.click(screen.getByTestId('memory-sync-choose'))
+    await waitFor(() => expect(api.memoryChooseSyncDir).toHaveBeenCalled())
+    expect(await screen.findByText(/2 devices sharing this brain/i)).toBeInTheDocument()
+    expect(screen.getByTestId('memory-sync-off')).toBeInTheDocument()
+  })
+
+  it('turning sync off calls set-sync-dir(null)', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/Dropbox/mem', deviceId: 'dev01', devices: 2, count: 42 } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('memory-sync-off')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('memory-sync-off'))
+    await waitFor(() => expect(api.memorySetSyncDir).toHaveBeenCalledWith(null))
+    expect(await screen.findByText(/Sync turned off/i)).toBeInTheDocument()
+  })
+
+  it('reports an error when enabling sync fails', async () => {
+    api.memoryChooseSyncDir.mockResolvedValueOnce({ success: false, error: 'no folder picked' })
+    renderPanel()
+    await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
+    fireEvent.click(screen.getByTestId('memory-sync-choose'))
+    expect(await screen.findByText('no folder picked')).toBeInTheDocument()
   })
 })

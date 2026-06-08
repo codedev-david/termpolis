@@ -102,6 +102,7 @@ Every Claude session today starts cold; you re-explain what you're doing and bur
 
 - **One memory, four agents.** Claude, Codex, Gemini, and Qwen all read and write the same store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list`). A fact one agent figures out is instantly available to the others — no copy-paste, no re-discovery.
 - **It survives quitting the app.** Stored as plain JSONL on disk (`~/.termpolis/swarm-memory.jsonl`) and reloaded with its embeddings at startup — close Termpolis, reopen it tomorrow, the context is still there.
+- **It can follow you across machines (optional).** Point the brain at a folder you already sync — Dropbox, Syncthing, iCloud, a git repo — and the same memory shows up on every computer. Each machine writes its own shard file, so there are never sync conflicts; the stores merge conflict-free (a content-hash-deduped grow-only set) and deletes propagate as tombstones. **No Termpolis server, no new account** — it rides on a sync tool you already trust. Off by default; enable it in the Memory panel.
 - **It feeds itself.** A background indexer ingests your past Claude / Codex / Gemini transcripts automatically (10 s after launch, then every 30 min). Idempotent (content-hash dedup), so it only ever embeds genuinely new content — no action required from you.
 - **Fully offline, no server, no secrets.** Embeddings run in-process via WASM with a bundled `bge-small-en-v1.5` model — **no Ollama, no native binaries, nothing leaves your machine.** The indexer reuses the same sensitive-file denylist as the read watcher, so `.env` files, keys, and cloud credentials are never embedded.
 
@@ -114,7 +115,7 @@ Every Claude session today starts cold; you re-explain what you're doing and bur
 
 The result: stop re-explaining context every session, and stop paying to reload it.
 
-**Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), and **inject the most relevant context into the active agent** with one click.
+**Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), **inject the most relevant context into the active agent** with one click, and **turn on cross-machine sync** (point it at a synced folder). Launched agents are also auto-primed with the project's relevant context (toggle in Settings).
 
 ---
 

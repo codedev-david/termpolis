@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import type { MemorySearchResult } from '../../types'
+import type { MemorySearchResult, MemorySyncStatus } from '../../types'
 
 interface Props {
   onClose: () => void
@@ -21,14 +21,52 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
   const [results, setResults] = useState<MemorySearchResult[]>([])
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
+  const [sync, setSync] = useState<MemorySyncStatus | null>(null)
 
   const refreshStats = useCallback(async () => {
     const res = await window.termpolis.memoryStats()
     if (res.success && res.data) setStats(res.data)
   }, [])
 
+  const refreshSync = useCallback(async () => {
+    const res = await window.termpolis.memorySyncStatus?.()
+    if (res?.success && res.data) setSync(res.data)
+  }, [])
+
   useEffect(() => {
     void refreshStats()
+    void refreshSync()
+  }, [refreshStats, refreshSync])
+
+  const chooseSyncFolder = useCallback(async () => {
+    setBusy(true)
+    setStatus('Choose a folder you already sync (Dropbox, Syncthing, iCloud…)')
+    try {
+      const res = await window.termpolis.memoryChooseSyncDir()
+      if (res.success && res.data) {
+        setSync(res.data)
+        setStatus(res.data.syncing ? `Syncing via ${res.data.dir} (${res.data.devices} device${res.data.devices === 1 ? '' : 's'})` : 'Sync unchanged.')
+        await refreshStats()
+      } else {
+        setStatus(res.error || 'Could not enable sync.')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [refreshStats])
+
+  const disableSync = useCallback(async () => {
+    setBusy(true)
+    try {
+      const res = await window.termpolis.memorySetSyncDir(null)
+      if (res.success && res.data) {
+        setSync(res.data)
+        setStatus('Sync turned off — memory is now local to this machine.')
+        await refreshStats()
+      }
+    } finally {
+      setBusy(false)
+    }
   }, [refreshStats])
 
   const doSearch = useCallback(async () => {
@@ -188,6 +226,39 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
           >
             <i className="fa-solid fa-code mr-1"></i> Index this repo&apos;s code
           </button>
+        </div>
+
+        <div className="border-t border-[#3c3c3c] pt-2 flex flex-col gap-1" data-testid="memory-sync">
+          <div className="text-[#666] text-[10px] uppercase tracking-wider flex items-center gap-1">
+            <i className="fa-solid fa-arrows-rotate"></i> Sync across machines
+          </div>
+          {sync?.syncing ? (
+            <>
+              <div className="text-[11px] text-[#bbb]">
+                <span className="text-[#7ee2a3]">On</span> · {sync.devices} device{sync.devices === 1 ? '' : 's'} sharing this brain
+                <div className="text-[10px] text-[#777] break-all">{sync.dir}</div>
+              </div>
+              <button
+                className="bg-[#2d2d30] hover:bg-[#37373a] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] cursor-pointer disabled:opacity-50 text-left"
+                onClick={() => void disableSync()}
+                disabled={busy}
+                data-testid="memory-sync-off"
+              >Turn off sync (keep memory local)</button>
+            </>
+          ) : (
+            <>
+              <div className="text-[11px] text-[#777] leading-relaxed">
+                Off — memory stays on this machine. Point it at a folder you already sync
+                (Dropbox / Syncthing / iCloud) and the same brain follows you to every machine. No Termpolis server.
+              </div>
+              <button
+                className="bg-[#22D3EE] hover:opacity-90 text-[#062a30] rounded px-2 py-1 font-medium cursor-pointer disabled:opacity-50 text-left"
+                onClick={() => void chooseSyncFolder()}
+                disabled={busy}
+                data-testid="memory-sync-choose"
+              >Choose a synced folder…</button>
+            </>
+          )}
         </div>
 
         {status && <div className="text-[#22D3EE] text-[11px]">{status}</div>}

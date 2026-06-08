@@ -145,7 +145,7 @@ describe('agentEventBus.publish', () => {
       publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `${i}`, payload: {} })
     }
     expect(getDroppedCount()).toBeGreaterThan(0)
-  })
+  }, 20_000) // 5000 instrumented publishes can exceed the 5s default under --coverage load
 })
 
 describe('agentEventBus.subscribe', () => {

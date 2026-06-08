@@ -168,6 +168,9 @@ export interface TermpolisAPI {
   memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
   memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
   memoryBuildPrimer: (query: string, limit?: number) => Promise<IpcResponse<string | null>>
+  memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
+  memorySetSyncDir: (dir: string | null) => Promise<IpcResponse<MemorySyncStatus>>
+  memoryChooseSyncDir: () => Promise<IpcResponse<MemorySyncStatus>>
 
   // Telemetry — opt-in mirror to main process
   setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
@@ -219,6 +222,14 @@ export interface MemoryEntry {
 }
 
 export interface MemorySearchResult extends MemoryEntry { score: number }
+
+export interface MemorySyncStatus {
+  syncing: boolean
+  dir: string | null
+  deviceId: string
+  devices: number // shard files in the sync folder (≈ machines sharing this brain)
+  count: number
+}
 
 export interface MemoryWriteInput {
   agentId: string

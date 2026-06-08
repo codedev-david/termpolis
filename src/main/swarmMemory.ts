@@ -43,52 +43,147 @@ const MAX_CONTENT = 16 * 1024      // cap per-entry content size
 const MAX_EMBEDDING_DIM = 1024
 
 // ---- State ----
-let memPath: string | null = null
+let memPath: string | null = null     // active WRITE target: legacy local file OR this device's sync shard
+let userDataDir: string | null = null
+let legacyPath: string | null = null  // <userData>/swarm-memory.jsonl (default local store / migration source)
+let deviceId = ''                     // stable per-machine id — names this device's shard
+let syncDir: string | null = null     // null = local-only (default); a folder = cross-machine sync
 const entries: MemoryEntry[] = []
 const seenHashes = new Set<string>()  // content hashes present — idempotent ingest guard
+const tombstones = new Set<string>()  // deleted entry ids (OR-Set) — propagate across devices via shards
+let clearEpoch = 0                    // epoch tombstone: entries with ts <= this are cleared everywhere
 let seq = 0
 let embeddingsAvailable: boolean | null = null  // cached probe result
 let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
 
 // ---- Init / persistence ----
+//
+// Cross-machine sync model: the store is an append-only set of immutable entries
+// keyed by id + content hash — i.e. a grow-only set, so merging two devices is a
+// conflict-free union (order-independent, idempotent). Each device writes ONLY
+// its own shard file (`<syncDir>/<deviceId>.jsonl`); a file-sync tool (Syncthing/
+// Dropbox/git) moves shards around, and single-writer-per-file means there are
+// never write conflicts. Deletes are tombstones (per-id) + a clear epoch, which
+// propagate the same way. Local-only (no syncDir) keeps the original single-file
+// behaviour byte-for-byte.
 
-export function initSwarmMemory(userDataPath: string): void {
+const SYNC_CONFIG_FILE = 'memory-sync.json'
+const DEVICE_ID_FILE = 'device-id'
+
+function loadOrCreateDeviceId(dir: string): string {
+  const p = path.join(dir, DEVICE_ID_FILE)
+  try {
+    const existing = fs.readFileSync(p, 'utf8').trim()
+    if (existing) return existing
+  } catch { /* create below */ }
+  const id = crypto.randomBytes(8).toString('hex')
+  try { fs.writeFileSync(p, id) } catch { /* best effort — falls back to an ephemeral id */ }
+  return id
+}
+
+function readSyncConfig(dir: string): string | null {
+  try {
+    const obj = JSON.parse(fs.readFileSync(path.join(dir, SYNC_CONFIG_FILE), 'utf8'))
+    return obj && typeof obj.dir === 'string' && obj.dir ? obj.dir : null
+  } catch { return null }
+}
+
+function writeSyncConfig(dir: string, syncTo: string | null): void {
+  try { fs.writeFileSync(path.join(dir, SYNC_CONFIG_FILE), JSON.stringify({ dir: syncTo })) } catch { /* best effort */ }
+}
+
+// Every shard this device should read in sync mode: all *.jsonl in the folder
+// (own shard + peers'). In local-only mode it's just the single store file.
+function shardFiles(): string[] {
+  if (!syncDir) return memPath ? [memPath] : []
+  try {
+    return fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(syncDir as string, f))
+  } catch { return memPath ? [memPath] : [] }
+}
+
+function parseShardLine(line: string, adds: MemoryEntry[]): void {
+  const s = line.trim()
+  if (!s) return
+  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown }
+  try { obj = JSON.parse(s) } catch { return /* skip malformed line */ }
+  if (!obj || typeof obj !== 'object') return
+  if (typeof obj.deleted === 'string') { tombstones.add(obj.deleted); return }
+  if (typeof obj.clearedBefore === 'number') { if (obj.clearedBefore > clearEpoch) clearEpoch = obj.clearedBefore; return }
+  if (obj.id && typeof obj.content === 'string') adds.push(obj as unknown as MemoryEntry)
+}
+
+// Rebuild the hot window from a set of shard files: union of adds, minus
+// tombstones (deleted ids + clear epoch), deduped by id and content-hash,
+// newest-maxEntries kept. Order-independent → safe to merge any device set.
+function reloadFrom(paths: string[]): void {
+  entries.length = 0
+  seenHashes.clear()
+  tombstones.clear()
+  clearEpoch = 0
+  const adds: MemoryEntry[] = []
+  for (const p of paths) {
+    let raw: string
+    try { raw = fs.readFileSync(p, 'utf8') } catch { continue }
+    for (const line of raw.split('\n')) parseShardLine(line, adds)
+  }
+  adds.sort((a, b) => (a.ts || 0) - (b.ts || 0)) // stable, oldest→newest
+  const seenIds = new Set<string>()
+  for (const e of adds) {
+    if (seenIds.has(e.id)) continue                 // same id in >1 file (e.g. legacy migration)
+    if (tombstones.has(e.id)) continue              // explicitly deleted
+    if ((e.ts || 0) <= clearEpoch) continue         // cleared epoch
+    if (e.hash && seenHashes.has(e.hash)) continue  // same content from another shard
+    seenIds.add(e.id)
+    entries.push(e)
+    if (e.hash) seenHashes.add(e.hash)
+  }
+  while (entries.length > maxEntries) {
+    const dropped = entries.shift()
+    if (dropped?.hash) seenHashes.delete(dropped.hash)
+  }
+}
+
+export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string | null } = {}): void {
   if (!userDataPath || typeof userDataPath !== 'string' || !path.isAbsolute(userDataPath)) {
     throw new Error('initSwarmMemory: absolute userDataPath required')
   }
   const resolved = path.resolve(userDataPath)
-  memPath = path.join(resolved, 'swarm-memory.jsonl')
+  userDataDir = resolved
+  legacyPath = path.join(resolved, 'swarm-memory.jsonl')
+  deviceId = loadOrCreateDeviceId(resolved)
+  // explicit opt wins; otherwise the persisted choice; otherwise local-only
+  syncDir = opts.syncDir !== undefined ? (opts.syncDir || null) : readSyncConfig(resolved)
+
   entries.length = 0
   seenHashes.clear()
+  tombstones.clear()
+  clearEpoch = 0
   seq = 0
   embeddingsAvailable = null
 
-  // Load existing entries (best effort)
   try {
-    if (fs.existsSync(memPath)) {
-      const raw = fs.readFileSync(memPath, 'utf8')
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const entry = JSON.parse(line) as MemoryEntry
-          if (entry && entry.id && typeof entry.content === 'string') {
-            entries.push(entry)
-            if (entry.hash) seenHashes.add(entry.hash)
-          }
-        } catch { /* skip malformed line */ }
+    if (syncDir) {
+      fs.mkdirSync(syncDir, { recursive: true })
+      memPath = path.join(syncDir, `${deviceId}.jsonl`)
+      // One-time migration: seed this device's shard from the legacy local store
+      // so existing memories join the synced set.
+      if (!fs.existsSync(memPath)) {
+        if (legacyPath && fs.existsSync(legacyPath)) {
+          try { fs.copyFileSync(legacyPath, memPath) } catch { fs.writeFileSync(memPath, '') }
+        } else {
+          fs.writeFileSync(memPath, '')
+        }
       }
-      // Trim if the file grew past the cap between runs
-      while (entries.length > maxEntries) {
-        const dropped = entries.shift()
-        if (dropped?.hash) seenHashes.delete(dropped.hash)
-      }
+      reloadFrom(shardFiles())
     } else {
-      fs.writeFileSync(memPath, '')
+      memPath = legacyPath
+      if (fs.existsSync(memPath)) reloadFrom([memPath])
+      else fs.writeFileSync(memPath, '')
     }
   } catch (err) {
-    // Real failure — disk unwritable, perms broken, etc. memPath -> null
-    // means subsequent writes silently disappear, which is data loss for
-    // the user's swarm context. Worth surfacing.
+    // Real failure — disk unwritable, perms broken, sync folder gone, etc.
+    // memPath -> null means subsequent writes silently disappear (data loss for
+    // the user's context). Worth surfacing.
     recordSwarmError('swarmMemory.init.failed', err, { memPath })
     memPath = null
   }
@@ -96,8 +191,14 @@ export function initSwarmMemory(userDataPath: string): void {
 
 export function _resetForTests(): void {
   memPath = null
+  userDataDir = null
+  legacyPath = null
+  deviceId = ''
+  syncDir = null
   entries.length = 0
   seenHashes.clear()
+  tombstones.clear()
+  clearEpoch = 0
   seq = 0
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
@@ -271,9 +372,72 @@ export function memoryCount(): number {
 
 export function memoryClear(): void {
   entries.length = 0
-  if (memPath) {
+  seenHashes.clear()
+  if (!memPath) return
+  if (syncDir) {
+    // Propagating clear: an epoch tombstone so every device drops everything up
+    // to now (truncating the shard would just resurrect from peers on next sync).
+    clearEpoch = Date.now()
+    try { fs.appendFileSync(memPath, JSON.stringify({ clearedBefore: clearEpoch }) + '\n') } catch { /* best effort */ }
+  } else {
     try { fs.writeFileSync(memPath, '') } catch { /* best effort */ }
   }
+}
+
+/** Delete a single entry everywhere — writes a tombstone that propagates via shards. */
+export function memoryDelete(id: string): void {
+  if (!id) return
+  const idx = entries.findIndex((e) => e.id === id)
+  if (idx !== -1) {
+    const [removed] = entries.splice(idx, 1)
+    if (removed?.hash) seenHashes.delete(removed.hash)
+  }
+  tombstones.add(id)
+  if (memPath) {
+    try { fs.appendFileSync(memPath, JSON.stringify({ deleted: id }) + '\n') } catch { /* best effort */ }
+  }
+}
+
+// ---- Cross-machine sync control ----
+
+export interface SyncStatus {
+  syncing: boolean
+  dir: string | null
+  deviceId: string
+  devices: number // shard files in the sync folder (≈ machines sharing this brain)
+  count: number
+}
+
+/** Re-read all shards to pick up entries synced from other devices. No-op when local-only. */
+export function reloadMemoryFromSync(): void {
+  if (!syncDir) return
+  reloadFrom(shardFiles())
+}
+
+export function getSyncStatus(): SyncStatus {
+  let devices = 0
+  if (syncDir) {
+    try { devices = fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).length } catch { devices = 0 }
+  }
+  return { syncing: !!syncDir, dir: syncDir, deviceId, devices, count: entries.length }
+}
+
+// Turn cross-machine sync on (point at a synced folder) or off (null = local-only).
+// Persists the choice and re-initialises from the new location.
+export function setSyncDir(dir: string | null): SyncStatus {
+  if (!userDataDir) throw new Error('setSyncDir: memory not initialised')
+  const clean = dir && dir.trim() ? path.resolve(dir.trim()) : null
+  // Turning sync OFF: snapshot the current (unioned) memories into the local
+  // store so we don't appear to lose everything synced from peers.
+  if (!clean && syncDir && legacyPath) {
+    try {
+      const snap = entries.map((e) => JSON.stringify(e)).join('\n')
+      fs.writeFileSync(legacyPath, snap ? snap + '\n' : '')
+    } catch { /* best effort */ }
+  }
+  writeSyncConfig(userDataDir, clean)
+  initSwarmMemory(userDataDir, { syncDir: clean })
+  return getSyncStatus()
 }
 
 // ---- Embedding helper ----
