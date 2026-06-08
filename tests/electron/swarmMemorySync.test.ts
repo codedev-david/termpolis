@@ -321,3 +321,17 @@ describe('cross-machine sync — at-rest encryption', () => {
     expect(() => setSyncPassphrase('   ')).toThrow(/passphrase required/)
   })
 })
+
+describe('cross-machine sync — packed-vector reconstruction on snapshot', () => {
+  it('turning sync off reconstructs packed EMBED_DIM vectors into the local store', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    const vec = new Array(384).fill(0)
+    vec[42] = 1
+    _setEmbedFnForTests(async () => vec) // 384-dim → gets packed (number[] dropped from the stored entry)
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'packed-and-synced' })
+    setSyncDir(null) // snapshots the unioned set back to the local file
+    const legacy = fs.readFileSync(path.join(userDir, 'swarm-memory.jsonl'), 'utf8')
+    expect(legacy).toContain('packed-and-synced')
+    expect(legacy).toContain('"embedding"') // the vector was reconstructed from the store, not lost
+  })
+})

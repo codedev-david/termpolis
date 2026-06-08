@@ -2,8 +2,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
-import { embedText } from './localEmbedder'
+import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
+import { VectorStore } from './vectorStore'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -33,12 +34,14 @@ export interface MemorySearchResult extends MemoryEntry {
 
 // Semantic-search window kept hot in memory. The durable JSONL on disk is
 // append-only and retains everything written; this only caps how many of the
-// most-recent chunks stay loaded for vector/keyword search, to bound RAM
-// (~3 KB per embedded chunk). 50k chunks is months-to-years of real usage.
-// Configurable for tests. (True-unbounded semantic recall over an arbitrarily
-// large corpus would need an on-disk ANN index — a deliberate future native-dep
-// decision; keyword recall already degrades gracefully.)
-const DEFAULT_MAX_ENTRIES = 50_000
+// most-recent chunks stay loaded for vector/keyword search, to bound RAM.
+// Embeddings now live in a packed Float32Array (~1.5 KB/chunk — half the old
+// per-entry number[] cost; see vectorStore.ts), so the window can be larger for
+// the same memory: 100k chunks is years of real usage. Configurable for tests.
+// (A truly-unbounded corpus would want an on-disk HNSW/ANN index — the planned
+// next step, for which this packed store is the foundation. Keyword recall
+// degrades gracefully regardless.)
+const DEFAULT_MAX_ENTRIES = 100_000
 let maxEntries = DEFAULT_MAX_ENTRIES
 const MAX_CONTENT = 16 * 1024      // cap per-entry content size
 const MAX_EMBEDDING_DIM = 1024
@@ -58,6 +61,13 @@ let embeddingsAvailable: boolean | null = null  // cached probe result
 let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
 let encKey: Buffer | null = null      // AES key for at-rest shard encryption (null = plaintext)
 let lockedShards = false              // encrypted shards present that we couldn't read (need passphrase)
+// Packed vector index: real (EMBED_DIM) embeddings live in one Float32Array
+// instead of per-entry number[] (the memory win), with bidirectional maps to the
+// owning entry. Non-EMBED_DIM vectors (tests/legacy) stay as number[] on the
+// entry and use the exact per-object path, so behaviour there is unchanged.
+let vectorStore = new VectorStore(EMBED_DIM)
+const rowToEntry = new Map<number, MemoryEntry>()    // store row → live entry
+const entryRow = new WeakMap<MemoryEntry, number>()  // live entry → store row
 
 // ---- Init / persistence ----
 //
@@ -153,6 +163,7 @@ function reloadFrom(paths: string[]): void {
     const dropped = entries.shift()
     if (dropped?.hash) seenHashes.delete(dropped.hash)
   }
+  rebuildVectorIndex()
 }
 
 export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string | null } = {}): void {
@@ -218,6 +229,8 @@ export function _resetForTests(): void {
   clearEpoch = 0
   encKey = null
   lockedShards = false
+  vectorStore = new VectorStore(EMBED_DIM)
+  rowToEntry.clear()
   seq = 0
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
@@ -277,14 +290,26 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     if (emb) entry.embedding = emb
   } catch { /* ignore */ }
 
-  entries.push(entry)
-  if (entry.hash) seenHashes.add(entry.hash)
+  persist(entry) // disk gets the full entry incl. embedding, BEFORE we pack it
+
+  // Keep a lean copy in the hot window: its EMBED_DIM vector moves to the packed
+  // store and the number[] is freed (the memory win). Return the ORIGINAL (with
+  // embedding) so the write contract still exposes it.
+  const stored: MemoryEntry = { ...entry }
+  indexEntryVector(stored)
+  entries.push(stored)
+  if (stored.hash) seenHashes.add(stored.hash)
   if (entries.length > maxEntries) {
     const dropped = entries.shift()
-    if (dropped?.hash) seenHashes.delete(dropped.hash)
+    if (dropped) {
+      if (dropped.hash) seenHashes.delete(dropped.hash)
+      const r = entryRow.get(dropped)
+      if (r !== undefined) rowToEntry.delete(r) // its packed row is now dead
+    }
   }
+  // Trims leave orphaned vectors behind; rebuild from disk once they pile up.
+  if (vectorStore.size - rowToEntry.size > maxEntries) reloadFrom(shardFiles())
 
-  persist(entry)
   return entry
 }
 
@@ -303,6 +328,42 @@ function appendShardLine(raw: string, ctx: string): void {
 
 function persist(entry: MemoryEntry): void {
   appendShardLine(JSON.stringify(entry), entry.id)
+}
+
+// ---- Packed vector index helpers ----
+
+// Move a real (EMBED_DIM) embedding into the packed store and free the number[]
+// from RAM. Non-EMBED_DIM vectors are left on the entry for the per-object path.
+function indexEntryVector(entry: MemoryEntry): void {
+  if (!entry.embedding || entry.embedding.length !== EMBED_DIM) return
+  const row = vectorStore.add(entry.embedding)
+  if (row < 0) return
+  rowToEntry.set(row, entry)
+  entryRow.set(entry, row)
+  delete entry.embedding
+}
+
+// Rebuild the packed store from the current hot window (after reload/trim/clear).
+function rebuildVectorIndex(): void {
+  vectorStore = new VectorStore(EMBED_DIM)
+  rowToEntry.clear()
+  for (const e of entries) indexEntryVector(e)
+}
+
+// Serialize an entry for disk, reconstructing its embedding from the packed store
+// when it was moved there — so snapshots/exports never lose a vector.
+function serializeEntry(e: MemoryEntry): string {
+  const row = entryRow.get(e)
+  if (row === undefined) return JSON.stringify(e)
+  const v = vectorStore.get(row)
+  return JSON.stringify(v ? { ...e, embedding: Array.from(v) } : e)
+}
+
+function passesFilter(e: MemoryEntry, opts: SearchOptions): boolean {
+  if (opts.agentId && e.agentId !== opts.agentId) return false
+  if (opts.kind && e.kind !== opts.kind) return false
+  if (opts.taskId && e.taskId !== opts.taskId) return false
+  return true
 }
 
 // ---- Search ----
@@ -332,13 +393,27 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
 
   const scored: MemorySearchResult[] = []
   if (queryEmb) {
+    // Fast path: packed Float32 store for real EMBED_DIM vectors — a tight,
+    // cache-friendly scan over half-the-memory storage (HNSW will make it
+    // sub-linear). Exact cosine, since stored vectors are normalized.
+    if (queryEmb.length === EMBED_DIM && vectorStore.size > 0) {
+      const allow = (row: number): boolean => {
+        const e = rowToEntry.get(row)
+        return e ? passesFilter(e, opts) : false
+      }
+      for (const h of vectorStore.searchTopK(queryEmb, limit, allow)) {
+        const e = rowToEntry.get(h.row)
+        if (e) scored.push({ ...e, score: h.score })
+      }
+    }
+    // Legacy path: entries still holding a number[] embedding (non-EMBED_DIM,
+    // e.g. tests). An entry is in exactly one of the two paths — never both.
     for (const entry of pool) {
       if (!entry.embedding || entry.embedding.length !== queryEmb.length) continue
-      const score = cosineSimilarity(queryEmb, entry.embedding)
-      scored.push({ ...entry, score })
+      scored.push({ ...entry, score: cosineSimilarity(queryEmb, entry.embedding) })
     }
-    // If we didn't score anything via embeddings (entries were written before
-    // the embedder was ready), mix in keyword-only matches as a safety net.
+    // Nothing scored via vectors (entries written before the embedder was ready)
+    // → keyword safety net.
     if (scored.length === 0) {
       for (const entry of pool) scored.push({ ...entry, score: keywordScore(opts.query, entry.content) })
     }
@@ -398,6 +473,8 @@ export function memoryCount(): number {
 export function memoryClear(): void {
   entries.length = 0
   seenHashes.clear()
+  vectorStore = new VectorStore(EMBED_DIM)
+  rowToEntry.clear()
   if (!memPath) return
   if (syncDir) {
     // Propagating clear: an epoch tombstone so every device drops everything up
@@ -415,7 +492,11 @@ export function memoryDelete(id: string): void {
   const idx = entries.findIndex((e) => e.id === id)
   if (idx !== -1) {
     const [removed] = entries.splice(idx, 1)
-    if (removed?.hash) seenHashes.delete(removed.hash)
+    if (removed) {
+      if (removed.hash) seenHashes.delete(removed.hash)
+      const r = entryRow.get(removed)
+      if (r !== undefined) rowToEntry.delete(r)
+    }
   }
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete')
@@ -555,7 +636,7 @@ export function setSyncDir(dir: string | null): SyncStatus {
   // store so we don't appear to lose everything synced from peers.
   if (!clean && syncDir && legacyPath) {
     try {
-      const snap = entries.map((e) => JSON.stringify(e)).join('\n')
+      const snap = entries.map(serializeEntry).join('\n')
       fs.writeFileSync(legacyPath, snap ? snap + '\n' : '')
     } catch { /* best effort */ }
   }

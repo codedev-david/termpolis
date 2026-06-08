@@ -17,6 +17,7 @@ import {
   memoryList,
   memoryCount,
   memoryClear,
+  memoryDelete,
   memoryHasHash,
   memoryStats,
   _resetForTests,
@@ -397,7 +398,7 @@ describe('ring buffer cap', () => {
   })
 
   it('defaults to a large semantic window', () => {
-    expect(memoryStats().capacity).toBe(50_000)
+    expect(memoryStats().capacity).toBe(100_000)
   })
 })
 
@@ -467,5 +468,70 @@ describe('swarm error reporting', () => {
     // Embedding failure goes to its own catch with no telemetry — explicit
     // design choice (embedder-not-ready is expected, not a bug).
     expect(mockRecordSwarmError).not.toHaveBeenCalled()
+  })
+})
+
+// Inject a deterministic EMBED_DIM (384) unit vector so entries take the packed
+// fast path without needing the real model. cos(vec(a), vec(b)) = 1 if a===b else 0.
+const vec384 = (seed: number): number[] => {
+  const v = new Array(384).fill(0)
+  v[((seed % 384) + 384) % 384] = 1
+  return v
+}
+
+describe('packed vector index (memory-win integration)', () => {
+  it('packs EMBED_DIM embeddings into the store, frees the number[] on stored entries, still searchable', async () => {
+    _setEmbedFnForTests(async () => vec384(0))
+    const written = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'packed me' })
+    expect(written.embedding).toBeTruthy()              // returned entry keeps it (write contract)
+    expect(written.embedding!.length).toBe(384)
+    expect(memoryList()[0].embedding).toBeUndefined()   // …but the stored hot-window entry dropped it
+    const hits = await memorySearch({ query: 'anything' })
+    expect(hits.some((h) => h.content === 'packed me')).toBe(true)
+  })
+
+  it('ranks the nearest packed vector first', async () => {
+    _setEmbedFnForTests(async (t) => (t.includes('auth') ? vec384(1) : vec384(2)))
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'about auth tokens' })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'about pizza' })
+    _setEmbedFnForTests(async () => vec384(1)) // query aligned with the 'auth' vector
+    const hits = await memorySearch({ query: 'q', limit: 2 })
+    expect(hits[0].content).toBe('about auth tokens')
+  })
+
+  it('applies agent/kind filters on the packed fast path', async () => {
+    _setEmbedFnForTests(async () => vec384(3))
+    await memoryWrite({ agentId: 'alice', kind: 'fact', content: 'alice fact' })
+    await memoryWrite({ agentId: 'bob', kind: 'fact', content: 'bob fact' })
+    _setEmbedFnForTests(async () => vec384(3))
+    const hits = await memorySearch({ query: 'q', agentId: 'bob' })
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every((h) => h.agentId === 'bob')).toBe(true)
+  })
+
+  it('reconstructs packed vectors on reload so nothing is lost', async () => {
+    _setEmbedFnForTests(async () => vec384(5))
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'survive reload' })
+    _resetForTests()
+    _setEmbedFnForTests(async () => vec384(5))
+    initSwarmMemory(tmpDir) // re-reads JSONL (kept the embedding) → re-packs
+    const hits = await memorySearch({ query: 'q' })
+    expect(hits.some((h) => h.content === 'survive reload')).toBe(true)
+  })
+
+  it('drops a packed entry from search after delete', async () => {
+    _setEmbedFnForTests(async () => vec384(7))
+    const w = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'delete this packed' })
+    memoryDelete(w.id)
+    _setEmbedFnForTests(async () => vec384(7))
+    const hits = await memorySearch({ query: 'q' })
+    expect(hits.some((h) => h.content === 'delete this packed')).toBe(false)
+  })
+
+  it('leaves non-EMBED_DIM (small) vectors on the legacy per-object path', async () => {
+    _setEmbedFnForTests(async () => [1, 0, 0]) // 3-dim, not EMBED_DIM
+    const w = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'small vec' })
+    expect(w.embedding).toEqual([1, 0, 0])
+    expect(memoryList()[0].embedding).toEqual([1, 0, 0]) // not packed → stays on the entry
   })
 })
