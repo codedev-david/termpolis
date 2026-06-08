@@ -5,6 +5,7 @@ import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
+import { HnswIndex } from './hnswIndex'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -68,6 +69,13 @@ let lockedShards = false              // encrypted shards present that we couldn
 let vectorStore = new VectorStore(EMBED_DIM)
 const rowToEntry = new Map<number, MemoryEntry>()    // store row → live entry
 const entryRow = new WeakMap<MemoryEntry, number>()  // live entry → store row
+// HNSW graph for sub-linear search once the store is large. Below the threshold,
+// the exact brute-force scan over the packed store is already fast, so we don't
+// bother. The graph is built LAZILY + YIELDED on first search (never at startup,
+// so it can't reintroduce a launch freeze) and kept fresh incrementally on write.
+let hnsw: HnswIndex | null = null
+let hnswStale = false
+let hnswThreshold = 50_000
 
 // ---- Init / persistence ----
 //
@@ -231,6 +239,9 @@ export function _resetForTests(): void {
   lockedShards = false
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
+  hnsw = null
+  hnswStale = false
+  hnswThreshold = 50_000
   seq = 0
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
@@ -239,6 +250,10 @@ export function _resetForTests(): void {
 
 export function _setMaxEntriesForTests(n: number): void {
   maxEntries = n
+}
+
+export function _setHnswThresholdForTests(n: number): void {
+  hnswThreshold = n
 }
 
 /** True if a chunk with this content hash is already stored (idempotent ingest). */
@@ -341,13 +356,33 @@ function indexEntryVector(entry: MemoryEntry): void {
   rowToEntry.set(row, entry)
   entryRow.set(entry, row)
   delete entry.embedding
+  if (hnsw && !hnswStale) hnsw.add(row)                        // keep the graph fresh incrementally
+  else if (vectorStore.size >= hnswThreshold) hnswStale = true // crossed the threshold → (re)build on next search
 }
 
 // Rebuild the packed store from the current hot window (after reload/trim/clear).
 function rebuildVectorIndex(): void {
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
+  hnsw = null
   for (const e of entries) indexEntryVector(e)
+  hnswStale = vectorStore.size >= hnswThreshold
+}
+
+// Build the HNSW graph lazily, yielding to the event loop between batches so a
+// large build never freezes the app (it runs inside the async search path, never
+// at startup). No-op below the threshold or when already fresh.
+async function ensureHnsw(): Promise<void> {
+  if (vectorStore.size < hnswThreshold) { hnsw = null; hnswStale = false; return }
+  if (hnsw && !hnswStale) return
+  const idx = new HnswIndex((r) => vectorStore.get(r))
+  let n = 0
+  for (const row of rowToEntry.keys()) {
+    idx.add(row)
+    if (++n % 1000 === 0) await new Promise<void>((r) => setImmediate(r))
+  }
+  hnsw = idx
+  hnswStale = false
 }
 
 // Serialize an entry for disk, reconstructing its embedding from the packed store
@@ -397,11 +432,15 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     // cache-friendly scan over half-the-memory storage (HNSW will make it
     // sub-linear). Exact cosine, since stored vectors are normalized.
     if (queryEmb.length === EMBED_DIM && vectorStore.size > 0) {
+      await ensureHnsw() // builds the graph (yielded) only when large + stale
       const allow = (row: number): boolean => {
         const e = rowToEntry.get(row)
         return e ? passesFilter(e, opts) : false
       }
-      for (const h of vectorStore.searchTopK(queryEmb, limit, allow)) {
+      let hits: { row: number; score: number }[] = []
+      if (hnsw) { try { hits = hnsw.search(queryEmb, limit, allow) } catch { hits = [] } }
+      if (hits.length === 0) hits = vectorStore.searchTopK(queryEmb, limit, allow) // exact brute-force fallback
+      for (const h of hits) {
         const e = rowToEntry.get(h.row)
         if (e) scored.push({ ...e, score: h.score })
       }
@@ -475,6 +514,8 @@ export function memoryClear(): void {
   seenHashes.clear()
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
+  hnsw = null
+  hnswStale = false
   if (!memPath) return
   if (syncDir) {
     // Propagating clear: an epoch tombstone so every device drops everything up

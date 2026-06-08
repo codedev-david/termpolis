@@ -24,6 +24,7 @@ import {
   _setEmbeddingsAvailable,
   _setEmbedFnForTests,
   _setMaxEntriesForTests,
+  _setHnswThresholdForTests,
 } from '../../src/main/swarmMemory'
 
 // Each test gets its own temp directory so persistence between runs can be
@@ -533,5 +534,40 @@ describe('packed vector index (memory-win integration)', () => {
     const w = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'small vec' })
     expect(w.embedding).toEqual([1, 0, 0])
     expect(memoryList()[0].embedding).toEqual([1, 0, 0]) // not packed → stays on the entry
+  })
+})
+
+describe('HNSW acceleration (large-store path)', () => {
+  it('builds the HNSW graph above the threshold and returns correct results', async () => {
+    _setHnswThresholdForTests(4) // build the graph after just a few vectors
+    let i = 0
+    _setEmbedFnForTests(async (t) => (t.includes('target') ? vec384(1) : vec384(50 + i++)))
+    for (let n = 0; n < 8; n++) await memoryWrite({ agentId: 'a', kind: 'fact', content: `noise ${n}` })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'the target fact' })
+    _setEmbedFnForTests(async () => vec384(1)) // exact match with the target
+    const hits = await memorySearch({ query: 'q', limit: 3 })
+    expect(hits.some((h) => h.content === 'the target fact')).toBe(true)
+  })
+
+  it('excludes a deleted entry from HNSW search via the allow filter', async () => {
+    _setHnswThresholdForTests(3)
+    let i = 0
+    _setEmbedFnForTests(async () => vec384(20 + i++))
+    for (let n = 0; n < 5; n++) await memoryWrite({ agentId: 'a', kind: 'fact', content: `v${n}` })
+    const doomed = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'doomed' }) // vec384(25)
+    memoryDelete(doomed.id)
+    _setEmbedFnForTests(async () => vec384(25)) // query for the now-deleted vector
+    const hits = await memorySearch({ query: 'q', limit: 5 })
+    expect(hits.some((h) => h.content === 'doomed')).toBe(false)
+  })
+
+  it('stays on exact brute-force below the threshold (no graph built)', async () => {
+    _setHnswThresholdForTests(1_000_000) // effectively never build
+    _setEmbedFnForTests(async (t) => (t.includes('match') ? vec384(2) : vec384(99)))
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'a match here' })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'unrelated' })
+    _setEmbedFnForTests(async () => vec384(2))
+    const hits = await memorySearch({ query: 'q', limit: 1 })
+    expect(hits[0].content).toBe('a match here')
   })
 })
