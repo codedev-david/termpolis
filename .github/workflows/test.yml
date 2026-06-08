@@ -110,6 +110,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Download bundled embedding model
         run: bash scripts/download-embedding-model.sh
+      # Un-gates semantic recall in CI: with the real model now on disk
+      # (resources/models), the skipIf(!hasBundledModel) tests RUN here and prove
+      # real-embedding cross-agent recall — the plain unit jobs lack the model.
+      - name: Real-embedding semantic recall (model present)
+        run: npx vitest run tests/electron/localEmbedder.test.ts tests/electron/bertTokenizer.test.ts tests/electron/memorySemanticRecall.test.ts --reporter=verbose
       - name: Build app
         run: npx electron-vite build
       - name: Package (unpacked, no installer, no signing)
@@ -176,6 +181,11 @@ jobs:
       # inject-primer path responds — in the real Electron app.
       - name: Memory panel flow
         run: xvfb-run --auto-servernum npx playwright test e2e/memory-panel.spec.ts
+      # Cross-agent recall gate: proves one agent's memory_write is retrievable
+      # by another agent via memory_search over the REAL MCP wire (HTTP + auth +
+      # dispatch + shared store) in the running app.
+      - name: Cross-agent memory recall over MCP
+        run: xvfb-run --auto-servernum npx playwright test e2e/memory-cross-agent-recall.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

@@ -389,4 +389,27 @@ describe('SettingsPane', () => {
       expect(screen.getByTestId('settings-tab-keybindings').className).toMatch(/border-\[#0078d4\]/)
     })
   })
+
+  it('auto-primer toggle defaults ON and persists "0" when switched off', () => {
+    localStorage.removeItem('termpolis.memory.autoPrimerOnLaunch')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-auto-primer-toggle')
+    // default ON → first click turns it OFF
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.memory.autoPrimerOnLaunch')).toBe('0')
+    // click again → back ON
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.memory.autoPrimerOnLaunch')).toBe('1')
+    localStorage.removeItem('termpolis.memory.autoPrimerOnLaunch')
+  })
+
+  it('auto-primer toggle reflects a stored opt-out on mount', () => {
+    localStorage.setItem('termpolis.memory.autoPrimerOnLaunch', '0')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-auto-primer-toggle')
+    // stored OFF → first click turns it ON
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.memory.autoPrimerOnLaunch')).toBe('1')
+    localStorage.removeItem('termpolis.memory.autoPrimerOnLaunch')
+  })
 })

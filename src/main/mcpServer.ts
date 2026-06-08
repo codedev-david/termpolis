@@ -260,7 +260,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_write',
-    description: 'Write a fact, decision, or result into the shared swarm memory so other agents can retrieve it later via memory_search. Use this for anything another agent would benefit from knowing.',
+    description: 'Write a fact, decision, or result into Termpolis shared persistent memory — a local brain shared across ALL your AI agents (Claude, Codex, Gemini, Qwen) and your past sessions. Anything stored here can be recalled later via memory_search by you or any other agent. Use it for decisions, conventions, architecture/file notes, and anything worth remembering across terminals and sessions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -275,7 +275,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_search',
-    description: 'Retrieve entries from the shared swarm memory that are relevant to a query. Uses local offline semantic vector search, falling back to keyword matching when the embedding model is unavailable.',
+    description: 'Retrieve relevant entries from Termpolis shared persistent memory — the local brain shared across ALL your AI agents and your past sessions. Call this at the START of a task to recall prior decisions, conventions, context, and code, so you never re-derive what another agent or an earlier session already worked out. Uses local offline semantic vector search, falling back to keyword matching when the embedding model is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -290,7 +290,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_list',
-    description: 'List recent entries from the shared swarm memory without semantic scoring. Useful for scanning the last N writes.',
+    description: 'List the most recent entries from Termpolis shared persistent memory (shared across all your AI agents and past sessions) without semantic scoring. Useful for scanning the last N writes.',
     inputSchema: {
       type: 'object',
       properties: {

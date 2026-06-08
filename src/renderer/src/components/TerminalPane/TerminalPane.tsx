@@ -24,6 +24,7 @@ import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
+import { useAutoPrimer } from '../../hooks/useAutoPrimer'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
 import { useContextLimit } from '../../hooks/useContextLimit'
 import type { ShellType } from '../../types'
@@ -87,6 +88,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const completion = useCompletionDropdown(terminalId, containerRef, inputBufferRef)
   const agent = useAgentDetection()
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
+  // Seed a launched agent with recalled context (opt-out in Settings).
+  useAutoPrimer(terminalId, agent.detectedAgent, cwd)
   const recording = useSessionRecording(terminalName, shellType)
   const contextLimit = useContextLimit(
     cwd,

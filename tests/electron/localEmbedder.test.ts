@@ -11,6 +11,7 @@ import {
   _setOrtForTests,
   _resetEmbedderForTests,
 } from '../../src/main/localEmbedder'
+import { hasBundledModel } from './_modelFixture'
 
 beforeEach(() => {
   _resetEmbedderForTests()
@@ -258,13 +259,9 @@ describe('localEmbedder real load path (fake ort)', () => {
 })
 
 // ---- Real native-free backend (onnxruntime-web WASM + BertTokenizer).
-// Runs where the bge model cache exists; skipped in offline CI. ----
-const cacheDir = path.join(
-  process.cwd(), 'node_modules', '@huggingface', 'transformers', '.cache', 'Xenova', 'bge-small-en-v1.5',
-)
-const hasModel = fs.existsSync(path.join(cacheDir, 'tokenizer.json'))
-
-describe.skipIf(!hasModel)('localEmbedder real native-free backend', () => {
+// Runs where the bge model is present (dev cache OR CI package-verify's
+// downloaded resources/models); skipped in the plain unit jobs. ----
+describe.skipIf(!hasBundledModel)('localEmbedder real native-free backend', () => {
   it('embeds with the real model: 384-dim + correct semantic ranking', async () => {
     _resetEmbedderForTests() // no injected backend → loads the real model
     const auth = await embedText('the authentication middleware validates jwt tokens')

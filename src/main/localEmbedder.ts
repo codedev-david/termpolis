@@ -123,6 +123,11 @@ function markFailed(): null {
 function resolveAssetDir(): string | undefined {
   const candidates: string[] = []
   if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'models', MODEL_DIR_NAME))
+  // The repo-relative bundling source (scripts/download-embedding-model.sh
+  // target). Lets the REAL backend load without a packaged app — in dev and,
+  // crucially, in CI's package-verify job where the model is downloaded here.
+  candidates.push(path.join(process.cwd(), 'resources', 'models', MODEL_DIR_NAME))
+  // transformers.js dev download cache (present on machines that ran model prep).
   candidates.push(
     path.join(process.cwd(), 'node_modules', '@huggingface', 'transformers', '.cache', 'Xenova', MODEL_DIR_NAME),
   )
