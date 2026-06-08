@@ -3,6 +3,7 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
 import { embedText } from './localEmbedder'
+import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -55,6 +56,8 @@ let clearEpoch = 0                    // epoch tombstone: entries with ts <= thi
 let seq = 0
 let embeddingsAvailable: boolean | null = null  // cached probe result
 let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
+let encKey: Buffer | null = null      // AES key for at-rest shard encryption (null = plaintext)
+let lockedShards = false              // encrypted shards present that we couldn't read (need passphrase)
 
 // ---- Init / persistence ----
 //
@@ -69,6 +72,8 @@ let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
 
 const SYNC_CONFIG_FILE = 'memory-sync.json'
 const DEVICE_ID_FILE = 'device-id'
+const SALT_FILE = '.termpolis-salt'      // lives in the SYNC folder — shared across devices, not secret
+const KEY_CACHE_FILE = 'memory-sync.key' // lives in userData — LOCAL to this device, never synced
 
 function loadOrCreateDeviceId(dir: string): string {
   const p = path.join(dir, DEVICE_ID_FILE)
@@ -104,8 +109,14 @@ function shardFiles(): string[] {
 function parseShardLine(line: string, adds: MemoryEntry[]): void {
   const s = line.trim()
   if (!s) return
+  let plain: string = s
+  if (isEncryptedLine(s)) {
+    const dec = encKey ? decryptLine(encKey, s) : null
+    if (dec === null) { lockedShards = true; return } // no key / wrong key → can't read this entry
+    plain = dec
+  }
   let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown }
-  try { obj = JSON.parse(s) } catch { return /* skip malformed line */ }
+  try { obj = JSON.parse(plain) } catch { return /* skip malformed line */ }
   if (!obj || typeof obj !== 'object') return
   if (typeof obj.deleted === 'string') { tombstones.add(obj.deleted); return }
   if (typeof obj.clearedBefore === 'number') { if (obj.clearedBefore > clearEpoch) clearEpoch = obj.clearedBefore; return }
@@ -120,6 +131,7 @@ function reloadFrom(paths: string[]): void {
   seenHashes.clear()
   tombstones.clear()
   clearEpoch = 0
+  lockedShards = false
   const adds: MemoryEntry[] = []
   for (const p of paths) {
     let raw: string
@@ -158,6 +170,8 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   seenHashes.clear()
   tombstones.clear()
   clearEpoch = 0
+  lockedShards = false
+  encKey = null
   seq = 0
   embeddingsAvailable = null
 
@@ -174,6 +188,9 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
           fs.writeFileSync(memPath, '')
         }
       }
+      // Load this device's locally-cached encryption key (if the user enabled
+      // encryption previously) so reloadFrom can decrypt — auto-unlocks on launch.
+      encKey = loadCachedKey()
       reloadFrom(shardFiles())
     } else {
       memPath = legacyPath
@@ -199,6 +216,8 @@ export function _resetForTests(): void {
   seenHashes.clear()
   tombstones.clear()
   clearEpoch = 0
+  encKey = null
+  lockedShards = false
   seq = 0
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
@@ -269,15 +288,21 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   return entry
 }
 
-function persist(entry: MemoryEntry): void {
+// Append one raw JSON line to this device's shard, encrypting it at rest when a
+// key is set. Best-effort: a write failure is surfaced but never thrown.
+function appendShardLine(raw: string, ctx: string): void {
   if (!memPath) return
   try {
-    fs.appendFileSync(memPath, JSON.stringify(entry) + '\n')
+    fs.appendFileSync(memPath, (encKey ? encryptLine(encKey, raw) : raw) + '\n')
   } catch (err) {
     // Append failure means this swarm fact never reaches disk — agents
     // will lose context on next launch. Surface it.
-    recordSwarmError('swarmMemory.persist.failed', err, { entryId: entry.id })
+    recordSwarmError('swarmMemory.persist.failed', err, { entryId: ctx })
   }
+}
+
+function persist(entry: MemoryEntry): void {
+  appendShardLine(JSON.stringify(entry), entry.id)
 }
 
 // ---- Search ----
@@ -378,7 +403,7 @@ export function memoryClear(): void {
     // Propagating clear: an epoch tombstone so every device drops everything up
     // to now (truncating the shard would just resurrect from peers on next sync).
     clearEpoch = Date.now()
-    try { fs.appendFileSync(memPath, JSON.stringify({ clearedBefore: clearEpoch }) + '\n') } catch { /* best effort */ }
+    appendShardLine(JSON.stringify({ clearedBefore: clearEpoch }), 'clear')
   } else {
     try { fs.writeFileSync(memPath, '') } catch { /* best effort */ }
   }
@@ -393,9 +418,7 @@ export function memoryDelete(id: string): void {
     if (removed?.hash) seenHashes.delete(removed.hash)
   }
   tombstones.add(id)
-  if (memPath) {
-    try { fs.appendFileSync(memPath, JSON.stringify({ deleted: id }) + '\n') } catch { /* best effort */ }
-  }
+  appendShardLine(JSON.stringify({ deleted: id }), 'delete')
 }
 
 // ---- Cross-machine sync control ----
@@ -406,6 +429,8 @@ export interface SyncStatus {
   deviceId: string
   devices: number // shard files in the sync folder (≈ machines sharing this brain)
   count: number
+  encrypted: boolean // this device holds the key and writes ciphertext at rest
+  locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
 }
 
 /** Re-read all shards to pick up entries synced from other devices. No-op when local-only. */
@@ -419,7 +444,106 @@ export function getSyncStatus(): SyncStatus {
   if (syncDir) {
     try { devices = fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).length } catch { devices = 0 }
   }
-  return { syncing: !!syncDir, dir: syncDir, deviceId, devices, count: entries.length }
+  return {
+    syncing: !!syncDir,
+    dir: syncDir,
+    deviceId,
+    devices,
+    count: entries.length,
+    encrypted: encKey !== null,
+    locked: lockedShards,
+  }
+}
+
+// ---- At-rest encryption ----
+//
+// When on, every shard line is AES-256-GCM encrypted under a key derived (scrypt)
+// from the user's passphrase + a per-store salt (the salt lives in the sync
+// folder; the derived key is cached LOCALLY, never synced). The sync provider
+// sees only ciphertext; Termpolis, holding the key, reads it. Plaintext and
+// ciphertext lines coexist, so enabling/disabling never corrupts a store.
+
+function keyCachePath(): string | null { return userDataDir ? path.join(userDataDir, KEY_CACHE_FILE) : null }
+function saltPath(): string | null { return syncDir ? path.join(syncDir, SALT_FILE) : null }
+
+function loadCachedKey(): Buffer | null {
+  const p = keyCachePath()
+  if (!p) return null
+  try {
+    const k = Buffer.from(fs.readFileSync(p, 'utf8').trim(), 'base64')
+    return k.length === 32 ? k : null
+  } catch { return null }
+}
+
+function loadOrCreateSalt(): Buffer {
+  const p = saltPath()
+  if (!p) return newSalt()
+  try {
+    const b = Buffer.from(fs.readFileSync(p, 'utf8').trim(), 'base64')
+    if (b.length === 16) return b
+  } catch { /* create below */ }
+  const s = newSalt()
+  try { fs.writeFileSync(p, s.toString('base64')) } catch { /* best effort */ }
+  return s
+}
+
+// Find one encrypted line across the synced shards, to validate a passphrase.
+function findAnyEncryptedLine(): string | null {
+  for (const f of shardFiles()) {
+    let raw: string
+    try { raw = fs.readFileSync(f, 'utf8') } catch { continue }
+    for (const line of raw.split('\n')) { const s = line.trim(); if (isEncryptedLine(s)) return s }
+  }
+  return null
+}
+
+// Rewrite this device's shard in place, mapping each line's plaintext through
+// `xform`. Lines we can't decrypt are kept verbatim (never dropped).
+function rewriteSelfShard(xform: (plain: string) => string): void {
+  if (!memPath) return
+  let raw: string
+  try { raw = fs.readFileSync(memPath, 'utf8') } catch { return }
+  const out: string[] = []
+  for (const line of raw.split('\n')) {
+    const s = line.trim()
+    if (!s) continue
+    const plain = isEncryptedLine(s) ? (encKey ? decryptLine(encKey, s) : null) : s
+    out.push(plain === null ? s : xform(plain))
+  }
+  try { fs.writeFileSync(memPath, out.length ? out.join('\n') + '\n' : '') } catch { /* best effort */ }
+}
+
+// Enable encryption (first time) OR unlock an already-encrypted store on a new
+// device: derive the key from the passphrase + the store's salt, validate it
+// against any existing ciphertext, cache it locally, (re-)encrypt this device's
+// shard, and reload.
+export function setSyncPassphrase(passphrase: string): SyncStatus {
+  if (!syncDir) throw new Error('setSyncPassphrase: cross-machine sync is not enabled')
+  if (!passphrase || !passphrase.trim()) throw new Error('setSyncPassphrase: passphrase required')
+  const key = deriveKey(passphrase, loadOrCreateSalt())
+  // If the store already holds ciphertext, the passphrase must decrypt it.
+  const sample = findAnyEncryptedLine()
+  if (sample && decryptLine(key, sample) === null) {
+    throw new Error('Incorrect passphrase for the existing encrypted memory.')
+  }
+  encKey = key
+  const p = keyCachePath()
+  if (p) { try { fs.writeFileSync(p, key.toString('base64')) } catch { /* best effort */ } }
+  rewriteSelfShard((plain) => encryptLine(key, plain)) // ciphertext-ify our own shard
+  reloadFrom(shardFiles())
+  return getSyncStatus()
+}
+
+// Turn encryption off: decrypt this device's shard back to plaintext and drop the
+// local key. (Peers stay encrypted until they do the same.)
+export function disableSyncEncryption(): SyncStatus {
+  if (!syncDir) throw new Error('disableSyncEncryption: cross-machine sync is not enabled')
+  if (encKey) rewriteSelfShard((plain) => plain) // decrypts on read, writes plaintext
+  encKey = null
+  const p = keyCachePath()
+  if (p) { try { fs.rmSync(p, { force: true }) } catch { /* best effort */ } }
+  reloadFrom(shardFiles())
+  return getSyncStatus()
 }
 
 // Turn cross-machine sync on (point at a synced folder) or off (null = local-only).

@@ -103,7 +103,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
-  getSyncStatus, setSyncDir, reloadMemoryFromSync,
+  getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   type MemoryEntry,
 } from './swarmMemory'
 import { runConversationIngest } from './conversationIngest'
@@ -945,6 +945,18 @@ ipcMain.handle('memory:choose-sync-dir', async () => {
     if (res.canceled || !res.filePaths[0]) return ok(getSyncStatus())
     return ok(setSyncDir(res.filePaths[0]))
   } catch (e: any) { return err(e.message) }
+})
+
+// At-rest encryption of the synced folder. Set/enter the passphrase (encrypts
+// this device's shard + unlocks peers' encrypted shards); the key is derived
+// locally and never leaves the machine, so the sync provider only sees
+// ciphertext. Returns an error (e.g. wrong passphrase) without throwing.
+ipcMain.handle('memory:set-sync-passphrase', async (_, opts: { passphrase: string }) => {
+  try { return ok(setSyncPassphrase(opts?.passphrase ?? '')) } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('memory:disable-sync-encryption', async () => {
+  try { return ok(disableSyncEncryption()) } catch (e: any) { return err(e.message) }
 })
 
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.

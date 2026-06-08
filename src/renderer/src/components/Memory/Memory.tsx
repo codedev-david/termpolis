@@ -22,6 +22,7 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
   const [sync, setSync] = useState<MemorySyncStatus | null>(null)
+  const [passphrase, setPassphrase] = useState('')
 
   const refreshStats = useCallback(async () => {
     const res = await window.termpolis.memoryStats()
@@ -62,6 +63,41 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
       if (res.success && res.data) {
         setSync(res.data)
         setStatus('Sync turned off — memory is now local to this machine.')
+        await refreshStats()
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [refreshStats])
+
+  const applyPassphrase = useCallback(async () => {
+    const p = passphrase.trim()
+    if (!p) { setStatus('Enter a passphrase first.'); return }
+    setBusy(true)
+    try {
+      const res = await window.termpolis.memorySetSyncPassphrase(p)
+      if (res.success && res.data) {
+        setSync(res.data)
+        setPassphrase('')
+        setStatus(res.data.locked
+          ? 'Some entries are still locked — check the passphrase.'
+          : '🔒 Encrypted — the synced folder now holds only ciphertext.')
+        await refreshStats()
+      } else {
+        setStatus(res.error || 'Could not apply passphrase.')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [passphrase, refreshStats])
+
+  const disableEncryption = useCallback(async () => {
+    setBusy(true)
+    try {
+      const res = await window.termpolis.memoryDisableSyncEncryption()
+      if (res.success && res.data) {
+        setSync(res.data)
+        setStatus('Encryption disabled on this device.')
         await refreshStats()
       }
     } finally {
@@ -244,6 +280,42 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
                 disabled={busy}
                 data-testid="memory-sync-off"
               >Turn off sync (keep memory local)</button>
+
+              {/* At-rest encryption */}
+              {sync.locked ? (
+                <div className="flex flex-col gap-1 mt-1 border-t border-[#3c3c3c] pt-2">
+                  <div className="text-[11px] text-[#FFB74D]"><i className="fa-solid fa-lock mr-1"></i>Encrypted memory found — enter the passphrase to unlock it on this device.</div>
+                  <input
+                    type="password"
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-none focus:border-[#22D3EE]"
+                    placeholder="Passphrase"
+                    value={passphrase}
+                    onChange={(e) => setPassphrase(e.target.value)}
+                    aria-label="Sync passphrase"
+                    data-testid="memory-sync-passphrase"
+                  />
+                  <button className="bg-[#22D3EE] hover:opacity-90 text-[#062a30] rounded px-2 py-1 font-medium cursor-pointer disabled:opacity-50" onClick={() => void applyPassphrase()} disabled={busy} data-testid="memory-sync-unlock">Unlock</button>
+                </div>
+              ) : sync.encrypted ? (
+                <div className="flex flex-col gap-1 mt-1 border-t border-[#3c3c3c] pt-2">
+                  <div className="text-[11px] text-[#7ee2a3]"><i className="fa-solid fa-lock mr-1"></i>Encrypted at rest — the sync provider only sees ciphertext.</div>
+                  <button className="text-[#888] hover:text-[#d4d4d4] text-[11px] text-left cursor-pointer disabled:opacity-50" onClick={() => void disableEncryption()} disabled={busy} data-testid="memory-sync-disable-enc">Disable encryption on this device</button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1 mt-1 border-t border-[#3c3c3c] pt-2">
+                  <div className="text-[11px] text-[#777] leading-relaxed">Encrypt at rest so the sync provider (Dropbox / iCloud) can&apos;t read it. Use the <strong>same passphrase</strong> on every device.</div>
+                  <input
+                    type="password"
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-none focus:border-[#22D3EE]"
+                    placeholder="Passphrase"
+                    value={passphrase}
+                    onChange={(e) => setPassphrase(e.target.value)}
+                    aria-label="Sync passphrase"
+                    data-testid="memory-sync-passphrase"
+                  />
+                  <button className="bg-[#2d2d30] hover:bg-[#37373a] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] cursor-pointer disabled:opacity-50" onClick={() => void applyPassphrase()} disabled={busy} data-testid="memory-sync-encrypt">Encrypt this folder</button>
+                </div>
+              )}
             </>
           ) : (
             <>

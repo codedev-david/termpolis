@@ -21,6 +21,8 @@ import {
   getSyncStatus,
   setSyncDir,
   reloadMemoryFromSync,
+  setSyncPassphrase,
+  disableSyncEncryption,
   _resetForTests,
   _setEmbedFnForTests,
   _setMaxEntriesForTests,
@@ -224,5 +226,98 @@ describe('cross-machine sync — edge cases', () => {
     const contents = memoryList().map((e) => e.content)
     expect(contents).toContain('newest')
     expect(contents).not.toContain('oldest') // trimmed as oldest
+  })
+})
+
+describe('cross-machine sync — at-rest encryption', () => {
+  const selfShardRaw = (): string => fs.readFileSync(path.join(syncDir, shards()[0]), 'utf8')
+
+  it('encrypts this device shard at rest, yet Termpolis still reads it', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'TOPSECRET-rocket-fuel-formula' })
+    const st = setSyncPassphrase('correct horse battery staple')
+    expect(st.encrypted).toBe(true)
+    expect(st.locked).toBe(false)
+    const raw = selfShardRaw()
+    expect(raw).toContain('enc:v1:')             // on-disk is ciphertext
+    expect(raw).not.toContain('TOPSECRET')       // plaintext does NOT leak to the synced file
+    expect(memoryList().some((e) => e.content.includes('TOPSECRET'))).toBe(true) // …but the store reads it
+  })
+
+  it('new writes after encryption are persisted as ciphertext', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    setSyncPassphrase('k')
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'written-after-encrypt' })
+    expect(selfShardRaw()).not.toContain('written-after-encrypt')
+    expect(memoryList().some((e) => e.content === 'written-after-encrypt')).toBe(true)
+  })
+
+  it('a second device with the SAME passphrase reads the encrypted memory', async () => {
+    // Device A encrypts a fact.
+    initSwarmMemory(userDir, { syncDir })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'shared-encrypted-fact' })
+    setSyncPassphrase('p@ss')
+    // Device B: fresh userData, same sync folder, no cached key → locked until unlocked.
+    const userDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-userB-'))
+    try {
+      _resetForTests()
+      _setEmbedFnForTests(async () => null)
+      initSwarmMemory(userDirB, { syncDir })
+      expect(getSyncStatus().locked).toBe(true)
+      expect(memoryList().some((e) => e.content === 'shared-encrypted-fact')).toBe(false)
+      const st = setSyncPassphrase('p@ss') // same passphrase
+      expect(st.locked).toBe(false)
+      expect(memoryList().some((e) => e.content === 'shared-encrypted-fact')).toBe(true)
+    } finally {
+      fs.rmSync(userDirB, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a WRONG passphrase on a device with existing ciphertext', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'x' })
+    setSyncPassphrase('right-one')
+    const userDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-userB2-'))
+    try {
+      _resetForTests()
+      _setEmbedFnForTests(async () => null)
+      initSwarmMemory(userDirB, { syncDir })
+      expect(() => setSyncPassphrase('WRONG')).toThrow(/Incorrect passphrase/)
+    } finally {
+      fs.rmSync(userDirB, { recursive: true, force: true })
+    }
+  })
+
+  it('auto-unlocks on re-init via the locally-cached key (no re-prompt)', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'persist-encrypted' })
+    setSyncPassphrase('remember-me')
+    _resetForTests()
+    _setEmbedFnForTests(async () => null)
+    initSwarmMemory(userDir, { syncDir }) // same device → key cached in userDir
+    const st = getSyncStatus()
+    expect(st.encrypted).toBe(true)
+    expect(st.locked).toBe(false)
+    expect(memoryList().some((e) => e.content === 'persist-encrypted')).toBe(true)
+  })
+
+  it('disabling encryption rewrites the shard back to plaintext', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'plain-again' })
+    setSyncPassphrase('temp')
+    expect(selfShardRaw()).toContain('enc:v1:')
+    const st = disableSyncEncryption()
+    expect(st.encrypted).toBe(false)
+    expect(selfShardRaw()).toContain('plain-again')
+    expect(selfShardRaw()).not.toContain('enc:v1:')
+    expect(memoryList().some((e) => e.content === 'plain-again')).toBe(true)
+  })
+
+  it('encryption helpers require sync to be enabled + a non-empty passphrase', () => {
+    initSwarmMemory(userDir) // local-only
+    expect(() => setSyncPassphrase('x')).toThrow(/not enabled/)
+    expect(() => disableSyncEncryption()).toThrow(/not enabled/)
+    initSwarmMemory(userDir, { syncDir })
+    expect(() => setSyncPassphrase('   ')).toThrow(/passphrase required/)
   })
 })

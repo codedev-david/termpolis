@@ -171,6 +171,8 @@ export interface TermpolisAPI {
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
   memorySetSyncDir: (dir: string | null) => Promise<IpcResponse<MemorySyncStatus>>
   memoryChooseSyncDir: () => Promise<IpcResponse<MemorySyncStatus>>
+  memorySetSyncPassphrase: (passphrase: string) => Promise<IpcResponse<MemorySyncStatus>>
+  memoryDisableSyncEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
 
   // Telemetry — opt-in mirror to main process
   setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
@@ -229,6 +231,8 @@ export interface MemorySyncStatus {
   deviceId: string
   devices: number // shard files in the sync folder (≈ machines sharing this brain)
   count: number
+  encrypted: boolean // this device holds the key and writes ciphertext at rest
+  locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
 }
 
 export interface MemoryWriteInput {

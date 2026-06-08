@@ -13,9 +13,11 @@ beforeEach(() => {
     memoryIngestConversations: vi.fn().mockResolvedValue({ success: true, data: { filesScanned: 3, chunksWritten: 5, chunksSkipped: 1 } }),
     memoryIngestCode: vi.fn().mockResolvedValue({ success: true, data: { filesScanned: 10, filesSkipped: 2, chunksWritten: 20, chunksSkipped: 0 } }),
     memoryBuildPrimer: vi.fn().mockResolvedValue({ success: true, data: 'PRIMER TEXT' }),
-    memorySyncStatus: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 42 } }),
-    memorySetSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 42 } }),
-    memoryChooseSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/Users/me/Dropbox/termpolis-memory', deviceId: 'dev01', devices: 2, count: 42 } }),
+    memorySyncStatus: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 42, encrypted: false, locked: false } }),
+    memorySetSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 42, encrypted: false, locked: false } }),
+    memoryChooseSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/Users/me/Dropbox/termpolis-memory', deviceId: 'dev01', devices: 2, count: 42, encrypted: false, locked: false } }),
+    memorySetSyncPassphrase: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: true, locked: false } }),
+    memoryDisableSyncEncryption: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: false, locked: false } }),
     writeToTerminal: vi.fn(),
   }
   ;(window as unknown as { termpolis: Api }).termpolis = api
@@ -177,5 +179,42 @@ describe('Memory panel', () => {
     await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
     fireEvent.click(screen.getByTestId('memory-sync-choose'))
     expect(await screen.findByText('no folder picked')).toBeInTheDocument()
+  })
+
+  it('encrypts the synced folder with a passphrase', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: false, locked: false } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'hunter2' } })
+    fireEvent.click(screen.getByTestId('memory-sync-encrypt'))
+    await waitFor(() => expect(api.memorySetSyncPassphrase).toHaveBeenCalledWith('hunter2'))
+    expect(await screen.findByText(/holds only ciphertext/i)).toBeInTheDocument()
+  })
+
+  it('warns if you click encrypt without a passphrase', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: false, locked: false } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('memory-sync-encrypt'))
+    expect(await screen.findByText(/Enter a passphrase/i)).toBeInTheDocument()
+    expect(api.memorySetSyncPassphrase).not.toHaveBeenCalled()
+  })
+
+  it('unlocks an encrypted store when locked', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 2, count: 0, encrypted: false, locked: true } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('memory-sync-unlock')).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'p@ss' } })
+    fireEvent.click(screen.getByTestId('memory-sync-unlock'))
+    await waitFor(() => expect(api.memorySetSyncPassphrase).toHaveBeenCalledWith('p@ss'))
+  })
+
+  it('disables encryption when already encrypted', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: true, locked: false } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('memory-sync-disable-enc')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('memory-sync-disable-enc'))
+    await waitFor(() => expect(api.memoryDisableSyncEncryption).toHaveBeenCalled())
+    expect(await screen.findByText(/Encryption disabled/i)).toBeInTheDocument()
   })
 })

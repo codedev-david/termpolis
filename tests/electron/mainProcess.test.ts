@@ -3016,4 +3016,26 @@ describe('memory cross-machine sync handlers', () => {
       fs.rmSync(picked, { recursive: true, force: true })
     }
   })
+
+  it('memory:set-sync-passphrase then disable-sync-encryption round-trip', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-enc-'))
+    try {
+      await invokeHandler('memory:set-sync-dir', { dir })
+      const enc = await invokeHandler('memory:set-sync-passphrase', { passphrase: 'mp-secret' })
+      expect(enc.success).toBe(true)
+      expect(enc.data.encrypted).toBe(true)
+      const dis = await invokeHandler('memory:disable-sync-encryption')
+      expect(dis.success).toBe(true)
+      expect(dis.data.encrypted).toBe(false)
+    } finally {
+      await invokeHandler('memory:set-sync-dir', { dir: null })
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('memory:set-sync-passphrase returns an error (no crash) when sync is off', async () => {
+    await invokeHandler('memory:set-sync-dir', { dir: null })
+    const res = await invokeHandler('memory:set-sync-passphrase', { passphrase: 'x' })
+    expect(res.success).toBe(false) // setSyncPassphrase throws "not enabled" → handler maps to err
+  })
 })

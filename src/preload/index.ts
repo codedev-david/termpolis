@@ -145,6 +145,8 @@ const api: TermpolisAPI = {
   memorySyncStatus: () => ipcRenderer.invoke('memory:sync-status'),
   memorySetSyncDir: (dir: string | null) => ipcRenderer.invoke('memory:set-sync-dir', { dir }),
   memoryChooseSyncDir: () => ipcRenderer.invoke('memory:choose-sync-dir'),
+  memorySetSyncPassphrase: (passphrase: string) => ipcRenderer.invoke('memory:set-sync-passphrase', { passphrase }),
+  memoryDisableSyncEncryption: () => ipcRenderer.invoke('memory:disable-sync-encryption'),
 
   // Telemetry — push opt-in changes to main so Sentry/updater pings can gate.
   setTelemetryOptIn: (value: boolean) =>
