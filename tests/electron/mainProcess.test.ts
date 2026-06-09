@@ -57,6 +57,11 @@ vi.mock('electron', () => ({
   Menu: { setApplicationMenu: vi.fn() },
   nativeImage: { createFromPath: vi.fn(() => ({})) },
   globalShortcut: { register: vi.fn(), unregisterAll: vi.fn() },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s, 'utf8'),
+    decryptString: (b: Buffer) => b.toString('utf8'),
+  },
   shell: {
     openExternal: vi.fn(async () => undefined),
     openPath: vi.fn(async () => ''),

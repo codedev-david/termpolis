@@ -27,6 +27,7 @@ import {
   _setEmbedFnForTests,
   _setMaxEntriesForTests,
 } from '../../src/main/swarmMemory'
+import { setSafeStorage } from '../../src/main/secureKeyStore'
 
 let userDir: string
 let syncDir: string
@@ -319,6 +320,31 @@ describe('cross-machine sync — at-rest encryption', () => {
     expect(() => disableSyncEncryption()).toThrow(/not enabled/)
     initSwarmMemory(userDir, { syncDir })
     expect(() => setSyncPassphrase('   ')).toThrow(/passphrase required/)
+  })
+
+  it('caches the encryption key in the OS keychain (encrypted at rest) and still auto-unlocks', async () => {
+    const K = 0x5a
+    const fake = {
+      isEncryptionAvailable: () => true,
+      encryptString: (s: string) => Buffer.from([...Buffer.from(s, 'utf8')].map((b) => b ^ K)),
+      decryptString: (b: Buffer) => Buffer.from([...b].map((x) => x ^ K)).toString('utf8'),
+    }
+    setSafeStorage(fake)
+    try {
+      initSwarmMemory(userDir, { syncDir })
+      setSyncPassphrase('keychain-pass')
+      // the on-disk key file is OS-keychain-encrypted, NOT a plaintext base64 key
+      const keyFile = fs.readFileSync(path.join(userDir, 'memory-sync.key'), 'utf8')
+      expect(keyFile.startsWith('osk:v1:')).toBe(true)
+      // relaunch same device → auto-unlocks via the keychain-decrypted key (no prompt)
+      _resetForTests()
+      _setEmbedFnForTests(async () => null)
+      initSwarmMemory(userDir, { syncDir })
+      expect(getSyncStatus().encrypted).toBe(true)
+      expect(getSyncStatus().locked).toBe(false)
+    } finally {
+      setSafeStorage(null)
+    }
   })
 })
 

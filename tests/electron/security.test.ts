@@ -178,6 +178,11 @@ vi.mock('electron', () => ({
   nativeImage: { createFromPath: vi.fn(() => ({})) },
   globalShortcut: { register: vi.fn(), unregisterAll: vi.fn() },
   shell: { openExternal: vi.fn() },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s, 'utf8'),
+    decryptString: (b: Buffer) => b.toString('utf8'),
+  },
 }))
 
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))

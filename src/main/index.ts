@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import {
   initTelemetry,
@@ -106,6 +106,7 @@ import {
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   type MemoryEntry,
 } from './swarmMemory'
+import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest } from './codeIngest'
 import { startIndexer, stopIndexer } from './memoryIndexer'
@@ -1341,6 +1342,9 @@ if (!gotTheLock) {
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
     initAiSecurity()
+    // Back the memory sync-key cache with the OS keychain (safeStorage: DPAPI /
+    // Keychain / libsecret) — no native module, ships in the one executable.
+    setSafeStorage(safeStorage)
     initSwarmMemory(app.getPath('userData'))
     initWorkspaceTrust()
 

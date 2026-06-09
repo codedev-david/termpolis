@@ -6,6 +6,7 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { HnswIndex } from './hnswIndex'
+import { readSecret, writeSecret } from './secureKeyStore'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -591,10 +592,10 @@ function saltPath(): string | null { return syncDir ? path.join(syncDir, SALT_FI
 function loadCachedKey(): Buffer | null {
   const p = keyCachePath()
   if (!p) return null
-  try {
-    const k = Buffer.from(fs.readFileSync(p, 'utf8').trim(), 'base64')
-    return k.length === 32 ? k : null
-  } catch { return null }
+  const b64 = readSecret(p) // transparently OS-decrypts (or reads legacy plaintext)
+  if (!b64) return null
+  const k = Buffer.from(b64, 'base64')
+  return k.length === 32 ? k : null
 }
 
 function loadOrCreateSalt(): Buffer {
@@ -650,7 +651,7 @@ export function setSyncPassphrase(passphrase: string): SyncStatus {
   }
   encKey = key
   const p = keyCachePath()
-  if (p) { try { fs.writeFileSync(p, key.toString('base64')) } catch { /* best effort */ } }
+  if (p) { try { writeSecret(p, key.toString('base64')) } catch { /* best effort */ } } // OS-keychain at rest
   rewriteSelfShard((plain) => encryptLine(key, plain)) // ciphertext-ify our own shard
   reloadFrom(shardFiles())
   return getSyncStatus()

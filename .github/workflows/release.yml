@@ -255,18 +255,33 @@ jobs:
           Copy-Item $exe.FullName "ftp-staging/"
           Copy-Item $exe.FullName "ftp-staging/Termpolis-Setup-Latest.exe"
 
-      - name: FTP deploy to termpolis.com
+      # Mirror the installer to termpolis.com/downloads. This is a NON-CRITICAL
+      # convenience mirror — GitHub Releases (uploaded above) is the source of
+      # truth that electron-updater auto-update reads — so a transient transfer
+      # failure must never mark the whole release run as failed.
+      #
+      # Uses curl over EXPLICIT FTPS (FTP + AUTH TLS; --ssl-reqd refuses to fall
+      # back to plaintext) with retries, which fixes the SamKirkland action's
+      # flaky control-socket timeouts. Credentials are passed via env, not the
+      # command line. (SFTP is a cleaner transport still; switching needs the host
+      # to expose SSH/SFTP + an SSH key secret — tracked as a follow-up.)
+      - name: Mirror installer to termpolis.com/downloads (FTPS, retried)
         if: matrix.platform == 'win'
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_HOST }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          port: 21
-          protocol: ftps
-          local-dir: ftp-staging/
-          server-dir: /downloads/
-          dangerous-clean-slate: true
+        continue-on-error: true
+        shell: pwsh
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-ChildItem ftp-staging -File | ForEach-Object {
+            Write-Host "Uploading $($_.Name) via FTPS ..."
+            curl.exe --ssl-reqd --fail --silent --show-error `
+              --retry 6 --retry-delay 5 --retry-all-errors `
+              --user "${env:FTP_USERNAME}:${env:FTP_PASSWORD}" `
+              -T "$($_.FullName)" "ftp://${env:FTP_HOST}/downloads/"
+          }
 
       - name: Publish to Chocolatey
         if: matrix.platform == 'win'
