@@ -641,7 +641,6 @@ describe('HNSW acceleration (large-store path)', () => {
     expect(_isHnswReadyForTests()).toBe(true) // it really built in the background
     expect(lags.length).toBeGreaterThan(5)    // the loop kept ticking throughout the build
     const maxLag = Math.max(...lags)
-    // eslint-disable-next-line no-console
     console.log(`[event-loop responsiveness] samples=${lags.length} maxLag=${maxLag}ms`)
     expect(maxLag).toBeLessThan(400)          // generous tripwire; real value ~20ms, starvation would be >>1s
   }, 30000)
