@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { AgentInfo } from '../lib/agentDetector'
+import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
 
 // Auto context-primer: when an AI agent is first detected in a terminal, paste a
 // one-time digest of the most relevant memories for this project into its input
@@ -68,4 +69,36 @@ export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | nul
     }, INJECT_DELAY_MS)
     return () => clearTimeout(handle)
   }, [terminalId, agentName, cwd])
+}
+
+// Watch a terminal's live output for a Claude Code compaction and, once it settles,
+// re-inject the most relevant memories so the agent recovers the context it just
+// summarized away. Returns a STABLE `onOutput(stripped)` to call from the terminal's
+// data handler; current cwd/agent are read through refs so the callback never goes
+// stale. One TerminalPane mounts this per terminal. Opt-out in Settings.
+export function useCompactionReprimer(
+  terminalId: string,
+  detectedAgent: AgentInfo | null,
+  cwd: string,
+): (stripped: string) => void {
+  const cwdRef = useRef(cwd)
+  cwdRef.current = cwd
+  const agentRef = useRef<string | null>(detectedAgent?.name ?? null)
+  agentRef.current = detectedAgent?.name ?? null
+
+  const controllerRef = useRef<ReprimeController | null>(null)
+  if (!controllerRef.current) {
+    controllerRef.current = createReprimeController({
+      hasAgent: () => agentRef.current != null,
+      reprime: () => {
+        void injectAutoPrimer(terminalId, cwdRef.current)
+      },
+    })
+  }
+
+  useEffect(() => () => controllerRef.current?.dispose(), [])
+
+  return useCallback((stripped: string) => {
+    controllerRef.current?.onOutput(stripped)
+  }, [])
 }

@@ -6,6 +6,7 @@ import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
+import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
 
 function getConfigFiles(home: string): { label: string; path: string; lang: string }[] {
   const isWin = /^[A-Za-z]:\\/.test(home)
@@ -38,6 +39,7 @@ export function SettingsPane() {
     try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
   })
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
+  const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
@@ -239,6 +241,30 @@ export function SettingsPane() {
                 relevant memories for this project into its input (not sent automatically) — so it
                 begins already knowing prior decisions and context, across agents and past sessions.
                 Only fires when relevant memory exists.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={() => { const next = !autoReprime; setAutoReprime(next); setAutoReprimeOnCompactionEnabled(next) }}
+              aria-label="Toggle auto re-prime after conversation compaction"
+              data-testid="settings-auto-reprime-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                autoReprime ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                autoReprime ? 'translate-x-4.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Re-recall context after compaction</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                When Claude compacts its conversation to fit the context window, it summarizes detail
+                away — but that detail still lives in the memory brain. Once the compaction settles,
+                Termpolis re-pastes the most relevant memories (not sent automatically) so the agent
+                picks right back up. Your durable memory is the large working set; the model&rsquo;s
+                window only holds the active task.
               </span>
             </div>
           </div>

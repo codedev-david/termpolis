@@ -2,10 +2,12 @@ import { renderHook } from '@testing-library/react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   useAutoPrimer,
+  useCompactionReprimer,
   isAutoPrimerEnabled,
   setAutoPrimerEnabled,
   injectAutoPrimer,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
+import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const agent = { name: 'Claude Code' } as any
@@ -130,6 +132,61 @@ describe('useAutoPrimer', () => {
     const { unmount } = renderHook(() => useAutoPrimer('term-1', agent, '/p'))
     unmount()
     await vi.advanceTimersByTimeAsync(3000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+})
+
+describe('useCompactionReprimer', () => {
+  it('re-primes after a compaction marker settles in the output stream', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCompactionReprimer('term-1', agent, '/home/me/proj'))
+    result.current('✻ Compacting conversation… (2m 30s)')
+    // Still building/ticking — not yet.
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    // Output settles → re-prime fires once.
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the LATEST cwd through a ref (stable callback never goes stale)', async () => {
+    vi.useFakeTimers()
+    const { result, rerender } = renderHook(({ cwd }) => useCompactionReprimer('t', agent, cwd), {
+      initialProps: { cwd: '/old/proj' },
+    })
+    const firstCallback = result.current
+    rerender({ cwd: 'C:\\code\\acme' })
+    expect(result.current).toBe(firstCallback) // identity stable across cwd changes
+    result.current('Compacting conversation…')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledWith(
+      expect.stringContaining('acme'),
+    )
+  })
+
+  it('does not re-prime when no agent is present', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCompactionReprimer('t', null, '/p'))
+    result.current('Compacting conversation…')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('does not re-prime when the setting is OFF', async () => {
+    setAutoReprimeOnCompactionEnabled(false)
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCompactionReprimer('t', agent, '/p'))
+    result.current('Compacting conversation…')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending re-prime when the terminal unmounts', async () => {
+    vi.useFakeTimers()
+    const { result, unmount } = renderHook(() => useCompactionReprimer('t', agent, '/p'))
+    result.current('Compacting conversation…')
+    unmount()
+    await vi.advanceTimersByTimeAsync(5000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
   })
 })

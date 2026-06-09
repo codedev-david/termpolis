@@ -24,7 +24,7 @@ import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
-import { useAutoPrimer } from '../../hooks/useAutoPrimer'
+import { useAutoPrimer, useCompactionReprimer } from '../../hooks/useAutoPrimer'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
 import { useContextLimit } from '../../hooks/useContextLimit'
 import type { ShellType } from '../../types'
@@ -90,6 +90,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings).
   useAutoPrimer(terminalId, agent.detectedAgent, cwd)
+  // Re-seed it after Claude compacts its conversation, restoring the detail it
+  // summarized away from the durable memory brain (opt-out in Settings).
+  const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)
   const recording = useSessionRecording(terminalName, shellType)
   const contextLimit = useContextLimit(
     cwd,
@@ -467,6 +470,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (agent.agentDetectedRef.current) {
         contextLimit.processContextLimit(stripped)
       }
+
+      // Re-prime memory after the agent compacts its conversation (settles, then
+      // re-injects recalled context). Stable callback; internally gated + debounced.
+      onCompactionOutput(stripped)
 
       // Watch for OSC 633 exit code marker (if shell integration is enabled)
       const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)

@@ -412,4 +412,24 @@ describe('SettingsPane', () => {
     expect(localStorage.getItem('termpolis.memory.autoPrimerOnLaunch')).toBe('1')
     localStorage.removeItem('termpolis.memory.autoPrimerOnLaunch')
   })
+
+  it('auto-reprime-on-compaction toggle defaults ON and persists "0" when switched off', () => {
+    localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-auto-reprime-toggle')
+    fireEvent.click(toggle) // default ON → OFF
+    expect(localStorage.getItem('termpolis.memory.autoReprimeOnCompaction')).toBe('0')
+    fireEvent.click(toggle) // back ON
+    expect(localStorage.getItem('termpolis.memory.autoReprimeOnCompaction')).toBe('1')
+    localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
+  })
+
+  it('auto-reprime toggle reflects a stored opt-out on mount', () => {
+    localStorage.setItem('termpolis.memory.autoReprimeOnCompaction', '0')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-auto-reprime-toggle')
+    fireEvent.click(toggle) // stored OFF → ON
+    expect(localStorage.getItem('termpolis.memory.autoReprimeOnCompaction')).toBe('1')
+    localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
+  })
 })
