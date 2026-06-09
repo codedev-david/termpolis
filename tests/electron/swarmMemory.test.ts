@@ -485,6 +485,23 @@ const vec384 = (seed: number): number[] => {
   return v
 }
 
+// Deterministic DISTINCT dense unit vectors — representative of real embeddings
+// (unlike one-hot vec384, which collides after 384 and makes a degenerate all-ties
+// graph). Used where the HNSW build needs to be realistic, e.g. the responsiveness test.
+const denseVec384 = (seed: number): number[] => {
+  let s = (seed * 2654435761 + 1) >>> 0
+  const v = new Array(384)
+  let norm = 0
+  for (let d = 0; d < 384; d++) {
+    s = (s ^ (s << 13)) >>> 0; s = (s ^ (s >>> 17)) >>> 0; s = (s ^ (s << 5)) >>> 0
+    const x = (s / 4294967296) * 2 - 1
+    v[d] = x; norm += x * x
+  }
+  norm = Math.sqrt(norm) || 1
+  for (let d = 0; d < 384; d++) v[d] /= norm
+  return v
+}
+
 describe('packed vector index (memory-win integration)', () => {
   it('packs EMBED_DIM embeddings into the store, frees the number[] on stored entries, still searchable', async () => {
     _setEmbedFnForTests(async () => vec384(0))
@@ -601,6 +618,33 @@ describe('HNSW acceleration (large-store path)', () => {
     const after = await memorySearch({ query: 'q', limit: 3 })
     expect(after.some((h) => h.content === 'the target fact')).toBe(true)
   })
+
+  it('keeps the event loop responsive during a background build (no UI starvation)', async () => {
+    _setHnswThresholdForTests(4)
+    let i = 0
+    _setEmbedFnForTests(async () => denseVec384(i++))
+    for (let n = 0; n < 1500; n++) await memoryWrite({ agentId: 'a', kind: 'fact', content: `e${n}` })
+    _setEmbedFnForTests(async () => denseVec384(999999))
+
+    // Sample event-loop lag (how late a 10 ms timer actually fires) while the graph
+    // builds in the background. Frame-budget yielding keeps every gap small; the OLD
+    // blocking build would stall the loop for the whole build. In the app the build
+    // runs in the main process, so a responsive loop here == IPC (terminal I/O,
+    // panels) stays responsive == the user doesn't see a freeze.
+    const lags: number[] = []
+    let last = Date.now()
+    const timer = setInterval(() => { const t = Date.now(); lags.push(t - last - 10); last = t }, 10)
+    await memorySearch({ query: 'q' }) // returns fast (non-blocking) but kicks the build
+    await _whenHnswSettledForTests() // now wait out the background build, timer still ticking
+    clearInterval(timer)
+
+    expect(_isHnswReadyForTests()).toBe(true) // it really built in the background
+    expect(lags.length).toBeGreaterThan(5)    // the loop kept ticking throughout the build
+    const maxLag = Math.max(...lags)
+    // eslint-disable-next-line no-console
+    console.log(`[event-loop responsiveness] samples=${lags.length} maxLag=${maxLag}ms`)
+    expect(maxLag).toBeLessThan(400)          // generous tripwire; real value ~20ms, starvation would be >>1s
+  }, 30000)
 })
 
 describe('HNSW persistence', () => {
