@@ -21,11 +21,13 @@ import {
   memoryHasHash,
   memoryStats,
   _resetForTests,
+  persistMemoryIndex,
   _setEmbeddingsAvailable,
   _setEmbedFnForTests,
   _setMaxEntriesForTests,
   _setHnswThresholdForTests,
 } from '../../src/main/swarmMemory'
+import { HnswIndex } from '../../src/main/hnswIndex'
 
 // Each test gets its own temp directory so persistence between runs can be
 // exercised deterministically without leaking state.
@@ -569,5 +571,70 @@ describe('HNSW acceleration (large-store path)', () => {
     _setEmbedFnForTests(async () => vec384(2))
     const hits = await memorySearch({ query: 'q', limit: 1 })
     expect(hits[0].content).toBe('a match here')
+  })
+})
+
+describe('HNSW persistence', () => {
+  async function fillStore(n: number, start = 0): Promise<void> {
+    let i = start
+    _setEmbedFnForTests(async () => vec384(i++))
+    for (let k = 0; k < n; k++) await memoryWrite({ agentId: 'a', kind: 'fact', content: `e${start + k}` })
+  }
+  const graphFile = () => path.join(tmpDir, 'memory-hnsw.json')
+
+  it('saves the graph to disk after building it', async () => {
+    _setHnswThresholdForTests(4)
+    await fillStore(8)
+    _setEmbedFnForTests(async () => vec384(0))
+    await memorySearch({ query: 'q' }) // build + save
+    expect(fs.existsSync(graphFile())).toBe(true)
+  })
+
+  it('loads the persisted graph on reload (skips rebuild) when unchanged', async () => {
+    _setHnswThresholdForTests(4)
+    await fillStore(8)
+    _setEmbedFnForTests(async () => vec384(0))
+    await memorySearch({ query: 'q' }) // build + save with fingerprint A
+    _resetForTests(); _setHnswThresholdForTests(4); _setEmbedFnForTests(async () => vec384(0))
+    initSwarmMemory(tmpDir) // same disk → fingerprint matches
+    const spy = vi.spyOn(HnswIndex, 'fromJSON')
+    await memorySearch({ query: 'q' })
+    expect(spy).toHaveBeenCalled() // loaded from disk, not rebuilt
+    spy.mockRestore()
+  })
+
+  it('ignores the persisted graph and rebuilds when the store changed', async () => {
+    _setHnswThresholdForTests(4)
+    await fillStore(8)
+    _setEmbedFnForTests(async () => vec384(0))
+    await memorySearch({ query: 'q' }) // save fingerprint A
+    await fillStore(1, 100) // a new entry → disk content changes
+    _resetForTests(); _setHnswThresholdForTests(4); _setEmbedFnForTests(async () => vec384(0))
+    initSwarmMemory(tmpDir)
+    const spy = vi.spyOn(HnswIndex, 'fromJSON')
+    await memorySearch({ query: 'q' })
+    expect(spy).not.toHaveBeenCalled() // fingerprint mismatch → rebuild
+    spy.mockRestore()
+  })
+
+  it('ignores a corrupt persisted graph and rebuilds without throwing', async () => {
+    _setHnswThresholdForTests(4)
+    await fillStore(8)
+    fs.writeFileSync(graphFile(), 'not json{{{')
+    _setEmbedFnForTests(async () => vec384(0))
+    const hits = await memorySearch({ query: 'q', limit: 1 })
+    expect(Array.isArray(hits)).toBe(true)
+  })
+
+  it('persistMemoryIndex re-saves the built graph; memoryClear removes the file', async () => {
+    _setHnswThresholdForTests(4)
+    await fillStore(8)
+    _setEmbedFnForTests(async () => vec384(0))
+    await memorySearch({ query: 'q' })
+    fs.rmSync(graphFile(), { force: true })
+    persistMemoryIndex() // graph is fresh → re-saves
+    expect(fs.existsSync(graphFile())).toBe(true)
+    memoryClear()
+    expect(fs.existsSync(graphFile())).toBe(false)
   })
 })

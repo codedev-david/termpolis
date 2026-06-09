@@ -87,4 +87,20 @@ describe('HnswIndex', () => {
     const got = idx.search(vecs[10], 5, (row) => row !== 10)
     expect(got.some((x) => x.row === 10)).toBe(false)
   })
+
+  it('serializes + deserializes to an identical graph (persistence)', () => {
+    const dim = 16
+    const r = rng(11)
+    const vecs = Array.from({ length: 300 }, () => randomUnit(dim, r))
+    const idx = new HnswIndex((row) => vecs[row] ?? null, { rng: rng(22) })
+    for (let i = 0; i < vecs.length; i++) idx.add(i)
+    const json = JSON.parse(JSON.stringify(idx.toJSON())) // round-trip through disk-shaped JSON
+    const restored = HnswIndex.fromJSON(json, (row) => vecs[row] ?? null)
+    expect(restored.size).toBe(idx.size)
+    // identical graph ⇒ identical search results for any query
+    for (const seed of [33, 44, 55]) {
+      const q = randomUnit(dim, rng(seed))
+      expect(restored.search(q, 5).map((x) => x.row)).toEqual(idx.search(q, 5).map((x) => x.row))
+    }
+  })
 })

@@ -104,6 +104,7 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
+  persistMemoryIndex,
   type MemoryEntry,
 } from './swarmMemory'
 import { setSafeStorage } from './secureKeyStore'
@@ -1366,6 +1367,8 @@ if (!gotTheLock) {
           { hasHash: memoryHasHash, write: memoryWrite },
           { maxChunks: 250 },
         )
+        // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
+        try { persistMemoryIndex() } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },
     })

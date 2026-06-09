@@ -5,7 +5,7 @@ import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
-import { HnswIndex } from './hnswIndex'
+import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
@@ -376,6 +376,10 @@ function rebuildVectorIndex(): void {
 async function ensureHnsw(): Promise<void> {
   if (vectorStore.size < hnswThreshold) { hnsw = null; hnswStale = false; return }
   if (hnsw && !hnswStale) return
+  // Try the on-disk graph first — skips the O(n log n) rebuild when the store is
+  // unchanged since it was saved (e.g. a fresh launch over a large store).
+  const loaded = loadPersistedHnsw()
+  if (loaded) { hnsw = loaded; hnswStale = false; return }
   const idx = new HnswIndex((r) => vectorStore.get(r))
   let n = 0
   for (const row of rowToEntry.keys()) {
@@ -384,6 +388,47 @@ async function ensureHnsw(): Promise<void> {
   }
   hnsw = idx
   hnswStale = false
+  savePersistedHnsw()
+}
+
+// ---- HNSW on-disk persistence ----
+// The graph is device-local (it indexes this device's packed rows), so it lives
+// in userData, NOT the synced folder. It's keyed to the hot window by a content
+// fingerprint: same entry set+order ⇒ same packed rows ⇒ the saved graph is
+// valid; any change invalidates it (→ rebuild + re-save). A stale/corrupt file
+// is simply ignored.
+const HNSW_FILE = 'memory-hnsw.json'
+function hnswFile(): string | null { return userDataDir ? path.join(userDataDir, HNSW_FILE) : null }
+
+function entriesFingerprint(): string {
+  const h = crypto.createHash('sha1')
+  h.update(String(entries.length))
+  for (const e of entries) { h.update(e.id); h.update('\n') }
+  return h.digest('hex')
+}
+
+function loadPersistedHnsw(): HnswIndex | null {
+  const p = hnswFile()
+  if (!p) return null
+  try {
+    const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
+    if (!obj || obj.fp !== entriesFingerprint() || !obj.graph) return null
+    return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
+  } catch { return null }
+}
+
+function savePersistedHnsw(): void {
+  const p = hnswFile()
+  if (!p || !hnsw) return
+  try {
+    fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw.toJSON() }))
+  } catch { /* best effort */ }
+}
+
+// Persist the current graph if it's fresh — called from the background indexer so
+// the on-disk graph tracks recent state. Safe no-op when there's no graph yet.
+export function persistMemoryIndex(): void {
+  if (hnsw && !hnswStale) savePersistedHnsw()
 }
 
 // Serialize an entry for disk, reconstructing its embedding from the packed store
@@ -517,6 +562,7 @@ export function memoryClear(): void {
   rowToEntry.clear()
   hnsw = null
   hnswStale = false
+  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
   if (!memPath) return
   if (syncDir) {
     // Propagating clear: an epoch tombstone so every device drops everything up

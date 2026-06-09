@@ -223,4 +223,37 @@ export class HnswIndex {
     out.sort((a, b) => b.score - a.score)
     return out.slice(0, k)
   }
+
+  // ---- Persistence ----
+  // The graph is keyed by store rows; a serialized graph is only valid against a
+  // vector store with the SAME rows (the caller guards this with a content
+  // fingerprint), so loading skips the O(n log n) rebuild on launch.
+
+  toJSON(): SerializedHnsw {
+    const nodes: SerializedNode[] = []
+    for (const [row, level] of this.nodeLevel) nodes.push([row, level, this.links.get(row) ?? []])
+    return { v: 1, M: this.M, efC: this.efC, efS: this.efS, entry: this.entry, topLayer: this.topLayer, nodes }
+  }
+
+  static fromJSON(data: SerializedHnsw, getVec: GetVec): HnswIndex {
+    const idx = new HnswIndex(getVec, { M: data.M, efConstruction: data.efC, efSearch: data.efS })
+    for (const [row, level, links] of data.nodes) {
+      idx.nodeLevel.set(row, level)
+      idx.links.set(row, links.map((l) => l.slice()))
+    }
+    idx.entry = data.entry
+    idx.topLayer = data.topLayer
+    return idx
+  }
+}
+
+type SerializedNode = [number, number, number[][]] // [row, level, links-per-layer]
+export interface SerializedHnsw {
+  v: 1
+  M: number
+  efC: number
+  efS: number
+  entry: number
+  topLayer: number
+  nodes: SerializedNode[]
 }
