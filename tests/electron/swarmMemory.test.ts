@@ -32,6 +32,12 @@ import {
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
 
+// Opt-in gate for the wall-clock event-loop responsiveness test. It measures real
+// timing while a large graph builds, so its duration swings ~7x between a fast dev
+// box (~4s) and a loaded CI runner (>30s) — too variable to gate CI on. Run it on
+// demand: RUN_TIMING_TESTS=1 npx vitest run tests/electron/swarmMemory.test.ts
+const RUN_TIMING_TESTS = process.env.RUN_TIMING_TESTS === '1'
+
 // Each test gets its own temp directory so persistence between runs can be
 // exercised deterministically without leaking state.
 let tmpDir: string
@@ -619,7 +625,7 @@ describe('HNSW acceleration (large-store path)', () => {
     expect(after.some((h) => h.content === 'the target fact')).toBe(true)
   })
 
-  it('keeps the event loop responsive during a background build (no UI starvation)', async () => {
+  it.skipIf(!RUN_TIMING_TESTS)('keeps the event loop responsive during a background build (no UI starvation)', async () => {
     _setHnswThresholdForTests(4)
     let i = 0
     _setEmbedFnForTests(async () => denseVec384(i++))
