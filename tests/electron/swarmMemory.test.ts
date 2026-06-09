@@ -26,6 +26,9 @@ import {
   _setEmbedFnForTests,
   _setMaxEntriesForTests,
   _setHnswThresholdForTests,
+  _setHnswYieldMsForTests,
+  _whenHnswSettledForTests,
+  _isHnswReadyForTests,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
 
@@ -572,6 +575,32 @@ describe('HNSW acceleration (large-store path)', () => {
     const hits = await memorySearch({ query: 'q', limit: 1 })
     expect(hits[0].content).toBe('a match here')
   })
+
+  it('builds in the BACKGROUND without blocking the search, then persists', async () => {
+    _setHnswThresholdForTests(4)
+    _setHnswYieldMsForTests(0) // yield every insert → force the async background build
+    const graphPath = path.join(tmpDir, 'memory-hnsw.json')
+    let i = 0
+    _setEmbedFnForTests(async (t) => (t.includes('target') ? vec384(1) : vec384(50 + i++)))
+    for (let n = 0; n < 8; n++) await memoryWrite({ agentId: 'a', kind: 'fact', content: `noise ${n}` })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'the target fact' })
+    _setEmbedFnForTests(async () => vec384(1)) // exact match with the target
+
+    // The triggering search returns correct results immediately via the exact
+    // brute-force fallback. With yield=0 the build suspends after its first insert
+    // (a macrotask), but this search resolves on the microtask queue first — so the
+    // graph provably isn't ready yet, proving the search did NOT block on it.
+    const during = await memorySearch({ query: 'q', limit: 3 })
+    expect(_isHnswReadyForTests()).toBe(false)
+    expect(during.some((h) => h.content === 'the target fact')).toBe(true)
+
+    // The graph finishes in the background and is persisted; later searches use it.
+    await _whenHnswSettledForTests()
+    expect(_isHnswReadyForTests()).toBe(true)
+    expect(fs.existsSync(graphPath)).toBe(true)
+    const after = await memorySearch({ query: 'q', limit: 3 })
+    expect(after.some((h) => h.content === 'the target fact')).toBe(true)
+  })
 })
 
 describe('HNSW persistence', () => {
@@ -587,6 +616,7 @@ describe('HNSW persistence', () => {
     await fillStore(8)
     _setEmbedFnForTests(async () => vec384(0))
     await memorySearch({ query: 'q' }) // build + save
+    await _whenHnswSettledForTests() // build is backgrounded — wait for it
     expect(fs.existsSync(graphFile())).toBe(true)
   })
 
@@ -595,6 +625,7 @@ describe('HNSW persistence', () => {
     await fillStore(8)
     _setEmbedFnForTests(async () => vec384(0))
     await memorySearch({ query: 'q' }) // build + save with fingerprint A
+    await _whenHnswSettledForTests()
     _resetForTests(); _setHnswThresholdForTests(4); _setEmbedFnForTests(async () => vec384(0))
     initSwarmMemory(tmpDir) // same disk → fingerprint matches
     const spy = vi.spyOn(HnswIndex, 'fromJSON')
@@ -608,6 +639,7 @@ describe('HNSW persistence', () => {
     await fillStore(8)
     _setEmbedFnForTests(async () => vec384(0))
     await memorySearch({ query: 'q' }) // save fingerprint A
+    await _whenHnswSettledForTests()
     await fillStore(1, 100) // a new entry → disk content changes
     _resetForTests(); _setHnswThresholdForTests(4); _setEmbedFnForTests(async () => vec384(0))
     initSwarmMemory(tmpDir)
@@ -631,6 +663,7 @@ describe('HNSW persistence', () => {
     await fillStore(8)
     _setEmbedFnForTests(async () => vec384(0))
     await memorySearch({ query: 'q' })
+    await _whenHnswSettledForTests()
     fs.rmSync(graphFile(), { force: true })
     persistMemoryIndex() // graph is fresh → re-saves
     expect(fs.existsSync(graphFile())).toBe(true)

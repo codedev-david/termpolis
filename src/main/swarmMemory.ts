@@ -72,11 +72,16 @@ const rowToEntry = new Map<number, MemoryEntry>()    // store row → live entry
 const entryRow = new WeakMap<MemoryEntry, number>()  // live entry → store row
 // HNSW graph for sub-linear search once the store is large. Below the threshold,
 // the exact brute-force scan over the packed store is already fast, so we don't
-// bother. The graph is built LAZILY + YIELDED on first search (never at startup,
-// so it can't reintroduce a launch freeze) and kept fresh incrementally on write.
+// bother. The graph is built LAZILY, in the BACKGROUND, and YIELDED on a frame
+// budget (never at startup, so it can't reintroduce a launch freeze; never
+// blocking the search that triggers it — that search falls back to the exact
+// brute-force scan until the graph is ready) and kept fresh incrementally on write.
 let hnsw: HnswIndex | null = null
 let hnswStale = false
 let hnswThreshold = 50_000
+let hnswBuilding = false                       // a background build is in flight
+let hnswBuildDone: Promise<void> = Promise.resolve() // resolves when it finishes (tests await this)
+let hnswYieldMs = 8                            // yield to the event loop every N ms of build work
 
 // ---- Init / persistence ----
 //
@@ -243,6 +248,9 @@ export function _resetForTests(): void {
   hnsw = null
   hnswStale = false
   hnswThreshold = 50_000
+  hnswBuilding = false
+  hnswBuildDone = Promise.resolve()
+  hnswYieldMs = 8
   seq = 0
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
@@ -255,6 +263,24 @@ export function _setMaxEntriesForTests(n: number): void {
 
 export function _setHnswThresholdForTests(n: number): void {
   hnswThreshold = n
+}
+
+/** Override the build's frame-budget yield (ms). 0 ⇒ yield every insert, which
+ *  forces the background (async) build path for deterministic tests. */
+export function _setHnswYieldMsForTests(ms: number): void {
+  hnswYieldMs = ms
+}
+
+/** Resolves when the in-flight background HNSW build (if any) has finished —
+ *  lets tests assert on the built/persisted graph without racing the build. */
+export function _whenHnswSettledForTests(): Promise<void> {
+  return hnswBuildDone
+}
+
+/** True once a fresh HNSW graph is in place (searches use it; before this they
+ *  fall back to brute-force). Lets tests prove the search didn't block on it. */
+export function _isHnswReadyForTests(): boolean {
+  return hnsw !== null && !hnswStale
 }
 
 /** True if a chunk with this content hash is already stored (idempotent ingest). */
@@ -370,25 +396,42 @@ function rebuildVectorIndex(): void {
   hnswStale = vectorStore.size >= hnswThreshold
 }
 
-// Build the HNSW graph lazily, yielding to the event loop between batches so a
-// large build never freezes the app (it runs inside the async search path, never
-// at startup). No-op below the threshold or when already fresh.
+// Ensure an HNSW graph exists for the current (large) store, WITHOUT blocking the
+// caller. Below the threshold there's no graph (brute-force is fast). On disk a
+// saved graph loads instantly. Otherwise a build is kicked off in the BACKGROUND
+// and this returns immediately — the triggering search uses the exact brute-force
+// fallback until `hnsw` is set. The build yields on a frame budget so it never
+// freezes the UI, and only ONE build runs at a time. Small stores (tests) finish
+// the build synchronously before the first yield, so callers see the graph at once.
 async function ensureHnsw(): Promise<void> {
   if (vectorStore.size < hnswThreshold) { hnsw = null; hnswStale = false; return }
   if (hnsw && !hnswStale) return
+  if (hnswBuilding) return // a build is already in flight → search uses brute-force meanwhile
   // Try the on-disk graph first — skips the O(n log n) rebuild when the store is
   // unchanged since it was saved (e.g. a fresh launch over a large store).
   const loaded = loadPersistedHnsw()
   if (loaded) { hnsw = loaded; hnswStale = false; return }
-  const idx = new HnswIndex((r) => vectorStore.get(r))
-  let n = 0
-  for (const row of rowToEntry.keys()) {
-    idx.add(row)
-    if (++n % 1000 === 0) await new Promise<void>((r) => setImmediate(r))
-  }
-  hnsw = idx
-  hnswStale = false
-  savePersistedHnsw()
+  hnswBuilding = true
+  hnswBuildDone = (async () => {
+    try {
+      const rows = [...rowToEntry.keys()] // snapshot: mid-build writes don't corrupt the walk
+      const idx = new HnswIndex((r) => vectorStore.get(r))
+      let last = Date.now()
+      for (const row of rows) {
+        if (!rowToEntry.has(row)) continue // deleted mid-build → skip
+        idx.add(row)
+        if (Date.now() - last >= hnswYieldMs) { await new Promise<void>((r) => setImmediate(r)); last = Date.now() }
+      }
+      hnsw = idx
+      // Only mark fresh + persist if the store didn't grow during the build; if it
+      // did, the snapshot is incomplete → keep it usable but stale (a later search
+      // rebuilds) and DON'T persist a graph whose fingerprint would over-claim.
+      if (rowToEntry.size === rows.length) { hnswStale = false; savePersistedHnsw() }
+      else hnswStale = true
+    } finally {
+      hnswBuilding = false
+    }
+  })()
 }
 
 // ---- HNSW on-disk persistence ----
@@ -478,7 +521,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     // cache-friendly scan over half-the-memory storage (HNSW will make it
     // sub-linear). Exact cosine, since stored vectors are normalized.
     if (queryEmb.length === EMBED_DIM && vectorStore.size > 0) {
-      await ensureHnsw() // builds the graph (yielded) only when large + stale
+      void ensureHnsw() // kicks a background build when large; never blocks this search
       const allow = (row: number): boolean => {
         const e = rowToEntry.get(row)
         return e ? passesFilter(e, opts) : false
@@ -487,8 +530,10 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
       // HNSW compares against the packed Float32 store, so match that precision
       // for the query too (cheap: one 384-float copy per search, ~µs).
       const queryF32 = Float32Array.from(queryEmb)
-      if (hnsw) { try { hits = hnsw.search(queryF32, limit, allow) } catch { hits = [] } }
-      if (hits.length === 0) hits = vectorStore.searchTopK(queryEmb, limit, allow) // exact brute-force fallback
+      // Use the graph only when it's fresh; while it's (re)building in the
+      // background `hnsw` is null or stale, so we serve the exact brute-force scan.
+      if (hnsw && !hnswStale) { try { hits = hnsw.search(queryF32, limit, allow) } catch { hits = [] } }
+      if (hits.length === 0) hits = vectorStore.searchTopK(queryF32, limit, allow) // exact brute-force fallback
       for (const h of hits) {
         const e = rowToEntry.get(h.row)
         if (e) scored.push({ ...e, score: h.score })
