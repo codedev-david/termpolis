@@ -412,7 +412,7 @@ function loadPersistedHnsw(): HnswIndex | null {
   if (!p) return null
   try {
     const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
-    if (!obj || obj.fp !== entriesFingerprint() || !obj.graph) return null
+    if (!obj || obj.fp !== entriesFingerprint() || obj.graph?.v !== 2) return null // stale / wrong format
     return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
   } catch { return null }
 }
@@ -484,7 +484,10 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
         return e ? passesFilter(e, opts) : false
       }
       let hits: { row: number; score: number }[] = []
-      if (hnsw) { try { hits = hnsw.search(queryEmb, limit, allow) } catch { hits = [] } }
+      // HNSW compares against the packed Float32 store, so match that precision
+      // for the query too (cheap: one 384-float copy per search, ~µs).
+      const queryF32 = Float32Array.from(queryEmb)
+      if (hnsw) { try { hits = hnsw.search(queryF32, limit, allow) } catch { hits = [] } }
       if (hits.length === 0) hits = vectorStore.searchTopK(queryEmb, limit, allow) // exact brute-force fallback
       for (const h of hits) {
         const e = rowToEntry.get(h.row)

@@ -399,9 +399,11 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
     }
     // Notify the renderer when a code-shaped or env-shaped prompt fires so
     // the UI can surface a one-time "X lines of code detected" banner. We
-    // never block here — the prompt has already been forwarded (or redacted)
-    // and the user can use the banner to cancel future similar sends.
-    if (decision.action === 'flush' || decision.action === 'redact') {
+    // never block here — the prompt has already been forwarded and the user
+    // can use the banner to cancel future similar sends. (A 'redact' decision
+    // returns earlier with its own secrets-redacted notification, so by here
+    // the action can only be 'flush' or 'pass'.)
+    if (decision.action === 'flush') {
       if (decision.codeChunk?.isCode) {
         aiSecurityAppend({
           agent: detectedAgent ?? 'unknown',

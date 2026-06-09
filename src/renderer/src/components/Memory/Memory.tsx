@@ -321,7 +321,8 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
             <>
               <div className="text-[11px] text-[#777] leading-relaxed">
                 Off — memory stays on this machine. Point it at a folder you already sync
-                (Dropbox / Syncthing / iCloud) and the same brain follows you to every machine. No Termpolis server.
+                (Dropbox / OneDrive / iCloud / Google Drive / Syncthing) and the same brain follows you to every machine. No Termpolis server.
+                <span className="text-[#666]"> Google Drive: use &ldquo;mirror&rdquo; mode so files stay on disk. Encrypt below if the folder is a third-party cloud.</span>
               </div>
               <button
                 className="bg-[#22D3EE] hover:opacity-90 text-[#062a30] rounded px-2 py-1 font-medium cursor-pointer disabled:opacity-50 text-left"

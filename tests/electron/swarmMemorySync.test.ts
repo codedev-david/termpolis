@@ -228,6 +228,16 @@ describe('cross-machine sync — edge cases', () => {
     expect(contents).toContain('newest')
     expect(contents).not.toContain('oldest') // trimmed as oldest
   })
+
+  it('skips an unreadable shard (e.g. a Google-Drive online-only/offline file) and loads the rest', () => {
+    initSwarmMemory(userDir, { syncDir })
+    dropShard('reachable.jsonl', [{ id: 'g', ts: 1, agentId: 'x', kind: 'fact', content: 'cloud-reachable' }])
+    // an unreadable "shard" — a directory named like one; readFileSync throws, just
+    // like an online-only placeholder that can't hydrate while offline.
+    fs.mkdirSync(path.join(syncDir, 'offline-peer.jsonl'))
+    reloadMemoryFromSync()
+    expect(memoryList().some((e) => e.content === 'cloud-reachable')).toBe(true) // degraded gracefully
+  })
 })
 
 describe('cross-machine sync — at-rest encryption', () => {
