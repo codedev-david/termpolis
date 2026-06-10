@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.11.75",
+  "version": "1.11.76",
   "description": "Secure AI-Assisted Development. Local-first multi-agent terminal for Claude, Codex, Gemini, and Qwen with a built-in AI Security Center (auto-scan on every prompt across 70+ secret patterns, Gemini paid-tier enforcement, auditable outbound log), MCP server, split panes, and live observability.",
   "author": "Termpolis",
   "license": "Apache-2.0",
