@@ -419,10 +419,16 @@ export default function App() {
     const onReopenOnboarding = () => setShowOnboarding(true)
     window.addEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
 
+    // Listen for the Settings "Open the Memory panel" link (SettingsPane is
+    // rendered propless, so a window event is the bridge — like openContextPins)
+    const onOpenMemory = () => setShowMemory(true)
+    window.addEventListener('termpolis:openMemory', onOpenMemory)
+
     return () => {
       window.removeEventListener('keydown', handler)
       window.removeEventListener('termpolis:openContextPins', onOpenPins)
       window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
+      window.removeEventListener('termpolis:openMemory', onOpenMemory)
       unsubGlobal?.()
       unsubSwarm?.()
       unsubClose?.()

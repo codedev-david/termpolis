@@ -432,4 +432,23 @@ describe('SettingsPane', () => {
     expect(localStorage.getItem('termpolis.memory.autoReprimeOnCompaction')).toBe('1')
     localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
   })
+
+  it('shows an "Open the Memory panel" link with the Ctrl+Shift+M hint', () => {
+    render(<SettingsPane />)
+    const link = screen.getByTestId('settings-open-memory-panel')
+    expect(link).toBeInTheDocument()
+    expect(link.parentElement?.textContent).toMatch(/Ctrl\+Shift\+M/)
+  })
+
+  it('dispatches termpolis:openMemory when the Memory panel link is clicked', () => {
+    const onOpen = vi.fn()
+    window.addEventListener('termpolis:openMemory', onOpen)
+    try {
+      render(<SettingsPane />)
+      fireEvent.click(screen.getByTestId('settings-open-memory-panel'))
+      expect(onOpen).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('termpolis:openMemory', onOpen)
+    }
+  })
 })

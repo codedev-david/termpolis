@@ -111,4 +111,20 @@ test.describe.serial('Memory panel', () => {
     await closeBtn().click()
     await page.waitForTimeout(300)
   })
+
+  test('4. Settings "Open the Memory panel" link opens the panel over Settings', async () => {
+    // Open Settings via the narrow e2e seam (same one ui-screens specs use).
+    await page.evaluate(() => (window as any).__setShowSettings(true))
+    const link = page.getByTestId('settings-open-memory-panel')
+    await expect(link).toBeVisible({ timeout: 5000 })
+
+    await link.click()
+    await page.waitForTimeout(600)
+    await expect(queryInput()).toBeVisible()
+
+    await closeBtn().click()
+    await page.waitForTimeout(300)
+    await expect(queryInput()).not.toBeVisible()
+    await page.evaluate(() => (window as any).__setShowSettings(false))
+  })
 })

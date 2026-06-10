@@ -268,6 +268,16 @@ export function SettingsPane() {
               </span>
             </div>
           </div>
+          <div className="text-xs text-[#9ca3af] -mt-2 px-1">
+            <button
+              data-testid="settings-open-memory-panel"
+              onClick={() => window.dispatchEvent(new CustomEvent('termpolis:openMemory'))}
+              className="text-[#0078d4] hover:underline"
+            >
+              Open the Memory panel
+            </button>
+            {' '}(Ctrl+Shift+M) — stats, search, indexing, cross-machine sync.
+          </div>
           <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
             <button
               onClick={toggleTelemetry}
