@@ -228,6 +228,9 @@ contextBridge.exposeInMainWorld('agentActivity', {
     ipcRenderer.on('agentActivity:event', handler)
     return () => ipcRenderer.removeListener('agentActivity:event', handler)
   },
+  // Test-only: drive a synthetic event through the real bus. Inert in production —
+  // the main-side handler is registered only under NODE_ENV=test.
+  __testPublish: (event: unknown) => ipcRenderer.invoke('agentActivity:__test_publish', { event }),
 })
 
 // Auto-updater — status + install trigger for the update banner in the renderer.

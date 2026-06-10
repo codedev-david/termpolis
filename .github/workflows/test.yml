@@ -171,6 +171,12 @@ jobs:
       # and ensures the mcpServers wrapper shape is preserved.
       - name: Plugin .mcp.json shape and adapter path
         run: xvfb-run --auto-servernum npx playwright test e2e/plugin-mcp-config.spec.ts
+      # Context-pressure gate: proves the live status-bar pill renders, escalates
+      # (warn -> critical), and hides — driven through the REAL agent-event bus in the
+      # running app (publish -> IPC push -> hook -> computePressure -> component), not
+      # just unit mocks. Closes the "does it actually show up live" gap.
+      - name: Context-pressure indicator renders + escalates
+        run: xvfb-run --auto-servernum npx playwright test e2e/context-pressure.spec.ts
       # Report-a-Problem gate: proves the Help-modal entry point, the
       # diagnostics IPC round-trip, and the openExternal handler are all
       # wired. Stubs shell.openExternal so no real browser launches.

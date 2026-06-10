@@ -88,6 +88,7 @@ import {
 } from './swarmManager'
 import {
   initEventBus, query as queryEvents, subscribe as subscribeEvents,
+  publish as publishEvent,
   getRingSize, getDroppedCount, shutdownEventBus,
   type AgentEvent, type EventFilter,
 } from './agentEventBus'
@@ -1149,6 +1150,19 @@ ipcMain.handle('agentActivity:stats', async () => {
   try { return ok({ ringSize: getRingSize(), dropped: getDroppedCount() }) }
   catch (e: any) { return err(e.message) }
 })
+
+// Test-only seam: e2e drives a synthetic agent event through the REAL bus so the
+// renderer receives it via the exact same push path as live watcher events. Only
+// registered under NODE_ENV=test, so production has no way to inject events.
+if (process.env.NODE_ENV === 'test') {
+  ipcMain.handle('agentActivity:__test_publish', async (_, { event }: { event?: Partial<AgentEvent> } = {}) => {
+    try {
+      if (!event || typeof event !== 'object') return err('event required')
+      publishEvent(event as Omit<AgentEvent, 'id' | 'ts'> & { ts?: number })
+      return ok(true)
+    } catch (e: any) { return err(e.message) }
+  })
+}
 
 // ---- Context Pin IPC ----
 ipcMain.handle('contextPins:list', async (_, { cwd }: { cwd: string }) => {

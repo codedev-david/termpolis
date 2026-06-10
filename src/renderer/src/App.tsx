@@ -187,6 +187,11 @@ export default function App() {
       useTerminalStore.getState().setSwarmCompletionSummary(summary)
     ;(window as any).__setSwarmNotification = (n: any) =>
       useTerminalStore.getState().setSwarmNotification(n)
+    // Focus a terminal id — used by e2e/context-pressure.spec.ts to scope the
+    // status-bar pressure indicator to a known terminal (narrow setter, not the
+    // full store, per the convention above).
+    ;(window as any).__setActiveTerminal = (id: string | null) =>
+      useTerminalStore.getState().setActiveTerminal(id)
     ;(window as any).__setShowSettings = (show: boolean) =>
       useTerminalStore.getState().setShowSettings(show)
     // Inject a hidden "test terminal" with a chosen cwd and mark it active.
