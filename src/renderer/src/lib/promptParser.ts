@@ -7,14 +7,18 @@
 // or: "user@host MINGW64 /c/Users/name/repos (branch)"
 const GIT_BASH_PROMPT = /MINGW\d*\s+([^\s(]+(?:\s[^\s(]+)*)\s*(?:\(([^)]+)\))?/
 
-// PowerShell prompt: "PS C:\Users\name\repos\project>"
-const PS_PROMPT = /PS\s+([A-Za-z]:\\[^>]+)>/
+// PowerShell prompt: "PS C:\Users\name\repos\project>" — anchored to the line
+// start so prompts QUOTED inside other output (AI answers, pasted context)
+// are not mistaken for the live prompt.
+const PS_PROMPT = /^PS\s+([A-Za-z]:\\[^>]+)>/
 
 // Generic path detection: lines ending with $ or > preceded by a path
 const GENERIC_PROMPT = /([~\/][^\s$>]+|\b[A-Za-z]:\\[^\s$>]+)\s*[$>]\s*$/
 
-// Git branch in parentheses: "(branch-name)" — common across many prompt configs
-const BRANCH_IN_PARENS = /\(([^)]+)\)\s*[$>]?\s*$/
+// Git branch in parentheses: "(branch-name)" — common across many prompt
+// configs. The content must look like a git ref (no spaces, ref charset);
+// otherwise TUI hints like "(esc to interrupt)" become the "branch".
+const BRANCH_IN_PARENS = /\(([A-Za-z0-9][\w./-]*)\)\s*[$>]?\s*$/
 
 export interface PromptInfo {
   cwd: string | null

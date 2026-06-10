@@ -134,5 +134,29 @@ describe('promptParser', () => {
       expect(result.cwd).toBe('~/My Documents/project')
       expect(result.gitBranch).toBe('main')
     })
+
+    // -----------------------------------------------------------------
+    // Agent-TUI noise rejection — AI agents print path/branch-shaped text
+    // (spinner hints, quoted prompts in code samples, injected context)
+    // that must never be mistaken for the live shell prompt.
+    // -----------------------------------------------------------------
+    it('does not treat TUI hint text in parens as a git branch', () => {
+      const result = parsePromptFromOutput('✻ Thinking… (esc to interrupt)', 'bash')
+      expect(result.gitBranch).toBeNull()
+    })
+
+    it('rejects paren text with spaces; accepts ref-like branch names', () => {
+      expect(parsePromptFromOutput('~/repos/app (my feature) $', 'bash').gitBranch).toBeNull()
+      expect(parsePromptFromOutput('~/repos/app (feature/x-1.2) $', 'bash').gitBranch).toBe('feature/x-1.2')
+    })
+
+    it('rejects keyboard-hint parens like (ctrl+c to quit)', () => {
+      expect(parsePromptFromOutput('Press (ctrl+c to quit)', 'bash').gitBranch).toBeNull()
+    })
+
+    it('requires a PowerShell prompt to start the line (ignores prompts quoted mid-text)', () => {
+      expect(parsePromptFromOutput('Try this: PS C:\\other> npm i', 'powershell').cwd).toBeNull()
+      expect(parsePromptFromOutput('PS C:\\repos\\app>', 'powershell').cwd).toBe('C:\\repos\\app')
+    })
   })
 })

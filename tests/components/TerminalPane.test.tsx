@@ -169,6 +169,7 @@ vi.mock('../../src/renderer/src/lib/outputPatterns', () => ({
   DIFF_PATTERN: /^diff --git /m,
   ERROR_PATTERN: /command not found|not recognized/i,
   CONTEXT_LIMIT_PATTERN: /context limit/i,
+  COMPACTION_PATTERN: /compacting conversation/i,
 }))
 
 // --- Mock hooks ---
@@ -890,6 +891,38 @@ describe('TerminalPane', () => {
         mockOnTerminalDataCb?.('term-1', 'some agent output')
       })
       expect(mocks.mockProcessAgentDetection).toHaveBeenCalled()
+    })
+
+    it('does not parse prompt info while an AI agent owns the terminal', async () => {
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      ;(useAgentDetection as any).mockReturnValue({
+        detectedAgent: { name: 'claude' },
+        costInfo: null,
+        processAgentDetection: mocks.mockProcessAgentDetection,
+        agentDetectedRef: { current: true },
+      })
+      const { parsePromptFromOutput } = await import('../../src/renderer/src/lib/promptParser')
+      render(<TerminalPane {...defaultProps} />)
+      act(() => {
+        mockOnTerminalDataCb?.('term-1', 'PS C:\\bogus-from-agent-output> ')
+      })
+      expect(parsePromptFromOutput).not.toHaveBeenCalled()
+      // Reset for subsequent tests in this describe.
+      ;(useAgentDetection as any).mockReturnValue({
+        detectedAgent: null,
+        costInfo: null,
+        processAgentDetection: mocks.mockProcessAgentDetection,
+        agentDetectedRef: { current: false },
+      })
+    })
+
+    it('parses prompt info from output when no agent is active', async () => {
+      const { parsePromptFromOutput } = await import('../../src/renderer/src/lib/promptParser')
+      render(<TerminalPane {...defaultProps} />)
+      act(() => {
+        mockOnTerminalDataCb?.('term-1', 'PS C:\\real-shell> ')
+      })
+      expect(parsePromptFromOutput).toHaveBeenCalled()
     })
 
     it('records output when recording is active', () => {

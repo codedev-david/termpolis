@@ -406,9 +406,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Strip ANSI for processing
       const stripped = outputBufferRef.current.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
 
-      // Parse prompt for cwd and git branch — throttled to once per 500ms
+      // Parse prompt for cwd and git branch — throttled to once per 500ms.
+      // Skipped while an AI agent owns the terminal: agent TUI output and
+      // injected context are full of path/branch-shaped text that is NOT a
+      // live shell prompt, and parsing it corrupts the status bar cwd/branch
+      // and the store cwd the Git Panel follows.
       const now = Date.now()
-      if (now - lastPromptParseRef.current > 500) {
+      if (!agent.agentDetectedRef.current && now - lastPromptParseRef.current > 500) {
         lastPromptParseRef.current = now
         const promptInfo = parsePromptFromOutput(stripped, shellType)
         if (promptInfo.cwd && !disposed) {
