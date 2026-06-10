@@ -412,7 +412,7 @@ describe('ring buffer cap', () => {
   })
 
   it('defaults to a large semantic window', () => {
-    expect(memoryStats().capacity).toBe(100_000)
+    expect(memoryStats().capacity).toBe(500_000)
   })
 })
 

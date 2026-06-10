@@ -45,13 +45,15 @@ export interface MemorySearchResult extends MemoryEntry {
 // Semantic-search window kept hot in memory. The durable JSONL on disk is
 // append-only and retains everything written; this only caps how many of the
 // most-recent chunks stay loaded for vector/keyword search, to bound RAM.
-// Embeddings now live in a packed Float32Array (~1.5 KB/chunk — half the old
-// per-entry number[] cost; see vectorStore.ts), so the window can be larger for
-// the same memory: 100k chunks is years of real usage. Configurable for tests.
-// (A truly-unbounded corpus would want an on-disk HNSW/ANN index — the planned
-// next step, for which this packed store is the foundation. Keyword recall
-// degrades gracefully regardless.)
-const DEFAULT_MAX_ENTRIES = 100_000
+// The machinery to carry a 500k window shipped across v1.11.66–69: embeddings
+// live in a packed Float32Array (~1.5 KB/chunk; vectorStore.ts), the HNSW graph
+// makes search sub-linear (hnsw.ts, recall-gated, brute-force fallback), its
+// build is lazy/yielded so it can't freeze startup, and the graph persists to
+// disk so relaunches skip the rebuild. Worst-case RAM at a FULL window is real
+// but acceptable for a dev tool: ~750 MB of vectors (500k × 384 dims × 4 B)
+// plus entry text — and a corpus only pays for what it actually has; typical
+// brains are far below the cap. Configurable for tests.
+const DEFAULT_MAX_ENTRIES = 500_000
 let maxEntries = DEFAULT_MAX_ENTRIES
 const MAX_CONTENT = 16 * 1024      // cap per-entry content size
 const MAX_EMBEDDING_DIM = 1024
