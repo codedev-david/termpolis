@@ -49,10 +49,6 @@ const mocks = vi.hoisted(() => {
     mockStartRecording: vi.fn(),
     mockStopRecording: vi.fn(),
     mockAppendRecordingEntry: vi.fn(),
-    mockProcessContextLimit: vi.fn(),
-    mockDismissContextLimit: vi.fn(),
-    mockSetShowHandoffModal: vi.fn(),
-    mockHandleHandoffSwitchTo: vi.fn(),
   }
 })
 
@@ -168,7 +164,6 @@ vi.mock('../../src/renderer/src/lib/promptParser', () => ({
 vi.mock('../../src/renderer/src/lib/outputPatterns', () => ({
   DIFF_PATTERN: /^diff --git /m,
   ERROR_PATTERN: /command not found|not recognized/i,
-  CONTEXT_LIMIT_PATTERN: /context limit/i,
   COMPACTION_PATTERN: /compacting conversation/i,
 }))
 
@@ -208,19 +203,6 @@ vi.mock('../../src/renderer/src/hooks/useSessionRecording', () => ({
   })),
 }))
 
-vi.mock('../../src/renderer/src/hooks/useContextLimit', () => ({
-  useContextLimit: vi.fn(() => ({
-    contextLimitReached: false,
-    showHandoffModal: false,
-    handoffContext: null,
-    processContextLimit: mocks.mockProcessContextLimit,
-    dismissContextLimit: mocks.mockDismissContextLimit,
-    setShowHandoffModal: mocks.mockSetShowHandoffModal,
-    handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-    contextLimitFiredRef: { current: false },
-  })),
-}))
-
 // --- Mock child components ---
 vi.mock('../../src/renderer/src/components/CompletionDropdown/CompletionDropdown', () => ({
   CompletionDropdown: () => <div data-testid="completion-dropdown">CompletionDropdown</div>,
@@ -242,17 +224,6 @@ vi.mock('../../src/renderer/src/components/DiffViewer/DiffViewer', () => ({
     <div data-testid="diff-viewer">
       DiffViewer
       <button data-testid="diff-close" onClick={onClose}>Close</button>
-    </div>
-  ),
-}))
-vi.mock('../../src/renderer/src/components/AgentHandoff/AgentHandoffBanner', () => ({
-  AgentHandoffBanner: () => <div data-testid="agent-handoff-banner">AgentHandoffBanner</div>,
-}))
-vi.mock('../../src/renderer/src/components/AgentHandoff/AgentHandoffModal', () => ({
-  AgentHandoffModal: ({ onConfirm, onCancel }: any) => (
-    <div data-testid="agent-handoff-modal">
-      <button data-testid="handoff-confirm" onClick={() => onConfirm('claude', 'prompt', true)}>Confirm</button>
-      <button data-testid="handoff-cancel" onClick={onCancel}>Cancel</button>
     </div>
   ),
 }))
@@ -1274,182 +1245,6 @@ describe('TerminalPane', () => {
       vi.advanceTimersByTime(10)
       expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', 80, 24)
       vi.useRealTimers()
-    })
-  })
-
-  // =====================================================
-  // 21. Agent handoff confirm
-  // =====================================================
-  describe('agent handoff confirm', () => {
-    it('handleHandoffConfirm creates new terminal and hands off', async () => {
-      // Set up context limit hook to show handoff modal
-      const { useContextLimit } = await import('../../src/renderer/src/hooks/useContextLimit')
-      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
-
-      ;(useContextLimit as any).mockReturnValue({
-        contextLimitReached: true,
-        showHandoffModal: true,
-        handoffContext: {
-          previousAgent: 'claude',
-          taskDescription: 'test task',
-          gitBranch: 'main',
-          modifiedFiles: [],
-          recentCommands: [],
-          diffSummary: '',
-        },
-        processContextLimit: mocks.mockProcessContextLimit,
-        dismissContextLimit: mocks.mockDismissContextLimit,
-        setShowHandoffModal: mocks.mockSetShowHandoffModal,
-        handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-        contextLimitFiredRef: { current: true },
-      })
-
-      ;(useAgentDetection as any).mockReturnValue({
-        detectedAgent: { name: 'claude' },
-        costInfo: null,
-        processAgentDetection: mocks.mockProcessAgentDetection,
-        agentDetectedRef: { current: true },
-      })
-
-      render(<TerminalPane {...defaultProps} />)
-
-      // The handoff modal should be shown
-      expect(screen.getByTestId('agent-handoff-modal')).toBeInTheDocument()
-
-      // Click confirm in the mock modal (calls onConfirm with 'claude', 'prompt', true)
-      fireEvent.click(screen.getByTestId('handoff-confirm'))
-
-      expect(mocks.mockSetShowHandoffModal).toHaveBeenCalledWith(false)
-      expect(mocks.mockDismissContextLimit).toHaveBeenCalled()
-      expect(mocks.mockAddTerminal).toHaveBeenCalled()
-
-      // Reset mock overrides
-      ;(useContextLimit as any).mockReturnValue({
-        contextLimitReached: false,
-        showHandoffModal: false,
-        handoffContext: null,
-        processContextLimit: mocks.mockProcessContextLimit,
-        dismissContextLimit: mocks.mockDismissContextLimit,
-        setShowHandoffModal: mocks.mockSetShowHandoffModal,
-        handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-        contextLimitFiredRef: { current: false },
-      })
-      ;(useAgentDetection as any).mockReturnValue({
-        detectedAgent: null,
-        costInfo: null,
-        processAgentDetection: mocks.mockProcessAgentDetection,
-        agentDetectedRef: { current: false },
-      })
-    })
-
-    it('handleHandoffConfirm with keepOldTerminal=false kills old terminal', async () => {
-      const { useContextLimit } = await import('../../src/renderer/src/hooks/useContextLimit')
-      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
-
-      // Override the mock AgentHandoffModal to pass keepOldTerminal=false
-      const { AgentHandoffModal } = await import('../../src/renderer/src/components/AgentHandoff/AgentHandoffModal')
-
-      ;(useContextLimit as any).mockReturnValue({
-        contextLimitReached: true,
-        showHandoffModal: true,
-        handoffContext: {
-          previousAgent: 'claude',
-          taskDescription: 'test task',
-          gitBranch: 'main',
-          modifiedFiles: [],
-          recentCommands: [],
-          diffSummary: '',
-        },
-        processContextLimit: mocks.mockProcessContextLimit,
-        dismissContextLimit: mocks.mockDismissContextLimit,
-        setShowHandoffModal: mocks.mockSetShowHandoffModal,
-        handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-        contextLimitFiredRef: { current: true },
-      })
-
-      ;(useAgentDetection as any).mockReturnValue({
-        detectedAgent: { name: 'claude' },
-        costInfo: null,
-        processAgentDetection: mocks.mockProcessAgentDetection,
-        agentDetectedRef: { current: true },
-      })
-
-      render(<TerminalPane {...defaultProps} />)
-
-      // The handoff modal mock sends keepOldTerminal=true, which means it won't kill old terminal
-      // This tests the rendering path when the modal is present
-      expect(screen.getByTestId('agent-handoff-modal')).toBeInTheDocument()
-
-      // Cancel the handoff
-      fireEvent.click(screen.getByTestId('handoff-cancel'))
-      expect(mocks.mockSetShowHandoffModal).toHaveBeenCalledWith(false)
-
-      // Reset mock overrides
-      ;(useContextLimit as any).mockReturnValue({
-        contextLimitReached: false,
-        showHandoffModal: false,
-        handoffContext: null,
-        processContextLimit: mocks.mockProcessContextLimit,
-        dismissContextLimit: mocks.mockDismissContextLimit,
-        setShowHandoffModal: mocks.mockSetShowHandoffModal,
-        handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-        contextLimitFiredRef: { current: false },
-      })
-      ;(useAgentDetection as any).mockReturnValue({
-        detectedAgent: null,
-        costInfo: null,
-        processAgentDetection: mocks.mockProcessAgentDetection,
-        agentDetectedRef: { current: false },
-      })
-    })
-  })
-
-  // =====================================================
-  // 22. Agent handoff banner
-  // =====================================================
-  describe('agent handoff banner', () => {
-    it('shows agent handoff banner when context limit reached with detected agent', async () => {
-      const { useContextLimit } = await import('../../src/renderer/src/hooks/useContextLimit')
-      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
-
-      ;(useContextLimit as any).mockReturnValue({
-        contextLimitReached: true,
-        showHandoffModal: false,
-        handoffContext: null,
-        processContextLimit: mocks.mockProcessContextLimit,
-        dismissContextLimit: mocks.mockDismissContextLimit,
-        setShowHandoffModal: mocks.mockSetShowHandoffModal,
-        handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-        contextLimitFiredRef: { current: true },
-      })
-
-      ;(useAgentDetection as any).mockReturnValue({
-        detectedAgent: { name: 'claude' },
-        costInfo: null,
-        processAgentDetection: mocks.mockProcessAgentDetection,
-        agentDetectedRef: { current: true },
-      })
-
-      render(<TerminalPane {...defaultProps} />)
-      expect(screen.getByTestId('agent-handoff-banner')).toBeInTheDocument()
-
-      // Reset
-      ;(useContextLimit as any).mockReturnValue({
-        contextLimitReached: false,
-        showHandoffModal: false,
-        handoffContext: null,
-        processContextLimit: mocks.mockProcessContextLimit,
-        dismissContextLimit: mocks.mockDismissContextLimit,
-        setShowHandoffModal: mocks.mockSetShowHandoffModal,
-        handleHandoffSwitchTo: mocks.mockHandleHandoffSwitchTo,
-        contextLimitFiredRef: { current: false },
-      })
-      ;(useAgentDetection as any).mockReturnValue({
-        detectedAgent: null,
-        costInfo: null,
-        processAgentDetection: mocks.mockProcessAgentDetection,
-        agentDetectedRef: { current: false },
-      })
     })
   })
 

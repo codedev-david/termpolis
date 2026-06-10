@@ -514,9 +514,9 @@ test.describe.serial('10. Help Modal', () => {
     await ss('10.5-help-swarm')
   })
 
-  test('10.6 has Context Handoff section', async () => {
-    const handoff = page.locator('text=Context Handoff').first()
-    const visible = await handoff.isVisible().catch(() => false)
+  test('10.6 has Memory Auto-Recall section', async () => {
+    const recall = page.locator('text=Memory Auto-Recall').first()
+    const visible = await recall.isVisible().catch(() => false)
     expect(visible).toBeTruthy()
   })
 

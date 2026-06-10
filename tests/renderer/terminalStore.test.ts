@@ -766,17 +766,6 @@ describe('terminalStore', () => {
     })
   })
 
-  describe('setLastHandoffContext', () => {
-    it('sets and clears last handoff context', () => {
-      const ctx = { previousAgent: 'claude', taskDescription: 'fix tests' } as any
-      useTerminalStore.getState().setLastHandoffContext(ctx)
-      expect(useTerminalStore.getState().lastHandoffContext).toEqual(ctx)
-
-      useTerminalStore.getState().setLastHandoffContext(null)
-      expect(useTerminalStore.getState().lastHandoffContext).toBeNull()
-    })
-  })
-
   describe('setAgentRatingOverrides', () => {
     it('sets agent rating overrides', () => {
       const overrides = { claude: { refactoring: 10 } } as any

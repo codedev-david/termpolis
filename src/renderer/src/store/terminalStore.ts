@@ -3,7 +3,6 @@ import { v4 as uuid } from 'uuid'
 import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
-import type { HandoffContext } from '../lib/contextCapture'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 
 // ---- Pane tree helpers ----
@@ -72,7 +71,6 @@ interface TerminalStore {
   promptTemplates: PromptTemplate[]
   userWorkflows: WorkflowTemplate[]
   conversations: ConversationIndex[]
-  lastHandoffContext: HandoffContext | null
   swarmActive: boolean
   swarmAgents: SwarmAgentEntry[]
   launchingAgent: string | null
@@ -108,7 +106,6 @@ interface TerminalStore {
   setUserWorkflows: (workflows: WorkflowTemplate[]) => void
   addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
   clearConversations: (terminalId: string) => void
-  setLastHandoffContext: (ctx: HandoffContext | null) => void
   setSwarmActive: (active: boolean) => void
   setSwarmAgents: (agents: SwarmAgentEntry[]) => void
   updateSwarmAgentStatus: (terminalId: string, status: SwarmAgentStatus, summary?: string) => void
@@ -133,7 +130,6 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   promptTemplates: [],
   userWorkflows: [],
   conversations: [],
-  lastHandoffContext: null,
   swarmActive: false,
   swarmAgents: [],
   launchingAgent: null,
@@ -306,8 +302,6 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   clearConversations: (terminalId) => set(s => ({
     conversations: s.conversations.filter(c => c.terminalId !== terminalId),
   })),
-
-  setLastHandoffContext: (ctx) => set({ lastHandoffContext: ctx }),
 
   setSwarmActive: (active) => set({ swarmActive: active }),
 

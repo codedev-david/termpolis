@@ -197,7 +197,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li>Termpolis runs an MCP server on <strong>localhost:9315</strong> (shown in the bottom bar)</li>
               <li>AI agents can create terminals, run commands, read output, and manage your workspace</li>
               <li><strong>Auto-registers with Claude Code</strong> — on launch, Termpolis adds itself to your Claude Code settings automatically. No manual config needed.</li>
-              <li>17 tools: terminal management, file tree, git status, swarm coordination, and shared memory</li>
+              <li>18 tools: terminal management, file tree, git status, swarm coordination, and shared memory (search, write, list, and the background primer)</li>
               <li>Secured with a 256-bit auth token (rotates every launch, localhost only)</li>
               <li>CLI tool available: <code>termpolis-cli list</code>, <code>termpolis-cli create "Dev"</code>, etc.</li>
             </ul>
@@ -219,17 +219,17 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             </ul>
           </section>
 
-          {/* Context Handoff */}
+          {/* Memory auto-recall */}
           <section>
             <h3 className="font-semibold text-[#D97706] mb-1.5 flex items-center gap-2">
-              <i className="fa-solid fa-arrow-right-arrow-left text-xs"></i> Agent Context Handoff
+              <i className="fa-solid fa-brain text-xs"></i> Memory Auto-Recall
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li>When an AI agent <strong>runs out of context/tokens</strong>, an amber banner appears automatically</li>
-              <li>Click <strong>Switch to Codex</strong>, <strong>Gemini</strong>, or <strong>Qwen Code</strong> to hand off instantly</li>
-              <li>Your working context transfers automatically: task description, git branch, modified files, recent commands, and diff summary</li>
-              <li>Click <strong>More Options</strong> to preview/edit the handoff prompt before switching</li>
-              <li>Choose to keep the old terminal open for reference or close it</li>
+              <li>When an AI agent launches, Termpolis adds a <strong>one-line note</strong> to its input pointing it at the <code className="bg-[#3c3c3c] px-1 rounded">memory_primer</code> MCP tool — the agent loads your saved memory <strong>behind the scenes</strong>, with no wall of text in the terminal</li>
+              <li><strong>This repo/directory first</strong> — memories for the current project (past conversations leading) take the top slots; cross-project context follows, clearly labeled</li>
+              <li><strong>Background only</strong> — the agent holds the memory as context and waits for your instruction; it will not start acting on past work by itself</li>
+              <li>After Claude Code <strong>compacts</strong> its conversation, the pointer is re-injected so the agent can recover the detail it summarized away</li>
+              <li>Both behaviors are opt-out in <strong>Settings → AI Memory</strong>; the note only appears when relevant memory actually exists</li>
             </ul>
           </section>
 

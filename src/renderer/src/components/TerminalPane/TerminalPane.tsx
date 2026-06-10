@@ -15,8 +15,6 @@ import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
-import { AgentHandoffBanner } from '../AgentHandoff/AgentHandoffBanner'
-import { AgentHandoffModal } from '../AgentHandoff/AgentHandoffModal'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { useTerminalStore } from '../../store/terminalStore'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
@@ -25,7 +23,6 @@ import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
 import { useAutoPrimer, useCompactionReprimer } from '../../hooks/useAutoPrimer'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
-import { useContextLimit } from '../../hooks/useContextLimit'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
 
@@ -89,12 +86,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // summarized away from the durable memory brain (opt-out in Settings).
   const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)
   const recording = useSessionRecording(terminalName, shellType)
-  const contextLimit = useContextLimit(
-    cwd,
-    parsedCwd,
-    agent.detectedAgent?.name ?? null,
-    outputBufferRef,
-  )
 
   const handleExport = useCallback((mode: 'full' | 'visible') => {
     const term = termRef.current
@@ -426,11 +417,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Agent detection + cost tracking + conversation parsing
       agent.processAgentDetection(stripped, data.length, terminalId, terminalName)
 
-      // Context limit detection (only when agent is active)
-      if (agent.agentDetectedRef.current) {
-        contextLimit.processContextLimit(stripped)
-      }
-
       // Re-prime memory after the agent compacts its conversation (settles, then
       // re-injects recalled context). Stable callback; internally gated + debounced.
       onCompactionOutput(stripped)
@@ -503,51 +489,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }, 0)
     }
   }, [isVisible, terminalId])
-
-  // Agent handoff: confirm and create new terminal
-  const handleHandoffConfirm = useCallback((agentCommand: string, prompt: string, keepOldTerminal: boolean) => {
-    contextLimit.setShowHandoffModal(false)
-    contextLimit.dismissContextLimit()
-
-    // Create a new terminal for the new agent
-    const store = useTerminalStore.getState()
-    const newId = uuid()
-    const agentLabel = agentCommand.charAt(0).toUpperCase() + agentCommand.slice(1)
-    const newTerminal = {
-      id: newId,
-      name: `${agentLabel} (handoff)`,
-      color: '#D97706',
-      shellType: shellType,
-      cwd: parsedCwd || cwd,
-      fontSize,
-      theme,
-      fontFamily,
-    }
-
-    // Add the terminal to the store
-    store.addTerminal(newTerminal)
-
-    // Create the PTY
-    window.termpolis.createTerminal(newId, shellType, parsedCwd || cwd).then(() => {
-      // Wait for shell to initialize, then launch the agent and paste the handoff prompt
-      setTimeout(() => {
-        if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
-        // Start the agent
-        window.termpolis.writeToTerminal(newId, agentCommand + '\r')
-        // Wait for agent to initialize, then paste the handoff prompt
-        setTimeout(() => {
-          if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
-          window.termpolis.writeToTerminal(newId, prompt + '\r')
-        }, 2000)
-      }, 1000)
-    })
-
-    // Optionally close the old terminal
-    if (!keepOldTerminal) {
-      window.termpolis.killTerminal(terminalId)
-      store.removeTerminal(terminalId)
-    }
-  }, [terminalId, shellType, parsedCwd, cwd, fontSize, theme, fontFamily, contextLimit])
 
   return (
     <div
@@ -778,13 +719,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             onDismiss={() => setFixSuggestion(null)}
           />
         )}
-        {contextLimit.contextLimitReached && agent.detectedAgent && !contextLimit.showHandoffModal && (
-          <AgentHandoffBanner
-            previousAgent={agent.detectedAgent.name}
-            onSwitchTo={contextLimit.handleHandoffSwitchTo}
-            onDismiss={contextLimit.dismissContextLimit}
-          />
-        )}
         {diffDetected && (
           <button
             className="absolute top-2 right-2 z-40 px-2.5 py-1 text-[11px] bg-[#1e3a5f] hover:bg-[#264f78] text-[#82aaff] rounded border border-[#3c5f8a] cursor-pointer shadow-lg"
@@ -808,13 +742,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         <DiffViewer
           rawDiff={outputBufferRef.current}
           onClose={() => setShowDiffViewer(false)}
-        />
-      )}
-      {contextLimit.showHandoffModal && contextLimit.handoffContext && (
-        <AgentHandoffModal
-          context={contextLimit.handoffContext}
-          onConfirm={handleHandoffConfirm}
-          onCancel={() => contextLimit.setShowHandoffModal(false)}
         />
       )}
     </div>

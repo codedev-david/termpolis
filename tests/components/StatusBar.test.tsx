@@ -262,10 +262,11 @@ describe('StatusBar', () => {
     )
   })
 
-  it('help dialog shows context handoff section', () => {
+  it('help dialog shows memory auto-recall section', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    expect(screen.getByText('Agent Context Handoff')).toBeInTheDocument()
+    expect(screen.getByText('Memory Auto-Recall')).toBeInTheDocument()
+    expect(screen.getByText('memory_primer')).toBeInTheDocument()
   })
 
   it('help dialog shows workspaces section', () => {
@@ -314,10 +315,10 @@ describe('StatusBar', () => {
     window.removeEventListener('termpolis:reopenOnboarding', listener)
   })
 
-  it('MCP section reflects the real 17-tool count', () => {
+  it('MCP section reflects the real 18-tool count', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    expect(screen.getByText(/17 tools/)).toBeInTheDocument()
+    expect(screen.getByText(/18 tools/)).toBeInTheDocument()
   })
 
   // -- Observability + security sections --
