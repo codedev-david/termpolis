@@ -174,6 +174,11 @@ export interface TermpolisAPI {
   memorySetSyncPassphrase: (passphrase: string) => Promise<IpcResponse<MemorySyncStatus>>
   memoryDisableSyncEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
 
+  // Test-only seams (inert in production — main handlers registered only under
+  // NODE_ENV=test). Used by e2e/compaction-reprime.spec.ts.
+  __testTerminalData?: (id: string, data: string) => Promise<IpcResponse<boolean>>
+  __testTerminalWrites?: () => Promise<IpcResponse<Array<{ id: string; data: string }>>>
+
   // Telemetry — opt-in mirror to main process
   setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
   getTelemetryOptIn: () => Promise<IpcResponse<boolean>>

@@ -177,6 +177,13 @@ jobs:
       # just unit mocks. Closes the "does it actually show up live" gap.
       - name: Context-pressure indicator renders + escalates
         run: xvfb-run --auto-servernum npx playwright test e2e/context-pressure.spec.ts
+      # Compaction re-primer gate: proves the FULL flow in the running app — a
+      # "Compacting conversation" marker in terminal output triggers a real
+      # bracketed-paste re-prime carrying seeded memory back into the terminal, and
+      # the cooldown prevents a second paste. Covers the TerminalPane wiring + real
+      # injectAutoPrimer that unit tests can't reach.
+      - name: Compaction re-primer pastes recalled memory
+        run: xvfb-run --auto-servernum npx playwright test e2e/compaction-reprime.spec.ts
       # Report-a-Problem gate: proves the Help-modal entry point, the
       # diagnostics IPC round-trip, and the openExternal handler are all
       # wired. Stubs shell.openExternal so no real browser launches.

@@ -148,6 +148,12 @@ const api: TermpolisAPI = {
   memorySetSyncPassphrase: (passphrase: string) => ipcRenderer.invoke('memory:set-sync-passphrase', { passphrase }),
   memoryDisableSyncEncryption: () => ipcRenderer.invoke('memory:disable-sync-encryption'),
 
+  // Test-only (inert in production — handlers registered only under NODE_ENV=test):
+  // feed synthetic terminal output and read back raw terminal writes, so e2e can
+  // exercise the compaction re-prime end to end through onTerminalData.
+  __testTerminalData: (id: string, data: string) => ipcRenderer.invoke('terminal:__test_data', { id, data }),
+  __testTerminalWrites: () => ipcRenderer.invoke('terminal:__test_writes'),
+
   // Telemetry — push opt-in changes to main so Sentry/updater pings can gate.
   setTelemetryOptIn: (value: boolean) =>
     ipcRenderer.invoke('telemetry:set-opt-in', { value }),

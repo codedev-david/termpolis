@@ -313,7 +313,11 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
   } catch (e: any) { return err(e.message) }
 })
 
+// Test-only: record raw terminal writes so e2e can assert the compaction re-prime
+// paste actually reached a terminal. Only populated under NODE_ENV=test.
+const __testTerminalWrites: Array<{ id: string; data: string }> = []
 ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
+  if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
   // Strict-mode enforcement: if the user is launching `gemini` on a free-tier
   // account and the operator has enabled the lock, intercept BEFORE forwarding
   // to the PTY. We write a refusal banner directly back to the terminal stream
@@ -1162,6 +1166,16 @@ if (process.env.NODE_ENV === 'test') {
       return ok(true)
     } catch (e: any) { return err(e.message) }
   })
+  // Inject synthetic terminal output for a terminal id, so e2e can feed an agent
+  // signature + a "Compacting conversation" marker into the real onTerminalData path.
+  ipcMain.handle('terminal:__test_data', async (_, { id, data }: { id?: string; data?: string } = {}) => {
+    try {
+      if (id) mainWindow?.webContents.send('terminal:data', id, data ?? '')
+      return ok(true)
+    } catch (e: any) { return err(e.message) }
+  })
+  // Read back the raw terminal writes recorded above (the re-prime paste lands here).
+  ipcMain.handle('terminal:__test_writes', async () => ok([...__testTerminalWrites]))
 }
 
 // ---- Context Pin IPC ----
