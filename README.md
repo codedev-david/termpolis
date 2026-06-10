@@ -250,7 +250,6 @@ When you're running multiple AI agents concurrently (or a whole swarm), you need
 - **Swarm Dashboard enhancements** — the dashboard (`Ctrl+Shift+S`) now shows live token burn per agent, tasks in kanban columns, and the full conductor message log. Every panel streams from the same event bus — no polling lag.
 
 ### Intelligence
-- **AI Command Suggestions** — type natural language in any terminal and get instant shell command suggestions. 30+ built-in patterns covering file search, git operations, npm/yarn, Docker, process management, system info, compression, and downloads. Captures values from your input (e.g., "kill port 3000" becomes `kill $(lsof -t -i:3000)`). Tab to accept, arrow keys to navigate, Esc to dismiss. Zero latency — all local pattern matching, no API calls.
 - **Command autocomplete** — VS Code-style dropdown with command names, subcommands, and flags. Bundled specs for 20+ common tools (git, docker, npm, kubectl, curl, and more)
 - **Command auto-fix** — mistype a command? A green banner suggests the correction. Press Enter to run or Esc to ignore. Detects typos, permission errors, wrong flags, and more
 - **Command history search** — search across all terminals with Ctrl+Shift+H

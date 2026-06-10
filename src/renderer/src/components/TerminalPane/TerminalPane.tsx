@@ -19,7 +19,6 @@ import { AgentHandoffBanner } from '../AgentHandoff/AgentHandoffBanner'
 import { AgentHandoffModal } from '../AgentHandoff/AgentHandoffModal'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { useTerminalStore } from '../../store/terminalStore'
-import { isNaturalLanguage, getSuggestions } from '../../lib/aiSuggestions'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -57,10 +56,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const inputBufferRef = useRef('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
-
-  // AI command suggestion state
-  const [aiSuggestions, setAiSuggestions] = useState<{ command: string; description: string }[]>([])
-  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0)
 
   // Command fix banner state
   const [fixSuggestion, setFixSuggestion] = useState<string | null>(null)
@@ -329,36 +324,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     })
 
     term.onData((data) => {
-      // Tab: accept AI suggestion if visible
-      if (data === '\t' && aiSuggestions.length > 0) {
-        const selected = aiSuggestions[selectedSuggestionIndex]
-        if (selected) {
-          // Clear current input from terminal (send backspaces), then type the command
-          const currentLen = inputBufferRef.current.length
-          const backspaces = '\u007f'.repeat(currentLen)
-          window.termpolis.writeToTerminal(terminalId, backspaces)
-          window.termpolis.writeToTerminal(terminalId, selected.command)
-          inputBufferRef.current = selected.command
-          setAiSuggestions([])
-        }
-        return
-      }
-
-      // Up/Down: navigate AI suggestions if visible
-      if (aiSuggestions.length > 0 && (data === '\x1b[A' || data === '\x1b[B')) {
-        setSelectedSuggestionIndex(prev => {
-          if (data === '\x1b[A') return Math.max(0, prev - 1)
-          return Math.min(aiSuggestions.length - 1, prev + 1)
-        })
-        return
-      }
-
-      // Escape: dismiss AI suggestions
-      if (data === '\x1b' && aiSuggestions.length > 0) {
-        setAiSuggestions([])
-        return
-      }
-
       // Ctrl+Space: manually trigger completions
       if (data === '\x00') {
         const input = inputBufferRef.current
@@ -395,9 +360,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
-        // Dismiss dropdown and AI suggestions on Enter
+        // Dismiss dropdown on Enter
         completion.dismissDropdown()
-        if (!disposed) setAiSuggestions([])
       } else if (data === '\u007f') {
         inputBufferRef.current = inputBufferRef.current.slice(0, -1)
         // Re-filter completions after backspace
@@ -413,14 +377,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         // Trigger completions if autocomplete is enabled and input has 2+ chars
         if (completion.autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
           completion.triggerCompletions(inputBufferRef.current)
-        }
-        // AI command suggestions for natural language input
-        const currentInput = inputBufferRef.current
-        if (isNaturalLanguage(currentInput)) {
-          const suggestions = getSuggestions(currentInput)
-          if (!disposed) { setAiSuggestions(suggestions); setSelectedSuggestionIndex(0) }
-        } else if (!disposed) {
-          setAiSuggestions([])
         }
       }
     })
@@ -807,36 +763,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             onAccept={completion.acceptSuggestion}
             onDismiss={completion.dismissDropdown}
           />
-        )}
-        {aiSuggestions.length > 0 && (
-          <div className="absolute bottom-10 left-4 right-4 z-30 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-xl overflow-hidden">
-            <div className="px-3 py-1.5 text-[10px] text-[#22D3EE] border-b border-[#3c3c3c] flex items-center gap-1.5">
-              <i className="fa-solid fa-wand-magic-sparkles"></i>
-              <span className="font-semibold">AI Suggestion</span>
-            </div>
-            {aiSuggestions.map((s, i) => (
-              <div
-                key={s.command}
-                className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${
-                  i === selectedSuggestionIndex ? 'bg-[#04395e] text-white' : 'text-[#d4d4d4] hover:bg-[#2a2d2e]'
-                }`}
-                onClick={() => {
-                  const currentLen = inputBufferRef.current.length
-                  const backspaces = '\u007f'.repeat(currentLen)
-                  window.termpolis.writeToTerminal(terminalId, backspaces)
-                  window.termpolis.writeToTerminal(terminalId, s.command)
-                  inputBufferRef.current = s.command
-                  setAiSuggestions([])
-                }}
-              >
-                <code className="font-mono text-[#22D3EE]">{s.command}</code>
-                <span className="text-[#888] ml-auto">{s.description}</span>
-              </div>
-            ))}
-            <div className="px-3 py-1 text-[10px] text-[#888] border-t border-[#3c3c3c]">
-              Tab accept · ↑↓ navigate · Esc dismiss
-            </div>
-          </div>
         )}
         {fixSuggestion && (
           <CommandFixBanner

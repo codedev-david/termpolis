@@ -277,21 +277,6 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             </ul>
           </section>
 
-          {/* AI Command Suggestions */}
-          <section>
-            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
-              <i className="fa-solid fa-wand-magic-sparkles text-xs"></i> AI Command Suggestions
-            </h3>
-            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li>Type <strong>natural language</strong> in any terminal and get instant shell command suggestions</li>
-              <li>Examples: "find large files", "undo last commit", "what's on port 3000", "kill port 8080"</li>
-              <li><strong>30+ built-in patterns</strong> — file search, git ops, npm/yarn, Docker, process management, system info, compression, downloads</li>
-              <li>Captures values from your input: "kill port 3000" becomes <code className="bg-[#2d2d2d] px-1 rounded">kill $(lsof -t -i:3000)</code></li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Tab</kbd> to accept, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">↑↓</kbd> to navigate, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Esc</kbd> to dismiss</li>
-              <li><strong>Zero latency</strong> — all local pattern matching, no API calls</li>
-            </ul>
-          </section>
-
           {/* Autocomplete & Auto-Fix */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">

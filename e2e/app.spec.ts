@@ -328,7 +328,7 @@ test('Help modal opens and shows all sections', async () => {
     'Sidebar Icon Bar',
     'Command Palette',
     'Git Panel',
-    'AI Command Suggestions',
+    'Autocomplete & Auto-Fix',
     'MCP Server',
     'Multi-Agent Swarm',
   ]

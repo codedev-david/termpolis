@@ -42,8 +42,6 @@ const mocks = vi.hoisted(() => {
     mockRemoveTerminal: vi.fn(),
     mockGetState: vi.fn(),
     mockGetSuggestion: vi.fn(() => Promise.resolve(null)),
-    mockIsNaturalLanguage: vi.fn(() => false),
-    mockGetSuggestions: vi.fn(() => []),
     mockCompletionDismiss: vi.fn(),
     mockTriggerCompletions: vi.fn(),
     mockHandleDropdownKeyIntercept: vi.fn(() => false),
@@ -127,12 +125,6 @@ vi.mock('../../src/renderer/src/completions/completionEngine', () => ({
 // --- Mock correctionEngine ---
 vi.mock('../../src/renderer/src/corrections/correctionEngine', () => ({
   getSuggestion: mocks.mockGetSuggestion,
-}))
-
-// --- Mock aiSuggestions ---
-vi.mock('../../src/renderer/src/lib/aiSuggestions', () => ({
-  isNaturalLanguage: (...args: any[]) => mocks.mockIsNaturalLanguage(...args),
-  getSuggestions: (...args: any[]) => mocks.mockGetSuggestions(...args),
 }))
 
 // --- Mock exportTerminal ---
@@ -367,8 +359,6 @@ describe('TerminalPane', () => {
       removeTerminal: mocks.mockRemoveTerminal,
       autocompleteEnabled: true,
     }))
-    mocks.mockIsNaturalLanguage.mockReturnValue(false)
-    mocks.mockGetSuggestions.mockReturnValue([])
     mocks.mockHandleDropdownKeyIntercept.mockReturnValue(false)
     mocks.mockGetSuggestion.mockReturnValue(Promise.resolve(null))
     mockOnTerminalData.mockImplementation((cb: (id: string, data: string) => void) => {
@@ -715,164 +705,6 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       expect(screen.getByText('Select All')).toBeInTheDocument()
       expect(screen.getByText('Copy as Code Block')).toBeInTheDocument()
-    })
-  })
-
-  // =====================================================
-  // 6. AI suggestions
-  // =====================================================
-  describe('AI suggestions', () => {
-    it('shows AI suggestions when natural language is detected', async () => {
-      mocks.mockIsNaturalLanguage.mockReturnValue(true)
-      mocks.mockGetSuggestions.mockReturnValue([
-        { command: 'find . -name "*.ts"', description: 'Find TypeScript files' },
-      ])
-
-      render(<TerminalPane {...defaultProps} />)
-
-      act(() => {
-        mockOnDataCb?.('f')
-        mockOnDataCb?.('i')
-        mockOnDataCb?.('n')
-        mockOnDataCb?.('d')
-        mockOnDataCb?.(' ')
-        mockOnDataCb?.('a')
-        mockOnDataCb?.('l')
-        mockOnDataCb?.('l')
-      })
-
-      await waitFor(() => {
-        expect(screen.getByText('AI Suggestion')).toBeInTheDocument()
-        expect(screen.getByText('find . -name "*.ts"')).toBeInTheDocument()
-        expect(screen.getByText('Find TypeScript files')).toBeInTheDocument()
-      })
-    })
-
-    it('Tab accepts the selected AI suggestion via click as workaround for stale closure', async () => {
-      // Note: The onData Tab handler uses a stale closure for aiSuggestions
-      // (captured when the effect runs with deps [terminalId]).
-      // In real usage this works due to React batching, but in test the closure
-      // sees the initial empty array. We test click-based acceptance instead.
-      mocks.mockIsNaturalLanguage.mockReturnValue(true)
-      mocks.mockGetSuggestions.mockReturnValue([
-        { command: 'ls -la', description: 'List all files' },
-      ])
-
-      render(<TerminalPane {...defaultProps} />)
-
-      act(() => { mockOnDataCb?.('l') })
-      act(() => { mockOnDataCb?.('i') })
-      act(() => { mockOnDataCb?.('s') })
-      act(() => { mockOnDataCb?.('t') })
-
-      await waitFor(() => {
-        expect(screen.getByText('AI Suggestion')).toBeInTheDocument()
-      })
-
-      // Click the suggestion (exercises the same code path as Tab)
-      fireEvent.click(screen.getByText('ls -la'))
-
-      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', expect.stringContaining('\u007f'))
-      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'ls -la')
-
-      // Suggestions should be dismissed after acceptance
-      await waitFor(() => {
-        expect(screen.queryByText('AI Suggestion')).not.toBeInTheDocument()
-      })
-    })
-
-    it('arrow keys navigate AI suggestions', async () => {
-      mocks.mockIsNaturalLanguage.mockReturnValue(true)
-      mocks.mockGetSuggestions.mockReturnValue([
-        { command: 'ls -la', description: 'List all files' },
-        { command: 'ls -lh', description: 'Human readable sizes' },
-      ])
-
-      render(<TerminalPane {...defaultProps} />)
-
-      act(() => { mockOnDataCb?.('l') })
-      act(() => { mockOnDataCb?.('i') })
-
-      await waitFor(() => {
-        expect(screen.getByText('AI Suggestion')).toBeInTheDocument()
-      })
-
-      // Arrow down to select second suggestion
-      act(() => { mockOnDataCb?.('\x1b[B') })
-
-      await waitFor(() => {
-        const items = screen.getAllByText(/ls -l/)
-        expect(items.length).toBe(2)
-      })
-    })
-
-    it('AI suggestions dismissed when non-natural-language input is typed', async () => {
-      // Note: The Escape handler in onData uses a stale closure for aiSuggestions
-      // (captured at effect creation time). We test dismissal via the natural language
-      // check returning false, which clears suggestions through setAiSuggestions([]).
-      mocks.mockIsNaturalLanguage.mockReturnValue(true)
-      mocks.mockGetSuggestions.mockReturnValue([
-        { command: 'ls -la', description: 'List all files' },
-      ])
-
-      render(<TerminalPane {...defaultProps} />)
-
-      act(() => { mockOnDataCb?.('l') })
-      act(() => { mockOnDataCb?.('i') })
-
-      await waitFor(() => {
-        expect(screen.getByText('AI Suggestion')).toBeInTheDocument()
-      })
-
-      // Now type something that is not natural language
-      mocks.mockIsNaturalLanguage.mockReturnValue(false)
-      act(() => { mockOnDataCb?.('x') })
-
-      await waitFor(() => {
-        expect(screen.queryByText('AI Suggestion')).not.toBeInTheDocument()
-      })
-    })
-
-    it('Enter dismisses AI suggestions and clears buffer', async () => {
-      mocks.mockIsNaturalLanguage.mockReturnValue(true)
-      mocks.mockGetSuggestions.mockReturnValue([
-        { command: 'ls -la', description: 'List' },
-      ])
-
-      render(<TerminalPane {...defaultProps} />)
-
-      act(() => { mockOnDataCb?.('h') })
-      act(() => { mockOnDataCb?.('i') })
-
-      await waitFor(() => {
-        expect(screen.getByText('AI Suggestion')).toBeInTheDocument()
-      })
-
-      act(() => { mockOnDataCb?.('\r') })
-
-      await waitFor(() => {
-        expect(screen.queryByText('AI Suggestion')).not.toBeInTheDocument()
-      })
-    })
-
-    it('clicking an AI suggestion accepts it', async () => {
-      mocks.mockIsNaturalLanguage.mockReturnValue(true)
-      mocks.mockGetSuggestions.mockReturnValue([
-        { command: 'git status', description: 'Show git status' },
-      ])
-
-      render(<TerminalPane {...defaultProps} />)
-
-      act(() => { mockOnDataCb?.('s') })
-      act(() => { mockOnDataCb?.('t') })
-
-      await waitFor(() => {
-        expect(screen.getByText('git status')).toBeInTheDocument()
-      })
-
-      fireEvent.click(screen.getByText('git status'))
-
-      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'git status')
     })
   })
 
