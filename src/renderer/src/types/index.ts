@@ -167,7 +167,7 @@ export interface TermpolisAPI {
   memoryStats: () => Promise<IpcResponse<{ count: number; capacity: number }>>
   memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
   memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
-  memoryBuildPrimer: (query: string, limit?: number) => Promise<IpcResponse<string | null>>
+  memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
   memorySetSyncDir: (dir: string | null) => Promise<IpcResponse<MemorySyncStatus>>
   memoryChooseSyncDir: () => Promise<IpcResponse<MemorySyncStatus>>

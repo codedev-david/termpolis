@@ -43,7 +43,8 @@ export async function injectAutoPrimer(terminalId: string, cwd: string): Promise
     const query = project
       ? `recent work, decisions, conventions, and context for ${project}`
       : 'recent work, key decisions, and conventions'
-    const res = await api.memoryBuildPrimer(query)
+    // Pass the cwd so current-project context takes precedence in the primer.
+    const res = await api.memoryBuildPrimer(query, undefined, cwd || undefined)
     if (!res?.success || !res.data) return false
     const wrapped = BP_START + res.data.replace(/\r\n|\r|\n/g, '\r') + BP_END
     api.writeToTerminal(terminalId, wrapped)

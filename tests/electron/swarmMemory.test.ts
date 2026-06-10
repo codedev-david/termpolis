@@ -20,6 +20,8 @@ import {
   memoryDelete,
   memoryHasHash,
   memoryStats,
+  memoryPatchProjects,
+  normalizeProjectSlug,
   _resetForTests,
   persistMemoryIndex,
   _setEmbeddingsAvailable,
@@ -718,5 +720,43 @@ describe('HNSW persistence', () => {
     expect(fs.existsSync(graphFile())).toBe(true)
     memoryClear()
     expect(fs.existsSync(graphFile())).toBe(false)
+  })
+})
+
+describe('project metadata (current-directory recall)', () => {
+  it('memoryWrite normalizes a cwd/path into a project slug', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha note', project: 'C:\\Users\\Dev\\repos\\Termpolis\\' })
+    const [hit] = await memorySearch({ query: 'alpha', limit: 5 })
+    expect(hit.project).toBe('termpolis')
+  })
+
+  it('memorySearch({ project }) filters to that project, accepting a path or slug', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha in termpolis', project: '/repos/termpolis' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha in other', project: '/repos/other' })
+    const hits = await memorySearch({ query: 'alpha', project: 'C:/repos/Termpolis' })
+    expect(hits).toHaveLength(1)
+    expect(hits[0].content).toContain('termpolis')
+  })
+
+  it('normalizeProjectSlug handles windows/posix paths, bare names, and junk', () => {
+    expect(normalizeProjectSlug('C:\\repos\\MyApp\\')).toBe('myapp')
+    expect(normalizeProjectSlug('/home/dev/My-App')).toBe('my-app')
+    expect(normalizeProjectSlug('Termpolis')).toBe('termpolis')
+    expect(normalizeProjectSlug('')).toBe('')
+    expect(normalizeProjectSlug('  /  ')).toBe('')
+  })
+
+  it('memoryPatchProjects backfills hash-matched entries without overwriting existing tags', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'message', content: 'old conversation chunk', hash: 'h-old' })
+    await memoryWrite({ agentId: 'a', kind: 'message', content: 'tagged already', hash: 'h-tagged', project: '/repos/keepme' })
+    const n = memoryPatchProjects([
+      { hash: 'h-old', project: 'C:\\repos\\Termpolis' },
+      { hash: 'h-tagged', project: '/repos/clobber' },
+      { hash: 'h-missing', project: '/repos/x' },
+    ])
+    expect(n).toBe(1)
+    expect(await memorySearch({ query: 'conversation', project: 'termpolis' })).toHaveLength(1)
+    expect(await memorySearch({ query: 'tagged', project: 'keepme' })).toHaveLength(1)
+    expect(await memorySearch({ query: 'tagged', project: 'clobber' })).toHaveLength(0)
   })
 })

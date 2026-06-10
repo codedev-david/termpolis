@@ -210,4 +210,24 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('tags code chunks with the repo project slug', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-ingest-proj-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      fs.writeFileSync(path.join(root, 'a.ts'), 'export const x = 1\n')
+      execFileSync('git', ['add', '-A'], { cwd: root })
+
+      const writes: Parameters<CodeIngestMemory['write']>[0][] = []
+      const memory: CodeIngestMemory = {
+        hasHash: () => false,
+        write: async (i) => { writes.push(i); return undefined },
+      }
+      await runCodeIngest(memory, { repoRoot: root })
+      expect(writes.length).toBeGreaterThan(0)
+      expect(writes.every((w) => w.project === root)).toBe(true) // raw repoRoot at the adapter; the store normalizes to a slug
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

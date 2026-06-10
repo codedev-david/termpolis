@@ -357,4 +357,44 @@ describe('runConversationIngest', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('tags writes with the project slug derived from the transcript cwd', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-proj-'))
+    try {
+      const proj = path.join(root, 'p')
+      fs.mkdirSync(proj)
+      fs.writeFileSync(path.join(proj, 's.jsonl'), '{"type":"user","cwd":"/repos/MyApp","message":{"role":"user","content":"hello world"}}')
+      const writes: Parameters<IngestMemory['write']>[0][] = []
+      const memory: IngestMemory = {
+        hasHash: () => false,
+        write: async (i) => { writes.push(i); return undefined },
+      }
+      await runConversationIngest(memory, { sources: ['claude'] as const, roots: { claude: root } })
+      expect(writes).toHaveLength(1)
+      expect(writes[0].project).toBe('/repos/MyApp') // raw cwd at the adapter; the store normalizes to a slug
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('project backfill for already-stored chunks', () => {
+  it('reports skipped chunks with a cwd via patchProjects so legacy entries get tagged', async () => {
+    const fixture = '{"type":"user","cwd":"/repos/legacy","message":{"role":"user","content":"older chat about the parser"}}'
+    const patched: Array<{ hash: string; project: string }> = []
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['f1.jsonl'],
+      readFile: async () => fixture,
+      hasHash: () => true, // everything already stored
+      write: async () => { throw new Error('should not write') },
+      patchProjects: (ps) => { patched.push(...ps) },
+    }
+    const s = await ingestConversations(deps)
+    expect(s.chunksSkipped).toBeGreaterThan(0)
+    expect(s.chunksWritten).toBe(0)
+    expect(patched.length).toBeGreaterThan(0)
+    expect(patched[0].hash).toBeTruthy()
+    expect(patched[0].project).toBe('/repos/legacy') // raw cwd; the store normalizes to a slug
+  })
 })

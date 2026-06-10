@@ -118,7 +118,7 @@ Every Claude session today starts cold; you re-explain what you're doing and bur
 
 The result: stop re-explaining context every session, and stop paying to reload it.
 
-**Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), **inject the most relevant context into the active agent** with one click, and **turn on cross-machine sync** (point it at a synced folder). Launched agents are also auto-primed with the project's relevant context (toggle in Settings).
+**Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), **inject the most relevant context into the active agent** with one click, and **turn on cross-machine sync** (point it at a synced folder). Launched agents are also auto-primed with the project's relevant context (toggle in Settings) — context from the **current directory's project comes first** (its past conversations, then its code/notes), and anything recalled from other projects is clearly labeled as possibly not applying.
 
 ---
 

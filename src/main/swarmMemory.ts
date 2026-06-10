@@ -27,7 +27,15 @@ export interface MemoryEntry {
   taskId?: string
   embedding?: number[]
   source?: string                 // provenance (e.g. 'claude'|'codex'|'gemini' for ingested transcripts)
+  project?: string                // normalized project slug (cwd basename) — current-directory recall
   hash?: string                   // content hash for idempotent ingestion dedup
+}
+
+/** Normalize a cwd/path or bare name into a lowercase project slug (its basename). */
+export function normalizeProjectSlug(pathOrName: string): string {
+  if (typeof pathOrName !== 'string') return ''
+  const base = pathOrName.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+  return base.trim().toLowerCase().slice(0, 128)
 }
 
 export interface MemorySearchResult extends MemoryEntry {
@@ -288,6 +296,27 @@ export function memoryHasHash(hash: string): boolean {
   return typeof hash === 'string' && seenHashes.has(hash)
 }
 
+/** Backfill project slugs onto already-stored entries by content hash — used by
+ *  re-ingest so legacy conversation chunks (written before `project` existed)
+ *  become current-directory-recallable. IN-MEMORY ONLY by design: the durable
+ *  JSONL/shard format stays append-only and untouched; the auto-indexer re-runs
+ *  ingest every launch, so the tags re-derive for free each session. Never
+ *  overwrites an existing tag. Returns how many entries were patched. */
+export function memoryPatchProjects(patches: Array<{ hash: string; project: string }>): number {
+  if (!Array.isArray(patches) || patches.length === 0) return 0
+  const byHash = new Map<string, MemoryEntry>()
+  for (const e of entries) { if (e.hash && !e.project) byHash.set(e.hash, e) }
+  let patched = 0
+  for (const p of patches) {
+    if (!p || typeof p.hash !== 'string') continue
+    const slug = p.project ? normalizeProjectSlug(p.project) : ''
+    if (!slug) continue
+    const e = byHash.get(p.hash)
+    if (e && !e.project) { e.project = slug; patched++ }
+  }
+  return patched
+}
+
 /** Store stats for observability / UI: current count + the hot-window capacity. */
 export function memoryStats(): { count: number; capacity: number } {
   return { count: entries.length, capacity: maxEntries }
@@ -302,6 +331,7 @@ export interface WriteInput {
   tags?: string[]
   taskId?: string
   source?: string
+  project?: string                // raw cwd/path or slug — normalized on write
   hash?: string
 }
 
@@ -310,6 +340,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     throw new Error('memoryWrite: content required')
   }
   const kind = input.kind || 'note'
+  const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
   const content = input.content.length > MAX_CONTENT
     ? input.content.slice(0, MAX_CONTENT)
     : input.content
@@ -323,6 +354,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     ...(input.tags && input.tags.length > 0 && { tags: input.tags.slice(0, 20) }),
     ...(input.taskId && { taskId: input.taskId }),
     ...(input.source && { source: input.source }),
+    ...(projectSlug && { project: projectSlug }),
     ...(input.hash && { hash: input.hash }),
   }
 
@@ -487,6 +519,7 @@ function passesFilter(e: MemoryEntry, opts: SearchOptions): boolean {
   if (opts.agentId && e.agentId !== opts.agentId) return false
   if (opts.kind && e.kind !== opts.kind) return false
   if (opts.taskId && e.taskId !== opts.taskId) return false
+  if (opts.project && e.project !== opts.project) return false
   return true
 }
 
@@ -498,17 +531,23 @@ export interface SearchOptions {
   agentId?: string
   kind?: MemoryEntry['kind']
   taskId?: string
+  project?: string                // path or slug — normalized on entry
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
   if (!opts || typeof opts.query !== 'string' || !opts.query.trim()) return []
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
+  // Accept either a raw cwd/path or an already-normalized slug for `project`.
+  const projectSlug = opts.project ? normalizeProjectSlug(opts.project) : ''
+  if (opts.project && !projectSlug) return []
+  if (projectSlug) opts = { ...opts, project: projectSlug }
 
   // Filter pool first — cheap wins
   let pool = entries
   if (opts.agentId) pool = pool.filter(e => e.agentId === opts.agentId)
   if (opts.kind) pool = pool.filter(e => e.kind === opts.kind)
   if (opts.taskId) pool = pool.filter(e => e.taskId === opts.taskId)
+  if (opts.project) pool = pool.filter(e => e.project === opts.project)
   if (pool.length === 0) return []
 
   // Try vector search first

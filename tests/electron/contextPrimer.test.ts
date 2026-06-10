@@ -47,3 +47,80 @@ describe('buildContextPrimer', () => {
     expect(out).toContain('[decision] a decision')
   })
 })
+
+describe('buildContextPrimer — current-project precedence', () => {
+  const proj = 'termpolis'
+
+  it('runs a project-scoped pass and lists those hits before global ones, labeled', async () => {
+    const search = vi.fn(async (opts: { query: string; limit?: number; project?: string }) => {
+      if (opts.project === proj) {
+        return [{ id: 'p1', content: 'project decision about MCP ports', source: 'claude', kind: 'message', score: 0.6, project: proj }]
+      }
+      return [{ id: 'g1', content: 'unrelated react tips', source: 'claude', kind: 'message', score: 0.95 }]
+    })
+    const out = await buildContextPrimer(search, { query: 'q', project: proj })
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 6, project: proj })
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 6 })
+    const pIdx = out!.indexOf('project decision about MCP ports')
+    const gIdx = out!.indexOf('unrelated react tips')
+    expect(pIdx).toBeGreaterThan(-1)
+    expect(gIdx).toBeGreaterThan(-1)
+    expect(pIdx).toBeLessThan(gIdx) // project context first, despite lower score
+    expect(out).toContain(`This project (${proj})`)
+    expect(out).toContain('may NOT apply')
+  })
+
+  it('puts past conversations ahead of other project hits regardless of score', async () => {
+    const search = vi.fn(async (opts: { project?: string }) => {
+      if (opts.project === proj) {
+        return [
+          { id: 'c1', content: 'a code chunk from the repo', source: 'code', kind: 'note', score: 0.9, project: proj },
+          { id: 'm1', content: 'we decided to use HNSW', source: 'claude', kind: 'message', score: 0.5, project: proj },
+        ]
+      }
+      return []
+    })
+    const out = await buildContextPrimer(search, { query: 'q', project: proj })
+    expect(out!.indexOf('we decided to use HNSW')).toBeLessThan(out!.indexOf('a code chunk from the repo'))
+  })
+
+  it('promotes global hits that mention the project into the project section (legacy entries)', async () => {
+    const search = vi.fn(async (opts: { project?: string }) => {
+      if (opts.project === proj) return []
+      return [
+        { id: 'g2', content: 'random other-project note', source: 'claude', kind: 'message', score: 0.9 },
+        { id: 'g1', content: 'in Termpolis the MCP server listens on 9315', source: 'claude', kind: 'message', score: 0.8 },
+      ]
+    })
+    const out = await buildContextPrimer(search, { query: 'q', project: proj })
+    expect(out!.indexOf('listens on 9315')).toBeLessThan(out!.indexOf('random other-project note'))
+    expect(out).toContain(`This project (${proj})`)
+  })
+
+  it('dedupes hits that appear in both passes by id', async () => {
+    const dup = { id: 'same', content: 'duplicated entry text', source: 'claude', kind: 'message', score: 0.9, project: proj }
+    const search = vi.fn(async (opts: { project?: string }) => (opts.project === proj ? [dup] : [dup]))
+    const out = await buildContextPrimer(search, { query: 'q', project: proj })
+    expect(out!.match(/duplicated entry text/g)).toHaveLength(1)
+  })
+
+  it('keeps the legacy flat format (single search, no section labels) when no project is given', async () => {
+    const search = vi.fn().mockResolvedValue(hits)
+    const out = await buildContextPrimer(search, { query: 'auth' })
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(out).not.toContain('This project')
+  })
+
+  it('caps total hits at the limit with project hits taking slots first', async () => {
+    const mk = (id: string, extra: Record<string, unknown> = {}): { id: string; content: string; source: string; kind: string; score: number } =>
+      ({ id, content: `content ${id}`, source: 'claude', kind: 'message', score: 0.5, ...extra })
+    const search = vi.fn(async (opts: { project?: string }) =>
+      opts.project === proj
+        ? [mk('p1', { project: proj }), mk('p2', { project: proj })]
+        : [mk('g1'), mk('g2'), mk('g3')])
+    const out = await buildContextPrimer(search, { query: 'q', limit: 3, project: proj })
+    expect(out).toContain('content p1')
+    expect(out).toContain('content p2')
+    expect((out!.match(/content g/g) || []).length).toBe(1) // only one global slot left
+  })
+})

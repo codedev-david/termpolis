@@ -629,6 +629,7 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 - **Durable across restarts.** Stored as JSONL at `~/.termpolis/swarm-memory.jsonl` (plain text, hand-editable) and reloaded with embeddings at startup. A ~50k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
 - **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver).
+- **Current-directory precedence.** The primer leads with context for the project you're standing in — past conversations from this repo first, then its code/notes — and anything from other projects is appended under a "may NOT apply" label. Ingested chunks are tagged with their project (derived from the transcript cwd / repo root), legacy chunks get back-tagged on the next indexer pass, and `memory_search` accepts a `project` filter so agents can scope recall themselves.
 
 **Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session.
 

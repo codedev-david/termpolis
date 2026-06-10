@@ -167,7 +167,7 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
 
 export interface CodeIngestMemory {
   hasHash: (hash: string) => boolean
-  write: (input: { agentId: string; kind: 'note'; content: string; source: string; hash: string }) => Promise<unknown>
+  write: (input: { agentId: string; kind: 'note'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
 }
 
 export async function runCodeIngest(
@@ -181,7 +181,7 @@ export async function runCodeIngest(
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
     write: async (chunk) => {
-      await memory.write({ agentId: 'code-index', kind: 'note', content: chunk.text, source: 'code', hash: chunk.hash })
+      await memory.write({ agentId: 'code-index', kind: 'note', content: chunk.text, source: 'code', hash: chunk.hash, project: opts.repoRoot })
     },
   })
 }

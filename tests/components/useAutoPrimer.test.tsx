@@ -48,7 +48,7 @@ describe('injectAutoPrimer', () => {
     const ok = await injectAutoPrimer('term-1', '/home/me/myproject')
     expect(ok).toBe(true)
     const api = (window as any).termpolis
-    expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('myproject'))
+    expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('myproject'), undefined, '/home/me/myproject')
     const [tid, payload] = api.writeToTerminal.mock.calls[0]
     expect(tid).toBe('term-1')
     expect(payload).toContain('\x1b[200~') // bracketed-paste start
@@ -56,15 +56,17 @@ describe('injectAutoPrimer', () => {
     expect(payload).toContain('\x1b[201~') // bracketed-paste end
   })
 
-  it('strips trailing slashes to derive the project name', async () => {
+  it('strips trailing slashes to derive the project name and passes the cwd through', async () => {
     await injectAutoPrimer('t', 'C:\\code\\acme\\')
-    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('acme'))
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('acme'), undefined, 'C:\\code\\acme\\')
   })
 
-  it('uses a generic query when there is no cwd', async () => {
+  it('uses a generic query and no cwd when there is none', async () => {
     await injectAutoPrimer('t', '')
     expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledWith(
       expect.not.stringContaining('context for'),
+      undefined,
+      undefined,
     )
   })
 
@@ -161,6 +163,8 @@ describe('useCompactionReprimer', () => {
     await vi.advanceTimersByTimeAsync(4000)
     expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledWith(
       expect.stringContaining('acme'),
+      undefined,
+      'C:\\code\\acme',
     )
   })
 

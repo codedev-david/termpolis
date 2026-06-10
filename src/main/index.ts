@@ -104,6 +104,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
+  memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -905,7 +906,7 @@ ipcMain.handle('memory:stats', () => ok(memoryStats()))
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
-    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite })
+    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -925,9 +926,12 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
 // user's first ask or the active project) so it can be injected as an agent's
 // first input — the agent starts already knowing the context instead of the
 // user re-explaining it. Returns a shell-paste-safe string, or null.
-ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: number }) => {
+ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: number; cwd?: string }) => {
   try {
-    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit })
+    // Current-directory precedence: context for the cwd's project leads the
+    // primer; unrelated global hits are labeled "may NOT apply".
+    const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
+    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit, project: project || undefined })
     return ok(primer)
   } catch (e: any) { return err(e.message) }
 })

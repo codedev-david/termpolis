@@ -290,6 +290,9 @@ export interface IngestDeps {
   readFile: (filePath: string) => Promise<string>
   hasHash: (hash: string) => boolean
   write: (chunk: IngestChunk) => Promise<void>
+  /** Called with already-stored chunks that have a cwd, so legacy entries
+   *  (written before project tagging existed) can be backfilled in the store. */
+  patchProjects?: (patches: Array<{ hash: string; project: string }>) => void
   sources?: ConversationSource[]
   chunkOptions?: ChunkOptions
   /** Awaited between embeds so a bulk pass can't freeze the UI. Default: a setImmediate macrotask. */
@@ -328,6 +331,12 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
   const maxChunks = deps.maxChunks ?? Infinity
   const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false }
   let sinceYield = 0
+  // Skipped-but-cwd-bearing chunks → project backfill for legacy entries.
+  const pendingPatches: Array<{ hash: string; project: string }> = []
+  const flushPatches = (): void => {
+    if (pendingPatches.length === 0 || !deps.patchProjects) return
+    try { deps.patchProjects(pendingPatches.splice(0)) } catch { /* best-effort */ }
+  }
   for (const source of sources) {
     let files: string[]
     try {
@@ -348,6 +357,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
       for (const chunk of chunkTurns(turns, deps.chunkOptions)) {
         if (deps.hasHash(chunk.hash)) {
           stats.chunksSkipped++
+          if (chunk.cwd) pendingPatches.push({ hash: chunk.hash, project: chunk.cwd })
           continue
         }
         try {
@@ -368,11 +378,13 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         // an explicit user-triggered "index everything").
         if (stats.chunksWritten >= maxChunks) {
           stats.truncated = true
+          flushPatches()
           return stats
         }
       }
     }
   }
+  flushPatches()
   return stats
 }
 
@@ -422,7 +434,8 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
 
 export interface IngestMemory {
   hasHash: (hash: string) => boolean
-  write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string }) => Promise<unknown>
+  write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
+  patchProjects?: (patches: Array<{ hash: string; project: string }>) => void
 }
 
 // Compose real ingestion: discover on disk + dedup/write via the memory store.
@@ -438,6 +451,7 @@ export async function runConversationIngest(
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source]),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
+    patchProjects: memory.patchProjects,
     write: async (chunk) => {
       await memory.write({
         agentId: `${chunk.source}-history`,
@@ -445,6 +459,7 @@ export async function runConversationIngest(
         content: chunk.text,
         source: chunk.source,
         hash: chunk.hash,
+        ...(chunk.cwd && { project: chunk.cwd }), // store normalizes to a slug
       })
     },
   })

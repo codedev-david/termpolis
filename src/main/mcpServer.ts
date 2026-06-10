@@ -269,6 +269,7 @@ const TOOLS: McpTool[] = [
         content: { type: 'string', description: 'Text content to store (max 16KB)' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for filtering' },
         taskId: { type: 'string', description: 'Optional task correlation id' },
+        project: { type: 'string', description: 'Project this belongs to — pass your working directory (or repo name) so the memory is recalled with current-directory priority' },
       },
       required: ['agentId', 'content'],
     },
@@ -284,6 +285,7 @@ const TOOLS: McpTool[] = [
         agentId: { type: 'string', description: 'Filter to a single agent (optional)' },
         kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Filter by kind (optional)' },
         taskId: { type: 'string', description: 'Filter by task correlation id (optional)' },
+        project: { type: 'string', description: 'Scope to one project — pass your working directory or repo name to recall only that project’s memories (optional)' },
       },
       required: ['query'],
     },
@@ -366,6 +368,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         content: args.content,
         tags: args.tags,
         taskId: args.taskId,
+        project: args.project,
       })
     case 'memory_search':
       return await handlers.memorySearch({
@@ -374,6 +377,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         agentId: args.agentId,
         kind: args.kind,
         taskId: args.taskId,
+        project: args.project,
       })
     case 'memory_list':
       return handlers.memoryList({
