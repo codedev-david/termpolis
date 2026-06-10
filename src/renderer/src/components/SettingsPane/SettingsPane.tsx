@@ -237,10 +237,11 @@ export function SettingsPane() {
             <div className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">Auto-recall context on agent launch</span>
               <span className="text-xs text-[#9ca3af] leading-relaxed">
-                When an AI agent starts in a terminal, Termpolis pastes a short primer of the most
-                relevant memories for this project into its input (not sent automatically) — so it
-                begins already knowing prior decisions and context, across agents and past sessions.
-                Only fires when relevant memory exists.
+                When an AI agent starts in a terminal, Termpolis adds a one-line note to its input
+                pointing it at the memory_primer MCP tool — the agent loads the most relevant
+                memories for this project behind the scenes (current repo/directory first, then
+                cross-project), holds them as background, and waits for your instruction instead
+                of acting on them. Only fires when relevant memory exists.
               </span>
             </div>
           </div>
@@ -262,9 +263,9 @@ export function SettingsPane() {
               <span className="text-xs text-[#9ca3af] leading-relaxed">
                 When Claude compacts its conversation to fit the context window, it summarizes detail
                 away — but that detail still lives in the memory brain. Once the compaction settles,
-                Termpolis re-pastes the most relevant memories (not sent automatically) so the agent
-                picks right back up. Your durable memory is the large working set; the model&rsquo;s
-                window only holds the active task.
+                Termpolis re-adds the one-line memory_primer note (not sent automatically) so the
+                agent can reload what it lost behind the scenes. Your durable memory is the large
+                working set; the model&rsquo;s window only holds the active task.
               </span>
             </div>
           </div>

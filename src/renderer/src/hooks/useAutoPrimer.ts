@@ -3,17 +3,36 @@ import type { AgentInfo } from '../lib/agentDetector'
 import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
 
 // Auto context-primer: when an AI agent is first detected in a terminal, paste a
-// one-time digest of the most relevant memories for this project into its input
-// — so "every invocation" starts already knowing prior decisions and context,
-// across agents and past sessions. Opt-out in Settings.
+// ONE-LINE pointer into its input telling it to load this project's memory digest
+// via the memory_primer MCP tool — so "every invocation" starts already knowing
+// prior decisions and context, across agents and past sessions, WITHOUT a giant
+// content dump on screen and WITHOUT the agent treating the memory as a task to
+// resume. The pointer is only injected when relevant memory actually exists
+// (we build the digest first as the relevance check). Opt-out in Settings.
 
 const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
 
-// Bracketed-paste markers so the multi-line primer lands as ONE paste in the
-// agent's input — not auto-submitted, not a flurry of Enter-ed lines.
+// Bracketed-paste markers so the pointer lands as ONE paste in the agent's
+// input — not auto-submitted, not interpreted by shell completion.
 const BP_START = '\x1b[200~'
 const BP_END = '\x1b[201~'
+
+// The behavioral contract pasted into the agent's input. Single line, paste-safe
+// (no backticks/newlines). It must (1) route the agent to the MCP tool so the
+// digest loads behind the scenes, (2) frame the memory as background only — the
+// agent must NOT start acting on it or resuming past work, and (3) pin a minimal
+// ack so an Enter on the bare pointer doesn't turn into spontaneous work.
+export function buildPrimerPointer(cwd: string): string {
+  const target = cwd ? `with cwd set to "${cwd}"` : 'with no arguments'
+  return (
+    'Termpolis memory: saved background context exists for this project. ' +
+    `First call the termpolis MCP tool memory_primer ${target} and read the result silently — ` +
+    'it is background reference only; do NOT act on it, resume past work from it, or summarize it. ' +
+    'If this message contains no request after this sentence, reply exactly "Memory loaded." and wait for my instruction. ' +
+    'If the memory_primer tool is unavailable, reply "Memory tools unavailable." and wait.'
+  )
+}
 
 /** Auto-primer is ON by default; users opt out in Settings. */
 export function isAutoPrimerEnabled(): boolean {
@@ -32,9 +51,11 @@ export function setAutoPrimerEnabled(on: boolean): void {
   }
 }
 
-// Build a primer from the project's most relevant memories and paste it into the
-// freshly-launched agent terminal. Best-effort and silent: a no-op if the API is
-// unavailable or there is no relevant memory yet. Returns whether it injected.
+// Check that relevant memory exists for this project and, if so, paste a short
+// pointer into the freshly-launched agent terminal directing it to load the
+// digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
+// Best-effort and silent: a no-op if the API is unavailable or there is no
+// relevant memory yet. Returns whether it injected.
 export async function injectAutoPrimer(terminalId: string, cwd: string): Promise<boolean> {
   try {
     const api = window.termpolis
@@ -43,10 +64,11 @@ export async function injectAutoPrimer(terminalId: string, cwd: string): Promise
     const query = project
       ? `recent work, decisions, conventions, and context for ${project}`
       : 'recent work, key decisions, and conventions'
-    // Pass the cwd so current-project context takes precedence in the primer.
+    // Relevance check: build the digest (cwd → current-project precedence) but
+    // paste only the pointer — the agent pulls the content itself over MCP.
     const res = await api.memoryBuildPrimer(query, undefined, cwd || undefined)
     if (!res?.success || !res.data) return false
-    const wrapped = BP_START + res.data.replace(/\r\n|\r|\n/g, '\r') + BP_END
+    const wrapped = BP_START + buildPrimerPointer(cwd) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     return true
   } catch {

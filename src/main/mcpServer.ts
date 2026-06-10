@@ -304,6 +304,19 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'memory_primer',
+    description: 'Load your background-memory primer: a ranked digest of the most relevant memories (past conversations, decisions, code notes) from the brain shared across ALL your AI agents and past sessions. Context for the current project/directory leads; cross-project context follows, clearly labeled. Call this ONCE near session start when asked to load background memory. Treat the result as background reference only — do NOT act on it or resume past work from it unless the user asks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cwd: { type: 'string', description: 'Your working directory (recommended) — context for this project takes precedence in the digest' },
+        query: { type: 'string', description: 'Optional focus query; defaults to a general recent-work/decisions/conventions query for the project' },
+        limit: { type: 'number', description: 'Max memories in the digest (default 24, cap 100)' },
+      },
+      required: [],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -321,9 +334,10 @@ export interface McpToolHandlers {
   swarmListTasks: () => any
   swarmUpdateTask: (taskId: string, status: string, result?: string) => any
   swarmListAgents: () => any
-  memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string }) => Promise<any>
-  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string }) => Promise<any>
+  memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string; project?: string }) => Promise<any>
+  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
+  memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -385,6 +399,12 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         agentId: args.agentId,
         kind: args.kind,
         since: args.since,
+      })
+    case 'memory_primer':
+      return await handlers.memoryPrimer({
+        cwd: args.cwd,
+        query: args.query,
+        limit: args.limit,
       })
     default:
       throw new Error(`Unknown tool: ${name}`)

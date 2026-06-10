@@ -17,6 +17,14 @@ describe('buildContextPrimer', () => {
     expect(search).toHaveBeenCalledWith({ query: 'auth', limit: 6 })
   })
 
+  it('frames the memory as background only — never an instruction to continue past work', async () => {
+    const out = await buildContextPrimer(vi.fn().mockResolvedValue(hits), { query: 'auth' })
+    expect(out).not.toContain('Continue the task')
+    expect(out).toContain('NOT a request')
+    expect(out).toContain('Do not act on it')
+    expect(out).toContain("wait for the user's actual instruction")
+  })
+
   it('returns null for an empty query', async () => {
     const search = vi.fn()
     expect(await buildContextPrimer(search, { query: '   ' })).toBeNull()
@@ -39,7 +47,7 @@ describe('buildContextPrimer', () => {
     const search = vi.fn().mockResolvedValue([{ content: 'x'.repeat(1000), kind: 'note', score: 1 }])
     const out = await buildContextPrimer(search, { query: 'q', limit: 999, maxSnippetChars: 50 })
     expect(out).toContain('...')
-    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 20 }) // clamped to 20
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 100 }) // clamped to 100 (rich MCP digests)
   })
 
   it('falls back to kind when source is absent', async () => {

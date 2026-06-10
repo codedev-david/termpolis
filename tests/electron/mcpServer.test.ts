@@ -34,6 +34,10 @@ function createMockHandlers() {
     swarmListTasks: vi.fn().mockReturnValue([]),
     swarmUpdateTask: vi.fn().mockReturnValue({ ok: true }),
     swarmListAgents: vi.fn().mockReturnValue([]),
+    memoryWrite: vi.fn().mockResolvedValue({ id: 'mem-1' }),
+    memorySearch: vi.fn().mockResolvedValue([]),
+    memoryList: vi.fn().mockReturnValue([]),
+    memoryPrimer: vi.fn().mockResolvedValue({ project: 'termpolis', primer: 'PRIMER DIGEST' }),
   }
 }
 
@@ -197,7 +201,7 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.status).toBe('ok')
     expect(body.name).toBe('termpolis-mcp')
-    expect(body.tools).toBe(17)
+    expect(body.tools).toBe(18)
   })
 
   it('OPTIONS returns 204 with CORS headers', async () => {
@@ -261,7 +265,7 @@ describe('MCP HTTP server', () => {
 
   // --- JSON-RPC: tools/list ---
 
-  it('tools/list returns 17 tools', async () => {
+  it('tools/list returns 18 tools', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',
       method: 'tools/list',
@@ -269,7 +273,7 @@ describe('MCP HTTP server', () => {
     })
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
-    expect(body.result.tools).toHaveLength(17)
+    expect(body.result.tools).toHaveLength(18)
     const names = body.result.tools.map((t: any) => t.name)
     expect(names).toContain('list_terminals')
     expect(names).toContain('run_command')
@@ -277,6 +281,7 @@ describe('MCP HTTP server', () => {
     expect(names).toContain('memory_write')
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_list')
+    expect(names).toContain('memory_primer')
   })
 
   // --- JSON-RPC: tools/call ---
@@ -293,6 +298,36 @@ describe('MCP HTTP server', () => {
     expect(handlers.listTerminals).toHaveBeenCalled()
     const content = JSON.parse(body.result.content[0].text)
     expect(content).toEqual([{ id: 't1', name: 'Test', shellType: 'bash', cwd: '/home' }])
+  })
+
+  it('tools/call memory_primer forwards cwd/query/limit and returns the digest', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'memory_primer', arguments: { cwd: 'C:\\code\\termpolis', limit: 10 } },
+      id: 31,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.memoryPrimer).toHaveBeenCalledWith({ cwd: 'C:\\code\\termpolis', query: undefined, limit: 10 })
+    const content = JSON.parse(JSON.parse(res.body).result.content[0].text)
+    expect(content).toEqual({ project: 'termpolis', primer: 'PRIMER DIGEST' })
+  })
+
+  it('tools/call memory_search and memory_write forward the project scope to handlers', async () => {
+    await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'memory_search', arguments: { query: 'q', project: 'termpolis' } },
+      id: 32,
+    })
+    expect(handlers.memorySearch).toHaveBeenCalledWith(expect.objectContaining({ query: 'q', project: 'termpolis' }))
+    await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'memory_write', arguments: { agentId: 'a1', content: 'fact', project: 'termpolis' } },
+      id: 33,
+    })
+    expect(handlers.memoryWrite).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1', content: 'fact', project: 'termpolis' }))
   })
 
   it('tools/call run_command calls handler with correct args', async () => {

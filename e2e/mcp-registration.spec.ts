@@ -96,13 +96,14 @@ test('MCP server returns 14 tools with valid auth', async () => {
       console.log('Skipping: token mismatch (another Termpolis is running)')
       return
     }
-    expect(data.result.tools.length).toBe(14)
+    expect(data.result.tools.length).toBe(18)
     const toolNames = data.result.tools.map((t: any) => t.name)
     for (const expected of [
       'list_terminals', 'create_terminal', 'run_command', 'read_output',
       'close_terminal', 'write_to_terminal', 'get_file_tree', 'get_git_status',
       'swarm_send_message', 'swarm_read_messages', 'swarm_create_task',
-      'swarm_list_tasks', 'swarm_update_task', 'swarm_list_agents'
+      'swarm_list_tasks', 'swarm_update_task', 'swarm_list_agents',
+      'memory_write', 'memory_search', 'memory_list', 'memory_primer'
     ]) {
       expect(toolNames).toContain(expected)
     }

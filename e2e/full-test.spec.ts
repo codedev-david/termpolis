@@ -429,7 +429,7 @@ test('33 - MCP server returns tools with auth', async () => {
       { timeout: 5000 }
     ).toString()
     const data = JSON.parse(result)
-    expect(data.result.tools.length).toBe(14)
+    expect(data.result.tools.length).toBe(18)
   } catch {
     test.skip()
   }

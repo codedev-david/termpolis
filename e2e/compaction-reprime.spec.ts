@@ -3,7 +3,8 @@
  *
  *   terminal output "Compacting conversation" -> TerminalPane.onTerminalData
  *   -> useCompactionReprimer.onOutput (arms, debounces) -> injectAutoPrimer
- *   -> memoryBuildPrimer (real seeded memory) -> writeToTerminal (bracketed paste)
+ *   -> memoryBuildPrimer (real seeded memory, relevance gate) -> writeToTerminal
+ *   (bracketed paste of the one-line memory_primer POINTER — not the digest)
  *
  * Seeds a real memory, detects an agent via injected output, feeds the compaction
  * marker, then asserts a bracketed-paste re-prime actually reached the terminal — the
@@ -126,7 +127,11 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     }, { id: termId, bp: BP_START })
 
     expect(pasted, 'expected a bracketed-paste re-prime to reach the terminal').toBeTruthy()
-    expect(pasted).toContain(MARKER) // the paste carries the seeded memory
+    // The paste is the one-line pointer (content loads behind the scenes via MCP),
+    // framed as background only — never the digest itself, never an auto-continue.
+    expect(pasted).toContain('memory_primer')
+    expect(pasted).toContain('do NOT act on it')
+    expect(pasted).not.toContain(MARKER)
   })
 
   test('no second re-prime fires within the cooldown (one paste per compaction)', async () => {

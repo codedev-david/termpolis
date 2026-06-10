@@ -1357,6 +1357,7 @@ if (!gotTheLock) {
         content: input.content,
         tags: input.tags,
         taskId: input.taskId,
+        project: input.project,
       }),
       memorySearch: (opts) => memorySearch({
         query: opts.query,
@@ -1364,6 +1365,7 @@ if (!gotTheLock) {
         agentId: opts.agentId,
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         taskId: opts.taskId,
+        project: opts.project,
       }),
       memoryList: (opts) => memoryList({
         limit: opts.limit,
@@ -1371,6 +1373,23 @@ if (!gotTheLock) {
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
       }),
+      // Behind-the-scenes memory load: agents call this (prompted by the one-line
+      // launch pointer) instead of having the digest pasted into the terminal.
+      // Current-directory context leads; cross-project hits follow, labeled.
+      memoryPrimer: async (opts) => {
+        const project = opts.cwd ? normalizeProjectSlug(opts.cwd) : ''
+        const query = (opts.query || '').trim() ||
+          (project
+            ? `recent work, decisions, conventions, and context for ${project}`
+            : 'recent work, key decisions, and conventions')
+        const primer = await buildContextPrimer(memorySearch, {
+          query,
+          limit: opts.limit ?? 24,
+          maxSnippetChars: 600,
+          project: project || undefined,
+        })
+        return { project: project || null, primer }
+      },
     }
 
     initAuditLog(app.getPath('userData'))

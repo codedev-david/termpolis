@@ -44,7 +44,7 @@ describe('isAutoPrimerEnabled / setAutoPrimerEnabled', () => {
 })
 
 describe('injectAutoPrimer', () => {
-  it('builds a project-scoped query and pastes the primer as a bracketed paste', async () => {
+  it('checks relevance with a project-scoped query and pastes only a pointer (no content dump)', async () => {
     const ok = await injectAutoPrimer('term-1', '/home/me/myproject')
     expect(ok).toBe(true)
     const api = (window as any).termpolis
@@ -52,8 +52,29 @@ describe('injectAutoPrimer', () => {
     const [tid, payload] = api.writeToTerminal.mock.calls[0]
     expect(tid).toBe('term-1')
     expect(payload).toContain('\x1b[200~') // bracketed-paste start
-    expect(payload).toContain('RECALLED CONTEXT')
     expect(payload).toContain('\x1b[201~') // bracketed-paste end
+    // The digest content is NOT pasted — the agent loads it via MCP behind the scenes.
+    expect(payload).not.toContain('RECALLED CONTEXT')
+    expect(payload).toContain('memory_primer')
+    expect(payload).toContain('"/home/me/myproject"')
+  })
+
+  it('pastes a background-only contract: no acting on memory, minimal ack, single paste-safe line', async () => {
+    await injectAutoPrimer('term-1', 'C:\\code\\acme')
+    const [, payload] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+    const pointer = payload.slice('\x1b[200~'.length, -'\x1b[201~'.length)
+    expect(pointer).not.toContain('\n') // single line — no wall of text in the terminal
+    expect(pointer).not.toContain('`')
+    expect(pointer).toContain('do NOT act on it')
+    expect(pointer).toContain('Memory loaded.')
+    expect(pointer).toContain('wait')
+  })
+
+  it('points the agent at the tool with no cwd argument when there is no cwd', async () => {
+    await injectAutoPrimer('t', '')
+    const [, payload] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+    expect(payload).toContain('with no arguments')
+    expect(payload).toContain('memory_primer')
   })
 
   it('strips trailing slashes to derive the project name and passes the cwd through', async () => {

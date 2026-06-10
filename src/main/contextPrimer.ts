@@ -1,8 +1,10 @@
 // Pre-context primer — the token-saver. Pulls the most relevant memories for a
 // query (typically the user's first ask or the active project) and formats them
-// as a shell-paste-safe block that can be injected as an agent's first input,
-// so the agent starts already knowing the relevant past context instead of the
-// user re-explaining it every session.
+// as a shell-paste-safe block. Agents load it behind the scenes via the
+// memory_primer MCP tool (the launch paste is just a one-line pointer); the
+// Memory panel shows the same digest as a preview. The framing is deliberately
+// passive: this is background the agent HOLDS, not a request — it must not
+// start acting on it or resume past work until the user actually asks.
 //
 // When a `project` slug is given, context for THAT project takes precedence: a
 // project-scoped search fills the slots first (past conversations ahead of
@@ -51,7 +53,7 @@ function renderLine(h: PrimerHit, maxSnip: number): string | null {
 
 export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptions): Promise<string | null> {
   if (!opts.query || !opts.query.trim()) return null
-  const limit = Math.min(Math.max(opts.limit ?? 6, 1), 20)
+  const limit = Math.min(Math.max(opts.limit ?? 6, 1), 100)
   const maxSnip = opts.maxSnippetChars ?? 400
   const project = (opts.project || '').trim().toLowerCase()
 
@@ -116,6 +118,6 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     '',
     ...body,
     '',
-    'Continue the task; use the above as background and do not re-ask the user for it.',
+    'The above is background reference, NOT a request. Do not act on it, resume past work from it, or summarize it — hold it as context and wait for the user\'s actual instruction.',
   ].join('\n')
 }

@@ -759,7 +759,7 @@ If none of the above fixes your problem, **[open an issue](https://github.com/co
 │  ├── Terminal manager (node-pty)                    │
 │  ├── Session persistence (session.json)             │
 │  ├── Git adapter                                    │
-│  ├── MCP server (HTTP, 17 tools)                    │
+│  ├── MCP server (HTTP, 18 tools)                    │
 │  ├── Swarm memory (JSONL + embeddings)              │
 │  ├── AI conductor (spawns Claude Code as a child)   │
 │  └── Watchers (event bus + alerts)                  │
