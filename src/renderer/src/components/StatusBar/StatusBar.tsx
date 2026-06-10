@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { ReportProblemModal } from './ReportProblemModal'
 import { resetOnboarding } from '../Onboarding/OnboardingModal'
+import { ContextPressureIndicator } from './ContextPressureIndicator'
+import { useLiveContextPressure } from '../../hooks/useLiveContextPressure'
 
 function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClose: () => void; onReportProblem: () => void; onShowTour: () => void; appVersion: string }) {
   return (
@@ -429,6 +431,8 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
   const [appVersion, setAppVersion] = useState<string>('')
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
+  const activeTerminalId = useTerminalStore((s) => s.activeTerminalId)
+  const contextPressure = useLiveContextPressure(activeTerminalId)
 
   useEffect(() => {
     window.termpolis.getAppVersion?.().then(res => {
@@ -468,6 +472,7 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
               )}
             </button>
           )}
+          <ContextPressureIndicator pressure={contextPressure} />
           <span className="flex items-center gap-1.5 text-[#22D3EE]" title="MCP server for AI agent integration">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE]"></span>
             MCP: localhost:9315

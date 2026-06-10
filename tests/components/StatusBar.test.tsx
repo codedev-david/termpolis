@@ -5,12 +5,14 @@ import { StatusBar } from '../../src/renderer/src/components/StatusBar/StatusBar
 
 let mockSwarmActive = false
 let mockSwarmAgents: any[] = []
+let mockActiveTerminalId: string | null = null
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: (selector: any) => {
     const state = {
       swarmActive: mockSwarmActive,
       swarmAgents: mockSwarmAgents,
+      activeTerminalId: mockActiveTerminalId,
     }
     return selector(state)
   },
@@ -19,6 +21,8 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
 beforeEach(() => {
   mockSwarmActive = false
   mockSwarmAgents = []
+  mockActiveTerminalId = null
+  ;(window as any).agentActivity = undefined
   ;(window as any).open = vi.fn()
   ;(window as any).termpolis = {
     getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
@@ -40,6 +44,31 @@ describe('StatusBar', () => {
   it('renders MCP server status indicator', () => {
     render(<StatusBar />)
     expect(screen.getByText('MCP: localhost:9315')).toBeInTheDocument()
+  })
+
+  it('shows no context-pressure indicator when no terminal is active', () => {
+    render(<StatusBar />)
+    expect(screen.queryByTestId('context-pressure-indicator')).not.toBeInTheDocument()
+  })
+
+  it('shows a live context-pressure indicator for the active agent terminal', async () => {
+    mockActiveTerminalId = 't1'
+    ;(window as any).agentActivity = {
+      query: vi.fn().mockResolvedValue({
+        success: true,
+        data: [
+          {
+            kind: 'token_update', terminalId: 't1', agentType: 'claude', taskId: 's1', ts: 1,
+            payload: { inputTokens: 130000, outputTokens: 0 }, // 130k / 200k = 65% → warn
+          },
+        ],
+      }),
+      onEvent: vi.fn(() => () => {}),
+    }
+    render(<StatusBar />)
+    const el = await screen.findByTestId('context-pressure-indicator')
+    expect(el).toHaveAttribute('data-level', 'warn')
+    expect(el).toHaveTextContent('ctx 65%')
   })
 
   it('renders MCP status with title tooltip', () => {
