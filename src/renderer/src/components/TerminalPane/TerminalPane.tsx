@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, writeCodeBlockToClipboardFromTerm } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
@@ -18,7 +18,10 @@ import { parsePromptFromOutput } from '../../lib/promptParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { useTerminalStore } from '../../store/terminalStore'
-import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding } from '../../lib/keybindings'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget } from '../../lib/keybindings'
+import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
+import { useVoiceInput } from '../../hooks/useVoiceInput'
+import { pushToTalkIntent, pushToTalkMainKey } from '../../lib/voice/voicePipeline'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -57,6 +60,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
+  // Keyboard copy mode — select text/words with no mouse (Ctrl+Shift+Space).
+  const selectionModeRef = useRef(false)
+  const anchorRef = useRef<GridPos>({ x: 0, y: 0 })
+  const caretRef = useRef<GridPos>({ x: 0, y: 0 })
+  const [selectionMode, setSelectionMode] = useState(false)
 
   // Command fix banner state
   const [fixSuggestion, setFixSuggestion] = useState<string | null>(null)
@@ -90,6 +98,18 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // summarized away from the durable memory brain (opt-out in Settings).
   const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)
   const recording = useSessionRecording(terminalName, shellType)
+  // Voice dictation (push-to-talk). Agent terminals take it as a prompt; plain
+  // shells get a confirm-before-run bar. Opt-in via Settings → Voice.
+  const voice = useVoiceInput(terminalId, !!agent.detectedAgent)
+  const voiceToggleRef = useRef<() => void>(() => {})
+  const voiceStartRef = useRef<() => void>(() => {})
+  const voiceStopRef = useRef<() => void>(() => {})
+  const voiceListeningRef = useRef(false)
+  const pttHoldActiveRef = useRef(false)
+  voiceToggleRef.current = voice.toggle
+  voiceStartRef.current = voice.start
+  voiceStopRef.current = voice.stop
+  voiceListeningRef.current = voice.listening
 
   const handleExport = useCallback((mode: 'full' | 'visible') => {
     const term = termRef.current
@@ -264,9 +284,101 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     //   Ctrl+C        → smart: copy selection if any, else passthrough (SIGINT)
     //   Ctrl+V        → paste
     //   Shift+Enter   → backslash/Esc + Enter (line continuation / multi-line)
+    // --- Keyboard copy mode helpers (select text/words with no mouse) ---
+    const gridCtx = (): GridCtx => ({
+      cols: term.cols,
+      lineCount: term.buffer.active.length,
+      getLineText: (y) => term.buffer.active.getLine(y)?.translateToString(true) ?? '',
+    })
+    const renderSelection = () => {
+      const { column, row, length } = toLinearSelection(anchorRef.current, caretRef.current, term.cols)
+      term.select(column, row, Math.max(1, length))
+    }
+    const enterSelectionMode = () => {
+      const b = term.buffer.active
+      const pos = { x: b.cursorX, y: b.baseY + b.cursorY }
+      anchorRef.current = pos
+      caretRef.current = pos
+      selectionModeRef.current = true
+      setSelectionMode(true)
+      renderSelection()
+    }
+    const exitSelectionMode = () => {
+      selectionModeRef.current = false
+      setSelectionMode(false)
+      term.clearSelection()
+    }
+    const applySelectionAction = (action: SelectionAction) => {
+      if (!action) return
+      switch (action.kind) {
+        case 'exit':
+          exitSelectionMode()
+          break
+        case 'copy': {
+          const sel = term.getSelection()
+          if (sel) window.termpolis.clipboardWriteText(sel).catch(() => {})
+          exitSelectionMode()
+          break
+        }
+        case 'selectAll':
+          anchorRef.current = { x: 0, y: 0 }
+          caretRef.current = { x: Math.max(0, term.cols - 1), y: Math.max(0, term.buffer.active.length - 1) }
+          term.selectAll()
+          break
+        case 'move': {
+          const next = moveCaret(caretRef.current, action.motion, gridCtx())
+          anchorRef.current = next
+          caretRef.current = next
+          renderSelection()
+          break
+        }
+        case 'extend':
+          caretRef.current = moveCaret(caretRef.current, action.motion, gridCtx())
+          renderSelection()
+          break
+      }
+    }
+
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // Voice push-to-talk runs first and (in hold mode) handles keyup too, so it
+      // must sit ahead of the keydown-only guard below. Inert until enabled.
+      const vs = useTerminalStore.getState().voiceSettings
+      if (vs?.enabled) {
+        if (e.type === 'keydown' && matchesKeybinding(e, vs.pushToTalkKey)) {
+          e.preventDefault()
+          const intent = pushToTalkIntent('keydown', vs.pushToTalkMode)
+          if (intent === 'toggle') voiceToggleRef.current()
+          else if (intent === 'start' && !voiceListeningRef.current) {
+            voiceStartRef.current()
+            pttHoldActiveRef.current = true
+          }
+          return false
+        }
+        // Hold mode: stop on release of the trigger's main key (modifiers may already be up).
+        if (e.type === 'keyup' && pttHoldActiveRef.current && e.key.toLowerCase() === pushToTalkMainKey(vs.pushToTalkKey)) {
+          e.preventDefault()
+          pttHoldActiveRef.current = false
+          voiceStopRef.current()
+          return false
+        }
+      }
+
       if (e.type !== 'keydown') return true
       const kb = useTerminalStore.getState().keybindings
+
+      // Keyboard copy mode intercepts first. While active it swallows EVERY key
+      // (nothing leaks to the shell); Ctrl+Shift+Space enters it when idle.
+      const selAction = selectionKeyAction(e, selectionModeRef.current)
+      if (selectionModeRef.current) {
+        e.preventDefault()
+        applySelectionAction(selAction)
+        return false
+      }
+      if (selAction?.kind === 'enter') {
+        e.preventDefault()
+        enterSelectionMode()
+        return false
+      }
 
       // When our handler returns false, xterm.js bails out of _keyDown WITHOUT
       // calling preventDefault — so the browser routes the keystroke to xterm's
@@ -293,20 +405,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Copy as code block (HTML + markdown plain-text)
       if (matchesKeybinding(e, kb.copyAsCodeBlock)) {
         e.preventDefault()
-        if (term.getSelection()) writeCodeBlockToClipboardFromTerm(term).catch(() => {})
+        if (term.getSelection()) window.termpolis.clipboardWriteRich(formatAsCodeBlockFromTerm(term), formatAsCodeBlockHtmlFromTerm(term)).catch(() => {})
         return false
       }
       // Copy (explicit force-copy form)
       if (matchesKeybinding(e, kb.copy)) {
         e.preventDefault()
         const selection = term.getSelection()
-        if (selection) navigator.clipboard.writeText(selection).catch(() => {})
+        if (selection) window.termpolis.clipboardWriteText(selection).catch(() => {})
         return false
       }
       // Paste (explicit form)
       if (matchesKeybinding(e, kb.paste)) {
         e.preventDefault()
-        navigator.clipboard.readText().then(text => {
+        window.termpolis.clipboardReadText().then(res => {
+          const text = res?.success ? res.data : ''
           if (text) window.termpolis.writeToTerminal(terminalId, text)
         }).catch(() => {})
         return false
@@ -350,7 +463,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         const selection = term.getSelection()
         if (selection) {
           e.preventDefault()
-          navigator.clipboard.writeText(selection).catch(() => {})
+          window.termpolis.clipboardWriteText(selection).catch(() => {})
           term.clearSelection()
           return false
         }
@@ -359,7 +472,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Ctrl+V (no Shift) — paste
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
         e.preventDefault()
-        navigator.clipboard.readText().then(text => {
+        window.termpolis.clipboardReadText().then(res => {
+          const text = res?.success ? res.data : ''
           if (text) window.termpolis.writeToTerminal(terminalId, text)
         }).catch(() => {})
         return false
@@ -529,6 +643,27 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     }
   }, [isVisible, terminalId])
 
+  // Put the cursor on the active terminal's command line so it's ready for input
+  // the instant you switch to it (Alt+1..9) or launch an agent (Ctrl+1..4 →
+  // addTerminal marks the new terminal active) — no manual click. Without this,
+  // switching swaps the visible pane but keystrokes have nowhere to land until
+  // the user clicks into xterm. Gate on isVisible so an off-screen grid pane or a
+  // hidden tab never grabs the caret, and skip when an editable field (command
+  // palette, settings input, modal) owns focus so we never yank it mid-type.
+  const isActiveTerminal = useTerminalStore(s => s.activeTerminalId === terminalId)
+  useEffect(() => {
+    if (!isActiveTerminal || !isVisible) return
+    const term = termRef.current
+    if (!term) return
+    // Don't yank the caret out of a NON-terminal editable field (command palette,
+    // settings input, a modal). xterm captures input via a hidden <textarea>
+    // inside .xterm, so a focused *terminal* is exempt — switching terminals
+    // (Alt+1..9) must be able to move focus from the old terminal to this one.
+    const active = document.activeElement as HTMLElement | null
+    if (isEditableTarget(active) && !active?.closest('.xterm')) return
+    try { term.focus() } catch { /* terminal disposed before the effect ran */ }
+  }, [isActiveTerminal, isVisible, terminalId])
+
   return (
     <div
       className="absolute inset-0 flex flex-col"
@@ -552,6 +687,37 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }}
       >
         <PinnedOutput pins={pinnedItems} onUnpin={handleUnpin} />
+        {selectionMode && (
+          <div
+            data-testid="selection-mode-badge"
+            className="absolute top-1.5 left-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-[#1e1e1e] bg-[#22D3EE] rounded px-2 py-1 pointer-events-none shadow"
+          >
+            <i className="fa-solid fa-i-cursor text-[9px]"></i>
+            SELECT — arrows move · Shift+arrows extend · Ctrl=word · a=all · Enter/y=copy · Esc=exit
+          </div>
+        )}
+        {voice.listening && (
+          <div
+            data-testid="voice-listening-badge"
+            className="absolute top-1.5 left-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-white bg-[#c0392b] rounded px-2 py-1 pointer-events-none shadow animate-pulse"
+          >
+            <i className="fa-solid fa-microphone text-[9px]"></i>
+            Listening…
+          </div>
+        )}
+        {voice.confirm && (
+          <div
+            data-testid="voice-confirm-bar"
+            className="absolute bottom-2 left-2 right-2 z-40 flex items-center gap-2 text-xs bg-[#2d2d2d] border border-[#3c5f8a] rounded px-3 py-2 shadow-lg"
+          >
+            <i className="fa-solid fa-microphone-lines text-[#82aaff]"></i>
+            <code className="flex-1 truncate text-[#e0e0e0]">{voice.confirm.text}</code>
+            <span className="text-[10px] text-[#999]">dictated command — review before running</span>
+            <button onClick={() => voice.confirmRun(true)} className="px-2 py-0.5 rounded bg-[#0e639c] hover:bg-[#1177bb] text-white">Run</button>
+            <button onClick={() => voice.confirmRun(false)} className="px-2 py-0.5 rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]">Insert</button>
+            <button onClick={voice.cancelConfirm} aria-label="Dismiss" className="px-1.5 py-0.5 rounded text-[#999] hover:text-white">✕</button>
+          </div>
+        )}
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setPastSessionsOpen(true) }}

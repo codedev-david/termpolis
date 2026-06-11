@@ -174,6 +174,17 @@ function createWindow() {
     },
   })
 
+  // Permissions: the renderer needs the microphone (voice input) and clipboard.
+  // Electron rejects getUserMedia without an explicit grant. We keep the prior
+  // permissive default (Electron approves all requests when no handler is set),
+  // so nothing else regresses. NOTE: packaged macOS builds also need
+  // NSMicrophoneUsageDescription + the audio-input entitlement (build config).
+  // Guarded with optional chaining so a minimal BrowserWindow mock (unit tests)
+  // doesn't trip on it; in real Electron the session and handlers always exist.
+  const ses = mainWindow.webContents?.session
+  ses?.setPermissionRequestHandler?.((_wc, _permission, callback) => callback(true))
+  ses?.setPermissionCheckHandler?.(() => true)
+
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {

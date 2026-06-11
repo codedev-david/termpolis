@@ -76,6 +76,7 @@ export interface SessionData {
   viewMode: ViewMode
   keybindings?: Record<string, string>
   customKeybindings?: CustomKeybinding[]
+  voiceSettings?: Record<string, unknown>
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]

@@ -97,6 +97,7 @@ export interface SessionData {
   viewMode: ViewMode
   keybindings?: Record<string, string>
   customKeybindings?: CustomKeybinding[]
+  voiceSettings?: unknown // persisted blob; renderer sanitizes via sanitizeVoiceSettings on load
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
 
   const mockTerminal = {
     open: vi.fn(),
+    focus: vi.fn(),
     write: vi.fn(),
     dispose: vi.fn(),
     onData: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => {
     getSelection: vi.fn(() => ''),
     clearSelection: vi.fn(),
     selectAll: vi.fn(),
+    select: vi.fn(),
     loadAddon: vi.fn(),
     unicode: { activeVersion: '11', register: vi.fn() },
     options: {} as Record<string, any>,
@@ -25,6 +27,9 @@ const mocks = vi.hoisted(() => {
       active: {
         length: mockBufferLines.length,
         viewportY: 0,
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
         getLine: vi.fn((i: number) => {
           if (i < mockBufferLines.length) {
             return { translateToString: vi.fn(() => mockBufferLines[i]) }
@@ -459,6 +464,134 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 2b. Auto-focus the active terminal so the cursor is ready for input the
+  // instant you switch to it (Alt+1..9) or launch an agent (Ctrl+1..4 →
+  // addTerminal makes the new terminal active) — no manual click required.
+  // =====================================================
+  describe('auto-focus active terminal', () => {
+    function withActive(activeTerminalId: string | null) {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        activeTerminalId,
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+      }))
+    }
+
+    it('focuses the xterm when this is the active, visible terminal', () => {
+      withActive('term-1')
+      render(<TerminalPane {...defaultProps} isVisible={true} />)
+      expect(mocks.mockTerminal.focus).toHaveBeenCalled()
+    })
+
+    it('does not focus when a different terminal is active', () => {
+      withActive('term-2')
+      render(<TerminalPane {...defaultProps} isVisible={true} />)
+      expect(mocks.mockTerminal.focus).not.toHaveBeenCalled()
+    })
+
+    it('does not focus a hidden pane even when it is the active terminal', () => {
+      withActive('term-1')
+      render(<TerminalPane {...defaultProps} isVisible={false} />)
+      expect(mocks.mockTerminal.focus).not.toHaveBeenCalled()
+    })
+
+    it('does not steal focus from an editable field (command palette / settings input)', () => {
+      withActive('term-1')
+      const input = document.createElement('input')
+      document.body.appendChild(input)
+      input.focus()
+      try {
+        render(<TerminalPane {...defaultProps} isVisible={true} />)
+        expect(mocks.mockTerminal.focus).not.toHaveBeenCalled()
+      } finally {
+        input.remove()
+      }
+    })
+
+    it('still focuses when switching away from another terminal (xterm hidden textarea has focus)', () => {
+      // xterm captures input via a hidden <textarea> inside .xterm. When you
+      // switch terminals, document.activeElement is the OLD terminal's textarea —
+      // which looks "editable". The guard must exempt terminals or the switch
+      // (Alt+1..9) would never move the caret to the new terminal.
+      withActive('term-1')
+      const xtermHost = document.createElement('div')
+      xtermHost.className = 'xterm'
+      const helper = document.createElement('textarea')
+      helper.className = 'xterm-helper-textarea'
+      xtermHost.appendChild(helper)
+      document.body.appendChild(xtermHost)
+      helper.focus()
+      try {
+        render(<TerminalPane {...defaultProps} isVisible={true} />)
+        expect(mocks.mockTerminal.focus).toHaveBeenCalled()
+      } finally {
+        xtermHost.remove()
+      }
+    })
+  })
+
+  // =====================================================
+  // 2c. Keyboard copy mode — select text/words with no mouse (Ctrl+Shift+Space).
+  // =====================================================
+  describe('keyboard copy mode', () => {
+    function press(init: KeyboardEventInit): boolean | undefined {
+      let res: boolean | undefined
+      act(() => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { cancelable: true, ...init })) })
+      return res
+    }
+
+    it('Ctrl+Shift+Space enters copy mode, shows the SELECT badge, selects the caret cell, and is consumed', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const res = press({ ctrlKey: true, shiftKey: true, key: ' ' })
+      expect(res).toBe(false) // consumed — no stray byte to the shell
+      expect(screen.getByTestId('selection-mode-badge')).toBeInTheDocument()
+      expect(mocks.mockTerminal.select).toHaveBeenCalledWith(0, 0, 1)
+    })
+
+    it('Shift+ArrowRight extends the selection by one cell', () => {
+      render(<TerminalPane {...defaultProps} />)
+      press({ ctrlKey: true, shiftKey: true, key: ' ' }) // enter
+      mocks.mockTerminal.select.mockClear()
+      press({ shiftKey: true, key: 'ArrowRight' })
+      expect(mocks.mockTerminal.select).toHaveBeenCalledWith(0, 0, 2)
+    })
+
+    it('Enter copies the selection via the native clipboard and exits the mode', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('picked text')
+      render(<TerminalPane {...defaultProps} />)
+      press({ ctrlKey: true, shiftKey: true, key: ' ' })
+      press({ key: 'Enter' })
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('picked text')
+      expect(screen.queryByTestId('selection-mode-badge')).not.toBeInTheDocument()
+    })
+
+    it('Escape exits copy mode and clears the selection', () => {
+      render(<TerminalPane {...defaultProps} />)
+      press({ ctrlKey: true, shiftKey: true, key: ' ' })
+      expect(screen.getByTestId('selection-mode-badge')).toBeInTheDocument()
+      press({ key: 'Escape' })
+      expect(mocks.mockTerminal.clearSelection).toHaveBeenCalled()
+      expect(screen.queryByTestId('selection-mode-badge')).not.toBeInTheDocument()
+    })
+
+    it('swallows unrelated keys while active so they never reach the shell', () => {
+      render(<TerminalPane {...defaultProps} />)
+      press({ ctrlKey: true, shiftKey: true, key: ' ' })
+      expect(press({ key: 'z' })).toBe(false)
+    })
+
+    it('plain Ctrl+Space does NOT enter copy mode (that is autocomplete)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      press({ ctrlKey: true, key: ' ' })
+      expect(screen.queryByTestId('selection-mode-badge')).not.toBeInTheDocument()
+    })
+  })
+
+  // =====================================================
   // 3. Cleanup on unmount
   // =====================================================
   describe('cleanup', () => {
@@ -535,7 +668,7 @@ describe('TerminalPane', () => {
       })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false) // consumed by handler
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('selected-text')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('selected-text')
     })
 
     it('Ctrl+Shift+C with no selection does not write to clipboard', () => {
@@ -547,7 +680,7 @@ describe('TerminalPane', () => {
         key: 'C',
       })
       mockKeyHandlerCb?.(event)
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
     it('Ctrl+Shift+V reads clipboard and writes to terminal', async () => {
@@ -562,6 +695,7 @@ describe('TerminalPane', () => {
       await waitFor(() => {
         expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
       })
+      expect(mockClipboardReadText).toHaveBeenCalled()
     })
 
     it('normal keys pass through (returns true)', () => {
@@ -577,7 +711,7 @@ describe('TerminalPane', () => {
       const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'C' })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('selected-text')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('selected-text')
       expect(mocks.mockTerminal.clearSelection).toHaveBeenCalled()
     })
 
@@ -587,7 +721,7 @@ describe('TerminalPane', () => {
       const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'C' })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(true)
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
     it('Ctrl+V pastes clipboard text into terminal', async () => {
@@ -598,6 +732,7 @@ describe('TerminalPane', () => {
       await waitFor(() => {
         expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
       })
+      expect(mockClipboardReadText).toHaveBeenCalled()
     })
 
     it('Shift+Enter sends backslash+CR for shell line continuation when no agent detected', () => {
@@ -651,7 +786,7 @@ describe('TerminalPane', () => {
       const event = new KeyboardEvent('keyup', { ctrlKey: true, key: 'C' })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(true)
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
   })
 
@@ -677,7 +812,7 @@ describe('TerminalPane', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('rebound-sel')
       const result = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { altKey: true, key: 'c' }))
       expect(result).toBe(false)
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('rebound-sel')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('rebound-sel')
     })
 
     it('stops copying on the old default once Copy is rebound away', () => {
@@ -687,7 +822,7 @@ describe('TerminalPane', () => {
       // Ctrl+Shift+C is no longer the copy combo; the smart Ctrl+C path needs
       // no Shift, so this combo must now do nothing.
       mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'C' }))
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
     it('honors a rebound autocomplete combo (toggleAutocomplete = Ctrl+J)', async () => {
@@ -769,7 +904,7 @@ describe('TerminalPane', () => {
       expect(screen.getByText('Select All')).toBeInTheDocument()
       expect(screen.getByText('Copy as Code Block')).toBeInTheDocument()
       // Did NOT auto-copy or clear
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
       expect(mocks.mockTerminal.clearSelection).not.toHaveBeenCalled()
     })
 
@@ -843,6 +978,7 @@ describe('TerminalPane', () => {
       await waitFor(() => {
         expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
       })
+      expect(mockClipboardReadText).toHaveBeenCalled()
     })
 
     it('clicking Select All calls selectAll on terminal', () => {
@@ -1452,8 +1588,7 @@ describe('TerminalPane', () => {
   // 25. Slack/Teams copy submenu (v1.11.43)
   // =====================================================
   describe('copy as code block / plain text / image', () => {
-    it('Ctrl+Shift+M with selection copies fenced output to clipboard', async () => {
-      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
+    it('Ctrl+Shift+M with selection copies fenced output via native clipboard (rich)', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('hello')
 
       render(<TerminalPane {...defaultProps} />)
@@ -1464,12 +1599,12 @@ describe('TerminalPane', () => {
       })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
-      expect(writeCodeBlockToClipboardFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
+      // Keyboard code-block copy now routes through the native Electron clipboard
+      // (clipboardWriteRich), not navigator.clipboard, so it works regardless of focus.
+      expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nhello\n```', '<pre><code>hello</code></pre>')
     })
 
-    it('Ctrl+Shift+M with no selection does not write to clipboard', async () => {
-      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(writeCodeBlockToClipboardFromTerm as any).mockClear()
+    it('Ctrl+Shift+M with no selection does not write to clipboard', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('')
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
@@ -1478,7 +1613,7 @@ describe('TerminalPane', () => {
         key: 'M',
       })
       mockKeyHandlerCb?.(event)
-      expect(writeCodeBlockToClipboardFromTerm).not.toHaveBeenCalled()
+      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
     })
 
     it('Copy as Code Block submenu item formats and copies', async () => {

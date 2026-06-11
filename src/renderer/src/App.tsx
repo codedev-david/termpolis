@@ -25,6 +25,7 @@ import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, DEFAULT_KEYBINDINGS } from './lib/keybindings'
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
+import { sanitizeVoiceSettings } from './lib/voice/voicePipeline'
 import { getHomedir } from './lib/homedir'
 import { getTerminalDefaults, agentTerminalName } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
@@ -40,7 +41,7 @@ import * as efficiencyLib from './lib/efficiencyAnalyzer'
 export default function App() {
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
-    defaultShell, keybindings, customKeybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides,
+    defaultShell, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
   } = useTerminalStore()
@@ -80,7 +81,7 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, customKeybindings: cz, aiProfiles: ap, promptTemplates: pt, userWorkflows: uw, agentRatingOverrides: aro } = res.data
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, customKeybindings: cz, voiceSettings: vsRaw, aiProfiles: ap, promptTemplates: pt, userWorkflows: uw, agentRatingOverrides: aro } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
         // Migrate old 'grid' viewMode to 'split'
         const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
@@ -92,6 +93,7 @@ export default function App() {
           activeTerminalId: saved[0]?.id ?? null,
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
           customKeybindings: cz ?? [],
+          voiceSettings: sanitizeVoiceSettings(vsRaw),
           aiProfiles: ap ?? [],
           promptTemplates: pt ?? [],
           userWorkflows: uw ?? [],
@@ -239,13 +241,14 @@ export default function App() {
         viewMode: state.viewMode,
         keybindings: { ...state.keybindings },
         customKeybindings: state.customKeybindings,
+        voiceSettings: state.voiceSettings,
         aiProfiles: state.aiProfiles,
         promptTemplates: state.promptTemplates,
         userWorkflows: state.userWorkflows,
         agentRatingOverrides: state.agentRatingOverrides,
       })
     }, 1000) // debounce 1 second
-  }, [terminals, workspaces, keybindings, customKeybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides])
+  }, [terminals, workspaces, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides])
 
   // Global keyboard shortcuts
   useEffect(() => {

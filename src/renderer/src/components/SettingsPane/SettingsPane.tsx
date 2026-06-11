@@ -5,6 +5,7 @@ import type { ShellInfo, ShellType } from '../../types'
 import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
+import { VoiceSettings } from './VoiceSettings'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
 import {
@@ -54,7 +55,7 @@ export function SettingsPane() {
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
-  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'keybindings' | 'agents' | 'shell'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'voice' | 'keybindings' | 'agents' | 'shell'>('general')
 
   useEffect(() => {
     const onOpenShortcuts = () => setActiveTab('keybindings')
@@ -185,6 +186,7 @@ export function SettingsPane() {
         {[
           { id: 'general', label: 'General' },
           { id: 'security', label: 'AI Security' },
+          { id: 'voice', label: 'Voice' },
           { id: 'keybindings', label: 'Keybindings' },
           { id: 'agents', label: 'Agent Ratings' },
           { id: 'shell', label: 'Shell Config' },
@@ -419,6 +421,8 @@ export function SettingsPane() {
       )}
 
       {activeTab === 'security' && <SecuritySettings />}
+
+      {activeTab === 'voice' && <VoiceSettings />}
 
       {activeTab === 'keybindings' && <KeybindingsSettings />}
 

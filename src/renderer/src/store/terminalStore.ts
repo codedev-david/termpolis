@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate, CustomKeybinding } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
+import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 
@@ -67,6 +68,7 @@ interface TerminalStore {
   sidebarCollapsed: boolean
   keybindings: KeybindingMap
   customKeybindings: CustomKeybinding[]
+  voiceSettings: VoiceSettings
   paneTree: PaneNode | null
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
@@ -97,6 +99,7 @@ interface TerminalStore {
   addCustomKeybinding: (binding: CustomKeybinding) => void
   updateCustomKeybinding: (id: string, patch: Partial<Omit<CustomKeybinding, 'id'>>) => void
   removeCustomKeybinding: (id: string) => void
+  setVoiceSettings: (patch: Partial<VoiceSettings>) => void
   setPaneTree: (tree: PaneNode | null) => void
   splitTerminal: (terminalId: string, direction: 'horizontal' | 'vertical', newTerminalId: string) => void
   removePaneTerminal: (terminalId: string) => void
@@ -130,6 +133,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   sidebarCollapsed: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },
   customKeybindings: [],
+  voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
   paneTree: null,
   aiProfiles: [],
   promptTemplates: [],
@@ -240,6 +244,8 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   removeCustomKeybinding: (id) => set(s => ({
     customKeybindings: s.customKeybindings.filter(c => c.id !== id),
   })),
+
+  setVoiceSettings: (patch) => set(s => ({ voiceSettings: { ...s.voiceSettings, ...patch } })),
 
   setPaneTree: (tree) => set({ paneTree: tree }),
 
