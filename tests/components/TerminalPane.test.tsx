@@ -704,6 +704,34 @@ describe('TerminalPane', () => {
       expect(screen.getByText('Export Visible Output...')).toBeInTheDocument()
     })
 
+    it('flips the menu UP when right-clicking near the viewport bottom (terminal line)', () => {
+      // Simulate a short viewport and a tall menu so a click near the bottom
+      // would overflow if the menu grew downward.
+      const origH = window.innerHeight
+      const origW = window.innerWidth
+      Object.defineProperty(window, 'innerHeight', { value: 500, configurable: true })
+      Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true })
+      const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+        width: 200, height: 400, top: 0, left: 0, right: 200, bottom: 400, x: 0, y: 0, toJSON: () => ({}),
+      } as DOMRect)
+      try {
+        const { container } = render(<TerminalPane {...defaultProps} />)
+        const terminalContainer = container.querySelector('.flex-1.relative')!
+        // Right-click on the bottom input line.
+        fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 450 })
+        const menu = screen.getByTestId('terminal-context-menu')
+        // 450 + 400 overflows 500, so it must open upward: top = 450 - 400 = 50.
+        expect(menu.style.top).toBe('50px')
+        expect(parseInt(menu.style.top, 10)).toBeLessThan(450)
+        // Horizontally it fits, so no flip: left stays at the click point.
+        expect(menu.style.left).toBe('100px')
+      } finally {
+        rectSpy.mockRestore()
+        Object.defineProperty(window, 'innerHeight', { value: origH, configurable: true })
+        Object.defineProperty(window, 'innerWidth', { value: origW, configurable: true })
+      }
+    })
+
     it('clicking Copy in context menu copies selection', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       mocks.mockTerminal.getSelection.mockReturnValue('copied-text')

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, writeCodeBlockToClipboardFromTerm } from '../../lib/exportTerminal'
+import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
@@ -52,6 +53,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const fitRef = useRef<FitAddon | null>(null)
   const inputBufferRef = useRef('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
 
   // Command fix banner state
@@ -170,6 +173,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [contextMenu.visible])
+
+  // Once the menu has rendered, measure it and flip it up/left so it never
+  // spills past the viewport — the common case is right-clicking the bottom
+  // input line, where a downward menu would clip Paste and everything below.
+  // Runs before paint (useLayoutEffect), so the corrected spot is what shows.
+  useLayoutEffect(() => {
+    if (!contextMenu.visible) {
+      setMenuPos(null)
+      return
+    }
+    const el = menuRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setMenuPos(computeMenuPosition(contextMenu.x, contextMenu.y, r.width, r.height, window.innerWidth, window.innerHeight))
+  }, [contextMenu.visible, contextMenu.x, contextMenu.y])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -526,8 +544,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
         {contextMenu.visible && (
           <div
+            ref={menuRef}
+            data-testid="terminal-context-menu"
             className="fixed z-50 bg-[#2d2d2d] border border-[#454545] rounded shadow-lg py-1 min-w-[200px]"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
+            style={{
+              left: menuPos ? menuPos.left : contextMenu.x,
+              top: menuPos ? menuPos.top : contextMenu.y,
+              // Hide for the single pre-measure commit so it never flashes at
+              // the un-flipped spot, then reveal at the corrected position.
+              visibility: menuPos ? 'visible' : 'hidden',
+            }}
           >
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
