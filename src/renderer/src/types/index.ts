@@ -25,6 +25,9 @@ export interface TerminalSession {
   isSwarm?: boolean
   hidden?: boolean
   isConductor?: boolean
+  /** Set when the terminal was seeded with project memory at launch (e.g. Claude
+   *  via --append-system-prompt-file), so useAutoPrimer skips the typed pointer. */
+  launchPrimed?: boolean
 }
 
 export interface Workspace {
@@ -168,11 +171,21 @@ export interface TermpolisAPI {
   memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
   memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
+  /** Claude launch primer: writes the recall instruction to a temp file (only
+   *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
+  memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<string | null>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
   memorySetSyncDir: (dir: string | null) => Promise<IpcResponse<MemorySyncStatus>>
   memoryChooseSyncDir: () => Promise<IpcResponse<MemorySyncStatus>>
   memorySetSyncPassphrase: (passphrase: string) => Promise<IpcResponse<MemorySyncStatus>>
   memoryDisableSyncEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
+
+  // Clipboard — native Electron clipboard (focus/permission-immune), used by the
+  // terminal context menu where navigator.clipboard silently rejects.
+  clipboardWriteText: (text: string) => Promise<IpcResponse>
+  clipboardReadText: () => Promise<IpcResponse<string>>
+  clipboardWriteRich: (text: string, html: string) => Promise<IpcResponse>
+  clipboardWriteImage: (dataUrl: string) => Promise<IpcResponse>
 
   // Test-only seams (inert in production — main handlers registered only under
   // NODE_ENV=test). Used by e2e/compaction-reprime.spec.ts.

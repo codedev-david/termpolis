@@ -5,6 +5,7 @@ import { getTerminalDefaults, agentTerminalName } from '../../lib/terminalDefaul
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { resolveAgentCommand, testDelay } from '../../lib/testAgents'
+import { isAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import qwenIcon from '../../assets/qwen-ai-logo.svg'
 
 const DEFAULT_AI_PROFILES: AIProfile[] = [
@@ -130,6 +131,30 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       alert(`Failed to open terminal: ${res.error}`)
       return
     }
+    // Claude: seed project memory invisibly at launch via a system-prompt file
+    // (--append-system-prompt-file) instead of typing a visible primer into the
+    // terminal. The prepare call is the relevance gate — it returns null when
+    // there's no saved memory for this project, in which case we launch bare.
+    // The other agents get the slim typed pointer via useAutoPrimer on detection.
+    let launchCommand = resolveAgentCommand(profile.command)
+    let launchPrimed = false
+    const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
+    if (isClaude && isAutoPrimerEnabled()) {
+      try {
+        const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+        const query = project
+          ? `recent work, decisions, conventions, and context for ${project}`
+          : 'recent work, key decisions, and conventions'
+        const primerRes = await window.termpolis.memoryPreparePrimerFile(query, cwd)
+        if (primerRes?.success && primerRes.data) {
+          const fileArg = primerRes.data.replace(/\\/g, '/')
+          launchCommand = `${launchCommand} --append-system-prompt-file "${fileArg}"`
+          launchPrimed = true
+        }
+      } catch {
+        // Memory unavailable — fall back to a bare launch + the normal typed pointer.
+      }
+    }
     addTerminal({
       id,
       name: agentTerminalName(profile.name, cwd),
@@ -138,6 +163,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       cwd,
       ...getTerminalDefaults(),
       agentCommand: profile.command,
+      launchPrimed,
     })
     // These timers fire seconds after the handler returns. In unit tests
     // jsdom may tear down before they run — guard each writeToTerminal
@@ -152,7 +178,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
     setTimeout(() => {
       writeIfAlive('\r')
       setTimeout(() => {
-        writeIfAlive(resolveAgentCommand(profile.command) + '\r')
+        writeIfAlive(launchCommand + '\r')
       }, 500)
     }, testDelay(4000))
     // Auto-trust: Claude/Codex show trust prompts ~5s after launch.

@@ -71,6 +71,7 @@ beforeEach(() => {
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/test/project' }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
+    memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: null }),
   }
 })
 
@@ -259,6 +260,45 @@ describe('AIProfiles', () => {
         )
       })
     })
+
+    it('Claude launch seeds memory via --append-system-prompt-file when memory exists', async () => {
+      ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
+        success: true, data: 'C:\\Users\\me\\AppData\\primers\\primer-x.txt',
+      })
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => {
+        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
+      })
+      fireEvent.click(screen.getByText('Claude Code'))
+      await waitFor(() => {
+        expect(mockAddTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: true }))
+      })
+      // The launch command carries the system-prompt file (forward-slashed path),
+      // so the primer never gets typed visibly into the terminal.
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls
+        const seeded = calls.some((c: any[]) =>
+          typeof c[1] === 'string' &&
+          c[1].includes('--append-system-prompt-file') &&
+          c[1].includes('primers/primer-x.txt'),
+        )
+        expect(seeded).toBe(true)
+      }, { timeout: 3000 })
+    }, 10000)
+
+    it('Claude launch stays bare when there is no relevant memory', async () => {
+      ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({ success: true, data: null })
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => {
+        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
+      })
+      fireEvent.click(screen.getByText('Claude Code'))
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls
+        expect(calls.some((c: any[]) => c[1] === 'claude\r')).toBe(true)
+      }, { timeout: 3000 })
+      expect(mockAddTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: false }))
+    }, 10000)
   })
 
   describe('collapse/expand', () => {

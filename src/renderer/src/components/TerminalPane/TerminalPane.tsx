@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsPlainTextFromTerm, writeCodeBlockToClipboardFromTerm } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, writeCodeBlockToClipboardFromTerm } from '../../lib/exportTerminal'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
@@ -533,7 +533,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
                 const selection = termRef.current?.getSelection()
-                if (selection) navigator.clipboard.writeText(selection)
+                if (selection) window.termpolis.clipboardWriteText(selection).catch(() => {})
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
             >
@@ -544,7 +544,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               onClick={() => {
                 const term = termRef.current
                 if (term && term.getSelection()) {
-                  writeCodeBlockToClipboardFromTerm(term).catch(() => {})
+                  window.termpolis.clipboardWriteRich(formatAsCodeBlockFromTerm(term), formatAsCodeBlockHtmlFromTerm(term)).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
@@ -557,7 +557,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               onClick={() => {
                 const term = termRef.current
                 if (term && term.getSelection()) {
-                  navigator.clipboard.writeText(formatAsPlainTextFromTerm(term))
+                  window.termpolis.clipboardWriteText(formatAsPlainTextFromTerm(term)).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
@@ -573,7 +573,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                   const cmd = lastCommandRef.current
                   const body = formatAsCodeBlockFromTerm(term)
                   const withCmd = cmd ? '`$ ' + cmd + '`\n' + body : body
-                  navigator.clipboard.writeText(withCmd).catch(() => {})
+                  window.termpolis.clipboardWriteText(withCmd).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
@@ -589,10 +589,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
                   try {
                     const canvas = xtermEl.querySelector('canvas') as HTMLCanvasElement | null
                     if (canvas) {
-                      const blob: Blob | null = await new Promise(res => canvas.toBlob(b => res(b), 'image/png'))
-                      if (blob && navigator.clipboard && (window as any).ClipboardItem) {
-                        await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': blob })])
-                      }
+                      const dataUrl = canvas.toDataURL('image/png')
+                      if (dataUrl) await window.termpolis.clipboardWriteImage(dataUrl)
                     }
                   } catch {}
                 }
@@ -605,9 +603,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
-                navigator.clipboard.readText().then(text => {
+                window.termpolis.clipboardReadText().then(res => {
+                  const text = res?.success ? res.data : ''
                   if (text) window.termpolis.writeToTerminal(terminalId, text)
-                })
+                }).catch(() => {})
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
             >

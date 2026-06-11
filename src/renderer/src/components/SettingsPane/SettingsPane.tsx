@@ -352,11 +352,12 @@ export function SettingsPane() {
             <div className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">Auto-recall context on agent launch</span>
               <span className="text-xs text-[#9ca3af] leading-relaxed">
-                When an AI agent starts in a terminal, Termpolis adds a one-line note to its input
-                pointing it at the memory_primer MCP tool — the agent loads the most relevant
-                memories for this project behind the scenes (current repo/directory first, then
-                cross-project), holds them as background, and waits for your instruction instead
-                of acting on them. Only fires when relevant memory exists.
+                When an AI agent starts in a terminal, Termpolis seeds it with your saved memory —
+                Claude Code via its system prompt (nothing typed into the terminal), other agents
+                via a short one-line note pointing at the memory_primer MCP tool. The agent loads
+                the most relevant memories for this project behind the scenes (current repo/directory
+                first, then cross-project), holds them as background, and waits for your instruction
+                instead of acting on them. Only fires when relevant memory exists.
               </span>
             </div>
           </div>

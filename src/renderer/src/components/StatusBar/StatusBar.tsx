@@ -225,11 +225,11 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <i className="fa-solid fa-brain text-xs"></i> Memory Auto-Recall
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li>When an AI agent launches, Termpolis adds a <strong>one-line note</strong> to its input pointing it at the <code className="bg-[#3c3c3c] px-1 rounded">memory_primer</code> MCP tool — the agent loads your saved memory <strong>behind the scenes</strong>, with no wall of text in the terminal</li>
+              <li><strong>Claude Code</strong> launches with the recall instruction in its <strong>system prompt</strong> (via <code className="bg-[#3c3c3c] px-1 rounded">--append-system-prompt-file</code>) — nothing is typed into the terminal at all. Codex, Gemini, and Qwen get a <strong>short one-line note</strong> pointing them at the <code className="bg-[#3c3c3c] px-1 rounded">memory_primer</code> MCP tool. Either way the agent loads your saved memory <strong>behind the scenes</strong>, with no wall of text</li>
               <li><strong>This repo/directory first</strong> — memories for the current project (past conversations leading) take the top slots; cross-project context follows, clearly labeled</li>
               <li><strong>Background only</strong> — the agent holds the memory as context and waits for your instruction; it will not start acting on past work by itself</li>
               <li>After Claude Code <strong>compacts</strong> its conversation, the pointer is re-injected so the agent can recover the detail it summarized away</li>
-              <li>Both behaviors are opt-out in <strong>Settings → AI Memory</strong>; the note only appears when relevant memory actually exists</li>
+              <li>Both behaviors are opt-out in <strong>Settings → AI Memory</strong>; seeding only happens when relevant memory actually exists for the project</li>
             </ul>
           </section>
 

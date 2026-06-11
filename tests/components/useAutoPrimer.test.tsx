@@ -8,6 +8,7 @@ import {
   injectAutoPrimer,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
+import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const agent = { name: 'Claude Code' } as any
@@ -159,6 +160,17 @@ describe('useAutoPrimer', () => {
     unmount()
     await vi.advanceTimersByTimeAsync(3000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('skips the typed pointer when the terminal was already seeded at launch', async () => {
+    // Claude launches with --append-system-prompt-file → store marks launchPrimed,
+    // so the on-detection typed pointer must NOT also fire (no double-prime).
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 'term-primed', launchPrimed: true } as any] })
+    renderHook(() => useAutoPrimer('term-primed', agent, '/home/me/proj'))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    useTerminalStore.setState({ terminals: [] })
   })
 })
 

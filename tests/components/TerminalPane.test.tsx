@@ -254,6 +254,10 @@ const mockExportTerminal = vi.fn()
 const mockResizeTerminal = vi.fn()
 const mockCreateTerminal = vi.fn(() => Promise.resolve())
 const mockKillTerminal = vi.fn()
+const mockClipboardWriteText = vi.fn(() => Promise.resolve({ success: true }))
+const mockClipboardReadText = vi.fn(() => Promise.resolve({ success: true, data: 'pasted-text' }))
+const mockClipboardWriteRich = vi.fn(() => Promise.resolve({ success: true }))
+const mockClipboardWriteImage = vi.fn(() => Promise.resolve({ success: true }))
 
 beforeAll(() => {
   ;(window as any).termpolis = {
@@ -265,6 +269,10 @@ beforeAll(() => {
     resizeTerminal: mockResizeTerminal,
     createTerminal: mockCreateTerminal,
     killTerminal: mockKillTerminal,
+    clipboardWriteText: mockClipboardWriteText,
+    clipboardReadText: mockClipboardReadText,
+    clipboardWriteRich: mockClipboardWriteRich,
+    clipboardWriteImage: mockClipboardWriteImage,
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
   }
 
@@ -702,7 +710,7 @@ describe('TerminalPane', () => {
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy'))
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('copied-text')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('copied-text')
     })
 
     it('clicking Paste in context menu pastes from clipboard', async () => {
@@ -1352,7 +1360,6 @@ describe('TerminalPane', () => {
     })
 
     it('Copy as Code Block submenu item formats and copies', async () => {
-      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
       mocks.mockTerminal.getSelection.mockReturnValue('selected')
 
       const { container } = render(<TerminalPane {...defaultProps} />)
@@ -1360,18 +1367,18 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
 
-      expect(writeCodeBlockToClipboardFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
+      // Menu copy goes through the native Electron clipboard (focus-immune) with
+      // BOTH the markdown fence and the rich HTML form.
+      expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nselected\n```', '<pre><code>selected</code></pre>')
     })
 
     it('Copy as Code Block with empty selection does nothing', async () => {
-      const { writeCodeBlockToClipboardFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(writeCodeBlockToClipboardFromTerm as any).mockClear()
       mocks.mockTerminal.getSelection.mockReturnValue('')
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
-      expect(writeCodeBlockToClipboardFromTerm).not.toHaveBeenCalled()
+      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
     })
 
     it('Copy as Plain Text strips ANSI and copies', async () => {
@@ -1385,7 +1392,7 @@ describe('TerminalPane', () => {
       fireEvent.click(screen.getByText('Copy as Plain Text'))
 
       expect(formatAsPlainTextFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain output')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('plain output')
     })
 
     it('Copy as Plain Text with empty selection does nothing', () => {
@@ -1394,7 +1401,7 @@ describe('TerminalPane', () => {
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Plain Text'))
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
     it('Copy with Command prepends last command and copies fence', async () => {
@@ -1410,7 +1417,7 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
 
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('`$ ls`\n```text\nresult\n```')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('`$ ls`\n```text\nresult\n```')
     })
 
     it('Copy with Command falls back to plain fence when no last command', async () => {
@@ -1423,7 +1430,7 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
 
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('```text\nresult\n```')
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('```text\nresult\n```')
     })
 
     it('Copy with Command with empty selection does nothing', () => {
@@ -1432,48 +1439,43 @@ describe('TerminalPane', () => {
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
-      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
-    it('Copy as Image attempts canvas.toBlob and writes ClipboardItem', async () => {
+    it('Copy as Image grabs the canvas and writes via the native clipboard', async () => {
       // Set up a fake canvas inside the .xterm element
       const { container } = render(<TerminalPane {...defaultProps} />)
       const inner = container.querySelector('.flex-1.relative') as HTMLElement
       const xtermDiv = document.createElement('div')
       xtermDiv.className = 'xterm'
       const canvas = document.createElement('canvas') as HTMLCanvasElement
-      ;(canvas as any).toBlob = (cb: (b: Blob) => void) => cb(new Blob(['fake-png'], { type: 'image/png' }))
+      ;(canvas as any).toDataURL = () => 'data:image/png;base64,ZmFrZQ=='
       xtermDiv.appendChild(canvas)
       inner.appendChild(xtermDiv)
-
-      // Stub ClipboardItem
-      ;(window as any).ClipboardItem = class { constructor(public data: any) {} }
-      ;(navigator.clipboard as any).write = vi.fn(() => Promise.resolve())
 
       fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Image'))
 
       await waitFor(() => {
-        expect((navigator.clipboard as any).write).toHaveBeenCalled()
+        expect(mockClipboardWriteImage).toHaveBeenCalledWith('data:image/png;base64,ZmFrZQ==')
       })
     })
 
     it('Copy as Image is a no-op when there is no canvas', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const inner = container.querySelector('.flex-1.relative') as HTMLElement
-      ;(navigator.clipboard as any).write = vi.fn(() => Promise.resolve())
       fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Image'))
-      expect((navigator.clipboard as any).write).not.toHaveBeenCalled()
+      expect(mockClipboardWriteImage).not.toHaveBeenCalled()
     })
 
-    it('Copy as Image swallows toBlob errors', async () => {
+    it('Copy as Image swallows canvas errors', async () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const inner = container.querySelector('.flex-1.relative') as HTMLElement
       const xtermDiv = document.createElement('div')
       xtermDiv.className = 'xterm'
       const canvas = document.createElement('canvas') as HTMLCanvasElement
-      ;(canvas as any).toBlob = () => { throw new Error('boom') }
+      ;(canvas as any).toDataURL = () => { throw new Error('boom') }
       xtermDiv.appendChild(canvas)
       inner.appendChild(xtermDiv)
 

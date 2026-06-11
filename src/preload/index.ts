@@ -142,6 +142,7 @@ const api: TermpolisAPI = {
   memoryIngestConversations: () => ipcRenderer.invoke('memory:ingest-conversations'),
   memoryIngestCode: (repoRoot: string) => ipcRenderer.invoke('memory:ingest-code', { repoRoot }),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
+  memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   memorySyncStatus: () => ipcRenderer.invoke('memory:sync-status'),
   memorySetSyncDir: (dir: string | null) => ipcRenderer.invoke('memory:set-sync-dir', { dir }),
   memoryChooseSyncDir: () => ipcRenderer.invoke('memory:choose-sync-dir'),
@@ -166,6 +167,14 @@ const api: TermpolisAPI = {
 
   listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
   digestAISession: (filePath: string) => ipcRenderer.invoke('aiSessions:digest', filePath),
+
+  // Clipboard — native Electron clipboard via main, so the terminal context menu
+  // works regardless of renderer focus. navigator.clipboard is focus/permission
+  // gated and silently rejects when called from a menu-button click.
+  clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', { text }),
+  clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
+  clipboardWriteRich: (text: string, html: string) => ipcRenderer.invoke('clipboard:write-rich', { text, html }),
+  clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

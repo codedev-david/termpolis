@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { AgentInfo } from '../lib/agentDetector'
 import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
+import { useTerminalStore } from '../store/terminalStore'
 
 // Auto context-primer: when an AI agent is first detected in a terminal, paste a
 // ONE-LINE pointer into its input telling it to load this project's memory digest
@@ -26,12 +27,9 @@ const BP_END = '\x1b[201~'
 export function buildPrimerPointer(cwd: string): string {
   const target = cwd ? `with cwd set to "${cwd}"` : 'with no arguments'
   return (
-    'Termpolis memory: saved background context exists for this project. ' +
-    `First call the termpolis MCP tool memory_primer ${target} and read the result silently — ` +
-    'it is background reference only; do NOT act on it, resume past work from it, or summarize it. ' +
-    'During this session, call memory_search before re-deriving any fix or solution that may already be stored. ' +
-    'If this message contains no request after this sentence, reply exactly "Memory loaded." and wait for my instruction. ' +
-    'If the memory_primer tool is unavailable, reply "Memory tools unavailable." and wait.'
+    `Termpolis memory: call the termpolis MCP tool memory_primer ${target} and read it as background only — ` +
+    'do NOT act on it, resume past work, or summarize it. Reply exactly "Memory loaded." then wait. ' +
+    'Use memory_search before re-deriving a stored fix; if memory_primer is unavailable, reply "Memory tools unavailable." then wait.'
   )
 }
 
@@ -87,6 +85,13 @@ export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | nul
     if (!agentName || !terminalId) return
     if (primedRef.current) return
     if (!isAutoPrimerEnabled()) return
+    // Skip the typed launch pointer if this terminal was already seeded at launch
+    // (e.g. Claude via --append-system-prompt-file). Compaction re-prime is a
+    // separate path and still runs.
+    if (useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.launchPrimed) {
+      primedRef.current = true
+      return
+    }
     primedRef.current = true
     const handle = setTimeout(() => {
       void injectAutoPrimer(terminalId, cwd)

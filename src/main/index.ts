@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import {
   initTelemetry,
@@ -49,7 +49,7 @@ if (process.platform === 'linux') {
 }
 import { join } from 'path'
 import { homedir } from 'os'
-import { writeFileSync } from 'fs'
+import { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid } from './terminalManager'
@@ -215,6 +215,33 @@ function createWindow() {
 }
 
 // IPC Handlers
+
+// Clipboard — routed through Electron's native clipboard module (main process)
+// rather than the renderer's navigator.clipboard. The web Clipboard API is gated
+// on the calling document being focused; when the user clicks a terminal
+// context-menu item, focus has left xterm's hidden textarea, so
+// navigator.clipboard.writeText/readText reject and copy/paste silently no-op
+// (the keyboard path works because it fires while the textarea is still focused).
+// The main-process clipboard module has no focus/permission gate.
+ipcMain.handle('clipboard:write-text', (_e, { text }: { text?: string }) => {
+  clipboard.writeText(typeof text === 'string' ? text : '')
+  return ok()
+})
+ipcMain.handle('clipboard:read-text', () => ok(clipboard.readText()))
+ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; html?: string }) => {
+  clipboard.write({ text: text ?? '', html: html ?? '' })
+  return ok()
+})
+ipcMain.handle('clipboard:write-image', (_e, { dataUrl }: { dataUrl?: string }) => {
+  try {
+    const img = nativeImage.createFromDataURL(dataUrl ?? '')
+    if (!img.isEmpty()) clipboard.writeImage(img)
+    return ok()
+  } catch (e) {
+    return err(e instanceof Error ? e.message : 'clipboard image write failed')
+  }
+})
+
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) => {
   try {
     const shells = await detectAvailableShells()
@@ -940,6 +967,42 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit, project: project || undefined })
     return ok(primer)
+  } catch (e: any) { return err(e.message) }
+})
+
+// Claude launch primer: when relevant memory exists, write the memory-recall
+// instruction to a temp file so Claude Code can be launched with
+// `--append-system-prompt-file <path>` — seeding the session invisibly (nothing
+// typed into the terminal) while keeping MCP tool access. Returns the file path,
+// or null when there is no relevant memory to seed. The instruction routes the
+// agent to memory_primer/memory_search; the digest itself loads via the tool, not
+// inline, so it never bloats the system prompt.
+ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string }) => {
+  try {
+    const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
+    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', project: project || undefined })
+    if (!digest) return ok(null) // no relevant memory → launch bare, skip seeding
+    const dir = join(app.getPath('userData'), 'primers')
+    try { mkdirSync(dir, { recursive: true }) } catch { /* already exists */ }
+    // Sweep stale primer files so the dir can't grow unbounded — Claude reads the
+    // file at startup, so it's disposable within seconds of launch.
+    try {
+      const now = Date.now()
+      for (const f of readdirSync(dir)) {
+        const p = join(dir, f)
+        try { if (now - statSync(p).mtimeMs > 5 * 60_000) unlinkSync(p) } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    const cwdArg = opts?.cwd ? ` (cwd "${opts.cwd}")` : ''
+    const instruction = [
+      'Termpolis project memory: saved background context exists for this project.',
+      `When you begin working, call the termpolis MCP tool memory_primer${cwdArg} and read it as background reference only — do NOT resume past work from it or summarize it unprompted; just hold it as context.`,
+      'Before re-deriving any fix or solution that may already be stored, call the termpolis memory_search tool first.',
+      'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
+    ].join(' ')
+    const file = join(dir, `primer-${uuidv4()}.txt`)
+    writeFileSync(file, instruction, 'utf8')
+    return ok(file)
   } catch (e: any) { return err(e.message) }
 })
 
