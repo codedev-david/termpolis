@@ -199,16 +199,29 @@ async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fet
         // Byte-level integrity check — download + hash and compare against
         // the YAML claim. This is the check that would have caught the
         // v1.11.23/24 post-signing SHA mismatch before users hit it.
-        try {
-          const { sha512, size } = await fetchHashAndSize(assetUrl, timeoutMs * 4, fetchImpl)
-          if (typeof f.size === 'number' && size !== f.size) {
-            allFindings.push(`${name}: size mismatch for ${f.url} — yml says ${f.size}, asset is ${size}`)
+        //
+        // Budget: ×20 the base timeout (default 15s → 5 min/asset), with one
+        // retry. The old ×4 (60s) regularly aborted mid-download on the
+        // ~100 MB+ mac assets when the CDN was cold right after publish —
+        // a transient that read as a red release (v1.11.78).
+        let hashed = null
+        let hashErr = null
+        for (let attempt = 0; attempt < 2 && !hashed; attempt++) {
+          try {
+            hashed = await fetchHashAndSize(assetUrl, timeoutMs * 20, fetchImpl)
+          } catch (e) {
+            hashErr = e
           }
-          if (f.sha512 && sha512 !== f.sha512) {
-            allFindings.push(`${name}: sha512 mismatch for ${f.url} — yml claims ${f.sha512.slice(0, 16)}..., asset hashes to ${sha512.slice(0, 16)}...`)
+        }
+        if (!hashed) {
+          allFindings.push(`${name}: could not verify hash of ${f.url} — ${hashErr.message}`)
+        } else {
+          if (typeof f.size === 'number' && hashed.size !== f.size) {
+            allFindings.push(`${name}: size mismatch for ${f.url} — yml says ${f.size}, asset is ${hashed.size}`)
           }
-        } catch (e) {
-          allFindings.push(`${name}: could not verify hash of ${f.url} — ${e.message}`)
+          if (f.sha512 && hashed.sha512 !== f.sha512) {
+            allFindings.push(`${name}: sha512 mismatch for ${f.url} — yml claims ${f.sha512.slice(0, 16)}..., asset hashes to ${hashed.sha512.slice(0, 16)}...`)
+          }
         }
       }
     }
