@@ -18,6 +18,7 @@ import { parsePromptFromOutput } from '../../lib/promptParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { useTerminalStore } from '../../store/terminalStore'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding } from '../../lib/keybindings'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -255,16 +256,17 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (res.data.output) term.write(res.data.output)
     }).catch(() => { /* terminal may have been killed before replay */ })
 
-    // Copy/paste support:
+    // Copy/paste/autocomplete shortcuts are read from the store keybindings at
+    // event time, so rebinding them in Settings takes effect immediately:
+    //   copy / copyAsCodeBlock / paste / toggleAutocomplete  → rebindable
+    // The two plain-terminal conveniences below stay hardcoded because they are
+    // terminal semantics rather than configurable rows:
     //   Ctrl+C        → smart: copy selection if any, else passthrough (SIGINT)
     //   Ctrl+V        → paste
-    //   Ctrl+Shift+C  → always copy (legacy, for power users)
-    //   Ctrl+Shift+V  → always paste (legacy)
-    //   Ctrl+Shift+M  → copy as Slack/Teams-friendly code block (HTML+plain)
-    //   Shift+Enter   → backslash + Enter (bash line continuation; many AI CLIs
-    //                   treat \<Enter> as multi-line continuation as well)
+    //   Shift+Enter   → backslash/Esc + Enter (line continuation / multi-line)
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true
+      const kb = useTerminalStore.getState().keybindings
 
       // When our handler returns false, xterm.js bails out of _keyDown WITHOUT
       // calling preventDefault — so the browser routes the keystroke to xterm's
@@ -288,27 +290,60 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         return false
       }
 
-      // Ctrl+Shift+M — copy as code block (HTML + markdown plain-text)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'M') {
+      // Copy as code block (HTML + markdown plain-text)
+      if (matchesKeybinding(e, kb.copyAsCodeBlock)) {
         e.preventDefault()
         if (term.getSelection()) writeCodeBlockToClipboardFromTerm(term).catch(() => {})
         return false
       }
-      // Ctrl+Shift+C — always copy (legacy explicit form)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+      // Copy (explicit force-copy form)
+      if (matchesKeybinding(e, kb.copy)) {
         e.preventDefault()
         const selection = term.getSelection()
         if (selection) navigator.clipboard.writeText(selection).catch(() => {})
         return false
       }
-      // Ctrl+Shift+V — always paste (legacy explicit form)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
+      // Paste (explicit form)
+      if (matchesKeybinding(e, kb.paste)) {
         e.preventDefault()
         navigator.clipboard.readText().then(text => {
           if (text) window.termpolis.writeToTerminal(terminalId, text)
         }).catch(() => {})
         return false
       }
+      // Trigger autocomplete on the current input buffer (was Ctrl+Space → \x00
+      // via onData; now driven by the rebindable toggleAutocomplete binding).
+      if (matchesKeybinding(e, kb.toggleAutocomplete)) {
+        e.preventDefault()
+        const input = inputBufferRef.current
+        if (input.length > 0) {
+          getCompletions(input).then(results => {
+            if (disposed) return
+            if (results.length > 0) completion.triggerCompletions(input)
+          }).catch(() => {})
+        }
+        return false
+      }
+
+      // App-level shortcuts must be caught HERE when a terminal is focused —
+      // otherwise xterm turns Ctrl+<digit>/Ctrl+Alt+<key> into stray control
+      // bytes (Ctrl+3 → ESC, Ctrl+4 → FS) sent to the shell. We preventDefault +
+      // return false so xterm emits nothing; App's window handler skips events
+      // we've already defaultPrevented. The launch needs App's deps, so signal
+      // it via a window event; a macro just types into this focused terminal.
+      const launchSlot = matchLaunchAgentSlot(e, kb)
+      if (launchSlot !== null) {
+        e.preventDefault()
+        window.dispatchEvent(new CustomEvent('termpolis:launch-agent-slot', { detail: launchSlot }))
+        return false
+      }
+      const macro = matchCustomKeybinding(e, useTerminalStore.getState().customKeybindings)
+      if (macro) {
+        e.preventDefault()
+        window.termpolis.writeToTerminal(terminalId, macro.text + (macro.runOnSend ? '\r' : ''))
+        return false
+      }
+
       // Ctrl+C (no Shift) — smart copy: if selection, copy + clear; else
       // let it through so it reaches the shell as SIGINT.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'C' || e.key === 'c')) {
@@ -333,20 +368,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     })
 
     term.onData((data) => {
-      // Ctrl+Space: manually trigger completions
-      if (data === '\x00') {
-        const input = inputBufferRef.current
-        if (input.length > 0) {
-          getCompletions(input).then(results => {
-            if (disposed) return
-            if (results.length > 0) {
-              completion.triggerCompletions(input)
-            }
-          }).catch(() => {})
-        }
-        return
-      }
-
       // When dropdown is visible, intercept certain keys
       if (completion.handleDropdownKeyIntercept(data)) {
         return // Key was consumed by dropdown

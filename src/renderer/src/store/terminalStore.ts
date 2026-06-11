@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate } from '../types'
+import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate, CustomKeybinding } from '../types'
 import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
@@ -66,6 +66,7 @@ interface TerminalStore {
   autocompleteEnabled: boolean
   sidebarCollapsed: boolean
   keybindings: KeybindingMap
+  customKeybindings: CustomKeybinding[]
   paneTree: PaneNode | null
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
@@ -93,6 +94,9 @@ interface TerminalStore {
   setSidebarCollapsed: (collapsed: boolean) => void
   setKeybinding: (action: keyof KeybindingMap, binding: string) => void
   resetKeybindings: () => void
+  addCustomKeybinding: (binding: CustomKeybinding) => void
+  updateCustomKeybinding: (id: string, patch: Partial<Omit<CustomKeybinding, 'id'>>) => void
+  removeCustomKeybinding: (id: string) => void
   setPaneTree: (tree: PaneNode | null) => void
   splitTerminal: (terminalId: string, direction: 'horizontal' | 'vertical', newTerminalId: string) => void
   removePaneTerminal: (terminalId: string) => void
@@ -125,6 +129,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   autocompleteEnabled: true,
   sidebarCollapsed: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },
+  customKeybindings: [],
   paneTree: null,
   aiProfiles: [],
   promptTemplates: [],
@@ -223,6 +228,18 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   })),
 
   resetKeybindings: () => set({ keybindings: { ...DEFAULT_KEYBINDINGS } }),
+
+  addCustomKeybinding: (binding) => set(s => ({
+    customKeybindings: [...s.customKeybindings, binding],
+  })),
+
+  updateCustomKeybinding: (id, patch) => set(s => ({
+    customKeybindings: s.customKeybindings.map(c => c.id === id ? { ...c, ...patch, id } : c),
+  })),
+
+  removeCustomKeybinding: (id) => set(s => ({
+    customKeybindings: s.customKeybindings.filter(c => c.id !== id),
+  })),
 
   setPaneTree: (tree) => set({ paneTree: tree }),
 

@@ -54,6 +54,23 @@ export interface PromptTemplate {
   isCustom?: boolean
 }
 
+/**
+ * A user-defined keyboard shortcut that types a snippet (or runs a command)
+ * into the active terminal. Distinct from the fixed KeybindingMap actions:
+ * these are open-ended macros the user adds themselves.
+ */
+export interface CustomKeybinding {
+  id: string
+  /** Human label shown in Settings and used for conflict messages. */
+  label: string
+  /** Key combo string, e.g. "Ctrl+Alt+G" (same grammar as KeybindingMap values). */
+  combo: string
+  /** Text sent to the active terminal when the combo fires. */
+  text: string
+  /** When true, a carriage return is appended so the command executes. */
+  runOnSend: boolean
+}
+
 export interface WorkflowTerminal {
   name: string
   command: string
@@ -79,6 +96,7 @@ export interface SessionData {
   defaultShell: ShellType
   viewMode: ViewMode
   keybindings?: Record<string, string>
+  customKeybindings?: CustomKeybinding[]
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]

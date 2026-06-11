@@ -42,6 +42,14 @@ export interface PromptTemplate {
   isCustom?: boolean
 }
 
+export interface CustomKeybinding {
+  id: string
+  label: string
+  combo: string
+  text: string
+  runOnSend: boolean
+}
+
 export interface WorkflowTerminal {
   name: string
   command: string
@@ -67,6 +75,7 @@ export interface SessionData {
   defaultShell: ShellType
   viewMode: ViewMode
   keybindings?: Record<string, string>
+  customKeybindings?: CustomKeybinding[]
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]

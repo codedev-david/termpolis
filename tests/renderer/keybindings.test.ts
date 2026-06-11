@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS } from '../../src/renderer/src/lib/keybindings'
+import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchCustomKeybinding, customComboHasModifier, isEditableTarget } from '../../src/renderer/src/lib/keybindings'
+import type { CustomKeybinding } from '../../src/renderer/src/types'
 
 function key(overrides: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -150,5 +151,174 @@ describe('copyAsCodeBlock binding', () => {
     for (const k of Object.keys(DEFAULT_KEYBINDINGS)) {
       expect(KEYBINDING_LABELS[k as keyof typeof KEYBINDING_LABELS]).toBeTruthy()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// launchAgent1..4 bindings (per-agent launch shortcuts)
+// ---------------------------------------------------------------------------
+
+describe('launchAgent bindings', () => {
+  it('default to Ctrl+1 through Ctrl+4', () => {
+    expect(DEFAULT_KEYBINDINGS.launchAgent1).toBe('Ctrl+1')
+    expect(DEFAULT_KEYBINDINGS.launchAgent2).toBe('Ctrl+2')
+    expect(DEFAULT_KEYBINDINGS.launchAgent3).toBe('Ctrl+3')
+    expect(DEFAULT_KEYBINDINGS.launchAgent4).toBe('Ctrl+4')
+  })
+
+  it('name the four default agents in their labels', () => {
+    expect(KEYBINDING_LABELS.launchAgent1).toMatch(/Claude/i)
+    expect(KEYBINDING_LABELS.launchAgent2).toMatch(/Codex/i)
+    expect(KEYBINDING_LABELS.launchAgent3).toMatch(/Gemini/i)
+    expect(KEYBINDING_LABELS.launchAgent4).toMatch(/Qwen/i)
+  })
+
+  it('Ctrl+1 default actually matches a real Ctrl+1 event (digit survives the matcher)', () => {
+    // Regression guard: Ctrl+Shift+1 would arrive as key "!" and never match,
+    // which is exactly why the defaults use Ctrl+<digit> with no Shift.
+    expect(matchesKeybinding(key({ ctrlKey: true, key: '1' }), DEFAULT_KEYBINDINGS.launchAgent1)).toBe(true)
+    expect(matchesKeybinding(key({ ctrlKey: true, shiftKey: true, key: '1' }), DEFAULT_KEYBINDINGS.launchAgent1)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// describeBinding
+// ---------------------------------------------------------------------------
+
+describe('describeBinding', () => {
+  it('returns the human label for a built-in action', () => {
+    expect(describeBinding('copy')).toBe(KEYBINDING_LABELS.copy)
+    expect(describeBinding('launchAgent1')).toBe(KEYBINDING_LABELS.launchAgent1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// findKeybindingConflict
+// ---------------------------------------------------------------------------
+
+describe('findKeybindingConflict', () => {
+  const custom: CustomKeybinding[] = [
+    { id: 'c1', label: 'Git Status', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true },
+  ]
+
+  it('returns null when the combo is free', () => {
+    expect(findKeybindingConflict('Ctrl+Alt+Z', DEFAULT_KEYBINDINGS, custom)).toBeNull()
+  })
+
+  it('detects a clash with a built-in binding and returns its label', () => {
+    expect(findKeybindingConflict('Ctrl+Shift+C', DEFAULT_KEYBINDINGS, custom)).toBe(KEYBINDING_LABELS.copy)
+  })
+
+  it('detects a clash with another custom binding and returns its label', () => {
+    expect(findKeybindingConflict('Ctrl+Alt+G', DEFAULT_KEYBINDINGS, custom)).toBe('Git Status')
+  })
+
+  it('ignores the binding being edited (exclude.action)', () => {
+    // Re-recording "copy" to its own current value is not a conflict with itself.
+    expect(findKeybindingConflict('Ctrl+Shift+C', DEFAULT_KEYBINDINGS, custom, { action: 'copy' })).toBeNull()
+  })
+
+  it('ignores the custom binding being edited (exclude.customId)', () => {
+    expect(findKeybindingConflict('Ctrl+Alt+G', DEFAULT_KEYBINDINGS, custom, { customId: 'c1' })).toBeNull()
+  })
+
+  it('is order-insensitive across modifiers', () => {
+    expect(findKeybindingConflict('Shift+Ctrl+C', DEFAULT_KEYBINDINGS, custom)).toBe(KEYBINDING_LABELS.copy)
+  })
+
+  it('treats an empty combo as no conflict', () => {
+    expect(findKeybindingConflict('', DEFAULT_KEYBINDINGS, custom)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// matchLaunchAgentSlot — maps a key event to a launch-agent slot index (0..3)
+// ---------------------------------------------------------------------------
+
+describe('matchLaunchAgentSlot', () => {
+  it('returns slot 0 for the launchAgent1 combo (Ctrl+1)', () => {
+    expect(matchLaunchAgentSlot(key({ ctrlKey: true, key: '1' }), DEFAULT_KEYBINDINGS)).toBe(0)
+  })
+
+  it('returns slot 3 for the launchAgent4 combo (Ctrl+4)', () => {
+    expect(matchLaunchAgentSlot(key({ ctrlKey: true, key: '4' }), DEFAULT_KEYBINDINGS)).toBe(3)
+  })
+
+  it('returns null when no launch slot matches', () => {
+    expect(matchLaunchAgentSlot(key({ ctrlKey: true, key: '9' }), DEFAULT_KEYBINDINGS)).toBeNull()
+    expect(matchLaunchAgentSlot(key({ key: 'a' }), DEFAULT_KEYBINDINGS)).toBeNull()
+  })
+
+  it('follows a rebound launch combo', () => {
+    const kb = { ...DEFAULT_KEYBINDINGS, launchAgent2: 'Ctrl+Alt+X' }
+    expect(matchLaunchAgentSlot(key({ ctrlKey: true, altKey: true, key: 'x' }), kb)).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// matchCustomKeybinding — finds the custom macro whose combo matches
+// ---------------------------------------------------------------------------
+
+describe('matchCustomKeybinding', () => {
+  const custom: CustomKeybinding[] = [
+    { id: 'c1', label: 'Git Status', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true },
+    { id: 'c2', label: 'Clear', combo: 'Ctrl+Alt+L', text: 'clear', runOnSend: true },
+  ]
+
+  it('returns the matching custom binding', () => {
+    expect(matchCustomKeybinding(key({ ctrlKey: true, altKey: true, key: 'l' }), custom)?.id).toBe('c2')
+  })
+
+  it('returns null when nothing matches', () => {
+    expect(matchCustomKeybinding(key({ ctrlKey: true, key: 'z' }), custom)).toBeNull()
+  })
+
+  it('skips custom bindings with an empty combo', () => {
+    const blank: CustomKeybinding[] = [{ id: 'b', label: 'Blank', combo: '', text: 'x', runOnSend: false }]
+    expect(matchCustomKeybinding(key({ key: '' }), blank)).toBeNull()
+  })
+
+  it('ignores a modifier-less custom combo so it cannot hijack a bare keypress', () => {
+    const bad: CustomKeybinding[] = [{ id: 'g', label: 'Bad', combo: 'G', text: 'boom', runOnSend: true }]
+    expect(matchCustomKeybinding(key({ key: 'g' }), bad)).toBeNull()
+  })
+
+  it('ignores a Shift-only custom combo (Shift is not enough)', () => {
+    const bad: CustomKeybinding[] = [{ id: 's', label: 'Bad', combo: 'Shift+G', text: 'boom', runOnSend: true }]
+    expect(matchCustomKeybinding(key({ shiftKey: true, key: 'g' }), bad)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// customComboHasModifier — custom macros must use Ctrl or Alt
+// ---------------------------------------------------------------------------
+
+describe('customComboHasModifier', () => {
+  it('is false for a bare key or Shift-only', () => {
+    expect(customComboHasModifier('G')).toBe(false)
+    expect(customComboHasModifier('Shift+G')).toBe(false)
+  })
+
+  it('is true when Ctrl or Alt is present', () => {
+    expect(customComboHasModifier('Ctrl+G')).toBe(true)
+    expect(customComboHasModifier('Alt+G')).toBe(true)
+    expect(customComboHasModifier('Ctrl+Alt+G')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isEditableTarget — guard so app shortcuts don't fire while typing in a field
+// ---------------------------------------------------------------------------
+
+describe('isEditableTarget', () => {
+  it('is true for INPUT, TEXTAREA, and contentEditable elements', () => {
+    expect(isEditableTarget({ tagName: 'INPUT', isContentEditable: false } as unknown as EventTarget)).toBe(true)
+    expect(isEditableTarget({ tagName: 'TEXTAREA', isContentEditable: false } as unknown as EventTarget)).toBe(true)
+    expect(isEditableTarget({ tagName: 'DIV', isContentEditable: true } as unknown as EventTarget)).toBe(true)
+  })
+
+  it('is false for non-editable elements and null', () => {
+    expect(isEditableTarget({ tagName: 'BUTTON', isContentEditable: false } as unknown as EventTarget)).toBe(false)
+    expect(isEditableTarget(null)).toBe(false)
   })
 })

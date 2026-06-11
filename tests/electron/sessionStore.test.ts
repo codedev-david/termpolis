@@ -61,6 +61,52 @@ describe('loadSession', () => {
     expect(result.viewMode).toBe('split')
   })
 
+  it('keeps well-formed customKeybindings on load', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = { ...defaultSession, appVersion: '1.0.0', customKeybindings: [
+      { id: 'a', label: 'Git', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true },
+    ] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const result = loadSession()
+    expect(result.customKeybindings).toEqual([
+      { id: 'a', label: 'Git', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true },
+    ])
+  })
+
+  it('drops malformed customKeybindings entries and coerces runOnSend to a strict boolean', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = { ...defaultSession, appVersion: '1.0.0', customKeybindings: [
+      { id: 'a', label: 'ok', combo: 'Ctrl+G', text: 'ls', runOnSend: 'yes' }, // non-boolean → false
+      { id: 'b', combo: 'Ctrl+H', text: 'x', runOnSend: true },                // no label → dropped
+      { label: 'no id', combo: 'Ctrl+J', text: 'y', runOnSend: true },         // no id → dropped
+      'garbage',                                                               // not an object → dropped
+      { id: 'c', label: 'noText', combo: 'Ctrl+K', runOnSend: true },          // no text → dropped
+    ] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const result = loadSession()
+    expect(result.customKeybindings).toEqual([
+      { id: 'a', label: 'ok', combo: 'Ctrl+G', text: 'ls', runOnSend: false },
+    ])
+  })
+
+  it('caps absurdly long customKeybinding text', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = { ...defaultSession, appVersion: '1.0.0', customKeybindings: [
+      { id: 'a', label: 'L', combo: 'Ctrl+G', text: 'x'.repeat(20000), runOnSend: true },
+    ] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const result = loadSession()
+    expect(result.customKeybindings![0].text.length).toBeLessThanOrEqual(4096)
+  })
+
+  it('drops a customKeybindings value that is not an array', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    const stored = { ...defaultSession, appVersion: '1.0.0', customKeybindings: { not: 'an array' } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(stored) as any)
+    const result = loadSession()
+    expect(result.customKeybindings).toEqual([])
+  })
+
   it('clears workspace terminals when version changes', () => {
     vi.mocked(existsSync).mockReturnValue(true)
     const stored = {

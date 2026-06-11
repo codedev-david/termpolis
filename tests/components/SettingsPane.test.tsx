@@ -6,6 +6,9 @@ const mockSetDefaultShell = vi.fn()
 const mockSetAutocompleteEnabled = vi.fn()
 const mockSetKeybinding = vi.fn()
 const mockResetKeybindings = vi.fn()
+const mockAddCustomKeybinding = vi.fn()
+const mockUpdateCustomKeybinding = vi.fn()
+const mockRemoveCustomKeybinding = vi.fn()
 const mockSetAgentRatingOverrides = vi.fn()
 
 beforeAll(() => {
@@ -56,8 +59,12 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         autocompleteEnabled: true,
         setAutocompleteEnabled: mockSetAutocompleteEnabled,
         keybindings: {},
+        customKeybindings: [],
         setKeybinding: mockSetKeybinding,
         resetKeybindings: mockResetKeybindings,
+        addCustomKeybinding: mockAddCustomKeybinding,
+        updateCustomKeybinding: mockUpdateCustomKeybinding,
+        removeCustomKeybinding: mockRemoveCustomKeybinding,
         agentRatingOverrides: {},
         setAgentRatingOverrides: mockSetAgentRatingOverrides,
       }
@@ -68,6 +75,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         defaultShell: 'bash',
         autocompleteEnabled: true,
         keybindings: {},
+        customKeybindings: [],
         agentRatingOverrides: {},
       })),
       setState: vi.fn(),

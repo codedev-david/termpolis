@@ -330,8 +330,9 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+A</kbd> Activity feed &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+B</kbd> Context pins &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+D</kbd> Redundancy &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Y</kbd> Efficiency</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+/</kbd> Shortcuts panel</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+1–4</kbd> Launch first four AI agents (Claude / Codex / Gemini / Qwen)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Win+Shift+T</kbd> New terminal (global, works when minimized)</li>
-              <li>All customizable in <strong>Settings → Keybindings</strong></li>
+              <li>All customizable — plus add your own snippet macros — in <strong>Settings → Keybindings</strong></li>
             </ul>
           </section>
 

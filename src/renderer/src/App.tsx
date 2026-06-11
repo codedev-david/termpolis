@@ -23,7 +23,8 @@ import { SecretsRedactedBanner } from './components/SecretsRedactedBanner/Secret
 import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
 import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
-import { matchesKeybinding, DEFAULT_KEYBINDINGS } from './lib/keybindings'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, DEFAULT_KEYBINDINGS } from './lib/keybindings'
+import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
 import { getHomedir } from './lib/homedir'
 import { getTerminalDefaults, agentTerminalName } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
@@ -39,7 +40,7 @@ import * as efficiencyLib from './lib/efficiencyAnalyzer'
 export default function App() {
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
-    defaultShell, keybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides,
+    defaultShell, keybindings, customKeybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
   } = useTerminalStore()
@@ -68,6 +69,10 @@ export default function App() {
   const [restoring, setRestoring] = useState(true)
   const started = useRef(false)
   const loaded = useRef(false)
+  // Live ref of available shells for the global keybinding handler — it reads
+  // at event time and must not capture the empty initial array in its closure.
+  const availableShellsRef = useRef<ShellInfo[]>([])
+  useEffect(() => { availableShellsRef.current = availableShells }, [availableShells])
 
   // Restore session on mount (guard against StrictMode double-fire)
   useEffect(() => {
@@ -75,7 +80,7 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, aiProfiles: ap, promptTemplates: pt, userWorkflows: uw, agentRatingOverrides: aro } = res.data
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, customKeybindings: cz, aiProfiles: ap, promptTemplates: pt, userWorkflows: uw, agentRatingOverrides: aro } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
         // Migrate old 'grid' viewMode to 'split'
         const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
@@ -86,6 +91,7 @@ export default function App() {
           viewMode: resolvedVm,
           activeTerminalId: saved[0]?.id ?? null,
           keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
+          customKeybindings: cz ?? [],
           aiProfiles: ap ?? [],
           promptTemplates: pt ?? [],
           userWorkflows: uw ?? [],
@@ -232,18 +238,36 @@ export default function App() {
         defaultShell: state.defaultShell,
         viewMode: state.viewMode,
         keybindings: { ...state.keybindings },
+        customKeybindings: state.customKeybindings,
         aiProfiles: state.aiProfiles,
         promptTemplates: state.promptTemplates,
         userWorkflows: state.userWorkflows,
         agentRatingOverrides: state.agentRatingOverrides,
       })
     }, 1000) // debounce 1 second
-  }, [terminals, workspaces, keybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides])
+  }, [terminals, workspaces, keybindings, customKeybindings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides])
 
   // Global keyboard shortcuts
   useEffect(() => {
+    const launchAgentBySlot = (slot: number) => {
+      const st = useTerminalStore.getState()
+      const profile = [...DEFAULT_AI_PROFILES, ...st.aiProfiles][slot]
+      if (profile) {
+        launchAgentProfile(profile, {
+          availableShells: availableShellsRef.current,
+          addTerminal: st.addTerminal,
+          setLaunchingAgent: st.setLaunchingAgent,
+        })
+      }
+    }
+
     const handler = (e: KeyboardEvent) => {
       const kb = useTerminalStore.getState().keybindings
+      // Skip anything a focused terminal already handled — TerminalPane
+      // preventDefaults launch/macro/copy combos so xterm emits no stray byte,
+      // and this window-level fallback must not then fire the action a second
+      // time (also stops Ctrl+Shift+M both copying and toggling the panel).
+      if (e.defaultPrevented) return
 
       if (matchesKeybinding(e, kb.historySearch)) {
         e.preventDefault()
@@ -302,6 +326,18 @@ export default function App() {
         if (!aid && terms.length > 0) {
           setActiveTerminal(terms[0].id)
         }
+        return
+      }
+
+      // Launch an AI agent by slot (Ctrl+1..4 by default → first four profiles,
+      // which are always the built-in Claude/Codex/Gemini/Qwen). This window
+      // path runs when NO terminal is focused; a focused terminal routes through
+      // TerminalPane → the 'termpolis:launch-agent-slot' listener below.
+      const launchSlot = matchLaunchAgentSlot(e, kb)
+      if (launchSlot !== null) {
+        if (isEditableTarget(e.target)) return // don't hijack typing in a field
+        e.preventDefault()
+        launchAgentBySlot(launchSlot)
         return
       }
 
@@ -393,9 +429,25 @@ export default function App() {
         }
         return
       }
+
+      // User-defined custom shortcuts (macros) — checked last so they never
+      // shadow a built-in shortcut. Send the snippet into the active terminal.
+      const cst = useTerminalStore.getState()
+      const customMatch = matchCustomKeybinding(e, cst.customKeybindings)
+      if (customMatch && cst.activeTerminalId && !isEditableTarget(e.target)) {
+        e.preventDefault()
+        window.termpolis.writeToTerminal(cst.activeTerminalId, customMatch.text + (customMatch.runOnSend ? '\r' : ''))
+        return
+      }
     }
 
     window.addEventListener('keydown', handler)
+
+    // A focused terminal can't launch agents itself (it lacks the launch deps),
+    // so TerminalPane asks via this event when a Ctrl+1..4 combo is pressed over
+    // the terminal — keeping the launch off the PTY (no stray control byte).
+    const onLaunchSlot = (e: Event) => launchAgentBySlot((e as CustomEvent).detail as number)
+    window.addEventListener('termpolis:launch-agent-slot', onLaunchSlot)
 
     // Listen for global Win+Shift+T hotkey from main process
     const unsubGlobal = window.globalEvents?.onNewTerminal(() => {
@@ -426,6 +478,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener('keydown', handler)
+      window.removeEventListener('termpolis:launch-agent-slot', onLaunchSlot)
       window.removeEventListener('termpolis:openContextPins', onOpenPins)
       window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
       window.removeEventListener('termpolis:openMemory', onOpenMemory)

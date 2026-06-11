@@ -1,29 +1,27 @@
 import React from 'react'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
 
 const setKeybinding = vi.fn()
 const resetKeybindings = vi.fn()
+const addCustomKeybinding = vi.fn()
+const updateCustomKeybinding = vi.fn()
+const removeCustomKeybinding = vi.fn()
 
-let mockKeybindings: Record<string, string> = {
-  copy: 'Ctrl+Shift+C',
-  paste: 'Ctrl+Shift+V',
-  historySearch: 'Ctrl+Shift+H',
-  newTerminal: 'Ctrl+Shift+T',
-  closeTerminal: 'Ctrl+Shift+W',
-  nextTerminal: 'Ctrl+Tab',
-  prevTerminal: 'Ctrl+Shift+Tab',
-  toggleAutocomplete: 'Ctrl+Space',
-  toggleSidebar: 'Ctrl+B',
-  toggleGrid: 'Ctrl+Shift+G',
-}
+let mockKeybindings: Record<string, string> = { ...DEFAULT_KEYBINDINGS }
+let mockCustomKeybindings: any[] = []
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: Object.assign(
     () => ({
       keybindings: mockKeybindings,
+      customKeybindings: mockCustomKeybindings,
       setKeybinding,
       resetKeybindings,
+      addCustomKeybinding,
+      updateCustomKeybinding,
+      removeCustomKeybinding,
     }),
     { getState: vi.fn(), setState: vi.fn() },
   ),
@@ -33,18 +31,8 @@ import { KeybindingsSettings } from '../../src/renderer/src/components/SettingsP
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockKeybindings = {
-    copy: 'Ctrl+Shift+C',
-    paste: 'Ctrl+Shift+V',
-    historySearch: 'Ctrl+Shift+H',
-    newTerminal: 'Ctrl+Shift+T',
-    closeTerminal: 'Ctrl+Shift+W',
-    nextTerminal: 'Ctrl+Tab',
-    prevTerminal: 'Ctrl+Shift+Tab',
-    toggleAutocomplete: 'Ctrl+Space',
-    toggleSidebar: 'Ctrl+B',
-    toggleGrid: 'Ctrl+Shift+G',
-  }
+  mockKeybindings = { ...DEFAULT_KEYBINDINGS }
+  mockCustomKeybindings = []
 })
 
 describe('KeybindingsSettings', () => {
@@ -154,5 +142,25 @@ describe('KeybindingsSettings', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'X', ctrlKey: true }))
     })
     expect(setKeybinding).not.toHaveBeenCalled()
+  })
+
+  it('renders the per-agent launch shortcut rows', () => {
+    render(<KeybindingsSettings />)
+    expect(screen.getByText('Launch Claude Code')).toBeInTheDocument()
+    expect(screen.getByText('Launch OpenAI Codex')).toBeInTheDocument()
+    expect(screen.getByText('Launch Gemini CLI')).toBeInTheDocument()
+    expect(screen.getByText('Launch Qwen Code')).toBeInTheDocument()
+  })
+
+  it('renders the Custom Shortcuts section', () => {
+    render(<KeybindingsSettings />)
+    expect(screen.getByText('Custom Shortcuts')).toBeInTheDocument()
+  })
+
+  it('warns when two configured shortcuts share a combo', () => {
+    mockKeybindings = { ...DEFAULT_KEYBINDINGS, paste: 'Ctrl+Shift+C' } // collides with Copy
+    render(<KeybindingsSettings />)
+    // Both the Copy row and the Paste row flag the clash.
+    expect(screen.getAllByText(/Conflicts with/i).length).toBeGreaterThanOrEqual(2)
   })
 })

@@ -73,6 +73,8 @@ mocks.mockGetState.mockImplementation(() => ({
   addTerminal: mocks.mockAddTerminal,
   removeTerminal: mocks.mockRemoveTerminal,
   autocompleteEnabled: true,
+  keybindings: { ...DEFAULT_KEYBINDINGS },
+  customKeybindings: [],
 }))
 
 // --- Mock xterm.js and addons ---
@@ -304,6 +306,7 @@ beforeAll(() => {
 
 // Import after all mocks are set up
 import { TerminalPane } from '../../src/renderer/src/components/TerminalPane/TerminalPane'
+import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
 
 const defaultProps = {
   terminalId: 'term-1',
@@ -338,6 +341,8 @@ describe('TerminalPane', () => {
       addTerminal: mocks.mockAddTerminal,
       removeTerminal: mocks.mockRemoveTerminal,
       autocompleteEnabled: true,
+      keybindings: { ...DEFAULT_KEYBINDINGS },
+      customKeybindings: [],
     }))
     mocks.mockHandleDropdownKeyIntercept.mockReturnValue(false)
     mocks.mockGetSuggestion.mockReturnValue(Promise.resolve(null))
@@ -647,6 +652,95 @@ describe('TerminalPane', () => {
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(true)
       expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
+  // 5c. Copy/paste/autocomplete combos are read from store keybindings,
+  // so rebinding them in Settings actually takes effect.
+  // =====================================================
+  describe('rebindable shortcuts (read from store keybindings)', () => {
+    function withKeybindings(over: Record<string, string>) {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS, ...over },
+        customKeybindings: [],
+      }))
+    }
+
+    it('honors a rebound Copy combo (copy = Alt+C)', () => {
+      withKeybindings({ copy: 'Alt+C' })
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('rebound-sel')
+      const result = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { altKey: true, key: 'c' }))
+      expect(result).toBe(false)
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('rebound-sel')
+    })
+
+    it('stops copying on the old default once Copy is rebound away', () => {
+      withKeybindings({ copy: 'Alt+C' })
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('sel')
+      // Ctrl+Shift+C is no longer the copy combo; the smart Ctrl+C path needs
+      // no Shift, so this combo must now do nothing.
+      mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'C' }))
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('honors a rebound autocomplete combo (toggleAutocomplete = Ctrl+J)', async () => {
+      const { getCompletions } = await import('../../src/renderer/src/completions/completionEngine')
+      ;(getCompletions as any).mockResolvedValue([{ text: 'git', source: 'command' }])
+      withKeybindings({ toggleAutocomplete: 'Ctrl+J' })
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnDataCb?.('g') })
+      act(() => { mockOnDataCb?.('i') })
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, key: 'j' })) })
+      await waitFor(() => { expect(getCompletions).toHaveBeenCalled() })
+    })
+  })
+
+  // =====================================================
+  // 5d. App-level shortcuts (launch slots + custom macros) are intercepted in
+  // the xterm key handler so the terminal never gets a stray control byte
+  // (Ctrl+3 -> ESC, Ctrl+4 -> FS) and the action still fires.
+  // =====================================================
+  describe('app-level shortcuts over a focused terminal', () => {
+    it('Ctrl+3 (launch slot) is consumed, leaks no byte, and dispatches a launch event', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      let launchedSlot: number | null = null
+      const onLaunch = (e: Event) => { launchedSlot = (e as CustomEvent).detail }
+      window.addEventListener('termpolis:launch-agent-slot', onLaunch)
+      try {
+        const ev = new KeyboardEvent('keydown', { ctrlKey: true, key: '3', cancelable: true })
+        const result = mockKeyHandlerCb?.(ev)
+        expect(result).toBe(false)
+        expect(ev.defaultPrevented).toBe(true)
+        expect(launchedSlot).toBe(2) // Ctrl+3 -> slot index 2 (Gemini)
+        expect(mockWriteToTerminal).not.toHaveBeenCalled() // no ESC byte to the PTY
+      } finally {
+        window.removeEventListener('termpolis:launch-agent-slot', onLaunch)
+      }
+    })
+
+    it('a custom macro combo writes its text into this terminal and is consumed', () => {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [{ id: 'm', label: 'GS', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true }],
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const ev = new KeyboardEvent('keydown', { ctrlKey: true, altKey: true, key: 'g', cancelable: true })
+      const result = mockKeyHandlerCb?.(ev)
+      expect(result).toBe(false)
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'git status\r')
     })
   })
 
@@ -1139,8 +1233,8 @@ describe('TerminalPane', () => {
       act(() => { mockOnDataCb?.('g') })
       act(() => { mockOnDataCb?.('i') })
 
-      // Ctrl+Space sends \x00
-      act(() => { mockOnDataCb?.('\x00') })
+      // Ctrl+Space is now handled in the key handler (rebindable toggleAutocomplete)
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, key: ' ' })) })
 
       await waitFor(() => {
         expect(getCompletions).toHaveBeenCalled()

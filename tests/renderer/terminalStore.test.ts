@@ -496,6 +496,38 @@ describe('terminalStore', () => {
     })
   })
 
+  describe('customKeybindings', () => {
+    const make = (over: Partial<{ id: string; label: string; combo: string; text: string; runOnSend: boolean }> = {}) => ({
+      id: 'k1', label: 'Git Status', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true, ...over,
+    })
+
+    it('defaults to an empty list', () => {
+      expect(useTerminalStore.getState().customKeybindings).toEqual([])
+    })
+
+    it('addCustomKeybinding appends a binding', () => {
+      useTerminalStore.getState().addCustomKeybinding(make())
+      expect(useTerminalStore.getState().customKeybindings).toEqual([make()])
+    })
+
+    it('removeCustomKeybinding deletes by id', () => {
+      useTerminalStore.getState().addCustomKeybinding(make({ id: 'a' }))
+      useTerminalStore.getState().addCustomKeybinding(make({ id: 'b' }))
+      useTerminalStore.getState().removeCustomKeybinding('a')
+      expect(useTerminalStore.getState().customKeybindings.map(c => c.id)).toEqual(['b'])
+    })
+
+    it('updateCustomKeybinding patches by id and preserves the id', () => {
+      useTerminalStore.getState().addCustomKeybinding(make({ id: 'a', label: 'Old' }))
+      useTerminalStore.getState().updateCustomKeybinding('a', { label: 'New', combo: 'Ctrl+J', id: 'ignored' as any })
+      const item = useTerminalStore.getState().customKeybindings.find(c => c.id === 'a')!
+      expect(item.label).toBe('New')
+      expect(item.combo).toBe('Ctrl+J')
+      expect(item.id).toBe('a')
+      expect(item.text).toBe('git status') // untouched field survives
+    })
+  })
+
   // ---- AI Profiles & Templates ----
 
   describe('addAIProfile / removeAIProfile', () => {
