@@ -34,14 +34,14 @@ vi.mock('../../src/main/telemetry', () => ({
 
 // vi.mock can't intercept lazy require() inside the SUT, so we inject the
 // fake autoUpdater via __setUpdaterProviderForTests instead.
-async function loadAutoUpdater() {
+async function loadAutoUpdater(opts?: { onBeforeQuitAndInstall?: () => void }) {
   vi.resetModules()
   for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
   ipcHandlers.clear()
   const mod = await import('../../src/main/autoUpdater')
   mod.__setUpdaterProviderForTests(() => mockAutoUpdater)
   const fakeWindow = { webContents: { send: vi.fn() } } as any
-  mod.initAutoUpdater(() => fakeWindow)
+  mod.initAutoUpdater(() => fakeWindow, opts)
   return { fakeWindow }
 }
 
@@ -53,6 +53,41 @@ beforeEach(() => {
   mockRecordUpdaterEvent.mockReset()
   mockAutoUpdater.on.mockClear()
   mockAutoUpdater.checkForUpdates.mockClear()
+})
+
+describe('updater:quit-and-install — agents-running close guard bypass', () => {
+  it('arms the bypass BEFORE quitAndInstall fires, so the close guard cannot interject', async () => {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const calls: string[] = []
+    mockAutoUpdater.quitAndInstall.mockImplementation(() => calls.push('quitAndInstall'))
+    const onBefore = vi.fn(() => calls.push('bypass'))
+    await loadAutoUpdater({ onBeforeQuitAndInstall: onBefore })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    const res = ipcHandlers.get('updater:quit-and-install')!()
+    expect(res).toEqual({ success: true })
+    expect(onBefore).toHaveBeenCalledTimes(1)
+    expect(calls).toEqual(['bypass', 'quitAndInstall']) // bypass armed first
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+  })
+
+  it('does not arm the bypass (or quit) when no update is ready', async () => {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const onBefore = vi.fn()
+    await loadAutoUpdater({ onBeforeQuitAndInstall: onBefore })
+    const res = ipcHandlers.get('updater:quit-and-install')!()
+    expect(res).toEqual({ success: false, error: 'no update ready' })
+    expect(onBefore).not.toHaveBeenCalled()
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it('still installs when the bypass hook itself throws', async () => {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    await loadAutoUpdater({ onBeforeQuitAndInstall: () => { throw new Error('boom') } })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    const res = ipcHandlers.get('updater:quit-and-install')!()
+    expect(res).toEqual({ success: true })
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+  })
 })
 
 describe('initAutoUpdater event forwarding', () => {

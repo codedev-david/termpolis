@@ -30,7 +30,19 @@ export function __setUpdaterProviderForTests(fn: () => any): void {
   updaterProvider = fn
 }
 
-export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
+export function initAutoUpdater(
+  getMainWindow: () => BrowserWindow | null,
+  opts?: {
+    /**
+     * Called right before quitAndInstall fires. The restart-to-install quit
+     * goes through the main window's close event, where the "AI agents are
+     * running" guard would otherwise preventDefault it and interject its
+     * confirm dialog — cancelling the update restart. The caller uses this to
+     * arm a one-way bypass: the user already chose to restart.
+     */
+    onBeforeQuitAndInstall?: () => void
+  },
+) {
   // Skip in dev / test runs — electron-updater can't verify unsigned builds
   // and would either no-op or error loudly. We still want the IPC surface
   // mounted so the renderer can render the banner in dev-test fixtures.
@@ -43,6 +55,7 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null) {
     try {
       const au = updaterProvider()
       if (!au) return { success: false, error: 'electron-updater unavailable' }
+      try { opts?.onBeforeQuitAndInstall?.() } catch { /* never block the install */ }
       au.quitAndInstall(false, true)
       return { success: true }
     } catch (e) {

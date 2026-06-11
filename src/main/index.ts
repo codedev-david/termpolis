@@ -121,6 +121,11 @@ import { v4 as uuidv4 } from 'uuid'
 function ok<T>(data?: T) { return { success: true, data } }
 function err(error: string) { return { success: false, error } }
 
+// One-way bypass for the agents-running close guard: armed when the user clicks
+// "Restart" on a downloaded update, so the quit from quitAndInstall isn't
+// intercepted (and cancelled) by the confirm dialog.
+let quittingForUpdate = false
+
 let mainWindow: BrowserWindow | null = null
 
 // Buffer terminal output for MCP read_output (capped at 32KB per terminal)
@@ -175,10 +180,12 @@ function createWindow() {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // Confirm close when AI agents are running (skip in test mode)
+  // Confirm close when AI agents are running. Skipped in test mode, and skipped
+  // when the user already chose Restart for an update — the agents-running
+  // dialog must not interject and cancel the update's restart.
   let forceClose = false
   mainWindow.on('close', (e) => {
-    if (forceClose || process.env.NODE_ENV === 'test') return
+    if (forceClose || quittingForUpdate || process.env.NODE_ENV === 'test') return
     // Ask renderer if agents are running, show in-app dialog if so
     const hasAgents = mainWindow?.webContents.executeJavaScript(
       `(() => { try { return window.__termpolis_has_agents?.() ?? false } catch { return false } })()`
@@ -1265,7 +1272,7 @@ if (!gotTheLock) {
 
     // Check GitHub releases for updates, auto-download in background,
     // notify renderer when ready to install.
-    initAutoUpdater(() => mainWindow)
+    initAutoUpdater(() => mainWindow, { onBeforeQuitAndInstall: () => { quittingForUpdate = true } })
 
     // Start MCP server for AI agent integration
     const mcpHandlers: McpToolHandlers = {
