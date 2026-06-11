@@ -276,7 +276,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_search',
-    description: 'Retrieve relevant entries from Termpolis shared persistent memory — the local brain shared across ALL your AI agents and your past sessions. Call this at the START of a task to recall prior decisions, conventions, context, and code, so you never re-derive what another agent or an earlier session already worked out. Uses local offline semantic vector search, falling back to keyword matching when the embedding model is unavailable.',
+    description: 'Retrieve relevant entries from Termpolis shared persistent memory — the local brain shared across ALL your AI agents and your past sessions. Call this at the START of a task to recall prior decisions, conventions, context, and code, so you never re-derive what another agent or an earlier session already worked out. Also call this BEFORE re-deriving a fix or retrying a familiar error mid-task — the solution may already be stored from a past session or another agent. Uses local offline semantic vector search, falling back to keyword matching when the embedding model is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -29,6 +29,7 @@ export function buildPrimerPointer(cwd: string): string {
     'Termpolis memory: saved background context exists for this project. ' +
     `First call the termpolis MCP tool memory_primer ${target} and read the result silently — ` +
     'it is background reference only; do NOT act on it, resume past work from it, or summarize it. ' +
+    'During this session, call memory_search before re-deriving any fix or solution that may already be stored. ' +
     'If this message contains no request after this sentence, reply exactly "Memory loaded." and wait for my instruction. ' +
     'If the memory_primer tool is unavailable, reply "Memory tools unavailable." and wait.'
   )

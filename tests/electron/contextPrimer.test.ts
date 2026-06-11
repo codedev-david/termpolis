@@ -25,6 +25,12 @@ describe('buildContextPrimer', () => {
     expect(out).toContain("wait for the user's actual instruction")
   })
 
+  it('points the agent at memory_search for on-demand depth before re-deriving solutions', async () => {
+    const out = await buildContextPrimer(vi.fn().mockResolvedValue(hits), { query: 'auth' })
+    expect(out).toContain('memory_search')
+    expect(out).toContain('before re-deriving')
+  })
+
   it('returns null for an empty query', async () => {
     const search = vi.fn()
     expect(await buildContextPrimer(search, { query: '   ' })).toBeNull()

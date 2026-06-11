@@ -68,6 +68,9 @@ describe('injectAutoPrimer', () => {
     expect(pointer).toContain('do NOT act on it')
     expect(pointer).toContain('Memory loaded.')
     expect(pointer).toContain('wait')
+    // Mid-task nudge: consult stored solutions before churning through retries.
+    expect(pointer).toContain('memory_search')
+    expect(pointer).toContain('before re-deriving')
   })
 
   it('points the agent at the tool with no cwd argument when there is no cwd', async () => {
