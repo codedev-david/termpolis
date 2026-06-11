@@ -592,6 +592,54 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 2d. Voice push-to-talk handler wiring (hold = keydown starts, keyup stops).
+  // =====================================================
+  describe('voice push-to-talk wiring', () => {
+    function withVoice(over: Record<string, unknown> = {}) {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        voiceSettings: {
+          enabled: true, engine: 'local', model: 'm', pushToTalkKey: 'Ctrl+Shift+L',
+          pushToTalkMode: 'hold', autoSubmitInAgent: false, correctionEnabled: true,
+          confirmBeforeRunInShell: true, cloudEndpoint: '', ...over,
+        },
+      }))
+    }
+
+    it('consumes the push-to-talk keydown when voice is enabled', () => {
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      let res: boolean | undefined
+      const ev = new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })
+      act(() => { res = mockKeyHandlerCb?.(ev) })
+      expect(res).toBe(false)
+      expect(ev.defaultPrevented).toBe(true)
+    })
+
+    it('consumes the trigger key release in hold mode (after a keydown)', () => {
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      let res: boolean | undefined
+      act(() => { res = mockKeyHandlerCb?.(new KeyboardEvent('keyup', { key: 'l', cancelable: true })) })
+      expect(res).toBe(false)
+    })
+
+    it('ignores the hotkey entirely when voice is disabled (key passes through)', () => {
+      withVoice({ enabled: false })
+      render(<TerminalPane {...defaultProps} />)
+      let res: boolean | undefined
+      act(() => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L' })) })
+      expect(res).toBe(true)
+    })
+  })
+
+  // =====================================================
   // 3. Cleanup on unmount
   // =====================================================
   describe('cleanup', () => {

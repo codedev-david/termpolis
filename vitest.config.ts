@@ -55,6 +55,10 @@ export default defineConfig({
         'src/renderer/src/lib/outputPatterns.ts',
         'src/renderer/src/lib/homedir.ts',
         'src/renderer/src/components/TitleBar/TitleBar.tsx',
+        // Web Worker entry: loads a WASM ASR model via Transformers.js. Cannot run
+        // in jsdom/node (no Worker/WebGPU/model) — same untestable-in-unit category
+        // as sentry/autoUpdater above. Exercised by manual/e2e smoke testing.
+        'src/renderer/src/lib/voice/whisperWorker.ts',
       ],
       thresholds: {
         // Gates apply to Windows CI only (see .github/workflows/test.yml).
