@@ -312,7 +312,7 @@ const TOOLS: McpTool[] = [
       properties: {
         cwd: { type: 'string', description: 'Your working directory (recommended) — context for this project takes precedence in the digest' },
         query: { type: 'string', description: 'Optional focus query; defaults to a general recent-work/decisions/conventions query for the project' },
-        limit: { type: 'number', description: 'Max memories in the digest (default 36, cap 100)' },
+        limit: { type: 'number', description: 'Max memories in the digest (default 40, cap 100)' },
       },
       required: [],
     },

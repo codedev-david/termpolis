@@ -1384,7 +1384,7 @@ if (!gotTheLock) {
             : 'recent work, key decisions, and conventions')
         const primer = await buildContextPrimer(memorySearch, {
           query,
-          limit: opts.limit ?? 36,
+          limit: opts.limit ?? 40,
           maxSnippetChars: 600,
           project: project || undefined,
         })
