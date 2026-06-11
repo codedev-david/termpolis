@@ -312,9 +312,15 @@ test.describe.serial('Chrome smoke', () => {
     const buttonCount = await settingsPane.locator('button').count()
     for (let i = 0; i < Math.min(buttonCount, 20); i++) {
       const btn = settingsPane.locator('button').nth(i)
+      // Tab-button clicks swap the pane's content mid-loop, so nth(i) may no
+      // longer exist. Every probe must be bounded: an unbounded isEnabled()
+      // on a missing index silently waits the full 30s default — four of
+      // those eat the whole 120s test budget (seen on Linux CI once the
+      // Settings pane grew past 20 buttons).
       const visible = await btn.isVisible().catch(() => false)
-      const enabled = await btn.isEnabled().catch(() => false)
-      if (visible && enabled) {
+      if (!visible) continue
+      const enabled = await btn.isEnabled({ timeout: 500 }).catch(() => false)
+      if (enabled) {
         await btn.click({ trial: false, timeout: 500 }).catch(() => {})
         await page.waitForTimeout(100)
       }
