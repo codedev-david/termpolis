@@ -47,6 +47,12 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
+    // The Whisper voice worker pulls in Transformers.js, which code-splits via
+    // dynamic import. Vite's default IIFE worker format can't do code-splitting;
+    // ES module workers can (Electron 30 / Chromium supports module workers).
+    worker: {
+      format: 'es'
+    },
     plugins: [react()]
   }
 })
