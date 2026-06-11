@@ -25,7 +25,7 @@ import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { matchesKeybinding, DEFAULT_KEYBINDINGS } from './lib/keybindings'
 import { getHomedir } from './lib/homedir'
-import { TERMINAL_DEFAULTS } from './lib/terminalDefaults'
+import { getTerminalDefaults, agentTerminalName } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from './types'
 import { resolveAgentCommand, testDelay } from './lib/testAgents'
@@ -447,9 +447,7 @@ export default function App() {
         color,
         shellType: data.shell as any,
         cwd: data.cwd,
-        fontSize: TERMINAL_DEFAULTS.fontSize,
-        theme: TERMINAL_DEFAULTS.theme,
-        fontFamily: TERMINAL_DEFAULTS.fontFamily,
+        ...getTerminalDefaults(),
         isSwarm: true,
         hidden: true,
       })
@@ -631,15 +629,16 @@ export default function App() {
     const cwd = await getHomedir()
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) { alert(`Failed to open terminal: ${res.error}`); return }
+    const defaults = getTerminalDefaults()
     addTerminal({
       id,
       name: opts.name,
       color: opts.color,
       shellType: opts.shellType,
       cwd,
-      fontSize: opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
-      theme: opts.theme ?? TERMINAL_DEFAULTS.theme,
-      fontFamily: opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
+      fontSize: opts.fontSize ?? defaults.fontSize,
+      theme: opts.theme ?? defaults.theme,
+      fontFamily: opts.fontFamily ?? defaults.fontFamily,
     })
     setShowAddModal(false)
   }
@@ -713,7 +712,7 @@ export default function App() {
         const pShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
         const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd)
         if (pRes.success) {
-          addTerminal({ id: pId, name: prof.name, color: prof.color, shellType: pShellType, cwd: pCwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace', agentCommand: prof.command })
+          addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
           setTimeout(() => {
             window.termpolis.writeToTerminal(pId, '\r')
             setTimeout(() => window.termpolis.writeToTerminal(pId, resolveAgentCommand(prof.command) + '\r'), 500)
@@ -762,7 +761,7 @@ export default function App() {
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
     const res = await window.termpolis.createTerminal(id, shellType, cwd)
     if (res.success) {
-      addTerminal({ id, name: config.name, color: config.color, shellType, cwd, fontSize: 14, theme: 'dark', fontFamily: 'Consolas, "Courier New", monospace', agentCommand: config.command })
+      addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
       setTimeout(() => {
         window.termpolis.writeToTerminal(id, '\r')
         setTimeout(() => window.termpolis.writeToTerminal(id, resolveAgentCommand(config.command) + '\r'), 500)

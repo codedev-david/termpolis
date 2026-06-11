@@ -7,6 +7,15 @@ import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
+import {
+  FONT_FAMILY_OPTIONS,
+  clampFontSize,
+  getTerminalDefaults,
+  setTerminalDefaults,
+  isAgentNameFromFolderEnabled,
+  setAgentNameFromFolderEnabled,
+} from '../../lib/terminalDefaults'
+import { TERMINAL_THEMES, THEME_IDS, getTheme } from '../../themes/terminalThemes'
 
 function getConfigFiles(home: string): { label: string; path: string; lang: string }[] {
   const isWin = /^[A-Za-z]:\\/.test(home)
@@ -40,6 +49,8 @@ export function SettingsPane() {
   })
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
+  const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
+  const [agentNameFromFolder, setAgentNameFromFolder] = useState(() => isAgentNameFromFolderEnabled())
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
@@ -205,6 +216,110 @@ export function SettingsPane() {
             >
               {shells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
             </select>
+          </div>
+          <div className="flex flex-col gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="settings-terminal-defaults">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Terminal Defaults</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                Applied to every new terminal — AI agents and regular shells alike. The New Terminal
+                dialog and each terminal&rsquo;s edit menu can still override these for an individual
+                terminal.
+              </span>
+            </div>
+            <div className="flex flex-col gap-1 text-sm">
+              Default Theme
+              <div className="flex flex-wrap gap-2 mt-1">
+                {THEME_IDS.map(id => {
+                  const t = getTheme(id)
+                  return (
+                    <button
+                      key={id}
+                      data-testid={`settings-default-theme-${id}`}
+                      onClick={() => setTermDefaults(setTerminalDefaults({ theme: id }))}
+                      style={{
+                        background: t.background as string,
+                        color: t.foreground as string,
+                        border: `2px solid ${termDefaults.theme === id ? '#0078d4' : 'transparent'}`,
+                        borderRadius: 4,
+                        padding: '2px 8px',
+                        fontSize: 12,
+                      }}
+                    >
+                      {TERMINAL_THEMES[id].name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="flex gap-4 items-end">
+              <div className="flex flex-col gap-1 text-sm">
+                Default Font Size
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setTermDefaults(setTerminalDefaults({ fontSize: clampFontSize(termDefaults.fontSize - 1) }))}
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm hover:bg-[#3c3c3c] leading-none"
+                  >−</button>
+                  <input
+                    type="number"
+                    min={8}
+                    max={32}
+                    data-testid="settings-default-font-size"
+                    value={termDefaults.fontSize}
+                    onChange={e => setTermDefaults(setTerminalDefaults({ fontSize: clampFontSize(Number(e.target.value)) }))}
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none w-14 text-center"
+                  />
+                  <button
+                    onClick={() => setTermDefaults(setTerminalDefaults({ fontSize: clampFontSize(termDefaults.fontSize + 1) }))}
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm hover:bg-[#3c3c3c] leading-none"
+                  >+</button>
+                </div>
+              </div>
+              <label className="flex flex-col gap-1 text-sm flex-1">
+                Default Font Family
+                <select
+                  data-testid="settings-default-font-family"
+                  value={termDefaults.fontFamily}
+                  onChange={e => setTermDefaults(setTerminalDefaults({ fontFamily: e.target.value }))}
+                  className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+                >
+                  {FONT_FAMILY_OPTIONS.map(f => (
+                    <option key={f.label} value={f.value}>{f.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div
+              style={{
+                background: getTheme(termDefaults.theme).background as string,
+                color: getTheme(termDefaults.theme).foreground as string,
+                fontFamily: termDefaults.fontFamily,
+                fontSize: termDefaults.fontSize,
+                padding: '6px 10px',
+                borderRadius: 4,
+                lineHeight: 1.5,
+                border: '1px solid #3c3c3c',
+              }}
+            >
+              <div>user@host:~/projects$ git status</div>
+              <div>nothing to commit, working tree clean</div>
+            </div>
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="settings-agent-name-from-folder"
+                checked={agentNameFromFolder}
+                onChange={e => { setAgentNameFromFolder(e.target.checked); setAgentNameFromFolderEnabled(e.target.checked) }}
+                className="mt-0.5"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span>Name AI agent terminals after their launch folder</span>
+                <span className="text-xs text-[#9ca3af] leading-relaxed">
+                  When on, launching an agent into a folder names the terminal after that folder
+                  (e.g. <code className="bg-[#3c3c3c] px-1 rounded">termpolis</code>) instead of the
+                  agent name. Resumed and handoff terminals keep their descriptive names.
+                </span>
+              </span>
+            </label>
           </div>
           <div className="flex items-center gap-3">
             <label className="text-sm font-medium">Enable Autocomplete</label>

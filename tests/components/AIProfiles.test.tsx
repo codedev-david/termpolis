@@ -13,7 +13,8 @@ vi.mock('../../src/renderer/src/lib/homedir', () => ({
 }))
 
 vi.mock('../../src/renderer/src/lib/terminalDefaults', () => ({
-  TERMINAL_DEFAULTS: { fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+  getTerminalDefaults: () => ({ fontSize: 14, theme: 'dark', fontFamily: 'monospace' }),
+  agentTerminalName: (profileName: string) => profileName,
 }))
 
 vi.mock('../../src/renderer/src/components/InstallHint/InstallHint', () => ({

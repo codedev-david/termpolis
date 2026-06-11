@@ -115,7 +115,7 @@ vi.mock('../../src/renderer/src/lib/homedir', () => ({
   getHomedir: vi.fn().mockResolvedValue('/home/user'),
 }))
 vi.mock('../../src/renderer/src/lib/terminalDefaults', () => ({
-  TERMINAL_DEFAULTS: { fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+  getTerminalDefaults: () => ({ fontSize: 14, theme: 'dark', fontFamily: 'monospace' }),
 }))
 
 import { Sidebar } from '../../src/renderer/src/components/Sidebar/Sidebar'

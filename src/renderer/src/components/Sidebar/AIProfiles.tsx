@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
-import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
+import { getTerminalDefaults, agentTerminalName } from '../../lib/terminalDefaults'
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { resolveAgentCommand, testDelay } from '../../lib/testAgents'
@@ -132,13 +132,11 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
     }
     addTerminal({
       id,
-      name: profile.name,
+      name: agentTerminalName(profile.name, cwd),
       color: profile.color,
       shellType,
       cwd,
-      fontSize: TERMINAL_DEFAULTS.fontSize,
-      theme: TERMINAL_DEFAULTS.theme,
-      fontFamily: TERMINAL_DEFAULTS.fontFamily,
+      ...getTerminalDefaults(),
       agentCommand: profile.command,
     })
     // These timers fire seconds after the handler returns. In unit tests

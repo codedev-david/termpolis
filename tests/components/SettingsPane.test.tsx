@@ -94,6 +94,41 @@ describe('SettingsPane', () => {
     expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
+  it('renders the Terminal Defaults section with theme, size, font, and folder-name controls', () => {
+    render(<SettingsPane />)
+    expect(screen.getByTestId('settings-terminal-defaults')).toBeInTheDocument()
+    expect(screen.getByText('Terminal Defaults')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-default-font-size')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-default-font-family')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-agent-name-from-folder')).toBeInTheDocument()
+  })
+
+  it('persists default theme, font size, and font family changes', () => {
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('settings-default-theme-light'))
+    fireEvent.change(screen.getByTestId('settings-default-font-size'), { target: { value: '18' } })
+    fireEvent.change(screen.getByTestId('settings-default-font-family'), {
+      target: { value: 'JetBrains Mono, monospace' },
+    })
+    const saved = JSON.parse(localStorage.getItem('termpolis.terminal.defaults')!)
+    expect(saved.theme).toBe('light')
+    expect(saved.fontSize).toBe(18)
+    expect(saved.fontFamily).toBe('JetBrains Mono, monospace')
+    localStorage.removeItem('termpolis.terminal.defaults')
+  })
+
+  it('agent-name-from-folder checkbox is off by default and persists when toggled', () => {
+    localStorage.removeItem('termpolis.terminal.agentNameFromFolder')
+    render(<SettingsPane />)
+    const box = screen.getByTestId('settings-agent-name-from-folder') as HTMLInputElement
+    expect(box.checked).toBe(false)
+    fireEvent.click(box)
+    expect(localStorage.getItem('termpolis.terminal.agentNameFromFolder')).toBe('1')
+    fireEvent.click(box)
+    expect(localStorage.getItem('termpolis.terminal.agentNameFromFolder')).toBe('0')
+    localStorage.removeItem('termpolis.terminal.agentNameFromFolder')
+  })
+
   it('renders the Check for updates button', () => {
     render(<SettingsPane />)
     expect(screen.getByTestId('settings-check-updates')).toBeInTheDocument()
@@ -308,9 +343,10 @@ describe('SettingsPane', () => {
     await waitFor(() => {
       expect(screen.getByText('Default Shell')).toBeInTheDocument()
     })
-    // No shell options should have been rendered from the detector
-    const options = screen.queryAllByRole('option')
-    expect(options.length).toBe(0)
+    // No shell options should have been rendered from the detector. (Scope to the
+    // shell dropdown — the Terminal Defaults font-family select has its own options.)
+    const shellSelect = screen.getByText('Default Shell').parentElement!.querySelector('select')!
+    expect(shellSelect.querySelectorAll('option').length).toBe(0)
     ;(window as any).termpolis.getAvailableShells = vi.fn().mockResolvedValue({ success: true, data: [
       { type: 'bash', label: 'Bash' },
       { type: 'powershell', label: 'PowerShell' },

@@ -10,7 +10,7 @@ import { GitPanel } from '../GitPanel/GitPanel'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
-import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
+import { getTerminalDefaults } from '../../lib/terminalDefaults'
 
 export function Sidebar() {
   const {
@@ -39,15 +39,16 @@ export function Sidebar() {
     const cwd = await getHomedir()
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) { alert(`Failed to open terminal: ${res.error}`); return }
+    const defaults = getTerminalDefaults()
     addTerminal({
       id,
       name: opts.name,
       color: opts.color,
       shellType: opts.shellType,
       cwd,
-      fontSize: opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
-      theme: opts.theme ?? TERMINAL_DEFAULTS.theme,
-      fontFamily: opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
+      fontSize: opts.fontSize ?? defaults.fontSize,
+      theme: opts.theme ?? defaults.theme,
+      fontFamily: opts.fontFamily ?? defaults.fontFamily,
     })
     setShowAddModal(false)
   }

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
-import { TERMINAL_DEFAULTS } from '../../lib/terminalDefaults'
+import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import type { PaneNode, ShellType, WorkflowTemplate, WorkflowTerminal, WorkflowLayout } from '../../types'
 
 const BUILT_IN_WORKFLOWS: WorkflowTemplate[] = [
@@ -325,9 +325,7 @@ export function WorkflowTemplates({ onClose }: Props) {
         color: tmpl.color,
         shellType,
         cwd,
-        fontSize: TERMINAL_DEFAULTS.fontSize,
-        theme: TERMINAL_DEFAULTS.theme,
-        fontFamily: TERMINAL_DEFAULTS.fontFamily,
+        ...getTerminalDefaults(),
       })
     }
 

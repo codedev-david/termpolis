@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../store/terminalStore'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
+import { getTerminalDefaults } from './terminalDefaults'
 import { recordSwarmError } from './sentry'
 
 interface ConductorState {
@@ -68,9 +69,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
     color: '#22D3EE',
     shellType,
     cwd,
-    fontSize: 14,
-    theme: 'dark',
-    fontFamily: 'Consolas, "Courier New", monospace',
+    ...getTerminalDefaults(),
     agentCommand: 'claude',
     hidden: true,
     isConductor: true,

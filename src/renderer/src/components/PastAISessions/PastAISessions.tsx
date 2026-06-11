@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
+import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import type { AISessionSummary, ShellType } from '../../types'
 
 interface Props {
@@ -124,9 +125,7 @@ export function PastAISessions({ open, onClose }: Props) {
       color: '#FF7F50',
       shellType: defaultShell as ShellType,
       cwd: session.cwd,
-      fontSize: 14,
-      theme: 'dark',
-      fontFamily: 'Consolas, Menlo, monospace',
+      ...getTerminalDefaults(),
       agentCommand: 'claude --resume ' + session.id,
     })
     setActiveTerminal(newId)
@@ -202,9 +201,7 @@ export function PastAISessions({ open, onClose }: Props) {
         color: '#7ee2a3',
         shellType: defaultShell as ShellType,
         cwd: session.cwd,
-        fontSize: 14,
-        theme: 'dark',
-        fontFamily: 'Consolas, Menlo, monospace',
+        ...getTerminalDefaults(),
         agentCommand: cmd,
       })
       setActiveTerminal(newId)

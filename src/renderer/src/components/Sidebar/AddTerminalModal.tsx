@@ -1,15 +1,11 @@
 import { useState } from 'react'
 import type { ShellInfo, ShellType } from '../../types'
 import { TERMINAL_THEMES, THEME_IDS, getTheme } from '../../themes/terminalThemes'
+import { FONT_FAMILY_OPTIONS, getTerminalDefaults } from '../../lib/terminalDefaults'
 
 const COLOR_SWATCHES = [
   '#22D3EE','#A5D6A7','#CE93D8','#EF9A9A','#FFE082',
   '#80CBC4','#FFCC80','#9FA8DA','#F48FB1','#C5E1A5','#80DEEA','#B0BEC5',
-]
-
-const FONT_FAMILY_OPTIONS = [
-  { label: 'Consolas', value: 'Consolas, "Courier New", monospace' },
-  { label: 'JetBrains Mono', value: 'JetBrains Mono, monospace' },
 ]
 
 interface Props {
@@ -21,12 +17,15 @@ interface Props {
 }
 
 export function AddTerminalModal({ shells, nextIndex, defaultShell, onCreate, onCancel }: Props) {
+  // Seed from the user's saved Terminal Defaults (Settings → General); anything
+  // changed here overrides the defaults for this one terminal.
+  const [defaults] = useState(() => getTerminalDefaults())
   const [name, setName] = useState(`Terminal ${nextIndex}`)
   const [shellType, setShellType] = useState<ShellType>(defaultShell)
   const [color, setColor] = useState(COLOR_SWATCHES[0])
-  const [fontSize, setFontSize] = useState(14)
-  const [theme, setTheme] = useState('dark')
-  const [fontFamily, setFontFamily] = useState(FONT_FAMILY_OPTIONS[0].value)
+  const [fontSize, setFontSize] = useState(defaults.fontSize)
+  const [theme, setTheme] = useState(defaults.theme)
+  const [fontFamily, setFontFamily] = useState(defaults.fontFamily)
 
   const selectedTheme = getTheme(theme)
 

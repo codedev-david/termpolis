@@ -49,6 +49,24 @@ describe('AddTerminalModal', () => {
     expect(screen.getByDisplayValue('Consolas')).toBeInTheDocument()
   })
 
+  it('seeds appearance fields from the saved Terminal Defaults (overridable in-modal)', () => {
+    localStorage.setItem(
+      'termpolis.terminal.defaults',
+      JSON.stringify({ fontSize: 18, theme: 'nord', fontFamily: 'JetBrains Mono, monospace' }),
+    )
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    expect(screen.getByDisplayValue('18')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('JetBrains Mono')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Create'))
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      fontSize: 18,
+      theme: 'nord',
+      fontFamily: 'JetBrains Mono, monospace',
+    }))
+    localStorage.removeItem('termpolis.terminal.defaults')
+  })
+
   it('calls onCreate with all fields including fontSize, theme, fontFamily', () => {
     const onCreate = vi.fn()
     render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
