@@ -210,6 +210,13 @@ vi.mock('../../src/renderer/src/hooks/useSessionRecording', () => ({
   })),
 }))
 
+// --- Mock the voice engine so the real useVoiceInput hook can run through the
+// terminal pane without loading the on-device transcription model. ---
+const voiceEng = vi.hoisted(() => ({ transcribe: vi.fn() }))
+vi.mock('../../src/renderer/src/lib/voice/voiceEngines', () => ({
+  createVoiceEngine: () => ({ kind: 'local', transcribe: voiceEng.transcribe, dispose: vi.fn() }),
+}))
+
 // --- Mock child components ---
 vi.mock('../../src/renderer/src/components/CompletionDropdown/CompletionDropdown', () => ({
   CompletionDropdown: () => <div data-testid="completion-dropdown">CompletionDropdown</div>,
@@ -636,6 +643,115 @@ describe('TerminalPane', () => {
       let res: boolean | undefined
       act(() => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L' })) })
       expect(res).toBe(true)
+    })
+  })
+
+  // =====================================================
+  // 2e. Voice start/stop control button + clickable "Listening" badge
+  // =====================================================
+  describe('voice control button', () => {
+    let savedMediaDevices: unknown
+    let savedAudioContext: unknown
+    let capturedProcessor: { onaudioprocess: ((e: unknown) => void) | null } | null = null
+
+    class StubAudioContext {
+      sampleRate = 48000
+      destination = {}
+      createMediaStreamSource() { return { connect: () => {} } }
+      createScriptProcessor() {
+        capturedProcessor = { onaudioprocess: null, connect: () => {}, disconnect: () => {} }
+        return capturedProcessor
+      }
+      close() { return Promise.resolve() }
+    }
+
+    function withVoice(over: Record<string, unknown> = {}) {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        voiceSettings: {
+          enabled: true, engine: 'local', model: 'm', pushToTalkKey: 'Ctrl+Shift+L',
+          pushToTalkMode: 'hold', autoSubmitInAgent: false, correctionEnabled: false,
+          confirmBeforeRunInShell: true, cloudEndpoint: '', ...over,
+        },
+      }))
+    }
+
+    function feedAudio() {
+      act(() => {
+        capturedProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array([0.1, 0.2, 0.3]) } })
+      })
+    }
+
+    beforeEach(() => {
+      capturedProcessor = null
+      voiceEng.transcribe.mockReset()
+      voiceEng.transcribe.mockResolvedValue({ text: 'hi there' })
+      savedMediaDevices = (navigator as unknown as { mediaDevices: unknown }).mediaDevices
+      savedAudioContext = (globalThis as unknown as { AudioContext: unknown }).AudioContext
+      ;(globalThis as unknown as { AudioContext: unknown }).AudioContext = StubAudioContext
+      Object.defineProperty(navigator, 'mediaDevices', {
+        value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] })) },
+        configurable: true,
+      })
+    })
+
+    afterEach(() => {
+      // Restore only what this block changed — a blanket vi.unstubAllGlobals()
+      // would also wipe the file-level ResizeObserver/IntersectionObserver stubs.
+      ;(globalThis as unknown as { AudioContext: unknown }).AudioContext = savedAudioContext
+      Object.defineProperty(navigator, 'mediaDevices', { value: savedMediaDevices, configurable: true })
+    })
+
+    it('is hidden when voice input is disabled', () => {
+      withVoice({ enabled: false })
+      render(<TerminalPane {...defaultProps} />)
+      expect(screen.queryByTestId('voice-toggle-btn')).not.toBeInTheDocument()
+      // the neighbouring Past AI Sessions button is unaffected
+      expect(screen.getByTestId('past-ai-sessions-btn')).toBeInTheDocument()
+    })
+
+    it('renders a start (Voice) button when enabled and idle', () => {
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      expect(screen.getByTestId('voice-toggle-btn')).toHaveTextContent(/voice/i)
+      expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+    })
+
+    it('clicking the button starts dictation: shows Stop and a Listening badge', async () => {
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      expect(screen.getByTestId('voice-toggle-btn')).toHaveTextContent(/stop/i)
+    })
+
+    it('clicking the Listening badge stops dictation', async () => {
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-listening-badge')) })
+      await waitFor(() => expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument())
+    })
+
+    it('shows a Transcribing state while the transcript is produced, then returns to idle', async () => {
+      let resolveT!: (r: unknown) => void
+      voiceEng.transcribe.mockReturnValue(new Promise((res) => { resolveT = res }))
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      feedAudio()
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-listening-badge')) })
+      await waitFor(() => expect(screen.getByTestId('voice-toggle-btn')).toHaveTextContent(/transcribing/i))
+      expect(screen.getByTestId('voice-toggle-btn')).toBeDisabled()
+      await act(async () => { resolveT({ text: '' }) })
+      await waitFor(() => expect(screen.getByTestId('voice-toggle-btn')).toHaveTextContent(/voice/i))
     })
   })
 

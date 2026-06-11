@@ -37,6 +37,12 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const agentRef = useRef(agentDetected)
   agentRef.current = agentDetected
   const listeningRef = useRef(false)
+  // getUserMedia is async, so there's a window between start() being called and
+  // the mic actually coming up. `startingRef` marks that window; `cancelStartRef`
+  // lets a stop() that lands inside it abort the pending start — otherwise the
+  // stop no-ops and the mic gets stuck "listening" with no way to end it.
+  const startingRef = useRef(false)
+  const cancelStartRef = useRef(false)
 
   const inject = useCallback((text: string, autoSubmit: boolean) => {
     if (!text) return
@@ -68,6 +74,13 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   }, [inject])
 
   const stop = useCallback(async () => {
+    // Mic still coming up: request cancellation so the in-flight start() tears
+    // the stream down instead of entering a stuck "listening" state.
+    if (startingRef.current && !listeningRef.current) {
+      cancelStartRef.current = true
+      setStatus('idle')
+      return
+    }
     if (!listeningRef.current) return
     listeningRef.current = false
     const ctx = audioCtxRef.current
@@ -84,13 +97,24 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   }, [cleanupCapture, transcribe])
 
   const start = useCallback(async () => {
-    if (listeningRef.current) return
+    if (listeningRef.current || startingRef.current) return
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined') {
       setStatus('error')
       return
     }
+    startingRef.current = true
+    cancelStartRef.current = false
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // A stop() arrived while the mic was initialising — release it and bail
+      // before we ever enter the listening state.
+      if (cancelStartRef.current) {
+        stream.getTracks().forEach((t) => t.stop())
+        startingRef.current = false
+        cancelStartRef.current = false
+        setStatus('idle')
+        return
+      }
       streamRef.current = stream
       const ctx = new AudioContext()
       audioCtxRef.current = ctx
@@ -104,14 +128,16 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       source.connect(processor)
       processor.connect(ctx.destination)
       listeningRef.current = true
+      startingRef.current = false
       setStatus('listening')
     } catch {
+      startingRef.current = false
       setStatus('error')
     }
   }, [])
 
   const toggle = useCallback(() => {
-    if (listeningRef.current) void stop()
+    if (listeningRef.current || startingRef.current) void stop()
     else void start()
   }, [start, stop])
 

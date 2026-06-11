@@ -199,6 +199,12 @@ jobs:
       # dispatch + shared store) in the running app.
       - name: Cross-agent memory recall over MCP
         run: xvfb-run --auto-servernum npx playwright test e2e/memory-cross-agent-recall.spec.ts
+      # Voice capture gate: proves the REAL getUserMedia -> AudioContext capture
+      # path works in the running app, using Chromium's fake audio device and a
+      # network-stubbed cloud STT engine (no model load). Closes the "does the
+      # mic actually work end-to-end" gap the jsdom unit suite can't reach.
+      - name: Voice capture from fake audio device
+        run: xvfb-run --auto-servernum npx playwright test e2e/voice-capture.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

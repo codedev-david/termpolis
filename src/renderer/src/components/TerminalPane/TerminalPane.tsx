@@ -101,6 +101,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // Voice dictation (push-to-talk). Agent terminals take it as a prompt; plain
   // shells get a confirm-before-run bar. Opt-in via Settings → Voice.
   const voice = useVoiceInput(terminalId, !!agent.detectedAgent)
+  // Reactive so the on-pane mic button appears/disappears as voice is toggled in Settings.
+  const voiceEnabled = useTerminalStore((s) => s.voiceSettings?.enabled ?? false)
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
   const voiceStopRef = useRef<() => void>(() => {})
@@ -697,13 +699,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           </div>
         )}
         {voice.listening && (
-          <div
+          <button
+            type="button"
             data-testid="voice-listening-badge"
-            className="absolute top-1.5 left-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-white bg-[#c0392b] rounded px-2 py-1 pointer-events-none shadow animate-pulse"
+            onClick={(e) => { e.stopPropagation(); voice.stop() }}
+            title="Click to stop dictation"
+            className="absolute top-1.5 left-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-white bg-[#c0392b] hover:bg-[#e74c3c] rounded px-2 py-1 shadow animate-pulse cursor-pointer"
           >
             <i className="fa-solid fa-microphone text-[9px]"></i>
-            Listening…
-          </div>
+            Listening… <span className="opacity-80 font-normal">— click to stop</span>
+          </button>
         )}
         {voice.confirm && (
           <div
@@ -718,16 +723,42 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button onClick={voice.cancelConfirm} aria-label="Dismiss" className="px-1.5 py-0.5 rounded text-[#999] hover:text-white">✕</button>
           </div>
         )}
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); setPastSessionsOpen(true) }}
-          className="absolute top-1.5 right-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-2 py-1 transition-colors"
-          title="Browse past Claude AI sessions across every project on this machine. Click to resume any session in a new terminal at its original folder."
-          data-testid="past-ai-sessions-btn"
-        >
-          <i className="fa-solid fa-clock-rotate-left text-[9px]"></i>
-          Past AI Sessions
-        </button>
+        <div className="absolute top-1.5 right-2 z-30 flex items-center gap-1.5">
+          {voiceEnabled && (
+            <button
+              type="button"
+              data-testid="voice-toggle-btn"
+              onClick={(e) => { e.stopPropagation(); voice.toggle() }}
+              disabled={voice.status === 'transcribing'}
+              aria-pressed={voice.listening}
+              title={
+                voice.listening
+                  ? 'Stop voice dictation'
+                  : voice.status === 'transcribing'
+                    ? 'Transcribing…'
+                    : 'Start voice dictation (or hold the push-to-talk hotkey)'
+              }
+              className={`flex items-center gap-1.5 text-[10px] font-medium border rounded px-2 py-1 transition-colors disabled:opacity-60 ${
+                voice.listening
+                  ? 'text-white bg-[#c0392b] hover:bg-[#e74c3c] border-[#e74c3c]'
+                  : 'text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border-[#3c3c3c] hover:border-[#1177bb]'
+              }`}
+            >
+              <i className={`fa-solid ${voice.listening ? 'fa-stop' : voice.status === 'transcribing' ? 'fa-spinner fa-spin' : 'fa-microphone'} text-[9px]`}></i>
+              {voice.listening ? 'Stop' : voice.status === 'transcribing' ? 'Transcribing…' : 'Voice'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setPastSessionsOpen(true) }}
+            className="flex items-center gap-1.5 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-2 py-1 transition-colors"
+            title="Browse past Claude AI sessions across every project on this machine. Click to resume any session in a new terminal at its original folder."
+            data-testid="past-ai-sessions-btn"
+          >
+            <i className="fa-solid fa-clock-rotate-left text-[9px]"></i>
+            Past AI Sessions
+          </button>
+        </div>
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
         {contextMenu.visible && (
           <div

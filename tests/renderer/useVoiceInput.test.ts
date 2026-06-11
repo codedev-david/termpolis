@@ -77,6 +77,36 @@ describe('useVoiceInput (orchestration)', () => {
     expect(result.current.listening).toBe(true)
   })
 
+  it('stop() requested while the mic is still starting aborts cleanly instead of getting stuck listening', async () => {
+    // A getUserMedia we resolve on demand, to model the async permission/startup
+    // gap where a key-release (or button click) lands before the mic is up.
+    const stopTrack = vi.fn()
+    let resolveMic!: (stream: unknown) => void
+    const pending = new Promise((res) => { resolveMic = res })
+    ;(navigator.mediaDevices.getUserMedia as unknown as { mockReturnValue: (v: unknown) => void }).mockReturnValue(pending)
+
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+
+    // Begin starting — the mic has NOT come up yet. Do not await.
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+
+    // User releases the key / clicks stop before the mic finishes initialising.
+    await act(async () => { await result.current.stop() })
+    expect(result.current.listening).toBe(false)
+
+    // The mic finally resolves: it must NOT flip into a stuck "listening" state,
+    // and the late stream must be released (mic indicator off).
+    await act(async () => {
+      resolveMic({ getTracks: () => [{ stop: stopTrack }] })
+      await startCall
+    })
+
+    expect(result.current.status).toBe('idle')
+    expect(result.current.listening).toBe(false)
+    expect(stopTrack).toHaveBeenCalled()
+  })
+
   it('agent terminal: stop() transcribes and injects the prompt (no auto-submit by default)', async () => {
     const { result } = renderHook(() => useVoiceInput('term-1', true))
     await act(async () => { await result.current.start() })
