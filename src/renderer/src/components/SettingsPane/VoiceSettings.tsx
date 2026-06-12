@@ -42,21 +42,27 @@ export function VoiceSettings() {
               onChange={(e) => set({ engine: e.target.value === 'cloud' ? 'cloud' : 'local' })}
               className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-64 focus:outline-none"
             >
-              <option value="local">Local — Distil-Whisper (offline, private)</option>
+              <option value="local">Local — Whisper (English, offline, private)</option>
               <option value="cloud">Cloud — turbo (sends audio off-device)</option>
             </select>
           </label>
 
           {v.engine === 'local' ? (
-            <label className="flex flex-col gap-1 text-sm">
-              Local model
-              <input
-                data-testid="voice-model-input"
-                value={v.model}
-                onChange={(e) => set({ model: e.target.value })}
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
-              />
-            </label>
+            <div className="flex flex-col gap-1 text-sm">
+              <span>Local model</span>
+              <div
+                data-testid="voice-model-display"
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm flex items-center gap-2"
+              >
+                <i className="fa-solid fa-microphone-lines text-[#82aaff] text-[11px]" />
+                <span className="font-mono text-[#e0e0e0]">{v.model}</span>
+                <span className="text-[10px] text-[#9ca3af]">English · on-device · bundled (~77 MB)</span>
+              </div>
+              <span className="text-xs text-[#9ca3af]">
+                Ships with the app and transcribes fully offline. It is tuned for English dictation; for the
+                highest accuracy, switch the engine to Cloud turbo (which sends audio off-device).
+              </span>
+            </div>
           ) : (
             <label className="flex flex-col gap-1 text-sm">
               Cloud STT endpoint

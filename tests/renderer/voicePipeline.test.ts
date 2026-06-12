@@ -9,6 +9,11 @@ import {
   resampleTo16k,
   pushToTalkIntent,
   pushToTalkMainKey,
+  audioRms,
+  isNoSpeech,
+  normalizeAudioGain,
+  SILENCE_RMS_THRESHOLD,
+  MIN_SPEECH_SECONDS,
 } from '../../src/renderer/src/lib/voice/voicePipeline'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../../src/renderer/src/lib/voice/voiceTypes'
 import { matchesKeybinding } from '../../src/renderer/src/lib/keybindings'
@@ -132,7 +137,11 @@ describe('voicePipeline', () => {
       // a persisted session.json with it must migrate to the bundled model.
       expect(sanitizeVoiceSettings({ model: 'onnx-community/distil-whisper-large-v3.5-ONNX' }).model)
         .toBe(DEFAULT_VOICE_SETTINGS.model)
-      expect(sanitizeVoiceSettings({ model: 'whisper-base' }).model).toBe('whisper-base')
+      // The bundled model is now whisper-base.en; a persisted multilingual
+      // 'whisper-base' (no longer bundled) must migrate to it, not silently fail.
+      expect(sanitizeVoiceSettings({ model: 'whisper-base' }).model).toBe('whisper-base.en')
+      expect(sanitizeVoiceSettings({ model: 'whisper-base.en' }).model).toBe('whisper-base.en')
+      expect(DEFAULT_VOICE_SETTINGS.model).toBe('whisper-base.en')
     })
 
     it('default push-to-talk uses a Shift-safe key (a letter — not Shift+punctuation/digit, which matchesKeybinding cannot match)', () => {
@@ -219,6 +228,85 @@ describe('voicePipeline', () => {
       const input = new Float32Array([0, 0.5, 1, 0.5])
       const out = resampleTo16k(input, 8000)
       expect(out.length).toBe(8)
+    })
+
+    it('downsampling AVERAGES each window (anti-alias) rather than decimating', () => {
+      // 48k -> 16k is a 3:1 box average. Naive decimation would return [1] (just
+      // the first sample of the window); the anti-aliased filter returns the mean.
+      const input = new Float32Array([1, 0, 0, 1, 0, 0])
+      const out = resampleTo16k(input, 48000)
+      expect(out.length).toBe(2)
+      expect(out[0]).toBeCloseTo(1 / 3, 5)
+      expect(out[1]).toBeCloseTo(1 / 3, 5)
+    })
+  })
+
+  describe('audioRms', () => {
+    it('is 0 for empty or silent input, and the amplitude for a DC signal', () => {
+      expect(audioRms(new Float32Array(0))).toBe(0)
+      expect(audioRms(new Float32Array(100))).toBe(0)
+      expect(audioRms(new Float32Array([0.5, 0.5, 0.5]))).toBeCloseTo(0.5, 6)
+    })
+    it('computes RMS of a mixed signal', () => {
+      expect(audioRms(new Float32Array([1, -1, 1, -1]))).toBeCloseTo(1, 6)
+      expect(audioRms(new Float32Array([0.3, -0.3]))).toBeCloseTo(0.3, 6)
+    })
+  })
+
+  describe('isNoSpeech (the anti-hallucination gate)', () => {
+    const ONE_SEC = 16000
+    it('flags pure silence as no-speech (Whisper would hallucinate a phrase here)', () => {
+      expect(isNoSpeech(new Float32Array(ONE_SEC), 16000)).toBe(true)
+    })
+    it('flags mic-floor noise below the threshold as no-speech', () => {
+      const noise = new Float32Array(ONE_SEC)
+      for (let i = 0; i < noise.length; i++) noise[i] = (i % 5 - 2) * (SILENCE_RMS_THRESHOLD / 4)
+      expect(audioRms(noise)).toBeLessThan(SILENCE_RMS_THRESHOLD)
+      expect(isNoSpeech(noise, 16000)).toBe(true)
+    })
+    it('flags a too-short buffer as no-speech (a key tap, not an utterance)', () => {
+      const tiny = new Float32Array(Math.floor(MIN_SPEECH_SECONDS * 16000) - 1).fill(0.5)
+      expect(isNoSpeech(tiny, 16000)).toBe(true)
+    })
+    it('does NOT flag a real, sufficiently-loud utterance as no-speech', () => {
+      const speech = new Float32Array(ONE_SEC)
+      for (let i = 0; i < speech.length; i++) speech[i] = 0.2 * Math.sin((2 * Math.PI * 180 * i) / 16000)
+      expect(audioRms(speech)).toBeGreaterThan(SILENCE_RMS_THRESHOLD)
+      expect(isNoSpeech(speech, 16000)).toBe(false)
+    })
+    it('respects the sample rate when checking minimum duration', () => {
+      // 0.25s of audio: speech at 16k (>0.2s), but no-speech at 48k (<0.2s).
+      const quarterSecAt16k = new Float32Array(4000).fill(0.2)
+      expect(isNoSpeech(quarterSecAt16k, 16000)).toBe(false)
+      expect(isNoSpeech(quarterSecAt16k, 48000)).toBe(true)
+    })
+  })
+
+  describe('normalizeAudioGain', () => {
+    it('boosts quiet audio toward the target RMS', () => {
+      const quiet = new Float32Array(1000)
+      for (let i = 0; i < quiet.length; i++) quiet[i] = 0.01 * Math.sin(i)
+      const out = normalizeAudioGain(quiet, 0.08)
+      expect(audioRms(out)).toBeGreaterThan(audioRms(quiet) * 2)
+      expect(audioRms(out)).toBeCloseTo(0.08, 2)
+    })
+    it('never attenuates audio already at/above the target (returns it unchanged)', () => {
+      const loud = new Float32Array(1000)
+      for (let i = 0; i < loud.length; i++) loud[i] = 0.5 * Math.sin(i)
+      expect(normalizeAudioGain(loud, 0.08)).toBe(loud)
+    })
+    it('caps the gain so near-silence is not blown up to full scale', () => {
+      const veryQuiet = new Float32Array(1000)
+      for (let i = 0; i < veryQuiet.length; i++) veryQuiet[i] = 0.0005 * Math.sin(i)
+      const out = normalizeAudioGain(veryQuiet, 0.08, 10) // maxGain 10
+      expect(audioRms(out)).toBeCloseTo(audioRms(veryQuiet) * 10, 4)
+    })
+    it('returns silent/empty input unchanged and never exceeds [-1,1]', () => {
+      const silent = new Float32Array(10)
+      expect(normalizeAudioGain(silent)).toBe(silent)
+      const clippy = new Float32Array([0.9, -0.9, 0.05])
+      const out = normalizeAudioGain(clippy, 0.9)
+      for (const v of out) expect(Math.abs(v)).toBeLessThanOrEqual(1)
     })
   })
 })

@@ -34,15 +34,24 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
 import { useVoiceInput } from '../../src/renderer/src/hooks/useVoiceInput'
 
 let createdProcessor: { onaudioprocess: ((e: unknown) => void) | null; connect: () => void; disconnect: () => void } | null = null
+// Lets a test hold AudioContext.resume() pending to model a stop() that lands
+// DURING context startup (not just during getUserMedia).
+let resumeGate: { promise: Promise<void>; resolve: () => void } | null = null
 
 class FakeAudioContext {
-  sampleRate = 48000
+  // We now request a 16kHz context (Chromium honors it) so capture needs no
+  // resampling; the mock reflects that.
+  sampleRate = 16000
   destination = {}
+  constructor(_opts?: unknown) { /* options (sampleRate) ignored by the fake */ }
+  resume() { return resumeGate ? resumeGate.promise : Promise.resolve() }
   createMediaStreamSource() { return { connect: vi.fn() } }
   createScriptProcessor() {
     createdProcessor = { onaudioprocess: null, connect: vi.fn(), disconnect: vi.fn() }
     return createdProcessor
   }
+  // Muted sink the ScriptProcessor drains into (so the mic isn't routed to speakers).
+  createGain() { return { gain: { value: 0 }, connect: vi.fn() } }
   close() { return Promise.resolve() }
 }
 
@@ -52,6 +61,7 @@ beforeEach(() => {
   h.writeToTerminal.mockClear()
   h.focusActiveTerminal.mockClear()
   createdProcessor = null
+  resumeGate = null
   ;(window as unknown as { termpolis: unknown }).termpolis = {
     writeToTerminal: h.writeToTerminal,
     getVoiceAssetBase: async () => ({ success: true, data: 'http://127.0.0.1:1' }),
@@ -67,10 +77,14 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-// Simulate the audio callback firing once so there is captured PCM to transcribe.
+// Simulate the audio callback firing with ~0.5s of real-level speech, so the
+// captured PCM clears the no-speech gate (≥0.2s AND above the RMS floor) and is
+// actually transcribed.
 function feedAudio() {
+  const pcm = new Float32Array(8000) // 0.5s @ 16kHz
+  for (let i = 0; i < pcm.length; i++) pcm[i] = 0.2 * Math.sin((2 * Math.PI * 180 * i) / 16000)
   act(() => {
-    createdProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array([0.1, 0.2, 0.3]) } })
+    createdProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => pcm } })
   })
 }
 
@@ -111,6 +125,33 @@ describe('useVoiceInput (orchestration)', () => {
     expect(result.current.status).toBe('idle')
     expect(result.current.listening).toBe(false)
     expect(stopTrack).toHaveBeenCalled()
+  })
+
+  it('stop() during the async AudioContext.resume() also aborts cleanly (no stuck listening)', async () => {
+    // getUserMedia resolves fast, but the context resume() pends — modelling a
+    // quick push-to-talk tap whose key-release lands while the context starts up.
+    const stopTrack = vi.fn()
+    ;(navigator.mediaDevices.getUserMedia as unknown as { mockResolvedValue: (v: unknown) => void })
+      .mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] })
+    let resolveResume!: () => void
+    resumeGate = { promise: new Promise<void>((r) => { resolveResume = r }), resolve: () => {} }
+
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    // Let start() progress past getUserMedia and park inside ctx.resume().
+    await act(async () => {})
+
+    // Key released before the mic is fully up.
+    await act(async () => { await result.current.stop() })
+    expect(result.current.listening).toBe(false)
+
+    // resume() resolves: start() must NOT flip into listening, and must release
+    // the mic + close the context instead of getting stuck.
+    await act(async () => { resolveResume(); await startCall })
+    expect(result.current.status).toBe('idle')
+    expect(result.current.listening).toBe(false)
+    expect(stopTrack).toHaveBeenCalled() // mic actually released
   })
 
   it('agent terminal: stop() transcribes and injects the prompt (no auto-submit by default)', async () => {
@@ -166,6 +207,21 @@ describe('useVoiceInput (orchestration)', () => {
     expect(h.writeToTerminal).not.toHaveBeenCalled()
     // Even with nothing to inject, stopping returns focus to the terminal.
     expect(h.focusActiveTerminal).toHaveBeenCalled()
+  })
+
+  it('no-speech gate: captured silence shows a notice and does NOT transcribe (no hallucination injected)', async () => {
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    // Feed 0.5s of SILENCE (zeros) — real length, but no speech content. This is
+    // exactly the audio that made Whisper emit "I'm sorry. What is that?".
+    act(() => {
+      createdProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array(8000) } })
+    })
+    await act(async () => { await result.current.stop() })
+    expect(h.transcribe).not.toHaveBeenCalled()
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/no speech/i)
   })
 
   it('reports an error when no microphone API is available', async () => {

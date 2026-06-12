@@ -37,12 +37,12 @@ const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs']
 const EMBEDDING_MODEL_REL = path.join('models', 'bge-small-en-v1.5', 'onnx', 'model_quantized.onnx')
 const EMBEDDING_TOKENIZER_REL = path.join('models', 'bge-small-en-v1.5', 'tokenizer.json')
 
-// The bundled offline VOICE model (whisper-base q8) + the onnxruntime-web wasm
+// The bundled offline VOICE model (whisper-base.en q8) + the onnxruntime-web wasm
 // runtime that the renderer's Whisper worker fetches over the localhost asset
 // server. Verified SEPARATELY (CI `--voice`), and only when present — a build
 // without the voice model downloaded is still valid (voice degrades), same as
 // the embedding model above.
-const VOICE_MODEL_DIR_REL = path.join('models', 'whisper-base')
+const VOICE_MODEL_DIR_REL = path.join('models', 'whisper-base.en')
 const VOICE_ENCODER_REL = path.join(VOICE_MODEL_DIR_REL, 'onnx', 'encoder_model_quantized.onnx')
 const VOICE_DECODER_REL = path.join(VOICE_MODEL_DIR_REL, 'onnx', 'decoder_model_merged_quantized.onnx')
 const VOICE_MODEL_FILES = [

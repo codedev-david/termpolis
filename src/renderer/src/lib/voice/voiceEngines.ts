@@ -55,6 +55,12 @@ export class LocalWhisperEngine implements VoiceEngine {
     return this.ready
   }
 
+  /** Pre-load the model (and ORT wasm) without transcribing, so the first real
+   *  dictation skips the multi-second cold start. Idempotent — ensure() dedupes. */
+  async warm(): Promise<void> {
+    await this.ensure()
+  }
+
   async transcribe(pcm16k: Float32Array): Promise<TranscriptResult> {
     await this.ensure()
     const id = ++this.seq

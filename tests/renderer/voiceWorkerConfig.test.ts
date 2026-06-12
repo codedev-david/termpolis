@@ -4,6 +4,7 @@ import { resolve } from 'path'
 import {
   configureOffline,
   createAsrPipeline,
+  buildTranscribeOptions,
   VOICE_MODELS_URL_PATH,
   VOICE_ORT_URL_PATH,
   VOICE_SESSION_OPTIONS,
@@ -95,7 +96,7 @@ describe('VOICE_SESSION_OPTIONS — the graph-optimization workaround (v1.12.4)'
       'utf8',
     )
     expect(worker).toContain('createAsrPipeline(')
-    expect(worker).toContain("import { configureOffline, createAsrPipeline }")
+    expect(worker).toMatch(/import \{[^}]*\bcreateAsrPipeline\b[^}]*\} from ['"]\.\/voiceWorkerConfig['"]/)
   })
 })
 
@@ -144,6 +145,36 @@ describe('createAsrPipeline', () => {
   it('fails LOUD when the tokenizer did not load', async () => {
     const t = fakeAsrTransformers({ processor: PROC, tokenizer: null })
     await expect(createAsrPipeline(t as any, 'whisper-base', 'wasm')).rejects.toThrow(/tokenizer=false/)
+  })
+})
+
+describe('buildTranscribeOptions (per-model decode options)', () => {
+  it('passes NO language/task for an English-only (.en) model — the bare call is correct', () => {
+    // whisper-base.en has no language/task tokens; pinning them would be wrong.
+    expect(buildTranscribeOptions('whisper-base.en')).toEqual({ return_timestamps: false })
+    expect(buildTranscribeOptions('whisper-small.en')).toEqual({ return_timestamps: false })
+  })
+
+  it('PINS language=en + task=transcribe for a multilingual model (else it auto-detects and hallucinates)', () => {
+    expect(buildTranscribeOptions('whisper-base')).toEqual({
+      return_timestamps: false,
+      language: 'en',
+      task: 'transcribe',
+    })
+  })
+
+  it('is case-insensitive on the .en suffix and tolerates empty/garbage ids', () => {
+    expect(buildTranscribeOptions('Whisper-Base.EN')).toEqual({ return_timestamps: false })
+    // Unknown/empty id → treat as multilingual and pin (safe default).
+    expect(buildTranscribeOptions('')).toMatchObject({ language: 'en', task: 'transcribe' })
+  })
+
+  it('is wired into the Whisper worker (what we test is what ships)', () => {
+    const worker = readFileSync(
+      resolve(__dirname, '..', '..', 'src', 'renderer', 'src', 'lib', 'voice', 'whisperWorker.ts'),
+      'utf8',
+    )
+    expect(worker).toContain('buildTranscribeOptions(')
   })
 })
 

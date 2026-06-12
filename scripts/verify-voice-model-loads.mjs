@@ -24,8 +24,8 @@ import path from 'node:path'
 const ROOT = process.cwd()
 const ORT = path.join(ROOT, 'node_modules', 'onnxruntime-web', 'dist')
 const MODELS = path.join(ROOT, 'resources', 'models')
-const DECODER = 'whisper-base/onnx/decoder_model_merged_quantized.onnx'
-const ENCODER = 'whisper-base/onnx/encoder_model_quantized.onnx'
+const DECODER = 'whisper-base.en/onnx/decoder_model_merged_quantized.onnx'
+const ENCODER = 'whisper-base.en/onnx/encoder_model_quantized.onnx'
 const CONFIG = path.join(ROOT, 'src', 'renderer', 'src', 'lib', 'voice', 'voiceWorkerConfig.ts')
 
 // Single source of truth: test the level the renderer actually ships, parsed from

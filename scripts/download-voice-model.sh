@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Download the whisper-base speech-to-text model (q8 ONNX + tokenizer/config)
+# Download the whisper-base.en speech-to-text model (q8 ONNX + tokenizer/config)
 # used by the local voice-input transcriber, into resources/models/ AND copy the
 # version-matched onnxruntime-web WASM into resources/voice-runtime/ so
 # electron-builder can bundle BOTH for fully-offline dictation in shipped builds.
 #
+# We ship the ENGLISH-ONLY (.en) variant on purpose: the multilingual whisper-base
+# auto-detects language each clip and, on marginal audio, mis-detects/hallucinates,
+# and is less accurate for English dictation. Same ~77MB and speed.
+#
 # Run at CI build time (see .github/workflows/release.yml), same pattern as
 # download-embedding-model.sh — these files are NOT committed to the repo.
-# whisper-base ONNX (Xenova export) is MIT-licensed.
+# whisper-base.en ONNX (Xenova export) is MIT-licensed.
 #
 # Why local + bundled: the renderer Whisper worker runs under the app's strict
 # CSP, which (correctly) blocks fetching models from huggingface.co. We bundle
@@ -14,9 +18,9 @@
 # main already exposes, so audio never leaves the box and there is no egress.
 set -euo pipefail
 
-REPO="Xenova/whisper-base"
+REPO="Xenova/whisper-base.en"
 BASE="https://huggingface.co/${REPO}/resolve/main"
-DIR="resources/models/whisper-base"
+DIR="resources/models/whisper-base.en"
 RT="resources/voice-runtime/ort"
 mkdir -p "$DIR/onnx" "$RT"
 
@@ -28,7 +32,7 @@ fetch() {
        "$1" -o "$2"
 }
 
-echo "Downloading whisper-base voice model into $DIR ..."
+echo "Downloading whisper-base.en voice model into $DIR ..."
 # Tokenizer + config surface the Whisper feature extractor (mel) and BPE
 # vocab/merges that Transformers.js needs to build the ASR pipeline.
 for f in config.json generation_config.json preprocessor_config.json \

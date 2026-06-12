@@ -15,10 +15,13 @@
 // unit tests; real transcription is covered by manual/e2e smoke.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { configureOffline, createAsrPipeline } from './voiceWorkerConfig'
+import { configureOffline, createAsrPipeline, buildTranscribeOptions } from './voiceWorkerConfig'
 
 const ctx: any = self as any
 let asr: any = null
+// Remember which model loaded so we decode with the right options (English-only
+// vs multilingual — see buildTranscribeOptions).
+let currentModel = ''
 
 function errStr(e: unknown): string {
   if (e instanceof Error) return e.message || String(e)
@@ -41,6 +44,7 @@ async function load(model: string, device: string, assetBase: string): Promise<v
     // our http-served offline model as missing → "feature_extractor of null" on
     // first transcribe). See voiceWorkerConfig.ts for the full root cause.
     asr = await createAsrPipeline(transformers, model, device)
+    currentModel = model
     ctx.postMessage({ type: 'ready', device })
   } catch (e) {
     ctx.postMessage({ type: 'load-error', error: `model load failed (${model} @ ${assetBase}): ${errStr(e)}` })
@@ -59,7 +63,7 @@ ctx.onmessage = async (ev: any): Promise<void> => {
       return
     }
     try {
-      const out = await asr(msg.pcm, { return_timestamps: false })
+      const out = await asr(msg.pcm, buildTranscribeOptions(currentModel))
       const text = Array.isArray(out) ? out.map((o: any) => o.text).join(' ') : (out?.text ?? '')
       ctx.postMessage({ type: 'result', id: msg.id, text: String(text).trim() })
     } catch (e) {

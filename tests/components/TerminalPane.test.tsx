@@ -660,13 +660,16 @@ describe('TerminalPane', () => {
     let capturedProcessor: { onaudioprocess: ((e: unknown) => void) | null } | null = null
 
     class StubAudioContext {
-      sampleRate = 48000
+      sampleRate = 16000 // we now request a 16kHz context (no resampling needed)
       destination = {}
+      constructor(_opts?: unknown) { /* options ignored by the stub */ }
+      resume() { return Promise.resolve() }
       createMediaStreamSource() { return { connect: () => {} } }
       createScriptProcessor() {
         capturedProcessor = { onaudioprocess: null, connect: () => {}, disconnect: () => {} }
         return capturedProcessor
       }
+      createGain() { return { gain: { value: 0 }, connect: () => {} } }
       close() { return Promise.resolve() }
     }
 
@@ -689,8 +692,11 @@ describe('TerminalPane', () => {
     }
 
     function feedAudio() {
+      // ~0.5s of real-level audio so the captured PCM clears the no-speech gate.
+      const pcm = new Float32Array(8000)
+      for (let i = 0; i < pcm.length; i++) pcm[i] = 0.2 * Math.sin((2 * Math.PI * 180 * i) / 16000)
       act(() => {
-        capturedProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array([0.1, 0.2, 0.3]) } })
+        capturedProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => pcm } })
       })
     }
 

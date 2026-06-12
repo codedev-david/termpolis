@@ -45,6 +45,16 @@ describe('voiceEngines', () => {
       expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
     })
 
+    it('warm() pre-loads the model once; a later transcribe reuses it (no second load)', async () => {
+      const fake = new FakeWorker('ok')
+      const engine = new LocalWhisperEngine('model-x', () => fake)
+      await engine.warm()
+      expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
+      await engine.transcribe(new Float32Array([0.1]))
+      // warm() already loaded it — transcribe must NOT trigger a second load.
+      expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
+    })
+
     it('rejects when the model fails to load', async () => {
       const engine = new LocalWhisperEngine('model-x', () => new FakeWorker('loadError'))
       await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/no webgpu/)

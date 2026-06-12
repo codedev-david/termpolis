@@ -18,6 +18,26 @@
 /** URL path (under the localhost asset server) for the bundled Whisper model. */
 export const VOICE_MODELS_URL_PATH = '/models/'
 
+/**
+ * Decode options passed to the ASR pipeline for one utterance.
+ *
+ * English-only Whisper exports (id ends in `.en`) carry NO language/task tokens,
+ * so we pass none — the bare call is correct (and what we ship: whisper-base.en).
+ * A MULTILINGUAL model (e.g. plain `whisper-base`) MUST have language+task pinned
+ * or Whisper auto-detects the language every clip and, on marginal/quiet audio,
+ * mis-detects and emits non-English or hallucinated text. This keeps the worker
+ * correct for whichever model is loaded. `return_timestamps:false` returns plain
+ * text (we don't surface word timings).
+ */
+export function buildTranscribeOptions(modelId: string): Record<string, unknown> {
+  const opts: Record<string, unknown> = { return_timestamps: false }
+  if (!/\.en$/i.test(modelId || '')) {
+    opts.language = 'en'
+    opts.task = 'transcribe'
+  }
+  return opts
+}
+
 /** URL path for the bundled onnxruntime-web wasm runtime (.mjs loaders + .wasm). */
 export const VOICE_ORT_URL_PATH = '/voice-runtime/ort/'
 

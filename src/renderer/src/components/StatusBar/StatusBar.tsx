@@ -347,6 +347,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li><strong>Turn it on first</strong> in <strong>Settings → Voice</strong> — it's off by default.</li>
               <li><strong>Hold <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+L</kbd> and speak; release to send.</strong> Prefer hands-free? Switch to tap-to-start / tap-to-stop under <strong>Activation</strong>.</li>
+              <li><strong>Wait for the "Listening…" badge, then speak normally.</strong> The on-device model is tuned for <strong>English</strong>. If the mic catches no speech you'll see <strong>"No speech detected"</strong> — just hold the key, speak, and release again (Termpolis never injects a guessed phrase when it didn't hear you).</li>
               <li><strong>In an AI-agent terminal</strong> (Claude · Codex · Gemini · Qwen) your words are <strong>sent straight to the agent as a prompt</strong> — it absorbs minor mis-hearings, so just talk naturally.</li>
               <li><strong>In a plain shell</strong> the transcript is <em>inserted but never run automatically</em> — you review it and press <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> yourself (a mis-heard command is never executed for you).</li>
               <li><strong>When dictation ends the caret returns to the terminal</strong> — keep typing or start another dictation right away, no clicking back in.</li>

@@ -240,14 +240,14 @@ describe('verifyEmbeddingModelBundled', () => {
 })
 
 describe('verifyVoiceModelBundled', () => {
-  // A complete voice bundle = the whisper-base model + the FULL onnxruntime-web
+  // A complete voice bundle = the whisper-base.en model + the FULL onnxruntime-web
   // wasm runtime family (every .mjs loader + .wasm). v1.12.2 shipped the model
   // plus only 2 of 8 ORT files and zero .mjs loaders — voice died at runtime
   // with "no available backend found". This verifier is the build-time guard
   // that would have caught it.
   function buildValidVoice(outDir: string): void {
     const res = join(outDir, 'resources')
-    const model = join(res, 'models', 'whisper-base')
+    const model = join(res, 'models', 'whisper-base.en')
     mkdirSync(join(model, 'onnx'), { recursive: true })
     writeFileSync(join(model, 'config.json'), '{"model_type":"whisper"}')
     writeFileSync(join(model, 'tokenizer.json'), '{}')
@@ -284,14 +284,14 @@ describe('verifyVoiceModelBundled', () => {
 
   it('THROWS when the model dir is present but a required model file is missing', () => {
     buildValidVoice(sandbox)
-    rmSync(join(sandbox, 'resources', 'models', 'whisper-base', 'config.json'))
+    rmSync(join(sandbox, 'resources', 'models', 'whisper-base.en', 'config.json'))
     expect(() => verifier.verifyVoiceModelBundled(sandbox)).toThrow(/missing\/empty/)
   })
 
   it('THROWS when the encoder onnx is too small (failed/partial download)', () => {
     buildValidVoice(sandbox)
     writeFileSync(
-      join(sandbox, 'resources', 'models', 'whisper-base', 'onnx', 'encoder_model_quantized.onnx'),
+      join(sandbox, 'resources', 'models', 'whisper-base.en', 'onnx', 'encoder_model_quantized.onnx'),
       Buffer.alloc(500, 1),
     )
     expect(() => verifier.verifyVoiceModelBundled(sandbox)).toThrow(/only \d+ bytes/)

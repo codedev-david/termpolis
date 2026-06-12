@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createVoiceEngine, type WorkerLike } from '../lib/voice/voiceEngines'
-import { processVoiceResult, resampleTo16k } from '../lib/voice/voicePipeline'
+import { processVoiceResult, resampleTo16k, isNoSpeech, normalizeAudioGain } from '../lib/voice/voicePipeline'
 import type { VoiceEngine } from '../lib/voice/voiceTypes'
 import { useTerminalStore } from '../store/terminalStore'
 
@@ -82,18 +82,24 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     streamRef.current = null
   }, [])
 
+  // Resolve the localhost asset base (the mount fetch may not have landed on the
+  // very first dictation) and lazily build the engine. Shared by warm-up (on
+  // record start) and transcribe so both reuse the one worker.
+  const ensureEngine = useCallback(async (): Promise<VoiceEngine> => {
+    let base = assetBaseRef.current
+    if (!base) {
+      const res = await window.termpolis?.getVoiceAssetBase?.()
+      if (res?.success && typeof res.data === 'string') { base = res.data; assetBaseRef.current = base }
+    }
+    if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current, { assetBase: base })
+    return engineRef.current
+  }, [])
+
   const transcribe = useCallback(async (pcm16k: Float32Array) => {
     setStatus('transcribing')
     try {
-      // Make sure we have the localhost asset base before building the engine —
-      // the mount fetch may not have resolved on the very first dictation.
-      let base = assetBaseRef.current
-      if (!base) {
-        const res = await window.termpolis?.getVoiceAssetBase?.()
-        if (res?.success && typeof res.data === 'string') { base = res.data; assetBaseRef.current = base }
-      }
-      if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current, { assetBase: base })
-      const result = await engineRef.current.transcribe(pcm16k)
+      const engine = await ensureEngine()
+      const result = await engine.transcribe(pcm16k)
       const { plan } = processVoiceResult(result, { agentDetected: agentRef.current, settings: settingsRef.current })
       if (!plan.text) { setStatus('idle'); focusActiveTerminal(); return }
       if (plan.needsConfirm) {
@@ -110,7 +116,7 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       setErrorMsg(describeVoiceError(e))
       setStatus('error')
     }
-  }, [inject, focusActiveTerminal])
+  }, [inject, focusActiveTerminal, ensureEngine])
 
   const stop = useCallback(async () => {
     // Mic still coming up: request cancellation so the in-flight start() tears
@@ -133,7 +139,18 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     const merged = new Float32Array(total)
     let off = 0
     for (const c of chunks) { merged.set(c, off); off += c.length }
-    await transcribe(resampleTo16k(merged, sampleRate))
+    const pcm16k = resampleTo16k(merged, sampleRate)
+    // No-speech gate. Whisper INVENTS a phrase ("you", "I'm sorry. What is that?")
+    // for silent/noise-only audio, so when the mic captured no actual speech we
+    // tell the user and bail instead of injecting a phantom transcript.
+    if (isNoSpeech(pcm16k)) {
+      setErrorMsg('No speech detected — hold the key, speak, then release.')
+      setStatus('error')
+      focusActiveTerminal()
+      return
+    }
+    // Boost quiet capture toward a consistent level before transcribing.
+    await transcribe(normalizeAudioGain(pcm16k))
   }, [cleanupCapture, transcribe, focusActiveTerminal])
 
   const start = useCallback(async () => {
@@ -146,8 +163,18 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     setErrorMsg(null) // fresh start — clear any prior failure
     startingRef.current = true
     cancelStartRef.current = false
+    // Pre-load the model NOW so it loads while the mic comes up and the user
+    // speaks — turning the old ~10s first-use "Transcribing…" wait into ~nothing.
+    void ensureEngine().then((e) => e.warm?.()).catch(() => { /* surfaces on transcribe */ })
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Capture raw mono mic audio. We deliberately disable the browser's adaptive
+      // processing: echo-cancellation can SELF-CANCEL the user's voice (it treats
+      // it as echo), and noise-suppression/AGC can gate quiet speech to silence —
+      // and silent audio is exactly what makes Whisper hallucinate. We level the
+      // audio ourselves (normalizeAudioGain) for deterministic, testable behavior.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      })
       // A stop() arrived while the mic was initialising — release it and bail
       // before we ever enter the listening state.
       if (cancelStartRef.current) {
@@ -158,8 +185,25 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
         return
       }
       streamRef.current = stream
-      const ctx = new AudioContext()
+      // Capture directly at 16kHz when the platform honors it (Chromium/Electron
+      // do), so resampleTo16k is a no-op and there's no decimation/aliasing.
+      let ctx: AudioContext
+      try { ctx = new AudioContext({ sampleRate: 16000 }) } catch { ctx = new AudioContext() }
       audioCtxRef.current = ctx
+      // Autoplay policy can start the context 'suspended' → onaudioprocess never
+      // fires → we'd capture nothing. Resume before wiring the graph.
+      await ctx.resume().catch(() => { /* best effort */ })
+      // resume() is async, so a stop()/key-release can land DURING it too — not
+      // just during getUserMedia. Re-check the cancel flag here or a quick
+      // push-to-talk tap (release before the context is up) strands the mic in a
+      // stuck "listening" state, which is the very failure this guard prevents.
+      if (cancelStartRef.current) {
+        cleanupCapture()
+        startingRef.current = false
+        cancelStartRef.current = false
+        setStatus('idle')
+        return
+      }
       const source = ctx.createMediaStreamSource(stream)
       const processor = ctx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
@@ -167,17 +211,28 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       processor.onaudioprocess = (e) => {
         pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)))
       }
+      // A ScriptProcessor only runs when connected to the graph, but routing the
+      // mic to ctx.destination would play it out the speakers (feedback + gives
+      // echo-cancellation something to fight). Sink through a MUTED gain node so
+      // it keeps pulling audio without any of it reaching the output.
+      const sink = ctx.createGain()
+      sink.gain.value = 0
       source.connect(processor)
-      processor.connect(ctx.destination)
+      processor.connect(sink)
+      sink.connect(ctx.destination)
       listeningRef.current = true
       startingRef.current = false
       setStatus('listening')
     } catch {
+      // Tear down any half-initialised capture so a throw mid-setup can't leave
+      // the OS mic indicator on or an AudioContext open (the refs may already be
+      // assigned by the time a node constructor throws).
+      cleanupCapture()
       startingRef.current = false
       setErrorMsg('Microphone access was blocked or no mic was found. Check your OS microphone privacy settings.')
       setStatus('error')
     }
-  }, [])
+  }, [ensureEngine, cleanupCapture])
 
   const toggle = useCallback(() => {
     if (listeningRef.current || startingRef.current) void stop()
