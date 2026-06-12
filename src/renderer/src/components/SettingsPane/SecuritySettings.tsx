@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { copyText, readClipboardText } from '../../lib/clipboard'
 
 interface AgentDataFact {
   agentId: string
@@ -128,7 +129,7 @@ export function SecuritySettings() {
   const scanClipboard = async () => {
     if (!api) return
     try {
-      const text = await navigator.clipboard.readText()
+      const text = await readClipboardText()
       if (text) {
         setScanInput(text)
         const res = await api.scan(text)
@@ -451,7 +452,7 @@ export function SecuritySettings() {
             <div className="flex items-center gap-2">
               <span className="text-xs text-[#9ca3af]">Redacted preview:</span>
               <button
-                onClick={() => navigator.clipboard.writeText(scanResult.redacted)}
+                onClick={() => void copyText(scanResult.redacted)}
                 className="text-[10px] px-2 py-0.5 rounded bg-[#2d2d2d] hover:bg-[#3c3c3c] border border-[#3c3c3c]"
               >Copy redacted</button>
             </div>

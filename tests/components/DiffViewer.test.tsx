@@ -52,13 +52,10 @@ describe('DiffViewer', () => {
   })
 
   it('Copy button copies diff to clipboard', () => {
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText: vi.fn(() => Promise.resolve()) },
-      writable: true,
-    })
+    ;(window as any).termpolis = { ...(window as any).termpolis, clipboardWriteText: vi.fn().mockResolvedValue({ success: true }) }
     render(<DiffViewer rawDiff={sampleDiff} onClose={vi.fn()} />)
     fireEvent.click(screen.getByText('Copy'))
-    expect(navigator.clipboard.writeText).toHaveBeenCalled()
+    expect((window as any).termpolis.clipboardWriteText).toHaveBeenCalled()
   })
 
   it('close X button calls onClose', () => {

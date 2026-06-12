@@ -10,11 +10,11 @@ const mockResults = [
 describe('HistorySearchModal', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'termpolis', {
-      value: { searchHistory: vi.fn().mockResolvedValue({ success: true, data: mockResults }) },
-      writable: true,
-    })
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      value: {
+        searchHistory: vi.fn().mockResolvedValue({ success: true, data: mockResults }),
+        // Native clipboard (Electron IPC) — copy routes here, not navigator.clipboard.
+        clipboardWriteText: vi.fn().mockResolvedValue({ success: true }),
+      },
       writable: true,
     })
   })
@@ -38,7 +38,7 @@ describe('HistorySearchModal', () => {
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'git' } })
     await waitFor(() => expect(screen.getByText('git status')).toBeInTheDocument(), { timeout: 500 })
     fireEvent.click(screen.getByText('git status'))
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('git status')
+    expect((window as any).termpolis.clipboardWriteText).toHaveBeenCalledWith('git status')
     expect(onClose).toHaveBeenCalled()
   })
 

@@ -1,4 +1,5 @@
 import React from 'react'
+import { copyText } from '../../lib/clipboard'
 
 interface InstallHintProps {
   agentId: string
@@ -99,7 +100,7 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
   const [copiedIndex, setCopiedIndex] = React.useState<number | null>(null)
 
   const handleCopy = (text: string, index: number) => {
-    navigator.clipboard.writeText(text.replace(/^\d+\.\s*/, '').trim())
+    void copyText(text.replace(/^\d+\.\s*/, '').trim())
     setCopiedIndex(index)
     setTimeout(() => setCopiedIndex(null), 2000)
   }

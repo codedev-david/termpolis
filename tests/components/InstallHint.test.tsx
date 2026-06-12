@@ -141,15 +141,15 @@ describe('InstallHint', () => {
   // Copy button tests
   // -----------------------------------------------------------------------
   it('copies step text to clipboard when copy button is clicked', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+    const clipboardWriteText = vi.fn().mockResolvedValue({ success: true })
+    ;(window as any).termpolis = { ...(window as any).termpolis, clipboardWriteText }
 
     render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
     // Each step row has a copy button with a fa-copy icon
     const copyButtons = screen.getAllByTitle('Copy to clipboard')
     expect(copyButtons.length).toBeGreaterThan(0)
     fireEvent.click(copyButtons[0])
-    expect(writeText).toHaveBeenCalledWith('npm install -g @anthropic-ai/claude-code')
+    expect(clipboardWriteText).toHaveBeenCalledWith('npm install -g @anthropic-ai/claude-code')
   })
 
   it('shows checkmark icon after copying', async () => {

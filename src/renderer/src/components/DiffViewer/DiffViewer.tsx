@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { stripAnsi } from '../../lib/exportTerminal'
+import { copyText } from '../../lib/clipboard'
 
 interface Props {
   rawDiff: string
@@ -77,7 +78,7 @@ export function DiffViewer({ rawDiff, onClose }: Props) {
   const files = useMemo(() => parseDiff(rawDiff), [rawDiff])
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(stripAnsi(rawDiff))
+    void copyText(stripAnsi(rawDiff))
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

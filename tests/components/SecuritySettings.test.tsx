@@ -188,10 +188,7 @@ describe('SecuritySettings', () => {
   })
 
   it('scan clipboard pulls from clipboard and triggers scan', async () => {
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { readText: vi.fn().mockResolvedValue('AKIAIOSFODNN7EXAMPLE') },
-      configurable: true,
-    })
+    ;(window as any).termpolis = { ...(window as any).termpolis, clipboardReadText: vi.fn().mockResolvedValue({ success: true, data: 'AKIAIOSFODNN7EXAMPLE' }) }
     ;(window as any).aiSecurity.scan = vi.fn().mockResolvedValue({
       success: true,
       data: { hitCount: 1, hits: [{ rule: 'aws_access_key', label: 'AWS', sample: 'AK…E' }], redacted: '[REDACTED]' },
@@ -208,10 +205,7 @@ describe('SecuritySettings', () => {
   })
 
   it('scan clipboard swallows clipboard errors', async () => {
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { readText: vi.fn().mockRejectedValue(new Error('denied')) },
-      configurable: true,
-    })
+    ;(window as any).termpolis = { ...(window as any).termpolis, clipboardReadText: vi.fn().mockRejectedValue(new Error('denied')) }
     render(<SecuritySettings />)
     await screen.findByPlaceholderText(/Paste the prompt/)
     expect(() => fireEvent.click(screen.getByText('Scan clipboard'))).not.toThrow()
@@ -310,11 +304,8 @@ describe('SecuritySettings', () => {
   })
 
   it('"Copy redacted" button calls clipboard.writeText with redacted preview', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText, readText: vi.fn().mockResolvedValue('') },
-      configurable: true,
-    })
+    const clipboardWriteText = vi.fn().mockResolvedValue({ success: true })
+    ;(window as any).termpolis = { ...(window as any).termpolis, clipboardWriteText }
     ;(window as any).aiSecurity.scan = vi.fn().mockResolvedValue({
       success: true,
       data: { hitCount: 1, hits: [{ rule: 'aws_access_key', label: 'AWS', sample: 'AK…E' }], redacted: '[REDACTED:aws_access_key]' },
@@ -325,7 +316,7 @@ describe('SecuritySettings', () => {
     fireEvent.click(screen.getByTestId('security-scan-btn'))
     await screen.findByText(/1 secret detected/i)
     fireEvent.click(screen.getByText(/Copy redacted/i))
-    expect(writeText).toHaveBeenCalledWith('[REDACTED:aws_access_key]')
+    expect(clipboardWriteText).toHaveBeenCalledWith('[REDACTED:aws_access_key]')
   })
 
   it('renders the Gemini account status block with free-oauth warning by default', async () => {

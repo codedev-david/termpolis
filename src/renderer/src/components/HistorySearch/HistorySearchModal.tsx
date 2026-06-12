@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { HistoryEntry } from '../../types'
+import { copyText } from '../../lib/clipboard'
 
 interface Props {
   onClose: () => void
@@ -25,7 +26,7 @@ export function HistorySearchModal({ onClose }: Props) {
   }, [query])
 
   const handleSelect = (entry: HistoryEntry) => {
-    navigator.clipboard.writeText(entry.command).catch(() => {})
+    void copyText(entry.command)
     onClose()
   }
 

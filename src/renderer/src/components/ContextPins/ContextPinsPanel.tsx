@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ContextPin } from '../../types'
 import { buildInjectionPrompt, estimateTokens } from '../../lib/contextInjection'
+import { copyText } from '../../lib/clipboard'
 
 interface Props {
   cwd: string
@@ -71,7 +72,7 @@ export function ContextPinsPanel({ cwd, onClose }: Props) {
 
   const handleCopy = useCallback(async () => {
     if (!builtPrompt) return
-    try { await navigator.clipboard.writeText(builtPrompt) } catch {}
+    await copyText(builtPrompt)
   }, [builtPrompt])
 
   return (

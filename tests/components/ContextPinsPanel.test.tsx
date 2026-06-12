@@ -32,11 +32,9 @@ beforeEach(() => {
     clear: vi.fn(),
   }
   ;(window as any).contextPins = api
-  // clipboard stub
-  Object.defineProperty(navigator, 'clipboard', {
-    value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    configurable: true,
-  })
+  // Native clipboard (Electron IPC) — copy goes through lib/clipboard → window.termpolis,
+  // NOT navigator.clipboard (which is focus-gated and silently fails from a button click).
+  ;(window as any).termpolis = { ...(window as any).termpolis, clipboardWriteText: vi.fn().mockResolvedValue({ success: true }) }
 })
 
 describe('ContextPinsPanel', () => {
@@ -140,7 +138,7 @@ describe('ContextPinsPanel', () => {
     await waitFor(() => expect(screen.getByTestId('built-prompt')).toBeInTheDocument())
     fireEvent.click(screen.getByText('copy'))
     await waitFor(() =>
-      expect((navigator.clipboard as any).writeText).toHaveBeenCalled(),
+      expect((window as any).termpolis.clipboardWriteText).toHaveBeenCalled(),
     )
   })
 
