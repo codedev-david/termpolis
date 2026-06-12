@@ -233,6 +233,21 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             </ul>
           </section>
 
+          {/* Memory Panel */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-brain text-xs"></i> The Memory Panel
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Your window into what Termpolis remembers. Open it with <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+M</kbd>, or from <strong>Settings → AI Memory → Open the Memory panel</strong>.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>See what's stored</strong> — the count of remembered chunks (and how many are in the fast in-RAM "hot" window).</li>
+              <li><strong>Search your memory</strong> — type what you're working on and hit <strong>Search</strong> to semantically pull up matching past conversations and code, newest/closest first.</li>
+              <li><strong>Inject primer</strong> — the token-saver: type a topic and click it to paste the most relevant memories straight into the <em>active agent's</em> terminal, so it starts already knowing the context and you don't re-explain it.</li>
+              <li><strong>Index this repo's code</strong> — pull the current project's git-tracked files into memory on demand (<code className="bg-[#3c3c3c] px-1 rounded">.env</code>/keys are always skipped). Conversations index themselves automatically; code is opt-in per repo.</li>
+              <li><strong>Cross-machine sync</strong> — point it at a folder you already sync (<strong>OneDrive, Google Drive, Dropbox, iCloud, Syncthing…</strong>) and the same brain follows you to every machine, with <strong>no Termpolis server</strong>. Turn on a passphrase to encrypt it at rest so the cloud provider only ever sees ciphertext — use the <em>same passphrase on every device</em>.</li>
+            </ul>
+          </section>
+
           {/* Multi-Agent Swarm */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">

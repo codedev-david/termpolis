@@ -387,16 +387,24 @@ export function SettingsPane() {
               </span>
             </div>
           </div>
-          <div className="text-xs text-[#9ca3af] -mt-2 px-1">
-            <button
-              data-testid="settings-open-memory-panel"
-              onClick={() => window.dispatchEvent(new CustomEvent('termpolis:openMemory'))}
-              className="text-[#0078d4] hover:underline"
-            >
-              Open the Memory panel
-            </button>
-            {' '}(Ctrl+Shift+M) — stats, search, indexing, cross-machine sync.
-          </div>
+          <button
+            data-testid="settings-open-memory-panel"
+            onClick={() => window.dispatchEvent(new CustomEvent('termpolis:openMemory'))}
+            className="flex items-center gap-3 p-3 border border-[#22D3EE]/50 rounded bg-[#22D3EE]/10 hover:bg-[#22D3EE]/20 transition-colors text-left w-full cursor-pointer"
+          >
+            <i className="fa-solid fa-brain text-[#22D3EE] text-lg flex-shrink-0"></i>
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium text-[#e0e0e0]">
+                Open the Memory panel
+                <kbd className="ml-2 bg-[#3c3c3c] px-1.5 py-0.5 rounded text-[10px] font-normal text-[#bbb] align-middle">Ctrl+Shift+M</kbd>
+              </span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                See what Termpolis remembers (how many chunks are stored), search your memory, index
+                this repo&apos;s code, inject the most relevant context into the active agent, and set up
+                encrypted cross-machine sync (OneDrive, Google Drive, Dropbox…).
+              </span>
+            </span>
+          </button>
           <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
             <button
               onClick={toggleTelemetry}

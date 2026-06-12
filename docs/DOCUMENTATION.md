@@ -646,14 +646,22 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 
 - **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
 - **Shared across all four agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`). One store backs Claude/Codex/Gemini/Qwen, so a fact one learns is instantly available to the others.
-- **Durable across restarts.** Stored as JSONL at `~/.termpolis/swarm-memory.jsonl` (plain text, hand-editable) and reloaded with embeddings at startup. A ~50k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
+- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\Termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/Termpolis/` on macOS, `~/.config/Termpolis/` on Linux (plain text, hand-editable) — and reloaded with embeddings at startup. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A ~100k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
 - **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver).
 - **Current-directory precedence.** The primer leads with context for the project you're standing in — past conversations from this repo first, then its code/notes — and anything from other projects is appended under a "may NOT apply" label. Ingested chunks are tagged with their project (derived from the transcript cwd / repo root), legacy chunks get back-tagged on the next indexer pass, and `memory_search` accepts a `project` filter so agents can scope recall themselves.
 
-**Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session.
+### Using the Memory panel
 
-Memory lives at `~/.termpolis/swarm-memory.jsonl` and is readable/editable as plain text.
+Open the panel with **Ctrl+Shift+M**, or from **Settings → AI Memory → Open the Memory panel**. From there you can:
+
+- **See what's stored** — the number of remembered chunks (and how many sit in the in-RAM hot window for fast search).
+- **Search** — type what you're working on and hit **Search** for a semantic lookup across your past conversations and indexed code.
+- **Inject primer** — type a topic and click **Inject primer** to paste the most relevant memories straight into the *active agent's* terminal, so it starts already knowing the context. This is the token-saver: you stop re-explaining background every session.
+- **Index this repo's code** — pull the current project's git-tracked files into memory on demand (`.env`/keys are always skipped). Conversations index themselves automatically; code indexing is opt-in per repo so you decide what's searchable.
+- **Cross-machine sync** — click **Choose a synced folder…** and point it at a folder you already sync (**OneDrive, Google Drive, Dropbox, iCloud, Syncthing…**). Each device writes its own shard and the union becomes one shared brain — no Termpolis server involved. Optionally set a **passphrase** to encrypt the synced data at rest (AES-256-GCM) so the cloud provider only ever sees ciphertext; use the **same passphrase on every device**. (For Google Drive, use "mirror" mode so the files stay on local disk.)
+
+**Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session. The store is plain-text JSONL in your app-data folder (see above), readable and hand-editable.
 
 ---
 

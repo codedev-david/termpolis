@@ -262,6 +262,18 @@ describe('StatusBar', () => {
     expect(screen.getByText(/inserted but never run automatically/i)).toBeInTheDocument()
   })
 
+  it('help dialog documents how to use the Memory panel (open + key actions)', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('The Memory Panel')).toBeInTheDocument()
+    // The load-bearing actions a user needs to know about.
+    expect(screen.getByText('Inject primer')).toBeInTheDocument()
+    expect(screen.getByText(/Index this repo's code/i)).toBeInTheDocument()
+    expect(screen.getByText(/Cross-machine sync/i)).toBeInTheDocument()
+    // Opens with the keyboard shortcut (appears in the shortcuts list too).
+    expect(screen.getAllByText(/Ctrl\+Shift\+M/).length).toBeGreaterThan(0)
+  })
+
   it('voice docs state the model is bundled/offline and explain the load-failed bar', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
