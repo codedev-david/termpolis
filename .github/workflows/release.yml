@@ -210,8 +210,17 @@ jobs:
           echo "EXE_PATH=$($exe.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
           echo "Found installer: $($exe.FullName)"
 
+      # Non-fatal by design: a signing hiccup (SSL.com eSigner quota exhaustion,
+      # OAuth/TOTP blip, service outage) must NEVER abort the whole release —
+      # that strands the macOS/Linux artifacts and skips the aggregate jobs.
+      # If this step fails we publish the functional UNSIGNED installer below
+      # (with a consistent latest.yml) and signing resumes on the next release.
+      # Defender pass-through is reputation-based, not EV-dependent, so an
+      # occasional unsigned build still installs and runs.
       - name: Sign Windows installer
+        id: sign-win
         if: matrix.platform == 'win'
+        continue-on-error: true
         uses: sslcom/esigner-codesign@develop
         with:
           command: sign
@@ -222,6 +231,16 @@ jobs:
           file_path: ${{ steps.find-exe.outputs.EXE_PATH }}
           malware_block: false
           override: true
+
+      - name: Note Windows signing result
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          if [ "${{ steps.sign-win.outcome }}" = "success" ]; then
+            echo "Windows installer signed successfully."
+          else
+            echo "::warning::Windows installer was NOT signed (eSigner outcome: ${{ steps.sign-win.outcome }}). Publishing the functional unsigned installer so the release is not blocked. This is almost certainly the SSL.com signing quota being exhausted; signing resumes automatically on the next release once the quota resets."
+          fi
 
       # Code-signing modifies the .exe in place, so the SHA512 in latest.yml
       # (written by electron-builder before signing) is now stale. Recompute
