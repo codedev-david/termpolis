@@ -28,6 +28,10 @@ function describeVoiceError(e: unknown): string {
  */
 export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const voiceSettings = useTerminalStore((s) => s.voiceSettings)
+  // After dictation stops, hand keyboard focus back to the active terminal's input
+  // line so the user can immediately type or start another dictation — otherwise
+  // focus is stranded on the mic button / Listening badge that was last clicked.
+  const focusActiveTerminal = useTerminalStore((s) => s.focusActiveTerminal)
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [confirm, setConfirm] = useState<VoiceConfirm | null>(null)
   // Human-readable reason when status === 'error'. Surfaced in the UI so a failed
@@ -91,15 +95,22 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current, { assetBase: base })
       const result = await engineRef.current.transcribe(pcm16k)
       const { plan } = processVoiceResult(result, { agentDetected: agentRef.current, settings: settingsRef.current })
-      if (!plan.text) { setStatus('idle'); return }
-      if (plan.needsConfirm) setConfirm({ text: plan.text })
-      else inject(plan.text, plan.autoSubmit)
+      if (!plan.text) { setStatus('idle'); focusActiveTerminal(); return }
+      if (plan.needsConfirm) {
+        // Shell mode: keep focus on the confirm bar; we hand it back to the
+        // terminal once the user resolves it (confirmRun / cancelConfirm).
+        setConfirm({ text: plan.text })
+        setStatus('idle')
+        return
+      }
+      inject(plan.text, plan.autoSubmit)
       setStatus('idle')
+      focusActiveTerminal()
     } catch (e) {
       setErrorMsg(describeVoiceError(e))
       setStatus('error')
     }
-  }, [inject])
+  }, [inject, focusActiveTerminal])
 
   const stop = useCallback(async () => {
     // Mic still coming up: request cancellation so the in-flight start() tears
@@ -107,6 +118,7 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     if (startingRef.current && !listeningRef.current) {
       cancelStartRef.current = true
       setStatus('idle')
+      focusActiveTerminal()
       return
     }
     if (!listeningRef.current) return
@@ -116,13 +128,13 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     pcmChunksRef.current = []
     const sampleRate = ctx?.sampleRate ?? 48000
     cleanupCapture()
-    if (chunks.length === 0) { setStatus('idle'); return }
+    if (chunks.length === 0) { setStatus('idle'); focusActiveTerminal(); return }
     const total = chunks.reduce((n, c) => n + c.length, 0)
     const merged = new Float32Array(total)
     let off = 0
     for (const c of chunks) { merged.set(c, off); off += c.length }
     await transcribe(resampleTo16k(merged, sampleRate))
-  }, [cleanupCapture, transcribe])
+  }, [cleanupCapture, transcribe, focusActiveTerminal])
 
   const start = useCallback(async () => {
     if (listeningRef.current || startingRef.current) return
@@ -175,9 +187,10 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const confirmRun = useCallback((submit: boolean) => {
     if (confirm) inject(confirm.text, submit)
     setConfirm(null)
-  }, [confirm, inject])
+    focusActiveTerminal()
+  }, [confirm, inject, focusActiveTerminal])
 
-  const cancelConfirm = useCallback(() => setConfirm(null), [])
+  const cancelConfirm = useCallback(() => { setConfirm(null); focusActiveTerminal() }, [focusActiveTerminal])
 
   const clearError = useCallback(() => setErrorMsg(null), [])
 

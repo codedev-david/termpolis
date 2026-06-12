@@ -61,6 +61,11 @@ interface TerminalStore {
   terminals: TerminalSession[]
   workspaces: Workspace[]
   activeTerminalId: string | null
+  // Bumped on every terminal switch and on every explicit focus request. Each
+  // TerminalPane's focus effect watches this so the active terminal's input line
+  // is (re)focused and ready to type — on Alt+<n>/click switches AND after voice
+  // dictation stops (even when re-selecting the already-active terminal).
+  focusNonce: number
   viewMode: ViewMode
   defaultShell: ShellType
   showSettings: boolean
@@ -85,6 +90,8 @@ interface TerminalStore {
   removeTerminal: (id: string) => void
   updateTerminal: (id: string, patch: Partial<Omit<TerminalSession, 'id'>>) => void
   setActiveTerminal: (id: string | null) => void
+  /** Re-focus the active terminal's input line (e.g. right after voice dictation stops). */
+  focusActiveTerminal: () => void
   toggleViewMode: () => void
   setShowSettings: (show: boolean) => void
   setDefaultShell: (shell: ShellType) => void
@@ -126,6 +133,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   terminals: [],
   workspaces: [],
   activeTerminalId: null,
+  focusNonce: 0,
   viewMode: 'tabs',
   defaultShell: navigator.platform.startsWith('Win') ? 'powershell' : navigator.platform.startsWith('Mac') ? 'zsh' : 'bash',
   showSettings: false,
@@ -162,6 +170,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
       activeTerminalId: t.id,
       showSettings: false,
       paneTree: newTree,
+      focusNonce: s.focusNonce + 1,
     }
   }),
 
@@ -174,14 +183,15 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     const newTree = s.viewMode === 'split'
       ? buildPaneTree(remaining.filter(t => !t.hidden).map(t => t.id))
       : (s.paneTree ? removeFromTree(s.paneTree, id) : null)
-    return { terminals: remaining, activeTerminalId: nextActive, paneTree: newTree }
+    return { terminals: remaining, activeTerminalId: nextActive, paneTree: newTree, focusNonce: s.focusNonce + 1 }
   }),
 
   updateTerminal: (id, patch) => set(s => ({
     terminals: s.terminals.map(t => t.id === id ? { ...t, ...patch } : t),
   })),
 
-  setActiveTerminal: (id) => set({ activeTerminalId: id, showSettings: false }),
+  setActiveTerminal: (id) => set(s => ({ activeTerminalId: id, showSettings: false, focusNonce: s.focusNonce + 1 })),
+  focusActiveTerminal: () => set(s => ({ focusNonce: s.focusNonce + 1 })),
 
   toggleViewMode: () => set(s => {
     const newMode: ViewMode = s.viewMode === 'tabs' ? 'split' : 'tabs'

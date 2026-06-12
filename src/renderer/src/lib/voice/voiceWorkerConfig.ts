@@ -22,6 +22,30 @@ export const VOICE_MODELS_URL_PATH = '/models/'
 export const VOICE_ORT_URL_PATH = '/voice-runtime/ort/'
 
 /**
+ * ONNX InferenceSession options for the Whisper encoder + (merged) decoder.
+ *
+ * THE BUG THIS GUARDS (v1.12.3 → v1.12.4): with default graph optimization,
+ * onnxruntime-web's EXTENDED-level fusion `TransposeDQWeightsForMatMulNBits`
+ * (qdq_actions.cc) crashes loading Xenova/whisper-base's q8 *merged* decoder:
+ *   "Can't create a session ... Missing required scale:
+ *    model.decoder.embed_tokens.weight_merged_0_scale for node
+ *    model.decoder.embed_tokens.weight_transposed_DequantizeLinear"
+ * The merged-decoder export is missing the scale initializer that fusion needs.
+ *
+ * Reproduced in headless Chromium against the EXACT shipped onnxruntime-web
+ * (1.26.0-dev.20260416) and the bundled model. Empirical level → outcome:
+ *   default('all') → CRASH · 'extended' → CRASH · 'basic' → OK · 'disabled' → OK
+ * So the fusion is an extended (Level-2) optimization. We pick 'basic': it keeps
+ * Level-1 opts (constant folding, basic int8 handling) while never running the
+ * broken fusion. transformers.js spreads `session_options` straight into
+ * `InferenceSession.create` (backends/onnx.js), so this reaches ORT verbatim.
+ *
+ * If onnxruntime-web is ever bumped, re-run `npm run voice:verify` — if default
+ * stops crashing, this workaround can be dropped.
+ */
+export const VOICE_SESSION_OPTIONS = { graphOptimizationLevel: 'basic' } as const
+
+/**
  * Point Transformers.js at the bundled model + ORT wasm on the localhost asset
  * server (`assetBase` = "http://127.0.0.1:<port>"), and forbid any network fetch.
  * Tolerates a missing wasm backend object (older/odd builds) without throwing.

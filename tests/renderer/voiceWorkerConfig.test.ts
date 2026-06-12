@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import {
   configureOffline,
   VOICE_MODELS_URL_PATH,
   VOICE_ORT_URL_PATH,
+  VOICE_SESSION_OPTIONS,
 } from '../../src/renderer/src/lib/voice/voiceWorkerConfig'
 
 // The Whisper worker's offline configuration is the exact contract that broke in
@@ -52,6 +55,34 @@ describe('configureOffline', () => {
     // The offline flags must still be applied even if the wasm backend is missing.
     expect(t.env.allowRemoteModels).toBe(false)
     expect(t.env.localModelPath).toBe(`${BASE}/models/`)
+  })
+})
+
+describe('VOICE_SESSION_OPTIONS — the graph-optimization workaround (v1.12.4)', () => {
+  // v1.12.3 fixed the wasm 404 but voice STILL failed at session creation:
+  // ORT-web's extended-level TransposeDQWeightsForMatMulNBits fusion crashes on
+  // whisper-base's q8 merged decoder ("Missing required scale: ...
+  // embed_tokens.weight_merged_0_scale"). Reproduced in Chromium; default/'extended'
+  // crash, 'basic'/'disabled' load. We ship 'basic'. These tests pin that so the
+  // fix can't be silently dropped; `npm run voice:verify` proves the REAL load.
+  it("sets graphOptimizationLevel to 'basic' (below the crashing 'extended' level)", () => {
+    expect(VOICE_SESSION_OPTIONS.graphOptimizationLevel).toBe('basic')
+  })
+
+  it("never ships the levels that crash the merged decoder ('extended'/'all')", () => {
+    expect(VOICE_SESSION_OPTIONS.graphOptimizationLevel).not.toBe('extended')
+    expect(VOICE_SESSION_OPTIONS.graphOptimizationLevel).not.toBe('all')
+  })
+
+  it('is actually passed to the Whisper pipeline as session_options', () => {
+    // whisperWorker.ts runs a real Worker/WASM model and is coverage-excluded, so
+    // assert its wiring as source text (same approach as downloadVoiceModelScript).
+    const worker = readFileSync(
+      resolve(__dirname, '..', '..', 'src', 'renderer', 'src', 'lib', 'voice', 'whisperWorker.ts'),
+      'utf8',
+    )
+    expect(worker).toContain('session_options: VOICE_SESSION_OPTIONS')
+    expect(worker).toContain("import { configureOffline, VOICE_SESSION_OPTIONS }")
   })
 })
 

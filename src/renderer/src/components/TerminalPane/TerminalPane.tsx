@@ -653,6 +653,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // hidden tab never grabs the caret, and skip when an editable field (command
   // palette, settings input, modal) owns focus so we never yank it mid-type.
   const isActiveTerminal = useTerminalStore(s => s.activeTerminalId === terminalId)
+  // Bumps on every switch (Alt+<n>, click, Ctrl+Tab) and every explicit
+  // focusActiveTerminal() — e.g. right after voice dictation stops. Watching it
+  // here re-runs this effect so the caret returns to the input line even when the
+  // active terminal didn't change (re-selecting the same one, or voice ending).
+  const focusNonce = useTerminalStore(s => s.focusNonce)
   useEffect(() => {
     if (!isActiveTerminal || !isVisible) return
     const term = termRef.current
@@ -664,7 +669,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     const active = document.activeElement as HTMLElement | null
     if (isEditableTarget(active) && !active?.closest('.xterm')) return
     try { term.focus() } catch { /* terminal disposed before the effect ran */ }
-  }, [isActiveTerminal, isVisible, terminalId])
+  }, [isActiveTerminal, isVisible, terminalId, focusNonce])
 
   return (
     <div

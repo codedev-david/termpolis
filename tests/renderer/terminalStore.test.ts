@@ -42,6 +42,35 @@ describe('terminalStore', () => {
     useTerminalStore.setState({ ...initialState }, true)
   })
 
+  // ---- Focus management (always-ready caret) ----
+
+  describe('focusNonce / focusActiveTerminal', () => {
+    it('setActiveTerminal bumps focusNonce so the active pane re-focuses on switch', () => {
+      const before = useTerminalStore.getState().focusNonce
+      useTerminalStore.getState().setActiveTerminal('t1')
+      expect(useTerminalStore.getState().focusNonce).toBe(before + 1)
+      expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
+    })
+
+    it('focusActiveTerminal bumps focusNonce WITHOUT changing the active terminal', () => {
+      useTerminalStore.getState().setActiveTerminal('t9')
+      const before = useTerminalStore.getState().focusNonce
+      useTerminalStore.getState().focusActiveTerminal()
+      const s = useTerminalStore.getState()
+      expect(s.focusNonce).toBe(before + 1)
+      expect(s.activeTerminalId).toBe('t9') // only a focus request fired — selection unchanged
+    })
+
+    it('add/remove terminal also bumps focusNonce so the newly-active terminal is focused', () => {
+      const start = useTerminalStore.getState().focusNonce
+      useTerminalStore.getState().addTerminal(makeTerminal({ id: 'a' }))
+      const afterAdd = useTerminalStore.getState().focusNonce
+      expect(afterAdd).toBeGreaterThan(start)
+      useTerminalStore.getState().removeTerminal('a')
+      expect(useTerminalStore.getState().focusNonce).toBeGreaterThan(afterAdd)
+    })
+  })
+
   // ---- Terminal CRUD ----
 
   describe('addTerminal', () => {

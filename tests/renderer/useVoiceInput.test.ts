@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const h = vi.hoisted(() => ({
   transcribe: vi.fn(async () => ({ text: 'hello world' })),
   writeToTerminal: vi.fn(),
+  focusActiveTerminal: vi.fn(),
 }))
 
 vi.mock('../../src/renderer/src/lib/voice/voiceEngines', () => ({
@@ -26,6 +27,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         confirmBeforeRunInShell: true,
         cloudEndpoint: '',
       },
+      focusActiveTerminal: h.focusActiveTerminal,
     }),
 }))
 
@@ -48,6 +50,7 @@ beforeEach(() => {
   h.transcribe.mockClear()
   h.transcribe.mockResolvedValue({ text: 'hello world' })
   h.writeToTerminal.mockClear()
+  h.focusActiveTerminal.mockClear()
   createdProcessor = null
   ;(window as unknown as { termpolis: unknown }).termpolis = {
     writeToTerminal: h.writeToTerminal,
@@ -118,6 +121,8 @@ describe('useVoiceInput (orchestration)', () => {
     expect(h.transcribe).toHaveBeenCalledTimes(1)
     expect(h.writeToTerminal).toHaveBeenCalledWith('term-1', 'hello world') // no trailing \r
     expect(result.current.confirm).toBeNull()
+    // Focus returns to the terminal input line so the user can keep typing/talking.
+    expect(h.focusActiveTerminal).toHaveBeenCalled()
   })
 
   it('shell terminal: stop() surfaces a confirm bar instead of running anything', async () => {
@@ -127,6 +132,8 @@ describe('useVoiceInput (orchestration)', () => {
     await act(async () => { await result.current.stop() })
     expect(h.writeToTerminal).not.toHaveBeenCalled()
     expect(result.current.confirm?.text).toBe('hello world')
+    // Confirm bar is pending — focus stays on it, NOT yanked back to the terminal yet.
+    expect(h.focusActiveTerminal).not.toHaveBeenCalled()
   })
 
   it('confirmRun(true) runs the dictated command (appends Enter) and clears the bar', async () => {
@@ -137,6 +144,8 @@ describe('useVoiceInput (orchestration)', () => {
     act(() => { result.current.confirmRun(true) })
     expect(h.writeToTerminal).toHaveBeenCalledWith('term-1', 'hello world\r')
     expect(result.current.confirm).toBeNull()
+    // After resolving the confirm bar, focus goes back to the terminal input line.
+    expect(h.focusActiveTerminal).toHaveBeenCalled()
   })
 
   it('confirmRun(false) inserts the command without running it', async () => {
@@ -155,6 +164,8 @@ describe('useVoiceInput (orchestration)', () => {
     feedAudio()
     await act(async () => { await result.current.stop() })
     expect(h.writeToTerminal).not.toHaveBeenCalled()
+    // Even with nothing to inject, stopping returns focus to the terminal.
+    expect(h.focusActiveTerminal).toHaveBeenCalled()
   })
 
   it('reports an error when no microphone API is available', async () => {

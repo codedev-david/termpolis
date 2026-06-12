@@ -14,7 +14,7 @@
 // unit tests; real transcription is covered by manual/e2e smoke.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { configureOffline } from './voiceWorkerConfig'
+import { configureOffline, VOICE_SESSION_OPTIONS } from './voiceWorkerConfig'
 
 const ctx: any = self as any
 let asr: any = null
@@ -34,7 +34,14 @@ async function load(model: string, device: string, assetBase: string): Promise<v
   try {
     const transformers: any = await import('@huggingface/transformers')
     await configureOffline(transformers, assetBase)
-    asr = await transformers.pipeline('automatic-speech-recognition', model, { device, dtype: 'q8' })
+    // session_options.graphOptimizationLevel='basic' is LOAD-BEARING: default/
+    // 'extended' optimization crashes on the q8 merged decoder (see
+    // VOICE_SESSION_OPTIONS). transformers.js forwards it to InferenceSession.create.
+    asr = await transformers.pipeline('automatic-speech-recognition', model, {
+      device,
+      dtype: 'q8',
+      session_options: VOICE_SESSION_OPTIONS,
+    })
     ctx.postMessage({ type: 'ready', device })
   } catch (e) {
     ctx.postMessage({ type: 'load-error', error: `model load failed (${model} @ ${assetBase}): ${errStr(e)}` })

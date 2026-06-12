@@ -128,6 +128,16 @@ jobs:
         run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
       - name: Verify voice model + complete ORT speech runtime bundled
         run: node scripts/verifyPackagedResources.cjs --voice dist-electron-builder/linux-unpacked
+      # REAL load gate: actually instantiate the bundled whisper model in the
+      # shipped onnxruntime-web inside headless Chromium and assert the session is
+      # created at the level we ship. This is the gate that would have caught the
+      # v1.12.3 "Can't create a session / MatMulNBits missing scale" crash — the
+      # other voice checks verify files are present/served but never load the model.
+      # Skips cleanly if the (continue-on-error) model download 429'd.
+      - name: Install Playwright Chromium (for voice load verify)
+        run: npx playwright install --with-deps chromium
+      - name: Verify bundled voice model actually loads in onnxruntime-web
+        run: npm run voice:verify
       - name: Upload unpacked output on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -210,6 +220,11 @@ jobs:
       # mic actually work end-to-end" gap the jsdom unit suite can't reach.
       - name: Voice capture from fake audio device
         run: xvfb-run --auto-servernum npx playwright test e2e/voice-capture.spec.ts
+      # Terminal-focus gate: proves switching terminals (Alt+<n> / clicking a tab),
+      # incl. re-selecting the already-active one, lands the caret on that
+      # terminal's xterm input — the "input is always ready" promise (focusNonce).
+      - name: Terminal switch focuses the input line
+        run: xvfb-run --auto-servernum npx playwright test e2e/terminal-focus.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
