@@ -239,6 +239,17 @@ describe('voicePipeline', () => {
       expect(out[0]).toBeCloseTo(1 / 3, 5)
       expect(out[1]).toBeCloseTo(1 / 3, 5)
     })
+
+    it('handles 44.1kHz (a non-integer 2.756:1 ratio — a common real mic rate) without NaN', () => {
+      // 1s @ 44.1k -> 16000 samples; the fractional window bounds must stay valid.
+      const input = new Float32Array(44100)
+      for (let i = 0; i < input.length; i++) input[i] = Math.sin((2 * Math.PI * 200 * i) / 44100)
+      const out = resampleTo16k(input, 44100)
+      expect(out.length).toBe(16000)
+      expect(out.every((v) => Number.isFinite(v))).toBe(true)
+      // A pure tone resamples to roughly the same amplitude band, not silence.
+      expect(audioRms(out)).toBeGreaterThan(0.1)
+    })
   })
 
   describe('audioRms', () => {

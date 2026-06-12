@@ -230,6 +230,16 @@ jobs:
       # mic actually work end-to-end" gap the jsdom unit suite can't reach.
       - name: Voice capture from fake audio device
         run: xvfb-run --auto-servernum npx playwright test e2e/voice-capture.spec.ts
+      # Voice TRANSCRIPTION gate: the real end-to-end proof — feeds a known speech
+      # clip as the mic (Chromium --use-file-for-fake-audio-capture), runs the REAL
+      # bundled whisper-base.en model, and asserts the correct words come back in
+      # the UI. The model download is best-effort (HF can 429); the spec SKIPS if
+      # the model/runtime isn't bundled, so a transient miss never reds the build.
+      - name: Download bundled voice model (for transcription e2e)
+        run: bash scripts/download-voice-model.sh
+        continue-on-error: true
+      - name: Voice transcription from a real speech clip
+        run: xvfb-run --auto-servernum npx playwright test e2e/voice-transcribe.spec.ts
       # Terminal-focus gate: proves switching terminals (Alt+<n> / clicking a tab),
       # incl. re-selecting the already-active one, lands the caret on that
       # terminal's xterm input — the "input is always ready" promise (focusNonce).

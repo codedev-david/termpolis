@@ -55,6 +55,37 @@ describe('voiceEngines', () => {
       expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
     })
 
+    it('routes concurrent transcribe() calls to the right result even when replies arrive out of order', async () => {
+      // A worker that buffers transcribe requests and answers them in REVERSE
+      // order, echoing each request id — so a broken pending-map (id cross-talk)
+      // would resolve a promise with the wrong transcript.
+      class OutOfOrderWorker implements WorkerLike {
+        onmessage: ((ev: { data: unknown }) => void) | null = null
+        onerror: ((ev: unknown) => void) | null = null
+        private ids: number[] = []
+        postMessage(msg: any): void {
+          if (msg.type === 'load') { queueMicrotask(() => this.onmessage?.({ data: { type: 'ready', device: 'wasm' } })); return }
+          if (msg.type === 'transcribe') {
+            this.ids.push(msg.id)
+            if (this.ids.length === 2) {
+              // Reply newest-first to stress ordering.
+              for (const id of [...this.ids].reverse()) {
+                this.onmessage?.({ data: { type: 'result', id, text: `text-${id}` } })
+              }
+            }
+          }
+        }
+        terminate(): void {}
+      }
+      const engine = new LocalWhisperEngine('m', () => new OutOfOrderWorker())
+      const [r1, r2] = await Promise.all([
+        engine.transcribe(new Float32Array([0.1])),
+        engine.transcribe(new Float32Array([0.2])),
+      ])
+      expect(r1.text).toBe('text-1') // first call (seq 1) gets its own result
+      expect(r2.text).toBe('text-2') // second call (seq 2) gets its own result
+    })
+
     it('rejects when the model fails to load', async () => {
       const engine = new LocalWhisperEngine('model-x', () => new FakeWorker('loadError'))
       await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/no webgpu/)

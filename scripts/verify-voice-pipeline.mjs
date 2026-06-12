@@ -97,6 +97,7 @@ const decodeOpts = /\\.en$/i.test(MODEL) ? { return_timestamps: false } : { retu
 // Mirror of isNoSpeech (pinned constants above).
 function audioRms(a){let s=0;for(let i=0;i<a.length;i++)s+=a[i]*a[i];return a.length?Math.sqrt(s/a.length):0}
 function isNoSpeech(a, rate){ if(a.length < MIN_SPEECH_SECONDS*rate) return true; return audioRms(a) < SILENCE_RMS_THRESHOLD }
+function scaleToRms(a, target){ const r=audioRms(a); if(r===0) return a; const g=target/r; const o=new Float32Array(a.length); for(let i=0;i<a.length;i++)o[i]=a[i]*g; return o }
 
 async function load16k(url) {
   const buf = await (await fetch(url)).arrayBuffer()
@@ -111,6 +112,11 @@ window.run = async () => {
   const speech = await load16k('/fixtures/jfk.wav')
   const out = await asr(speech, decodeOpts)
   const silence = new Float32Array(16000 * 2)
+  // QUIET-but-real speech, scaled to RMS ~0.012 (above the gate's 0.0025 floor,
+  // but quiet): it must NOT be gated, and must still transcribe correctly. This
+  // proves the no-speech gate doesn't drop a soft-spoken user.
+  const quiet = scaleToRms(speech, 0.012)
+  const quietOut = await asr(quiet, decodeOpts)
   return {
     processorOk: !!(asr.processor && asr.processor.feature_extractor),
     tokenizerOk: !!asr.tokenizer,
@@ -118,6 +124,9 @@ window.run = async () => {
     text: out && out.text,
     gate_silence_isNoSpeech: isNoSpeech(silence, 16000),  // expect true
     gate_speech_isNoSpeech: isNoSpeech(speech, 16000),    // expect false
+    quiet_rms: audioRms(quiet),
+    quiet_isNoSpeech: isNoSpeech(quiet, 16000),           // expect false (not dropped)
+    quiet_text: quietOut && quietOut.text,                // expect the same words
     speech_rms: audioRms(speech),
   }
 }
@@ -174,6 +183,12 @@ try {
   // NO-SPEECH GATE: silence must be classified no-speech, real speech must not.
   if (r.gate_silence_isNoSpeech !== true) fail('no-speech gate FAILED to flag silence — hallucination could be injected')
   if (r.gate_speech_isNoSpeech !== false) fail(`no-speech gate WRONGLY flagged real speech (rms=${r.speech_rms}) — dictation would be dropped`)
+
+  // QUIET REAL SPEECH must survive the gate AND transcribe — a soft-spoken user
+  // is not silence. Guards against a too-aggressive gate threshold.
+  if (r.quiet_isNoSpeech !== false) fail(`no-speech gate WRONGLY dropped QUIET real speech (rms=${r.quiet_rms}) — soft talkers would get nothing`)
+  const quietMissing = REQUIRED.filter((w) => !String(r.quiet_text || '').toLowerCase().includes(w))
+  if (quietMissing.length) fail(`quiet speech mis-transcribed — missing [${quietMissing.join(', ')}] in: "${r.quiet_text}"`)
 } catch (e) {
   fail(`verifier error: ${(e && e.message) || e}`)
 } finally {
@@ -182,4 +197,4 @@ try {
 }
 
 if (failed) process.exit(1)
-console.log('[voice:verify-pipeline] OK — whisper-base.en assembles offline, transcribes real speech CORRECTLY, and the no-speech gate separates silence from speech.')
+console.log('[voice:verify-pipeline] OK — whisper-base.en assembles offline, transcribes real speech (loud AND quiet) CORRECTLY, and the no-speech gate separates silence from speech without dropping soft talkers.')
