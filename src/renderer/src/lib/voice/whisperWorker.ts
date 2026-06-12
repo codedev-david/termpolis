@@ -14,30 +14,14 @@
 // unit tests; real transcription is covered by manual/e2e smoke.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { configureOffline } from './voiceWorkerConfig'
+
 const ctx: any = self as any
 let asr: any = null
 
 function errStr(e: unknown): string {
   if (e instanceof Error) return e.message || String(e)
   return String(e)
-}
-
-// Point Transformers.js at the bundled model + ORT wasm on the localhost asset
-// server, and forbid any network fetch.
-async function configureOffline(transformers: any, assetBase: string): Promise<void> {
-  const env = transformers.env
-  env.allowRemoteModels = false
-  env.allowLocalModels = true
-  // assetBase = "http://127.0.0.1:<port>"; → fetches /models/<id>/config.json etc.
-  env.localModelPath = `${assetBase}/models/`
-  const wasm = env.backends?.onnx?.wasm
-  if (wasm) {
-    // Without this, ORT would fetch its wasm from a jsdelivr CDN — blocked by CSP.
-    wasm.wasmPaths = `${assetBase}/voice-runtime/ort/`
-    // No SharedArrayBuffer (renderer isn't cross-origin isolated) → single thread.
-    wasm.numThreads = 1
-    wasm.proxy = false
-  }
 }
 
 async function load(model: string, device: string, assetBase: string): Promise<void> {

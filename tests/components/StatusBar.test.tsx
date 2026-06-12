@@ -238,6 +238,37 @@ describe('StatusBar', () => {
     expect(screen.getByText('All Keyboard Shortcuts')).toBeInTheDocument()
   })
 
+  // -- Voice dictation docs --
+
+  it('help dialog documents Voice Dictation', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Voice Dictation')).toBeInTheDocument()
+    expect(screen.getByText(/audio never leaves your machine/i)).toBeInTheDocument()
+  })
+
+  it('voice docs explain how to enable + the push-to-talk hotkey', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/Turn it on first/)).toBeInTheDocument()
+    // Ctrl+Shift+L also appears in the shortcuts list — both are fine.
+    expect(screen.getAllByText(/Ctrl\+Shift\+L/).length).toBeGreaterThan(0)
+  })
+
+  it('voice docs explain agent-vs-shell behavior (shell commands never auto-run)', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/sent straight to the agent as a prompt/i)).toBeInTheDocument()
+    expect(screen.getByText(/inserted but never run automatically/i)).toBeInTheDocument()
+  })
+
+  it('voice docs state the model is bundled/offline and explain the load-failed bar', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/ships inside Termpolis/i)).toBeInTheDocument()
+    expect(screen.getByText(/Voice: model load failed/)).toBeInTheDocument()
+  })
+
   // -- Help dialog link clicks --
 
   it('help dialog GitHub link opens in new window', () => {

@@ -338,6 +338,23 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             </ul>
           </section>
 
+          {/* Voice Dictation */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-microphone text-xs"></i> Voice Dictation
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Talk instead of type. Transcription runs 100% on-device — audio never leaves your machine.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>Turn it on first</strong> in <strong>Settings → Voice</strong> — it's off by default.</li>
+              <li><strong>Hold <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+L</kbd> and speak; release to send.</strong> Prefer hands-free? Switch to tap-to-start / tap-to-stop under <strong>Activation</strong>.</li>
+              <li><strong>In an AI-agent terminal</strong> (Claude · Codex · Gemini · Qwen) your words are <strong>sent straight to the agent as a prompt</strong> — it absorbs minor mis-hearings, so just talk naturally.</li>
+              <li><strong>In a plain shell</strong> the transcript is <em>inserted but never run automatically</em> — you review it and press <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> yourself (a mis-heard command is never executed for you).</li>
+              <li><strong>Fully offline</strong> — the Whisper speech model (~77&nbsp;MB) <strong>ships inside Termpolis</strong>, runtime and all; nothing downloads on first use, and the strict CSP is never touched.</li>
+              <li><strong>Cloud "turbo"</strong> mode (Settings → Voice → Engine) is an opt-in that sends audio to an endpoint you configure — off by default.</li>
+              <li>If you ever see a red <strong>"Voice: model load failed"</strong> bar, the on-device speech runtime didn't load — update to the latest Termpolis build (it bundles the complete runtime) and try again.</li>
+            </ul>
+          </section>
+
           {/* Bundled Tools */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">

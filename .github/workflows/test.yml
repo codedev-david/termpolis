@@ -126,6 +126,8 @@ jobs:
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
       - name: Verify embedding model + onnxruntime-web WASM bundled
         run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
+      - name: Verify voice model + complete ORT speech runtime bundled
+        run: node scripts/verifyPackagedResources.cjs --voice dist-electron-builder/linux-unpacked
       - name: Upload unpacked output on failure
         if: failure()
         uses: actions/upload-artifact@v4

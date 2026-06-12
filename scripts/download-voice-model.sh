@@ -51,19 +51,38 @@ for m in "$DIR/onnx/encoder_model_quantized.onnx" "$DIR/onnx/decoder_model_merge
   fi
 done
 
-# Copy the onnxruntime-web WASM that Transformers.js 4.2.0 loads at runtime.
-# Pinned to the SAME onnxruntime-web version (package.json dep), so the binary
+# Copy the onnxruntime-web WASM runtime that the renderer's Whisper worker loads.
+# Pinned to the SAME onnxruntime-web version (package.json dep), so the runtime
 # always matches the bundled JS glue — no CDN, no version drift.
-echo "Copying version-matched onnxruntime-web WASM into $RT ..."
+echo "Copying version-matched onnxruntime-web WASM runtime into $RT ..."
 ORT_DIST="node_modules/onnxruntime-web/dist"
 if [ ! -d "$ORT_DIST" ]; then
   echo "ERROR: $ORT_DIST not found — run npm ci first." >&2
   exit 1
 fi
-# .jsep.wasm = WebGPU/JSEP build; plain .wasm = CPU build. Ship both so either
-# device path resolves offline.
-cp "$ORT_DIST/ort-wasm-simd-threaded.wasm"      "$RT/"
-cp "$ORT_DIST/ort-wasm-simd-threaded.jsep.wasm" "$RT/"
+# onnxruntime-web ships its wasm backend as a `.mjs` loader + `.wasm` pair per
+# variant (plain, asyncify, jsep, jspi). At runtime ORT DYNAMICALLY imports the
+# variant .mjs it selects (asyncify for our device='wasm', single-thread,
+# no-proxy config) from wasm.wasmPaths. v1.12.0-v1.12.2 shipped only 2 of these
+# `.wasm` and ZERO `.mjs` loaders, so that import 404'd and voice died with
+# "no available backend found". Copy the COMPLETE family via glob so the bundled
+# set can never drift from what the loader requests.
+shopt -s nullglob
+ORT_RUNTIME=("$ORT_DIST"/ort-wasm-simd-threaded.*)
+if [ ${#ORT_RUNTIME[@]} -eq 0 ]; then
+  echo "ERROR: no ort-wasm-simd-threaded.* runtime files in $ORT_DIST — onnxruntime-web layout changed?" >&2
+  exit 1
+fi
+cp "${ORT_RUNTIME[@]}" "$RT/"
+
+# The renderer imports the asyncify variant; its .mjs loader + .wasm MUST be
+# present or the worker fails with "Failed to fetch dynamically imported module".
+for required in ort-wasm-simd-threaded.asyncify.mjs ort-wasm-simd-threaded.asyncify.wasm; do
+  if [ ! -s "$RT/$required" ]; then
+    echo "ERROR: required ORT runtime file missing after copy: $RT/$required" >&2
+    exit 1
+  fi
+done
 
 echo "Done. Bundled voice model + runtime:"
 ls -la "$DIR" "$DIR/onnx" "$RT"
