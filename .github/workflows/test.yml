@@ -138,6 +138,16 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Verify bundled voice model actually loads in onnxruntime-web
         run: npm run voice:verify
+      # REAL pipeline gate: build the FULL transformers.js automatic-speech-
+      # recognition pipeline (exactly as the renderer does — offline, loopback
+      # localModelPath/remoteHost) and run a transcription. This is the gate that
+      # would have caught v1.12.5's "Cannot read properties of null (reading
+      # 'feature_extractor')": transformers.js 4.x's component-existence probe left
+      # the processor/tokenizer unloaded. voice:verify only reaches session
+      # creation; this reaches feature-extraction + decode. Skips cleanly if the
+      # (continue-on-error) model download 429'd.
+      - name: Verify full offline voice pipeline assembles + transcribes
+        run: npm run voice:verify-pipeline
       - name: Upload unpacked output on failure
         if: failure()
         uses: actions/upload-artifact@v4

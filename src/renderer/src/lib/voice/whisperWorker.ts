@@ -4,17 +4,18 @@
 //
 // Loads a LOCALLY-BUNDLED model (whisper-base q8) + version-matched ORT wasm,
 // both served over localhost by the main process (see voiceAssetServer.ts).
-// Fully offline: env.allowRemoteModels=false means it NEVER touches the network,
-// so the app's strict CSP (no huggingface.co) is respected and audio/transcripts
-// never leave the box. The wasm CPU backend needs no GPU/driver and no
-// cross-origin isolation.
+// Fully offline: configureOffline points BOTH the local and "remote" hub at the
+// 127.0.0.1 asset server (the remoteHost trick that fixes the v1.12.5 component
+// probe — see voiceWorkerConfig.ts), so every fetch is loopback and the app's
+// strict CSP (no huggingface.co) is respected — audio/transcripts never leave the
+// box. The wasm CPU backend needs no GPU/driver and no cross-origin isolation.
 //
 // NOTE: requires a real browser/Electron runtime; the headless unit suite injects
 // a fake worker. The load/transcribe message protocol is exercised by the engine
 // unit tests; real transcription is covered by manual/e2e smoke.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { configureOffline, VOICE_SESSION_OPTIONS } from './voiceWorkerConfig'
+import { configureOffline, createAsrPipeline } from './voiceWorkerConfig'
 
 const ctx: any = self as any
 let asr: any = null
@@ -34,14 +35,12 @@ async function load(model: string, device: string, assetBase: string): Promise<v
   try {
     const transformers: any = await import('@huggingface/transformers')
     await configureOffline(transformers, assetBase)
-    // session_options.graphOptimizationLevel='basic' is LOAD-BEARING: default/
-    // 'extended' optimization crashes on the q8 merged decoder (see
-    // VOICE_SESSION_OPTIONS). transformers.js forwards it to InferenceSession.create.
-    asr = await transformers.pipeline('automatic-speech-recognition', model, {
-      device,
-      dtype: 'q8',
-      session_options: VOICE_SESSION_OPTIONS,
-    })
+    // createAsrPipeline builds the pipeline with the load-bearing
+    // graphOptimizationLevel='basic' session option AND repairs the
+    // transformers.js 4.x null-processor/tokenizer bug (the probe wrongly treats
+    // our http-served offline model as missing → "feature_extractor of null" on
+    // first transcribe). See voiceWorkerConfig.ts for the full root cause.
+    asr = await createAsrPipeline(transformers, model, device)
     ctx.postMessage({ type: 'ready', device })
   } catch (e) {
     ctx.postMessage({ type: 'load-error', error: `model load failed (${model} @ ${assetBase}): ${errStr(e)}` })
