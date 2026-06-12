@@ -10,22 +10,31 @@
 
 $ErrorActionPreference = 'Stop'
 
-$RepoRoot   = Split-Path -Parent $PSScriptRoot
-$ScriptPath = Join-Path $RepoRoot 'scripts\auto-triage.ps1'
-$TaskName   = "Termpolis Auto-Triage"
+$RepoRoot     = Split-Path -Parent $PSScriptRoot
+$ScriptPath   = Join-Path $RepoRoot 'scripts\auto-triage.ps1'
+$LauncherPath = Join-Path $RepoRoot 'scripts\run-auto-triage-hidden.vbs'
+$TaskName     = "Termpolis Auto-Triage"
 
 if (-not (Test-Path $ScriptPath)) {
     Write-Error "auto-triage.ps1 not found at $ScriptPath"
     exit 1
 }
+if (-not (Test-Path $LauncherPath)) {
+    Write-Error "run-auto-triage-hidden.vbs not found at $LauncherPath"
+    exit 1
+}
 
-# Run powershell.exe with bypass policy, no logo/profile, pointing at the
-# script. Use the absolute path - Task Scheduler doesn't reliably resolve
-# bare "powershell.exe" via PATH under all logon contexts (we saw it return
-# 0x80070002 file-not-found despite powershell.exe being on the user PATH).
+# Launch via wscript.exe + a .vbs that runs PowerShell with window style 0
+# (fully hidden). This is what stops the console window from popping up in the
+# user's face every 30 minutes: `powershell -WindowStyle Hidden` still flashes a
+# conhost window, but WScript.Shell.Run(..., 0) never shows one at all. The .vbs
+# keeps the SAME interactive user context (so gh auth + auto-triage.ps1's PATH
+# self-healing still work) -- we only hide the window. Absolute paths because
+# Task Scheduler doesn't reliably resolve bare exe names under all logon contexts
+# (we saw 0x80070002 file-not-found despite them being on PATH).
 $action = New-ScheduledTaskAction `
-    -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
-    -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`""
+    -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') `
+    -Argument "`"$LauncherPath`""
 
 # Every 30 minutes, indefinitely, starting now. Also runs once at user logon
 # so the user gets a fresh scan when they sit down.
