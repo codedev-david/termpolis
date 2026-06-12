@@ -74,6 +74,10 @@ jobs:
         run: bash scripts/download-embedding-model.sh
         continue-on-error: true
 
+      - name: Download bundled voice model
+        run: bash scripts/download-voice-model.sh
+        continue-on-error: true
+
       - name: Import Apple certificate
         if: matrix.platform == 'mac'
         env:

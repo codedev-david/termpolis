@@ -753,6 +753,18 @@ describe('TerminalPane', () => {
       await act(async () => { resolveT({ text: '' }) })
       await waitFor(() => expect(screen.getByTestId('voice-toggle-btn')).toHaveTextContent(/voice/i))
     })
+
+    it('surfaces a visible error bar when transcription fails (no more silent failure)', async () => {
+      voiceEng.transcribe.mockRejectedValue(new Error('model load failed: boom'))
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      feedAudio()
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-listening-badge')) })
+      await waitFor(() => expect(screen.getByTestId('voice-error-bar')).toBeInTheDocument())
+      expect(screen.getByTestId('voice-error-bar')).toHaveTextContent(/model load failed/i)
+    })
   })
 
   // =====================================================

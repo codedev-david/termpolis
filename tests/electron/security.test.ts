@@ -486,8 +486,13 @@ describe('CSP is present in renderer index.html', () => {
       'utf8',
     )
     expect(html).toMatch(/Content-Security-Policy/i)
-    // Strict script-src: no 'unsafe-eval' or 'unsafe-inline' for scripts
-    expect(html).toMatch(/script-src\s+'self'(?!\s*'unsafe)/)
+    // Strict script-src: 'self' plus ONLY 'wasm-unsafe-eval' (lets the voice
+    // worker compile onnxruntime-web WASM — WASM compilation only, not JS eval).
+    // Bare 'unsafe-eval' (arbitrary JS) and 'unsafe-inline' remain forbidden.
+    const scriptSrc = html.match(/script-src([^;]*);/)?.[1] ?? ''
+    expect(scriptSrc).toContain("'self'")
+    expect(scriptSrc).not.toContain("'unsafe-inline'")
+    expect(scriptSrc.replace(/'wasm-unsafe-eval'/g, '')).not.toContain('unsafe-eval')
     // Blocks inline object/embed (Flash-era attack vectors)
     expect(html).toMatch(/object-src\s+'none'/)
     // Prevents <base> injection hijacking relative URLs

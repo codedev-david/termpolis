@@ -206,6 +206,10 @@ export interface TermpolisAPI {
   clipboardWriteRich: (text: string, html: string) => Promise<IpcResponse>
   clipboardWriteImage: (dataUrl: string) => Promise<IpcResponse>
 
+  // Voice: localhost base URL ("http://127.0.0.1:<port>") serving the bundled
+  // Whisper model + ORT wasm to the renderer transcription worker.
+  getVoiceAssetBase: () => Promise<IpcResponse<string>>
+
   // Test-only seams (inert in production — main handlers registered only under
   // NODE_ENV=test). Used by e2e/compaction-reprime.spec.ts.
   __testTerminalData?: (id: string, data: string) => Promise<IpcResponse<boolean>>

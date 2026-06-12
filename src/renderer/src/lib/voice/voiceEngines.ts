@@ -23,6 +23,10 @@ export class LocalWhisperEngine implements VoiceEngine {
   constructor(
     private model: string,
     private makeWorker: () => WorkerLike = defaultWorkerFactory,
+    // Localhost base URL ("http://127.0.0.1:<port>") for the bundled model + ORT
+    // wasm. Empty → the worker falls back to relative paths and will fail loudly
+    // (we never want a silent network fetch).
+    private assetBase: string = '',
   ) {}
 
   private ensure(): Promise<void> {
@@ -43,7 +47,10 @@ export class LocalWhisperEngine implements VoiceEngine {
         }
       }
       w.onerror = () => reject(new Error('voice worker crashed'))
-      w.postMessage({ type: 'load', model: this.model, device: 'webgpu' })
+      // device 'wasm' (CPU): reliable + offline. We only bundle q8 weights, and
+      // the wasm path needs no GPU/driver or cross-origin isolation. assetBase
+      // tells the worker where to fetch the bundled model + ORT wasm.
+      w.postMessage({ type: 'load', model: this.model, device: 'wasm', assetBase: this.assetBase })
     })
     return this.ready
   }
@@ -96,10 +103,10 @@ export class CloudWhisperEngine implements VoiceEngine {
 /** Build the engine for the current settings. Deps are injectable for tests. */
 export function createVoiceEngine(
   settings: VoiceSettings,
-  deps: { makeWorker?: () => WorkerLike; fetchImpl?: typeof fetch } = {},
+  deps: { makeWorker?: () => WorkerLike; fetchImpl?: typeof fetch; assetBase?: string } = {},
 ): VoiceEngine {
   if (settings.engine === 'cloud') return new CloudWhisperEngine(settings.cloudEndpoint, deps.fetchImpl)
-  return new LocalWhisperEngine(settings.model, deps.makeWorker)
+  return new LocalWhisperEngine(settings.model, deps.makeWorker, deps.assetBase)
 }
 
 export type { WorkerLike }

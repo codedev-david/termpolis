@@ -41,3 +41,7 @@ test-results/
 
 # Bundled embedding model (downloaded at build time, ~34MB — not committed)
 resources/models/bge-small-en-v1.5/
+
+# Bundled voice model + ORT wasm (downloaded/copied at build time, ~116MB — not committed)
+resources/models/whisper-base/
+resources/voice-runtime/

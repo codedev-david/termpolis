@@ -28,13 +28,19 @@ export interface VoiceSettings {
   cloudEndpoint: string
 }
 
-// Distil-Whisper Large v3.5 — the research's corrected pick: more accurate than
-// large-v3-turbo (7.21% vs 7.83% WER, Open ASR Leaderboard 2026-03) AND
-// browser/WASM-deployable, unlike the NeMo leaderboard toppers.
+// Whisper-base (q8 ONNX) — the model we BUNDLE and serve offline. Small (~77MB),
+// runs on the wasm CPU backend in a few hundred ms for a short utterance, and is
+// plenty accurate for dictating natural-language prompts to the AI agents (which
+// absorb minor errors). Distil-large-v3.5 is more accurate but ~0.5-1GB — too
+// heavy to bundle for an opt-in feature. Only ids in BUNDLED_LOCAL_MODELS load
+// (others are coerced to this default in sanitizeVoiceSettings) because the
+// worker is offline — it can ONLY load what ships in resources/models.
+export const BUNDLED_LOCAL_MODELS = ['whisper-base'] as const
+
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   enabled: false,
   engine: 'local',
-  model: 'onnx-community/distil-whisper-large-v3.5-ONNX',
+  model: 'whisper-base',
   pushToTalkKey: 'Ctrl+Shift+L', // letter, so Shift doesn't mutate it (matchesKeybinding compares e.key)
   pushToTalkMode: 'hold',
   autoSubmitInAgent: false,

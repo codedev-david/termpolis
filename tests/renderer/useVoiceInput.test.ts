@@ -49,7 +49,10 @@ beforeEach(() => {
   h.transcribe.mockResolvedValue({ text: 'hello world' })
   h.writeToTerminal.mockClear()
   createdProcessor = null
-  ;(window as unknown as { termpolis: unknown }).termpolis = { writeToTerminal: h.writeToTerminal }
+  ;(window as unknown as { termpolis: unknown }).termpolis = {
+    writeToTerminal: h.writeToTerminal,
+    getVoiceAssetBase: async () => ({ success: true, data: 'http://127.0.0.1:1' }),
+  }
   vi.stubGlobal('AudioContext', FakeAudioContext)
   Object.defineProperty(navigator, 'mediaDevices', {
     value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] })) },
@@ -159,5 +162,18 @@ describe('useVoiceInput (orchestration)', () => {
     const { result } = renderHook(() => useVoiceInput('term-1', true))
     await act(async () => { await result.current.start() })
     expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toBeTruthy()
+  })
+
+  it('surfaces a clear error (not silence) when transcription fails, and clearError resets it', async () => {
+    h.transcribe.mockRejectedValueOnce(new Error('model load failed: boom'))
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    await act(async () => { await result.current.stop() })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/model load failed/)
+    act(() => { result.current.clearError() })
+    expect(result.current.errorMsg).toBeNull()
   })
 })

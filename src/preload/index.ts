@@ -175,6 +175,10 @@ const api: TermpolisAPI = {
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
   clipboardWriteRich: (text: string, html: string) => ipcRenderer.invoke('clipboard:write-rich', { text, html }),
   clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
+
+  // Voice: localhost base URL for the bundled Whisper model + ORT wasm, served
+  // by main so the renderer worker can load the model offline under the CSP.
+  getVoiceAssetBase: () => ipcRenderer.invoke('voice:asset-base'),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

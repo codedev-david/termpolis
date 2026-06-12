@@ -4,6 +4,7 @@
 
 import {
   DEFAULT_VOICE_SETTINGS,
+  BUNDLED_LOCAL_MODELS,
   type VoiceSettings,
   type VoiceMode,
   type InjectionPlan,
@@ -121,10 +122,15 @@ export function sanitizeVoiceSettings(raw: unknown): VoiceSettings {
   const d = DEFAULT_VOICE_SETTINGS
   const str = (v: unknown, fallback: string, max = 200): string => (typeof v === 'string' ? v.slice(0, max) : fallback)
   const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback)
+  // The local engine is OFFLINE — it can only load a model we actually bundle.
+  // Coerce any other id (e.g. a stale persisted remote model from an earlier
+  // build, or junk) to the bundled default so it never silently fails to load.
+  const modelRaw = str(r.model, d.model)
+  const model = (BUNDLED_LOCAL_MODELS as readonly string[]).includes(modelRaw) ? modelRaw : d.model
   return {
     enabled: bool(r.enabled, d.enabled),
     engine: r.engine === 'cloud' ? 'cloud' : 'local',
-    model: str(r.model, d.model),
+    model,
     pushToTalkKey: str(r.pushToTalkKey, d.pushToTalkKey, 50),
     pushToTalkMode: r.pushToTalkMode === 'toggle' ? 'toggle' : 'hold',
     autoSubmitInAgent: bool(r.autoSubmitInAgent, d.autoSubmitInAgent),

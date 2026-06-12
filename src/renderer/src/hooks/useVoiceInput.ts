@@ -9,6 +9,11 @@ export interface VoiceConfirm {
   text: string
 }
 
+function describeVoiceError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e ?? '')
+  return msg || 'Voice transcription failed.'
+}
+
 /**
  * Voice dictation for one terminal. Tap the push-to-talk key to start/stop
  * listening; on stop the captured audio is resampled to 16kHz and transcribed
@@ -25,6 +30,9 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const voiceSettings = useTerminalStore((s) => s.voiceSettings)
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [confirm, setConfirm] = useState<VoiceConfirm | null>(null)
+  // Human-readable reason when status === 'error'. Surfaced in the UI so a failed
+  // transcription is never silent (the old behaviour: "I talk and nothing shows up").
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const streamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -43,6 +51,18 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   // stop no-ops and the mic gets stuck "listening" with no way to end it.
   const startingRef = useRef(false)
   const cancelStartRef = useRef(false)
+  // The bundled model + ORT wasm are served by main over localhost; the worker
+  // needs that base URL to load offline. Fetched once on mount (and re-fetched
+  // lazily in transcribe() if it hasn't landed yet).
+  const assetBaseRef = useRef<string>('')
+
+  useEffect(() => {
+    const p = window.termpolis?.getVoiceAssetBase?.()
+    if (!p) return
+    p.then((res) => {
+      if (res?.success && typeof res.data === 'string') assetBaseRef.current = res.data
+    }).catch(() => { /* surfaced as a load error on first transcribe */ })
+  }, [])
 
   const inject = useCallback((text: string, autoSubmit: boolean) => {
     if (!text) return
@@ -61,14 +81,22 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const transcribe = useCallback(async (pcm16k: Float32Array) => {
     setStatus('transcribing')
     try {
-      if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current)
+      // Make sure we have the localhost asset base before building the engine —
+      // the mount fetch may not have resolved on the very first dictation.
+      let base = assetBaseRef.current
+      if (!base) {
+        const res = await window.termpolis?.getVoiceAssetBase?.()
+        if (res?.success && typeof res.data === 'string') { base = res.data; assetBaseRef.current = base }
+      }
+      if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current, { assetBase: base })
       const result = await engineRef.current.transcribe(pcm16k)
       const { plan } = processVoiceResult(result, { agentDetected: agentRef.current, settings: settingsRef.current })
       if (!plan.text) { setStatus('idle'); return }
       if (plan.needsConfirm) setConfirm({ text: plan.text })
       else inject(plan.text, plan.autoSubmit)
       setStatus('idle')
-    } catch {
+    } catch (e) {
+      setErrorMsg(describeVoiceError(e))
       setStatus('error')
     }
   }, [inject])
@@ -99,9 +127,11 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const start = useCallback(async () => {
     if (listeningRef.current || startingRef.current) return
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined') {
+      setErrorMsg('Microphone capture is not available in this environment.')
       setStatus('error')
       return
     }
+    setErrorMsg(null) // fresh start — clear any prior failure
     startingRef.current = true
     cancelStartRef.current = false
     try {
@@ -132,6 +162,7 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       setStatus('listening')
     } catch {
       startingRef.current = false
+      setErrorMsg('Microphone access was blocked or no mic was found. Check your OS microphone privacy settings.')
       setStatus('error')
     }
   }, [])
@@ -148,6 +179,8 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
 
   const cancelConfirm = useCallback(() => setConfirm(null), [])
 
+  const clearError = useCallback(() => setErrorMsg(null), [])
+
   const dispose = useCallback(() => {
     cleanupCapture()
     engineRef.current?.dispose()
@@ -161,11 +194,13 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     status,
     listening: status === 'listening',
     confirm,
+    errorMsg,
     toggle,
     start,
     stop,
     confirmRun,
     cancelConfirm,
+    clearError,
     dispose,
   }
 }

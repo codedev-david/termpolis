@@ -81,6 +81,7 @@ import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
+import { ensureVoiceAssetServer, stopVoiceAssetServer } from './voiceAssetServer'
 import {
   sendMessage, readMessages, getAllMessages,
   createTask, listTasks, updateTask, clearSwarm,
@@ -584,6 +585,19 @@ ipcMain.handle('telemetry:set-opt-in', async (_, { value }: { value: boolean }) 
 ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
+
+// Voice: hand the renderer the localhost base URL for the bundled Whisper model
+// + ORT wasm. Lazily starts the asset server on first call (port stays closed
+// until voice is actually used), so the renderer worker can load the model
+// fully-offline under the app's CSP. Returns null-ish on failure → the hook
+// surfaces a clear error instead of hanging.
+ipcMain.handle('voice:asset-base', async () => {
+  try {
+    return ok(await ensureVoiceAssetServer())
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e))
+  }
+})
 
 // Past AI sessions — scans ~/.claude/projects/ across all project folders so
 // the renderer can offer a "Resume any session" picker that bypasses the
@@ -1760,6 +1774,7 @@ if (!gotTheLock) {
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
+    try { stopVoiceAssetServer() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {
@@ -1767,6 +1782,7 @@ if (!gotTheLock) {
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
+    try { stopVoiceAssetServer() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
     if (process.platform !== 'darwin') {
       app.quit()

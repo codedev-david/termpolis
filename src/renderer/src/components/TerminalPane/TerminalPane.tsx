@@ -723,6 +723,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button onClick={voice.cancelConfirm} aria-label="Dismiss" className="px-1.5 py-0.5 rounded text-[#999] hover:text-white">✕</button>
           </div>
         )}
+        {voice.status === 'error' && voice.errorMsg && (
+          <div
+            data-testid="voice-error-bar"
+            className="absolute bottom-2 left-2 right-2 z-40 flex items-center gap-2 text-xs bg-[#3a2222] border border-[#a33] rounded px-3 py-2 shadow-lg"
+          >
+            <i className="fa-solid fa-microphone-slash text-[#ff8a8a]"></i>
+            <span className="flex-1 text-[#f0c0c0]">Voice: {voice.errorMsg}</span>
+            <button onClick={voice.clearError} aria-label="Dismiss" className="px-1.5 py-0.5 rounded text-[#caa] hover:text-white">✕</button>
+          </div>
+        )}
         <div className="absolute top-1.5 right-2 z-30 flex items-center gap-1.5">
           {voiceEnabled && (
             <button

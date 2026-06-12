@@ -110,6 +110,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Download bundled embedding model
         run: bash scripts/download-embedding-model.sh
+      - name: Download bundled voice model
+        run: bash scripts/download-voice-model.sh
+        continue-on-error: true
       # Un-gates semantic recall in CI: with the real model now on disk
       # (resources/models), the skipIf(!hasBundledModel) tests RUN here and prove
       # real-embedding cross-agent recall — the plain unit jobs lack the model.

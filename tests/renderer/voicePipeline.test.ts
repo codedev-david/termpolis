@@ -127,6 +127,14 @@ describe('voicePipeline', () => {
       expect(out.cloudEndpoint.length).toBeLessThanOrEqual(500)
     })
 
+    it('coerces an unbundled/stale local model id to the bundled default (offline engine can only load what ships)', () => {
+      // The pre-1.12.2 default was a remote model that can never load offline —
+      // a persisted session.json with it must migrate to the bundled model.
+      expect(sanitizeVoiceSettings({ model: 'onnx-community/distil-whisper-large-v3.5-ONNX' }).model)
+        .toBe(DEFAULT_VOICE_SETTINGS.model)
+      expect(sanitizeVoiceSettings({ model: 'whisper-base' }).model).toBe('whisper-base')
+    })
+
     it('default push-to-talk uses a Shift-safe key (a letter — not Shift+punctuation/digit, which matchesKeybinding cannot match)', () => {
       const last = DEFAULT_VOICE_SETTINGS.pushToTalkKey.split('+').pop() ?? ''
       expect(last).toMatch(/^[A-Za-z]$/)
