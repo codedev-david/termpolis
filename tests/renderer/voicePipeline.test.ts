@@ -118,9 +118,22 @@ describe('voicePipeline', () => {
       expect(sanitizeVoiceSettings(42)).toEqual(DEFAULT_VOICE_SETTINGS)
     })
 
-    it('coerces an unknown engine to local and keeps a valid cloud choice', () => {
-      expect(sanitizeVoiceSettings({ engine: 'banana' }).engine).toBe('local')
-      expect(sanitizeVoiceSettings({ engine: 'cloud' }).engine).toBe('cloud')
+    it('coerces an unknown Groq model to the default, keeps a valid one', () => {
+      expect(sanitizeVoiceSettings({ groqModel: 'banana' }).groqModel).toBe(DEFAULT_VOICE_SETTINGS.groqModel)
+      expect(sanitizeVoiceSettings({ groqModel: 'whisper-large-v3' }).groqModel).toBe('whisper-large-v3')
+      expect(sanitizeVoiceSettings({ groqModel: 'whisper-large-v3-turbo' }).groqModel).toBe('whisper-large-v3-turbo')
+    })
+
+    it('migrates a stale persisted local model id to the default Groq model', () => {
+      // A session.json from a pre-Groq build may still carry a local whisper id —
+      // it must fall back to the default Groq model, never persist as-is.
+      expect(sanitizeVoiceSettings({ groqModel: 'whisper-base.en' }).groqModel).toBe(DEFAULT_VOICE_SETTINGS.groqModel)
+    })
+
+    it('requires explicit consent (never silently defaults it to true)', () => {
+      expect(sanitizeVoiceSettings({}).consentAccepted).toBe(false)
+      expect(sanitizeVoiceSettings({ consentAccepted: true }).consentAccepted).toBe(true)
+      expect(sanitizeVoiceSettings({ consentAccepted: 'yes' }).consentAccepted).toBe(false)
     })
 
     it('defaults push-to-talk mode to hold, preserves an explicit toggle', () => {
@@ -130,22 +143,10 @@ describe('voicePipeline', () => {
     })
 
     it('ignores non-boolean flags and caps oversized strings', () => {
-      const out = sanitizeVoiceSettings({ enabled: 'yes', model: 'm'.repeat(9999), cloudEndpoint: 'x'.repeat(9999) })
+      const out = sanitizeVoiceSettings({ enabled: 'yes', inputDeviceId: 'd'.repeat(9999), pushToTalkKey: 'k'.repeat(9999) })
       expect(out.enabled).toBe(false) // 'yes' is not a boolean → default
-      expect(out.model.length).toBeLessThanOrEqual(200)
-      expect(out.cloudEndpoint.length).toBeLessThanOrEqual(500)
-    })
-
-    it('coerces an unbundled/stale local model id to the bundled default (offline engine can only load what ships)', () => {
-      // The pre-1.12.2 default was a remote model that can never load offline —
-      // a persisted session.json with it must migrate to the bundled model.
-      expect(sanitizeVoiceSettings({ model: 'onnx-community/distil-whisper-large-v3.5-ONNX' }).model)
-        .toBe(DEFAULT_VOICE_SETTINGS.model)
-      // The bundled model is now whisper-base.en; a persisted multilingual
-      // 'whisper-base' (no longer bundled) must migrate to it, not silently fail.
-      expect(sanitizeVoiceSettings({ model: 'whisper-base' }).model).toBe('whisper-base.en')
-      expect(sanitizeVoiceSettings({ model: 'whisper-base.en' }).model).toBe('whisper-base.en')
-      expect(DEFAULT_VOICE_SETTINGS.model).toBe('whisper-base.en')
+      expect(out.inputDeviceId.length).toBeLessThanOrEqual(200)
+      expect(out.pushToTalkKey.length).toBeLessThanOrEqual(50)
     })
 
     it('default push-to-talk uses a Shift-safe key (a letter — not Shift+punctuation/digit, which matchesKeybinding cannot match)', () => {

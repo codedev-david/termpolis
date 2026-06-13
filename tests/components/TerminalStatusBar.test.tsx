@@ -63,22 +63,14 @@ describe('TerminalStatusBar', () => {
     expect(screen.queryByTestId('context-gauge')).not.toBeInTheDocument()
   })
 
-  it('renders cost info when agent + costInfo.estimatedCost > 0', async () => {
-    const agent = { name: 'Claude', color: '#c15f3c', icon: 'fa-brands fa-claude', command: 'claude' } as any
-    const costInfo = { estimatedCost: 0.25, tokensIn: 12345 } as any
-    render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} costInfo={costInfo} />)
-    // Use regex + findByText: on Windows CI the exact-string getByText('$0.25')
-    // timed out at 5s (6612ms). The adjacent test at line ~131 already uses the
-    // regex pattern successfully. React splits `$` + `{toFixed}` into sibling
-    // text nodes, so normalized text content equality against '$0.25' is fragile.
-    expect(await screen.findByText(/\$0\.25/)).toBeInTheDocument()
-  })
-
-  it('hides cost info when estimatedCost is 0', () => {
-    const agent = { name: 'Claude', color: '#c15f3c', icon: 'fa-brands fa-claude', command: 'claude' } as any
-    const costInfo = { estimatedCost: 0, tokensIn: 0 } as any
-    render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} costInfo={costInfo} />)
-    expect(screen.queryByText(/\$0\.00/)).not.toBeInTheDocument()
+  // Cost/token tracking was a misleading single-regex scrape of scrollback (it
+  // showed a coincidental "<n> tokens" hit, not real usage), so the badge no
+  // longer renders it — the bottom-bar ctx% pill is the real signal.
+  it('does not render any scraped cost/token text', () => {
+    const agent = { name: 'Claude Code', color: '#D97706', icon: 'fa-solid fa-robot' } as any
+    render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} />)
+    expect(screen.queryByText(/tokens/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/\$\d/)).not.toBeInTheDocument()
   })
 
   it('renders each shell label correctly', () => {
@@ -125,13 +117,6 @@ describe('TerminalStatusBar', () => {
       expect(screen.getByText('parsed-branch')).toBeInTheDocument()
       expect(screen.queryByText('ipc-branch')).not.toBeInTheDocument()
     })
-  })
-
-  it('displays token count when tokensIn > 0', () => {
-    const agent = { name: 'Claude', color: '#c15f3c', icon: 'fa-brands fa-claude', command: 'claude' } as any
-    const costInfo = { estimatedCost: 0.5, tokensIn: 1500 } as any
-    render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/repo" agent={agent} costInfo={costInfo} />)
-    expect(screen.getByText(/tokens/)).toBeInTheDocument()
   })
 
   it('gracefully handles getTerminalStatus rejection', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectAgent } from '../../src/renderer/src/lib/agentDetector'
+import { detectAgent, agentFromCommand } from '../../src/renderer/src/lib/agentDetector'
 
 describe('agentDetector', () => {
   describe('detectAgent', () => {
@@ -61,6 +61,39 @@ describe('agentDetector', () => {
       const result = detectAgent('CLAUDE and QWEN running')
       expect(result).not.toBeNull()
       expect(result!.name).toBe('Claude Code')
+    })
+  })
+
+  describe('agentFromCommand (launched-agent identity, not output scraping)', () => {
+    it('maps the claude launch command to Claude Code', () => {
+      expect(agentFromCommand('claude')!.name).toBe('Claude Code')
+    })
+    it('maps claude with flags/resume (startsWith) to Claude Code', () => {
+      expect(agentFromCommand('claude --resume abc --append-system-prompt-file "x"')!.name).toBe('Claude Code')
+    })
+    it('maps codex to OpenAI Codex with its color', () => {
+      const a = agentFromCommand('codex')!
+      expect(a.name).toBe('OpenAI Codex')
+      expect(a.color).toBe('#10B981')
+    })
+    it('maps gemini to Gemini CLI', () => {
+      expect(agentFromCommand('gemini')!.name).toBe('Gemini CLI')
+    })
+    it('maps qwen to Qwen Code', () => {
+      expect(agentFromCommand('qwen')!.name).toBe('Qwen Code')
+    })
+    it('is case-insensitive and tolerates leading whitespace', () => {
+      expect(agentFromCommand('  CLAUDE ')!.name).toBe('Claude Code')
+    })
+    it('returns null for a non-agent command, empty, null, or undefined', () => {
+      expect(agentFromCommand('npm run dev')).toBeNull()
+      expect(agentFromCommand('')).toBeNull()
+      expect(agentFromCommand(null)).toBeNull()
+      expect(agentFromCommand(undefined)).toBeNull()
+    })
+    it('returns a fresh object each call (safe to mutate)', () => {
+      expect(agentFromCommand('claude')).not.toBe(agentFromCommand('claude'))
+      expect(agentFromCommand('claude')).toEqual(agentFromCommand('claude'))
     })
   })
 })

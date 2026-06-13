@@ -110,9 +110,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Download bundled embedding model
         run: bash scripts/download-embedding-model.sh
-      - name: Download bundled voice model
-        run: bash scripts/download-voice-model.sh
-        continue-on-error: true
       # Un-gates semantic recall in CI: with the real model now on disk
       # (resources/models), the skipIf(!hasBundledModel) tests RUN here and prove
       # real-embedding cross-agent recall — the plain unit jobs lack the model.
@@ -126,28 +123,6 @@ jobs:
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
       - name: Verify embedding model + onnxruntime-web WASM bundled
         run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
-      - name: Verify voice model + complete ORT speech runtime bundled
-        run: node scripts/verifyPackagedResources.cjs --voice dist-electron-builder/linux-unpacked
-      # REAL load gate: actually instantiate the bundled whisper model in the
-      # shipped onnxruntime-web inside headless Chromium and assert the session is
-      # created at the level we ship. This is the gate that would have caught the
-      # v1.12.3 "Can't create a session / MatMulNBits missing scale" crash — the
-      # other voice checks verify files are present/served but never load the model.
-      # Skips cleanly if the (continue-on-error) model download 429'd.
-      - name: Install Playwright Chromium (for voice load verify)
-        run: npx playwright install --with-deps chromium
-      - name: Verify bundled voice model actually loads in onnxruntime-web
-        run: npm run voice:verify
-      # REAL pipeline gate: build the FULL transformers.js automatic-speech-
-      # recognition pipeline (exactly as the renderer does — offline, loopback
-      # localModelPath/remoteHost) and run a transcription. This is the gate that
-      # would have caught v1.12.5's "Cannot read properties of null (reading
-      # 'feature_extractor')": transformers.js 4.x's component-existence probe left
-      # the processor/tokenizer unloaded. voice:verify only reaches session
-      # creation; this reaches feature-extraction + decode. Skips cleanly if the
-      # (continue-on-error) model download 429'd.
-      - name: Verify full offline voice pipeline assembles + transcribes
-        run: npm run voice:verify-pipeline
       - name: Upload unpacked output on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -230,16 +205,6 @@ jobs:
       # mic actually work end-to-end" gap the jsdom unit suite can't reach.
       - name: Voice capture from fake audio device
         run: xvfb-run --auto-servernum npx playwright test e2e/voice-capture.spec.ts
-      # Voice TRANSCRIPTION gate: the real end-to-end proof — feeds a known speech
-      # clip as the mic (Chromium --use-file-for-fake-audio-capture), runs the REAL
-      # bundled whisper-base.en model, and asserts the correct words come back in
-      # the UI. The model download is best-effort (HF can 429); the spec SKIPS if
-      # the model/runtime isn't bundled, so a transient miss never reds the build.
-      - name: Download bundled voice model (for transcription e2e)
-        run: bash scripts/download-voice-model.sh
-        continue-on-error: true
-      - name: Voice transcription from a real speech clip
-        run: xvfb-run --auto-servernum npx playwright test e2e/voice-transcribe.spec.ts
       # Voice DEAD-ZONE gate: feed steady background hum (the exact audio that made
       # Whisper emit "the"/" you") as the mic and prove the app GATES it — shows a
       # notice and injects NOTHING. Uses a committed noise fixture; needs no model

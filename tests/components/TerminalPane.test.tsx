@@ -217,7 +217,7 @@ vi.mock('../../src/renderer/src/hooks/useSessionRecording', () => ({
 // terminal pane without loading the on-device transcription model. ---
 const voiceEng = vi.hoisted(() => ({ transcribe: vi.fn() }))
 vi.mock('../../src/renderer/src/lib/voice/voiceEngines', () => ({
-  createVoiceEngine: () => ({ kind: 'local', transcribe: voiceEng.transcribe, dispose: vi.fn() }),
+  createVoiceEngine: () => ({ transcribe: voiceEng.transcribe, warm: vi.fn(async () => {}), dispose: vi.fn() }),
 }))
 
 // --- Mock child components ---
@@ -616,9 +616,9 @@ describe('TerminalPane', () => {
         focusActiveTerminal: mocks.mockFocusActiveTerminal,
         focusNonce: 0,
         voiceSettings: {
-          enabled: true, engine: 'local', model: 'm', pushToTalkKey: 'Ctrl+Shift+L',
+          enabled: true, consentAccepted: true, groqModel: 'whisper-large-v3-turbo', pushToTalkKey: 'Ctrl+Shift+L',
           pushToTalkMode: 'hold', autoSubmitInAgent: false, correctionEnabled: true,
-          confirmBeforeRunInShell: true, cloudEndpoint: '', ...over,
+          confirmBeforeRunInShell: true, ...over,
         },
       }))
     }

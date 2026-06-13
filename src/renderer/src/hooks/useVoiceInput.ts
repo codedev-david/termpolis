@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createVoiceEngine, type WorkerLike } from '../lib/voice/voiceEngines'
+import { createVoiceEngine } from '../lib/voice/voiceEngines'
 import { processVoiceResult, resampleTo16k, analyzeCapture, computeDisplayLevel, normalizeAudioGain, type CaptureAnalysis } from '../lib/voice/voicePipeline'
 import type { VoiceEngine } from '../lib/voice/voiceTypes'
 import { useTerminalStore } from '../store/terminalStore'
@@ -74,19 +74,6 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   // stop no-ops and the mic gets stuck "listening" with no way to end it.
   const startingRef = useRef(false)
   const cancelStartRef = useRef(false)
-  // The bundled model + ORT wasm are served by main over localhost; the worker
-  // needs that base URL to load offline. Fetched once on mount (and re-fetched
-  // lazily in transcribe() if it hasn't landed yet).
-  const assetBaseRef = useRef<string>('')
-
-  useEffect(() => {
-    const p = window.termpolis?.getVoiceAssetBase?.()
-    if (!p) return
-    p.then((res) => {
-      if (res?.success && typeof res.data === 'string') assetBaseRef.current = res.data
-    }).catch(() => { /* surfaced as a load error on first transcribe */ })
-  }, [])
-
   const inject = useCallback((text: string, autoSubmit: boolean) => {
     if (!text) return
     window.termpolis.writeToTerminal(terminalId, text + (autoSubmit ? '\r' : ''))
@@ -128,16 +115,9 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     levelTimerRef.current = id
   }, [])
 
-  // Resolve the localhost asset base (the mount fetch may not have landed on the
-  // very first dictation) and lazily build the engine. Shared by warm-up (on
-  // record start) and transcribe so both reuse the one worker.
+  // Lazily build the engine; reused by warm-up (on record start) and transcribe.
   const ensureEngine = useCallback(async (): Promise<VoiceEngine> => {
-    let base = assetBaseRef.current
-    if (!base) {
-      const res = await window.termpolis?.getVoiceAssetBase?.()
-      if (res?.success && typeof res.data === 'string') { base = res.data; assetBaseRef.current = base }
-    }
-    if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current, { assetBase: base })
+    if (!engineRef.current) engineRef.current = createVoiceEngine(settingsRef.current)
     return engineRef.current
   }, [])
 
@@ -342,5 +322,3 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     dispose,
   }
 }
-
-export type { WorkerLike }

@@ -37,39 +37,6 @@ const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs']
 const EMBEDDING_MODEL_REL = path.join('models', 'bge-small-en-v1.5', 'onnx', 'model_quantized.onnx')
 const EMBEDDING_TOKENIZER_REL = path.join('models', 'bge-small-en-v1.5', 'tokenizer.json')
 
-// The bundled offline VOICE model (whisper-base.en q8) + the onnxruntime-web wasm
-// runtime that the renderer's Whisper worker fetches over the localhost asset
-// server. Verified SEPARATELY (CI `--voice`), and only when present — a build
-// without the voice model downloaded is still valid (voice degrades), same as
-// the embedding model above.
-const VOICE_MODEL_DIR_REL = path.join('models', 'whisper-base.en')
-const VOICE_ENCODER_REL = path.join(VOICE_MODEL_DIR_REL, 'onnx', 'encoder_model_quantized.onnx')
-const VOICE_DECODER_REL = path.join(VOICE_MODEL_DIR_REL, 'onnx', 'decoder_model_merged_quantized.onnx')
-const VOICE_MODEL_FILES = [
-  path.join(VOICE_MODEL_DIR_REL, 'config.json'),
-  path.join(VOICE_MODEL_DIR_REL, 'tokenizer.json'),
-  VOICE_ENCODER_REL,
-  VOICE_DECODER_REL,
-]
-// onnxruntime-web ships its wasm backend as a .mjs loader + .wasm pair per
-// variant. The renderer's ORT loader DYNAMICALLY imports the variant .mjs it
-// selects at runtime (asyncify for our device='wasm', single-thread, no-proxy
-// config) from `wasm.wasmPaths`. Shipping a SUBSET — which is exactly what
-// v1.12.0-v1.12.2 did (2 of these .wasm, zero .mjs loaders) — makes that import
-// 404 and the worker die with "no available backend found". So the COMPLETE
-// family must ship. This list is pinned to onnxruntime-web reality by a unit test
-// (tests/electron/verifyPackagedResources.test.ts) that reads node_modules.
-const VOICE_RUNTIME_ORT_FILES = [
-  'ort-wasm-simd-threaded.mjs',
-  'ort-wasm-simd-threaded.wasm',
-  'ort-wasm-simd-threaded.asyncify.mjs',
-  'ort-wasm-simd-threaded.asyncify.wasm',
-  'ort-wasm-simd-threaded.jsep.mjs',
-  'ort-wasm-simd-threaded.jsep.wasm',
-  'ort-wasm-simd-threaded.jspi.mjs',
-  'ort-wasm-simd-threaded.jspi.wasm',
-]
-
 /**
  * Resolve the platform-specific "Resources" directory that electron-builder
  * produces inside its unpacked output (e.g. `win-unpacked/resources`,
@@ -263,97 +230,20 @@ function verifyEmbeddingModelBundled(appOutDir) {
   )
 }
 
-/**
- * Verify the bundled VOICE model + the COMPLETE onnxruntime-web wasm runtime made
- * it into the packaged output, so local Whisper dictation works offline. The
- * voice download is best-effort in CI (continue-on-error on HF 429): if the model
- * was skipped entirely, this is a no-op (voice degrades, build still valid). But
- * if ANY of it shipped, the WHOLE set must be complete — that's what catches a
- * partial ORT runtime (the v1.12.2 bug: model present, .mjs loaders missing).
- * Throws on any problem. Used by the package-verify CI job (`--voice`).
- */
-function verifyVoiceModelBundled(appOutDir) {
-  const resourcesDir = [
-    path.join(appOutDir, 'resources'),
-    ...safeListDir(appOutDir)
-      .filter((n) => n.endsWith('.app'))
-      .map((n) => path.join(appOutDir, n, 'Contents', 'Resources')),
-  ].find((d) => fs.existsSync(d))
-  if (!resourcesDir) {
-    throw new Error(`[verifyPackagedResources] no resources dir under ${appOutDir}`)
-  }
-
-  // Best-effort: nothing bundled at all → skip (do NOT fail the build).
-  const modelDir = path.join(resourcesDir, VOICE_MODEL_DIR_REL)
-  if (!fs.existsSync(modelDir)) {
-    // eslint-disable-next-line no-console
-    console.log(
-      '[verifyPackagedResources] voice model not bundled (download skipped/failed) — skipping voice verification',
-    )
-    return
-  }
-
-  // Model present → the full model file set must be there and non-empty.
-  for (const rel of VOICE_MODEL_FILES) {
-    const full = path.join(resourcesDir, rel)
-    if (!fs.existsSync(full) || fs.statSync(full).size === 0) {
-      throw new Error(`[verifyPackagedResources] FATAL: bundled voice file missing/empty: ${full}`)
-    }
-  }
-  // The onnx weights must be real multi-MB models, not truncated/HTML error pages.
-  for (const rel of [VOICE_ENCODER_REL, VOICE_DECODER_REL]) {
-    const size = fs.statSync(path.join(resourcesDir, rel)).size
-    if (size < 1_000_000) {
-      throw new Error(`[verifyPackagedResources] voice model file ${rel} is only ${size} bytes (download failed?)`)
-    }
-  }
-
-  // The bit that broke: the COMPLETE ORT wasm runtime (every .mjs loader + .wasm).
-  const ortDir = path.join(resourcesDir, 'voice-runtime', 'ort')
-  for (const f of VOICE_RUNTIME_ORT_FILES) {
-    const full = path.join(ortDir, f)
-    if (!fs.existsSync(full)) {
-      throw new Error(
-        `[verifyPackagedResources] FATAL: ORT speech-runtime file missing: ${full}\n` +
-          `onnxruntime-web dynamically imports this at runtime; without it the voice worker fails ` +
-          `with "no available backend found / Failed to fetch dynamically imported module".\n` +
-          `Fix: scripts/download-voice-model.sh must copy the COMPLETE ort-wasm-simd-threaded.* family.`,
-      )
-    }
-    // .wasm are multi-MB; .mjs loaders are ~20-46 KB. Catch truncated copies.
-    const size = fs.statSync(full).size
-    const min = f.endsWith('.wasm') ? 1_000_000 : 1_000
-    if (size < min) {
-      throw new Error(`[verifyPackagedResources] ORT speech-runtime file ${f} is only ${size} bytes (truncated copy?)`)
-    }
-  }
-
-  // eslint-disable-next-line no-console
-  console.log(
-    `[verifyPackagedResources] OK — voice model + complete ORT speech runtime (${VOICE_RUNTIME_ORT_FILES.length} files) bundled`,
-  )
-}
-
 module.exports = {
   REQUIRED_RESOURCE_FILES,
-  VOICE_MODEL_FILES,
-  VOICE_RUNTIME_ORT_FILES,
   resolveResourcesDir,
   verifyResourcesFolder,
   verifyFromAfterPack,
   verifyEmbeddingModelBundled,
-  verifyVoiceModelBundled,
 }
 
 // If invoked directly, run CLI mode. `--model <appOutDir>` verifies the bundled
-// embedding model; `--voice <appOutDir>` verifies the bundled voice model + ORT
-// speech runtime; otherwise verify the required resource files.
+// embedding model; otherwise verify the required resource files.
 if (require.main === module) {
   try {
     if (process.argv[2] === '--model') {
       verifyEmbeddingModelBundled(process.argv[3])
-    } else if (process.argv[2] === '--voice') {
-      verifyVoiceModelBundled(process.argv[3])
     } else {
       verifyFromCLI(process.argv[2])
     }

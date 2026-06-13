@@ -1,13 +1,24 @@
 import React from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { VoiceSettings } from '../../src/renderer/src/components/SettingsPane/VoiceSettings'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { DEFAULT_VOICE_SETTINGS } from '../../src/renderer/src/lib/voice/voiceTypes'
 
+function stubTermpolis(status: { connected: boolean; hint: string } = { connected: false, hint: '' }) {
+  ;(window as unknown as { termpolis: unknown }).termpolis = {
+    groqGetKeyStatus: vi.fn(async () => ({ success: true, data: status })),
+    openExternal: vi.fn(async () => ({ success: true })),
+    groqValidateKey: vi.fn(async () => ({ success: true, data: { ok: true } })),
+    groqSetApiKey: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_••••1234' } })),
+    groqClearApiKey: vi.fn(async () => ({ success: true, data: { connected: false, hint: '' } })),
+  }
+}
+
 describe('VoiceSettings', () => {
   beforeEach(() => {
     useTerminalStore.setState({ voiceSettings: { ...DEFAULT_VOICE_SETTINGS } })
+    stubTermpolis()
   })
 
   it('renders, and voice is opt-in (disabled) by default', () => {
@@ -22,20 +33,34 @@ describe('VoiceSettings', () => {
     expect(useTerminalStore.getState().voiceSettings.enabled).toBe(true)
   })
 
-  it('local engine by default; switching to cloud reveals the endpoint field', () => {
+  it('shows a Connect Groq button when no key is stored, and opens the connect modal', async () => {
     render(<VoiceSettings />)
-    fireEvent.click(screen.getByTestId('voice-enable-toggle')) // un-disable the fieldset
-    expect(useTerminalStore.getState().voiceSettings.engine).toBe('local')
-    expect(screen.queryByTestId('voice-endpoint-input')).not.toBeInTheDocument()
-    fireEvent.change(screen.getByTestId('voice-engine-select'), { target: { value: 'cloud' } })
-    expect(useTerminalStore.getState().voiceSettings.engine).toBe('cloud')
-    expect(screen.getByTestId('voice-endpoint-input')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    const btn = await screen.findByTestId('groq-connect-open-btn')
+    expect(btn).toBeInTheDocument()
+    fireEvent.click(btn)
+    expect(screen.getByTestId('groq-connect-modal')).toBeInTheDocument()
+  })
+
+  it('shows connected status + masked hint when a key is already stored', async () => {
+    stubTermpolis({ connected: true, hint: 'gsk_••••9999' })
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    expect(await screen.findByText('gsk_••••9999')).toBeInTheDocument()
+    expect(screen.getByTestId('groq-manage-btn')).toBeInTheDocument()
+  })
+
+  it('changes the transcription model in the store', () => {
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    fireEvent.change(screen.getByTestId('voice-model-select'), { target: { value: 'whisper-large-v3' } })
+    expect(useTerminalStore.getState().voiceSettings.groqModel).toBe('whisper-large-v3')
   })
 
   it('confirm-before-run defaults ON and can be toggled off', () => {
     render(<VoiceSettings />)
     expect(useTerminalStore.getState().voiceSettings.confirmBeforeRunInShell).toBe(true)
-    fireEvent.click(screen.getByTestId('voice-enable-toggle')) // enable so the fieldset is interactive
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
     fireEvent.click(screen.getByTestId('voice-confirm-toggle'))
     expect(useTerminalStore.getState().voiceSettings.confirmBeforeRunInShell).toBe(false)
   })

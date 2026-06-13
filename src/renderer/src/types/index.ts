@@ -206,9 +206,14 @@ export interface TermpolisAPI {
   clipboardWriteRich: (text: string, html: string) => Promise<IpcResponse>
   clipboardWriteImage: (dataUrl: string) => Promise<IpcResponse>
 
-  // Voice: localhost base URL ("http://127.0.0.1:<port>") serving the bundled
-  // Whisper model + ORT wasm to the renderer transcription worker.
-  getVoiceAssetBase: () => Promise<IpcResponse<string>>
+  // Voice (Groq cloud STT). The API key lives only in main (OS keychain); the
+  // renderer can validate/set/clear it and read a masked status, and send PCM to
+  // be transcribed — it never holds the raw key.
+  groqValidateKey: (key: string) => Promise<IpcResponse<{ ok: boolean; status?: number; error?: string }>>
+  groqSetApiKey: (key: string) => Promise<IpcResponse<{ connected: boolean; hint: string }>>
+  groqGetKeyStatus: () => Promise<IpcResponse<{ connected: boolean; hint: string }>>
+  groqClearApiKey: () => Promise<IpcResponse<{ connected: boolean; hint: string }>>
+  voiceTranscribe: (pcm: Float32Array, model?: string) => Promise<IpcResponse<{ text: string }>>
 
   // Test-only seams (inert in production — main handlers registered only under
   // NODE_ENV=test). Used by e2e/compaction-reprime.spec.ts.

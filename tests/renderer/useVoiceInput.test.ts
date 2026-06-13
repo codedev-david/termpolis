@@ -10,20 +10,19 @@ const h = vi.hoisted(() => ({
   // Mutable so a test can set inputDeviceId before calling start().
   settings: {
     enabled: true,
-    engine: 'local',
-    model: 'm',
+    consentAccepted: true,
+    groqModel: 'whisper-large-v3-turbo',
     inputDeviceId: '',
     pushToTalkKey: 'Ctrl+Shift+Period',
     pushToTalkMode: 'hold',
     autoSubmitInAgent: false,
     correctionEnabled: true,
     confirmBeforeRunInShell: true,
-    cloudEndpoint: '',
   },
 }))
 
 vi.mock('../../src/renderer/src/lib/voice/voiceEngines', () => ({
-  createVoiceEngine: () => ({ kind: 'local', transcribe: h.transcribe, dispose: vi.fn() }),
+  createVoiceEngine: () => ({ transcribe: h.transcribe, warm: vi.fn(async () => {}), dispose: vi.fn() }),
 }))
 
 // Hook reads voiceSettings via the store selector; return the mutable config.
@@ -69,7 +68,7 @@ beforeEach(() => {
   h.settings.inputDeviceId = ''
   ;(window as unknown as { termpolis: unknown }).termpolis = {
     writeToTerminal: h.writeToTerminal,
-    getVoiceAssetBase: async () => ({ success: true, data: 'http://127.0.0.1:1' }),
+    voiceTranscribe: vi.fn(async () => ({ success: true, data: { text: 'hello world' } })),
   }
   vi.stubGlobal('AudioContext', FakeAudioContext)
   Object.defineProperty(navigator, 'mediaDevices', {

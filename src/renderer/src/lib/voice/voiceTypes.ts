@@ -1,18 +1,17 @@
-// Types + defaults for terminal voice input. LOCAL on-device Whisper
-// (whisper-base.en via Transformers.js / onnxruntime-web) is the reliable
-// default; managed cloud STT is an opt-in "turbo". Dictation drives the AI
-// agents directly (agent mode); raw shell commands are NEVER auto-run
-// (shell mode → confirm-before-run), and any LLM cleanup is CONSTRAINED.
-
-export type VoiceEngineKind = 'local' | 'cloud'
+// Types + defaults for terminal voice input. Transcription uses Groq's hosted
+// Whisper API (cloud) — opt-in, OFF by default, with the API key stored in the
+// OS keychain in the MAIN process (it never enters the renderer). Dictation
+// drives the AI agents directly (agent mode); raw shell commands are NEVER
+// auto-run (shell mode → confirm-before-run), and any LLM cleanup is CONSTRAINED.
 
 export interface VoiceSettings {
   /** Master toggle. Off by default — opt-in feature. */
   enabled: boolean
-  /** 'local' (on-device Whisper, default) or 'cloud' (opt-in turbo). */
-  engine: VoiceEngineKind
-  /** Local model id (ONNX, Transformers.js-loadable). */
-  model: string
+  /** The user has accepted the disclosure that audio is sent to Groq for
+   *  transcription. Required before voice can be enabled. */
+  consentAccepted: boolean
+  /** Groq Whisper model id (see GROQ_MODELS). */
+  groqModel: string
   /** Preferred microphone (MediaDeviceInfo.deviceId); '' = system default. */
   inputDeviceId: string
   /** Push-to-talk combo (rebindable). */
@@ -26,37 +25,28 @@ export interface VoiceSettings {
   correctionEnabled: boolean
   /** Never auto-run dictated SHELL commands — insert and wait for the user. */
   confirmBeforeRunInShell: boolean
-  /** Opt-in cloud STT endpoint (only used when engine === 'cloud'). */
-  cloudEndpoint: string
 }
 
-// Whisper-base.en (q8 ONNX) — the ENGLISH-ONLY model we BUNDLE and serve offline.
-// Small (~77MB), runs on the wasm CPU backend in a few hundred ms for a short
-// utterance. We deliberately ship the `.en` variant, NOT the multilingual
-// `whisper-base`: the multilingual model auto-detects language on every clip and,
-// on marginal audio, mis-detects and hallucinates — and it's measurably less
-// accurate for English dictation (the English-only model also punctuates better).
-// "Bigger" is the wrong axis here: a larger model would be much slower on the
-// single-thread WASM CPU path without fixing hallucination, which is a no-speech
-// problem, not a capacity one (see isNoSpeech). Distil-large-v3.5 is more accurate
-// but ~0.5-1GB — too heavy to bundle for an opt-in feature; the Cloud engine is
-// the opt-in path to higher accuracy. Only ids in BUNDLED_LOCAL_MODELS load
-// (others — including a stale persisted 'whisper-base' — are coerced to this
-// default in sanitizeVoiceSettings) because the worker is offline: it can ONLY
-// load what ships in resources/models.
-export const BUNDLED_LOCAL_MODELS = ['whisper-base.en'] as const
+// The Groq Whisper models we expose. Turbo is the default: fastest and cheapest
+// (~$0.04/hr of audio), and accurate enough that the more expensive large-v3 is
+// rarely worth the latency for dictation. The id must match a Groq model id.
+export const GROQ_MODELS = [
+  { id: 'whisper-large-v3-turbo', label: 'Turbo — fastest, ~$0.04/hr (recommended)' },
+  { id: 'whisper-large-v3', label: 'Large v3 — most accurate, ~$0.11/hr' },
+] as const
+
+export const DEFAULT_GROQ_MODEL = 'whisper-large-v3-turbo'
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   enabled: false,
-  engine: 'local',
-  model: 'whisper-base.en',
+  consentAccepted: false,
+  groqModel: DEFAULT_GROQ_MODEL,
   inputDeviceId: '',
   pushToTalkKey: 'Ctrl+Shift+L', // letter, so Shift doesn't mutate it (matchesKeybinding compares e.key)
   pushToTalkMode: 'hold',
   autoSubmitInAgent: false,
   correctionEnabled: true,
   confirmBeforeRunInShell: true,
-  cloudEndpoint: '',
 }
 
 export type VoiceMode = 'agent' | 'shell'
@@ -68,13 +58,12 @@ export interface TranscriptResult {
 }
 
 export interface VoiceEngine {
-  readonly kind: VoiceEngineKind
   /** Transcribe 16kHz mono PCM (Float32, [-1,1]) to text (+ optional N-best). */
   transcribe(pcm16k: Float32Array): Promise<TranscriptResult>
-  /** Optionally pre-load the model so the first transcription isn't a cold start.
-   *  Idempotent; safe to call while the user is still speaking. */
+  /** Optionally pre-load/warm the engine. No-op for the cloud engine; kept so the
+   *  hook's warm-up call stays uniform. Idempotent. */
   warm?(): Promise<void>
-  /** Free model/worker resources. */
+  /** Free any resources. */
   dispose(): void
 }
 

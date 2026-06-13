@@ -40,9 +40,9 @@ test.describe.serial('Voice gates steady noise (no phantom transcript)', () => {
     const { execSync } = await import('child_process')
     execSync('npx electron-vite build', { cwd: REPO, stdio: 'pipe' })
 
-    // Voice ON, LOCAL engine (so the real renderer gate runs), plain shell so a
-    // transcript — if one were wrongly produced — would surface in the confirm bar
-    // we assert NEVER appears.
+    // Voice ON, plain shell so a transcript — if one were wrongly produced —
+    // would surface in the confirm bar we assert NEVER appears. The speech/noise
+    // gate runs in the RENDERER before any Groq call, so this needs no API key.
     isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-vng-'))
     const session = JSON.stringify({
       terminals: [],
@@ -51,14 +51,13 @@ test.describe.serial('Voice gates steady noise (no phantom transcript)', () => {
       viewMode: 'tabs',
       voiceSettings: {
         enabled: true,
-        engine: 'local',
-        model: 'whisper-base.en',
+        consentAccepted: true,
+        groqModel: 'whisper-large-v3-turbo',
         pushToTalkKey: 'Ctrl+Shift+L',
         pushToTalkMode: 'hold',
         autoSubmitInAgent: false,
         correctionEnabled: false,
         confirmBeforeRunInShell: true,
-        cloudEndpoint: '',
       },
     })
     fs.writeFileSync(path.join(isolatedUserData, 'session.json'), session)

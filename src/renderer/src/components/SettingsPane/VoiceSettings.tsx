@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
+import { GROQ_MODELS } from '../../lib/voice/voiceTypes'
 import { MicTester } from './MicTester'
+import { GroqConnectModal } from './GroqConnectModal'
 
 function Toggle({ on, onClick, testid, label }: { on: boolean; onClick: () => void; testid: string; label: string }) {
   return (
@@ -17,6 +20,26 @@ function Toggle({ on, onClick, testid, label }: { on: boolean; onClick: () => vo
 export function VoiceSettings() {
   const v = useTerminalStore((s) => s.voiceSettings)
   const set = useTerminalStore((s) => s.setVoiceSettings)
+  const [showConnect, setShowConnect] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [hint, setHint] = useState('')
+
+  const refreshStatus = () => {
+    window.termpolis
+      ?.groqGetKeyStatus?.()
+      .then((res) => {
+        if (res?.success && res.data) {
+          setConnected(res.data.connected)
+          setHint(res.data.hint)
+        }
+      })
+      .catch(() => {
+        /* leave as disconnected */
+      })
+  }
+  useEffect(() => {
+    refreshStatus()
+  }, [])
 
   return (
     <div className="flex flex-col gap-4" data-testid="voice-settings">
@@ -28,56 +51,69 @@ export function VoiceSettings() {
             {v.pushToTalkMode === 'hold' ? 'Hold' : 'Tap'} <kbd className="bg-[#3c3c3c] px-1 rounded">{v.pushToTalkKey}</kbd> in a
             terminal to dictate{v.pushToTalkMode === 'hold' ? ' (release to send)' : ' (tap again to stop)'}. In an AI-agent
             terminal the transcript is sent as a prompt; in a plain shell it is inserted and you confirm before it runs.
-            Local, on-device transcription by default — nothing leaves your machine.
+            Transcription uses Groq's cloud Whisper API — your recorded audio is sent to Groq (opt-in, off by default).
           </span>
         </div>
       </div>
 
       <fieldset disabled={!v.enabled} className={v.enabled ? '' : 'opacity-50'}>
         <div className="flex flex-col gap-4">
+          {/* Groq connection */}
+          <div className="flex flex-col gap-1 text-sm" data-testid="groq-connection-card">
+            <span>Groq transcription</span>
+            {connected ? (
+              <div className="bg-[#1e1e1e] border border-[#2d5a3d] rounded px-2 py-1.5 flex items-center gap-2">
+                <i className="fa-solid fa-circle-check text-[#7ee2a3] text-[11px]" />
+                <span className="text-[#e0e0e0]">Connected</span>
+                {hint && <span className="font-mono text-[10px] text-[#9ca3af]">{hint}</span>}
+                <span className="text-[10px] text-[#9ca3af]">· key in OS keychain</span>
+                <button
+                  type="button"
+                  data-testid="groq-manage-btn"
+                  onClick={() => setShowConnect(true)}
+                  className="ml-auto px-2 py-0.5 text-[11px] rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]"
+                >
+                  Manage
+                </button>
+              </div>
+            ) : (
+              <div className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1.5 flex items-center gap-2">
+                <i className="fa-solid fa-bolt text-[#f55036] text-[11px]" />
+                <span className="text-[#9ca3af]">Not connected — add your Groq API key to use voice.</span>
+                <button
+                  type="button"
+                  data-testid="groq-connect-open-btn"
+                  onClick={() => setShowConnect(true)}
+                  className="ml-auto px-2 py-0.5 text-[11px] rounded bg-[#0e639c] hover:bg-[#1177bb] text-white"
+                >
+                  Connect Groq…
+                </button>
+              </div>
+            )}
+            <span className="text-xs text-[#9ca3af]">
+              Free tier covers everyday dictation; paid is ~$0.04/hr of audio. The key is stored encrypted in your OS
+              keychain and used only in the background — it never lands in settings or logs.
+            </span>
+          </div>
+
+          {/* Model */}
           <label className="flex flex-col gap-1 text-sm">
-            Engine
+            Transcription model
             <select
-              data-testid="voice-engine-select"
-              value={v.engine}
-              onChange={(e) => set({ engine: e.target.value === 'cloud' ? 'cloud' : 'local' })}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-64 focus:outline-none"
+              data-testid="voice-model-select"
+              value={v.groqModel}
+              onChange={(e) => set({ groqModel: e.target.value })}
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-none"
             >
-              <option value="local">Local — Whisper (English, offline, private)</option>
-              <option value="cloud">Cloud — turbo (sends audio off-device)</option>
+              {GROQ_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
             </select>
           </label>
 
           <MicTester />
-
-          {v.engine === 'local' ? (
-            <div className="flex flex-col gap-1 text-sm">
-              <span>Local model</span>
-              <div
-                data-testid="voice-model-display"
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm flex items-center gap-2"
-              >
-                <i className="fa-solid fa-microphone-lines text-[#82aaff] text-[11px]" />
-                <span className="font-mono text-[#e0e0e0]">{v.model}</span>
-                <span className="text-[10px] text-[#9ca3af]">English · on-device · bundled (~77 MB)</span>
-              </div>
-              <span className="text-xs text-[#9ca3af]">
-                Ships with the app and transcribes fully offline. It is tuned for English dictation; for the
-                highest accuracy, switch the engine to Cloud turbo (which sends audio off-device).
-              </span>
-            </div>
-          ) : (
-            <label className="flex flex-col gap-1 text-sm">
-              Cloud STT endpoint
-              <input
-                data-testid="voice-endpoint-input"
-                placeholder="https://your-stt-endpoint/transcribe"
-                value={v.cloudEndpoint}
-                onChange={(e) => set({ cloudEndpoint: e.target.value })}
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
-              />
-            </label>
-          )}
 
           <label className="flex flex-col gap-1 text-sm">
             Push-to-talk hotkey
@@ -127,6 +163,15 @@ export function VoiceSettings() {
           </label>
         </div>
       </fieldset>
+
+      {showConnect && (
+        <GroqConnectModal
+          onClose={() => {
+            setShowConnect(false)
+            refreshStatus()
+          }}
+        />
+      )}
     </div>
   )
 }

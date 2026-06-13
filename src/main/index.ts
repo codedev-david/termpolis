@@ -81,7 +81,8 @@ import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
-import { ensureVoiceAssetServer, stopVoiceAssetServer } from './voiceAssetServer'
+import { getGroqKey, setGroqKey, getGroqKeyStatus, clearGroqKey } from './groqKeyStore'
+import { transcribeWithGroq, validateGroqKey } from './groqTranscription'
 import {
   sendMessage, readMessages, getAllMessages,
   createTask, listTasks, updateTask, clearSwarm,
@@ -586,14 +587,46 @@ ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
 
-// Voice: hand the renderer the localhost base URL for the bundled Whisper model
-// + ORT wasm. Lazily starts the asset server on first call (port stays closed
-// until voice is actually used), so the renderer worker can load the model
-// fully-offline under the app's CSP. Returns null-ish on failure → the hook
-// surfaces a clear error instead of hanging.
-ipcMain.handle('voice:asset-base', async () => {
+// Voice (Groq cloud STT). The API key lives ONLY in main, encrypted in the OS
+// keychain — the renderer never receives it, it only ever sees a connected flag
+// + masked hint. validate/set/status/clear manage the key; transcribe reads it,
+// encodes the captured PCM to WAV, and posts it to Groq's Whisper API.
+ipcMain.handle('groq:validate-key', async (_, input: { key?: string }) => {
   try {
-    return ok(await ensureVoiceAssetServer())
+    return ok(await validateGroqKey(input?.key ?? ''))
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e))
+  }
+})
+ipcMain.handle('groq:set-api-key', (_, input: { key?: string }) => {
+  try {
+    setGroqKey(app.getPath('userData'), input?.key ?? '')
+    return ok(getGroqKeyStatus(app.getPath('userData')))
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e))
+  }
+})
+ipcMain.handle('groq:get-key-status', () => {
+  try {
+    return ok(getGroqKeyStatus(app.getPath('userData')))
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e))
+  }
+})
+ipcMain.handle('groq:clear-api-key', () => {
+  try {
+    clearGroqKey(app.getPath('userData'))
+    return ok(getGroqKeyStatus(app.getPath('userData')))
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e))
+  }
+})
+ipcMain.handle('voice:transcribe', async (_, input: { pcm?: Float32Array | number[]; model?: string }) => {
+  try {
+    const key = getGroqKey(app.getPath('userData'))
+    if (!key) return err('Groq is not connected — add your API key in Settings → Voice.')
+    const pcm = input?.pcm instanceof Float32Array ? input.pcm : new Float32Array(input?.pcm ?? [])
+    return ok(await transcribeWithGroq(pcm, { apiKey: key, model: input?.model }))
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e))
   }
@@ -1774,7 +1807,6 @@ if (!gotTheLock) {
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
-    try { stopVoiceAssetServer() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {
@@ -1782,7 +1814,6 @@ if (!gotTheLock) {
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
-    try { stopVoiceAssetServer() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
     if (process.platform !== 'darwin') {
       app.quit()

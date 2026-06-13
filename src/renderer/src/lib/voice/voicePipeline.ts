@@ -4,7 +4,7 @@
 
 import {
   DEFAULT_VOICE_SETTINGS,
-  BUNDLED_LOCAL_MODELS,
+  GROQ_MODELS,
   type VoiceSettings,
   type VoiceMode,
   type InjectionPlan,
@@ -122,22 +122,19 @@ export function sanitizeVoiceSettings(raw: unknown): VoiceSettings {
   const d = DEFAULT_VOICE_SETTINGS
   const str = (v: unknown, fallback: string, max = 200): string => (typeof v === 'string' ? v.slice(0, max) : fallback)
   const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback)
-  // The local engine is OFFLINE — it can only load a model we actually bundle.
-  // Coerce any other id (e.g. a stale persisted remote model from an earlier
-  // build, or junk) to the bundled default so it never silently fails to load.
-  const modelRaw = str(r.model, d.model)
-  const model = (BUNDLED_LOCAL_MODELS as readonly string[]).includes(modelRaw) ? modelRaw : d.model
+  // Only accept a Groq model id we actually offer; anything else (junk, or a
+  // stale persisted local model id from an older build) falls back to the default.
+  const groqModel = GROQ_MODELS.some((m) => m.id === r.groqModel) ? (r.groqModel as string) : d.groqModel
   return {
     enabled: bool(r.enabled, d.enabled),
-    engine: r.engine === 'cloud' ? 'cloud' : 'local',
-    model,
+    consentAccepted: bool(r.consentAccepted, d.consentAccepted),
+    groqModel,
     inputDeviceId: str(r.inputDeviceId, d.inputDeviceId, 200),
     pushToTalkKey: str(r.pushToTalkKey, d.pushToTalkKey, 50),
     pushToTalkMode: r.pushToTalkMode === 'toggle' ? 'toggle' : 'hold',
     autoSubmitInAgent: bool(r.autoSubmitInAgent, d.autoSubmitInAgent),
     correctionEnabled: bool(r.correctionEnabled, d.correctionEnabled),
     confirmBeforeRunInShell: bool(r.confirmBeforeRunInShell, d.confirmBeforeRunInShell),
-    cloudEndpoint: str(r.cloudEndpoint, d.cloudEndpoint, 500),
   }
 }
 

@@ -5,20 +5,18 @@
  * (no audio device in jsdom; the Whisper worker can't load there).
  *
  * How it stays deterministic and cheap:
- *  - Chromium's FAKE audio device (`--use-fake-device-for-media-stream`) feeds
- *    synthetic frames, so getUserMedia resolves headlessly under xvfb.
- *  - The CLOUD STT engine is network-stubbed via page.route, so the transcript
- *    is fixed and NO on-device model is ever loaded.
+ *  - Chromium's FAKE audio device (`--use-fake-device-for-media-stream`) feeds a
+ *    synthetic tone, so getUserMedia resolves headlessly under xvfb.
+ *  - Transcription is NOT exercised here: it runs in the MAIN process (Groq), and
+ *    the synthetic tone is gated as non-speech in the renderer before any Groq
+ *    call — so stop() resolves instantly with no API key and no network.
  *
  * What it proves end-to-end: clicking the on-pane mic button performs REAL mic
  * acquisition (the red "Listening…" badge only renders once getUserMedia
  * resolved AND the capture graph is wired), and clicking the badge actually
  * STOPS capture — the runtime proof of the "never goes away" fix. The
  * transcript→UI decision itself (inject vs confirm-before-run) is exhaustively
- * covered by the unit suite (voicePipeline + useVoiceInput); it needs the
- * on-device Whisper model, which can't load headlessly, so it is intentionally
- * out of scope here. The cloud engine + network stub are used only so a stop
- * resolves instantly without loading that model.
+ * covered by the unit suite (voicePipeline + useVoiceInput) and is out of scope here.
  *
  * Isolated --user-data-dir gives this its own single-instance lock, so it
  * coexists with a developer's running app instead of fighting it for the lock.
@@ -33,17 +31,13 @@ let app: ElectronApplication
 let page: Page
 let isolatedUserData: string
 
-// The fixed transcript the stubbed cloud STT endpoint returns. Distinct enough
-// that asserting on it can't be satisfied by stray UI text.
-const STT_TEXT = 'voice capture e2e ok'
-
 test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   // Isolated profile: its own single-instance lock (so it won't collide with a
-  // dev app) and a seeded session that turns voice ON with the network-stubbable
-  // cloud engine — so the heavy local Whisper model is never loaded in CI.
+  // dev app) and a seeded session that turns voice ON. Transcription is never
+  // triggered (the fake tone is gated as non-speech), so no Groq key is needed.
   isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-voice-'))
   const session = JSON.stringify({
     terminals: [],
@@ -52,14 +46,13 @@ test.beforeAll(async () => {
     viewMode: 'tabs',
     voiceSettings: {
       enabled: true,
-      engine: 'cloud',
-      model: 'onnx-community/distil-whisper-large-v3.5-ONNX',
+      consentAccepted: true,
+      groqModel: 'whisper-large-v3-turbo',
       pushToTalkKey: 'Ctrl+Shift+L',
       pushToTalkMode: 'hold',
       autoSubmitInAgent: false,
       correctionEnabled: false,
       confirmBeforeRunInShell: true,
-      cloudEndpoint: 'https://stt.e2e.local/transcribe',
     },
   })
   fs.writeFileSync(path.join(isolatedUserData, 'session.json'), session)
@@ -84,16 +77,6 @@ test.beforeAll(async () => {
   })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
-
-  // Stub the cloud STT endpoint: deterministic transcript, no model load, and
-  // the result never depends on what the fake device actually emits.
-  await page.route('**/transcribe', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ text: STT_TEXT }),
-    })
-  })
 
   await page.waitForTimeout(1500)
 

@@ -79,8 +79,8 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>AI Agents</strong> section in the sidebar — one-click launch for Claude Code, Codex, Gemini CLI, Qwen Code</li>
               <li><strong>+</strong> button to add custom AI agent profiles with name, command, shell, and color</li>
               <li><strong>Workflows</strong> button — pre-built multi-terminal layouts (Claude + Shell, Full Stack Dev, Code Review)</li>
-              <li><strong>Agent detection</strong> — status bar automatically shows a colored badge when an AI agent is running</li>
-              <li><strong>Cost tracking</strong> — parses token usage and costs from AI output, shown next to the agent badge</li>
+              <li><strong>Agent badge</strong> — the per-terminal status bar shows a colored badge for the agent you launched (Claude Code, Codex, Gemini, Qwen)</li>
+              <li><strong>Context gauge</strong> — the bottom bar shows a live <code>ctx %</code> pill of how full the focused agent's context window is (real token counts for Claude), so you can see compaction coming</li>
               <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex", "Qwen Code") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
             </ul>
           </section>
@@ -358,17 +358,16 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-microphone text-xs"></i> Voice Dictation
             </h3>
-            <p className="text-[#bbb] text-xs mb-1.5">Talk instead of type. Transcription runs 100% on-device — audio never leaves your machine.</p>
+            <p className="text-[#bbb] text-xs mb-1.5">Talk instead of type. Transcription uses Groq's cloud Whisper API — your recorded audio is sent to Groq (opt-in, off by default).</p>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><strong>Turn it on first</strong> in <strong>Settings → Voice</strong> — it's off by default.</li>
+              <li><strong>Turn it on first</strong> in <strong>Settings → Voice</strong> — it's off by default — then <strong>Connect Groq</strong> (paste a free Groq API key). The key is validated and stored encrypted in your OS keychain; it never touches settings or logs.</li>
               <li><strong>Hold <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+L</kbd> and speak; release to send.</strong> Prefer hands-free? Switch to tap-to-start / tap-to-stop under <strong>Activation</strong>.</li>
-              <li><strong>Wait for the "Listening…" badge, then speak normally.</strong> The on-device model is tuned for <strong>English</strong>. If the mic catches no speech you'll see <strong>"No speech detected"</strong> — just hold the key, speak, and release again (Termpolis never injects a guessed phrase when it didn't hear you).</li>
+              <li><strong>Wait for the "Listening…" badge, then speak normally.</strong> Groq's Whisper model is tuned for <strong>English</strong>. If the mic catches no speech you'll see <strong>"No speech detected"</strong> — hold the key, speak, and release again (Termpolis never injects a guessed phrase, and never sends silence to Groq).</li>
               <li><strong>In an AI-agent terminal</strong> (Claude · Codex · Gemini · Qwen) your words are <strong>sent straight to the agent as a prompt</strong> — it absorbs minor mis-hearings, so just talk naturally.</li>
               <li><strong>In a plain shell</strong> the transcript is <em>inserted but never run automatically</em> — you review it and press <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> yourself (a mis-heard command is never executed for you).</li>
               <li><strong>When dictation ends the caret returns to the terminal</strong> — keep typing or start another dictation right away, no clicking back in.</li>
-              <li><strong>Fully offline</strong> — the Whisper speech model (~77&nbsp;MB) <strong>ships inside Termpolis</strong>, runtime and all; nothing downloads on first use, and the strict CSP is never touched.</li>
-              <li><strong>Cloud "turbo"</strong> mode (Settings → Voice → Engine) is an opt-in that sends audio to an endpoint you configure — off by default.</li>
-              <li>If you ever see a red <strong>"Voice: model load failed"</strong> bar, the on-device speech runtime didn't load — update to the latest Termpolis build (it bundles the complete runtime) and try again.</li>
+              <li><strong>Privacy</strong> — only the few seconds you dictate are sent, and only to Groq. By default Groq does not train on or retain it; for the hardened setup, enable <strong>Zero Data Retention</strong> in your Groq console (the Connect dialog links you there). Free tier covers everyday use; paid is ~$0.04/hr of audio.</li>
+              <li>If transcription fails, check your <strong>Groq API key</strong> in <strong>Settings → Voice</strong> and your internet connection — the red error bar will say what went wrong.</li>
             </ul>
           </section>
 

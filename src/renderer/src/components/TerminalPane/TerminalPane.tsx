@@ -25,6 +25,7 @@ import { pushToTalkIntent, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEE
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
+import { agentFromCommand } from '../../lib/agentDetector'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
 import { useAutoPrimer, useCompactionReprimer } from '../../hooks/useAutoPrimer'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
@@ -91,6 +92,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // --- Custom hooks ---
   const completion = useCompletionDropdown(terminalId, containerRef, inputBufferRef)
   const agent = useAgentDetection()
+  // The status-bar badge uses the LAUNCHED agent identity (the authoritative
+  // `agentCommand` Termpolis records), NOT output keyword scraping — which
+  // mislabels e.g. a Claude session that merely discusses "OpenAI" as "Codex".
+  // Falls back to output detection for an agent started by hand in a plain shell.
+  const agentCommand = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.agentCommand)
+  const badgeAgent = agentFromCommand(agentCommand) ?? agent.detectedAgent
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings).
   useAutoPrimer(terminalId, agent.detectedAgent, cwd)
@@ -1010,8 +1017,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         shellType={shellType}
         cwd={parsedCwd || cwd}
         parsedBranch={parsedBranch}
-        agent={agent.detectedAgent}
-        costInfo={agent.costInfo}
+        agent={badgeAgent}
         isRecording={recording.isRecording}
       />
       {showDiffViewer && (

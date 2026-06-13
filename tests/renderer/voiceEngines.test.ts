@@ -1,128 +1,72 @@
-import { describe, it, expect, vi } from 'vitest'
-import { LocalWhisperEngine, CloudWhisperEngine, createVoiceEngine, type WorkerLike } from '../../src/renderer/src/lib/voice/voiceEngines'
+// @vitest-environment jsdom
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { GroqWhisperEngine, createVoiceEngine } from '../../src/renderer/src/lib/voice/voiceEngines'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../../src/renderer/src/lib/voice/voiceTypes'
 
-const settings = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({ ...DEFAULT_VOICE_SETTINGS, ...over })
-
-// A fake worker that scripts the responses the real Whisper worker would post.
-class FakeWorker implements WorkerLike {
-  onmessage: ((ev: { data: unknown }) => void) | null = null
-  onerror: ((ev: unknown) => void) | null = null
-  posted: any[] = []
-  terminated = false
-  constructor(private behavior: 'ok' | 'loadError' | 'txError' = 'ok') {}
-  postMessage(msg: any): void {
-    this.posted.push(msg)
-    queueMicrotask(() => {
-      if (msg.type === 'load') {
-        if (this.behavior === 'loadError') this.onmessage?.({ data: { type: 'load-error', error: 'no webgpu' } })
-        else this.onmessage?.({ data: { type: 'ready', device: 'wasm' } })
-      } else if (msg.type === 'transcribe') {
-        if (this.behavior === 'txError') this.onmessage?.({ data: { type: 'error', id: msg.id, error: 'decode boom' } })
-        else this.onmessage?.({ data: { type: 'result', id: msg.id, text: 'hello world', nbest: ['hello word'] } })
-      }
-    })
-  }
-  terminate(): void { this.terminated = true }
+function settings(overrides: Partial<VoiceSettings> = {}): VoiceSettings {
+  return { ...DEFAULT_VOICE_SETTINGS, ...overrides }
 }
 
-describe('voiceEngines', () => {
-  describe('createVoiceEngine', () => {
-    it('builds a local engine by default and a cloud engine when selected', () => {
-      expect(createVoiceEngine(settings({ engine: 'local' })).kind).toBe('local')
-      expect(createVoiceEngine(settings({ engine: 'cloud', cloudEndpoint: 'http://x' })).kind).toBe('cloud')
-    })
+afterEach(() => {
+  delete (window as unknown as { termpolis?: unknown }).termpolis
+})
+
+describe('GroqWhisperEngine', () => {
+  it('sends the PCM + model through the transport and returns the transcript', async () => {
+    const transport = vi.fn(async () => ({ text: 'hello there' }))
+    const engine = new GroqWhisperEngine('whisper-large-v3-turbo', transport)
+    const pcm = new Float32Array([0.1, -0.1])
+    const res = await engine.transcribe(pcm)
+    expect(res.text).toBe('hello there')
+    expect(transport).toHaveBeenCalledWith(pcm, 'whisper-large-v3-turbo')
   })
 
-  describe('LocalWhisperEngine', () => {
-    it('loads the model once, then transcribes via the worker', async () => {
-      const fake = new FakeWorker('ok')
-      const engine = new LocalWhisperEngine('model-x', () => fake)
-      const r1 = await engine.transcribe(new Float32Array([0.1, 0.2]))
-      expect(r1).toEqual({ text: 'hello world', nbest: ['hello word'] })
-      // A second call reuses the same (already-loaded) worker — only one 'load' message.
-      await engine.transcribe(new Float32Array([0.3]))
-      expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
+  it('propagates transport errors', async () => {
+    const transport = vi.fn(async () => {
+      throw new Error('Groq transcription failed')
     })
-
-    it('warm() pre-loads the model once; a later transcribe reuses it (no second load)', async () => {
-      const fake = new FakeWorker('ok')
-      const engine = new LocalWhisperEngine('model-x', () => fake)
-      await engine.warm()
-      expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
-      await engine.transcribe(new Float32Array([0.1]))
-      // warm() already loaded it — transcribe must NOT trigger a second load.
-      expect(fake.posted.filter((m) => m.type === 'load')).toHaveLength(1)
-    })
-
-    it('routes concurrent transcribe() calls to the right result even when replies arrive out of order', async () => {
-      // A worker that buffers transcribe requests and answers them in REVERSE
-      // order, echoing each request id — so a broken pending-map (id cross-talk)
-      // would resolve a promise with the wrong transcript.
-      class OutOfOrderWorker implements WorkerLike {
-        onmessage: ((ev: { data: unknown }) => void) | null = null
-        onerror: ((ev: unknown) => void) | null = null
-        private ids: number[] = []
-        postMessage(msg: any): void {
-          if (msg.type === 'load') { queueMicrotask(() => this.onmessage?.({ data: { type: 'ready', device: 'wasm' } })); return }
-          if (msg.type === 'transcribe') {
-            this.ids.push(msg.id)
-            if (this.ids.length === 2) {
-              // Reply newest-first to stress ordering.
-              for (const id of [...this.ids].reverse()) {
-                this.onmessage?.({ data: { type: 'result', id, text: `text-${id}` } })
-              }
-            }
-          }
-        }
-        terminate(): void {}
-      }
-      const engine = new LocalWhisperEngine('m', () => new OutOfOrderWorker())
-      const [r1, r2] = await Promise.all([
-        engine.transcribe(new Float32Array([0.1])),
-        engine.transcribe(new Float32Array([0.2])),
-      ])
-      expect(r1.text).toBe('text-1') // first call (seq 1) gets its own result
-      expect(r2.text).toBe('text-2') // second call (seq 2) gets its own result
-    })
-
-    it('rejects when the model fails to load', async () => {
-      const engine = new LocalWhisperEngine('model-x', () => new FakeWorker('loadError'))
-      await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/no webgpu/)
-    })
-
-    it('rejects when transcription errors', async () => {
-      const engine = new LocalWhisperEngine('model-x', () => new FakeWorker('txError'))
-      await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/decode boom/)
-    })
-
-    it('terminates the worker on dispose', async () => {
-      const fake = new FakeWorker('ok')
-      const engine = new LocalWhisperEngine('model-x', () => fake)
-      await engine.transcribe(new Float32Array([0]))
-      engine.dispose()
-      expect(fake.terminated).toBe(true)
-    })
+    const engine = new GroqWhisperEngine('m', transport)
+    await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/Groq/)
   })
 
-  describe('CloudWhisperEngine', () => {
-    it('POSTs audio to the endpoint and returns the transcript', async () => {
-      const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ text: 'cloud text', nbest: ['c'] }) })) as any
-      const engine = new CloudWhisperEngine('https://stt.example/transcribe', fetchImpl)
-      const r = await engine.transcribe(new Float32Array([0.1]))
-      expect(r).toEqual({ text: 'cloud text', nbest: ['c'] })
-      expect(fetchImpl).toHaveBeenCalledWith('https://stt.example/transcribe', expect.objectContaining({ method: 'POST' }))
-    })
+  it('warm() and dispose() are no-ops that never throw', async () => {
+    const engine = new GroqWhisperEngine('m', vi.fn())
+    await expect(engine.warm()).resolves.toBeUndefined()
+    expect(() => engine.dispose()).not.toThrow()
+  })
+})
 
-    it('throws without an endpoint', async () => {
-      const engine = new CloudWhisperEngine('')
-      await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/no cloud STT endpoint/)
-    })
+describe('createVoiceEngine', () => {
+  it('builds a Groq engine that uses the settings model + injected transport', async () => {
+    const transport = vi.fn(async () => ({ text: 'x' }))
+    const engine = createVoiceEngine(settings({ groqModel: 'whisper-large-v3' }), { transport })
+    await engine.transcribe(new Float32Array([0]))
+    expect(transport).toHaveBeenCalledWith(expect.any(Float32Array), 'whisper-large-v3')
+  })
+})
 
-    it('throws on a non-OK response', async () => {
-      const fetchImpl = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })) as any
-      const engine = new CloudWhisperEngine('https://stt.example', fetchImpl)
-      await expect(engine.transcribe(new Float32Array([0]))).rejects.toThrow(/503/)
-    })
+describe('default IPC transport', () => {
+  it('round-trips through window.termpolis.voiceTranscribe and returns its text', async () => {
+    const voiceTranscribe = vi.fn(async () => ({ success: true, data: { text: 'via ipc' } }))
+    ;(window as unknown as { termpolis: unknown }).termpolis = { voiceTranscribe }
+    const pcm = new Float32Array([0.2])
+    const res = await createVoiceEngine(settings({ groqModel: 'whisper-large-v3-turbo' })).transcribe(pcm)
+    expect(res.text).toBe('via ipc')
+    expect(voiceTranscribe).toHaveBeenCalledWith(pcm, 'whisper-large-v3-turbo')
+  })
+
+  it('throws with the IPC error message when the transcribe call fails', async () => {
+    ;(window as unknown as { termpolis: unknown }).termpolis = {
+      voiceTranscribe: vi.fn(async () => ({ success: false, error: 'Groq is not connected' })),
+    }
+    await expect(createVoiceEngine(settings()).transcribe(new Float32Array([0]))).rejects.toThrow(/not connected/)
+  })
+
+  it('defaults the transcript to empty string when the response omits data', async () => {
+    ;(window as unknown as { termpolis: unknown }).termpolis = {
+      voiceTranscribe: vi.fn(async () => ({ success: true, data: {} })),
+    }
+    const res = await createVoiceEngine(settings()).transcribe(new Float32Array([0]))
+    expect(res.text).toBe('')
   })
 })

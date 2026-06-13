@@ -244,7 +244,7 @@ describe('StatusBar', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.getByText('Voice Dictation')).toBeInTheDocument()
-    expect(screen.getByText(/audio never leaves your machine/i)).toBeInTheDocument()
+    expect(screen.getByText(/sent to Groq/i)).toBeInTheDocument()
   })
 
   it('voice docs explain how to enable + the push-to-talk hotkey', () => {
@@ -274,11 +274,11 @@ describe('StatusBar', () => {
     expect(screen.getAllByText(/Ctrl\+Shift\+M/).length).toBeGreaterThan(0)
   })
 
-  it('voice docs state the model is bundled/offline and explain the load-failed bar', () => {
+  it('voice docs state transcription uses Groq + the Zero-Data-Retention option', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    expect(screen.getByText(/ships inside Termpolis/i)).toBeInTheDocument()
-    expect(screen.getByText(/Voice: model load failed/)).toBeInTheDocument()
+    expect(screen.getByText('Connect Groq')).toBeInTheDocument()
+    expect(screen.getByText('Zero Data Retention')).toBeInTheDocument()
   })
 
   // -- Help dialog link clicks --

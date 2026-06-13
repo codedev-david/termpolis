@@ -10,12 +10,11 @@
 
       'unsafe-inline' for style-src is required by Tailwind's JIT runtime and
       Monaco editor (both inject <style> tags at runtime). 'wasm-unsafe-eval' in
-      script-src lets the voice worker instantiate the onnxruntime-web WASM for
-      local Whisper transcription (it permits WASM compilation only, NOT arbitrary
-      JS eval). connect-src allows localhost + 127.0.0.1 (Vite HMR in dev, local
-      MCP server, and the local voice-asset server that serves the bundled model
-      + ORT wasm — all bound to 127.0.0.1) and Sentry ingest. worker-src allows
-      blob: for Monaco's web workers.
+      script-src lets onnxruntime-web instantiate the local embedding model's WASM
+      (it permits WASM compilation only, NOT arbitrary JS eval). connect-src allows
+      localhost + 127.0.0.1 (Vite HMR in dev and the local MCP server) and Sentry
+      ingest. Voice transcription runs in the MAIN process (Groq), so it needs no
+      renderer network grant here. worker-src allows blob: for Monaco's web workers.
     -->
     <meta
       http-equiv="Content-Security-Policy"

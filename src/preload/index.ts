@@ -176,9 +176,13 @@ const api: TermpolisAPI = {
   clipboardWriteRich: (text: string, html: string) => ipcRenderer.invoke('clipboard:write-rich', { text, html }),
   clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
 
-  // Voice: localhost base URL for the bundled Whisper model + ORT wasm, served
-  // by main so the renderer worker can load the model offline under the CSP.
-  getVoiceAssetBase: () => ipcRenderer.invoke('voice:asset-base'),
+  // Voice (Groq cloud STT). The API key stays in main (OS keychain) — these only
+  // push the key one-way into main, read back a masked status, or send PCM out.
+  groqValidateKey: (key: string) => ipcRenderer.invoke('groq:validate-key', { key }),
+  groqSetApiKey: (key: string) => ipcRenderer.invoke('groq:set-api-key', { key }),
+  groqGetKeyStatus: () => ipcRenderer.invoke('groq:get-key-status'),
+  groqClearApiKey: () => ipcRenderer.invoke('groq:clear-api-key'),
+  voiceTranscribe: (pcm: Float32Array, model?: string) => ipcRenderer.invoke('voice:transcribe', { pcm, model }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

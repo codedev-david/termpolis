@@ -258,9 +258,9 @@ Changes save immediately. There is no "apply" button — edits are persisted to 
 
 ## Voice Dictation
 
-Talk instead of type. Transcription runs **100% on-device** — audio never leaves your machine. It is **off by default**; turn it on in **Settings → Voice**.
+Talk instead of type. Transcription uses **Groq's cloud Whisper API** — your recorded audio is sent to Groq for transcription. It is **off by default** and opt-in; turn it on in **Settings → Voice** and connect a Groq API key.
 
-**Engine.** The default is a bundled, offline **Whisper** model (`whisper-base.en`, ~77 MB) that ships inside Termpolis — model and runtime both — so nothing downloads on first use and the app's strict CSP is never touched. It is **tuned for English**. We deliberately ship the English-only model rather than the multilingual one (more accurate for English dictation, and it can't mis-detect the language) or a larger one (which would be much slower on the on-device CPU runtime without improving the things that actually matter here). A **Cloud "turbo"** engine is available as an opt-in (Settings → Voice → Engine) that sends audio to an endpoint you configure — off by default.
+**Engine.** Transcription runs on **Groq's hosted Whisper API** (`whisper-large-v3-turbo` by default; `whisper-large-v3` is selectable for maximum accuracy). The call happens in Termpolis's **main process**, so your **API key never enters the renderer** — it is validated when you connect and stored encrypted in your **OS keychain** (Windows DPAPI / macOS Keychain / Linux libsecret), never in settings or logs. Groq is fast (~200–300 ms for a short clip) and cheap: the **free tier** covers everyday dictation, and paid is about **$0.04 per hour of audio**.
 
 **How to use it.**
 
@@ -270,9 +270,9 @@ Talk instead of type. Transcription runs **100% on-device** — audio never leav
 - **In a plain shell** the transcript is **inserted but never run automatically** — you review it and press `Enter` yourself, so a mis-heard command is never executed for you.
 - When dictation ends the caret returns to the terminal so you can keep typing or dictate again without clicking back in.
 
-**"No speech detected."** If the microphone captured silence or no clear speech, Termpolis shows a brief **"No speech detected"** notice and does nothing — it will **never inject a guessed phrase** when it didn't actually hear you. (This is what eliminates the old "I'm sorry, what is that?" phantom transcripts: on no-speech audio a speech model invents filler, so Termpolis gates that out at the source.) Just hold the key, speak, and release again. To improve capture, speak after the badge appears and reduce background noise; the model itself is robust to volume.
+**"No speech detected."** If the microphone captured silence or no clear speech, Termpolis shows a brief **"No speech detected"** notice and does nothing — it will **never inject a guessed phrase** when it didn't actually hear you. (This is what eliminates the old "I'm sorry, what is that?" phantom transcripts: on no-speech audio a speech model invents filler, so Termpolis gates that out at the source — and silence is never sent to Groq, since the speech/noise gate runs locally first.) Just hold the key, speak, and release again. To improve capture, speak after the badge appears and reduce background noise; the model itself is robust to volume.
 
-**Privacy & reliability.** Local transcription is fully offline — no network, no telemetry. The bundled model + onnxruntime-web runtime are verified at build time (a CI gate loads the real model and transcribes a known clip, asserting the words come back correctly), so a broken or partial bundle fails the build instead of reaching you. If you ever see a red **"Voice: model load failed"** bar, update to the latest build (it bundles the complete runtime) and try again.
+**Privacy & reliability.** Only the few seconds you actually dictate are sent, and only to Groq — never your files, terminal output, or other context. By default Groq **does not train on or retain** API audio; for the hardened setup, enable **Zero Data Retention** in your Groq console (the Connect dialog links you straight there). The transcript Groq returns is re-scanned by the secret scanner before it's injected, the same as anything else you send to an agent. If transcription fails, the red error bar tells you what went wrong — usually a missing/invalid key (**Settings → Voice**) or no internet connection.
 
 ---
 
