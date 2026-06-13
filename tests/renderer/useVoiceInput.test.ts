@@ -7,28 +7,29 @@ const h = vi.hoisted(() => ({
   transcribe: vi.fn(async () => ({ text: 'hello world' })),
   writeToTerminal: vi.fn(),
   focusActiveTerminal: vi.fn(),
+  // Mutable so a test can set inputDeviceId before calling start().
+  settings: {
+    enabled: true,
+    engine: 'local',
+    model: 'm',
+    inputDeviceId: '',
+    pushToTalkKey: 'Ctrl+Shift+Period',
+    pushToTalkMode: 'hold',
+    autoSubmitInAgent: false,
+    correctionEnabled: true,
+    confirmBeforeRunInShell: true,
+    cloudEndpoint: '',
+  },
 }))
 
 vi.mock('../../src/renderer/src/lib/voice/voiceEngines', () => ({
   createVoiceEngine: () => ({ kind: 'local', transcribe: h.transcribe, dispose: vi.fn() }),
 }))
 
-// Hook reads voiceSettings via the store selector; return an enabled config.
+// Hook reads voiceSettings via the store selector; return the mutable config.
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: (selector: (s: unknown) => unknown) =>
-    selector({
-      voiceSettings: {
-        enabled: true,
-        engine: 'local',
-        model: 'm',
-        pushToTalkKey: 'Ctrl+Shift+Period',
-        autoSubmitInAgent: false,
-        correctionEnabled: true,
-        confirmBeforeRunInShell: true,
-        cloudEndpoint: '',
-      },
-      focusActiveTerminal: h.focusActiveTerminal,
-    }),
+    selector({ voiceSettings: h.settings, focusActiveTerminal: h.focusActiveTerminal }),
 }))
 
 import { useVoiceInput } from '../../src/renderer/src/hooks/useVoiceInput'
@@ -46,6 +47,9 @@ class FakeAudioContext {
   constructor(_opts?: unknown) { /* options (sampleRate) ignored by the fake */ }
   resume() { return resumeGate ? resumeGate.promise : Promise.resolve() }
   createMediaStreamSource() { return { connect: vi.fn() } }
+  createAnalyser() {
+    return { fftSize: 2048, connect: vi.fn(), disconnect: vi.fn(), getFloatTimeDomainData: (a: Float32Array) => a.fill(0) }
+  }
   createScriptProcessor() {
     createdProcessor = { onaudioprocess: null, connect: vi.fn(), disconnect: vi.fn() }
     return createdProcessor
@@ -62,6 +66,7 @@ beforeEach(() => {
   h.focusActiveTerminal.mockClear()
   createdProcessor = null
   resumeGate = null
+  h.settings.inputDeviceId = ''
   ;(window as unknown as { termpolis: unknown }).termpolis = {
     writeToTerminal: h.writeToTerminal,
     getVoiceAssetBase: async () => ({ success: true, data: 'http://127.0.0.1:1' }),
@@ -242,5 +247,58 @@ describe('useVoiceInput (orchestration)', () => {
     expect(result.current.errorMsg).toMatch(/model load failed/)
     act(() => { result.current.clearError() })
     expect(result.current.errorMsg).toBeNull()
+  })
+
+  it('uses the explicitly chosen input device', async () => {
+    h.settings.inputDeviceId = 'mic-42'
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ audio: expect.objectContaining({ deviceId: { exact: 'mic-42' } }) }),
+    )
+  })
+
+  it('falls back to the system default mic when the chosen device is unavailable', async () => {
+    h.settings.inputDeviceId = 'unplugged'
+    const gum = navigator.mediaDevices.getUserMedia as unknown as ReturnType<typeof vi.fn>
+    gum.mockReset()
+    gum.mockRejectedValueOnce(new Error('OverconstrainedError'))
+    gum.mockResolvedValueOnce({ getTracks: () => [{ stop: vi.fn() }] })
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    expect(gum).toHaveBeenCalledTimes(2)
+    // The retry drops the deviceId constraint so a stale id can't brick dictation.
+    expect(gum.mock.calls[1][0]).toEqual({
+      audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    })
+    expect(result.current.status).toBe('listening')
+  })
+
+  it('exposes the capture analysis (verdict + level) so a failure is legible', async () => {
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    expect(result.current.lastCapture).toBeNull()
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    await act(async () => { await result.current.stop() })
+    expect(result.current.lastCapture?.verdict).toBe('speech')
+    expect(result.current.lastCapture?.peak).toBeGreaterThan(0)
+  })
+
+  it('steady background noise is gated as noise (NOT transcribed → no "the" hallucination)', async () => {
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    // Flat, mid-level hum: above the silence floor but no speech dynamics — the
+    // exact dead-zone that made Whisper emit "the".
+    act(() => {
+      const pcm = new Float32Array(8000)
+      for (let i = 0; i < pcm.length; i++) pcm[i] = 0.007 * Math.sin((2 * Math.PI * 120 * i) / 16000)
+      createdProcessor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => pcm } })
+    })
+    await act(async () => { await result.current.stop() })
+    expect(h.transcribe).not.toHaveBeenCalled()
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/background noise/i)
+    expect(result.current.lastCapture?.verdict).toBe('noise')
   })
 })

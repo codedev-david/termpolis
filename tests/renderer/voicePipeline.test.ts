@@ -12,8 +12,12 @@ import {
   audioRms,
   isNoSpeech,
   normalizeAudioGain,
+  computeDisplayLevel,
+  analyzeCapture,
   SILENCE_RMS_THRESHOLD,
   MIN_SPEECH_SECONDS,
+  RELIABLE_SPEECH_RMS,
+  SPEECH_DYNAMIC_RATIO,
 } from '../../src/renderer/src/lib/voice/voicePipeline'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../../src/renderer/src/lib/voice/voiceTypes'
 import { matchesKeybinding } from '../../src/renderer/src/lib/keybindings'
@@ -318,6 +322,86 @@ describe('voicePipeline', () => {
       const clippy = new Float32Array([0.9, -0.9, 0.05])
       const out = normalizeAudioGain(clippy, 0.9)
       for (const v of out) expect(Math.abs(v)).toBeLessThanOrEqual(1)
+    })
+  })
+
+  describe('computeDisplayLevel (live meter mapping)', () => {
+    it('is 0 for silence/invalid and clamps to [0,1]', () => {
+      expect(computeDisplayLevel(0)).toBe(0)
+      expect(computeDisplayLevel(-1)).toBe(0)
+      expect(computeDisplayLevel(Number.NaN)).toBe(0)
+      expect(computeDisplayLevel(0.15)).toBeCloseTo(1, 5)
+      expect(computeDisplayLevel(1)).toBe(1) // clamped, never > 1
+    })
+    it('is monotonic — louder audio reads higher on the meter', () => {
+      expect(computeDisplayLevel(0.02)).toBeGreaterThan(computeDisplayLevel(0.005))
+      expect(computeDisplayLevel(0.08)).toBeGreaterThan(computeDisplayLevel(0.02))
+    })
+    it('lifts quiet-but-real speech to a clearly-visible level (sqrt curve)', () => {
+      expect(computeDisplayLevel(RELIABLE_SPEECH_RMS)).toBeGreaterThan(0.2)
+    })
+  })
+
+  describe('analyzeCapture (speech vs silence vs steady noise)', () => {
+    const SR = 16000
+    const make = (n: number, fn: (i: number) => number): Float32Array => {
+      const a = new Float32Array(n)
+      for (let i = 0; i < n; i++) a[i] = fn(i)
+      return a
+    }
+
+    it('classifies true silence as silent (Whisper would hallucinate here)', () => {
+      expect(analyzeCapture(new Float32Array(SR), SR).verdict).toBe('silent')
+    })
+
+    it('classifies a too-short tap as silent', () => {
+      const tiny = new Float32Array(Math.floor(MIN_SPEECH_SECONDS * SR) - 1).fill(0.3)
+      expect(analyzeCapture(tiny, SR).verdict).toBe('silent')
+    })
+
+    it('classifies steady mid-level hum as NOISE — the dead-zone that produced "the"', () => {
+      // Flat ~0.005-RMS tone: ABOVE the raw silence gate, but no speech dynamics.
+      const hum = make(SR, (i) => 0.007 * Math.sin((2 * Math.PI * 120 * i) / SR))
+      const a = analyzeCapture(hum, SR)
+      expect(a.rms).toBeGreaterThan(SILENCE_RMS_THRESHOLD) // would pass a raw RMS gate
+      expect(a.dynamicRatio).toBeLessThan(SPEECH_DYNAMIC_RATIO)
+      expect(a.verdict).toBe('noise')
+    })
+
+    it('classifies dynamic, syllable-like audio as SPEECH even when quiet', () => {
+      // Quiet bursts with gaps (3Hz on/off envelope) → high dynamic range → speech.
+      const speech = make(SR, (i) => {
+        const on = Math.sin((2 * Math.PI * 3 * i) / SR) > 0 ? 1 : 0.02
+        return 0.01 * on * Math.sin((2 * Math.PI * 180 * i) / SR)
+      })
+      const a = analyzeCapture(speech, SR)
+      expect(a.dynamicRatio).toBeGreaterThan(SPEECH_DYNAMIC_RATIO)
+      expect(a.verdict).toBe('speech')
+    })
+
+    it('accepts clearly-loud audio as speech regardless of flatness', () => {
+      const loud = make(SR, (i) => 0.2 * Math.sin((2 * Math.PI * 180 * i) / SR))
+      expect(analyzeCapture(loud, SR).verdict).toBe('speech')
+    })
+
+    it('does NOT drop continuous, normal-volume speech with few pauses (false-negative guard)', () => {
+      // Flat, normal-volume tone at RMS ~0.025 — like reading a sentence without
+      // gaps: low dynamicRatio, peak below the loud cutoff, but clearly above the
+      // reliable-speech RMS, so it must be accepted, never gated as noise.
+      const cont = make(SR, (i) => 0.035 * Math.sin((2 * Math.PI * 180 * i) / SR))
+      const a = analyzeCapture(cont, SR)
+      expect(a.rms).toBeGreaterThan(RELIABLE_SPEECH_RMS)
+      expect(a.dynamicRatio).toBeLessThan(SPEECH_DYNAMIC_RATIO) // flat...
+      expect(a.verdict).toBe('speech') // ...but accepted via the overall-RMS escape hatch
+    })
+
+    it('a NaN/Infinity-poisoned buffer yields a FINITE level (no "level NaN"), never crashes', () => {
+      const bad = new Float32Array(SR).fill(0.1)
+      bad[10] = Number.NaN
+      bad[20] = Number.POSITIVE_INFINITY
+      const a = analyzeCapture(bad, SR)
+      expect(Number.isFinite(a.rms)).toBe(true)
+      expect(Number.isFinite(computeDisplayLevel(a.rms))).toBe(true)
     })
   })
 })

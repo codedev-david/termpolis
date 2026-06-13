@@ -60,7 +60,11 @@ function parseConst(src, name) {
 const PSRC = fs.readFileSync(PIPELINE_TS, 'utf8')
 const SILENCE_RMS_THRESHOLD = parseConst(PSRC, 'SILENCE_RMS_THRESHOLD')
 const MIN_SPEECH_SECONDS = parseConst(PSRC, 'MIN_SPEECH_SECONDS')
-console.log(`[voice:verify-pipeline] gate constants: SILENCE_RMS_THRESHOLD=${SILENCE_RMS_THRESHOLD} MIN_SPEECH_SECONDS=${MIN_SPEECH_SECONDS}`)
+const SPEECH_DYNAMIC_RATIO = parseConst(PSRC, 'SPEECH_DYNAMIC_RATIO')
+const LOUD_SPEECH_RMS = parseConst(PSRC, 'LOUD_SPEECH_RMS')
+const RELIABLE_SPEECH_RMS = parseConst(PSRC, 'RELIABLE_SPEECH_RMS')
+const ANALYSIS_FRAME_SECONDS = parseConst(PSRC, 'ANALYSIS_FRAME_SECONDS')
+console.log(`[voice:verify-pipeline] gate constants: SILENCE_RMS_THRESHOLD=${SILENCE_RMS_THRESHOLD} MIN_SPEECH_SECONDS=${MIN_SPEECH_SECONDS} SPEECH_DYNAMIC_RATIO=${SPEECH_DYNAMIC_RATIO} LOUD_SPEECH_RMS=${LOUD_SPEECH_RMS}`)
 
 const ctype = (f) =>
   f.endsWith('.mjs') || f.endsWith('.js') ? 'text/javascript'
@@ -92,12 +96,33 @@ if (wasm) { wasm.wasmPaths = location.origin + '/ort/'; wasm.numThreads = 1; was
 const MODEL = ${JSON.stringify(MODEL)}
 const SILENCE_RMS_THRESHOLD = ${SILENCE_RMS_THRESHOLD}
 const MIN_SPEECH_SECONDS = ${MIN_SPEECH_SECONDS}
+const SPEECH_DYNAMIC_RATIO = ${SPEECH_DYNAMIC_RATIO}
+const LOUD_SPEECH_RMS = ${LOUD_SPEECH_RMS}
+const RELIABLE_SPEECH_RMS = ${RELIABLE_SPEECH_RMS}
+const ANALYSIS_FRAME_SECONDS = ${ANALYSIS_FRAME_SECONDS}
 // Mirror of buildTranscribeOptions: bare call for an English-only (.en) model.
 const decodeOpts = /\\.en$/i.test(MODEL) ? { return_timestamps: false } : { return_timestamps: false, language: 'en', task: 'transcribe' }
 // Mirror of isNoSpeech (pinned constants above).
 function audioRms(a){let s=0;for(let i=0;i<a.length;i++)s+=a[i]*a[i];return a.length?Math.sqrt(s/a.length):0}
 function isNoSpeech(a, rate){ if(a.length < MIN_SPEECH_SECONDS*rate) return true; return audioRms(a) < SILENCE_RMS_THRESHOLD }
 function scaleToRms(a, target){ const r=audioRms(a); if(r===0) return a; const g=target/r; const o=new Float32Array(a.length); for(let i=0;i<a.length;i++)o[i]=a[i]*g; return o }
+// Mirror of analyzeCapture's verdict (pinned constants above): silence vs steady
+// noise vs speech, by energy PROFILE — the gate that kills the dead-zone "the".
+function analyzeVerdict(pcm, rate){
+  if(pcm.length < MIN_SPEECH_SECONDS*rate) return 'silent'
+  const rms = audioRms(pcm)
+  const frameLen = Math.max(1, Math.floor(ANALYSIS_FRAME_SECONDS*rate))
+  const frames=[]
+  for(let i=0;i+frameLen<=pcm.length;i+=frameLen){ let s=0; for(let j=i;j<i+frameLen;j++) s+=pcm[j]*pcm[j]; frames.push(Math.sqrt(s/frameLen)) }
+  if(frames.length===0) frames.push(audioRms(pcm))
+  frames.sort((a,b)=>a-b)
+  const peak=frames[frames.length-1]
+  const floor=frames[Math.floor(frames.length*0.2)] ?? frames[0]
+  const dyn=peak/(floor+1e-9)
+  if(peak < SILENCE_RMS_THRESHOLD) return 'silent'
+  if(dyn < SPEECH_DYNAMIC_RATIO && peak < LOUD_SPEECH_RMS && rms < RELIABLE_SPEECH_RMS) return 'noise'
+  return 'speech'
+}
 
 async function load16k(url) {
   const buf = await (await fetch(url)).arrayBuffer()
@@ -117,6 +142,11 @@ window.run = async () => {
   // proves the no-speech gate doesn't drop a soft-spoken user.
   const quiet = scaleToRms(speech, 0.012)
   const quietOut = await asr(quiet, decodeOpts)
+  // STEADY NOISE (flat ~0.005-RMS hum, 2s): the dead-zone a level gate can't catch.
+  // Prove the REAL model hallucinates on it AND that analyzeVerdict gates it 'noise'.
+  const hum = new Float32Array(16000 * 2)
+  for (let i = 0; i < hum.length; i++) hum[i] = 0.007 * Math.sin(2 * Math.PI * 120 * i / 16000)
+  const humOut = await asr(hum, decodeOpts)
   return {
     processorOk: !!(asr.processor && asr.processor.feature_extractor),
     tokenizerOk: !!asr.tokenizer,
@@ -127,6 +157,12 @@ window.run = async () => {
     quiet_rms: audioRms(quiet),
     quiet_isNoSpeech: isNoSpeech(quiet, 16000),           // expect false (not dropped)
     quiet_text: quietOut && quietOut.text,                // expect the same words
+    hum_rms: audioRms(hum),
+    hum_model_text: humOut && humOut.text,                // what the model INVENTS on noise
+    hum_verdict: analyzeVerdict(hum, 16000),              // expect 'noise' (gated, never injected)
+    silence_verdict: analyzeVerdict(silence, 16000),      // expect 'silent'
+    speech_verdict: analyzeVerdict(speech, 16000),        // expect 'speech'
+    quiet_verdict: analyzeVerdict(quiet, 16000),          // expect 'speech' (soft talkers not dropped)
     speech_rms: audioRms(speech),
   }
 }
@@ -189,6 +225,16 @@ try {
   if (r.quiet_isNoSpeech !== false) fail(`no-speech gate WRONGLY dropped QUIET real speech (rms=${r.quiet_rms}) — soft talkers would get nothing`)
   const quietMissing = REQUIRED.filter((w) => !String(r.quiet_text || '').toLowerCase().includes(w))
   if (quietMissing.length) fail(`quiet speech mis-transcribed — missing [${quietMissing.join(', ')}] in: "${r.quiet_text}"`)
+
+  // STEADY-NOISE DEAD-ZONE — the exact "the" bug, proven dead on the SHIPPED model:
+  // the real model hallucinates on flat hum, but analyzeVerdict classifies it
+  // 'noise' so the hook never injects it. Also confirm the profile gate agrees
+  // with reality on silence/speech/quiet (no soft-talker false-drops).
+  console.log(`[voice:verify-pipeline] model on steady noise → "${r.hum_model_text}" (rms=${r.hum_rms}); analyzer verdict=${r.hum_verdict}`)
+  if (r.hum_verdict !== 'noise') fail(`steady noise was NOT gated (verdict=${r.hum_verdict}) — a hallucination like "${r.hum_model_text}" could be injected (the "the" bug)`)
+  if (r.silence_verdict !== 'silent') fail(`silence misclassified as ${r.silence_verdict}`)
+  if (r.speech_verdict !== 'speech') fail(`real speech misclassified as ${r.speech_verdict} — dictation would be dropped`)
+  if (r.quiet_verdict !== 'speech') fail(`QUIET real speech misclassified as ${r.quiet_verdict} — soft talkers dropped`)
 } catch (e) {
   fail(`verifier error: ${(e && e.message) || e}`)
 } finally {

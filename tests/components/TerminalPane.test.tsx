@@ -670,6 +670,9 @@ describe('TerminalPane', () => {
         return capturedProcessor
       }
       createGain() { return { gain: { value: 0 }, connect: () => {} } }
+      createAnalyser() {
+        return { fftSize: 2048, connect: () => {}, disconnect: () => {}, getFloatTimeDomainData: (a: Float32Array) => a.fill(0) }
+      }
       close() { return Promise.resolve() }
     }
 

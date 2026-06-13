@@ -240,6 +240,12 @@ jobs:
         continue-on-error: true
       - name: Voice transcription from a real speech clip
         run: xvfb-run --auto-servernum npx playwright test e2e/voice-transcribe.spec.ts
+      # Voice DEAD-ZONE gate: feed steady background hum (the exact audio that made
+      # Whisper emit "the"/" you") as the mic and prove the app GATES it — shows a
+      # notice and injects NOTHING. Uses a committed noise fixture; needs no model
+      # (the speech/noise gate runs in the renderer first). The in-app proof of the fix.
+      - name: Voice gates steady background noise (no phantom transcript)
+        run: xvfb-run --auto-servernum npx playwright test e2e/voice-noise-gate.spec.ts
       # Clipboard gate: proves the terminal right-click menu actually COPIES the
       # selection to the REAL OS clipboard (plain + code-block) and PASTES from it
       # (the recurring "copy/paste does nothing" report) — end-to-end in real Electron.

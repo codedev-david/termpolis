@@ -21,7 +21,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget } from '../../lib/keybindings'
 import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
-import { pushToTalkIntent, pushToTalkMainKey } from '../../lib/voice/voicePipeline'
+import { pushToTalkIntent, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -709,10 +709,28 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             data-testid="voice-listening-badge"
             onClick={(e) => { e.stopPropagation(); voice.stop() }}
             title="Click to stop dictation"
-            className="absolute top-1.5 left-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-white bg-[#c0392b] hover:bg-[#e74c3c] rounded px-2 py-1 shadow animate-pulse cursor-pointer"
+            className="absolute top-1.5 left-2 z-30 flex items-center gap-2 text-[10px] font-medium text-white bg-[#c0392b] hover:bg-[#e74c3c] rounded px-2 py-1 shadow cursor-pointer"
           >
-            <i className="fa-solid fa-microphone text-[9px]"></i>
-            Listening… <span className="opacity-80 font-normal">— click to stop</span>
+            <i className="fa-solid fa-microphone text-[9px] animate-pulse"></i>
+            Listening…
+            {/* Live mic level — lets the user SEE the mic is actually picking them
+                up; the tick marks where audio becomes reliably transcribable. */}
+            <span
+              data-testid="voice-level-meter"
+              className="relative inline-block h-1.5 w-20 rounded-full bg-[#ffffff2e] overflow-hidden align-middle"
+              title="Live mic level — keep your voice above the tick"
+            >
+              <span
+                data-testid="voice-level-fill"
+                className="absolute left-0 top-0 h-full rounded-full transition-[width] duration-75"
+                style={{
+                  width: `${Math.round(voice.level * 100)}%`,
+                  backgroundColor: voice.level >= computeDisplayLevel(RELIABLE_SPEECH_RMS) ? '#7ee787' : '#f0b86e',
+                }}
+              />
+              <span className="absolute top-0 h-full w-px bg-white/70" style={{ left: `${computeDisplayLevel(RELIABLE_SPEECH_RMS) * 100}%` }} />
+            </span>
+            <span className="opacity-80 font-normal">— click to stop</span>
           </button>
         )}
         {voice.confirm && (

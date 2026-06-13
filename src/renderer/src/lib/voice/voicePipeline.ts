@@ -131,6 +131,7 @@ export function sanitizeVoiceSettings(raw: unknown): VoiceSettings {
     enabled: bool(r.enabled, d.enabled),
     engine: r.engine === 'cloud' ? 'cloud' : 'local',
     model,
+    inputDeviceId: str(r.inputDeviceId, d.inputDeviceId, 200),
     pushToTalkKey: str(r.pushToTalkKey, d.pushToTalkKey, 50),
     pushToTalkMode: r.pushToTalkMode === 'toggle' ? 'toggle' : 'hold',
     autoSubmitInAgent: bool(r.autoSubmitInAgent, d.autoSubmitInAgent),
@@ -181,7 +182,9 @@ export function resampleTo16k(input: Float32Array, inputRate: number): Float32Ar
 export function audioRms(pcm: Float32Array): number {
   if (pcm.length === 0) return 0
   let sum = 0
-  for (let i = 0; i < pcm.length; i++) sum += pcm[i] * pcm[i]
+  // Skip non-finite samples (a glitched/dropped capture frame): a single NaN must
+  // not poison the RMS into NaN — which would read as 'speech' and surface "NaN".
+  for (let i = 0; i < pcm.length; i++) { const x = pcm[i]; if (Number.isFinite(x)) sum += x * x }
   return Math.sqrt(sum / pcm.length)
 }
 
@@ -230,4 +233,87 @@ export function normalizeAudioGain(pcm: Float32Array, targetRms = 0.08, maxGain 
     out[i] = v
   }
   return out
+}
+
+// ── Live capture instrumentation ──────────────────────────────────────────────
+// The capture path was a black box for 8 releases: no way to SEE whether the mic
+// was actually live, and a single RMS gate couldn't tell quiet speech from steady
+// background noise. computeDisplayLevel drives the on-screen meter; analyzeCapture
+// makes the speech/no-speech decision AND yields the numbers we surface, so a
+// failure is legible ("level 0.004") instead of a silent phantom transcript.
+
+/**
+ * Map a raw RMS amplitude to a 0..1 meter level for display. Uses a sqrt curve so
+ * quiet-but-real speech is clearly visible (linear would leave it a sliver), and
+ * clamps to [0,1]. ~0.15 RMS ≈ full scale (a strong, close-mic voice). Pure.
+ */
+export function computeDisplayLevel(rms: number): number {
+  if (!(rms > 0)) return 0
+  const v = Math.sqrt(rms / 0.15)
+  return v < 0 ? 0 : v > 1 ? 1 : v
+}
+
+/** Meter tick marking where audio becomes reliably transcribable — aim above it. */
+export const RELIABLE_SPEECH_RMS = 0.012
+
+// Speech is dynamic: syllables and pauses make the loudest frame much louder than
+// the quiet floor between words. Steady noise (fan/hum/mic-floor) is flat — peak ≈
+// floor. This ratio separates them where a raw level gate can't, which is exactly
+// the band just above SILENCE_RMS_THRESHOLD where Whisper hallucinates "the".
+export const SPEECH_DYNAMIC_RATIO = 2.2
+// Clearly-loud audio is accepted regardless of flatness (a held vowel can be flat).
+export const LOUD_SPEECH_RMS = 0.05
+const ANALYSIS_FRAME_SECONDS = 0.025
+
+export type CaptureVerdict = 'speech' | 'silent' | 'noise'
+export interface CaptureAnalysis {
+  /** Overall RMS of the clip. */
+  rms: number
+  /** Loudest 25ms-frame RMS. */
+  peak: number
+  /** Low-percentile frame RMS — the "between words" floor. */
+  floor: number
+  /** peak / floor — high for speech, ≈1 for steady noise. */
+  dynamicRatio: number
+  durationSec: number
+  verdict: CaptureVerdict
+}
+
+/**
+ * Classify a captured clip as speech / silent / noise from its energy profile.
+ * The bulletproof replacement for a bare RMS gate: it blocks BOTH true silence
+ * AND steady background noise (the dead-zone that produced "the"), while NOT
+ * rejecting genuine quiet speech (which still has a high dynamicRatio). Pure;
+ * sampleRate only sets the frame + min-duration sizing.
+ */
+export function analyzeCapture(pcm: Float32Array, sampleRate = 16000): CaptureAnalysis {
+  const durationSec = pcm.length / sampleRate
+  const rms = audioRms(pcm)
+  if (pcm.length < MIN_SPEECH_SECONDS * sampleRate) {
+    return { rms, peak: rms, floor: rms, dynamicRatio: 1, durationSec, verdict: 'silent' }
+  }
+  const frameLen = Math.max(1, Math.floor(ANALYSIS_FRAME_SECONDS * sampleRate))
+  const frames: number[] = []
+  for (let i = 0; i + frameLen <= pcm.length; i += frameLen) {
+    let sum = 0
+    for (let j = i; j < i + frameLen; j++) { const x = pcm[j]; if (Number.isFinite(x)) sum += x * x }
+    frames.push(Math.sqrt(sum / frameLen))
+  }
+  if (frames.length === 0) frames.push(rms)
+  const sorted = [...frames].sort((a, b) => a - b)
+  const peak = sorted[sorted.length - 1] ?? rms
+  const floor = sorted[Math.floor(sorted.length * 0.2)] ?? sorted[0] ?? rms
+  const dynamicRatio = peak / (floor + 1e-9)
+  if (peak < SILENCE_RMS_THRESHOLD) {
+    return { rms, peak, floor, dynamicRatio, durationSec, verdict: 'silent' }
+  }
+  // Flat (low dynamicRatio) AND not loud AND quiet OVERALL → noise. The rms guard
+  // is the critical escape hatch: continuous, normal-volume speech has few pauses
+  // (so a low dynamicRatio) yet a healthy overall RMS — without it, that speech
+  // would be wrongly dropped as "noise". Genuine hum/fan sits below
+  // RELIABLE_SPEECH_RMS and stays gated; anything at/above it is trusted as speech.
+  if (dynamicRatio < SPEECH_DYNAMIC_RATIO && peak < LOUD_SPEECH_RMS && rms < RELIABLE_SPEECH_RMS) {
+    return { rms, peak, floor, dynamicRatio, durationSec, verdict: 'noise' }
+  }
+  return { rms, peak, floor, dynamicRatio, durationSec, verdict: 'speech' }
 }

@@ -129,6 +129,12 @@ test.describe.serial('Voice transcription (real model, fake file audio)', () => 
     await toggle.click()
     const badge = page.locator('[data-testid="voice-listening-badge"]').first()
     await expect(badge, 'Listening badge = capture started').toBeVisible({ timeout: 10000 })
+    // The live mic-level meter must render while listening — the instrument that
+    // lets a user SEE the mic is actually picking them up.
+    await expect(
+      page.locator('[data-testid="voice-level-meter"]').first(),
+      'live level meter renders during capture',
+    ).toBeVisible({ timeout: 5000 })
 
     // Capture ~9s so the buffer holds the load-bearing words ("fellow / country /
     // Americans"), then stop — which kicks off real transcription.

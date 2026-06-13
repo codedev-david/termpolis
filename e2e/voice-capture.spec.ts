@@ -145,6 +145,12 @@ test.describe.serial('Voice capture (fake audio device)', () => {
       page.locator('[data-testid="voice-listening-badge"]').first(),
       'Listening badge proves getUserMedia + AudioContext capture succeeded',
     ).toBeVisible({ timeout: 10000 })
+    // The live level meter renders inside the badge while listening — proves the
+    // capture instrumentation (AnalyserNode + meter) is wired in the real app.
+    await expect(
+      page.locator('[data-testid="voice-level-meter"]').first(),
+      'live mic-level meter renders during capture',
+    ).toBeVisible({ timeout: 5000 })
   })
 
   test('2. clicking the Listening badge stops capture (the "never goes away" fix)', async () => {

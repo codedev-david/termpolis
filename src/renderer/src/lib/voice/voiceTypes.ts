@@ -13,6 +13,8 @@ export interface VoiceSettings {
   engine: VoiceEngineKind
   /** Local model id (ONNX, Transformers.js-loadable). */
   model: string
+  /** Preferred microphone (MediaDeviceInfo.deviceId); '' = system default. */
+  inputDeviceId: string
   /** Push-to-talk combo (rebindable). */
   pushToTalkKey: string
   /** 'hold' = hold the combo to record, release to send (true push-to-talk);
@@ -48,6 +50,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   enabled: false,
   engine: 'local',
   model: 'whisper-base.en',
+  inputDeviceId: '',
   pushToTalkKey: 'Ctrl+Shift+L', // letter, so Shift doesn't mutate it (matchesKeybinding compares e.key)
   pushToTalkMode: 'hold',
   autoSubmitInAgent: false,

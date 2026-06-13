@@ -1,4 +1,5 @@
 import { useTerminalStore } from '../../store/terminalStore'
+import { MicTester } from './MicTester'
 
 function Toggle({ on, onClick, testid, label }: { on: boolean; onClick: () => void; testid: string; label: string }) {
   return (
@@ -46,6 +47,8 @@ export function VoiceSettings() {
               <option value="cloud">Cloud — turbo (sends audio off-device)</option>
             </select>
           </label>
+
+          <MicTester />
 
           {v.engine === 'local' ? (
             <div className="flex flex-col gap-1 text-sm">

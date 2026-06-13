@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createVoiceEngine, type WorkerLike } from '../lib/voice/voiceEngines'
-import { processVoiceResult, resampleTo16k, isNoSpeech, normalizeAudioGain } from '../lib/voice/voicePipeline'
+import { processVoiceResult, resampleTo16k, analyzeCapture, computeDisplayLevel, normalizeAudioGain, type CaptureAnalysis } from '../lib/voice/voicePipeline'
 import type { VoiceEngine } from '../lib/voice/voiceTypes'
 import { useTerminalStore } from '../store/terminalStore'
 
@@ -12,6 +12,16 @@ export interface VoiceConfirm {
 function describeVoiceError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e ?? '')
   return msg || 'Voice transcription failed.'
+}
+
+/** User-facing guidance when the capture held no usable speech — includes the
+ *  measured level so a failure is legible (and reportable) instead of silent. */
+function noSpeechMessage(a: CaptureAnalysis): string {
+  const lvl = a.peak.toFixed(4)
+  if (a.verdict === 'noise') {
+    return `Heard background noise, not speech (level ${lvl}). Move closer or speak up, or pick your microphone in Settings → Voice.`
+  }
+  return `No speech detected (level ${lvl}). Hold the key, speak, then release — and watch the level meter. If it didn't move, choose your microphone in Settings → Voice.`
 }
 
 /**
@@ -37,10 +47,19 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   // Human-readable reason when status === 'error'. Surfaced in the UI so a failed
   // transcription is never silent (the old behaviour: "I talk and nothing shows up").
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  // Live input level (0..1) for the on-screen meter while listening, and the
+  // analysis of the last captured clip (level + verdict) for diagnostics. These
+  // turn the previously-invisible capture path into something the user can SEE.
+  const [level, setLevel] = useState(0)
+  const [lastCapture, setLastCapture] = useState<CaptureAnalysis | null>(null)
 
   const streamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
+  // AnalyserNode + timer drive the live level meter; refs so cleanup can stop them.
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const levelTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const levelBufRef = useRef<Float32Array<ArrayBuffer> | null>(null)
   const pcmChunksRef = useRef<Float32Array[]>([])
   const engineRef = useRef<VoiceEngine | null>(null)
   // Refs so the async capture callbacks always read current values.
@@ -74,12 +93,39 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   }, [terminalId])
 
   const cleanupCapture = useCallback(() => {
+    if (levelTimerRef.current != null) {
+      clearInterval(levelTimerRef.current)
+      levelTimerRef.current = null
+    }
+    try { analyserRef.current?.disconnect() } catch { /* already gone */ }
     try { processorRef.current?.disconnect() } catch { /* already gone */ }
     try { audioCtxRef.current?.close() } catch { /* already closed */ }
     streamRef.current?.getTracks().forEach((t) => t.stop())
+    analyserRef.current = null
     processorRef.current = null
     audioCtxRef.current = null
     streamRef.current = null
+    setLevel(0)
+  }, [])
+
+  // Drive the live meter from the analyser at ~30fps while listening. setInterval
+  // (not rAF) so a synchronous rAF stub in tests can't recurse, and updates state
+  // only on a visible change to bound re-renders. With no audio (the jsdom test
+  // path) the level reads 0 and the change-guard suppresses re-renders entirely.
+  const startLevelLoop = useCallback(() => {
+    const id = setInterval(() => {
+      const an = analyserRef.current
+      if (!an) return
+      const buf = levelBufRef.current && levelBufRef.current.length === an.fftSize
+        ? levelBufRef.current
+        : (levelBufRef.current = new Float32Array(an.fftSize))
+      an.getFloatTimeDomainData(buf)
+      let sum = 0
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
+      const next = computeDisplayLevel(Math.sqrt(sum / buf.length))
+      setLevel((prev) => (Math.abs(next - prev) > 0.03 ? next : prev))
+    }, 33)
+    levelTimerRef.current = id
   }, [])
 
   // Resolve the localhost asset base (the mount fetch may not have landed on the
@@ -140,16 +186,20 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     let off = 0
     for (const c of chunks) { merged.set(c, off); off += c.length }
     const pcm16k = resampleTo16k(merged, sampleRate)
-    // No-speech gate. Whisper INVENTS a phrase ("you", "I'm sorry. What is that?")
-    // for silent/noise-only audio, so when the mic captured no actual speech we
-    // tell the user and bail instead of injecting a phantom transcript.
-    if (isNoSpeech(pcm16k)) {
-      setErrorMsg('No speech detected — hold the key, speak, then release.')
+    // Speech/no-speech gate. Whisper INVENTS a phrase ("the", "you", "I'm sorry.
+    // What is that?") for silent OR steady-noise audio, so we classify the clip by
+    // its energy PROFILE — not just a raw level — and bail with the measured level
+    // (never a phantom transcript) unless it actually contains speech. analyzeCapture
+    // separates dynamic speech from flat hum even when both sit in the same level band.
+    const analysis = analyzeCapture(pcm16k, 16000)
+    setLastCapture(analysis)
+    if (analysis.verdict !== 'speech') {
+      setErrorMsg(noSpeechMessage(analysis))
       setStatus('error')
       focusActiveTerminal()
       return
     }
-    // Boost quiet capture toward a consistent level before transcribing.
+    // Boost quiet (but real) capture toward a consistent level before transcribing.
     await transcribe(normalizeAudioGain(pcm16k))
   }, [cleanupCapture, transcribe, focusActiveTerminal])
 
@@ -172,9 +222,19 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       // it as echo), and noise-suppression/AGC can gate quiet speech to silence —
       // and silent audio is exactly what makes Whisper hallucinate. We level the
       // audio ourselves (normalizeAudioGain) for deterministic, testable behavior.
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      })
+      const baseAudio: MediaTrackConstraints = { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      const wantId = settingsRef.current.inputDeviceId
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: wantId ? { ...baseAudio, deviceId: { exact: wantId } } : baseAudio,
+        })
+      } catch (devErr) {
+        // The chosen mic may be unplugged/blocked — fall back to the system default
+        // rather than failing outright, so a stale device id can't brick dictation.
+        if (!wantId) throw devErr
+        stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudio })
+      }
       // A stop() arrived while the mic was initialising — release it and bail
       // before we ever enter the listening state.
       if (cancelStartRef.current) {
@@ -205,6 +265,12 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
         return
       }
       const source = ctx.createMediaStreamSource(stream)
+      // Tap the source with an AnalyserNode to drive the live level meter. It's a
+      // passive read (no onward connection needed) so it never affects capture.
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 1024
+      source.connect(analyser)
+      analyserRef.current = analyser
       const processor = ctx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
       pcmChunksRef.current = []
@@ -222,6 +288,8 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       sink.connect(ctx.destination)
       listeningRef.current = true
       startingRef.current = false
+      setLastCapture(null)
+      startLevelLoop()
       setStatus('listening')
     } catch {
       // Tear down any half-initialised capture so a throw mid-setup can't leave
@@ -232,7 +300,7 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       setErrorMsg('Microphone access was blocked or no mic was found. Check your OS microphone privacy settings.')
       setStatus('error')
     }
-  }, [ensureEngine, cleanupCapture])
+  }, [ensureEngine, cleanupCapture, startLevelLoop])
 
   const toggle = useCallback(() => {
     if (listeningRef.current || startingRef.current) void stop()
@@ -261,6 +329,8 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   return {
     status,
     listening: status === 'listening',
+    level,
+    lastCapture,
     confirm,
     errorMsg,
     toggle,
