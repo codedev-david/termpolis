@@ -64,6 +64,44 @@ export function isNoSpeechTranscript(text: string | null | undefined): boolean {
   return !/[\p{L}\p{N}]/u.test(text ?? '')
 }
 
+/**
+ * Whisper's stock no-speech *words*. Hosted Whisper (Groq's large-v3 included)
+ * doesn't only emit a bare "." for no-speech audio — trained on captioned video,
+ * it also blurts a tiny set of caption fillers ("the", "you", "thank you",
+ * "thanks for watching"…) when the audio holds no real speech. These have
+ * letters, so isNoSpeechTranscript keeps them — yet a LONE one is the same
+ * phantom as the period. This was the chronic "it just types 'the'" symptom when
+ * a mic fed Groq room tone instead of a voice. Kept deliberately short and
+ * high-precision: every entry is something essentially never dictated alone into
+ * a terminal, so the false-drop cost is ~nil and a re-speak fixes it.
+ */
+const FILLER_HALLUCINATIONS = new Set([
+  'the',
+  'you',
+  'thank you',
+  'thank you for watching',
+  'thanks for watching',
+  'please subscribe',
+])
+
+/**
+ * True when the WHOLE transcript is exactly one canonical Whisper no-speech
+ * filler, ignoring case/punctuation/spacing. Matched against the entire
+ * utterance ONLY — "run the tests" or "thank you for the fix" keep every word;
+ * just a bare "The"/"you"/"thank you" is rejected. The final backstop after the
+ * capture gate (analyzeCapture) and isNoSpeechTranscript, so a noisy-mic capture
+ * surfaces a "check your mic" notice instead of a phantom word in the prompt.
+ * Pure.
+ */
+export function isHallucinatedFiller(text: string | null | undefined): boolean {
+  const norm = (text ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return norm.length > 0 && FILLER_HALLUCINATIONS.has(norm)
+}
+
 function tokenize(s: string): string[] {
   return s.toLowerCase().split(/\s+/).filter(Boolean)
 }

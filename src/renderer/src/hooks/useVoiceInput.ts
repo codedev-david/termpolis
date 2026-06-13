@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createVoiceEngine } from '../lib/voice/voiceEngines'
-import { processVoiceResult, resampleTo16k, analyzeCapture, computeDisplayLevel, normalizeAudioGain, isNoSpeechTranscript, type CaptureAnalysis } from '../lib/voice/voicePipeline'
+import { processVoiceResult, resampleTo16k, analyzeCapture, computeDisplayLevel, normalizeAudioGain, isNoSpeechTranscript, isHallucinatedFiller, type CaptureAnalysis } from '../lib/voice/voicePipeline'
 import type { VoiceEngine } from '../lib/voice/voiceTypes'
 import { useTerminalStore } from '../store/terminalStore'
 
@@ -126,11 +126,12 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
     try {
       const engine = await ensureEngine()
       const result = await engine.transcribe(pcm16k)
-      // Groq/Whisper returns a bare "." (or empty) when the audio held no real
-      // speech — e.g. a mic capturing only background noise. NEVER paste that
-      // phantom; surface the same legible mic-pointing notice as the capture gate
-      // so a failure is actionable instead of a mysterious period in the prompt.
-      if (isNoSpeechTranscript(result.text)) {
+      // Groq/Whisper returns a phantom when the audio held no real speech — e.g.
+      // a mic capturing only background noise. That's either a bare "." (no
+      // letters) OR a stock caption filler WORD ("the", "you", "thank you"). NEVER
+      // paste either; surface the same legible mic-pointing notice as the capture
+      // gate so a failure is actionable instead of a mystery word in the prompt.
+      if (isNoSpeechTranscript(result.text) || isHallucinatedFiller(result.text)) {
         setErrorMsg('Groq heard no speech — only background sound reached it. Check your microphone: Settings → Voice → Test microphone, and watch the level move while you talk.')
         setStatus('error')
         focusActiveTerminal()

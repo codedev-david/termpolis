@@ -12,6 +12,7 @@ import {
   audioRms,
   isNoSpeech,
   isNoSpeechTranscript,
+  isHallucinatedFiller,
   normalizeAudioGain,
   computeDisplayLevel,
   analyzeCapture,
@@ -65,6 +66,34 @@ describe('voicePipeline', () => {
       expect(isNoSpeechTranscript('ok.')).toBe(false)
       expect(isNoSpeechTranscript('1 2 3')).toBe(false)
       expect(isNoSpeechTranscript('thank you')).toBe(false)
+    })
+  })
+
+  describe('isHallucinatedFiller (Whisper no-speech filler-WORD backstop)', () => {
+    it('treats a lone canonical Whisper no-speech filler as no-speech, ignoring case/punctuation/spacing', () => {
+      // "The" is David's exact recurring symptom: Whisper (incl. Groq's hosted
+      // model) emits these stock fillers when the audio reaching it has no real
+      // speech, and they slip past isNoSpeechTranscript because they have letters.
+      expect(isHallucinatedFiller('The')).toBe(true)
+      expect(isHallucinatedFiller('the')).toBe(true)
+      expect(isHallucinatedFiller('  the. ')).toBe(true)
+      expect(isHallucinatedFiller('You')).toBe(true)
+      expect(isHallucinatedFiller(' you ')).toBe(true)
+      expect(isHallucinatedFiller('Thank you.')).toBe(true)
+      expect(isHallucinatedFiller('thanks for watching')).toBe(true)
+      expect(isHallucinatedFiller('Thank you for watching!')).toBe(true)
+      expect(isHallucinatedFiller('Please subscribe')).toBe(true)
+    })
+    it('NEVER drops genuine dictation — only an EXACT lone filler matches', () => {
+      expect(isHallucinatedFiller('the build failed')).toBe(false)
+      expect(isHallucinatedFiller('run the tests')).toBe(false)
+      expect(isHallucinatedFiller('thank you so much for the help')).toBe(false)
+      expect(isHallucinatedFiller('ok')).toBe(false)
+      expect(isHallucinatedFiller('hello')).toBe(false)
+      expect(isHallucinatedFiller('1')).toBe(false)
+      expect(isHallucinatedFiller('')).toBe(false)
+      expect(isHallucinatedFiller(null)).toBe(false)
+      expect(isHallucinatedFiller(undefined)).toBe(false)
     })
   })
 

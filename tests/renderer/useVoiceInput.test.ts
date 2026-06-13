@@ -228,6 +228,23 @@ describe('useVoiceInput (orchestration)', () => {
     expect(h.focusActiveTerminal).toHaveBeenCalled()
   })
 
+  it('Groq filler-word hallucination (a lone "The") is NOT pasted — surfaces a mic notice instead', async () => {
+    // David's exact recurring symptom: real-level audio passes the capture gate and
+    // reaches Groq, but the mic caught only room noise so Groq returns the stock
+    // no-speech filler word "The". It has letters (slips past the "." backstop) yet
+    // is still a phantom — it must be gated, never injected.
+    h.transcribe.mockResolvedValue({ text: 'The' })
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    await act(async () => { await result.current.stop() })
+    expect(h.transcribe).toHaveBeenCalledTimes(1) // audio DID reach the engine
+    expect(h.writeToTerminal).not.toHaveBeenCalled() // but "The" is never injected
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/no speech|microphone/i)
+    expect(h.focusActiveTerminal).toHaveBeenCalled()
+  })
+
   it('no-speech gate: captured silence shows a notice and does NOT transcribe (no hallucination injected)', async () => {
     const { result } = renderHook(() => useVoiceInput('term-1', true))
     await act(async () => { await result.current.start() })
