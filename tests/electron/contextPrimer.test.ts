@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildContextPrimer, type PrimerHit } from '../../src/main/contextPrimer'
+import { buildContextPrimer, getLastPrimerCost, type PrimerHit } from '../../src/main/contextPrimer'
 
 const hits: PrimerHit[] = [
   { content: 'auth uses JWT middleware\nvalidated per request', source: 'claude', kind: 'message', score: 0.9 },
@@ -14,7 +14,8 @@ describe('buildContextPrimer', () => {
     expect(out).toContain('[code] rate limiting via token bucket')
     expect(out).not.toContain('`')
     expect(out).toContain('background only')
-    expect(search).toHaveBeenCalledWith({ query: 'auth', limit: 6 })
+    // Over-fetches candidates (4x the inject limit) so the relevance gate can trim noise.
+    expect(search).toHaveBeenCalledWith({ query: 'auth', limit: 24 })
   })
 
   it('frames the memory as background only — never an instruction to continue past work', async () => {
@@ -52,13 +53,46 @@ describe('buildContextPrimer', () => {
   it('truncates long snippets and clamps the limit', async () => {
     const search = vi.fn().mockResolvedValue([{ content: 'x'.repeat(1000), kind: 'note', score: 1 }])
     const out = await buildContextPrimer(search, { query: 'q', limit: 999, maxSnippetChars: 50 })
-    expect(out).toContain('...')
-    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 100 }) // clamped to 100 (rich MCP digests)
+    expect(out).toContain('…')
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 100 }) // candidate over-fetch capped at 100
   })
 
   it('falls back to kind when source is absent', async () => {
     const out = await buildContextPrimer(async () => [{ content: 'a decision', kind: 'decision', score: 1 }], { query: 'q' })
     expect(out).toContain('[decision] a decision')
+  })
+
+  it('drops low-relevance noise from the digest (keeps signal, trims the long tail)', async () => {
+    const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
+    const search = vi.fn().mockResolvedValue([
+      mk('keep one', 0.9), mk('keep two', 0.8), mk('keep three', 0.7),
+      mk('noise alpha', 0.2), mk('noise beta', 0.1), mk('noise gamma', 0.05),
+    ])
+    const out = await buildContextPrimer(search, { query: 'q' })
+    expect(out).toContain('keep one')
+    expect(out).toContain('keep three')
+    expect(out).not.toContain('noise alpha')
+    expect(out).not.toContain('noise gamma')
+  })
+
+  it('never starves — keeps a floor of hits even when all are low-relevance', async () => {
+    const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
+    const search = vi.fn().mockResolvedValue([
+      mk('low one', 0.2), mk('low two', 0.15), mk('low three', 0.1), mk('low four', 0.05),
+    ])
+    const out = await buildContextPrimer(search, { query: 'q' })
+    // a floor of 3 keeps the top three even below the bar; only the 4th is dropped
+    expect(out).toContain('low one')
+    expect(out).toContain('low three')
+    expect(out).not.toContain('low four')
+  })
+
+  it('records the injection cost (chars/tokens) of the last primer for accounting', async () => {
+    const out = await buildContextPrimer(vi.fn().mockResolvedValue(hits), { query: 'auth' })
+    const cost = getLastPrimerCost()
+    expect(cost.chars).toBe(out!.length)
+    expect(cost.tokens).toBe(Math.ceil(out!.length / 4))
+    expect(cost.tokens).toBeGreaterThan(0)
   })
 })
 
@@ -73,8 +107,8 @@ describe('buildContextPrimer — current-project precedence', () => {
       return [{ id: 'g1', content: 'unrelated react tips', source: 'claude', kind: 'message', score: 0.95 }]
     })
     const out = await buildContextPrimer(search, { query: 'q', project: proj })
-    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 6, project: proj })
-    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 6 })
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 24, project: proj })
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 24 })
     const pIdx = out!.indexOf('project decision about MCP ports')
     const gIdx = out!.indexOf('unrelated react tips')
     expect(pIdx).toBeGreaterThan(-1)

@@ -157,10 +157,67 @@ is worst, so it's the highest-value place to broker. Phases, in priority order:
 
 ---
 
-## 6. Status
-- **Shipped & tested this change:** swarm model broker (brain + sanitizer + conductor
-  guidance), plus the unrelated voice + sidebar fixes from the same session.
-- **Designed, not yet built:** Phase 2a single-agent model selection (highest value),
-  2b reactive downgrade, Phase 3 spend/savings tracking, Phase 4 other agents.
-- **Recommendation:** build Phase 2a next — it's small, low-risk, and targets the
-  single-agent case where most users are bleeding tokens.
+## 6. Context economy — shipped this build (token-window savings)
+
+The recall path now injects **signal, not noise**, with a safety floor so it never
+starves the agent (the "don't shoot ourselves in the foot" guardrail we discussed):
+
+- **`src/main/memoryEconomy.ts`** (pure, fully tested): `estimateTokens`,
+  `gateByScore` (relevance cutoff WITH a floor + cap), `dedupeHits`,
+  `truncateContent`, `summarizePrimerCost`, and a `TtlLruCache` (built + tested,
+  wired into the search path in the next build).
+- **`contextPrimer.ts`**: now **over-fetches** candidates (4× the inject limit,
+  capped at 100) then **gates** them — drops sub-0.25 similarity noise but always
+  keeps a floor of the top hits — and **dedupes** + **truncates**. It records the
+  **injected token cost** (`getLastPrimerCost`) so tuning is measurable (lever C),
+  and the closing line now pushes **search-first** ("your local memory search is
+  fast and offline: call memory_search before re-deriving") — Memex's single
+  biggest lever.
+
+Net: when little is relevant the primer shrinks toward only what matters; when lots
+is relevant the floor + cap keep it useful. Measured, gated, never-starving.
+
+**Memex-informed (`brain/src/memex/...`):** Memex's speed comes from hybrid
+keyword+vector search, **pre-filtering before KNN**, an **LRU+TTL result cache**,
+and a **search-first** system-prompt convention. Termpolis already has HNSW
+(sub-linear) + local embeddings; we ported the *ideas* in-memory (no SQLite/FTS5
+dependency): the cache utility is built+tested, and search-first guidance is in the
+primer. Hybrid keyword+vector scoring and wiring the cache into `memorySearch` (with
+write-invalidation) are the next search-speed step.
+
+## 7. Connected memory / knowledge graph — next major phase
+
+David's vision: Termpolis "learns and builds connections like an LLM internally" so
+agents solve tasks with knowledge *outside the model's training*, fast.
+
+**Head start:** Termpolis's **HNSW index is already a connection graph** — every
+memory is linked to its nearest neighbors. So *implicit* associative recall exists
+today; the search/recall work above makes it fast and clean. Two layers remain:
+
+- **Layer 1 (implicit, exists):** similarity links via HNSW/vectors. Expose a
+  `memory_related(id|query)` 1-hop traversal so an agent can ask "what connects to
+  this?" — a thin wrapper over the existing vector search. Cheapest first step.
+- **Layer 2 (explicit, the build):** a typed knowledge graph — edges like
+  `bug → solved-by → fix`, `decision → supersedes → decision`, `file → part-of →
+  feature` — accumulating as work happens. Components: an edge store (id→id + typed
+  relation + weight, persisted alongside the JSONL), lightweight relation extraction
+  on write (link a new memory to its top-K neighbors + named entities), an n-hop
+  typed traversal API, and a `memory_graph` MCP tool the agent uses to follow
+  chains. Over time: more memories + denser edges = faster recall of out-of-training
+  knowledge — exactly the goal.
+- **Honest framing:** an LLM's "connections" are learned weights, not a literal
+  graph; but the *intent* (recall by association) is what a graph/HNSW delivers —
+  and it's inspectable and grows with the user's real work instead of freezing at a
+  training cutoff.
+
+## 8. Status
+- **Shipped & tested (this release):** swarm model broker; voice tap-or-hold +
+  rebindable send key; sidebar dropdown clamp; context-economy (relevance-gate +
+  floor + dedup + truncate + token accounting + search-first), Memex-informed.
+- **Built + tested, wired next build:** `TtlLruCache` (search result cache).
+- **Designed, not yet built:** single-agent model picker (Phase 2a, highest value),
+  reactive 429-downgrade, spend/savings panel, hybrid keyword+vector scoring,
+  externalize-big-cold-artifacts, and the explicit knowledge graph (§7).
+- **Recommendation:** next, (1) the single-agent model picker — biggest token win
+  for the common case — and (2) the `memory_related` 1-hop traversal — the cheapest
+  first step toward the connected-memory vision.
