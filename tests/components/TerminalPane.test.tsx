@@ -617,7 +617,7 @@ describe('TerminalPane', () => {
         focusNonce: 0,
         voiceSettings: {
           enabled: true, consentAccepted: true, groqModel: 'whisper-large-v3-turbo', pushToTalkKey: 'Ctrl+Shift+L',
-          pushToTalkMode: 'hold', autoSubmitInAgent: false, correctionEnabled: true,
+          pushToTalkMode: 'tapOrHold', sendKey: 'Space', autoSubmitInAgent: false, correctionEnabled: true,
           confirmBeforeRunInShell: true, ...over,
         },
       }))
@@ -633,7 +633,7 @@ describe('TerminalPane', () => {
       expect(ev.defaultPrevented).toBe(true)
     })
 
-    it('consumes the trigger key release in hold mode (after a keydown)', () => {
+    it('consumes the trigger key release after a keydown (tap-or-hold)', () => {
       withVoice()
       render(<TerminalPane {...defaultProps} />)
       act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
@@ -707,7 +707,7 @@ describe('TerminalPane', () => {
         focusNonce: 0,
         voiceSettings: {
           enabled: true, engine: 'local', model: 'm', pushToTalkKey: 'Ctrl+Shift+L',
-          pushToTalkMode: 'hold', autoSubmitInAgent: false, correctionEnabled: false,
+          pushToTalkMode: 'tapOrHold', sendKey: 'Space', autoSubmitInAgent: false, correctionEnabled: false,
           confirmBeforeRunInShell: true, cloudEndpoint: '', ...over,
         },
       }))
@@ -790,6 +790,52 @@ describe('TerminalPane', () => {
       await act(async () => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { key: ' ', code: 'Space', cancelable: true })) })
       expect(res).toBe(false)
       await waitFor(() => expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument())
+    })
+
+    it('tapOrHold: a quick TAP starts dictation and KEEPS listening after release (the hands-free fix)', async () => {
+      let nowMs = 1000
+      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+      withVoice({ pushToTalkMode: 'tapOrHold' })
+      render(<TerminalPane {...defaultProps} />)
+      // Tap DOWN at t=1000 → starts listening.
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      // Release 80ms later — a TAP, not a hold — must NOT stop. (The old hold-only
+      // default cancelled the just-started capture here: David's "tap does nothing".)
+      nowMs = 1080
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keyup', { key: 'l', cancelable: true })) })
+      expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument()
+      nowSpy.mockRestore()
+    })
+
+    it('tapOrHold: tapping the hotkey again stops the hands-free session', async () => {
+      let nowMs = 2000
+      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+      withVoice({ pushToTalkMode: 'tapOrHold' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      nowMs = 2080
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keyup', { key: 'l', cancelable: true })) }) // tap → still listening
+      expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument()
+      nowMs = 3000
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument())
+      nowSpy.mockRestore()
+    })
+
+    it('tapOrHold: HOLDING then releasing after the threshold stops (push-to-talk preserved)', async () => {
+      let nowMs = 5000
+      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+      withVoice({ pushToTalkMode: 'tapOrHold' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      // Release 900ms later → a HOLD → stop on release.
+      nowMs = 5900
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keyup', { key: 'l', cancelable: true })) })
+      await waitFor(() => expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument())
+      nowSpy.mockRestore()
     })
 
     it('shows a Transcribing state while the transcript is produced, then returns to idle', async () => {

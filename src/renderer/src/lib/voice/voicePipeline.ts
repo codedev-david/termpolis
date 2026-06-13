@@ -35,6 +35,42 @@ export function pushToTalkIntent(eventType: string, mode: 'hold' | 'toggle'): 's
 }
 
 /**
+ * Below this press duration (ms) a key press is a TAP, not a HOLD. A tap toggles
+ * hands-free dictation; a longer press is push-to-talk and sends on release.
+ * Deliberately generous: misreading a tap as a hold reproduces the old "a quick
+ * tap captures nothing" bug (start cancelled by the immediate release), whereas
+ * misreading a short hold as a tap merely leaves dictation listening until the
+ * next tap — the far safer failure.
+ */
+export const TAP_MAX_MS = 400
+
+/**
+ * 'tapOrHold' mode, keydown half. Pure. Decides the action from current state:
+ *  - already listening → 'stop'  (tap-again-to-stop; also ends a button-started
+ *                                 or hold session cleanly)
+ *  - press in progress → 'none'  (don't double-start)
+ *  - OS auto-repeat    → 'none'  (a held key must never retrigger)
+ *  - otherwise         → 'start' (begin a press; the keyup decides tap vs hold)
+ */
+export function tapOrHoldKeydownAction(s: { listening: boolean; pressActive: boolean; repeat: boolean }): 'start' | 'stop' | 'none' {
+  if (s.repeat) return 'none'
+  if (s.listening) return 'stop'
+  if (s.pressActive) return 'none'
+  return 'start'
+}
+
+/**
+ * 'tapOrHold' mode, keyup half. Pure. A press lasting >= TAP_MAX_MS was a HOLD →
+ * 'stop' (push-to-talk release sends); a shorter press was a TAP → 'none' (stay
+ * listening hands-free, ended by the next tap). A keyup with no active press
+ * (e.g. the release after a stop-tap) is inert.
+ */
+export function tapOrHoldKeyupAction(s: { pressActive: boolean; heldMs: number }, tapMaxMs = TAP_MAX_MS): 'stop' | 'none' {
+  if (!s.pressActive) return 'none'
+  return s.heldMs >= tapMaxMs ? 'stop' : 'none'
+}
+
+/**
  * Decide what to do with a finished transcript. Agent mode injects the text
  * (optionally auto-submitting); shell mode NEVER auto-submits and (by default)
  * asks for confirmation, because mis-transcribed shell commands are dangerous.
@@ -186,8 +222,11 @@ export function sanitizeVoiceSettings(raw: unknown): VoiceSettings {
     groqModel,
     inputDeviceId: str(r.inputDeviceId, d.inputDeviceId, 200),
     pushToTalkKey: str(r.pushToTalkKey, d.pushToTalkKey, 50),
+    // Legacy 'hold' (the old default) and anything unrecognised fall through to
+    // 'tapOrHold' — a strict superset: holding still works, and now a tap does too.
     pushToTalkMode:
-      r.pushToTalkMode === 'toggle' ? 'toggle' : r.pushToTalkMode === 'tapSpace' ? 'tapSpace' : 'hold',
+      r.pushToTalkMode === 'toggle' ? 'toggle' : r.pushToTalkMode === 'tapSpace' ? 'tapSpace' : 'tapOrHold',
+    sendKey: str(r.sendKey, d.sendKey, 50),
     autoSubmitInAgent: bool(r.autoSubmitInAgent, d.autoSubmitInAgent),
     correctionEnabled: bool(r.correctionEnabled, d.correctionEnabled),
     confirmBeforeRunInShell: bool(r.confirmBeforeRunInShell, d.confirmBeforeRunInShell),

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { GROQ_MODELS } from '../../lib/voice/voiceTypes'
+import { eventToKeybinding } from '../../lib/keybindings'
 import { MicTester } from './MicTester'
 import { GroqConnectModal } from './GroqConnectModal'
 
@@ -48,8 +49,8 @@ export function VoiceSettings() {
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium">Enable voice input</span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
-            {v.pushToTalkMode === 'hold' ? 'Hold' : 'Tap'} <kbd className="bg-[#3c3c3c] px-1 rounded">{v.pushToTalkKey}</kbd> in a
-            terminal to dictate{v.pushToTalkMode === 'hold' ? ' (release to send)' : v.pushToTalkMode === 'tapSpace' ? ' (Spacebar to send)' : ' (tap again to stop)'}. In an AI-agent
+            {v.pushToTalkMode === 'tapOrHold' ? 'Tap or hold' : 'Tap'} <kbd className="bg-[#3c3c3c] px-1 rounded">{v.pushToTalkKey}</kbd> in a
+            terminal to dictate{v.pushToTalkMode === 'tapOrHold' ? ' — tap to start/stop, or hold to talk' : v.pushToTalkMode === 'tapSpace' ? ` (press ${v.sendKey || 'Space'} to send)` : ' (tap again to stop)'}. In an AI-agent
             terminal the transcript is sent as a prompt; in a plain shell it is inserted and you confirm before it runs.
             Transcription uses Groq's cloud Whisper API — your recorded audio is sent to Groq (opt-in, off by default).
           </span>
@@ -132,15 +133,35 @@ export function VoiceSettings() {
               value={v.pushToTalkMode}
               onChange={(e) => {
                 const m = e.target.value
-                set({ pushToTalkMode: m === 'toggle' ? 'toggle' : m === 'tapSpace' ? 'tapSpace' : 'hold' })
+                set({ pushToTalkMode: m === 'toggle' ? 'toggle' : m === 'tapSpace' ? 'tapSpace' : 'tapOrHold' })
               }}
               className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-none"
             >
-              <option value="hold">Hold to talk — release to send (push-to-talk)</option>
-              <option value="tapSpace">Tap to start, Spacebar to send (hands-free)</option>
+              <option value="tapOrHold">Tap to start/stop, or hold to talk (recommended)</option>
               <option value="toggle">Tap to start, tap again to stop (hands-free)</option>
+              <option value="tapSpace">Tap to start, press a key to send (hands-free)</option>
             </select>
           </label>
+
+          {/* The stop/send key is specific to tapSpace mode — and rebindable. */}
+          {v.pushToTalkMode === 'tapSpace' && (
+            <label className="flex flex-col gap-1 text-sm">
+              Send / stop key
+              <input
+                data-testid="voice-sendkey-input"
+                value={v.sendKey}
+                readOnly
+                onKeyDown={(e) => {
+                  e.preventDefault()
+                  const kb = eventToKeybinding(e.nativeEvent)
+                  if (kb) set({ sendKey: kb })
+                }}
+                placeholder="Press a key…"
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-none font-mono"
+              />
+              <span className="text-xs text-[#9ca3af]">Click the field, then press the key that stops &amp; sends dictation (default Space).</span>
+            </label>
+          )}
 
           <label className="flex items-start gap-2 text-sm cursor-pointer">
             <Toggle on={v.autoSubmitInAgent} onClick={() => set({ autoSubmitInAgent: !v.autoSubmitInAgent })} testid="voice-autosubmit-toggle" label="Toggle auto-submit in agent terminals" />

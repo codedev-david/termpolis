@@ -9,6 +9,9 @@ import {
   resampleTo16k,
   pushToTalkIntent,
   pushToTalkMainKey,
+  tapOrHoldKeydownAction,
+  tapOrHoldKeyupAction,
+  TAP_MAX_MS,
   audioRms,
   isNoSpeech,
   isNoSpeechTranscript,
@@ -46,6 +49,40 @@ describe('voicePipeline', () => {
     it('toggle mode: keydown flips, keyup is ignored', () => {
       expect(pushToTalkIntent('keydown', 'toggle')).toBe('toggle')
       expect(pushToTalkIntent('keyup', 'toggle')).toBeNull()
+    })
+  })
+
+  // The default activation: a quick TAP of the hotkey toggles hands-free dictation
+  // (start on tap, stop on the next tap), while HOLDING it is true push-to-talk
+  // (release sends). One key, both interactions — so a tap finally captures audio
+  // instead of being start-then-immediately-cancelled the way the old hold-only
+  // default treated it. The decision is split into two pure helpers so the
+  // tap-vs-hold rule is unit-tested without DOM/timers.
+  describe('tap-or-hold activation', () => {
+    it('keydown from idle starts a press (begins listening)', () => {
+      expect(tapOrHoldKeydownAction({ listening: false, pressActive: false, repeat: false })).toBe('start')
+    })
+    it('keydown while already listening stops it — tap-again-to-stop, even for a button-started session', () => {
+      expect(tapOrHoldKeydownAction({ listening: true, pressActive: false, repeat: false })).toBe('stop')
+    })
+    it('ignores keyboard auto-repeat so a held-down key never retriggers start/stop', () => {
+      expect(tapOrHoldKeydownAction({ listening: false, pressActive: false, repeat: true })).toBe('none')
+      expect(tapOrHoldKeydownAction({ listening: true, pressActive: false, repeat: true })).toBe('none')
+    })
+    it('ignores a second keydown while a press is already in progress', () => {
+      expect(tapOrHoldKeydownAction({ listening: false, pressActive: true, repeat: false })).toBe('none')
+    })
+    it('a quick TAP (released under the threshold) keeps listening hands-free', () => {
+      expect(tapOrHoldKeyupAction({ pressActive: true, heldMs: 120 })).toBe('none')
+      expect(tapOrHoldKeyupAction({ pressActive: true, heldMs: TAP_MAX_MS - 1 })).toBe('none')
+    })
+    it('a HOLD (released at/after the threshold) stops and sends — true push-to-talk', () => {
+      expect(tapOrHoldKeyupAction({ pressActive: true, heldMs: TAP_MAX_MS })).toBe('stop')
+      expect(tapOrHoldKeyupAction({ pressActive: true, heldMs: 1500 })).toBe('stop')
+    })
+    it('a keyup with no active press is inert (e.g. the release of a stop-tap)', () => {
+      expect(tapOrHoldKeyupAction({ pressActive: false, heldMs: 5 })).toBe('none')
+      expect(tapOrHoldKeyupAction({ pressActive: false, heldMs: 9999 })).toBe('none')
     })
   })
 
@@ -186,11 +223,22 @@ describe('voicePipeline', () => {
       expect(sanitizeVoiceSettings({ consentAccepted: 'yes' }).consentAccepted).toBe(false)
     })
 
-    it('defaults push-to-talk mode to hold, preserves an explicit toggle or tapSpace', () => {
-      expect(sanitizeVoiceSettings({ pushToTalkMode: 'banana' }).pushToTalkMode).toBe('hold')
-      expect(sanitizeVoiceSettings({}).pushToTalkMode).toBe('hold')
+    it('defaults push-to-talk mode to tap-or-hold, migrates legacy hold, preserves toggle or tapSpace', () => {
+      expect(sanitizeVoiceSettings({ pushToTalkMode: 'banana' }).pushToTalkMode).toBe('tapOrHold')
+      expect(sanitizeVoiceSettings({}).pushToTalkMode).toBe('tapOrHold')
+      // Legacy 'hold' (the old default) migrates to the hybrid so a quick tap finally
+      // starts dictation instead of being cancelled by the key release.
+      expect(sanitizeVoiceSettings({ pushToTalkMode: 'hold' }).pushToTalkMode).toBe('tapOrHold')
+      expect(sanitizeVoiceSettings({ pushToTalkMode: 'tapOrHold' }).pushToTalkMode).toBe('tapOrHold')
       expect(sanitizeVoiceSettings({ pushToTalkMode: 'toggle' }).pushToTalkMode).toBe('toggle')
       expect(sanitizeVoiceSettings({ pushToTalkMode: 'tapSpace' }).pushToTalkMode).toBe('tapSpace')
+    })
+
+    it('defaults the tapSpace send/stop key to Space and preserves or caps a custom one', () => {
+      expect(sanitizeVoiceSettings({}).sendKey).toBe('Space')
+      expect(sanitizeVoiceSettings({ sendKey: 'Enter' }).sendKey).toBe('Enter')
+      expect(sanitizeVoiceSettings({ sendKey: 42 }).sendKey).toBe('Space')
+      expect(sanitizeVoiceSettings({ sendKey: 's'.repeat(9999) }).sendKey.length).toBeLessThanOrEqual(50)
     })
 
     it('ignores non-boolean flags and caps oversized strings', () => {

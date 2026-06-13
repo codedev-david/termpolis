@@ -21,7 +21,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget } from '../../lib/keybindings'
 import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
-import { pushToTalkIntent, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
+import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -114,7 +114,11 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const voiceStartRef = useRef<() => void>(() => {})
   const voiceStopRef = useRef<() => void>(() => {})
   const voiceListeningRef = useRef(false)
-  const pttHoldActiveRef = useRef(false)
+  // A physical activation-key press is currently down (tap-or-hold mode), plus the
+  // performance.now() it began at — together they tell a quick TAP (toggles
+  // hands-free) from a HOLD (push-to-talk: sends on release).
+  const pttPressActiveRef = useRef(false)
+  const pttPressStartRef = useRef(0)
   voiceToggleRef.current = voice.toggle
   voiceStartRef.current = voice.start
   voiceStopRef.current = voice.stop
@@ -349,37 +353,56 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     }
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      // Voice push-to-talk runs first and (in hold mode) handles keyup too, so it
-      // must sit ahead of the keydown-only guard below. Inert until enabled.
+      // Voice activation runs first and (in tap-or-hold mode) handles keyup too, so
+      // it must sit ahead of the keydown-only guard below. Inert until enabled.
       const vs = useTerminalStore.getState().voiceSettings
       if (vs?.enabled) {
         const mode = vs.pushToTalkMode
+        // ── Activation combo (default Ctrl+Shift+L) keydown ───────────────────
         if (e.type === 'keydown' && matchesKeybinding(e, vs.pushToTalkKey)) {
           e.preventDefault()
-          if (mode === 'tapSpace') {
-            // Tap the combo to START; the Spacebar ends it (handled below). No
+          if (mode === 'toggle') {
+            // Pure toggle: tap to start, tap again to stop (no hold-to-talk).
+            voiceToggleRef.current()
+          } else if (mode === 'tapSpace') {
+            // Tap the combo to START; the send key ends it (handled below). No
             // keyup latch — releasing the combo keys must NOT stop dictation here.
             if (!voiceListeningRef.current) voiceStartRef.current()
           } else {
-            const intent = pushToTalkIntent('keydown', mode)
-            if (intent === 'toggle') voiceToggleRef.current()
-            else if (intent === 'start' && !voiceListeningRef.current) {
+            // tapOrHold (default; also where legacy 'hold' lands): a TAP toggles
+            // hands-free, a HOLD is push-to-talk. keydown begins a press (or stops
+            // an already-live session); the keyup below decides tap vs hold.
+            const action = tapOrHoldKeydownAction({
+              listening: voiceListeningRef.current,
+              pressActive: pttPressActiveRef.current,
+              repeat: e.repeat,
+            })
+            if (action === 'start') {
+              pttPressActiveRef.current = true
+              pttPressStartRef.current = performance.now()
               voiceStartRef.current()
-              pttHoldActiveRef.current = true
+            } else if (action === 'stop') {
+              pttPressActiveRef.current = false
+              voiceStopRef.current()
             }
           }
           return false
         }
-        // Hold mode: stop on release of the trigger's main key (modifiers may already be up).
-        if (e.type === 'keyup' && pttHoldActiveRef.current && e.key.toLowerCase() === pushToTalkMainKey(vs.pushToTalkKey)) {
+        // ── tapOrHold release: a long press (HOLD) sends; a quick press (TAP)
+        //    leaves dictation listening hands-free. Modifiers may already be up,
+        //    so match on the combo's main key only.
+        if (mode !== 'toggle' && mode !== 'tapSpace' && e.type === 'keyup' && pttPressActiveRef.current
+            && e.key.toLowerCase() === pushToTalkMainKey(vs.pushToTalkKey)) {
           e.preventDefault()
-          pttHoldActiveRef.current = false
-          voiceStopRef.current()
+          const heldMs = performance.now() - pttPressStartRef.current
+          pttPressActiveRef.current = false
+          if (tapOrHoldKeyupAction({ pressActive: true, heldMs }) === 'stop') voiceStopRef.current()
           return false
         }
-        // Tap-to-start / Spacebar-to-send mode: while listening, the Spacebar ends
-        // dictation and is swallowed so the space never reaches the shell/agent.
-        if (mode === 'tapSpace' && e.type === 'keydown' && voiceListeningRef.current && (e.key === ' ' || e.code === 'Space')) {
+        // ── tapSpace: while listening, the send key (default Space, rebindable)
+        //    ends dictation and is swallowed so it never reaches the shell/agent.
+        if (mode === 'tapSpace' && e.type === 'keydown' && voiceListeningRef.current
+            && matchesKeybinding(e, vs.sendKey || 'Space')) {
           e.preventDefault()
           voiceStopRef.current()
           return false

@@ -14,12 +14,18 @@ export interface VoiceSettings {
   groqModel: string
   /** Preferred microphone (MediaDeviceInfo.deviceId); '' = system default. */
   inputDeviceId: string
-  /** Push-to-talk combo (rebindable). */
+  /** Activation combo (rebindable) — tapped or held depending on the mode. */
   pushToTalkKey: string
-  /** 'hold' = hold the combo to record, release to send (true push-to-talk);
-   *  'toggle' = tap the combo to start, tap it again to stop (hands-free);
-   *  'tapSpace' = tap the combo to start, tap the Spacebar to send (hands-free). */
-  pushToTalkMode: 'hold' | 'toggle' | 'tapSpace'
+  /** How the activation combo drives recording:
+   *  'tapOrHold' (default) = TAP the combo to start hands-free dictation and tap
+   *    again to stop, OR HOLD it to talk and release to send — one key, both;
+   *  'toggle' = tap the combo to start, tap it again to stop (no hold-to-talk);
+   *  'tapSpace' = tap the combo to start, then press the send key (Spacebar by
+   *    default, rebindable via sendKey) to stop and send. */
+  pushToTalkMode: 'tapOrHold' | 'toggle' | 'tapSpace'
+  /** The key that stops & sends dictation in 'tapSpace' mode (rebindable). A
+   *  keybinding string like 'Space' or 'Enter', matched via matchesKeybinding. */
+  sendKey: string
   /** In an AI-agent terminal, append Enter so the prompt submits automatically. */
   autoSubmitInAgent: boolean
   /** Run the constrained STT→LLM cleanup stage on the transcript. */
@@ -44,7 +50,8 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   groqModel: DEFAULT_GROQ_MODEL,
   inputDeviceId: '',
   pushToTalkKey: 'Ctrl+Shift+L', // letter, so Shift doesn't mutate it (matchesKeybinding compares e.key)
-  pushToTalkMode: 'hold',
+  pushToTalkMode: 'tapOrHold',
+  sendKey: 'Space',
   autoSubmitInAgent: false,
   correctionEnabled: true,
   confirmBeforeRunInShell: true,

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { getCompletions, type CompletionResult } from '../completions/completionEngine'
 import { useTerminalStore } from '../store/terminalStore'
+import { clampDropdownPosition } from '../lib/dropdownPosition'
 
 interface CompletionDropdownState {
   suggestions: CompletionResult[]
@@ -57,10 +58,16 @@ export function useCompletionDropdown(
   const updateDropdownPosition = useCallback(() => {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect()
-      setDropdownPosition({
-        x: rect.left + 20,
-        y: rect.top + 40,
-      })
+      // Clamp inside the pane so the dropdown can never spill over the sidebar
+      // (left) or a docked panel / the window edge (right). Conservative box size
+      // matches the CSS max-w-[360px] and a typical multi-row list + footer.
+      setDropdownPosition(
+        clampDropdownPosition(
+          { x: rect.left + 20, y: rect.top + 40 },
+          { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+          { width: 360, height: 240 },
+        ),
+      )
     }
   }, [containerRef])
 

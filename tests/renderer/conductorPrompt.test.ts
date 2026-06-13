@@ -177,6 +177,17 @@ describe('buildConductorPrompt', () => {
     expect(step4Block).toContain("'qwen'")
   })
 
+  it('offers Claude model brokering in STEP 4 so the conductor can downshift to save tokens', () => {
+    const prompt = buildDefault()
+    const step4Idx = prompt.indexOf('STEP 4')
+    const step5Idx = prompt.indexOf('STEP 5')
+    const step4Block = prompt.slice(step4Idx, step5Idx)
+    expect(step4Block).toContain('--model haiku')
+    expect(step4Block).toContain('--model sonnet')
+    expect(step4Block).toContain('--model opus')
+    expect(step4Block).toMatch(/conserve tokens/i)
+  })
+
   it('warns against headless flags for Qwen Code (Gemini-fork)', () => {
     const prompt = buildDefault()
     expect(prompt).toContain('qwen -p "prompt"')

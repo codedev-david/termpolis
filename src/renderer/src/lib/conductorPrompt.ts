@@ -1,4 +1,5 @@
 import { CATEGORY_LABELS, getEffectiveCapabilities, type AgentRatingOverrides } from './agentCapabilities'
+import { claudeModelGuidance } from './modelBroker'
 
 interface ConductorPromptOptions {
   taskDescription: string
@@ -24,6 +25,11 @@ export function buildConductorPrompt(options: ConductorPromptOptions): string {
       return `- ${a.agentName} (${a.agentId}): Strengths: ${strengths}. ${costLabel}. ${mcpNote}.`
     })
     .join('\n')
+
+  // Optional model-tiering guidance for Claude agents, generated from the broker
+  // registry so the aliases never drift. Empty when no Claude tiers are configured.
+  const modelGuidance = claudeModelGuidance()
+  const modelGuidanceBlock = modelGuidance ? `${modelGuidance}\n` : ''
 
   return `You are the Swarm Conductor for Termpolis. Your job is to orchestrate a multi-agent swarm to complete the user's task.
 
@@ -64,12 +70,12 @@ STEP 3 — Create agent terminals:
 
 STEP 4 — Start agents in INTERACTIVE mode:
   For each terminal call run_command(terminalId='[id]', command='[agent command]')
-  Use ONLY these exact commands — copy them verbatim:
+  Use these commands — copy them verbatim (Claude may also choose a model; see below):
     Claude Code → 'claude --dangerously-skip-permissions'
     Codex       → 'codex --full-auto'
     Gemini CLI  → 'gemini'
     Qwen Code   → 'qwen'
-  Then post a status update via swarm_send_message.
+${modelGuidanceBlock}  Then post a status update via swarm_send_message.
 
   ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Qwen Code):
     ✗ claude -p "prompt"                    — loses tool access (no file writes)
@@ -81,7 +87,7 @@ STEP 4 — Start agents in INTERACTIVE mode:
     ✗ qwen --sandbox                        — restricts capabilities, do NOT use
     ✗ echo "prompt" | claude                — piping breaks stdin (Ink raw mode error)
     ✗ agent_command "prompt as argument"    — positional args not supported
-    ✗ Any flag not listed in STEP 4         — do NOT add -p, --sandbox, --print, or any other flag
+    ✗ Any flag not listed in STEP 4         — do NOT add -p, --sandbox, --print, or any flag besides an optional Claude --model <opus|sonnet|haiku>
   Agents launched with -p or --sandbox CANNOT write files or use tools.
   The ONLY correct way to send a task prompt is via write_to_terminal in STEP 5.
 
@@ -138,11 +144,11 @@ IMPORTANT RULES:
 - Always use from='conductor' when sending messages.
 - Be decisive. Do not ask the user for input.
 - If only one agent type is installed, run multiple instances with different roles.
-- NEVER add -p, --sandbox, --print, or ANY extra flags to agent commands. The commands in STEP 4 are complete.
+- NEVER add -p, --sandbox, or --print. The ONLY optional flag is a Claude --model <opus|sonnet|haiku> (STEP 4) — add nothing else.
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex, not Qwen Code).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
-- If you are tempted to add flags, use -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
+- If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`
 }

