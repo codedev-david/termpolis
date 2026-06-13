@@ -49,7 +49,7 @@ export function VoiceSettings() {
           <span className="text-sm font-medium">Enable voice input</span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             {v.pushToTalkMode === 'hold' ? 'Hold' : 'Tap'} <kbd className="bg-[#3c3c3c] px-1 rounded">{v.pushToTalkKey}</kbd> in a
-            terminal to dictate{v.pushToTalkMode === 'hold' ? ' (release to send)' : ' (tap again to stop)'}. In an AI-agent
+            terminal to dictate{v.pushToTalkMode === 'hold' ? ' (release to send)' : v.pushToTalkMode === 'tapSpace' ? ' (Spacebar to send)' : ' (tap again to stop)'}. In an AI-agent
             terminal the transcript is sent as a prompt; in a plain shell it is inserted and you confirm before it runs.
             Transcription uses Groq's cloud Whisper API — your recorded audio is sent to Groq (opt-in, off by default).
           </span>
@@ -130,10 +130,14 @@ export function VoiceSettings() {
             <select
               data-testid="voice-mode-select"
               value={v.pushToTalkMode}
-              onChange={(e) => set({ pushToTalkMode: e.target.value === 'toggle' ? 'toggle' : 'hold' })}
+              onChange={(e) => {
+                const m = e.target.value
+                set({ pushToTalkMode: m === 'toggle' ? 'toggle' : m === 'tapSpace' ? 'tapSpace' : 'hold' })
+              }}
               className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-none"
             >
               <option value="hold">Hold to talk — release to send (push-to-talk)</option>
+              <option value="tapSpace">Tap to start, Spacebar to send (hands-free)</option>
               <option value="toggle">Tap to start, tap again to stop (hands-free)</option>
             </select>
           </label>

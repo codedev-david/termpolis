@@ -47,6 +47,23 @@ export function prepareInjection(text: string, mode: VoiceMode, settings: VoiceS
   return { text: clean, autoSubmit: false, needsConfirm: settings.confirmBeforeRunInShell }
 }
 
+/**
+ * True when a finished transcript contains NO real speech. Groq's hosted Whisper
+ * (like every Whisper model) emits a bare filler token — most often a lone "." or
+ * " ." — when the audio it receives has no intelligible speech (a mic capturing
+ * only room tone / background noise). We must never paste that phantom into the
+ * terminal. A transcript with no letter or digit is treated as no-speech.
+ *
+ * Deliberately conservative: ANY real word or number (even "you", "ok", "1") is
+ * kept, so genuine dictation is never dropped — only pure punctuation/whitespace
+ * (".", " . ", "...", "?!") is rejected. The capture-side gate (analyzeCapture)
+ * stops most no-speech audio earlier; this is the backstop for audio that slips
+ * past it yet still comes back empty from the model. Pure.
+ */
+export function isNoSpeechTranscript(text: string | null | undefined): boolean {
+  return !/[\p{L}\p{N}]/u.test(text ?? '')
+}
+
 function tokenize(s: string): string[] {
   return s.toLowerCase().split(/\s+/).filter(Boolean)
 }
@@ -131,7 +148,8 @@ export function sanitizeVoiceSettings(raw: unknown): VoiceSettings {
     groqModel,
     inputDeviceId: str(r.inputDeviceId, d.inputDeviceId, 200),
     pushToTalkKey: str(r.pushToTalkKey, d.pushToTalkKey, 50),
-    pushToTalkMode: r.pushToTalkMode === 'toggle' ? 'toggle' : 'hold',
+    pushToTalkMode:
+      r.pushToTalkMode === 'toggle' ? 'toggle' : r.pushToTalkMode === 'tapSpace' ? 'tapSpace' : 'hold',
     autoSubmitInAgent: bool(r.autoSubmitInAgent, d.autoSubmitInAgent),
     correctionEnabled: bool(r.correctionEnabled, d.correctionEnabled),
     confirmBeforeRunInShell: bool(r.confirmBeforeRunInShell, d.confirmBeforeRunInShell),

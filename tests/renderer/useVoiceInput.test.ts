@@ -213,6 +213,21 @@ describe('useVoiceInput (orchestration)', () => {
     expect(h.focusActiveTerminal).toHaveBeenCalled()
   })
 
+  it('Groq no-speech result (a bare ".") is NOT pasted — surfaces a mic notice instead', async () => {
+    // The capture passed the energy gate (real-level audio) and reached Groq, but
+    // Groq returned its no-speech token. We must never inject that phantom period.
+    h.transcribe.mockResolvedValue({ text: ' .' })
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    await act(async () => { await result.current.stop() })
+    expect(h.transcribe).toHaveBeenCalledTimes(1) // audio DID reach the engine
+    expect(h.writeToTerminal).not.toHaveBeenCalled() // but the "." is never injected
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/no speech|microphone/i)
+    expect(h.focusActiveTerminal).toHaveBeenCalled()
+  })
+
   it('no-speech gate: captured silence shows a notice and does NOT transcribe (no hallucination injected)', async () => {
     const { result } = renderHook(() => useVoiceInput('term-1', true))
     await act(async () => { await result.current.start() })

@@ -17,8 +17,9 @@ export interface VoiceSettings {
   /** Push-to-talk combo (rebindable). */
   pushToTalkKey: string
   /** 'hold' = hold the combo to record, release to send (true push-to-talk);
-   *  'toggle' = tap to start, tap again to stop (hands-free for long dictation). */
-  pushToTalkMode: 'hold' | 'toggle'
+   *  'toggle' = tap the combo to start, tap it again to stop (hands-free);
+   *  'tapSpace' = tap the combo to start, tap the Spacebar to send (hands-free). */
+  pushToTalkMode: 'hold' | 'toggle' | 'tapSpace'
   /** In an AI-agent terminal, append Enter so the prompt submits automatically. */
   autoSubmitInAgent: boolean
   /** Run the constrained STT→LLM cleanup stage on the transcript. */

@@ -353,13 +353,20 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // must sit ahead of the keydown-only guard below. Inert until enabled.
       const vs = useTerminalStore.getState().voiceSettings
       if (vs?.enabled) {
+        const mode = vs.pushToTalkMode
         if (e.type === 'keydown' && matchesKeybinding(e, vs.pushToTalkKey)) {
           e.preventDefault()
-          const intent = pushToTalkIntent('keydown', vs.pushToTalkMode)
-          if (intent === 'toggle') voiceToggleRef.current()
-          else if (intent === 'start' && !voiceListeningRef.current) {
-            voiceStartRef.current()
-            pttHoldActiveRef.current = true
+          if (mode === 'tapSpace') {
+            // Tap the combo to START; the Spacebar ends it (handled below). No
+            // keyup latch — releasing the combo keys must NOT stop dictation here.
+            if (!voiceListeningRef.current) voiceStartRef.current()
+          } else {
+            const intent = pushToTalkIntent('keydown', mode)
+            if (intent === 'toggle') voiceToggleRef.current()
+            else if (intent === 'start' && !voiceListeningRef.current) {
+              voiceStartRef.current()
+              pttHoldActiveRef.current = true
+            }
           }
           return false
         }
@@ -367,6 +374,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         if (e.type === 'keyup' && pttHoldActiveRef.current && e.key.toLowerCase() === pushToTalkMainKey(vs.pushToTalkKey)) {
           e.preventDefault()
           pttHoldActiveRef.current = false
+          voiceStopRef.current()
+          return false
+        }
+        // Tap-to-start / Spacebar-to-send mode: while listening, the Spacebar ends
+        // dictation and is swallowed so the space never reaches the shell/agent.
+        if (mode === 'tapSpace' && e.type === 'keydown' && voiceListeningRef.current && (e.key === ' ' || e.code === 'Space')) {
+          e.preventDefault()
           voiceStopRef.current()
           return false
         }

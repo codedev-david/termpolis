@@ -649,6 +649,25 @@ describe('TerminalPane', () => {
       act(() => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L' })) })
       expect(res).toBe(true)
     })
+
+    it('tapSpace mode: the combo keydown still starts (is consumed)', () => {
+      withVoice({ pushToTalkMode: 'tapSpace' })
+      render(<TerminalPane {...defaultProps} />)
+      let res: boolean | undefined
+      const ev = new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })
+      act(() => { res = mockKeyHandlerCb?.(ev) })
+      expect(res).toBe(false)
+      expect(ev.defaultPrevented).toBe(true)
+    })
+
+    it('tapSpace mode: Spacebar passes through to the terminal when NOT listening', () => {
+      withVoice({ pushToTalkMode: 'tapSpace' })
+      render(<TerminalPane {...defaultProps} />)
+      let res: boolean | undefined
+      // Idle (not dictating): a space must reach the shell/agent, not be swallowed.
+      act(() => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { key: ' ', code: 'Space', cancelable: true })) })
+      expect(res).toBe(true)
+    })
   })
 
   // =====================================================
@@ -752,6 +771,24 @@ describe('TerminalPane', () => {
       await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
       await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
       await act(async () => { fireEvent.click(screen.getByTestId('voice-listening-badge')) })
+      await waitFor(() => expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument())
+    })
+
+    it('tapSpace mode: tap the combo to start, Spacebar to stop (combo release does NOT stop)', async () => {
+      withVoice({ pushToTalkMode: 'tapSpace' })
+      render(<TerminalPane {...defaultProps} />)
+      // Tap the push-to-talk combo → starts listening.
+      await act(async () => {
+        mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true }))
+      })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      // Releasing the combo keys must NOT end dictation (unlike hold mode).
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keyup', { key: 'l', cancelable: true })) })
+      expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument()
+      // Spacebar ends dictation (and is consumed so the space isn't typed).
+      let res: boolean | undefined
+      await act(async () => { res = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { key: ' ', code: 'Space', cancelable: true })) })
+      expect(res).toBe(false)
       await waitFor(() => expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument())
     })
 

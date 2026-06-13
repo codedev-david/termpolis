@@ -11,6 +11,7 @@ import {
   pushToTalkMainKey,
   audioRms,
   isNoSpeech,
+  isNoSpeechTranscript,
   normalizeAudioGain,
   computeDisplayLevel,
   analyzeCapture,
@@ -44,6 +45,26 @@ describe('voicePipeline', () => {
     it('toggle mode: keydown flips, keyup is ignored', () => {
       expect(pushToTalkIntent('keydown', 'toggle')).toBe('toggle')
       expect(pushToTalkIntent('keyup', 'toggle')).toBeNull()
+    })
+  })
+
+  describe('isNoSpeechTranscript (Groq no-speech "." backstop)', () => {
+    it('treats a bare period / pure punctuation / empty as no-speech', () => {
+      expect(isNoSpeechTranscript('.')).toBe(true)
+      expect(isNoSpeechTranscript(' .')).toBe(true) // Groq's exact no-speech response
+      expect(isNoSpeechTranscript('...')).toBe(true)
+      expect(isNoSpeechTranscript('?!')).toBe(true)
+      expect(isNoSpeechTranscript('   ')).toBe(true)
+      expect(isNoSpeechTranscript('')).toBe(true)
+      expect(isNoSpeechTranscript(null)).toBe(true)
+      expect(isNoSpeechTranscript(undefined)).toBe(true)
+    })
+    it('keeps ANY real word or digit so genuine dictation is never dropped', () => {
+      expect(isNoSpeechTranscript('hello')).toBe(false)
+      expect(isNoSpeechTranscript('you')).toBe(false)
+      expect(isNoSpeechTranscript('ok.')).toBe(false)
+      expect(isNoSpeechTranscript('1 2 3')).toBe(false)
+      expect(isNoSpeechTranscript('thank you')).toBe(false)
     })
   })
 
@@ -136,10 +157,11 @@ describe('voicePipeline', () => {
       expect(sanitizeVoiceSettings({ consentAccepted: 'yes' }).consentAccepted).toBe(false)
     })
 
-    it('defaults push-to-talk mode to hold, preserves an explicit toggle', () => {
+    it('defaults push-to-talk mode to hold, preserves an explicit toggle or tapSpace', () => {
       expect(sanitizeVoiceSettings({ pushToTalkMode: 'banana' }).pushToTalkMode).toBe('hold')
       expect(sanitizeVoiceSettings({}).pushToTalkMode).toBe('hold')
       expect(sanitizeVoiceSettings({ pushToTalkMode: 'toggle' }).pushToTalkMode).toBe('toggle')
+      expect(sanitizeVoiceSettings({ pushToTalkMode: 'tapSpace' }).pushToTalkMode).toBe('tapSpace')
     })
 
     it('ignores non-boolean flags and caps oversized strings', () => {

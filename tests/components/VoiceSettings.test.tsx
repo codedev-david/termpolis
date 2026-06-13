@@ -72,12 +72,14 @@ describe('VoiceSettings', () => {
     expect(useTerminalStore.getState().voiceSettings.pushToTalkKey).toBe('Ctrl+Shift+;')
   })
 
-  it('defaults to hold-to-talk and can switch to tap-to-toggle', () => {
+  it('defaults to hold-to-talk and can switch to tap-to-toggle or tap-to-start/Spacebar-to-send', () => {
     render(<VoiceSettings />)
     expect(useTerminalStore.getState().voiceSettings.pushToTalkMode).toBe('hold')
     fireEvent.click(screen.getByTestId('voice-enable-toggle'))
     fireEvent.change(screen.getByTestId('voice-mode-select'), { target: { value: 'toggle' } })
     expect(useTerminalStore.getState().voiceSettings.pushToTalkMode).toBe('toggle')
+    fireEvent.change(screen.getByTestId('voice-mode-select'), { target: { value: 'tapSpace' } })
+    expect(useTerminalStore.getState().voiceSettings.pushToTalkMode).toBe('tapSpace')
   })
 
   it('stays on the Connect button when the key-status IPC rejects', async () => {
