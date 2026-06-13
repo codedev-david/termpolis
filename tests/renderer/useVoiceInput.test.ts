@@ -301,4 +301,33 @@ describe('useVoiceInput (orchestration)', () => {
     expect(result.current.errorMsg).toMatch(/background noise/i)
     expect(result.current.lastCapture?.verdict).toBe('noise')
   })
+
+  it('runs the live level meter while listening (samples the analyser)', async () => {
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { await result.current.start() })
+    expect(result.current.listening).toBe(true)
+    // Let the ~33ms meter interval fire against the fake analyser a few times.
+    await act(async () => { await new Promise((r) => setTimeout(r, 90)) })
+    await act(async () => { await result.current.stop() })
+    expect(result.current.listening).toBe(false)
+  })
+
+  it('toggle() starts when idle and stops when listening', async () => {
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await act(async () => { result.current.toggle() }) // idle → start
+    expect(result.current.listening).toBe(true)
+    await act(async () => { result.current.toggle() }) // listening → stop
+    expect(result.current.listening).toBe(false)
+  })
+
+  it('cancelConfirm dismisses the confirm bar without injecting', async () => {
+    const { result } = renderHook(() => useVoiceInput('term-1', false)) // shell → confirm path
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    await act(async () => { await result.current.stop() })
+    expect(result.current.confirm?.text).toBe('hello world')
+    act(() => { result.current.cancelConfirm() })
+    expect(result.current.confirm).toBeNull()
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+  })
 })
