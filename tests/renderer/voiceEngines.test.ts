@@ -69,4 +69,18 @@ describe('default IPC transport', () => {
     const res = await createVoiceEngine(settings()).transcribe(new Float32Array([0]))
     expect(res.text).toBe('')
   })
+
+  it('uses a generic message when the IPC failure carries no error string', async () => {
+    ;(window as unknown as { termpolis: unknown }).termpolis = {
+      voiceTranscribe: vi.fn(async () => ({ success: false })),
+    }
+    await expect(createVoiceEngine(settings()).transcribe(new Float32Array([0]))).rejects.toThrow(/Groq transcription failed/)
+  })
+
+  it('throws when the IPC response is null/undefined', async () => {
+    ;(window as unknown as { termpolis: unknown }).termpolis = {
+      voiceTranscribe: vi.fn(async () => undefined),
+    }
+    await expect(createVoiceEngine(settings()).transcribe(new Float32Array([0]))).rejects.toThrow(/Groq transcription failed/)
+  })
 })

@@ -75,4 +75,60 @@ describe('GroqConnectModal', () => {
     await waitFor(() => expect(api.groqClearApiKey).toHaveBeenCalled())
     expect(await screen.findByTestId('groq-consent-checkbox')).toBeInTheDocument()
   })
+
+  it('shows an error and does not store the key when validation throws', async () => {
+    const api = stub({
+      groqValidateKey: vi.fn(async () => {
+        throw new Error('network down')
+      }),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_x' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    expect(await screen.findByTestId('groq-error')).toHaveTextContent(/network down/)
+    expect(api.groqSetApiKey).not.toHaveBeenCalled()
+  })
+
+  it('shows an error when storing the validated key fails', async () => {
+    stub({ groqSetApiKey: vi.fn(async () => ({ success: false, error: 'keychain locked' })) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_x' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    expect(await screen.findByTestId('groq-error')).toHaveTextContent(/keychain locked/)
+    expect(screen.queryByTestId('groq-connected-status')).not.toBeInTheDocument()
+  })
+
+  it('shows a generic error when validation fails with no message', async () => {
+    stub({ groqValidateKey: vi.fn(async () => ({ success: false })) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_x' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    expect(await screen.findByTestId('groq-error')).toBeInTheDocument()
+  })
+
+  it('survives groqGetKeyStatus rejecting on mount (stays on the connect form)', async () => {
+    stub({
+      groqGetKeyStatus: vi.fn(async () => {
+        throw new Error('ipc down')
+      }),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    expect(await screen.findByTestId('groq-consent-checkbox')).toBeInTheDocument()
+  })
+
+  it('does not crash if disconnect itself fails', async () => {
+    const api = stub({
+      groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_••••1' } })),
+      groqClearApiKey: vi.fn(async () => {
+        throw new Error('clear failed')
+      }),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    expect(await screen.findByTestId('groq-disconnect-btn')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('groq-disconnect-btn'))
+    await waitFor(() => expect(api.groqClearApiKey).toHaveBeenCalled())
+  })
 })

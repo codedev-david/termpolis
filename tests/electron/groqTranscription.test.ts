@@ -165,4 +165,57 @@ describe('validateGroqKey', () => {
     expect(res.ok).toBe(false)
     expect((fetchImpl as any).mock.calls.length).toBe(0)
   })
+
+  it('falls back to "HTTP <status>" when the error body is empty', async () => {
+    const fetchImpl = fakeFetch(() => ({ ok: false, status: 403, text: async () => '' }))
+    const res = await validateGroqKey('k', { fetchImpl })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('HTTP 403')
+  })
+
+  it('still reports not-ok when reading the error body itself throws', async () => {
+    const fetchImpl = fakeFetch(() => ({
+      ok: false,
+      status: 500,
+      text: async () => {
+        throw new Error('stream broke')
+      },
+    }))
+    const res = await validateGroqKey('k', { fetchImpl })
+    expect(res.ok).toBe(false)
+    expect(res.status).toBe(500)
+  })
+})
+
+describe('edge cases', () => {
+  it('encodeWav uses a 16kHz default sample rate when none is given', () => {
+    const wav = encodeWav(new Float32Array([0, 0.1]))
+    expect(wav.readUInt32LE(24)).toBe(16000)
+  })
+
+  it('buildMultipartBody generates a unique boundary when none is supplied', () => {
+    const wav = encodeWav(new Float32Array([0]))
+    const a = buildMultipartBody(wav, 'm')
+    const b = buildMultipartBody(wav, 'm')
+    expect(a.contentType).toMatch(/^multipart\/form-data; boundary=----termpolis/)
+    expect(a.contentType).not.toBe(b.contentType) // fresh boundary each call
+    expect(a.body.toString('latin1')).toContain('filename="audio.wav"')
+  })
+
+  it('transcribeWithGroq still throws (with status) when reading the error body throws', async () => {
+    const fetchImpl = fakeFetch(() => ({
+      ok: false,
+      status: 502,
+      text: async () => {
+        throw new Error('no body')
+      },
+    }))
+    await expect(transcribeWithGroq(new Float32Array([0.1]), { apiKey: 'k', fetchImpl })).rejects.toThrow(/502/)
+  })
+
+  it('transcribeWithGroq rejects a whitespace-only API key without calling the network', async () => {
+    const fetchImpl = fakeFetch(() => ({ ok: true, status: 200, json: async () => ({ text: 'x' }) }))
+    await expect(transcribeWithGroq(new Float32Array([0]), { apiKey: '   ', fetchImpl })).rejects.toThrow(/key/i)
+    expect((fetchImpl as any).mock.calls.length).toBe(0)
+  })
 })

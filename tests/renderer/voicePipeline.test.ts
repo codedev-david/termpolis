@@ -405,4 +405,47 @@ describe('voicePipeline', () => {
       expect(Number.isFinite(computeDisplayLevel(a.rms))).toBe(true)
     })
   })
+
+  describe('push-to-talk intent edge cases', () => {
+    it('hold mode ignores non key-down/up events (returns null)', () => {
+      expect(pushToTalkIntent('blur', 'hold')).toBeNull()
+    })
+    it('toggle mode ignores key-up; only key-down toggles', () => {
+      expect(pushToTalkIntent('keyup', 'toggle')).toBeNull()
+      expect(pushToTalkIntent('keydown', 'toggle')).toBe('toggle')
+    })
+    it('hold mode maps key-down to start and key-up to stop', () => {
+      expect(pushToTalkIntent('keydown', 'hold')).toBe('start')
+      expect(pushToTalkIntent('keyup', 'hold')).toBe('stop')
+    })
+    it('pushToTalkMainKey returns the last segment lowercased, "" for an empty combo', () => {
+      expect(pushToTalkMainKey('Ctrl+Shift+L')).toBe('l')
+      expect(pushToTalkMainKey('')).toBe('')
+    })
+  })
+
+  describe('audio helper edge branches', () => {
+    it('resampleTo16k upsamples a sub-16kHz input (linear interpolation path)', () => {
+      const out = resampleTo16k(new Float32Array([0, 1, 0, 1]), 8000)
+      expect(out.length).toBeGreaterThan(4) // 8k -> 16k roughly doubles the samples
+      for (const v of out) expect(Number.isFinite(v)).toBe(true)
+    })
+
+    it('resampleTo16k returns the input unchanged when already at 16kHz', () => {
+      const input = new Float32Array([0.1, 0.2])
+      expect(resampleTo16k(input, 16000)).toBe(input)
+    })
+
+    it('normalizeAudioGain caps the boost for near-silent audio (maxGain branch)', () => {
+      const quiet = new Float32Array(1000).fill(0.0005) // far below target → gain would exceed maxGain
+      const out = normalizeAudioGain(quiet, 0.08, 40)
+      // Capped at 40x: 0.0005 * 40 = 0.02, never clipped to 1.
+      expect(out[0]).toBeCloseTo(0.02, 5)
+    })
+
+    it('normalizeAudioGain returns input unchanged when already at/above target', () => {
+      const loud = new Float32Array(10).fill(0.5)
+      expect(normalizeAudioGain(loud, 0.08)).toBe(loud)
+    })
+  })
 })

@@ -84,5 +84,19 @@ describe('groqKeyStore', () => {
     it('fully masks short keys', () => {
       expect(maskKey('short')).toBe('••••')
     })
+    it('handles null/undefined keys without throwing', () => {
+      expect(maskKey(null as unknown as string)).toBe('••••')
+      expect(maskKey(undefined as unknown as string)).toBe('••••')
+    })
+  })
+
+  describe('nullish key handling', () => {
+    it('treats undefined / null / whitespace-only as "no key"', () => {
+      setGroqKey(dir, undefined as unknown as string)
+      expect(getGroqKey(dir)).toBeNull()
+      setGroqKey(dir, '   ')
+      expect(getGroqKey(dir)).toBeNull()
+      expect(getGroqKeyStatus(dir)).toEqual({ connected: false, hint: '' })
+    })
   })
 })

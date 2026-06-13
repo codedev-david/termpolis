@@ -79,4 +79,15 @@ describe('VoiceSettings', () => {
     fireEvent.change(screen.getByTestId('voice-mode-select'), { target: { value: 'toggle' } })
     expect(useTerminalStore.getState().voiceSettings.pushToTalkMode).toBe('toggle')
   })
+
+  it('stays on the Connect button when the key-status IPC rejects', async () => {
+    ;(window as unknown as { termpolis: unknown }).termpolis = {
+      groqGetKeyStatus: vi.fn(async () => {
+        throw new Error('ipc down')
+      }),
+    }
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    expect(await screen.findByTestId('groq-connect-open-btn')).toBeInTheDocument()
+  })
 })
