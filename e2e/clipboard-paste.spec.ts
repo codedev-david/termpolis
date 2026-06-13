@@ -103,4 +103,54 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     // The marker is echoed by the shell on the input line.
     await expect(page.locator('.xterm-rows')).toContainText(MARKER, { timeout: 15000 })
   })
+
+  // --- COPY: select terminal text, right-click a Copy variant, read the REAL OS
+  // clipboard. Copy reads xterm's BUFFER model (term.getSelection()), so it works
+  // headlessly regardless of the GPU/canvas renderer. (Copy as Image uses a WebGL
+  // canvas capture that xvfb can't reliably produce, so it's exercised by the unit
+  // test for the clipboard:write-image IPC, not here.) ---
+
+  /** Put `marker` on a clean top line and triple-click to select that line.
+   *  Returns the click point so the caller can right-click the same spot. */
+  async function selectMarkerLine(marker: string): Promise<{ x: number; y: number }> {
+    const term = page.locator('.xterm').first()
+    await term.click() // focus xterm
+    await page.keyboard.press('Enter')   // submit whatever is on the input line
+    await page.waitForTimeout(250)
+    await page.keyboard.type('clear')    // reset to a top-of-screen prompt
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(500)
+    await page.keyboard.type(marker)     // lands on the (now top) input line
+    await expect(page.locator('.xterm-rows')).toContainText(marker, { timeout: 8000 })
+    const box = await page.locator('.xterm-screen').first().boundingBox()
+    if (!box) throw new Error('no .xterm-screen bounding box')
+    const pt = { x: box.x + 40, y: box.y + 8 } // first text row
+    await page.mouse.click(pt.x, pt.y, { clickCount: 3 }) // xterm triple-click = select line
+    return pt
+  }
+
+  const readClip = () => app.evaluate(async ({ clipboard }) => clipboard.readText())
+
+  test('right-click Copy puts the selected terminal text on the real clipboard', async () => {
+    const marker = 'zz_copy_plain_71'
+    const pt = await selectMarkerLine(marker)
+    await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__')) // prove freshness
+    await page.mouse.click(pt.x, pt.y, { button: 'right' })
+    const menu = page.locator('[data-testid="terminal-context-menu"]')
+    await expect(menu).toBeVisible({ timeout: 5000 })
+    await menu.locator('button').filter({ hasText: 'Copy' }).first().click() // plain "Copy"
+    await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
+  })
+
+  test('right-click "Copy as Code Block" writes the markdown form to the clipboard', async () => {
+    const marker = 'zz_copy_codeblock_72'
+    const pt = await selectMarkerLine(marker)
+    await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__'))
+    await page.mouse.click(pt.x, pt.y, { button: 'right' })
+    const menu = page.locator('[data-testid="terminal-context-menu"]')
+    await expect(menu).toBeVisible({ timeout: 5000 })
+    await menu.locator('button').filter({ hasText: 'Copy as Code Block' }).click()
+    // The plain-text flavor is a ```-fenced block that contains the selected line.
+    await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
+  })
 })
