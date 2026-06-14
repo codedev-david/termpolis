@@ -197,7 +197,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li>Termpolis runs an MCP server on <strong>localhost:9315</strong> (shown in the bottom bar)</li>
               <li>AI agents can create terminals, run commands, read output, and manage your workspace</li>
               <li><strong>Auto-registers with Claude Code</strong> — on launch, Termpolis adds itself to your Claude Code settings automatically. No manual config needed.</li>
-              <li>18 tools: terminal management, file tree, git status, swarm coordination, and shared memory (search, write, list, and the background primer)</li>
+              <li>19 tools: terminal management, file tree, git status, swarm coordination, and shared memory (search, related-entry traversal, write, list, and the background primer)</li>
               <li>Secured with a 256-bit auth token (rotates every launch, localhost only)</li>
               <li>CLI tool available: <code>termpolis-cli list</code>, <code>termpolis-cli create "Dev"</code>, etc.</li>
             </ul>
@@ -228,6 +228,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>Claude Code</strong> launches with the recall instruction in its <strong>system prompt</strong> (via <code className="bg-[#3c3c3c] px-1 rounded">--append-system-prompt-file</code>) — nothing is typed into the terminal at all. Codex, Gemini, and Qwen get a <strong>short one-line note</strong> pointing them at the <code className="bg-[#3c3c3c] px-1 rounded">memory_primer</code> MCP tool. Either way the agent loads your saved memory <strong>behind the scenes</strong>, with no wall of text</li>
               <li><strong>This repo/directory first</strong> — memories for the current project (past conversations leading) take the top slots; cross-project context follows, clearly labeled</li>
               <li><strong>Background only</strong> — the agent holds the memory as context and waits for your instruction; it will not start acting on past work by itself</li>
+              <li><strong>Signal, not noise</strong> — recall is relevance-gated (with a floor so it never starves), de-duplicated, and search-first, so it injects the memories that matter without bloating the context window. The <code className="bg-[#3c3c3c] px-1 rounded">memory_related</code> tool follows connections from one memory to its nearest neighbours.</li>
               <li>After Claude Code <strong>compacts</strong> its conversation, the pointer is re-injected so the agent can recover the detail it summarized away</li>
               <li>Both behaviors are opt-out in <strong>Settings → AI Memory</strong>; seeding only happens when relevant memory actually exists for the project</li>
             </ul>
@@ -346,7 +347,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+/</kbd> Shortcuts panel</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Space</kbd> Keyboard select / copy mode (arrows move · Shift extends · Ctrl=word · a=all · Enter copies · Esc exits)</li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+L</kbd> Voice dictation — hold to talk (enable first in Settings → Voice)</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+L</kbd> Voice dictation — tap to start/stop, or hold to talk (enable first in Settings → Voice)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+1–4</kbd> Launch first four AI agents (Claude / Codex / Gemini / Qwen)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Win+Shift+T</kbd> New terminal (global, works when minimized)</li>
               <li>All customizable — plus add your own snippet macros — in <strong>Settings → Keybindings</strong></li>
@@ -361,7 +362,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             <p className="text-[#bbb] text-xs mb-1.5">Talk instead of type. Transcription uses Groq's cloud Whisper API — your recorded audio is sent to Groq (opt-in, off by default).</p>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li><strong>Turn it on first</strong> in <strong>Settings → Voice</strong> — it's off by default — then <strong>Connect Groq</strong> (paste a free Groq API key). The key is validated and stored encrypted in your OS keychain; it never touches settings or logs.</li>
-              <li><strong>Hold <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+L</kbd> and speak; release to send.</strong> Prefer hands-free? Switch to tap-to-start / tap-to-stop under <strong>Activation</strong>.</li>
+              <li><strong>Tap <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+L</kbd> to start and tap again to stop — or hold it to talk and release to send.</strong> Both work on the same key by default (tap-or-hold). Pure hold, tap-to-toggle, and tap-then-send-key modes are selectable under <strong>Activation</strong>, and both the hotkey and the send key are rebindable.</li>
               <li><strong>Wait for the "Listening…" badge, then speak normally.</strong> Groq's Whisper model is tuned for <strong>English</strong>. If the mic catches no speech you'll see <strong>"No speech detected"</strong> — hold the key, speak, and release again (Termpolis never injects a guessed phrase, and never sends silence to Groq).</li>
               <li><strong>In an AI-agent terminal</strong> (Claude · Codex · Gemini · Qwen) your words are <strong>sent straight to the agent as a prompt</strong> — it absorbs minor mis-hearings, so just talk naturally.</li>
               <li><strong>In a plain shell</strong> the transcript is <em>inserted but never run automatically</em> — you review it and press <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> yourself (a mis-heard command is never executed for you).</li>

@@ -188,9 +188,11 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Diff Viewer** — detects `git diff` output and renders it with syntax highlighting (green/red for additions/deletions)
 - **Smart Context Panel** — `Ctrl+Shift+E` opens a side panel showing file tree, git status, and recent commits for the current directory
 - **Conversation History** — `Ctrl+Shift+I` searches across all AI agent conversations indexed from terminal output
+- **Voice Dictation** — talk instead of type (Groq Whisper, opt-in, off by default): tap `Ctrl+Shift+L` to start/stop hands-free, or hold to talk; the hotkey and the send key are rebindable
+- **Cost-Aware Model Picker** — pin a Claude model per profile (launches with `--model`) or hot-swap a running agent's model live from the terminal header (`/model`), with savings hints — Sonnet ≈40% cheaper than Opus, Haiku ≈80% — so routine work runs cheap while hard work stays on Opus
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 14 tools for AI agents to control terminals programmatically
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 19 tools for AI agents to control terminals programmatically (incl. shared-memory search, write, list, the background primer, and 1-hop `memory_related` traversal)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
@@ -287,7 +289,7 @@ When you're running multiple AI agents concurrently (or a whole swarm), you need
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
 - **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
 - **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
-- **1,400+ automated tests** — 1,400+ unit tests (Vitest, 90% line coverage) + 140+ E2E tests (Playwright). Coverage is maintained at 90%+ as a hard gate — no commits allowed below this threshold.
+- **3,800+ automated tests** — 3,800+ unit & component tests (Vitest, 177 test files, 90%+ line / 85%+ branch coverage) plus a Playwright end-to-end suite that launches the real Electron app. Coverage is enforced as a hard CI gate — no commits allowed below threshold.
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -448,7 +450,7 @@ npm test
 ```
 
 650+ total tests:
-- `npm test` — 1,400+ unit tests (Vitest, 75 test files, 90% coverage)
+- `npm test` — 3,800+ unit & component tests (Vitest, 177 test files, 90%+ coverage)
 - `npm run test:coverage` — unit tests with v8 coverage report
 - `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
 - E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
@@ -568,7 +570,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (1,400+ tests, 75 files, 90% coverage)
+├── tests/                           # Vitest test suites (3,800+ tests, 177 files, 90%+ coverage)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)
