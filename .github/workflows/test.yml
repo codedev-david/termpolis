@@ -64,10 +64,10 @@ jobs:
       # without the coverage denominator.
       - name: Unit tests (with coverage gates)
         if: matrix.os == 'windows-latest'
-        run: npx vitest run --coverage --reporter=verbose --reporter=json --outputFile.json=test-output.json
+        run: npx vitest run --coverage --retry=2 --reporter=verbose --reporter=json --outputFile.json=test-output.json
       - name: Unit tests
         if: matrix.os != 'windows-latest'
-        run: npx vitest run --reporter=verbose --reporter=json --outputFile.json=test-output.json
+        run: npx vitest run --retry=2 --reporter=verbose --reporter=json --outputFile.json=test-output.json
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -19,6 +19,8 @@ import {
   _resetForTests,
   _setEmbedFnForTests,
   _setHnswThresholdForTests,
+  _setHnswYieldMsForTests,
+  _whenHnswSettledForTests,
 } from '../../src/main/swarmMemory'
 import { runConversationIngest } from '../../src/main/conversationIngest'
 import { setSafeStorage } from '../../src/main/secureKeyStore'
@@ -59,8 +61,10 @@ beforeEach(() => {
   _resetForTests()
   _setEmbedFnForTests(async (t: string) => embedFor(t))
   _setHnswThresholdForTests(5) // small so the HNSW graph engages in the test
+  _setHnswYieldMsForTests(0) // yield every insert → always exercise the backgrounded build (the CI condition)
 })
-afterEach(() => {
+afterEach(async () => {
+  await _whenHnswSettledForTests() // let any backgrounded build finish before reset, so it can't leak into the next test
   _resetForTests()
   setSafeStorage(null)
   for (const d of [userDir, syncDir]) { try { fs.rmSync(d, { recursive: true, force: true }) } catch { /* ignore */ } }
@@ -92,7 +96,11 @@ describe('memory brain — grand end-to-end', () => {
     expect(text).toMatch(/JWT|token auth|login/i) // recalled the ingested auth content
     expect(text).not.toMatch(/blue-green/) // unrelated topic not surfaced
 
-    // 4) The HNSW graph was built (> threshold) and persisted to disk.
+    // 4) The HNSW graph was built (> threshold) and persisted to disk. The build
+    //    is backgrounded (frame-budgeted yields), so wait for it to settle before
+    //    asserting the file exists — otherwise a slow/loaded CI runner can check
+    //    before the deferred persist lands. Matches the swarmMemory HNSW tests.
+    await _whenHnswSettledForTests()
     expect(fs.existsSync(path.join(userDir, 'memory-hnsw.json'))).toBe(true)
 
     // 5) Reload the whole store from disk → still recalls (persistence + repack).
