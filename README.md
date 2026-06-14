@@ -190,9 +190,11 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Conversation History** — `Ctrl+Shift+I` searches across all AI agent conversations indexed from terminal output
 - **Voice Dictation** — talk instead of type (Groq Whisper, opt-in, off by default): tap `Ctrl+Shift+L` to start/stop hands-free, or hold to talk; the hotkey and the send key are rebindable
 - **Cost-Aware Model Picker** — pin a Claude model per profile (launches with `--model`) or hot-swap a running agent's model live from the terminal header (`/model`), with savings hints — Sonnet ≈40% cheaper than Opus, Haiku ≈80% — so routine work runs cheap while hard work stays on Opus
+- **Knowledge Graph** — the shared memory stores **typed connections** between entries (`bug → solved-by → fix`, `decision → supersedes → …`), built explicitly via `memory_link` and **automatically** as curated memories are written. Agents follow the chain with `memory_graph` to reuse prior solutions fast instead of re-deriving them — the graph gets denser, and the agents get smarter, the more you use it
+- **No duplicate data** — every write is content-addressed (SHA-256 over normalized text); storing the same information twice is a no-op, so the vector store and the on-disk log never accumulate duplicates and never re-embed what they already hold
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 19 tools for AI agents to control terminals programmatically (incl. shared-memory search, write, list, the background primer, and 1-hop `memory_related` traversal)
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 21 tools for AI agents to control terminals programmatically (incl. shared-memory search, write, list, the background primer, 1-hop `memory_related` traversal, and the knowledge graph: `memory_link` + multi-hop `memory_graph`)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)

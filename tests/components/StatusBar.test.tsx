@@ -358,10 +358,10 @@ describe('StatusBar', () => {
     window.removeEventListener('termpolis:reopenOnboarding', listener)
   })
 
-  it('MCP section reflects the real 19-tool count', () => {
+  it('MCP section reflects the real 21-tool count', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    expect(screen.getByText(/19 tools/)).toBeInTheDocument()
+    expect(screen.getByText(/21 tools/)).toBeInTheDocument()
   })
 
   // -- Observability + security sections --

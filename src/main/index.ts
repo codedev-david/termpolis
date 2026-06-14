@@ -105,7 +105,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -1521,6 +1521,14 @@ if (!gotTheLock) {
       memoryRelated: (opts) => memoryRelated({
         id: opts.id,
         query: opts.query,
+        limit: opts.limit,
+      }),
+      memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation }),
+      memoryGraph: (opts) => memoryGraphQuery({
+        id: opts.id,
+        query: opts.query,
+        relation: opts.relation,
+        depth: opts.depth,
         limit: opts.limit,
       }),
     }

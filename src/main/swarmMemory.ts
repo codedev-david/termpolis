@@ -6,6 +6,7 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { TtlLruCache } from './memoryEconomy'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -198,6 +199,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   const resolved = path.resolve(userDataPath)
   userDataDir = resolved
   legacyPath = path.join(resolved, 'swarm-memory.jsonl')
+  initMemoryGraph(resolved)
   deviceId = loadOrCreateDeviceId(resolved)
   // explicit opt wins; otherwise the persisted choice; otherwise local-only
   syncDir = opts.syncDir !== undefined ? (opts.syncDir || null) : readSyncConfig(resolved)
@@ -268,6 +270,7 @@ export function _resetForTests(): void {
   embedOverride = null
   searchGen = 0
   searchCache.clear()
+  _resetGraphForTests()
 }
 
 export function _setMaxEntriesForTests(n: number): void {
@@ -340,6 +343,21 @@ export interface WriteInput {
   hash?: string
 }
 
+// Auto-link only high-signal kinds so the knowledge graph stays meaningful (not
+// flooded by transcript/code chunks); each links to its top-K nearest neighbours.
+const AUTO_LINK_KINDS = new Set<MemoryEntry['kind']>(['decision', 'fact', 'result'])
+const AUTO_LINK_K = 3
+
+/** Stable content-addressed hash for a memory's text — the key we use to skip
+ *  storing the same information twice (in the vector store AND in the on-disk
+ *  log). We normalize Unicode form and collapse/trim whitespace so trivially
+ *  different copies (reflowed, padded) of the same text map to one entry. Case
+ *  is preserved so we never merge genuinely distinct content. */
+export function contentHash(content: string): string {
+  const normalized = (content || '').normalize('NFC').replace(/\s+/g, ' ').trim()
+  return crypto.createHash('sha256').update(normalized).digest('hex')
+}
+
 export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (!input || typeof input.content !== 'string' || !input.content.trim()) {
     throw new Error('memoryWrite: content required')
@@ -349,6 +367,17 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   const content = input.content.length > MAX_CONTENT
     ? input.content.slice(0, MAX_CONTENT)
     : input.content
+
+  // De-duplicate by content so the same information never lands twice — not in
+  // the packed vector store, not in the JSONL on disk. Ingestion supplies its
+  // own source-scoped hash (idempotent re-ingest of a transcript/file); direct
+  // writes get a content hash. A hit returns the already-stored entry and skips
+  // the embed + persist + index work entirely (the Memex content-addressed win).
+  const effectiveHash = input.hash || contentHash(content)
+  if (seenHashes.has(effectiveHash)) {
+    const existing = entries.find(e => e.hash === effectiveHash)
+    if (existing) return existing
+  }
 
   const entry: MemoryEntry = {
     id: `mem-${Date.now()}-${++seq}-${crypto.randomBytes(3).toString('hex')}`,
@@ -360,7 +389,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     ...(input.taskId && { taskId: input.taskId }),
     ...(input.source && { source: input.source }),
     ...(projectSlug && { project: projectSlug }),
-    ...(input.hash && { hash: input.hash }),
+    hash: effectiveHash,
   }
 
   // Opportunistic embedding — swallow any failure silently
@@ -390,6 +419,21 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (vectorStore.size - rowToEntry.size > maxEntries) reloadFrom(shardFiles())
 
   bumpSearchGen() // a new entry invalidates cached searches
+
+  // Knowledge graph: auto-link a curated memory to its nearest neighbours so the
+  // graph grows passively as you work. High-value kinds only (transcript/code
+  // chunks would flood it; the agent can still link anything via memory_link).
+  if (AUTO_LINK_KINDS.has(kind) && entry.embedding) {
+    try {
+      // Side-effect-free neighbour lookup: reuse the embedding we just computed and
+      // scan the packed store directly, so growing the graph never kicks an HNSW
+      // (re)build or a disk-persist — those stay owned by memorySearch alone.
+      for (const n of nearestNeighbours(entry.embedding, AUTO_LINK_K, entry.id)) {
+        if (n.score <= 0) continue
+        addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto' })
+      }
+    } catch { /* best effort — linking never blocks a write */ }
+  }
   return entry
 }
 
@@ -644,6 +688,34 @@ export async function memoryRelated(opts: RelatedOptions): Promise<MemorySearchR
   return results.filter(r => r.id !== opts.id).slice(0, limit)
 }
 
+export interface GraphQueryOptions { id?: string; query?: string; relation?: string; depth?: number; limit?: number }
+
+// Walk the knowledge graph from a seed memory (by id, or by a query that finds the
+// seed) and resolve the connected entries — the agent-facing "follow the chain".
+export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<MemorySearchResult & { relation: string; distance: number }>> {
+  if (!opts || (!opts.id && !opts.query)) return []
+  let startId = opts.id
+  if (!startId && opts.query) {
+    const seed = await memorySearch({ query: opts.query, limit: 1 })
+    startId = seed[0]?.id
+  }
+  if (!startId) return []
+  const hits = traverseGraph(startId, { relation: opts.relation, depth: opts.depth ?? 2, limit: opts.limit ?? 20 })
+  if (hits.length === 0) return []
+  const byId = new Map<string, MemoryEntry>(entries.map(e => [e.id, e]))
+  const out: Array<MemorySearchResult & { relation: string; distance: number }> = []
+  for (const h of hits) {
+    const e = byId.get(h.id)
+    if (e) out.push({ ...e, score: Math.max(0, 1 - h.distance * 0.15), relation: h.relation, distance: h.distance })
+  }
+  return out
+}
+
+// Record a typed connection between two memories (agent-facing memory_link).
+export function memoryLink(input: { from: string; to: string; relation?: string; weight?: number; createdBy?: string }): MemoryEdge | null {
+  return addMemoryEdge(input)
+}
+
 function keywordScore(query: string, content: string): number {
   const q = query.toLowerCase()
   const c = content.toLowerCase()
@@ -665,6 +737,38 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
   const denom = Math.sqrt(magA) * Math.sqrt(magB)
   return denom === 0 ? 0 : dot / denom
+}
+
+// Top-k nearest neighbours of an embedding with NO side effects — pure reads over
+// the in-memory store. Unlike memorySearch it never calls ensureHnsw() (so no
+// background graph build) and never persists, so auto-linking can grow the
+// knowledge graph on every curated write without disturbing the search index's
+// build/persist lifecycle. Exact brute-force, which is what such writes want.
+function nearestNeighbours(queryEmb: number[], k: number, excludeId: string): Array<{ id: string; score: number }> {
+  // Packed path: real EMBED_DIM vectors live in the Float32 store. Exact
+  // brute-force top-k (the same fallback memorySearch uses) — no graph build.
+  if (queryEmb.length === EMBED_DIM && vectorStore.size > 0) {
+    const queryF32 = Float32Array.from(queryEmb)
+    const allow = (row: number): boolean => {
+      const e = rowToEntry.get(row)
+      return !!e && e.id !== excludeId
+    }
+    const out: Array<{ id: string; score: number }> = []
+    for (const h of vectorStore.searchTopK(queryF32, k, allow)) {
+      const e = rowToEntry.get(h.row)
+      if (e) out.push({ id: e.id, score: h.score })
+    }
+    return out
+  }
+  // Legacy path: entries still carrying a number[] embedding (e.g. tests with
+  // injected non-EMBED_DIM vectors). One-pass cosine, top-k.
+  const out: Array<{ id: string; score: number }> = []
+  for (const e of entries) {
+    if (e.id === excludeId || !e.embedding || e.embedding.length !== queryEmb.length) continue
+    out.push({ id: e.id, score: cosineSimilarity(queryEmb, e.embedding) })
+  }
+  out.sort((a, b) => b.score - a.score)
+  return out.slice(0, k)
 }
 
 // ---- List ----

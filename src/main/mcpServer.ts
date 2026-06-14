@@ -330,6 +330,34 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'memory_link',
+    description: 'Record a TYPED connection between two stored memories — build the knowledge graph as you work, so the brain stores not just facts but how they relate. Use it the moment you discover a relationship: a fix that solved a bug, a decision that supersedes an older one, an error caused by a config change, a file that is part of a feature. Pass the two memory ids (from search results) plus a relation. Suggested relations: solves, solved-by, supersedes, superseded-by, caused-by, causes, part-of, follows, duplicates, relates-to (free-form allowed).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Source memory entry id' },
+        to: { type: 'string', description: 'Target memory entry id' },
+        relation: { type: 'string', description: "Relation type, e.g. 'solved-by', 'supersedes', 'caused-by', 'part-of' (default 'relates-to')" },
+      },
+      required: ['from', 'to'],
+    },
+  },
+  {
+    name: 'memory_graph',
+    description: 'Follow the CONNECTIONS in the shared knowledge graph — a multi-hop traversal from a seed memory to everything it links to. Pass an entry `id` (or a `query` to find the seed) and walk the chain: from a bug to the fix that solved it, from a decision to what superseded it, and onward. Returns connected entries with the relation and hop distance. Use it to reuse prior solutions and context fast instead of re-deriving them.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Seed memory entry id (optional if query is given)' },
+        query: { type: 'string', description: 'Natural-language query to find the seed (optional if id is given)' },
+        relation: { type: 'string', description: 'Only follow edges of this relation type (optional)' },
+        depth: { type: 'number', description: 'Max hops to traverse (default 2)' },
+        limit: { type: 'number', description: 'Max connected entries to return (default 20)' },
+      },
+      required: [],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -352,6 +380,8 @@ export interface McpToolHandlers {
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
   memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
+  memoryLink: (opts: { from: string; to: string; relation?: string }) => any
+  memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -424,6 +454,16 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return await handlers.memoryRelated({
         id: args.id,
         query: args.query,
+        limit: args.limit,
+      })
+    case 'memory_link':
+      return handlers.memoryLink({ from: args.from, to: args.to, relation: args.relation })
+    case 'memory_graph':
+      return await handlers.memoryGraph({
+        id: args.id,
+        query: args.query,
+        relation: args.relation,
+        depth: args.depth,
         limit: args.limit,
       })
     default:

@@ -180,8 +180,9 @@ describe('memorySearch', () => {
   })
 
   it('filters by agentId', async () => {
-    await memoryWrite({ agentId: 'claude', kind: 'fact', content: 'shared knowledge' })
-    await memoryWrite({ agentId: 'codex', kind: 'fact', content: 'shared knowledge' })
+    // Distinct content per agent — identical text would de-duplicate into one entry.
+    await memoryWrite({ agentId: 'claude', kind: 'fact', content: 'shared knowledge from claude' })
+    await memoryWrite({ agentId: 'codex', kind: 'fact', content: 'shared knowledge from codex' })
     const results = await memorySearch({ query: 'shared', agentId: 'codex' })
     expect(results.length).toBe(1)
     expect(results[0].agentId).toBe('codex')

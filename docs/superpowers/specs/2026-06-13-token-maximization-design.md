@@ -220,8 +220,20 @@ today; the search/recall work above makes it fast and clean. Two layers remain:
   cache** (write-invalidated, so repeats are instant and never stale); and
   **`memory_related`** — the 1-hop connected-memory traversal (MCP tool + function),
   step 1 of §7.
+- **Shipped & tested in v1.15.0:** the explicit typed **knowledge graph** (§7 Layer 2) —
+  a `memoryGraph` edge store (JSONL-persisted, survives restarts; cycle-safe n-hop
+  traversal), typed edges via the **`memory_link`** MCP tool, multi-hop
+  **`memory_graph`** traversal, and **auto-linking** of curated writes
+  (decision/fact/result) to their nearest neighbours so the graph grows as you work.
+  MCP tool count 19 → 21. Plus **content-addressed de-duplication**: `contentHash`
+  (SHA-256 over whitespace-normalized text) makes `memoryWrite` skip-if-exists, so
+  identical information never lands twice in the vector store or the JSONL — and is
+  never re-embedded. Ingestion keeps its source-scoped idempotency hash; hashless
+  direct writes auto-hash. The neighbour lookup feeding auto-linking is
+  side-effect-free (no HNSW build / persist), so growing the graph never disturbs
+  the search-index lifecycle.
 - **Designed, not yet built:** reactive 429-downgrade, spend/savings panel, hybrid
-  keyword+vector scoring, externalize-big-cold-artifacts, and the explicit typed
-  knowledge graph (§7, Layer 2).
-- **Recommendation:** next, the typed **knowledge graph** (§7 Layer 2) — edges that
-  accumulate as work happens (`bug → solved-by → fix`) — building on `memory_related`.
+  keyword+vector scoring, externalize-big-cold-artifacts, cross-machine sync +
+  encryption of the edge log, and a Memory-panel graph view.
+- **Recommendation:** next, surface the graph in the Memory panel (visualize / curate
+  connections) and add the spend/savings tracker so the token wins are visible.
