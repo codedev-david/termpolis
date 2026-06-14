@@ -6,6 +6,9 @@ import {
   isAutoIndexEnabled,
   setAutoIndexEnabled,
   _resetAutoIndexedRoots,
+  resweepOpenRepos,
+  startRepoResweep,
+  REPO_RESWEEP_INTERVAL_MS,
 } from '../../src/renderer/src/hooks/useAutoCodeIndex'
 
 const KEY = 'termpolis.memory.autoIndexEverything'
@@ -141,5 +144,76 @@ describe('useAutoCodeIndex', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect((window as any).termpolis.memoryIngestCode).not.toHaveBeenCalled()
+  })
+})
+
+describe('resweepOpenRepos', () => {
+  it('re-indexes the distinct Git roots of the open cwds (dedupes shared roots)', async () => {
+    const api = (window as any).termpolis
+    api.gitFindRoot = vi.fn(async (cwd: string) => ({
+      success: true,
+      data: cwd.startsWith('/repoA') ? '/repoA' : '/repoB',
+    }))
+    const n = await resweepOpenRepos(() => ['/repoA/x', '/repoA/y', '/repoB'])
+    expect(n).toBe(2)
+    expect(api.memoryIngestCode).toHaveBeenCalledTimes(2)
+    expect(api.memoryIngestCode).toHaveBeenCalledWith('/repoA')
+    expect(api.memoryIngestCode).toHaveBeenCalledWith('/repoB')
+  })
+
+  it('returns 0 and indexes nothing when the setting is OFF', async () => {
+    setAutoIndexEnabled(false)
+    expect(await resweepOpenRepos(() => ['/repo/root'])).toBe(0)
+    expect((window as any).termpolis.memoryIngestCode).not.toHaveBeenCalled()
+  })
+
+  it('returns 0 when the bridge API is unavailable', async () => {
+    ;(window as any).termpolis = undefined
+    expect(await resweepOpenRepos(() => ['/x'])).toBe(0)
+  })
+
+  it('skips empty and non-repo cwds but keeps sweeping the rest', async () => {
+    const api = (window as any).termpolis
+    api.gitFindRoot = vi.fn(async (cwd: string) =>
+      cwd === '/good' ? { success: true, data: '/good' } : { success: true, data: null })
+    const n = await resweepOpenRepos(() => ['', '/nope', '/good'])
+    expect(n).toBe(1)
+    expect(api.memoryIngestCode).toHaveBeenCalledTimes(1)
+    expect(api.memoryIngestCode).toHaveBeenCalledWith('/good')
+  })
+
+  it('keeps sweeping when gitFindRoot throws for one cwd', async () => {
+    const api = (window as any).termpolis
+    api.gitFindRoot = vi.fn(async (cwd: string) => {
+      if (cwd === '/boom') throw new Error('boom')
+      return { success: true, data: '/ok' }
+    })
+    const n = await resweepOpenRepos(() => ['/boom', '/ok/sub'])
+    expect(n).toBe(1)
+    expect(api.memoryIngestCode).toHaveBeenCalledWith('/ok')
+  })
+})
+
+describe('startRepoResweep', () => {
+  it('re-sweeps on each interval and stops once disposed', async () => {
+    vi.useFakeTimers()
+    try {
+      const api = (window as any).termpolis
+      const stop = startRepoResweep(() => ['/repo/root'], 1000)
+      expect(api.gitFindRoot).not.toHaveBeenCalled() // nothing fires on start
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(api.memoryIngestCode).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(api.memoryIngestCode).toHaveBeenCalledTimes(2) // re-sweeps each interval
+      stop()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(api.memoryIngestCode).toHaveBeenCalledTimes(2) // no more after dispose
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('defaults to a 15-minute interval', () => {
+    expect(REPO_RESWEEP_INTERVAL_MS).toBe(15 * 60_000)
   })
 })

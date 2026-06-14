@@ -71,3 +71,55 @@ export function useAutoCodeIndex(cwd: string): void {
     void autoIndexRepo(cwd)
   }, [cwd])
 }
+
+// Periodic re-sweep: every REPO_RESWEEP_INTERVAL_MS, re-index the code of all
+// currently-open repos so edits made mid-session are picked up WITHOUT reopening
+// the repo. Re-running the code index is cheap — it's content-hash deduped, so
+// only files whose content actually changed are re-embedded. This is distinct
+// from the on-open path above: the once-per-session guard does NOT apply here —
+// a re-sweep is a deliberate refresh.
+export const REPO_RESWEEP_INTERVAL_MS = 15 * 60_000 // 15 min
+
+// Resolve the distinct Git roots of the given cwds and re-index each. Best-effort
+// and gated by the setting; returns how many roots it kicked off an index for.
+export async function resweepOpenRepos(getCwds: () => string[]): Promise<number> {
+  try {
+    if (!isAutoIndexEnabled()) return 0
+    const api = window.termpolis
+    if (!api?.gitFindRoot || !api?.memoryIngestCode) return 0
+    const cwds = Array.from(new Set(getCwds().filter(Boolean)))
+    const roots = new Set<string>()
+    for (const cwd of cwds) {
+      try {
+        const res = await api.gitFindRoot(cwd)
+        const root = res?.success ? res.data : null
+        if (root) roots.add(root)
+      } catch {
+        /* skip this cwd, keep sweeping the rest */
+      }
+    }
+    for (const root of roots) {
+      try {
+        void api.memoryIngestCode(root)
+      } catch {
+        /* skip this root */
+      }
+    }
+    return roots.size
+  } catch {
+    return 0
+  }
+}
+
+// Start the periodic re-sweep. Call once (from the app root); returns a disposer
+// that stops the timer. `getCwds` is read at each tick, so the sweep always
+// targets the repos that are open *then*.
+export function startRepoResweep(
+  getCwds: () => string[],
+  intervalMs: number = REPO_RESWEEP_INTERVAL_MS,
+): () => void {
+  const timer = setInterval(() => {
+    void resweepOpenRepos(getCwds)
+  }, intervalMs)
+  return () => clearInterval(timer)
+}

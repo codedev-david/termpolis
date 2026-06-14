@@ -23,6 +23,7 @@ import { SecretsRedactedBanner } from './components/SecretsRedactedBanner/Secret
 import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
 import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
+import { startRepoResweep } from './hooks/useAutoCodeIndex'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, DEFAULT_KEYBINDINGS } from './lib/keybindings'
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
 import { sanitizeVoiceSettings } from './lib/voice/voicePipeline'
@@ -74,6 +75,11 @@ export default function App() {
   // at event time and must not capture the empty initial array in its closure.
   const availableShellsRef = useRef<ShellInfo[]>([])
   useEffect(() => { availableShellsRef.current = availableShells }, [availableShells])
+
+  // Re-index open repos every 15 min so mid-session code edits land in the
+  // memory brain (cheap — the code index is content-hash deduped). Reads the
+  // open terminals' cwds at each tick; opt-out via Settings → Auto-index.
+  useEffect(() => startRepoResweep(() => useTerminalStore.getState().terminals.map(t => t.cwd)), [])
 
   // Restore session on mount (guard against StrictMode double-fire)
   useEffect(() => {
