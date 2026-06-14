@@ -5,6 +5,7 @@ import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
+import { TtlLruCache } from './memoryEconomy'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -265,6 +266,8 @@ export function _resetForTests(): void {
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
   embedOverride = null
+  searchGen = 0
+  searchCache.clear()
 }
 
 export function _setMaxEntriesForTests(n: number): void {
@@ -386,6 +389,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   // Trims leave orphaned vectors behind; rebuild from disk once they pile up.
   if (vectorStore.size - rowToEntry.size > maxEntries) reloadFrom(shardFiles())
 
+  bumpSearchGen() // a new entry invalidates cached searches
   return entry
 }
 
@@ -536,6 +540,16 @@ export interface SearchOptions {
   project?: string                // path or slug — normalized on entry
 }
 
+// Search-result cache — identical repeated searches return instantly. Any write
+// (or a test embed-fn / availability swap) bumps `searchGen`, which is part of the
+// cache key, so old-generation entries simply age out and results are never stale.
+let searchGen = 0
+const searchCache = new TtlLruCache<MemorySearchResult[]>(128, 5 * 60 * 1000)
+function bumpSearchGen(): void { searchGen++ }
+function searchCacheKey(o: SearchOptions, limit: number): string {
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}`
+}
+
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
   if (!opts || typeof opts.query !== 'string' || !opts.query.trim()) return []
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
@@ -543,6 +557,10 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const projectSlug = opts.project ? normalizeProjectSlug(opts.project) : ''
   if (opts.project && !projectSlug) return []
   if (projectSlug) opts = { ...opts, project: projectSlug }
+
+  const cacheKey = searchCacheKey(opts, limit)
+  const cached = searchCache.get(cacheKey)
+  if (cached) return cached
 
   // Filter pool first — cheap wins
   let pool = entries
@@ -596,7 +614,34 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   }
 
   scored.sort((a, b) => b.score - a.score || b.ts - a.ts)
-  return scored.filter(r => r.score > 0).slice(0, limit)
+  const result = scored.filter(r => r.score > 0).slice(0, limit)
+  searchCache.set(cacheKey, result)
+  return result
+}
+
+export interface RelatedOptions {
+  id?: string
+  query?: string
+  limit?: number
+  project?: string
+}
+
+// One-hop "what connects to this?" traversal over the memory graph (the HNSW
+// nearest-neighbour links). By id: use that entry's content as the query and drop
+// the entry itself; by query: a plain semantic search. Cheap — reuses memorySearch
+// (and its cache). The first concrete step toward an explicit knowledge graph.
+export async function memoryRelated(opts: RelatedOptions): Promise<MemorySearchResult[]> {
+  if (!opts || (!opts.id && !opts.query)) return []
+  let query = opts.query
+  if (opts.id) {
+    const src = entries.find(e => e.id === opts.id)
+    if (!src) return []
+    query = src.content
+  }
+  if (!query || !query.trim()) return []
+  const limit = Math.min(Math.max(opts.limit ?? 5, 1), 100)
+  const results = await memorySearch({ query, limit: limit + 1, project: opts.project })
+  return results.filter(r => r.id !== opts.id).slice(0, limit)
 }
 
 function keywordScore(query: string, content: string): number {
@@ -858,8 +903,10 @@ async function embed(text: string, isQuery: boolean): Promise<number[] | null> {
 // Exposed for tests
 export function _setEmbeddingsAvailable(v: boolean | null): void {
   embeddingsAvailable = v
+  bumpSearchGen() // toggling embed availability changes results — invalidate the cache
 }
 
 export function _setEmbedFnForTests(fn: ((text: string) => Promise<number[] | null>) | null): void {
   embedOverride = fn
+  bumpSearchGen() // swapping the embedder changes results — invalidate the cache
 }

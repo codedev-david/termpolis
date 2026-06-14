@@ -671,6 +671,46 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 2d2. Live model picker — hot-swap a Claude agent's model from the header.
+  // =====================================================
+  describe('live model picker (single-agent hot-swap)', () => {
+    function withClaudeTerminal(agentCommand: string | undefined) {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false, agentCommand }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        focusActiveTerminal: mocks.mockFocusActiveTerminal,
+        focusNonce: 0,
+        voiceSettings: { enabled: false },
+      }))
+    }
+
+    it('shows the picker for a Claude agent and sends /model on change', () => {
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '/model sonnet\r')
+    })
+
+    it('does NOT show the picker for a plain (non-agent) terminal', () => {
+      withClaudeTerminal(undefined)
+      render(<TerminalPane {...defaultProps} />)
+      expect(screen.queryByTestId('model-picker')).not.toBeInTheDocument()
+    })
+
+    it('sends nothing for the placeholder option (no injection)', () => {
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: '' } })
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
   // 2e. Voice start/stop control button + clickable "Listening" badge
   // =====================================================
   describe('voice control button', () => {

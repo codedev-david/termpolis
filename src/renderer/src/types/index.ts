@@ -44,6 +44,8 @@ export interface AIProfile {
   command: string
   shell: string
   color: string
+  /** Optional Claude model alias (opus/sonnet/haiku), appended as --model on launch. */
+  model?: string
 }
 
 export interface PromptTemplate {

@@ -211,13 +211,17 @@ today; the search/recall work above makes it fast and clean. Two layers remain:
   training cutoff.
 
 ## 8. Status
-- **Shipped & tested (this release):** swarm model broker; voice tap-or-hold +
+- **Shipped & tested in v1.14.0:** swarm model broker; voice tap-or-hold +
   rebindable send key; sidebar dropdown clamp; context-economy (relevance-gate +
   floor + dedup + truncate + token accounting + search-first), Memex-informed.
-- **Built + tested, wired next build:** `TtlLruCache` (search result cache).
-- **Designed, not yet built:** single-agent model picker (Phase 2a, highest value),
-  reactive 429-downgrade, spend/savings panel, hybrid keyword+vector scoring,
-  externalize-big-cold-artifacts, and the explicit knowledge graph (§7).
-- **Recommendation:** next, (1) the single-agent model picker — biggest token win
-  for the common case — and (2) the `memory_related` 1-hop traversal — the cheapest
-  first step toward the connected-memory vision.
+- **Shipped & tested in v1.14.1:** single-agent **model picker** (per-profile launch
+  `--model` + a live `/model` hot-swap from the terminal header + savings hints —
+  cheaper for routine work, Opus for the hard parts); the **`TtlLruCache` search
+  cache** (write-invalidated, so repeats are instant and never stale); and
+  **`memory_related`** — the 1-hop connected-memory traversal (MCP tool + function),
+  step 1 of §7.
+- **Designed, not yet built:** reactive 429-downgrade, spend/savings panel, hybrid
+  keyword+vector scoring, externalize-big-cold-artifacts, and the explicit typed
+  knowledge graph (§7, Layer 2).
+- **Recommendation:** next, the typed **knowledge graph** (§7 Layer 2) — edges that
+  accumulate as work happens (`bug → solved-by → fix`) — building on `memory_related`.

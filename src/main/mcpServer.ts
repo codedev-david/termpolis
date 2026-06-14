@@ -317,6 +317,19 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'memory_related',
+    description: 'Find entries CONNECTED to a stored memory — a one-hop traversal of the shared brain. Pass an entry `id` to get its nearest neighbours (the memories most related to it), or a `query` for a plain semantic search. Use it to follow a thread: from a bug to the fix that solved it, from a decision to what superseded it, or to surface similar work by another agent or session — without re-deriving context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'A memory entry id to find related entries for (optional if query is given)' },
+        query: { type: 'string', description: 'Natural-language query, when not traversing from an id (optional if id is given)' },
+        limit: { type: 'number', description: 'Max related entries (default 5, cap 100)' },
+      },
+      required: [],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -338,6 +351,7 @@ export interface McpToolHandlers {
   memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
   memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
+  memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -403,6 +417,12 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
     case 'memory_primer':
       return await handlers.memoryPrimer({
         cwd: args.cwd,
+        query: args.query,
+        limit: args.limit,
+      })
+    case 'memory_related':
+      return await handlers.memoryRelated({
+        id: args.id,
         query: args.query,
         limit: args.limit,
       })

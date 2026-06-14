@@ -4,6 +4,7 @@ import { resolveAgentCommand, testDelay } from './testAgents'
 import { getTerminalDefaults, agentTerminalName } from './terminalDefaults'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import qwenIcon from '../assets/qwen-ai-logo.svg'
+import { claudeModelArg } from './modelBroker'
 
 /**
  * The four built-in AI agents. Always rendered first in the sidebar and always
@@ -79,6 +80,8 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
       // Memory unavailable — fall back to a bare launch + the normal typed pointer.
     }
   }
+  // Per-profile model selection: append a validated --model for Claude launches.
+  if (isClaude) launchCommand = launchCommand + claudeModelArg(profile.model)
   addTerminal({
     id,
     name: agentTerminalName(profile.name, cwd),

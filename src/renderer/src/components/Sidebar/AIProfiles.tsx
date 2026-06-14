@@ -4,6 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo } from '../../types'
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from '../../lib/aiProfiles'
+import { CLAUDE_MODEL_OPTIONS } from '../../lib/modelBroker'
 
 interface AddProfileModalProps {
   onSave: (profile: AIProfile) => void
@@ -15,6 +16,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
   const [command, setCommand] = useState('')
   const [shell, setShell] = useState('bash')
   const [color, setColor] = useState('#22D3EE')
+  const [model, setModel] = useState('')
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -26,6 +28,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
       command: command.trim(),
       shell,
       color,
+      ...(model && { model }),
     })
   }
 
@@ -60,6 +63,20 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
           <option value="cmd">CMD</option>
           <option value="zsh">Zsh</option>
           <option value="gitbash">Git Bash</option>
+        </select>
+        <select
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
+          value={model}
+          onChange={e => setModel(e.target.value)}
+          title="Claude model for this profile (appended as --model on launch). Cheaper models save tokens."
+          data-testid="profile-model-select"
+        >
+          <option value="">Model: default (Claude only)</option>
+          {CLAUDE_MODEL_OPTIONS.map(m => (
+            <option key={m.alias} value={m.alias}>
+              {m.label}{m.savingsPct > 0 ? ` — ${m.savingsPct}% cheaper` : ''}
+            </option>
+          ))}
         </select>
         <div className="flex items-center gap-2">
           <label className="text-xs text-[#9ca3af]">Color</label>

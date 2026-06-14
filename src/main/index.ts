@@ -105,7 +105,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
+  memoryWrite, memorySearch, memoryRelated, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -1518,6 +1518,11 @@ if (!gotTheLock) {
         })
         return { project: project || null, primer }
       },
+      memoryRelated: (opts) => memoryRelated({
+        id: opts.id,
+        query: opts.query,
+        limit: opts.limit,
+      }),
     }
 
     initAuditLog(app.getPath('userData'))

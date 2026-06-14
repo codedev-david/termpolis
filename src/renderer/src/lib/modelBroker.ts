@@ -89,6 +89,37 @@ export function brokerModel(agentId: string, signals: TaskSignals): BrokerDecisi
  * AGENT_MODEL_TIERS so the aliases never drift from the registry. Returns null
  * if Claude has no tiers configured (so the conductor prompt can omit the block).
  */
+export interface ModelOption {
+  /** CLI model alias — Claude Code's --model and /model accept these. */
+  alias: string
+  label: string
+  /** % token-cost saved vs. the premium (Opus) model. */
+  savingsPct: number
+}
+
+// The aliases Claude Code accepts, derived from the tier registry so the picker,
+// the sanitizer allowlist, and the broker never drift apart.
+const CLAUDE_ALIASES = new Set(
+  ([AGENT_MODEL_TIERS.claude?.premium, AGENT_MODEL_TIERS.claude?.standard, AGENT_MODEL_TIERS.claude?.economy]
+    .filter(Boolean)) as string[],
+)
+
+/** Claude model picker options, premium→economy, each with its savings vs Opus. */
+export const CLAUDE_MODEL_OPTIONS: ModelOption[] = (['premium', 'standard', 'economy'] as ModelTier[]).map((tier) => {
+  const alias = AGENT_MODEL_TIERS.claude[tier] as string
+  return { alias, label: alias.charAt(0).toUpperCase() + alias.slice(1), savingsPct: estimateSavingsPct('claude', tier) }
+})
+
+/** The ` --model <alias>` to append to a Claude LAUNCH command, or '' if not a valid alias. Pure. */
+export function claudeModelArg(model: string | undefined | null): string {
+  return model && CLAUDE_ALIASES.has(model) ? ` --model ${model}` : ''
+}
+
+/** The `/model <alias>` to type into a RUNNING Claude agent to hot-swap, or '' if invalid. Pure. */
+export function modelSwitchCommand(alias: string): string {
+  return CLAUDE_ALIASES.has(alias) ? `/model ${alias}` : ''
+}
+
 export function claudeModelGuidance(): string | null {
   const t = AGENT_MODEL_TIERS.claude
   if (!t?.economy || !t.standard || !t.premium) return null

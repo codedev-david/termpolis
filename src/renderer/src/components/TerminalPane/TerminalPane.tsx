@@ -22,6 +22,7 @@ import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEdita
 import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
+import { CLAUDE_MODEL_OPTIONS, modelSwitchCommand } from '../../lib/modelBroker'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -110,6 +111,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const voice = useVoiceInput(terminalId, !!agent.detectedAgent)
   // Reactive so the on-pane mic button appears/disappears as voice is toggled in Settings.
   const voiceEnabled = useTerminalStore((s) => s.voiceSettings?.enabled ?? false)
+  // Local hot-swap model for this terminal's Claude agent (sends /model on change).
+  const [liveModel, setLiveModel] = useState('')
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
   const voiceStopRef = useRef<() => void>(() => {})
@@ -835,6 +838,27 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <i className="fa-solid fa-clock-rotate-left text-[9px]"></i>
             Past AI Sessions
           </button>
+          {agentFromCommand(agentCommand)?.name === 'Claude Code' && (
+            <select
+              data-testid="model-picker"
+              value={liveModel}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation()
+                const alias = e.target.value
+                setLiveModel(alias)
+                const cmd = modelSwitchCommand(alias)
+                if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
+              }}
+              title="Switch this Claude agent's model on the fly (takes effect next message). Cheaper models save tokens."
+              className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none"
+            >
+              <option value="">Model…</option>
+              {CLAUDE_MODEL_OPTIONS.map((m) => (
+                <option key={m.alias} value={m.alias}>{m.label}{m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
+              ))}
+            </select>
+          )}
         </div>
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
         {contextMenu.visible && (

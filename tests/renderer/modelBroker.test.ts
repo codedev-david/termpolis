@@ -6,6 +6,9 @@ import {
   estimateSavingsPct,
   brokerModel,
   claudeModelGuidance,
+  CLAUDE_MODEL_OPTIONS,
+  claudeModelArg,
+  modelSwitchCommand,
   AGENT_MODEL_TIERS,
 } from '../../src/renderer/src/lib/modelBroker'
 
@@ -73,6 +76,28 @@ describe('modelBroker', () => {
       const d = brokerModel('gemini', { complexity: 1, tokenIntensity: 'low' })
       expect(d.tier).toBe('economy')
       expect(d.modelFlag).toBe('')
+    })
+  })
+
+  describe('single-agent model picker helpers', () => {
+    it('offers Claude options premium→economy with savings vs Opus', () => {
+      expect(CLAUDE_MODEL_OPTIONS).toEqual([
+        { alias: 'opus', label: 'Opus', savingsPct: 0 },
+        { alias: 'sonnet', label: 'Sonnet', savingsPct: 40 },
+        { alias: 'haiku', label: 'Haiku', savingsPct: 80 },
+      ])
+    })
+    it('claudeModelArg appends only a validated alias for launch', () => {
+      expect(claudeModelArg('sonnet')).toBe(' --model sonnet')
+      expect(claudeModelArg('opus')).toBe(' --model opus')
+      expect(claudeModelArg('gpt-4')).toBe('')
+      expect(claudeModelArg('')).toBe('')
+      expect(claudeModelArg(undefined)).toBe('')
+    })
+    it('modelSwitchCommand builds /model only for a validated alias (no injection)', () => {
+      expect(modelSwitchCommand('haiku')).toBe('/model haiku')
+      expect(modelSwitchCommand('sonnet; rm -rf /')).toBe('')
+      expect(modelSwitchCommand('bogus')).toBe('')
     })
   })
 
