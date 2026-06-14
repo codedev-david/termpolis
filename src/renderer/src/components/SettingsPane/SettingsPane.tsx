@@ -8,6 +8,7 @@ import { SecuritySettings } from './SecuritySettings'
 import { VoiceSettings } from './VoiceSettings'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
+import { isAutoIndexEnabled, setAutoIndexEnabled } from '../../hooks/useAutoCodeIndex'
 import {
   FONT_FAMILY_OPTIONS,
   clampFontSize,
@@ -50,6 +51,7 @@ export function SettingsPane() {
   })
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
+  const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
   const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
   const [agentNameFromFolder, setAgentNameFromFolder] = useState(() => isAgentNameFromFolderEnabled())
   const [appVersion, setAppVersion] = useState<string>('')
@@ -384,6 +386,30 @@ export function SettingsPane() {
                 Termpolis re-adds the one-line memory_primer note (not sent automatically) so the
                 agent can reload what it lost behind the scenes. Your durable memory is the large
                 working set; the model&rsquo;s window only holds the active task.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={() => { const next = !autoIndex; setAutoIndex(next); setAutoIndexEnabled(next) }}
+              aria-label="Toggle auto-index everything into memory"
+              data-testid="settings-auto-index-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                autoIndex ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                autoIndex ? 'translate-x-4.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Auto-index everything into memory</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                Keep the memory brain current with no clicks. Your past AI conversations are always
+                indexed in the background; with this on, the code of each Git repo you open in a
+                terminal is indexed automatically too — once per repo, and content-hash deduped, so
+                unchanged code is never re-embedded. Turn it off to index a repo only when you click
+                &ldquo;Index this repo&rsquo;s code&rdquo; in the Memory panel.
               </span>
             </div>
           </div>

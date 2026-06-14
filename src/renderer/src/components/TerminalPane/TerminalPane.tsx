@@ -29,6 +29,7 @@ import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { agentFromCommand } from '../../lib/agentDetector'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
 import { useAutoPrimer, useCompactionReprimer } from '../../hooks/useAutoPrimer'
+import { useAutoCodeIndex } from '../../hooks/useAutoCodeIndex'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
 import type { ShellType } from '../../types'
 import 'xterm/css/xterm.css'
@@ -105,6 +106,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // Re-seed it after Claude compacts its conversation, restoring the detail it
   // summarized away from the durable memory brain (opt-out in Settings).
   const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)
+  // Auto-index this terminal's repo code into the shared memory brain when its
+  // cwd resolves to a Git repo — once per repo per session (opt-out in Settings).
+  useAutoCodeIndex(parsedCwd || cwd)
   const recording = useSessionRecording(terminalName, shellType)
   // Voice dictation (push-to-talk). Agent terminals take it as a prompt; plain
   // shells get a confirm-before-run bar. Opt-in via Settings → Voice.

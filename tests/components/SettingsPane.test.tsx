@@ -477,6 +477,26 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
   })
 
+  it('auto-index toggle defaults ON and persists "0" when switched off', () => {
+    localStorage.removeItem('termpolis.memory.autoIndexEverything')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-auto-index-toggle')
+    fireEvent.click(toggle) // default ON → OFF
+    expect(localStorage.getItem('termpolis.memory.autoIndexEverything')).toBe('0')
+    fireEvent.click(toggle) // back ON
+    expect(localStorage.getItem('termpolis.memory.autoIndexEverything')).toBe('1')
+    localStorage.removeItem('termpolis.memory.autoIndexEverything')
+  })
+
+  it('auto-index toggle reflects a stored opt-out on mount', () => {
+    localStorage.setItem('termpolis.memory.autoIndexEverything', '0')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-auto-index-toggle')
+    fireEvent.click(toggle) // stored OFF → ON
+    expect(localStorage.getItem('termpolis.memory.autoIndexEverything')).toBe('1')
+    localStorage.removeItem('termpolis.memory.autoIndexEverything')
+  })
+
   it('shows an "Open the Memory panel" link with the Ctrl+Shift+M hint', () => {
     render(<SettingsPane />)
     const link = screen.getByTestId('settings-open-memory-panel')
