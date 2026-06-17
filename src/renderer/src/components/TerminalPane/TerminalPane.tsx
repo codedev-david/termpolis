@@ -76,6 +76,17 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [parsedCwd, setParsedCwd] = useState<string | null>(null)
   const [parsedBranch, setParsedBranch] = useState<string | null>(null)
   const lastCommandRef = useRef('')
+  // Snapshot of the selection + every derived copy payload, captured at
+  // right-click time (handleContextMenu). The menu reads from this instead of
+  // calling term.getSelection() lazily on click — xterm only guarantees the
+  // selection through the right-click itself, and a focus change or re-render
+  // while the menu is open can clear it, which silently no-op'd every copy.
+  const copySnapshotRef = useRef<{
+    selection: string
+    codeBlockMd: string
+    codeBlockHtml: string
+    plainText: string
+  } | null>(null)
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -171,7 +182,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   }, [recording])
 
   const handlePinSelection = useCallback(() => {
-    const selection = termRef.current?.getSelection()
+    const selection = copySnapshotRef.current?.selection
     if (selection) {
       const pin: PinnedItem = {
         id: uuid(),
@@ -190,6 +201,22 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    // Snapshot the selection + all derived copy payloads NOW, while the
+    // right-click guarantees xterm's selection is still intact. Reading them
+    // lazily when a menu item is clicked is unreliable: a focus change or
+    // re-render during the menu's lifetime can clear xterm's selection model,
+    // which made every Copy action silently no-op ("right-click deselects and
+    // won't copy"). See copySnapshotRef.
+    const term = termRef.current
+    const selection = term?.getSelection() ?? ''
+    copySnapshotRef.current = term && selection
+      ? {
+          selection,
+          codeBlockMd: formatAsCodeBlockFromTerm(term),
+          codeBlockHtml: formatAsCodeBlockHtmlFromTerm(term),
+          plainText: formatAsPlainTextFromTerm(term),
+        }
+      : null
     // Right-click always opens the context menu (Windows/Linux convention).
     // The Copy-as-Code-Block / Paste / Plain Text options are the whole point
     // of having the menu — hiding it behind a Shift+right-click modifier (the
@@ -881,8 +908,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
-                const selection = termRef.current?.getSelection()
-                if (selection) window.termpolis.clipboardWriteText(selection).catch(() => {})
+                const snap = copySnapshotRef.current
+                if (snap) window.termpolis.clipboardWriteText(snap.selection).catch(() => {})
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
             >
@@ -891,9 +918,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
-                const term = termRef.current
-                if (term && term.getSelection()) {
-                  window.termpolis.clipboardWriteRich(formatAsCodeBlockFromTerm(term), formatAsCodeBlockHtmlFromTerm(term)).catch(() => {})
+                const snap = copySnapshotRef.current
+                if (snap) {
+                  window.termpolis.clipboardWriteRich(snap.codeBlockMd, snap.codeBlockHtml).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
@@ -904,9 +931,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
-                const term = termRef.current
-                if (term && term.getSelection()) {
-                  window.termpolis.clipboardWriteText(formatAsPlainTextFromTerm(term)).catch(() => {})
+                const snap = copySnapshotRef.current
+                if (snap) {
+                  window.termpolis.clipboardWriteText(snap.plainText).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
@@ -917,10 +944,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
-                const term = termRef.current
-                if (term && term.getSelection()) {
+                const snap = copySnapshotRef.current
+                if (snap) {
                   const cmd = lastCommandRef.current
-                  const body = formatAsCodeBlockFromTerm(term)
+                  const body = snap.codeBlockMd
                   const withCmd = cmd ? '`$ ' + cmd + '`\n' + body : body
                   window.termpolis.clipboardWriteText(withCmd).catch(() => {})
                 }
@@ -1002,9 +1029,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               </button>
             )}
             <button
-              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#094771] cursor-pointer ${termRef.current?.getSelection() ? 'text-[#d4d4d4]' : 'text-[#999] pointer-events-none'}`}
+              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#094771] cursor-pointer ${copySnapshotRef.current ? 'text-[#d4d4d4]' : 'text-[#999] pointer-events-none'}`}
               onClick={handlePinSelection}
-              disabled={!termRef.current?.getSelection()}
+              disabled={!copySnapshotRef.current}
             >
               <i className="fa-solid fa-thumbtack text-[10px] mr-1.5"></i>
               Pin Selection

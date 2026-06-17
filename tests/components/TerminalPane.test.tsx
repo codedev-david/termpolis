@@ -1285,6 +1285,32 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteText).toHaveBeenCalledWith('copied-text')
     })
 
+    // Regression: "right-click deselects the text and it won't copy." In the real
+    // app, xterm only guarantees the selection through the right-click itself;
+    // focus changes / re-renders while the menu is open can clear xterm's selection
+    // model, so reading getSelection() lazily at click time returns ''. The menu
+    // must SNAPSHOT the selection at right-click. We simulate the clear by changing
+    // the mock's return value to '' after the menu opens.
+    it('Copy uses the selection snapshotted at right-click even after xterm clears it', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      mocks.mockTerminal.getSelection.mockReturnValue('snapshot-text')
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      mocks.mockTerminal.getSelection.mockReturnValue('') // selection lost while menu open
+      fireEvent.click(screen.getByText('Copy'))
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('snapshot-text')
+    })
+
+    it('Copy as Code Block uses the right-click snapshot even after the selection clears', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      mocks.mockTerminal.getSelection.mockReturnValue('snap-code')
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      fireEvent.click(screen.getByText('Copy as Code Block'))
+      expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nsnap-code\n```', '<pre><code>snap-code</code></pre>')
+    })
+
     it('clicking Paste in context menu pastes from clipboard', async () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
