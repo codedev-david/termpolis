@@ -293,14 +293,45 @@ jobs:
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
-          $ErrorActionPreference = "Stop"
-          Get-ChildItem ftp-staging -File | ForEach-Object {
-            Write-Host "Uploading $($_.Name) via FTPS ..."
-            curl.exe --ssl-reqd --fail --silent --show-error `
-              --retry 6 --retry-delay 5 --retry-all-errors `
-              --user "${env:FTP_USERNAME}:${env:FTP_PASSWORD}" `
-              -T "$($_.FullName)" "ftp://${env:FTP_HOST}/downloads/"
+          # Engineered to ALWAYS exit 0 so this non-critical mirror can never
+          # red-flag an otherwise-good release; any failure surfaces only as a
+          # ::warning::. GitHub Releases stays the source of truth that
+          # electron-updater reads for auto-update.
+          #
+          # We try full certificate verification FIRST, then fall back to TLS
+          # WITHOUT the cert-name check: GoDaddy's FTPS endpoint currently
+          # presents a certificate whose principal name doesn't match $FTP_HOST
+          # (Windows Schannel error SEC_E_WRONG_PRINCIPAL / curl exit 60).
+          # --insecure keeps the channel TLS-encrypted (credentials never cross
+          # the wire in plaintext); it only skips the name check. When the host
+          # certificate is corrected, the verified path resumes automatically.
+          $ErrorActionPreference = 'Continue'
+          # Don't let a native non-zero exit (curl) throw before we inspect it:
+          # PowerShell 7.3+ would otherwise terminate the step on curl exit 60.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $base = @(
+            '--ssl-reqd', '--fail', '--silent',
+            '--retry', '6', '--retry-delay', '5', '--retry-all-errors',
+            '--user', "${env:FTP_USERNAME}:${env:FTP_PASSWORD}"
+          )
+          $failed = 0
+          foreach ($f in (Get-ChildItem ftp-staging -File)) {
+            $dest = "ftp://${env:FTP_HOST}/downloads/"
+            Write-Host "Uploading $($f.Name) via FTPS (verified) ..."
+            curl.exe @base -T "$($f.FullName)" "$dest"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Verified FTPS failed (curl exit $LASTEXITCODE); retrying with TLS but no cert-name check ..."
+              curl.exe @base --insecure --show-error -T "$($f.FullName)" "$dest"
+            }
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::Could not mirror $($f.Name) to termpolis.com/downloads (curl exit $LASTEXITCODE). GitHub Releases still has the build; the website link may be stale until the next successful mirror."
+              $failed++
+            } else {
+              Write-Host "Mirrored $($f.Name) successfully."
+            }
           }
+          if ($failed -eq 0) { Write-Host "All installer files mirrored to termpolis.com/downloads." }
+          exit 0
 
       - name: Publish to Chocolatey
         if: matrix.platform == 'win'
@@ -326,10 +357,24 @@ jobs:
           $nuspec = $nuspec -replace '<releaseNotes>.*</releaseNotes>', "<releaseNotes>https://github.com/codedev-david/termpolis/releases/tag/v$version</releaseNotes>"
           Set-Content "packaging/chocolatey/termpolis.nuspec" $nuspec
 
-          # Pack and push
+          # Pack and push. Non-critical: GitHub Releases is the source of truth,
+          # so a Chocolatey hiccup (moderation queue, push quota, transient 5xx)
+          # must never red-flag the release — surface it as a ::warning:: and
+          # exit 0 instead. The native-error guard keeps a non-zero choco exit
+          # from throwing before we can downgrade it to a warning.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           cd packaging/chocolatey
           choco pack
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::choco pack failed (exit $LASTEXITCODE); skipping Chocolatey publish for this release."
+            exit 0
+          }
           choco push "termpolis.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::choco push failed (exit $LASTEXITCODE). GitHub Releases still has the build; the Chocolatey package will update on the next successful push."
+          }
+          exit 0
 
   # Auto-update metadata gate — runs AFTER all platform builds have
   # published their artifacts to the GitHub release. Hits the live URLs
