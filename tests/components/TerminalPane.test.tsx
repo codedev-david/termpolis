@@ -1311,6 +1311,20 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nsnap-code\n```', '<pre><code>snap-code</code></pre>')
     })
 
+    // David's exact symptom: "the selection disappears as soon as I right-click",
+    // so getSelection() is already '' by the time the contextmenu fires. The
+    // right-button mousedown (capture phase) must have snapshotted it first.
+    it('Copy still works when the selection vanishes the instant you right-click', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      mocks.mockTerminal.getSelection.mockReturnValue('right-click-text')
+      fireEvent.mouseDown(terminalContainer, { button: 2 }) // capture-phase snapshot
+      mocks.mockTerminal.getSelection.mockReturnValue('')    // selection gone on right-click
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      fireEvent.click(screen.getByText('Copy'))
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('right-click-text')
+    })
+
     it('clicking Paste in context menu pastes from clipboard', async () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!

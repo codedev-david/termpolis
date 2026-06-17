@@ -54,6 +54,28 @@ interface ContextMenuState {
   y: number
 }
 
+type CopySnapshot = {
+  selection: string
+  codeBlockMd: string
+  codeBlockHtml: string
+  plainText: string
+}
+
+// Build the copy payloads from the terminal's CURRENT selection (null if none).
+// Captured at the earliest instant of a right-click so the menu never depends on
+// the live selection surviving — some environments clear xterm's selection the
+// moment you right-click ("the selection disappears as soon as I right-click").
+function buildCopySnapshot(term: Terminal | null): CopySnapshot | null {
+  const selection = term?.getSelection() ?? ''
+  if (!term || !selection) return null
+  return {
+    selection,
+    codeBlockMd: formatAsCodeBlockFromTerm(term),
+    codeBlockHtml: formatAsCodeBlockHtmlFromTerm(term),
+    plainText: formatAsPlainTextFromTerm(term),
+  }
+}
+
 export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -81,12 +103,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // calling term.getSelection() lazily on click — xterm only guarantees the
   // selection through the right-click itself, and a focus change or re-render
   // while the menu is open can clear it, which silently no-op'd every copy.
-  const copySnapshotRef = useRef<{
-    selection: string
-    codeBlockMd: string
-    codeBlockHtml: string
-    plainText: string
-  } | null>(null)
+  const copySnapshotRef = useRef<CopySnapshot | null>(null)
+  // Snapshot taken at the right-button mousedown (capture phase) — the earliest
+  // instant of a right-click, before anything (re-render, focus change, native
+  // selection handling) can clear xterm's selection. handleContextMenu prefers
+  // the live selection but falls back to this when the selection is already gone.
+  const mouseDownSnapRef = useRef<{ snap: CopySnapshot | null; t: number } | null>(null)
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -199,24 +221,25 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     setPinnedItems(prev => prev.filter(p => p.id !== id))
   }, [])
 
+  // Capture the selection at the EARLIEST instant of a right-click — the
+  // mousedown, capture phase — before xterm or a React re-render can clear it.
+  const handleMouseDownCapture = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 2) return
+    mouseDownSnapRef.current = { snap: buildCopySnapshot(termRef.current), t: Date.now() }
+  }, [])
+
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    // Snapshot the selection + all derived copy payloads NOW, while the
-    // right-click guarantees xterm's selection is still intact. Reading them
-    // lazily when a menu item is clicked is unreliable: a focus change or
-    // re-render during the menu's lifetime can clear xterm's selection model,
-    // which made every Copy action silently no-op ("right-click deselects and
-    // won't copy"). See copySnapshotRef.
-    const term = termRef.current
-    const selection = term?.getSelection() ?? ''
-    copySnapshotRef.current = term && selection
-      ? {
-          selection,
-          codeBlockMd: formatAsCodeBlockFromTerm(term),
-          codeBlockHtml: formatAsCodeBlockHtmlFromTerm(term),
-          plainText: formatAsPlainTextFromTerm(term),
-        }
-      : null
+    // Decide which selection the menu's Copy actions will use. Prefer the live
+    // selection (keyboard-invoked menu, or the selection survived the click);
+    // fall back to the right-mousedown snapshot when the selection was already
+    // cleared by the time the menu opens ("right-click deselects, won't copy").
+    // Reading the selection lazily at menu-item-click time is what failed.
+    const live = buildCopySnapshot(termRef.current)
+    const md = mouseDownSnapRef.current
+    const fresh = md && Date.now() - md.t < 1000 ? md.snap : null
+    copySnapshotRef.current = live ?? fresh ?? null
+    mouseDownSnapRef.current = null
     // Right-click always opens the context menu (Windows/Linux convention).
     // The Copy-as-Code-Block / Paste / Plain Text options are the whole point
     // of having the menu — hiding it behind a Shift+right-click modifier (the
@@ -758,6 +781,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         ref={containerRef}
         className="flex-1 relative min-h-0 overflow-hidden"
         style={{ padding: 4 }}
+        onMouseDownCapture={handleMouseDownCapture}
         onContextMenu={handleContextMenu}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
         onDrop={(e) => {
