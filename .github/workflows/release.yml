@@ -136,6 +136,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The `--prepackaged nsis` step below SKIPS the electron-builder pack
+      # phase that normally writes resources/app-update.yml. Without this, the
+      # Windows installer ships WITHOUT that file and auto-update dies on every
+      # client with "ENOENT ... resources\app-update.yml" (Sentry ELECTRON-8 /
+      # issue #14, regressed in v1.15.4 when the two-phase inner-exe signing was
+      # introduced). Write it into the unpacked dir now — BEFORE the installer
+      # is packaged from that dir — deterministically from package.json's
+      # build.publish config.
+      - name: Write app-update.yml into unpacked dir (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: node scripts/writeAppUpdateYml.cjs dist-electron-builder/win-unpacked/resources
+
       # Non-fatal by design — same rationale as the installer-signing step:
       # an eSigner hiccup (SSL.com quota/OAuth/TOTP/outage) must NEVER abort
       # the release. If this fails we pack the UNSIGNED inner exe (exactly
@@ -182,6 +195,13 @@ jobs:
         if: matrix.platform == 'win'
         shell: bash
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/win-unpacked
+      # Fail-fast guard: the Windows two-phase build silently dropped
+      # app-update.yml in v1.15.4/v1.15.5 (issue #14). Never upload a Windows
+      # installer whose updater config is missing or malformed.
+      - name: Verify app-update.yml in packaged output (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: node scripts/writeAppUpdateYml.cjs --verify dist-electron-builder/win-unpacked/resources
       - name: Verify MCP adapter in packaged output (Linux)
         if: matrix.platform == 'linux'
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
