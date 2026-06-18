@@ -110,11 +110,68 @@ jobs:
           # node-pty's spawn-helper needs execute permission for posix_spawnp
           find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
 
-      - name: Package
+      # macOS + Linux: unchanged single-shot package.
+      - name: Package (macOS + Linux)
+        if: matrix.platform != 'win'
         run: npx electron-builder --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Windows is built in TWO phases so we can code-sign the INNER app
+      # executable (win-unpacked/Termpolis.exe) — the binary Windows Defender
+      # actually scans and quarantines. electron-builder only ever signs the
+      # OUTER installer, so the unpacked Termpolis.exe shipped UNSIGNED and
+      # tripped Defender's cloud-ML C2/RAT classifier (Trojan:Win32/Cinjo.O!cl).
+      # Phases:
+      #   1. build only the unpacked dir,
+      #   2. sign win-unpacked/Termpolis.exe,
+      #   3. build the NSIS installer FROM the now-signed dir.
+      # The outer installer is still signed by the existing step further down,
+      # and latest.yml's sha512 is recomputed after that — so signing the inner
+      # exe (which changes the installer bytes) needs no extra metadata fixup.
+      - name: Package — unpacked dir only (Windows)
+        if: matrix.platform == 'win'
+        run: npx electron-builder --win --dir --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Non-fatal by design — same rationale as the installer-signing step:
+      # an eSigner hiccup (SSL.com quota/OAuth/TOTP/outage) must NEVER abort
+      # the release. If this fails we pack the UNSIGNED inner exe (exactly
+      # today's behaviour) rather than stranding the whole Windows build.
+      # malware_block:false so SSL.com's own pre-sign scan won't refuse to sign
+      # the very AI-agent network→shell pattern Defender flags.
+      - name: Sign inner Termpolis.exe (Windows)
+        id: sign-inner-win
+        if: matrix.platform == 'win'
+        continue-on-error: true
+        uses: sslcom/esigner-codesign@develop
+        with:
+          command: sign
+          username: ${{ secrets.SSL_COM_USERNAME }}
+          password: ${{ secrets.SSL_COM_PASSWORD }}
+          credential_id: ${{ secrets.SSL_COM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSL_COM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/dist-electron-builder/win-unpacked/Termpolis.exe
+          malware_block: false
+          override: true
+
+      - name: Note inner-exe signing result (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          if [ "${{ steps.sign-inner-win.outcome }}" = "success" ]; then
+            echo "Inner Termpolis.exe signed successfully."
+          else
+            echo "::warning::Inner Termpolis.exe was NOT signed (eSigner outcome: ${{ steps.sign-inner-win.outcome }}). Packing it unsigned (status quo); the outer installer is still signed below. Defender may keep flagging the unpacked exe until inner-exe signing succeeds on a later release."
+          fi
+
+      - name: Package — NSIS installer from signed dir (Windows)
+        if: matrix.platform == 'win'
+        run: npx electron-builder --win nsis --prepackaged dist-electron-builder/win-unpacked --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Belt-and-suspenders: the afterPack hook (scripts/afterPack.cjs)
       # already verifies this during the build, but we also verify the

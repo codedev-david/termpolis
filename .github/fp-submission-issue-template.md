@@ -7,6 +7,9 @@
     __ASSET_URL__      - direct GitHub release download URL
     __ASSET_SIZE__     - human-readable size, e.g. "108 MB"
     __SHA256__         - sha256 of the signed installer
+    __INNER_SHA256__   - sha256 of the INNER Termpolis.exe (the file to submit)
+    __INNER_SIZE__     - human-readable size of the inner exe
+    __RUN_URL__        - URL of the workflow run holding the inner-exe artifact
 -->
 A new release (__TAG__) has shipped. Submit it to Microsoft for false-positive review so the new hash plus our publisher reputation continue to accrue.
 
@@ -16,18 +19,25 @@ https://www.microsoft.com/en-us/wdsi/filesubmission
 
 Choose **Submit a file for malware analysis** → category **Software developer** → action **This software should not be detected as malware**.
 
-## File to upload
+## File to upload — the INNER exe, NOT the installer
 
-[`__ASSET_NAME__`](__ASSET_URL__) (__ASSET_SIZE__)
+⚠️ Submit **`Termpolis.exe`** (the unpacked application binary), **not** the installer. Defender flags the inner exe; the signed installer (`__ASSET_NAME__`) scans **clean**, so submitting it gets a useless "no threat found" result.
 
-**SHA256:** `__SHA256__`
+**Easiest — download the ready artifact** attached to the workflow run that opened this issue (artifact `termpolis-inner-exe-__VERSION__`):
 
-If you don't have a copy of the installer locally:
+__RUN_URL__
 
-```powershell
-Invoke-WebRequest -Uri "__ASSET_URL__" -OutFile "__ASSET_NAME__"
-Get-FileHash "__ASSET_NAME__" -Algorithm SHA256
-```
+**Inner `Termpolis.exe` SHA256:** `__INNER_SHA256__` (__INNER_SIZE__)
+
+If the artifact isn't there (auto-extract can fail), get the inner exe another way:
+
+- From an installed copy: `%LOCALAPPDATA%\Programs\Termpolis\Termpolis.exe`
+- Extract from the installer with 7-Zip: open `__ASSET_NAME__` → `$PLUGINSDIR\app-64.7z` → `Termpolis.exe`, then `Get-FileHash .\Termpolis.exe -Algorithm SHA256`
+
+<details><summary>Installer reference — for the record, do NOT submit this</summary>
+
+[`__ASSET_NAME__`](__ASSET_URL__) (__ASSET_SIZE__) — SHA256 `__SHA256__`
+</details>
 
 ## Pre-filled form fields — paste verbatim
 
@@ -51,7 +61,7 @@ Get-MpComputerStatus | Select-Object AntivirusSignatureVersion, AMEngineVersion
 
 > Termpolis is a code-signed multi-agent AI terminal application (https://github.com/codedev-david/termpolis) — an Electron app that orchestrates Claude Code, OpenAI Codex, Gemini CLI, and Qwen Code as user-launched subprocess terminals. Architecturally equivalent to Warp, Cursor, and the Claude Code CLI — same AI-provider→shell flow that the well-known peer ecosystem uses. The signed `Termpolis.exe` legitimately receives text from AI provider APIs (api.anthropic.com, api.openai.com, etc.) and executes shell commands the user has approved through the UI; this is the standard AI-terminal workflow, not a remote-attacker channel.
 >
-> The installer (`__ASSET_NAME__`, SHA256 `__SHA256__`) is signed with our SSL.com OV code-signing certificate (CN=David Engelhart, thumbprint `43025637A49BD023DED20645127D834D697D060B`). `Get-AuthenticodeSignature` reports `Valid` before Defender quarantines it.
+> The flagged file `Termpolis.exe` (SHA256 `__INNER_SHA256__`) — and the installer that delivers it (`__ASSET_NAME__`, SHA256 `__SHA256__`) — are signed with our SSL.com OV code-signing certificate (CN=David Engelhart, thumbprint `43025637A49BD023DED20645127D834D697D060B`). `Get-AuthenticodeSignature` reports `Valid` on the inner exe before Defender quarantines it.
 >
 > Defender's cloud-ML classifier has flagged `Termpolis.exe` (and our shortcut targets) as `Trojan:Win32/Cinjo.O!cl` ("This program is dangerous and executes commands from an attacker"). The `!cl` suffix indicates a runtime classifier judgement, not a signature match. The Cinjo family signature appears triggered by the legitimate AI-agent network→shell flow that every AI terminal exhibits. The binary has no obfuscation, packing, or unusual entry-point logic — it's a standard electron-builder NSIS package. We have no persistence beyond the user-approved NSIS shortcut creation, no auto-elevation, and no telemetry that runs without explicit opt-in (verifiable in `src/main/sentry.ts` in the public repo).
 >

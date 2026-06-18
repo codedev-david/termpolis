@@ -51,7 +51,7 @@ jobs:
           echo "asset_name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
           echo "asset_url=${ASSET_URL}"   >> "$GITHUB_OUTPUT"
 
-      - name: Download installer + compute SHA256
+      - name: Download installer, hash it, extract the inner exe
         id: hash
         run: |
           set -euo pipefail
@@ -75,6 +75,61 @@ jobs:
           echo "size_human=${HUMAN}" >> "$GITHUB_OUTPUT"
           echo "Installer SHA256: ${SHA256} (${HUMAN})"
 
+          # --- Extract the INNER Termpolis.exe ---------------------------------
+          # The installer scans CLEAN; Defender flags the unpacked Termpolis.exe.
+          # A submission must use the inner exe, so pull it out here. The NSIS
+          # installer embeds the app as `$PLUGINSDIR/app-64.7z`, and the exe sits
+          # at the root of that archive (verified against a real build). This is
+          # NON-FATAL: if any step fails we still open the issue, just with
+          # manual-extraction instructions instead of a ready artifact.
+          INNER_OK=false
+          # ubuntu-latest ships 7-Zip as `7z` (NSIS-capable). Prefer it over
+          # `7za`, which can't read the NSIS installer format; apt-install only
+          # as a fallback if a future runner image lacks 7z entirely.
+          SZ=$(command -v 7z || command -v 7za || true)
+          if [[ -z "$SZ" ]]; then
+            sudo apt-get update -y >/dev/null 2>&1 || true
+            sudo apt-get install -y 7zip p7zip-full >/dev/null 2>&1 || true
+            SZ=$(command -v 7z || command -v 7za || true)
+          fi
+          if [[ -n "$SZ" ]]; then
+            echo "Using archiver: $SZ"
+            rm -rf _x _app && mkdir -p _x _app
+            if "$SZ" x -y -o_x installer.exe >/dev/null 2>&1; then
+              APP7Z=$(find _x \( -iname 'app-64.7z' -o -iname 'app.7z' -o -iname '*.nsis.7z' \) | head -1)
+              if [[ -n "${APP7Z:-}" ]] && "$SZ" x -y -o_app "$APP7Z" >/dev/null 2>&1; then
+                INNER=$(find _app -iname 'Termpolis.exe' | head -1)
+                if [[ -n "${INNER:-}" && -s "$INNER" ]]; then
+                  cp "$INNER" Termpolis.exe
+                  ISHA=$(sha256sum Termpolis.exe | awk '{print $1}')
+                  IBYTES=$(stat -c%s Termpolis.exe)
+                  IHUMAN=$(numfmt --to=iec --suffix=B "${IBYTES}" 2>/dev/null || echo "${IBYTES} bytes")
+                  echo "inner_sha256=${ISHA}" >> "$GITHUB_OUTPUT"
+                  echo "inner_size_human=${IHUMAN}" >> "$GITHUB_OUTPUT"
+                  echo "Inner Termpolis.exe SHA256: ${ISHA} (${IHUMAN})"
+                  INNER_OK=true
+                fi
+              fi
+            fi
+          fi
+          echo "inner_ok=${INNER_OK}" >> "$GITHUB_OUTPUT"
+          if [[ "$INNER_OK" != "true" ]]; then
+            echo "::warning::Could not auto-extract the inner Termpolis.exe; the issue will fall back to manual-extraction instructions."
+          fi
+          rm -rf _x _app
+
+      # Attach the inner exe to this run so the maintainer can one-click it into
+      # the WDSI portal. A run artifact (not a release asset) keeps the public
+      # releases page clean — a bare Termpolis.exe won't run standalone anyway.
+      - name: Upload inner exe as a run artifact
+        if: steps.hash.outputs.inner_ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: termpolis-inner-exe-${{ steps.meta.outputs.version }}
+          path: Termpolis.exe
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Render issue body from template
         id: body
         env:
@@ -84,6 +139,9 @@ jobs:
           ASSET_URL: ${{ steps.meta.outputs.asset_url }}
           ASSET_SIZE: ${{ steps.hash.outputs.size_human }}
           SHA256: ${{ steps.hash.outputs.sha256 }}
+          INNER_SHA256: ${{ steps.hash.outputs.inner_sha256 || '(auto-extract failed — compute locally with Get-FileHash)' }}
+          INNER_SIZE: ${{ steps.hash.outputs.inner_size_human || 'see install dir' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           TEMPLATE=".github/fp-submission-issue-template.md"
@@ -99,8 +157,9 @@ jobs:
           src = open(os.environ['GITHUB_WORKSPACE'] + '/.github/fp-submission-issue-template.md', 'r', encoding='utf-8').read()
           # Drop the leading HTML comment block (developer-only notes).
           src = re.sub(r'^<!--.*?-->\s*', '', src, count=1, flags=re.DOTALL)
-          for key in ('TAG','VERSION','ASSET_NAME','ASSET_URL','ASSET_SIZE','SHA256'):
-              src = src.replace('__' + key + '__', os.environ[key])
+          for key in ('TAG','VERSION','ASSET_NAME','ASSET_URL','ASSET_SIZE','SHA256',
+                      'INNER_SHA256','INNER_SIZE','RUN_URL'):
+              src = src.replace('__' + key + '__', os.environ.get(key, ''))
           print(src, end='')
           PYEOF
           echo "body_path=$(pwd)/issue-body.md" >> "$GITHUB_OUTPUT"
