@@ -165,6 +165,86 @@ describe('initAutoUpdater event forwarding', () => {
   })
 })
 
+describe('initAutoUpdater — missing app-update.yml is benign (Sentry ELECTRON-8)', () => {
+  const missingConfigErr = () =>
+    new Error(
+      "ENOENT: no such file or directory, open " +
+        "'C:\\Users\\x\\AppData\\Local\\Programs\\termpolis\\resources\\app-update.yml'",
+    )
+
+  it('does NOT report a missing-config ENOENT as a production error', async () => {
+    await loadAutoUpdater()
+    eventHandlers['error']?.(missingConfigErr())
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error' }),
+    )
+  })
+
+  it('surfaces a missing-config ENOENT as a benign not-available state', async () => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['error']?.(missingConfigErr())
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'not-available' }),
+    )
+    expect(fakeWindow.webContents.send).toHaveBeenCalledWith(
+      'updater:state',
+      expect.objectContaining({ status: 'not-available' }),
+    )
+  })
+
+  it('still reports genuine updater errors (sha512 mismatch) to telemetry', async () => {
+    await loadAutoUpdater()
+    eventHandlers['error']?.(new Error('sha512 checksum mismatch'))
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith({
+      status: 'error',
+      error: 'sha512 checksum mismatch',
+    })
+  })
+
+  it('isMissingUpdateConfigError matches only the ENOENT app-update.yml shape', async () => {
+    vi.resetModules()
+    const mod = await import('../../src/main/autoUpdater')
+    expect(mod.isMissingUpdateConfigError(missingConfigErr())).toBe(true)
+    expect(mod.isMissingUpdateConfigError(new Error('ENOENT: open other.txt'))).toBe(false)
+    expect(mod.isMissingUpdateConfigError(new Error('sha512 checksum mismatch'))).toBe(false)
+    expect(mod.isMissingUpdateConfigError(new Error('net::ERR_INTERNET_DISCONNECTED'))).toBe(false)
+    expect(mod.isMissingUpdateConfigError(undefined)).toBe(false)
+  })
+
+  it('skips scheduling periodic checks when app-update.yml is absent, but keeps an error listener', async () => {
+    vi.resetModules()
+    for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
+    ipcHandlers.clear()
+    mockAutoUpdater.on.mockClear()
+    const mod = await import('../../src/main/autoUpdater')
+    mod.__setUpdaterProviderForTests(() => mockAutoUpdater)
+    mod.__setUpdateConfigExistsForTests(() => false)
+    const setIntervalSpy = vi.spyOn(global, 'setInterval')
+    const setTimeoutSpy = vi.spyOn(global, 'setTimeout')
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    // The error listener MUST still be registered so a manual updater:check
+    // (or any stray emit) can't crash the process with an unhandled 'error'.
+    expect(typeof eventHandlers['error']).toBe('function')
+    // ...but no pointless periodic checks are scheduled.
+    expect(setIntervalSpy).not.toHaveBeenCalled()
+    setIntervalSpy.mockRestore()
+    setTimeoutSpy.mockRestore()
+  })
+
+  it('schedules periodic checks when app-update.yml is present', async () => {
+    vi.resetModules()
+    for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
+    ipcHandlers.clear()
+    const mod = await import('../../src/main/autoUpdater')
+    mod.__setUpdaterProviderForTests(() => mockAutoUpdater)
+    mod.__setUpdateConfigExistsForTests(() => true)
+    const setIntervalSpy = vi.spyOn(global, 'setInterval')
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    expect(setIntervalSpy).toHaveBeenCalled()
+    setIntervalSpy.mockRestore()
+  })
+})
+
 describe('initAutoUpdater dev/test short-circuit', () => {
   it('does not register event listeners when NODE_ENV=test', async () => {
     process.env.NODE_ENV = 'test'

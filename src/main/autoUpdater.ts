@@ -7,6 +7,8 @@
 // restart to install.
 
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import { recordUpdaterEvent } from './telemetry'
 
 export interface UpdateState {
@@ -28,6 +30,33 @@ let updaterProvider: () => any = () => {
 
 export function __setUpdaterProviderForTests(fn: () => any): void {
   updaterProvider = fn
+}
+
+// electron-updater reads `resources/app-update.yml` at the start of every
+// checkForUpdates(). When that file is absent — an interrupted/partial install,
+// an antivirus quarantine, a manual delete — it emits an ENOENT 'error'. Auto-
+// update genuinely cannot run without it and there is nothing the app can do
+// about it at runtime, so this is a benign, unactionable environmental state,
+// NOT a production crash. We detect it so it never gets reported to Sentry as an
+// error (was Sentry issue ELECTRON-8 / GitHub #14).
+export function isMissingUpdateConfigError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+  return /ENOENT/i.test(msg) && /app-update\.yml/i.test(msg)
+}
+
+// Injectable so unit tests can simulate a present/absent app-update.yml without
+// a real packaged resources dir. Defaults to the exact path electron-updater
+// reads in a packaged app: process.resourcesPath/app-update.yml.
+let updateConfigExists: () => boolean = () => {
+  try {
+    return existsSync(join(process.resourcesPath, 'app-update.yml'))
+  } catch {
+    return false
+  }
+}
+
+export function __setUpdateConfigExistsForTests(fn: () => boolean): void {
+  updateConfigExists = fn
 }
 
 export function initAutoUpdater(
@@ -130,8 +159,22 @@ export function initAutoUpdater(
     })
   })
   autoUpdater.on('error', (err: Error) => {
+    // A missing app-update.yml is benign and unactionable (see
+    // isMissingUpdateConfigError). Surface it as "no update available" and keep
+    // it out of Sentry instead of reporting a phantom production error.
+    if (isMissingUpdateConfigError(err)) {
+      setState({ status: 'not-available' })
+      return
+    }
     setState({ status: 'error', error: err?.message || String(err) })
   })
+
+  // If the update config is absent, every checkForUpdates() would only re-emit
+  // the benign ENOENT above. Skip scheduling the periodic checks entirely. The
+  // 'error' listener stays registered so a manual updater:check (or any stray
+  // emit) is still handled gracefully rather than crashing the main process
+  // with an unhandled 'error' event.
+  if (!updateConfigExists()) return
 
   // First check a few seconds after launch; then every 4 hours.
   setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 10_000)
