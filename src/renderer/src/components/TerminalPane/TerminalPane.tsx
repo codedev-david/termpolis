@@ -18,7 +18,9 @@ import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
+import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
+import { setPendingSettingsTab } from '../../lib/settingsNav'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget } from '../../lib/keybindings'
 import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
@@ -86,6 +88,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
+  const [groqGateOpen, setGroqGateOpen] = useState(false)
   // Keyboard copy mode — select text/words with no mouse (Ctrl+Shift+Space).
   const selectionModeRef = useRef(false)
   const anchorRef = useRef<GridPos>({ x: 0, y: 0 })
@@ -149,6 +152,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const voice = useVoiceInput(terminalId, !!agent.detectedAgent)
   // Reactive so the on-pane mic button appears/disappears as voice is toggled in Settings.
   const voiceEnabled = useTerminalStore((s) => s.voiceSettings?.enabled ?? false)
+  const setShowSettings = useTerminalStore((s) => s.setShowSettings)
   // Local hot-swap model for this terminal's Claude agent (sends /model on change).
   const [liveModel, setLiveModel] = useState('')
   const voiceToggleRef = useRef<() => void>(() => {})
@@ -164,6 +168,20 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   voiceStartRef.current = voice.start
   voiceStopRef.current = voice.stop
   voiceListeningRef.current = voice.listening
+
+  // The on-pane Voice button is Groq-cloud-only — starting capture with no Groq
+  // key connected can only fail, so gate the START on a live key-status check and
+  // route the user to Settings → Voice instead. Stopping never needs the check.
+  const handleVoiceButtonClick = useCallback(async () => {
+    if (voiceListeningRef.current) { voice.toggle(); return }
+    try {
+      const status = await window.termpolis?.groqGetKeyStatus?.()
+      if (status?.success && status.data?.connected) { voice.toggle(); return }
+    } catch {
+      // Treat an errored status check as "not connected" — show the gate.
+    }
+    setGroqGateOpen(true)
+  }, [voice])
 
   const handleExport = useCallback((mode: 'full' | 'visible') => {
     const term = termRef.current
@@ -866,7 +884,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button
               type="button"
               data-testid="voice-toggle-btn"
-              onClick={(e) => { e.stopPropagation(); voice.toggle() }}
+              onClick={(e) => { e.stopPropagation(); void handleVoiceButtonClick() }}
               disabled={voice.status === 'transcribing'}
               aria-pressed={voice.listening}
               title={
@@ -919,6 +937,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           )}
         </div>
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
+        {groqGateOpen && (
+          <VoiceGroqGate
+            onClose={() => setGroqGateOpen(false)}
+            onOpenSettings={() => {
+              setGroqGateOpen(false)
+              setPendingSettingsTab('voice')
+              setShowSettings(true)
+            }}
+          />
+        )}
         {contextMenu.visible && (
           <div
             ref={menuRef}

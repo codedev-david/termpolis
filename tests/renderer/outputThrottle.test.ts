@@ -14,28 +14,76 @@ describe('createOutputThrottle', () => {
 
   afterEach(() => vi.unstubAllGlobals())
 
-  it('buffers data until rAF fires', () => {
+  function drainOne() {
+    const cbs = [...rafCallbacks]
+    rafCallbacks = []
+    cbs.forEach(cb => cb())
+  }
+
+  // A small write while the throttle is idle is the keystroke-echo case: the
+  // PTY echoes the typed character straight back, and it must appear instantly.
+  // Frame-deferring it (the old behavior) added ~1 animation frame of latency
+  // to every keystroke.
+  it('flushes a small idle write synchronously without scheduling a frame', () => {
     const writeFn = vi.fn()
     const throttled = createOutputThrottle(writeFn)
-    throttled('hello ')
-    throttled('world')
-    expect(writeFn).not.toHaveBeenCalled()
-    // Simulate rAF
-    rafCallbacks.forEach(cb => cb())
+    throttled('a')
     expect(writeFn).toHaveBeenCalledTimes(1)
-    expect(writeFn).toHaveBeenCalledWith('hello world')
+    expect(writeFn).toHaveBeenCalledWith('a')
+    // No frame scheduled — the echo did not wait for rAF.
+    expect(rafCallbacks.length).toBe(0)
   })
 
-  it('resets after flush and can buffer again', () => {
+  it('flushes several small idle writes immediately and in order', () => {
     const writeFn = vi.fn()
     const throttled = createOutputThrottle(writeFn)
-    throttled('first')
-    rafCallbacks.forEach(cb => cb())
-    rafCallbacks = []
-    throttled('second')
-    rafCallbacks.forEach(cb => cb())
+    throttled('h')
+    throttled('i')
     expect(writeFn).toHaveBeenCalledTimes(2)
-    expect(writeFn).toHaveBeenLastCalledWith('second')
+    expect(writeFn).toHaveBeenNthCalledWith(1, 'h')
+    expect(writeFn).toHaveBeenNthCalledWith(2, 'i')
+    expect(rafCallbacks.length).toBe(0)
+  })
+
+  // Bulk output (large chunks) is still coalesced through a single rAF so a
+  // flood can't spike memory or thrash the renderer.
+  it('batches a large write through requestAnimationFrame', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    const big = 'x'.repeat(2048)
+    throttled(big)
+    expect(writeFn).not.toHaveBeenCalled()
+    drainOne()
+    expect(writeFn).toHaveBeenCalledTimes(1)
+    expect(writeFn).toHaveBeenCalledWith(big)
+  })
+
+  // Ordering safety: once a burst is in flight (a frame is scheduled),
+  // subsequent small writes must NOT jump ahead via the fast path — they append
+  // to the buffer and flush in their original order.
+  it('keeps small writes ordered behind an in-flight burst', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    const big = 'x'.repeat(2048)
+    throttled(big) // schedules a frame
+    throttled('!') // must queue behind the burst, not write immediately
+    expect(writeFn).not.toHaveBeenCalled()
+    drainOne()
+    expect(writeFn).toHaveBeenCalledTimes(1)
+    expect(writeFn).toHaveBeenCalledWith(big + '!')
+  })
+
+  it('returns to the instant fast path after a burst flushes', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    throttled('x'.repeat(2048))
+    drainOne()
+    expect(writeFn).toHaveBeenCalledTimes(1)
+    // Idle again — a small write should be synchronous once more.
+    throttled('y')
+    expect(writeFn).toHaveBeenCalledTimes(2)
+    expect(writeFn).toHaveBeenLastCalledWith('y')
+    expect(rafCallbacks.length).toBe(0)
   })
 
   it('splits large output into 64KB chunks across frames', () => {
@@ -44,13 +92,6 @@ describe('createOutputThrottle', () => {
     // Write 150KB of data
     const bigData = 'x'.repeat(150 * 1024)
     throttled(bigData)
-
-    // Drain rAF callbacks round by round (each flush may schedule another)
-    function drainOne() {
-      const cbs = [...rafCallbacks]
-      rafCallbacks = []
-      cbs.forEach(cb => cb())
-    }
 
     // First frame: flushes 64KB
     drainOne()

@@ -70,9 +70,17 @@ jobs:
         run: bash scripts/download-tools.sh
         continue-on-error: true
 
+      # The bundled embedding model powers offline semantic memory on every OS.
+      # download-embedding-model.sh already retries transient HuggingFace 429/5xx
+      # with backoff and hard-fails on a too-small file, so a momentary throttle
+      # self-heals. We deliberately do NOT continue-on-error here: a genuine
+      # failure must fail the build rather than silently ship a model-less
+      # installer that degrades memory to keyword-only for that platform's users
+      # (the v1.12.2-v1.12.4 "model silently absent" failure class). The packaged
+      # output is then asserted by the per-platform "Verify embedding model
+      # bundled" steps below.
       - name: Download bundled embedding model
         run: bash scripts/download-embedding-model.sh
-        continue-on-error: true
 
       - name: Import Apple certificate
         if: matrix.platform == 'mac'
@@ -195,6 +203,12 @@ jobs:
         if: matrix.platform == 'win'
         shell: bash
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/win-unpacked
+      # Never ship a Windows installer whose offline memory model is missing —
+      # asserts resources/models/** + the onnxruntime-web WASM are bundled.
+      - name: Verify embedding model bundled (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/win-unpacked
       # Fail-fast guard: the Windows two-phase build silently dropped
       # app-update.yml in v1.15.4/v1.15.5 (issue #14). Never upload a Windows
       # installer whose updater config is missing or malformed.
@@ -205,6 +219,9 @@ jobs:
       - name: Verify MCP adapter in packaged output (Linux)
         if: matrix.platform == 'linux'
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
+      - name: Verify embedding model bundled (Linux)
+        if: matrix.platform == 'linux'
+        run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
       - name: Verify MCP adapter in packaged output (macOS x64)
         if: matrix.platform == 'mac'
         shell: bash
@@ -214,6 +231,24 @@ jobs:
             if [ -d "$d" ]; then
               echo "Verifying $d..."
               node scripts/verifyPackagedResources.cjs "$d"
+            fi
+          done
+
+      # macOS is the least-verified arch for the memory stack (different .app
+      # Resources layout + notarization) and this assertion has never run on a
+      # Mac build before. Introduce it WARN-FIRST (continue-on-error) so a latent
+      # mac-only bundling gap surfaces as a signal without blocking the Mac DMG —
+      # memory would just degrade to keyword-only, the status quo. Flip to a hard
+      # gate (drop continue-on-error) once it's been observed green on a release.
+      - name: Verify embedding model bundled (macOS)
+        if: matrix.platform == 'mac'
+        continue-on-error: true
+        shell: bash
+        run: |
+          for d in dist-electron-builder/mac dist-electron-builder/mac-arm64; do
+            if [ -d "$d" ]; then
+              echo "Verifying embedding model in $d..."
+              node scripts/verifyPackagedResources.cjs --model "$d"
             fi
           done
 

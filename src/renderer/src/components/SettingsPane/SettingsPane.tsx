@@ -6,6 +6,7 @@ import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { VoiceSettings } from './VoiceSettings'
+import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
 import { isAutoIndexEnabled, setAutoIndexEnabled } from '../../hooks/useAutoCodeIndex'
@@ -57,7 +58,7 @@ export function SettingsPane() {
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
-  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'voice' | 'keybindings' | 'agents' | 'shell'>('general')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => consumePendingSettingsTab() ?? 'general')
 
   useEffect(() => {
     const onOpenShortcuts = () => setActiveTab('keybindings')

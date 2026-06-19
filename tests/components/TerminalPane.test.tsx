@@ -1,6 +1,7 @@
 import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { consumePendingSettingsTab } from '../../src/renderer/src/lib/settingsNav'
 
 // vi.hoisted runs before vi.mock factories — we can create vi.fn() here
 const mocks = vi.hoisted(() => {
@@ -56,6 +57,7 @@ const mocks = vi.hoisted(() => {
     mockStartRecording: vi.fn(),
     mockStopRecording: vi.fn(),
     mockAppendRecordingEntry: vi.fn(),
+    mockSetShowSettings: vi.fn(),
   }
 })
 
@@ -292,6 +294,7 @@ beforeAll(() => {
     clipboardWriteRich: mockClipboardWriteRich,
     clipboardWriteImage: mockClipboardWriteImage,
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_test' } })),
     platformInfo: { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } },
   }
 
@@ -778,6 +781,7 @@ describe('TerminalPane', () => {
           pushToTalkMode: 'tapOrHold', sendKey: 'Space', autoSubmitInAgent: false, correctionEnabled: false,
           confirmBeforeRunInShell: true, cloudEndpoint: '', ...over,
         },
+        setShowSettings: mocks.mockSetShowSettings,
       }))
     }
 
@@ -794,6 +798,7 @@ describe('TerminalPane', () => {
       capturedProcessor = null
       voiceEng.transcribe.mockReset()
       voiceEng.transcribe.mockResolvedValue({ text: 'hi there' })
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: true, hint: 'gsk_test' } })
       savedMediaDevices = (navigator as unknown as { mediaDevices: unknown }).mediaDevices
       savedAudioContext = (globalThis as unknown as { AudioContext: unknown }).AudioContext
       ;(globalThis as unknown as { AudioContext: unknown }).AudioContext = StubAudioContext
@@ -931,6 +936,35 @@ describe('TerminalPane', () => {
       await act(async () => { fireEvent.click(screen.getByTestId('voice-listening-badge')) })
       await waitFor(() => expect(screen.getByTestId('voice-error-bar')).toBeInTheDocument())
       expect(screen.getByTestId('voice-error-bar')).toHaveTextContent(/model load failed/i)
+    })
+
+    it('clicking Voice without Groq connected shows the setup gate and does NOT start capture', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: false } })
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
+      expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+    })
+
+    it('clicking Voice WITH Groq connected starts capture and shows no gate', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: true } })
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      expect(screen.queryByTestId('voice-groq-gate')).not.toBeInTheDocument()
+    })
+
+    it('the Groq gate Open Voice Settings button opens Settings on the Voice tab', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: false } })
+      withVoice()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
+      await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-groq-gate-open-settings')) })
+      expect(mocks.mockSetShowSettings).toHaveBeenCalledWith(true)
+      expect(consumePendingSettingsTab()).toBe('voice')
     })
   })
 
