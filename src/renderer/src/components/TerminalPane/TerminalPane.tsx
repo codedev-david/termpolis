@@ -7,6 +7,7 @@ import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
+import { buildTerminalOptions } from '../../lib/terminalOptions'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
@@ -289,15 +290,17 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     const termInfo = useTerminalStore.getState().terminals.find(t => t.id === terminalId)
     const scrollback = termInfo?.isSwarm ? 3000 : 10000
 
-    const term = new Terminal({
+    const term = new Terminal(buildTerminalOptions({
       theme: getTheme(theme),
       fontFamily,
       fontSize,
-      cursorBlink: false,
-      cursorStyle: 'block',
-      cursorInactiveStyle: 'outline',
       scrollback,
-    })
+      // On Windows, hand xterm the ConPTY backend + OS build (resolved in main)
+      // so its line-reflow + scrollback heuristics match the pty. Without this a
+      // heavy-redraw TUI like Claude Code's Ink UI progressively desyncs and its
+      // output overlaps the prompt box. null off Windows (native reflow is fine).
+      windowsPty: window.termpolis?.platformInfo?.windowsPty ?? null,
+    }))
 
     // 2. Load FitAddon
     const fitAddon = new FitAddon()

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { TermpolisAPI, ShellType } from '../renderer/src/types'
+import type { TermpolisAPI, ShellType, PlatformInfo } from '../renderer/src/types'
 
 const api: TermpolisAPI = {
   createTerminal: (id, shellType, cwd, extraPaths) =>
@@ -164,6 +164,13 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('telemetry:record-event', { name, props }),
 
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+
+  // Static platform facts, read SYNCHRONOUSLY at preload load so the renderer has
+  // windowsPty before it constructs the first xterm Terminal (the option must be
+  // set at construction). Tiny one-shot payload from main; falls back to a safe
+  // default when the channel is unavailable (e.g. unit tests with no sendSync).
+  platformInfo: (ipcRenderer.sendSync?.('app:platform-info-sync') as PlatformInfo | undefined)
+    ?? { platform: process.platform, windowsPty: null },
 
   listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
   digestAISession: (filePath: string) => ipcRenderer.invoke('aiSessions:digest', filePath),

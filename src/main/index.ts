@@ -48,11 +48,11 @@ if (process.platform === 'linux') {
   }
 }
 import { join } from 'path'
-import { homedir } from 'os'
+import { homedir, release } from 'os'
 import { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress } from './egressAudit'
 import {
   subscribeSensitiveReads,
@@ -586,6 +586,18 @@ ipcMain.handle('telemetry:set-opt-in', async (_, { value }: { value: boolean }) 
 ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
+
+// Synchronous so the renderer can read windowsPty BEFORE it constructs the first
+// xterm Terminal (the option must be set at construction time). Tiny static
+// payload: tells xterm the Windows ConPTY backend + OS build so its reflow and
+// scrollback heuristics match the pty — otherwise a heavy-redraw TUI (Claude
+// Code's Ink UI) progressively desyncs and overlaps the prompt box.
+ipcMain.on('app:platform-info-sync', (e) => {
+  e.returnValue = {
+    platform: process.platform,
+    windowsPty: computeWindowsPty(process.platform, release()),
+  }
+})
 
 // Voice (Groq cloud STT). The API key lives ONLY in main, encrypted in the OS
 // keychain — the renderer never receives it, it only ever sees a connected flag

@@ -43,6 +43,12 @@ describe('window.termpolis IPC channels', () => {
     expect(mockInvoke).toHaveBeenCalledWith('terminal:kill', { id: 'id-1' })
   })
 
+  it('platformInfo falls back to a null windowsPty when sendSync is unavailable', () => {
+    // This mock ipcRenderer has no sendSync — the resolver must degrade to a safe
+    // default rather than throw, leaving xterm on its standard (Unix) reflow.
+    expect(exposed.termpolis.platformInfo.windowsPty).toBeNull()
+  })
+
   it('writeToTerminal sends terminal:write', () => {
     exposed.termpolis.writeToTerminal('id-1', 'ls -la\r')
     expect(mockSend).toHaveBeenCalledWith('terminal:write', { id: 'id-1', data: 'ls -la\r' })

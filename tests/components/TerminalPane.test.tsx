@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => {
   return {
     mockTerminal,
     mockBufferLines,
+    lastTerminalOptions: null as any,
     mockAddTerminal: vi.fn(),
     mockRemoveTerminal: vi.fn(),
     mockFocusActiveTerminal: vi.fn(),
@@ -87,7 +88,7 @@ mocks.mockGetState.mockImplementation(() => ({
 
 // --- Mock xterm.js and addons ---
 vi.mock('xterm', () => ({
-  Terminal: function () { return mocks.mockTerminal },
+  Terminal: function (options: unknown) { mocks.lastTerminalOptions = options; return mocks.mockTerminal },
 }))
 vi.mock('@xterm/addon-fit', () => ({
   FitAddon: function () { this.fit = vi.fn(); this.dispose = vi.fn() },
@@ -291,6 +292,7 @@ beforeAll(() => {
     clipboardWriteRich: mockClipboardWriteRich,
     clipboardWriteImage: mockClipboardWriteImage,
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    platformInfo: { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } },
   }
 
   // Mock ResizeObserver
@@ -340,6 +342,7 @@ describe('TerminalPane', () => {
     mockOnDataCb = null
     mockKeyHandlerCb = null
     mockOnTerminalDataCb = null
+    mocks.lastTerminalOptions = null
 
     // Re-wire implementations after clearAllMocks
     mocks.mockTerminal.onData.mockImplementation((cb: (data: string) => void) => {
@@ -470,6 +473,31 @@ describe('TerminalPane', () => {
     it('subscribes to onTerminalData', () => {
       render(<TerminalPane {...defaultProps} />)
       expect(mockOnTerminalData).toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
+  // 2a2. Windows ConPTY reflow fix — the Terminal must be constructed with the
+  // windowsPty option (from window.termpolis.platformInfo) so xterm's reflow +
+  // scrollback match ConPTY. Without it a heavy-redraw TUI (Claude Code's Ink
+  // UI) progressively desyncs and its output overlaps the prompt box.
+  // =====================================================
+  describe('windowsPty wiring (Windows ConPTY reflow fix)', () => {
+    it('constructs the Terminal with windowsPty when platformInfo provides it', () => {
+      ;(window as any).termpolis.platformInfo = { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } }
+      render(<TerminalPane {...defaultProps} />)
+      expect(mocks.lastTerminalOptions?.windowsPty).toEqual({ backend: 'conpty', buildNumber: 22631 })
+    })
+
+    it('omits windowsPty when platformInfo reports none (non-Windows host)', () => {
+      const saved = (window as any).termpolis.platformInfo
+      ;(window as any).termpolis.platformInfo = { platform: 'linux', windowsPty: null }
+      try {
+        render(<TerminalPane {...defaultProps} />)
+        expect(mocks.lastTerminalOptions?.windowsPty).toBeUndefined()
+      } finally {
+        ;(window as any).termpolis.platformInfo = saved
+      }
     })
   })
 

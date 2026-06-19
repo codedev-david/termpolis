@@ -38,6 +38,7 @@ const {
   killAll,
   getTerminalPid,
   getTerminalCwd,
+  computeWindowsPty,
 } = await import('../../src/main/terminalManager')
 
 describe('terminalManager', () => {
@@ -572,6 +573,39 @@ describe('terminalManager', () => {
       const cmdEnv = calls[0][2]?.env as Record<string, string>
       expect(gitBashEnv.PATH).toContain('\\Git\\usr\\bin')
       expect(cmdEnv.PATH).not.toContain('\\Git\\usr\\bin')
+    })
+  })
+
+  // ---- computeWindowsPty: tell xterm.js how the Windows PTY wraps + scrolls ----
+  //
+  // xterm.js needs to know it is driving a Windows ConPTY so its line-reflow and
+  // scrollback heuristics match ConPTY's behavior. Without it, a heavy-redraw TUI
+  // (Claude Code's Ink UI) progressively desyncs and the output overlaps the
+  // prompt box ("text gets jumbled with the prompt area"). We mirror node-pty's
+  // OWN backend decision — ConPTY when the OS build >= 18309, else winpty (see
+  // node-pty's windowsPtyAgent._getWindowsBuildNumber) — so the hint we hand
+  // xterm matches the pty we actually spawned.
+  describe('computeWindowsPty', () => {
+    it('returns null off Windows (Unix ptys reflow natively, need no hint)', () => {
+      expect(computeWindowsPty('linux', '6.8.0-generic')).toBeNull()
+      expect(computeWindowsPty('darwin', '23.5.0')).toBeNull()
+    })
+
+    it('reports conpty + the parsed build number on Windows 11', () => {
+      expect(computeWindowsPty('win32', '10.0.22631')).toEqual({ backend: 'conpty', buildNumber: 22631 })
+    })
+
+    it("treats node-pty's 18309 threshold as conpty (boundary)", () => {
+      expect(computeWindowsPty('win32', '10.0.18309')).toEqual({ backend: 'conpty', buildNumber: 18309 })
+    })
+
+    it('reports winpty just below the threshold and on older Windows 10', () => {
+      expect(computeWindowsPty('win32', '10.0.18308')).toEqual({ backend: 'winpty', buildNumber: 18308 })
+      expect(computeWindowsPty('win32', '10.0.17763')).toEqual({ backend: 'winpty', buildNumber: 17763 })
+    })
+
+    it('falls back to winpty/0 when the release string has no build (mirrors node-pty)', () => {
+      expect(computeWindowsPty('win32', 'weird-release')).toEqual({ backend: 'winpty', buildNumber: 0 })
     })
   })
 

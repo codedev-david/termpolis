@@ -8,6 +8,7 @@ const exposed: Record<string, any> = {}
 const mockIpcRenderer = {
   invoke: vi.fn().mockResolvedValue({ success: true }),
   send: vi.fn(),
+  sendSync: vi.fn(() => ({ platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } })),
   on: vi.fn((_channel: string, handler: Function) => handler),
   removeListener: vi.fn(),
 }
@@ -21,6 +22,7 @@ vi.mock('electron', () => ({
   ipcRenderer: {
     invoke: (...args: any[]) => mockIpcRenderer.invoke(...args),
     send: (...args: any[]) => mockIpcRenderer.send(...args),
+    sendSync: (...args: any[]) => mockIpcRenderer.sendSync(...args),
     on: (...args: any[]) => mockIpcRenderer.on(...args),
     removeListener: (...args: any[]) => mockIpcRenderer.removeListener(...args),
   },
@@ -36,6 +38,15 @@ beforeEach(() => {
 describe('preload: termpolis API', () => {
   it('exposes termpolis on the window', () => {
     expect(exposed.termpolis).toBeDefined()
+  })
+
+  it('exposes platformInfo, resolved synchronously at load (xterm windowsPty source)', () => {
+    // sendSync returns a payload → platformInfo carries it straight through, so
+    // the renderer can hand xterm the Windows ConPTY backend at Terminal construction.
+    expect(exposed.termpolis.platformInfo).toEqual({
+      platform: 'win32',
+      windowsPty: { backend: 'conpty', buildNumber: 22631 },
+    })
   })
 
   it('createTerminal invokes terminal:create', async () => {

@@ -185,3 +185,27 @@ function getShellArgs(executable: string): string[] {
   if (lower.endsWith('bash') || lower.endsWith('zsh')) return ['--login']
   return []
 }
+
+/**
+ * xterm.js `windowsPty` option for a renderer Terminal: tells the emulator the
+ * Windows PTY backend + OS build so its line-reflow and scrollback heuristics
+ * match ConPTY (which hard-wraps lines and repaints differently than a Unix
+ * pty). Without this hint a heavy-redraw TUI — e.g. Claude Code's Ink UI —
+ * progressively desyncs and its output overlaps the prompt box ("text gets
+ * jumbled with the prompt area"). Returns null off Windows, where xterm's
+ * native reflow is already correct.
+ *
+ * Mirrors node-pty's OWN backend decision — ConPTY when the OS build >= 18309,
+ * else winpty (see node-pty windowsPtyAgent._getWindowsBuildNumber) — so the
+ * hint we hand xterm matches the pty we actually spawned. Pure + injectable
+ * (platform/release passed in) for unit testing.
+ */
+export function computeWindowsPty(
+  platform: NodeJS.Platform,
+  release: string,
+): { backend: 'conpty' | 'winpty'; buildNumber: number } | null {
+  if (platform !== 'win32') return null
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(release)
+  const buildNumber = match ? parseInt(match[3], 10) : 0
+  return { backend: buildNumber >= 18309 ? 'conpty' : 'winpty', buildNumber }
+}

@@ -119,6 +119,14 @@ export interface IpcResponse<T = undefined> {
   error?: string
 }
 
+export interface PlatformInfo {
+  /** process.platform of the host (e.g. 'win32', 'darwin', 'linux'). */
+  platform: string
+  /** xterm.js `windowsPty` option on Windows (backend + OS build) so the
+   *  emulator's reflow/scrollback match ConPTY; null off Windows. */
+  windowsPty: { backend: 'conpty' | 'winpty'; buildNumber: number } | null
+}
+
 export interface TermpolisAPI {
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[]) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
@@ -227,6 +235,10 @@ export interface TermpolisAPI {
   getTelemetryOptIn: () => Promise<IpcResponse<boolean>>
   recordTelemetryEvent: (name: string, props?: Record<string, unknown>) => Promise<IpcResponse>
 
+  /** Static platform facts read synchronously at preload load. windowsPty tells
+   *  xterm.js how the Windows ConPTY wraps/scrolls so a TUI's redraws don't
+   *  overlap the prompt (null off Windows). */
+  platformInfo: PlatformInfo
   getAppVersion: () => Promise<IpcResponse<{ version: string }>>
 
   listAISessions: () => Promise<IpcResponse<AISessionSummary[]>>
