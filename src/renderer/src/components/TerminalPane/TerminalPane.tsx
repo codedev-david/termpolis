@@ -90,12 +90,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
   const [groqGateOpen, setGroqGateOpen] = useState(false)
-  // Input-latency probe surface (lib/inputLatencyProbe). Only populated when the
-  // `termpolis.inputLatency` localStorage flag is on; otherwise stays null and the
-  // on-pane readout never renders. Used to localize "first keystroke echoes late."
+  // Input-latency probe surface (lib/inputLatencyProbe). The probe measures every
+  // keystroke, but we only surface a readout when input is actually slow (either
+  // leg >= 200ms) — so there's no badge in the normal fast case; it appears exactly
+  // when lag is felt, with numbers that say whether it's the shell (echoMs) or the
+  // renderer (paintMs). The effect below auto-hides it a few seconds later.
   const [echoLatency, setEchoLatency] = useState<InputLatencySample | null>(null)
   const latencyReportRef = useRef<(s: InputLatencySample) => void>(() => {})
-  latencyReportRef.current = (s) => setEchoLatency(s)
+  latencyReportRef.current = (s) => {
+    if (s.echoMs >= 200 || s.paintMs >= 200) setEchoLatency(s)
+  }
+  useEffect(() => {
+    if (!echoLatency) return
+    const t = setTimeout(() => setEchoLatency(null), 5000)
+    return () => clearTimeout(t)
+  }, [echoLatency])
   // Keyboard copy mode — select text/words with no mouse (Ctrl+Shift+Space).
   const selectionModeRef = useRef(false)
   const anchorRef = useRef<GridPos>({ x: 0, y: 0 })
@@ -973,7 +982,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           <div
             data-testid="input-latency-badge"
             className="absolute bottom-1.5 left-2 z-30 font-mono text-[10px] px-1.5 py-0.5 rounded bg-black/75 text-[#9fe6ff] border border-[#3c3c3c] pointer-events-none"
-            title="Input latency probe (termpolis.inputLatency flag). echo = keystroke→shell echo (shell round trip); paint = echo→next frame (renderer)."
+            title="Input latency (shows only when slow). echo = keystroke→shell echo (shell round trip); paint = echo→next animation frame (renderer)."
           >
             echo {Math.round(echoLatency.echoMs)}ms · paint {Math.round(echoLatency.paintMs)}ms{echoLatency.firstEcho ? ' · 1st' : ''}
           </div>

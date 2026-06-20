@@ -8,12 +8,11 @@ const ARROW_UP = String.fromCharCode(27) + '[A' // ESC [ A
 
 // Deterministic harness: a manual clock + a frame queue we drain on demand, so we
 // can assert both legs (echoMs from the shell round trip, paintMs to the frame).
-function harness(enabled = true) {
+function harness() {
   let clock = 0
   const frameCbs: (() => void)[] = []
   const samples: InputLatencySample[] = []
   const probe = createInputLatencyProbe({
-    isEnabled: () => enabled,
     now: () => clock,
     scheduleFrame: (cb) => frameCbs.push(cb),
     report: (s) => samples.push(s),
@@ -40,21 +39,12 @@ describe('createInputLatencyProbe', () => {
     expect(h.samples[0]).toMatchObject({ echoMs: 30, paintMs: 15, echoBytes: 12, firstEcho: true, sinceOpenMs: 35 })
   })
 
-  it('reports nothing when the flag is off (zero overhead path)', () => {
-    const h = harness(false)
-    h.probe.markOpen()
-    h.probe.onKeystroke('a')
-    h.setClock(100)
-    h.probe.onOutput(5)
-    h.runFrame()
-    expect(h.samples).toHaveLength(0)
-  })
-
   it('only times single echoable characters, not Enter / control / escape sequences', () => {
     const h = harness()
     h.probe.markOpen()
     for (const k of [ENTER, CTRL_C, ARROW_UP, 'ab']) {
-      h.probe.onKeystroke(k) // none of these arm the timer
+      // Enter, Ctrl+C, an arrow escape sequence, and a 2-char chunk: none arm the timer.
+      h.probe.onKeystroke(k)
       h.probe.onOutput(4)
       h.runFrame()
     }
@@ -99,41 +89,10 @@ describe('createInputLatencyProbe', () => {
     expect(h.samples.map((s) => s.firstEcho)).toEqual([true, true])
   })
 
-  // --- default dependencies (exercised in the app, stubbed here) ---
-
-  it('default isEnabled reads the termpolis.inputLatency localStorage flag', () => {
-    const store: Record<string, string> = {}
-    vi.stubGlobal('localStorage', {
-      getItem: (k: string) => store[k] ?? null,
-      setItem: (k: string, v: string) => { store[k] = v },
-    })
-    const samples: InputLatencySample[] = []
-    const probe = createInputLatencyProbe({ now: () => 0, scheduleFrame: (cb) => cb(), report: (s) => samples.push(s) })
-    probe.markOpen()
-    probe.onKeystroke('a'); probe.onOutput(1)
-    expect(samples).toHaveLength(0) // flag absent → disabled
-    store['termpolis.inputLatency'] = '1'
-    probe.onKeystroke('b'); probe.onOutput(1)
-    expect(samples).toHaveLength(1) // flag set → enabled
-    vi.unstubAllGlobals()
-  })
-
-  it('treats a throwing localStorage as disabled', () => {
-    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('blocked') } })
-    const samples: InputLatencySample[] = []
-    const probe = createInputLatencyProbe({ now: () => 0, scheduleFrame: (cb) => cb(), report: (s) => samples.push(s) })
-    probe.markOpen()
-    probe.onKeystroke('a'); probe.onOutput(1)
-    expect(samples).toHaveLength(0)
-    vi.unstubAllGlobals()
-  })
-
   it('runs with all default deps (performance.now + rAF/fallback + no-op report) without throwing', () => {
-    vi.stubGlobal('localStorage', { getItem: () => '1' })
     const probe = createInputLatencyProbe() // every dependency defaulted
     probe.markOpen()
     probe.onKeystroke('a')
     expect(() => probe.onOutput(2)).not.toThrow()
-    vi.unstubAllGlobals()
   })
 })

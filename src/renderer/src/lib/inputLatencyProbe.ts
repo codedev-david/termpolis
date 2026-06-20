@@ -13,9 +13,11 @@
 //                renderer's frame was STARVED (the main thread was busy mounting
 //                the new terminal). That's the lag the renderer/throttle owns.
 //
-// Off unless the `termpolis.inputLatency` localStorage flag is set, so it costs
-// nothing in normal use (a single boolean check per keystroke, never per output
-// chunk). All side-effecting dependencies are injectable for unit testing.
+// The probe always measures (a perf.now() per typed character and one rAF per
+// echo — negligible) and reports every sample. The CONSUMER decides whether to
+// surface it; TerminalPane only shows a readout when a sample is actually slow,
+// so there's no UI noise in the normal fast case. All side-effecting
+// dependencies are injectable for unit testing.
 
 export interface InputLatencySample {
   /** Keystroke → echoed bytes returning from the PTY (shell round trip), ms. */
@@ -40,7 +42,6 @@ export interface InputLatencyProbe {
 }
 
 export interface InputLatencyDeps {
-  isEnabled?: () => boolean
   now?: () => number
   scheduleFrame?: (cb: () => void) => void
   report?: (sample: InputLatencySample) => void
@@ -48,15 +49,6 @@ export interface InputLatencyDeps {
 
 export function createInputLatencyProbe(deps: InputLatencyDeps = {}): InputLatencyProbe {
   const now = deps.now ?? (() => (typeof performance !== 'undefined' ? performance.now() : 0))
-  const isEnabled =
-    deps.isEnabled ??
-    (() => {
-      try {
-        return localStorage.getItem('termpolis.inputLatency') === '1'
-      } catch {
-        return false
-      }
-    })
   const scheduleFrame =
     deps.scheduleFrame ??
     ((cb: () => void) => {
@@ -77,12 +69,6 @@ export function createInputLatencyProbe(deps: InputLatencyDeps = {}): InputLaten
     },
 
     onKeystroke(data: string) {
-      // Read the flag at keystroke time (cheap, human-paced) so toggling it takes
-      // effect on the next keypress without reopening the terminal.
-      if (!isEnabled()) {
-        pendingTs = null
-        return
-      }
       // Don't restart the clock if we're still waiting on a prior keystroke's echo.
       if (pendingTs !== null) return
       // Only time a single character the PTY echoes straight back: printables and
