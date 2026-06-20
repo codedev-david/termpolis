@@ -45,12 +45,41 @@ describe('createOutputThrottle', () => {
     expect(rafCallbacks.length).toBe(0)
   })
 
+  // A keystroke echo isn't always one byte: PowerShell PSReadLine repaints the
+  // whole input line (+ a prediction suggestion) on every keypress — a few KB.
+  // That must still take the instant path, or the first keystroke in a new
+  // terminal lags while the line repaint waits on a starved frame.
+  it('flushes a multi-KB idle write (a PSReadLine line repaint) synchronously', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    const repaint = 'x'.repeat(4096)
+    throttled(repaint)
+    expect(writeFn).toHaveBeenCalledTimes(1)
+    expect(writeFn).toHaveBeenCalledWith(repaint)
+    expect(rafCallbacks.length).toBe(0)
+  })
+
+  // Boundary: at the limit it's still instant; one byte over coalesces.
+  it('flushes exactly at the bypass limit but coalesces just above it', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    throttled('x'.repeat(8192)) // at the limit → instant
+    expect(writeFn).toHaveBeenCalledTimes(1)
+    expect(rafCallbacks.length).toBe(0)
+
+    const writeFn2 = vi.fn()
+    const throttled2 = createOutputThrottle(writeFn2)
+    throttled2('x'.repeat(8193)) // one over → deferred to a frame
+    expect(writeFn2).not.toHaveBeenCalled()
+    expect(rafCallbacks.length).toBe(1)
+  })
+
   // Bulk output (large chunks) is still coalesced through a single rAF so a
   // flood can't spike memory or thrash the renderer.
   it('batches a large write through requestAnimationFrame', () => {
     const writeFn = vi.fn()
     const throttled = createOutputThrottle(writeFn)
-    const big = 'x'.repeat(2048)
+    const big = 'x'.repeat(16384)
     throttled(big)
     expect(writeFn).not.toHaveBeenCalled()
     drainOne()
@@ -64,7 +93,7 @@ describe('createOutputThrottle', () => {
   it('keeps small writes ordered behind an in-flight burst', () => {
     const writeFn = vi.fn()
     const throttled = createOutputThrottle(writeFn)
-    const big = 'x'.repeat(2048)
+    const big = 'x'.repeat(16384)
     throttled(big) // schedules a frame
     throttled('!') // must queue behind the burst, not write immediately
     expect(writeFn).not.toHaveBeenCalled()
@@ -76,7 +105,7 @@ describe('createOutputThrottle', () => {
   it('returns to the instant fast path after a burst flushes', () => {
     const writeFn = vi.fn()
     const throttled = createOutputThrottle(writeFn)
-    throttled('x'.repeat(2048))
+    throttled('x'.repeat(16384))
     drainOne()
     expect(writeFn).toHaveBeenCalledTimes(1)
     // Idle again — a small write should be synchronous once more.

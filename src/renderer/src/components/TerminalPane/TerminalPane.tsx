@@ -5,6 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
+import { createInputLatencyProbe, type InputLatencySample } from '../../lib/inputLatencyProbe'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
@@ -89,6 +90,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
   const [groqGateOpen, setGroqGateOpen] = useState(false)
+  // Input-latency probe surface (lib/inputLatencyProbe). Only populated when the
+  // `termpolis.inputLatency` localStorage flag is on; otherwise stays null and the
+  // on-pane readout never renders. Used to localize "first keystroke echoes late."
+  const [echoLatency, setEchoLatency] = useState<InputLatencySample | null>(null)
+  const latencyReportRef = useRef<(s: InputLatencySample) => void>(() => {})
+  latencyReportRef.current = (s) => setEchoLatency(s)
   // Keyboard copy mode — select text/words with no mouse (Ctrl+Shift+Space).
   const selectionModeRef = useRef(false)
   const anchorRef = useRef<GridPos>({ x: 0, y: 0 })
@@ -158,6 +165,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
   const voiceStopRef = useRef<() => void>(() => {})
+  // Hotkey START path, gated on a live Groq key check (parity with the button).
+  const voiceStartGatedRef = useRef<() => void>(() => {})
   const voiceListeningRef = useRef(false)
   // A physical activation-key press is currently down (tap-or-hold mode), plus the
   // performance.now() it began at — together they tell a quick TAP (toggles
@@ -169,19 +178,32 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   voiceStopRef.current = voice.stop
   voiceListeningRef.current = voice.listening
 
-  // The on-pane Voice button is Groq-cloud-only — starting capture with no Groq
-  // key connected can only fail, so gate the START on a live key-status check and
-  // route the user to Settings → Voice instead. Stopping never needs the check.
-  const handleVoiceButtonClick = useCallback(async () => {
-    if (voiceListeningRef.current) { voice.toggle(); return }
+  // Voice dictation is Groq-cloud-only (local Whisper was removed in v1.13.0), so
+  // starting a capture with no Groq key connected can only fail. BOTH entry points
+  // — the on-pane Voice button AND the push-to-talk hotkey — must check for a
+  // connected key first and, when it's missing, show the same setup gate that
+  // routes to Settings → Voice instead of starting a doomed (silent) capture.
+  // Returns true when capture may proceed. Stopping never needs the check.
+  const ensureGroqOrGate = useCallback(async (): Promise<boolean> => {
     try {
       const status = await window.termpolis?.groqGetKeyStatus?.()
-      if (status?.success && status.data?.connected) { voice.toggle(); return }
+      if (status?.success && status.data?.connected) return true
     } catch {
-      // Treat an errored status check as "not connected" — show the gate.
+      // An errored status check is treated as "not connected" — show the gate.
     }
     setGroqGateOpen(true)
-  }, [voice])
+    return false
+  }, [])
+  // Hotkey START (keydown) is gated too. The xterm key handler is synchronous, so
+  // we fire-and-forget the async check: either capture starts or the gate opens.
+  voiceStartGatedRef.current = () => {
+    void (async () => { if (await ensureGroqOrGate()) voiceStartRef.current() })()
+  }
+
+  const handleVoiceButtonClick = useCallback(async () => {
+    if (voiceListeningRef.current) { voice.toggle(); return }
+    if (await ensureGroqOrGate()) voice.toggle()
+  }, [voice, ensureGroqOrGate])
 
   const handleExport = useCallback((mode: 'full' | 'visible') => {
     const term = termRef.current
@@ -441,11 +463,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           e.preventDefault()
           if (mode === 'toggle') {
             // Pure toggle: tap to start, tap again to stop (no hold-to-talk).
-            voiceToggleRef.current()
+            // Starting is Groq-gated; stopping never needs the check.
+            if (voiceListeningRef.current) voiceStopRef.current()
+            else voiceStartGatedRef.current()
           } else if (mode === 'tapSpace') {
             // Tap the combo to START; the send key ends it (handled below). No
             // keyup latch — releasing the combo keys must NOT stop dictation here.
-            if (!voiceListeningRef.current) voiceStartRef.current()
+            if (!voiceListeningRef.current) voiceStartGatedRef.current()
           } else {
             // tapOrHold (default; also where legacy 'hold' lands): a TAP toggles
             // hands-free, a HOLD is push-to-talk. keydown begins a press (or stops
@@ -458,7 +482,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             if (action === 'start') {
               pttPressActiveRef.current = true
               pttPressStartRef.current = performance.now()
-              voiceStartRef.current()
+              voiceStartGatedRef.current()
             } else if (action === 'stop') {
               pttPressActiveRef.current = false
               voiceStopRef.current()
@@ -605,6 +629,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       return true // let terminal handle all other keys
     })
 
+    // Input-latency probe: times keystroke→echo (shell round trip) and echo→frame
+    // (renderer starvation) to localize input lag. No-op unless the
+    // `termpolis.inputLatency` flag is set. See lib/inputLatencyProbe.
+    const latencyProbe = createInputLatencyProbe({ report: (s) => latencyReportRef.current(s) })
+    latencyProbe.markOpen()
+
     term.onData((data) => {
       // When dropdown is visible, intercept certain keys
       if (completion.handleDropdownKeyIntercept(data)) {
@@ -613,6 +643,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
       // Pass data to PTY
       window.termpolis.writeToTerminal(terminalId, data)
+      latencyProbe.onKeystroke(data)
 
       // Record input if recording
       recording.appendRecordingEntry('input', data)
@@ -653,6 +684,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
     const unsub = window.termpolis.onTerminalData((id, data) => {
       if (id !== terminalId) return
+      latencyProbe.onOutput(data.length)
       throttledWrite(data)
 
       // Record output if recording
@@ -937,6 +969,15 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           )}
         </div>
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
+        {echoLatency && (
+          <div
+            data-testid="input-latency-badge"
+            className="absolute bottom-1.5 left-2 z-30 font-mono text-[10px] px-1.5 py-0.5 rounded bg-black/75 text-[#9fe6ff] border border-[#3c3c3c] pointer-events-none"
+            title="Input latency probe (termpolis.inputLatency flag). echo = keystroke→shell echo (shell round trip); paint = echo→next frame (renderer)."
+          >
+            echo {Math.round(echoLatency.echoMs)}ms · paint {Math.round(echoLatency.paintMs)}ms{echoLatency.firstEcho ? ' · 1st' : ''}
+          </div>
+        )}
         {groqGateOpen && (
           <VoiceGroqGate
             onClose={() => setGroqGateOpen(false)}

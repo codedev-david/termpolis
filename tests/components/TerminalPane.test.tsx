@@ -966,6 +966,56 @@ describe('TerminalPane', () => {
       expect(mocks.mockSetShowSettings).toHaveBeenCalledWith(true)
       expect(consumePendingSettingsTab()).toBe('voice')
     })
+
+    // The hotkey (default Ctrl+Shift+L) must enforce the SAME Groq gate as the
+    // button — otherwise pressing it with no key connected silently starts a
+    // capture that can only fail. One test per activation mode.
+    it('hotkey START without Groq connected shows the setup gate and does NOT start capture (tapOrHold)', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: false } })
+      withVoice({ pushToTalkMode: 'tapOrHold' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
+      expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+    })
+
+    it('hotkey START without Groq connected shows the gate in toggle mode', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: false } })
+      withVoice({ pushToTalkMode: 'toggle' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
+      expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+    })
+
+    it('hotkey START without Groq connected shows the gate in tapSpace mode', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: false } })
+      withVoice({ pushToTalkMode: 'tapSpace' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
+      expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+    })
+
+    it('hotkey START WITH Groq connected starts capture and shows no gate (toggle)', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: true } })
+      withVoice({ pushToTalkMode: 'toggle' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument())
+      expect(screen.queryByTestId('voice-groq-gate')).not.toBeInTheDocument()
+    })
+
+    it('hotkey gate routes to Settings → Voice via Open Voice Settings', async () => {
+      ;(window as any).termpolis.groqGetKeyStatus = vi.fn().mockResolvedValue({ success: true, data: { connected: false } })
+      withVoice({ pushToTalkMode: 'tapOrHold' })
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'L', cancelable: true })) })
+      await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
+      await act(async () => { fireEvent.click(screen.getByTestId('voice-groq-gate-open-settings')) })
+      expect(mocks.mockSetShowSettings).toHaveBeenCalledWith(true)
+      expect(consumePendingSettingsTab()).toBe('voice')
+    })
   })
 
   // =====================================================
