@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.15.10",
+  "version": "1.15.11",
   "description": "Secure AI-Assisted Development. Local-first multi-agent terminal for Claude, Codex, Gemini, and Qwen with a built-in AI Security Center (auto-scan on every prompt across 70+ secret patterns, Gemini paid-tier enforcement, auditable outbound log), MCP server, split panes, and live observability.",
   "author": "Termpolis",
   "license": "Apache-2.0",
@@ -137,7 +137,6 @@
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-unicode11": "0.9.0",
     "@xterm/addon-web-links": "0.12.0",
-    "@xterm/addon-webgl": "0.19.0",
     "autoprefixer": "10.4.27",
     "electron-updater": "6.8.3",
     "monaco-editor": "^0.55.1",
@@ -149,6 +148,8 @@
     "tailwindcss": "3.4.19",
     "uuid": "13.0.0",
     "xterm": "5.3.0",
+    "xterm-addon-canvas": "^0.5.0",
+    "xterm-addon-webgl": "^0.16.0",
     "zustand": "5.0.12"
   },
   "devDependencies": {
