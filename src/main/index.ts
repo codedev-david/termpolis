@@ -17,6 +17,16 @@ import {
 // modes (unpacked, packaged, CI).
 app.setName('termpolis')
 
+// Windows taskbar identity. The NSIS installer stamps the Start-menu/desktop
+// shortcut with an explicit AppUserModelID equal to build.appId. Windows groups
+// taskbar buttons and resolves the taskbar/jump-list icon by that ID — but ONLY
+// if the RUNNING process declares the SAME id. Without this call the process
+// gets a default per-process id, Windows can't tie the live window to the
+// installed shortcut, and the taskbar shows a GENERIC icon instead of ours.
+// Must stay in sync with build.appId in package.json. No-op on macOS/Linux;
+// optional-chained so a minimal `app` mock in unit tests can't trip on it.
+app.setAppUserModelId?.('com.termpolis.app')
+
 // Telemetry must initialize before Sentry — Sentry's gate reads from the
 // persisted opt-in state. Without this ordering, the very first launch
 // after install would never enable Sentry even after the user opts in,
@@ -158,14 +168,23 @@ import {
 } from './agentMcpRegistry'
 
 function createWindow() {
-  const iconPath = join(__dirname, '../../assets/logo-termpolis.png')
+  // Window icon. On Windows the multi-size .ico keeps the taskbar/title-bar
+  // icon crisp at any DPI; other platforms use the PNG (macOS ignores this and
+  // uses the .app icon). The assets/ dir is bundled into app.asar via
+  // build.files in package.json — WITHOUT that entry this path resolves to
+  // nothing inside the asar, nativeImage returns an EMPTY image, and Windows
+  // falls back to the generic taskbar icon. If the image is empty for any
+  // reason, omit `icon` entirely so the OS uses the executable's embedded icon
+  // rather than a blank one.
+  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'logo-termpolis.png'
+  const windowIcon = nativeImage.createFromPath(join(__dirname, '../../assets', iconFile))
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 600,
     minHeight: 400,
     title: 'Termpolis',
-    icon: nativeImage.createFromPath(iconPath),
+    icon: windowIcon.isEmpty?.() ? undefined : windowIcon,
     backgroundColor: '#1e1e1e',
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',

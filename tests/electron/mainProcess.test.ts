@@ -35,6 +35,7 @@ vi.mock('electron', () => ({
     whenReady: () => Promise.resolve(),
     requestSingleInstanceLock: () => true,
     setName: vi.fn(),
+    setAppUserModelId: vi.fn(),
     on: vi.fn(),
     commandLine: { appendSwitch: vi.fn() },
     isPackaged: false,
@@ -262,6 +263,8 @@ function invokeOnHandler(channel: string, args: any = {}) {
 // Captured callbacks from app.on and globalShortcut.register (one-time during import)
 const capturedAppCallbacks: Record<string, Function> = {}
 const capturedShortcuts: Record<string, Function> = {}
+// Captured once during import, before beforeEach's clearAllMocks wipes the history.
+let capturedAppUserModelId: string | undefined
 
 beforeAll(async () => {
   vi.resetModules()
@@ -278,10 +281,23 @@ beforeAll(async () => {
   for (const call of (globalShortcut.register as any).mock.calls) {
     capturedShortcuts[call[0]] = call[1]
   }
+  capturedAppUserModelId = (app.setAppUserModelId as any).mock.calls[0]?.[0]
 })
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+// =========================================================================
+// Windows taskbar identity (generic-icon regression guard)
+// =========================================================================
+describe('app identity', () => {
+  it('declares the AppUserModelID matching build.appId so Windows shows our taskbar icon', () => {
+    // Without this, the running process gets a default per-process id, Windows
+    // can't associate the window with the installed shortcut, and the taskbar
+    // falls back to a generic icon. Must equal package.json build.appId.
+    expect(capturedAppUserModelId).toBe('com.termpolis.app')
+  })
 })
 
 // =========================================================================

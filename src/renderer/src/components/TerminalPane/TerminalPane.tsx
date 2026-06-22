@@ -639,8 +639,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     })
 
     // Input-latency probe: times keystroke→echo (shell round trip) and echo→frame
-    // (renderer starvation) to localize input lag. No-op unless the
-    // `termpolis.inputLatency` flag is set. See lib/inputLatencyProbe.
+    // (renderer starvation) to localize input lag. The probe always measures;
+    // an on-pane readout (input-latency-badge) is surfaced only when a leg is
+    // slow (>= 200ms), so there's no noise in the fast case. See lib/inputLatencyProbe.
     const latencyProbe = createInputLatencyProbe({ report: (s) => latencyReportRef.current(s) })
     latencyProbe.markOpen()
 
