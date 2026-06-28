@@ -1,4 +1,4 @@
-import type { ITerminalOptions } from 'xterm'
+import type { ITerminalOptions } from '@xterm/xterm'
 
 /**
  * Windows PTY backend info handed to xterm.js via its `windowsPty` option. On

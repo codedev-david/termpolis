@@ -89,7 +89,7 @@ mocks.mockGetState.mockImplementation(() => ({
 }))
 
 // --- Mock xterm.js and addons ---
-vi.mock('xterm', () => ({
+vi.mock('@xterm/xterm', () => ({
   Terminal: function (options: unknown) { mocks.lastTerminalOptions = options; return mocks.mockTerminal },
 }))
 vi.mock('@xterm/addon-fit', () => ({
@@ -104,7 +104,7 @@ vi.mock('@xterm/addon-unicode11', () => ({
 vi.mock('@xterm/addon-web-links', () => ({
   WebLinksAddon: function () { this.dispose = vi.fn() },
 }))
-vi.mock('xterm/css/xterm.css', () => ({}))
+vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
 // --- Mock uuid ---
 vi.mock('uuid', () => ({

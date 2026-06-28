@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
-import { Terminal } from 'xterm'
+import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { createInputLatencyProbe, type InputLatencySample } from '../../lib/inputLatencyProbe'
@@ -36,7 +37,7 @@ import { useAutoPrimer, useCompactionReprimer } from '../../hooks/useAutoPrimer'
 import { useAutoCodeIndex } from '../../hooks/useAutoCodeIndex'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
 import type { ShellType } from '../../types'
-import 'xterm/css/xterm.css'
+import '@xterm/xterm/css/xterm.css'
 
 interface Props {
   terminalId: string
@@ -358,14 +359,19 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // 3. Open terminal (attach to DOM) — must come before WebGL
     term.open(containerRef.current)
 
-    // 4. Load WebGL addon (requires DOM attachment)
-    // Disabled for now — canvas renderer is stable; WebGL can cause blank screens
-    // on some systems. Re-enable when xterm.js WebGL addon is more robust.
-    // try {
-    //   const webglAddon = new WebglAddon()
-    //   webglAddon.onContextLoss(() => webglAddon.dispose())
-    //   term.loadAddon(webglAddon)
-    // } catch {}
+    // 4. Load the WebGL renderer addon (requires DOM attachment). The GPU
+    // renderer paints far faster than xterm's default DOM renderer, which was the
+    // source of typing/paint latency (the input-latency badge's paintMs leg). It
+    // is version-matched now that the core is @xterm/xterm 5.5 — the old 5.3 core
+    // vs 5.5 addon mismatch is what made it crash/blank before. Fully guarded: if
+    // WebGL is unavailable, or the GPU context is lost at runtime, we dispose the
+    // addon and xterm transparently falls back to the DOM renderer, so the
+    // terminal never goes blank.
+    try {
+      const webglAddon = new WebglAddon()
+      webglAddon.onContextLoss(() => { try { webglAddon.dispose() } catch { /* already disposed */ } })
+      term.loadAddon(webglAddon)
+    } catch { /* no WebGL (old GPU/driver or software rendering) — DOM renderer stays */ }
 
     // 5. Load Unicode11 addon
     try {

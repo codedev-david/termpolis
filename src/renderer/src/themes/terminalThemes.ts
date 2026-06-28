@@ -1,4 +1,4 @@
-import type { ITheme } from 'xterm'
+import type { ITheme } from '@xterm/xterm'
 
 export const TERMINAL_THEMES: Record<string, { name: string; theme: ITheme }> = {
   dark: {

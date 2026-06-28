@@ -59,7 +59,7 @@ if (process.platform === 'linux') {
 }
 import { join } from 'path'
 import { homedir, release } from 'os'
-import { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { execSync } from 'child_process'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid, computeWindowsPty } from './terminalManager'
@@ -167,24 +167,35 @@ import {
   registerInQwen,
 } from './agentMcpRegistry'
 
+// Load the window/taskbar icon from a Buffer. We previously used
+// nativeImage.createFromPath, but the assets/ dir lives INSIDE app.asar and
+// createFromPath's native file read does NOT reliably resolve asar paths — it
+// returned an EMPTY image, so `icon` was dropped and Windows showed the generic
+// taskbar icon. fs (Electron-patched) reads the asar entry correctly, and a PNG
+// buffer is a format nativeImage always decodes; Electron downscales it for the
+// taskbar/title bar. The crisp multi-size .ico is what electron-builder stamps
+// onto the exe + Start-menu/taskbar shortcut (build.win.icon).
+function loadWindowIcon() {
+  try {
+    const buf = readFileSync(join(__dirname, '../../assets', 'logo-termpolis.png'))
+    const img = nativeImage.createFromBuffer(buf)
+    return img.isEmpty?.() ? undefined : img
+  } catch {
+    return undefined
+  }
+}
+
 function createWindow() {
-  // Window icon. On Windows the multi-size .ico keeps the taskbar/title-bar
-  // icon crisp at any DPI; other platforms use the PNG (macOS ignores this and
-  // uses the .app icon). The assets/ dir is bundled into app.asar via
-  // build.files in package.json — WITHOUT that entry this path resolves to
-  // nothing inside the asar, nativeImage returns an EMPTY image, and Windows
-  // falls back to the generic taskbar icon. If the image is empty for any
-  // reason, omit `icon` entirely so the OS uses the executable's embedded icon
-  // rather than a blank one.
-  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'logo-termpolis.png'
-  const windowIcon = nativeImage.createFromPath(join(__dirname, '../../assets', iconFile))
+  // If the icon fails to load we leave `icon` undefined so the OS uses the
+  // executable's embedded icon, never a blank one.
+  const windowIcon = loadWindowIcon()
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 600,
     minHeight: 400,
     title: 'Termpolis',
-    icon: windowIcon.isEmpty?.() ? undefined : windowIcon,
+    icon: windowIcon ?? undefined,
     backgroundColor: '#1e1e1e',
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -194,6 +205,11 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+
+  // Defensive: explicitly (re)assert the taskbar/window icon after creation —
+  // some Windows setups don't apply the constructor `icon` to the taskbar button
+  // until it's set on the live window.
+  if (windowIcon) { try { mainWindow.setIcon(windowIcon) } catch { /* non-fatal */ } }
 
   // Permissions: the renderer needs the microphone (voice input) and clipboard.
   // Electron rejects getUserMedia without an explicit grant. We keep the prior
