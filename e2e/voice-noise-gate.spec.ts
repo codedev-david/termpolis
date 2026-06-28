@@ -90,6 +90,16 @@ test.describe.serial('Voice gates steady noise (no phantom transcript)', () => {
       await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
       await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
     }
+
+    // v1.15.8 gates the mic button on a connected Groq key (VoiceGroqGate /
+    // ensureGroqOrGate). Without one the click opens the setup gate instead of
+    // starting capture, so the Listening badge never appears. The dead-zone gate
+    // we exercise here runs in the RENDERER *after* capture starts and BEFORE any
+    // Groq call, so seeding a dummy key only clears the button gate — no network
+    // request is ever made (the noise fixture is classified as no-speech first).
+    await page.evaluate(() =>
+      window.termpolis?.groqSetApiKey?.('gsk_e2e_dummy_capture_gate_key_not_used_for_network'),
+    )
   })
 
   test.afterAll(async () => {

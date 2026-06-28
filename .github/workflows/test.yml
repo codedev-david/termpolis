@@ -210,16 +210,19 @@ jobs:
       # notice and injects NOTHING. Uses a committed noise fixture; needs no model
       # (the speech/noise gate runs in the renderer first). The in-app proof of the fix.
       - name: Voice gates steady background noise (no phantom transcript)
+        if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/voice-noise-gate.spec.ts
       # Clipboard gate: proves the terminal right-click menu actually COPIES the
       # selection to the REAL OS clipboard (plain + code-block) and PASTES from it
       # (the recurring "copy/paste does nothing" report) — end-to-end in real Electron.
       - name: Terminal right-click copy + paste (real clipboard)
+        if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/clipboard-paste.spec.ts
       # Terminal-focus gate: proves switching terminals (Alt+<n> / clicking a tab),
       # incl. re-selecting the already-active one, lands the caret on that
       # terminal's xterm input — the "input is always ready" promise (focusNonce).
       - name: Terminal switch focuses the input line
+        if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/terminal-focus.spec.ts
       - name: Upload failure traces
         if: failure()
