@@ -44,6 +44,23 @@ export function isMissingUpdateConfigError(err: unknown): boolean {
   return /ENOENT/i.test(msg) && /app-update\.yml/i.test(msg)
 }
 
+// A transient network failure during an update check: the user is offline, on a
+// flaky/captive-portal connection, or the update host is briefly unreachable.
+// electron-updater surfaces these as Chromium net errors (net::ERR_*) or Node
+// socket errnos. Auto-update simply can't reach the server — there's nothing to
+// fix and the user did nothing wrong — so it must NEVER be reported to Sentry as
+// a production error (was Sentry issue ELECTRON-9 / GitHub #15:
+// "updater error: net::ERR_INTERNET_DISCONNECTED"). Matches only connectivity
+// failures, so genuine errors (e.g. sha512 mismatch) still report.
+export function isTransientNetworkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+  return (
+    /net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|NAME_NOT_RESOLVED|CONNECTION_(RESET|REFUSED|CLOSED|TIMED_OUT)|TIMED_OUT|ADDRESS_UNREACHABLE|NETWORK_ACCESS_DENIED|PROXY_CONNECTION_FAILED)/i.test(
+      msg,
+    ) || /\b(ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENETDOWN)\b/.test(msg)
+  )
+}
+
 // Injectable so unit tests can simulate a present/absent app-update.yml without
 // a real packaged resources dir. Defaults to the exact path electron-updater
 // reads in a packaged app: process.resourcesPath/app-update.yml.
@@ -159,10 +176,12 @@ export function initAutoUpdater(
     })
   })
   autoUpdater.on('error', (err: Error) => {
-    // A missing app-update.yml is benign and unactionable (see
-    // isMissingUpdateConfigError). Surface it as "no update available" and keep
-    // it out of Sentry instead of reporting a phantom production error.
-    if (isMissingUpdateConfigError(err)) {
+    // Benign, unactionable environmental errors must surface as "no update
+    // available" and stay OUT of Sentry instead of reporting a phantom crash:
+    //   - a missing app-update.yml (isMissingUpdateConfigError; ELECTRON-8 / #14)
+    //   - a transient network failure / offline (isTransientNetworkError;
+    //     ELECTRON-9 / #15)
+    if (isMissingUpdateConfigError(err) || isTransientNetworkError(err)) {
       setState({ status: 'not-available' })
       return
     }

@@ -211,6 +211,39 @@ describe('initAutoUpdater — missing app-update.yml is benign (Sentry ELECTRON-
     expect(mod.isMissingUpdateConfigError(undefined)).toBe(false)
   })
 
+  it('surfaces a transient network error (offline) as a benign not-available state', async () => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['error']?.(new Error('net::ERR_INTERNET_DISCONNECTED'))
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'not-available' }),
+    )
+    expect(fakeWindow.webContents.send).toHaveBeenCalledWith(
+      'updater:state',
+      expect.objectContaining({ status: 'not-available' }),
+    )
+  })
+
+  it('isTransientNetworkError matches connectivity failures but not genuine errors', async () => {
+    vi.resetModules()
+    const mod = await import('../../src/main/autoUpdater')
+    for (const m of [
+      'net::ERR_INTERNET_DISCONNECTED',
+      'net::ERR_NAME_NOT_RESOLVED',
+      'net::ERR_CONNECTION_RESET',
+      'net::ERR_TIMED_OUT',
+      'getaddrinfo ENOTFOUND github.com',
+      'connect ETIMEDOUT 140.82.121.4:443',
+      'read ECONNRESET',
+    ]) {
+      expect(mod.isTransientNetworkError(new Error(m)), m).toBe(true)
+    }
+    // Genuine, actionable errors must still report — never suppressed.
+    expect(mod.isTransientNetworkError(new Error('sha512 checksum mismatch'))).toBe(false)
+    expect(mod.isTransientNetworkError(missingConfigErr())).toBe(false)
+    expect(mod.isTransientNetworkError(new Error('Unexpected token < in JSON'))).toBe(false)
+    expect(mod.isTransientNetworkError(undefined)).toBe(false)
+  })
+
   it('skips scheduling periodic checks when app-update.yml is absent, but keeps an error listener', async () => {
     vi.resetModules()
     for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
