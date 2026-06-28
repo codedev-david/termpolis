@@ -3,9 +3,6 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { WebglAddon } from 'xterm-addon-webgl'
-import { CanvasAddon } from 'xterm-addon-canvas'
-import { setupTerminalRenderer } from '../../lib/terminalRenderer'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { createInputLatencyProbe, type InputLatencySample } from '../../lib/inputLatencyProbe'
@@ -361,18 +358,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // 3. Open terminal (attach to DOM) — must come before WebGL
     term.open(containerRef.current)
 
-    // 4. Renderer (requires DOM attachment): attach the fastest WORKING renderer
-    // via the WebGL → Canvas → DOM ladder. Using version-matched addons
-    // (xterm-addon-webgl/canvas, 5.3-era) avoids the render-internals skew that
-    // made the newer scoped @xterm/addon-webgl blank the screen. If WebGL2 is
-    // unavailable or hardware acceleration is off, it falls back automatically —
-    // terminal creation never fails over this. See lib/terminalRenderer.
-    setupTerminalRenderer(term, {
-      createWebgl: () => new WebglAddon(),
-      createCanvas: () => new CanvasAddon(),
-      onFallback: (tier, err) =>
-        console.warn(`[termpolis] terminal renderer fell back from ${tier}:`, err),
-    })
+    // 4. Load WebGL addon (requires DOM attachment)
+    // Disabled for now — canvas renderer is stable; WebGL can cause blank screens
+    // on some systems. Re-enable when xterm.js WebGL addon is more robust.
+    // try {
+    //   const webglAddon = new WebglAddon()
+    //   webglAddon.onContextLoss(() => webglAddon.dispose())
+    //   term.loadAddon(webglAddon)
+    // } catch {}
 
     // 5. Load Unicode11 addon
     try {

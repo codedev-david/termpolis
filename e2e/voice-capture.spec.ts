@@ -94,6 +94,18 @@ test.beforeAll(async () => {
     await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
     await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
+
+  // v1.15.8 gates BOTH voice entry points (mic button + push-to-talk hotkey) on a
+  // connected Groq key — voice is Groq-cloud-only, so without one the mic button
+  // opens the "Voice typing needs Groq" setup gate instead of starting capture
+  // (see VoiceGroqGate / ensureGroqOrGate). This test proves the getUserMedia →
+  // AudioContext CAPTURE path, which is upstream of transcription, so we seed a
+  // dummy key through the app's own IPC to clear the gate. Transcription is still
+  // never reached (the synthetic fake-audio tone is gated as non-speech before any
+  // Groq call), so the key is never used for a network request.
+  await page.evaluate(() =>
+    window.termpolis?.groqSetApiKey?.('gsk_e2e_dummy_capture_gate_key_not_used_for_network'),
+  )
 })
 
 test.afterAll(async () => {
