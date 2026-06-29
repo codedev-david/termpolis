@@ -119,9 +119,20 @@ describe('knowledge graph — auto-link grows the graph as you work (with embedd
     expect(graphStats().edges).toBeGreaterThan(0) // the graph grew on its own
   })
 
-  it('does NOT auto-link low-signal kinds (note / message)', async () => {
-    await memoryWrite({ agentId: 'claude', kind: 'note', content: 'a passing remark' })
-    await memoryWrite({ agentId: 'claude', kind: 'message', content: 'a transcript line' })
+  it('BB16: densifies message/note ONLY on a tight (high-cosine) relation', async () => {
+    // The fixture gives every entry the same unit vector → cosine 1.0 → a tight relation,
+    // so the message densifies onto its near-identical neighbour.
+    await memoryWrite({ agentId: 'claude', kind: 'note', content: 'a passing remark about hnsw' })
+    await memoryWrite({ agentId: 'claude', kind: 'message', content: 'a transcript line about hnsw' })
+    expect(graphStats().edges).toBeGreaterThan(0)
+  })
+
+  it('BB16: does NOT densify message/note on a weak (low-cosine) relation', async () => {
+    // Distinct one-hot vectors → cosine 0, below the 0.6 densification gate.
+    let i = 0
+    _setEmbedFnForTests(async () => { const v = new Array(EMBED_DIM).fill(0); v[i++ % EMBED_DIM] = 1; return v })
+    await memoryWrite({ agentId: 'claude', kind: 'note', content: 'unrelated note one' })
+    await memoryWrite({ agentId: 'claude', kind: 'message', content: 'unrelated message two' })
     expect(graphStats().edges).toBe(0)
   })
 

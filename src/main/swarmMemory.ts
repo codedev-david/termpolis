@@ -352,6 +352,10 @@ export interface WriteInput {
 // flooded by transcript/code chunks); each links to its top-K nearest neighbours.
 const AUTO_LINK_KINDS = new Set<MemoryEntry['kind']>(['decision', 'fact', 'result'])
 const AUTO_LINK_K = 3
+// BB16: densify the bulk (message/note) too, but ONLY on a genuinely tight relation —
+// a single best neighbour at high cosine — so the graph grows without flooding.
+const DENSIFY_KINDS = new Set<MemoryEntry['kind']>(['message', 'note'])
+const DENSIFY_MIN_COSINE = 0.6
 
 /** Stable content-addressed hash for a memory's text — the key we use to skip
  *  storing the same information twice (in the vector store AND in the on-disk
@@ -442,6 +446,16 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
         addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto' })
       }
     } catch { /* best effort — linking never blocks a write */ }
+  } else if (DENSIFY_KINDS.has(kind) && entry.embedding) {
+    // BB16: link a message/note chunk to its single best neighbour, but only when
+    // the relation is genuinely tight (cosine >= 0.6) — densifies the bulk without
+    // flooding the graph. Idempotent via upsertEdge; never blocks a write.
+    try {
+      const [n] = nearestNeighbours(entry.embedding, 1, entry.id)
+      if (n && n.score >= DENSIFY_MIN_COSINE) {
+        addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto' })
+      }
+    } catch { /* best effort */ }
   }
   return entry
 }
