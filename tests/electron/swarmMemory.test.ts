@@ -35,6 +35,7 @@ import {
   _setPrfForTests,
   rocchioExpand,
   memoryLink,
+  _vectorStoreSizeForTests,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
 import { gateByScore } from '../../src/main/memoryEconomy'
@@ -302,6 +303,21 @@ describe('hybrid lexical+dense retrieval (BB1)', () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'unrelated billing invoice logic' })
     const hits = await memorySearch({ query: 'authentication jwt' })
     expect(hits[0].content).toContain('authentication')
+  })
+})
+
+describe('orphan compaction (BB10)', () => {
+  it('compacts orphaned vectors out of the packed store after trims, keeping search correct', async () => {
+    _setMaxEntriesForTests(4)
+    let i = 0
+    _setEmbedFnForTests(async (t) => (t.includes('target') ? vec384(1) : vec384(50 + i++)))
+    for (let n = 0; n < 11; n++) await memoryWrite({ agentId: 'a', kind: 'fact', content: `noise ${n}` })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'the target fact' })
+    // 12 packed vectors written, cap 4 → orphans get compacted away (store ~= live size).
+    expect(_vectorStoreSizeForTests()).toBeLessThanOrEqual(4)
+    _setEmbedFnForTests(async () => vec384(1))
+    const hits = await memorySearch({ query: 'q' })
+    expect(hits.some(h => h.content === 'the target fact')).toBe(true)
   })
 })
 

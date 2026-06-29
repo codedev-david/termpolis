@@ -104,3 +104,24 @@ describe('VectorStore', () => {
     expect(s.get(99)).toBeNull()
   })
 })
+
+describe('VectorStore.compact (BB10)', () => {
+  it('keeps only the live rows in order and remaps old→new', () => {
+    const s = new VectorStore(2)
+    s.add([1, 0]); s.add([0, 1]); s.add([1, 1]); s.add([0.5, 0.5]) // rows 0,1,2,3
+    expect(s.size).toBe(4)
+    const remap = s.compact([2, 0]) // keep old rows 2 then 0
+    expect(s.size).toBe(2)
+    expect(remap.get(2)).toBe(0)
+    expect(remap.get(0)).toBe(1)
+    expect(s.get(0)![0]).toBeCloseTo(Math.SQRT1_2, 5) // new row 0 = old row 2 = normalize([1,1])
+    expect(s.searchTopK([1, 0], 1)[0].row).toBe(1)    // old row 0 ([1,0]) → new row 1
+  })
+  it('drops out-of-range and duplicate rows safely', () => {
+    const s = new VectorStore(2)
+    s.add([1, 0]); s.add([0, 1])
+    const remap = s.compact([0, 0, 99, -1]) // duplicate 0, out-of-range 99/-1
+    expect(s.size).toBe(1)
+    expect(remap.get(0)).toBe(0)
+  })
+})

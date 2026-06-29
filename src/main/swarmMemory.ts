@@ -422,8 +422,10 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       if (r !== undefined) rowToEntry.delete(r) // its packed row is now dead
     }
   }
-  // Trims leave orphaned vectors behind; rebuild from disk once they pile up.
-  if (vectorStore.size - rowToEntry.size > maxEntries) reloadFrom(shardFiles())
+  // BB10: trims leave orphaned vectors; compact them out IN MEMORY (no disk re-read)
+  // once they exceed ~45% of the store, replacing the old full reloadFrom.
+  const orphans = vectorStore.size - rowToEntry.size
+  if (orphans > 0 && orphans / vectorStore.size > 0.45 && !hnswBuilding) compactVectorStore()
 
   bumpSearchGen() // a new entry invalidates cached searches
 
@@ -485,6 +487,34 @@ function rebuildVectorIndex(): void {
   for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
   hnswStale = vectorStore.size >= hnswThreshold
 }
+
+// BB10: compact orphaned vectors out of the packed store IN MEMORY, remapping the
+// row↔entry maps. The HNSW graph indexes by row, so it must be discarded (file +
+// memory): entriesFingerprint is unchanged by compaction, so leaving the file would
+// make the next launch load the OLD-row graph against the remapped store (silent
+// mis-scoring). The yielded ensureHnsw rebuilds it on the next large search.
+function compactVectorStore(): void {
+  if (hnswBuilding) return // never compact mid-build — rows would shift under it
+  const live: number[] = []
+  const liveEntries: MemoryEntry[] = []
+  for (const e of entries) {
+    const r = entryRow.get(e)
+    if (r !== undefined && rowToEntry.get(r) === e) { live.push(r); liveEntries.push(e) }
+  }
+  const remap = vectorStore.compact(live)
+  rowToEntry.clear()
+  for (let i = 0; i < liveEntries.length; i++) {
+    const nr = remap.get(live[i])
+    if (nr === undefined) continue
+    rowToEntry.set(nr, liveEntries[i])
+    entryRow.set(liveEntries[i], nr) // overwrite the stale row
+  }
+  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  hnsw = null
+  hnswStale = vectorStore.size >= hnswThreshold
+}
+
+export function _vectorStoreSizeForTests(): number { return vectorStore.size }
 
 // Ensure an HNSW graph exists for the current (large) store, WITHOUT blocking the
 // caller. Below the threshold there's no graph (brute-force is fast). On disk a

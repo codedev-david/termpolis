@@ -101,6 +101,29 @@ export class VectorStore {
   /** Reset to empty (keeps the backing allocation for reuse). */
   clear(): void { this.count = 0 }
 
+  /**
+   * BB10: compact the store down to `liveRows` (in the given order), dropping the
+   * orphaned vectors left behind by trims/deletes. Returns an old-row → new-row remap
+   * so the caller can fix its row↔entry maps. Stays Float32 (full precision) for the
+   * subsequent graph rebuild. Bounds steady-state RAM to ~live size with no disk read.
+   */
+  compact(liveRows: number[]): Map<number, number> {
+    const remap = new Map<number, number>()
+    const cap = Math.max(1, liveRows.length)
+    const fresh = new Float32Array(cap * this.dim)
+    let next = 0
+    for (const oldRow of liveRows) {
+      if (oldRow < 0 || oldRow >= this.count || remap.has(oldRow)) continue
+      fresh.set(this.data.subarray(oldRow * this.dim, (oldRow + 1) * this.dim), next * this.dim)
+      remap.set(oldRow, next)
+      next++
+    }
+    this.data = fresh
+    this.capacity = cap
+    this.count = next
+    return remap
+  }
+
   private ensure(n: number): void {
     if (n <= this.capacity) return
     let cap = this.capacity
