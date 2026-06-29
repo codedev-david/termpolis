@@ -125,3 +125,53 @@ describe('VectorStore.compact (BB10)', () => {
     expect(remap.get(0)).toBe(0)
   })
 })
+
+describe('VectorStore int8 quantization (BB8)', () => {
+  const rng = (seed: number) => { let s = seed >>> 0; return () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
+  const randUnit = (dim: number, r: () => number) => { const v = new Array(dim); let n = 0; for (let i = 0; i < dim; i++) { v[i] = r() * 2 - 1; n += v[i] * v[i] } n = Math.sqrt(n) || 1; for (let i = 0; i < dim; i++) v[i] /= n; return v }
+
+  it('reports quantized state; float store is the default (gated by the explicit flag)', () => {
+    expect(new VectorStore(4).quantized).toBe(false)
+    expect(new VectorStore(4, 1024, { quantize: true }).quantized).toBe(true)
+  })
+
+  it('int8 searchTopK matches the exact float store on recall@10 (merge gate)', () => {
+    const dim = 32, N = 300, r = rng(7)
+    const vecs = Array.from({ length: N }, () => randUnit(dim, r))
+    const f = new VectorStore(dim, 64), q8 = new VectorStore(dim, 64, { quantize: true })
+    for (const v of vecs) { f.add(v); q8.add(v) }
+    const qr = rng(99)
+    let hit = 0, total = 0
+    for (let t = 0; t < 20; t++) {
+      const query = randUnit(dim, qr)
+      const truth = new Set(f.searchTopK(query, 10).map(x => x.row))
+      for (const x of q8.searchTopK(query, 10)) { total++; if (truth.has(x.row)) hit++ }
+    }
+    expect(hit / total).toBeGreaterThan(0.9)
+  })
+
+  it('int8 384-dim path finds the exact match (merge gate)', () => {
+    const dim = 384, r = rng(3)
+    const vecs = Array.from({ length: 100 }, () => randUnit(dim, r))
+    const q8 = new VectorStore(dim, 16, { quantize: true })
+    for (const v of vecs) q8.add(v)
+    expect(q8.searchTopK(vecs[42], 1)[0].row).toBe(42)
+  })
+
+  it('int8 get() dequantizes to an approximate vector (~2dp)', () => {
+    const q8 = new VectorStore(2, 16, { quantize: true })
+    const row = q8.add([3, 4]) // normalizes to [0.6, 0.8]
+    const v = q8.get(row)!
+    expect(v[0]).toBeCloseTo(0.6, 2)
+    expect(v[1]).toBeCloseTo(0.8, 2)
+  })
+
+  it('int8 compact preserves the quantized store', () => {
+    const q8 = new VectorStore(2, 16, { quantize: true })
+    q8.add([1, 0]); q8.add([0, 1]); q8.add([1, 1])
+    q8.compact([2, 0])
+    expect(q8.size).toBe(2)
+    expect(q8.quantized).toBe(true)
+    expect(q8.searchTopK([1, 0], 1)[0].row).toBe(1) // old row 0 -> new row 1
+  })
+})
