@@ -93,6 +93,7 @@ export function _resetEmbedderForTests(): void {
   loadFailed = false
   injectedOrt = null
   assetDirResolver = null
+  resetWorker()
 }
 
 /** True once a backend has been loaded/injected and is usable. */
@@ -231,6 +232,63 @@ export async function embedText(text: string, opts?: EmbedOptions): Promise<numb
   return out[0] ?? null
 }
 
+// BB11: optional off-main-thread embedding. A worker_thread keeps the ORT session warm
+// and embeds ONE text per message, so per-chunk forward passes during background ingest
+// don't stall the Electron main thread. The transport is INJECTABLE (vitest exercises the
+// spawn/timeout/fallback orchestration without a real worker); when no spawner is set the
+// in-process path runs unchanged. Any spawn/timeout/failure disables the worker and falls
+// back to in-process, then keyword.
+export interface WorkerTransport {
+  embed: (text: string) => Promise<number[] | null>
+  dispose?: () => void
+}
+let workerTransport: WorkerTransport | null = null
+let workerTried = false
+let workerSpawner: (() => WorkerTransport | null) | null = null
+const WORKER_TIMEOUT_MS = 10_000
+
+/** Set the worker spawner (the app wires this to a real worker_thread; tests inject a mock). */
+export function setWorkerSpawner(fn: (() => WorkerTransport | null) | null): void {
+  workerSpawner = fn
+  workerTransport = null
+  workerTried = false
+}
+
+function resetWorker(): void {
+  try { workerTransport?.dispose?.() } catch { /* ignore */ }
+  workerTransport = null
+  workerTried = false
+  workerSpawner = null
+}
+
+async function ensureWorker(): Promise<WorkerTransport | null> {
+  if (workerTried) return workerTransport
+  workerTried = true
+  try { workerTransport = workerSpawner ? workerSpawner() : null } catch { workerTransport = null }
+  return workerTransport
+}
+
+/** Embed one (already-prepared) text via the worker, with a timeout. `ok=false` means
+ *  the worker is unavailable/failed and the caller must fall back to in-process. */
+async function tryWorkerEmbed(text: string): Promise<{ ok: boolean; vec: number[] | null }> {
+  const w = await ensureWorker()
+  if (!w) return { ok: false, vec: null }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const vec = await Promise.race([
+      w.embed(text),
+      new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('worker timeout')), WORKER_TIMEOUT_MS) }),
+    ])
+    return { ok: true, vec }
+  } catch {
+    try { w.dispose?.() } catch { /* ignore */ }
+    workerTransport = null // disable on failure/timeout → fall back to in-process
+    return { ok: false, vec: null }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 /**
  * BB12: length-bucket texts into sub-batches bounded by total ESTIMATED tokens
  * (~chars/4) and a hard count cap, so one backend run can't become a multi-hundred-
@@ -264,6 +322,19 @@ export function bucketByTokens(texts: string[], maxTokens = 1024, maxCount = 16)
 export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<(number[] | null)[]> {
   if (!Array.isArray(texts) || texts.length === 0) return []
   const prepared = opts?.isQuery ? texts.map((t) => QUERY_PREFIX + t) : texts
+  // BB11: try the off-thread worker first (single-text protocol). If it embeds every
+  // text we're done; any miss disables it for this call and we use the in-process path.
+  const worker = await ensureWorker()
+  if (worker) {
+    const out: (number[] | null)[] = []
+    let ok = true
+    for (const p of prepared) {
+      const r = await tryWorkerEmbed(p)
+      if (!r.ok) { ok = false; break }
+      out.push(r.vec)
+    }
+    if (ok) return out
+  }
   const be = await getBackend()
   if (!be) return texts.map(() => null)
   const out: (number[] | null)[] = new Array(texts.length).fill(null)

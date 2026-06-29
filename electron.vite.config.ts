@@ -18,6 +18,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
+          // BB11: embedding worker_thread — a second main-process entry, emitted next to
+          // index.js so it can be spawned off the UI thread for ONNX inference.
+          embedWorker: resolve(__dirname, 'src/main/embedWorker.ts'),
         },
       },
     },

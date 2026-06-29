@@ -51,6 +51,7 @@ export default defineConfig({
         'src/renderer/src/lib/sentry.ts',
         'src/main/sentry.ts',
         'src/main/autoUpdater.ts',
+        'src/main/embedWorker.ts', // BB11: worker_thread + real spawner — integration, exercised in-app not in vitest
         'src/renderer/src/lib/terminalDefaults.ts',
         'src/renderer/src/lib/outputPatterns.ts',
         'src/renderer/src/lib/homedir.ts',

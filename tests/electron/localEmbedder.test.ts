@@ -7,6 +7,7 @@ import {
   embedText,
   embedBatch,
   bucketByTokens,
+  setWorkerSpawner,
   isEmbedderReady,
   _setBackendForTests,
   _setOrtForTests,
@@ -308,5 +309,37 @@ describe('bucketByTokens (BB12)', () => {
     // the order-preservation contract must hold regardless of bucketing.
     const out = await embedBatch(['a', 'b', 'c'])
     expect(out).toEqual([[1, 0], [0, 1], [1, 1]])
+  })
+})
+
+describe('worker-backed embedding orchestration (BB11)', () => {
+  afterEach(() => setWorkerSpawner(null))
+
+  it('uses the injected worker when a spawner is set and it succeeds', async () => {
+    const workerEmbed = vi.fn(async (text: string) => [text.length, 0, 0])
+    setWorkerSpawner(() => ({ embed: workerEmbed }))
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [999, 999, 999])) // in-process would differ
+    const out = await embedBatch(['abc'])
+    expect(out).toEqual([[3, 0, 0]]) // from the worker (len 3), not the in-process backend
+    expect(workerEmbed).toHaveBeenCalledWith('abc')
+  })
+
+  it('falls back to the in-process backend when the worker embed fails', async () => {
+    setWorkerSpawner(() => ({ embed: async () => { throw new Error('worker boom') } }))
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [7, 7, 7]))
+    expect(await embedBatch(['abc'])).toEqual([[7, 7, 7]])
+  })
+
+  it('with no spawner set, uses the in-process backend (byte-identical default)', async () => {
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [1, 2, 3]))
+    expect(await embedBatch(['x'])).toEqual([[1, 2, 3]])
+  })
+
+  it('applies the query prefix before sending text to the worker', async () => {
+    const seen: string[] = []
+    setWorkerSpawner(() => ({ embed: async (t) => { seen.push(t); return [0] } }))
+    await embedBatch(['hello'], { isQuery: true })
+    expect(seen[0]).not.toBe('hello')
+    expect(seen[0].endsWith('hello')).toBe(true) // QUERY_PREFIX was prepended
   })
 })
