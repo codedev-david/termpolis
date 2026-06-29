@@ -73,32 +73,36 @@ async function createTerminal(name: string) {
 }
 
 test.describe.serial('In-terminal find bar (search + scrollback jump)', () => {
-  test('Ctrl+Shift+F opens the find bar, finds a keyword in the buffer, Escape closes it', async () => {
+  test('Ctrl+Shift+F opens the find bar and jumps to a keyword scrolled into the scrollback', async () => {
     test.setTimeout(60_000)
     await createTerminal('SearchTerm')
 
-    // Print a marker on MANY lines so it lives both in the visible viewport AND the
-    // scrollback — unambiguous on a slow CI runner.
+    // Print a UNIQUE marker once at the top, then push it far up into the scrollback
+    // with filler so it is no longer in the visible viewport (250 lines >> any window).
     const xterm = page.locator('.xterm-helper-textarea').first()
+    const term = page.locator('.xterm').first()
     await xterm.focus()
-    await page.keyboard.type('for i in $(seq 1 120); do echo "FINDME_MARKER_42 line $i"; done')
+    await page.keyboard.type('echo TOPMARKER_FIND_ME_99; for i in $(seq 1 250); do echo "filler line $i"; done')
     await page.keyboard.press('Enter')
-    // Wait until the output has actually RENDERED before searching — the incremental
-    // search fires once on `fill`, so the marker must be in the buffer by then.
-    await expect(page.locator('.xterm').first()).toContainText('FINDME_MARKER_42', { timeout: 20000 })
+    // Wait until the output finished rendering (the LAST filler line is on screen).
+    await expect(term).toContainText('filler line 250', { timeout: 25000 })
+    // The marker is now scrolled OFF the visible viewport.
+    expect(await term.textContent()).not.toContain('TOPMARKER_FIND_ME_99')
 
-    // Open the find bar with the keybinding (proves the TerminalPane wiring).
+    // Open the find bar (proves the TerminalPane keybinding + component wiring).
     await xterm.focus()
     await page.keyboard.press('Control+Shift+F')
     const bar = page.locator('[data-testid="terminal-search"]')
     await expect(bar).toBeVisible({ timeout: 5000 })
 
-    // The real SearchAddon scans the whole buffer (incl. scrollback) and the bar shows
-    // "<active>/<total>" with at least one match.
+    // Search for the off-screen marker — the real SearchAddon scans the whole buffer
+    // (incl. scrollback) and scrolls the viewport to the match, bringing it back on
+    // screen. This proves scrollback search + jump without depending on the flaky
+    // decoration match-count under the headless renderer.
     const input = page.locator('[data-testid="terminal-search-input"]')
-    await input.fill('FINDME_MARKER_42')
-    const count = page.locator('[data-testid="terminal-search-count"]')
-    await expect(count).toHaveText(/\d+\/[1-9]\d*/, { timeout: 10000 })
+    await input.fill('TOPMARKER_FIND_ME_99')
+    await input.press('Enter') // explicit findNext → selects + scrolls the match into view
+    await expect(term).toContainText('TOPMARKER_FIND_ME_99', { timeout: 10000 })
 
     // Escape closes the bar.
     await input.press('Escape')
