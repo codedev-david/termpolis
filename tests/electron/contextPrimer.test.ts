@@ -75,6 +75,21 @@ describe('buildContextPrimer', () => {
     expect(out).not.toContain('noise gamma')
   })
 
+  it('QW2: trims on a relevance cliff — injects the strong cluster, not the whole tail above the static floor', async () => {
+    const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
+    // All six clear the old static 0.25 floor, so a FIXED gate would inject all six.
+    // The adaptive gate's dynamic cut (0.6 * topScore = 0.54) keeps only the strong cluster.
+    const search = vi.fn().mockResolvedValue([
+      mk('strong one', 0.9), mk('strong two', 0.85), mk('strong three', 0.6),
+      mk('weakish four', 0.5), mk('weakish five', 0.45), mk('weakish six', 0.4),
+    ])
+    const out = await buildContextPrimer(search, { query: 'q' })
+    expect(out).toContain('strong one')
+    expect(out).toContain('strong three')
+    expect(out).not.toContain('weakish four')
+    expect(out).not.toContain('weakish six')
+  })
+
   it('never starves — keeps a floor of hits even when all are low-relevance', async () => {
     const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
     const search = vi.fn().mockResolvedValue([

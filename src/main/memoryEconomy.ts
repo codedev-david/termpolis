@@ -32,6 +32,28 @@ export function gateByScore<T extends Scored>(
   return sorted.slice(0, Math.min(keepCount, opts.cap))
 }
 
+/**
+ * Adaptive relevance gate: like {@link gateByScore} but the cutoff scales to THIS
+ * query's result quality instead of a single fixed bar. Keep hits scoring at least
+ * `max(absoluteFloor, max(0, topScore) * relFrac)` — so a query that returns one
+ * great hit and a long mediocre tail injects just the strong cluster, while a query
+ * whose best hit is weak falls back to the absolute noise floor. The keep-at-least-
+ * `floor` valve and the `cap` are retained so recall never starves and never floods.
+ * `topScore` is clamped ≥ 0 so a negative-cosine top hit can't push the threshold
+ * negative and filter out the very best result. Output sorted by score desc.
+ */
+export function adaptiveGate<T extends Scored>(
+  hits: T[],
+  opts: { floor: number; cap: number; relFrac: number; absoluteFloor: number },
+): T[] {
+  const sorted = [...hits].sort((a, b) => b.score - a.score)
+  const topScore = sorted.length ? sorted[0].score : 0
+  const threshold = Math.max(opts.absoluteFloor, Math.max(0, topScore) * opts.relFrac)
+  const above = sorted.filter((h) => h.score >= threshold).length
+  const keepCount = Math.max(above, Math.min(opts.floor, sorted.length))
+  return sorted.slice(0, Math.min(keepCount, opts.cap))
+}
+
 export interface RankInput {
   relevance: number          // base 0..1 similarity / keyword score
   ts: number                 // entry timestamp (ms)

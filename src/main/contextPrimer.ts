@@ -16,7 +16,7 @@
 // formatting mirrors the cross-AI handoff prompt: no backticks (AI shells often
 // treat them as command substitution), simple dividers, single-line snippets.
 
-import { gateByScore, dedupeHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { adaptiveGate, dedupeHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 
 export interface PrimerHit {
   content: string
@@ -51,6 +51,10 @@ const CANDIDATE_FACTOR = 4
 // us under the floor (so a thin recall never starves the agent of context).
 const MIN_RELEVANCE = 0.25
 const RELEVANCE_FLOOR = 3
+// Per-query relevance cliff: a hit must score within this fraction of the top hit
+// to clear the gate (in addition to the absolute MIN_RELEVANCE floor). This is
+// what trims "inject 6" down to "inject 3-4" when results fall off a cliff.
+const RELEVANCE_REL_FRAC = 0.6
 
 // Estimated cost of the last primer built — the measurable "how much did we inject"
 // number the Memory panel / accounting reads. Zero until the first successful build.
@@ -76,7 +80,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // drop exact duplicates. This is "inject signal, not noise" — the token-saver.
   const candidateLimit = Math.min(Math.max(limit * CANDIDATE_FACTOR, limit), 100)
   const gate = (hits: PrimerHit[]): PrimerHit[] =>
-    dedupeHits(gateByScore(hits, { minScore: MIN_RELEVANCE, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit }))
+    dedupeHits(adaptiveGate(hits, { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit }))
 
   let projectHits: PrimerHit[] = []
   if (project) {

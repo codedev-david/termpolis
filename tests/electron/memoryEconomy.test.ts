@@ -8,6 +8,7 @@ import {
   summarizePrimerCost,
   rankScore,
   RANK_DEFAULTS,
+  adaptiveGate,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -177,6 +178,38 @@ describe('memoryEconomy', () => {
       expect(RANK_DEFAULTS.halfLifeMs).toBe(30 * DAY)
       expect(RANK_DEFAULTS.kindPriors.decision).toBe(1.15)
       expect(RANK_DEFAULTS.kindPriors.fact).toBe(1.15)
+    })
+  })
+
+  describe('adaptiveGate — per-query dynamic relevance cut (keep the cluster near the top)', () => {
+    const mk = (...scores: number[]) => scores.map((score, i) => ({ score, id: String(i) }))
+
+    it('trims to the cluster above the relative cliff (relFrac * topScore)', () => {
+      // top 0.9 → threshold max(0.25, 0.54) = 0.54 → keeps 0.9, 0.85, 0.6 only
+      expect(adaptiveGate(mk(0.9, 0.85, 0.6, 0.5, 0.45, 0.4), { floor: 1, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
+        .toEqual([0.9, 0.85, 0.6])
+    })
+    it('falls back to the absolute floor when the top score is weak', () => {
+      // top 0.3 → 0.6*0.3 = 0.18 < 0.25 → threshold 0.25 → keeps 0.3, 0.28
+      expect(adaptiveGate(mk(0.3, 0.28, 0.2, 0.1), { floor: 1, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
+        .toEqual([0.3, 0.28])
+    })
+    it('never starves — keeps at least `floor` even past a steep cliff', () => {
+      // top 0.9 → threshold 0.54 → only 0.9 qualifies, but floor 3 keeps the top 3
+      expect(adaptiveGate(mk(0.9, 0.1, 0.08, 0.05), { floor: 3, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
+        .toEqual([0.9, 0.1, 0.08])
+    })
+    it('caps the result even when many clear the dynamic threshold', () => {
+      expect(adaptiveGate(mk(0.9, 0.88, 0.86, 0.84, 0.82), { floor: 1, cap: 2, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
+        .toEqual([0.9, 0.88])
+    })
+    it('clamps a negative top score so the floor still surfaces the best hit (never a negative threshold)', () => {
+      const out = adaptiveGate(mk(-0.1, -0.3, -0.5), { floor: 1, cap: 10, relFrac: 0.6, absoluteFloor: 0 })
+      expect(out.map(h => h.score)).toEqual([-0.1])
+    })
+    it('sorts by score desc and returns [] for empty input', () => {
+      expect(adaptiveGate(mk(0.2, 0.9, 0.5), { floor: 0, cap: 10, relFrac: 0, absoluteFloor: 0 }).map(h => h.score)).toEqual([0.9, 0.5, 0.2])
+      expect(adaptiveGate([], { floor: 3, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 })).toEqual([])
     })
   })
 })
