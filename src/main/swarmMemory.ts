@@ -5,6 +5,7 @@ import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
+import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated } from './memoryEconomy'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
@@ -270,6 +271,8 @@ export function _resetForTests(): void {
   embedOverride = null
   searchGen = 0
   searchCache.clear()
+  lexicalIndex.clear()
+  graphFusionEnabled = false
   _resetGraphForTests()
 }
 
@@ -405,12 +408,14 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   // embedding) so the write contract still exposes it.
   const stored: MemoryEntry = { ...entry }
   indexEntryVector(stored)
+  lexicalIndex.add(stored.id, stored.content) // BB1: keep the lexical index in sync
   entries.push(stored)
   if (stored.hash) seenHashes.add(stored.hash)
   if (entries.length > maxEntries) {
     const dropped = entries.shift()
     if (dropped) {
       if (dropped.hash) seenHashes.delete(dropped.hash)
+      lexicalIndex.remove(dropped.id)
       const r = entryRow.get(dropped)
       if (r !== undefined) rowToEntry.delete(r) // its packed row is now dead
     }
@@ -474,7 +479,8 @@ function rebuildVectorIndex(): void {
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
   hnsw = null
-  for (const e of entries) indexEntryVector(e)
+  lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
+  for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
   hnswStale = vectorStore.size >= hnswThreshold
 }
 
@@ -597,6 +603,12 @@ function bumpSearchGen(): void { searchGen++ }
 // illusory). When off, memorySearch is byte-identical to the pre-BB7 behavior.
 let graphFusionEnabled = false
 export function _setGraphFusionForTests(v: boolean): void { graphFusionEnabled = v; bumpSearchGen() }
+
+// BB1: BM25 lexical index maintained beside the vector store — the exact-token half
+// of hybrid retrieval and the graceful-degrade signal when the embedder is down.
+const lexicalIndex = new LexicalIndex()
+// Saturate unbounded BM25 into 0..1 for the calibrated fusion: bm25 / (bm25 + K).
+const LEX_SAT_K = 1
 function searchCacheKey(o: SearchOptions, limit: number): string {
   return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}`
 }
@@ -662,6 +674,36 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     }
   } else {
     for (const entry of pool) scored.push({ ...entry, score: keywordScore(opts.query, entry.content) })
+  }
+
+  // BB1: fuse the dense ranking with a BM25 lexical signal so exact tokens (paths,
+  // symbols, error codes, CLI flags) that bge blurs are recalled — and the lexical
+  // index is the graceful-degrade path when the embedder is down. The score stays a
+  // calibrated 0..1 (soft-OR of dense + saturated BM25), so the adaptiveGate /
+  // gateByScore 0.25-floor contract still holds.
+  if (lexicalIndex.size > 0) {
+    const byId = new Map<string, MemorySearchResult>()
+    for (const s of scored) byId.set(s.id, s)
+    let entriesById: Map<string, MemoryEntry> | null = null
+    const resolve = (id: string): MemoryEntry | undefined => {
+      if (!entriesById) entriesById = new Map(entries.map(e => [e.id, e]))
+      return entriesById.get(id)
+    }
+    const candidateN = Math.min(Math.max(limit * 4, limit), 100)
+    const lexHits = lexicalIndex.search(opts.query, candidateN, (id) => {
+      const e = resolve(id)
+      return e ? passesFilter(e, opts) : false
+    })
+    for (const lh of lexHits) {
+      const lexSat = lh.score / (lh.score + LEX_SAT_K)
+      const existing = byId.get(lh.id)
+      if (existing) {
+        existing.score = 1 - (1 - existing.score) * (1 - lexSat) // soft-OR boost (in place)
+      } else {
+        const e = resolve(lh.id)
+        if (e) { const hit: MemorySearchResult = { ...e, score: lexSat }; byId.set(lh.id, hit); scored.push(hit) }
+      }
+    }
   }
 
   // QW1: fuse relevance with recency + per-kind importance. Decorate ONCE per
@@ -867,6 +909,7 @@ export function memoryClear(): void {
   seenHashes.clear()
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
+  lexicalIndex.clear()
   hnsw = null
   hnswStale = false
   try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
@@ -893,6 +936,7 @@ export function memoryDelete(id: string): void {
       if (r !== undefined) rowToEntry.delete(r)
     }
   }
+  lexicalIndex.remove(id)
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete')
 }

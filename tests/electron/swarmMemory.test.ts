@@ -35,6 +35,7 @@ import {
   memoryLink,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
+import { gateByScore } from '../../src/main/memoryEconomy'
 
 // Opt-in gate for the wall-clock event-loop responsiveness test. It measures real
 // timing while a large graph builds, so its duration swings ~7x between a fast dev
@@ -263,6 +264,42 @@ describe('rank fusion (QW1: recency + per-kind importance)', () => {
     // token-overlap decision — the 1.15 kind prior only breaks near-ties, never overrides.
     const results = await memorySearch({ query: 'widget widget widget exact widget match' })
     expect(results[0].kind).toBe('message')
+  })
+})
+
+describe('hybrid lexical+dense retrieval (BB1)', () => {
+  it('surfaces an exact-token match that the dense vector ranking misses', async () => {
+    // Entry indexed with vec384(1); the query embeds to an orthogonal vec384(2) → its
+    // dense cosine is 0 (would be filtered out). BM25 fusion surfaces it on the token.
+    _setEmbedFnForTests(async () => vec384(1))
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'this note contains rareToken as an exact identifier' })
+    _setEmbedFnForTests(async () => vec384(2)) // query vector orthogonal to the entry
+    const hits = await memorySearch({ query: 'rareToken', limit: 5 })
+    expect(hits.some(h => h.content.includes('rareToken'))).toBe(true)
+  })
+
+  it('fused scores stay in (0,1] so the gateByScore/adaptiveGate contract holds (BLOCKING fix)', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'deploy kubernetes docker pipeline runbook steps' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'kubernetes notes only one token match' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'totally unrelated content about lunch' })
+    const hits = await memorySearch({ query: 'deploy kubernetes docker' })
+    expect(hits.length).toBeGreaterThan(0)
+    for (const h of hits) {
+      expect(h.score).toBeGreaterThan(0)
+      expect(h.score).toBeLessThanOrEqual(1) // RRF would have blown past 1; soft-OR keeps it calibrated
+    }
+    // The real fused output flows through the existing relevance gate unchanged.
+    const gated = gateByScore(hits, { minScore: 0.25, floor: 3, cap: 10 })
+    expect(gated.length).toBeGreaterThan(0)
+    expect(gated.every(h => h.score > 0 && h.score <= 1)).toBe(true)
+  })
+
+  it('is the graceful-degrade path when the embedder is down (keyword/BM25 still ranks)', async () => {
+    _setEmbeddingsAvailable(false)
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'authentication middleware validates the jwt' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'unrelated billing invoice logic' })
+    const hits = await memorySearch({ query: 'authentication jwt' })
+    expect(hits[0].content).toContain('authentication')
   })
 })
 
