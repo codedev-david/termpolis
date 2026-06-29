@@ -358,6 +358,56 @@ describe('runConversationIngest', () => {
     }
   })
 
+  it('BB6: links consecutive same-session chunks with a "follows" edge', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-follows-'))
+    try {
+      const proj = path.join(root, 'p')
+      fs.mkdirSync(proj)
+      const a = 'alpha '.repeat(80) // ~480 chars → its own chunk at maxChars 500
+      const b = 'bravo '.repeat(80)
+      fs.writeFileSync(path.join(proj, 's.jsonl'),
+        `{"sessionId":"sess-1","type":"user","message":{"role":"user","content":"${a}"}}\n` +
+        `{"sessionId":"sess-1","type":"user","message":{"role":"user","content":"${b}"}}\n`)
+      let n = 0
+      const links: Array<[string, string, string, number]> = []
+      const memory: IngestMemory = {
+        hasHash: () => false,
+        write: async () => ({ id: `id-${n++}` }),
+        link: (from, to, relation, weight) => { links.push([from, to, relation, weight]) },
+      }
+      const stats = await runConversationIngest(memory, { sources: ['claude'] as const, roots: { claude: root }, chunkOptions: { maxChars: 500 } })
+      expect(stats.chunksWritten).toBe(2)
+      expect(links).toEqual([['id-0', 'id-1', 'follows', 1]]) // chunk 0 -> chunk 1, same session
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('BB6: does not link across different sessions, and no-ops without a link callback', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-follows-x-'))
+    try {
+      const p1 = path.join(root, 'a'); const p2 = path.join(root, 'b')
+      fs.mkdirSync(p1); fs.mkdirSync(p2)
+      fs.writeFileSync(path.join(p1, 's.jsonl'), `{"sessionId":"sess-A","type":"user","message":{"role":"user","content":"one only chunk here"}}\n`)
+      fs.writeFileSync(path.join(p2, 's.jsonl'), `{"sessionId":"sess-B","type":"user","message":{"role":"user","content":"another single chunk"}}\n`)
+      let n = 0
+      const links: unknown[] = []
+      const memory: IngestMemory = {
+        hasHash: () => false,
+        write: async () => ({ id: `id-${n++}` }),
+        link: (...args) => { links.push(args) },
+      }
+      await runConversationIngest(memory, { sources: ['claude'] as const, roots: { claude: root } })
+      expect(links).toEqual([]) // one chunk per session → nothing to follow
+
+      // And the linking path is fully optional — omitting `link` must not throw.
+      const memNoLink: IngestMemory = { hasHash: () => false, write: async () => ({ id: 'x' }) }
+      await expect(runConversationIngest(memNoLink, { sources: ['claude'] as const, roots: { claude: root } })).resolves.toBeDefined()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('tags writes with the project slug derived from the transcript cwd', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-proj-'))
     try {

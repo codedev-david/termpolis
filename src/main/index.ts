@@ -1045,7 +1045,7 @@ ipcMain.handle('memory:stats', () => ok(memoryStats()))
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
-    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects })
+    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -1605,7 +1605,7 @@ if (!gotTheLock) {
         // when cross-machine sync is off).
         try { reloadMemoryFromSync() } catch { /* best effort */ }
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite },
+          { hasHash: memoryHasHash, write: memoryWrite, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) },
           { maxChunks: 250 },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).

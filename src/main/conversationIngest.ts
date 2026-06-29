@@ -436,6 +436,10 @@ export interface IngestMemory {
   hasHash: (hash: string) => boolean
   write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
   patchProjects?: (patches: Array<{ hash: string; project: string }>) => void
+  /** BB6: optionally link each newly-written chunk to the previous one in the same
+   *  session with a 'follows' edge — a per-session temporal backbone for the
+   *  otherwise edge-less message chunks. Wired to memoryLink in the app. */
+  link?: (from: string, to: string, relation: string, weight: number) => void
 }
 
 // Compose real ingestion: discover on disk + dedup/write via the memory store.
@@ -444,6 +448,11 @@ export async function runConversationIngest(
   memory: IngestMemory,
   opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number } = {},
 ): Promise<IngestStats> {
+  // BB6: track the last-written chunk id per session so we can lay down a 'follows'
+  // edge between consecutive same-session chunks. Idempotent: already-stored chunks
+  // are skipped (this closure isn't called for them) and upsertEdge dedups repeats.
+  // A fresh map per run — cross-pass continuity isn't needed for the backbone.
+  const lastIdBySession = new Map<string, string>()
   return ingestConversations({
     sources: opts.sources,
     chunkOptions: opts.chunkOptions,
@@ -453,14 +462,21 @@ export async function runConversationIngest(
     hasHash: memory.hasHash,
     patchProjects: memory.patchProjects,
     write: async (chunk) => {
-      await memory.write({
+      const entry = (await memory.write({
         agentId: `${chunk.source}-history`,
         kind: 'message',
         content: chunk.text,
         source: chunk.source,
         hash: chunk.hash,
         ...(chunk.cwd && { project: chunk.cwd }), // store normalizes to a slug
-      })
+      })) as { id?: string } | null | undefined
+      const curId = entry?.id
+      const sid = chunk.sessionId
+      if (curId && sid) {
+        const prevId = lastIdBySession.get(sid)
+        if (prevId && memory.link) memory.link(prevId, curId, 'follows', 1)
+        lastIdBySession.set(sid, curId)
+      }
     },
   })
 }
