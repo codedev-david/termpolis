@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     dispose: vi.fn(),
     onData: vi.fn(),
     attachCustomKeyEventHandler: vi.fn(),
+    attachCustomWheelEventHandler: vi.fn(),
     getSelection: vi.fn(() => ''),
     clearSelection: vi.fn(),
     selectAll: vi.fn(),
@@ -27,6 +28,7 @@ const mocks = vi.hoisted(() => {
     rows: 24,
     buffer: {
       active: {
+        type: 'normal',
         length: mockBufferLines.length,
         viewportY: 0,
         cursorX: 0,
@@ -397,12 +399,15 @@ describe('TerminalPane', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    mocks.mockTerminal.buffer.active.type = 'normal'
   })
 
   describe('app mouse-control (mouse-tracking suppression)', () => {
     const lastCsiHandler = () => {
       const calls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls
-      return calls[calls.length - 1] as [{ prefix?: string; final: string }, (p: (number | number[])[]) => boolean]
+      // There are now multiple CSI handlers (h-observer, l-disable); find the 'h' one.
+      const h = [...calls].reverse().find((c) => c[0]?.final === 'h')
+      return h as [{ prefix?: string; final: string }, (p: (number | number[])[]) => boolean]
     }
 
     it('registers a CSI ? h handler that swallows mouse-tracking enables by default', () => {
@@ -432,6 +437,143 @@ describe('TerminalPane', () => {
       const [, cb] = lastCsiHandler()
       expect(cb([1002])).toBe(false) // app keeps the mouse
       expect(cb([25])).toBe(false)
+    })
+  })
+
+  // =====================================================
+  // 0b. Wheel-scroll forwarding to TUI apps on the alt screen
+  // =====================================================
+  describe('wheel-scroll forwarding', () => {
+    const hCsiHandler = () => {
+      const calls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls
+      const h = [...calls].reverse().find((c) => c[0]?.final === 'h')
+      return h?.[1] as (p: (number | number[])[]) => boolean
+    }
+    const wheelHandler = () => {
+      const calls = mocks.mockTerminal.attachCustomWheelEventHandler.mock.calls
+      return calls[calls.length - 1]?.[0] as (e: WheelEvent) => boolean
+    }
+    const wheel = (over: Partial<WheelEvent> = {}) =>
+      ({ deltaY: -100, deltaMode: 0, clientX: 0, clientY: 0, preventDefault: vi.fn(), ...over }) as unknown as WheelEvent
+
+    it('forwards the wheel to the app as SGR reports on the alternate screen', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const h = hCsiHandler()
+      h([1002]) // app enables button tracking (we swallow it to keep selection)
+      h([1006]) // app selects SGR encoding
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel({ deltaY: -100 }))
+
+      expect(handled).toBe(false) // xterm's own scroll is cancelled
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(1)
+      const [id, seq] = mockWriteToTerminal.mock.calls[0]
+      expect(id).toBe('term-1')
+      expect(seq).toContain('\x1b[<64;') // SGR wheel-UP report (button 64)
+    })
+
+    it('sends wheel-DOWN (button 65) when scrolling down', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const h = hCsiHandler()
+      h([1002]); h([1006])
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      wheelHandler()(wheel({ deltaY: 100 }))
+
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<65;')
+    })
+
+    it('does NOT forward (lets xterm scroll its scrollback) on the normal buffer', () => {
+      render(<TerminalPane {...defaultProps} />)
+      hCsiHandler()([1002])
+      mocks.mockTerminal.buffer.active.type = 'normal'
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel())
+
+      expect(handled).toBe(true)
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('does not forward when the app never requested the mouse', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel())
+
+      expect(handled).toBe(true)
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('ignores horizontal wheels (deltaY 0)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const h = hCsiHandler()
+      h([1002]); h([1006])
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel({ deltaY: 0, deltaX: 40 }))
+
+      expect(handled).toBe(true)
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('defers to native app mouse when the user allows app mouse control', () => {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        allowAppMouseControl: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel())
+
+      expect(handled).toBe(true)
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('maps the wheel position to a cell from the xterm screen geometry', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const h = hCsiHandler()
+      h([1002]); h([1006])
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      // Inject a fake xterm screen: 800px / 80 cols = 10px per col, 480px / 24 rows = 20px per row.
+      const xtermContainer = container.querySelector('.flex-1.relative')!
+      const screenEl = document.createElement('div')
+      screenEl.className = 'xterm-screen'
+      screenEl.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 800, height: 480, right: 800, bottom: 480, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+      xtermContainer.appendChild(screenEl)
+      mockWriteToTerminal.mockClear()
+
+      // clientX 80 -> col floor(80/10)+1 = 9; clientY 48 -> row floor(48/20)+1 = 3.
+      wheelHandler()(wheel({ deltaY: -48, deltaMode: 0, clientX: 80, clientY: 48 }))
+
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;9;3M')
+    })
+
+    it('stops forwarding after the app leaves the alternate screen (stale-flag guard)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const csiCalls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls
+      const l = [...csiCalls].reverse().find((c) => c[0]?.final === 'l')?.[1] as (p: (number | number[])[]) => boolean
+      hCsiHandler()([1002]) // a mouse app enabled tracking...
+      l([1049])             // ...then left the alt screen without disabling tracking (crash/exit)
+      mocks.mockTerminal.buffer.active.type = 'alternate' // a NEW non-mouse pager is now on alt
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel())
+
+      expect(handled).toBe(true) // defer to xterm; do NOT inject wheel reports into the pager
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
   })
 
@@ -1451,8 +1593,18 @@ describe('TerminalPane', () => {
       expect(screen.getByText('Copy')).toBeInTheDocument()
       expect(screen.getByText('Paste')).toBeInTheDocument()
       expect(screen.getByText('Select All')).toBeInTheDocument()
+      expect(screen.getByText('Find...')).toBeInTheDocument()
       expect(screen.getByText('Export Full Scrollback...')).toBeInTheDocument()
       expect(screen.getByText('Export Visible Output...')).toBeInTheDocument()
+    })
+
+    it('Find... in the context menu opens the in-terminal search bar', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      expect(screen.queryByTestId('terminal-search')).toBeNull()
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
+      fireEvent.click(screen.getByText('Find...'))
+      expect(screen.getByTestId('terminal-search')).toBeInTheDocument()
     })
 
     it('flips the menu UP when right-clicking near the viewport bottom (terminal line)', () => {

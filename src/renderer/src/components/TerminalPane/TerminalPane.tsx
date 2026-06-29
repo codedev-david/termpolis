@@ -10,7 +10,7 @@ import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
-import { suppressesMouseTracking } from '../../lib/mouseMode'
+import { suppressesMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { TerminalSearch, type TerminalSearchOptions } from '../TerminalSearch/TerminalSearch'
 import { v4 as uuid } from 'uuid'
@@ -189,6 +189,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const allowAppMouseControl = useTerminalStore(s => s.allowAppMouseControl)
   const allowAppMouseControlRef = useRef(allowAppMouseControl)
   allowAppMouseControlRef.current = allowAppMouseControl
+  // Remembers that a TUI app asked for the mouse (we swallowed it for selection)
+  // and which encoding it wants, so the wheel handler can forward scroll back to it.
+  const appWantedMouseRef = useRef(false)
+  const mouseEncodingRef = useRef<MouseEncoding>('x10')
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -415,9 +419,56 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // control: swallow mouse-tracking DECSET (CSI ? 1000-1003 h) so a click-drag
     // selects text — making right-click Copy work — instead of being captured by the
     // TUI app (Claude Code, vim, lazygit). Other private modes pass through untouched.
-    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) =>
-      allowAppMouseControlRef.current ? false : suppressesMouseTracking(params),
-    )
+    // We still REMEMBER that the app wanted the mouse + its encoding so the wheel
+    // handler below can forward scroll to it — otherwise swallowing tracking leaves
+    // the wheel dead on the alternate screen (which has no scrollback to fall back on).
+    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      if (requestsSgrMouseEncoding(params)) mouseEncodingRef.current = 'sgr'
+      if (allowAppMouseControlRef.current) return false
+      const swallow = suppressesMouseTracking(params)
+      if (swallow) appWantedMouseRef.current = true
+      return swallow
+    })
+    // Clear wheel-forwarding state when the app disables mouse tracking OR leaves the
+    // alternate screen (its session is ending). The alt-screen reset matters when a
+    // mouse app exits WITHOUT a tracking-disable (crash / no DECRST): otherwise the
+    // stale flag would make the next non-mouse pager (less, man, git) on the alt screen
+    // receive synthesized wheel reports as garbage instead of scrolling. Never swallow
+    // these — return false so xterm still processes them.
+    term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+      if (disablesMouseTracking(params) || exitsAltScreen(params)) {
+        appWantedMouseRef.current = false
+        mouseEncodingRef.current = 'x10'
+      }
+      return false
+    })
+    // Wheel forwarding. When we swallowed the app's mouse tracking AND it owns the
+    // screen (alternate buffer = no scrollback), synthesize wheel reports to the pty
+    // so the app scrolls its own content (e.g. Claude Code's transcript). On the
+    // normal buffer we return true and let xterm scroll its scrollback as before.
+    // Returning false cancels xterm's own wheel handling for the forwarded case.
+    term.attachCustomWheelEventHandler((ev: WheelEvent) => {
+      if (allowAppMouseControlRef.current) return true   // app already gets the mouse natively
+      if (!appWantedMouseRef.current) return true        // plain shell → xterm scrolls scrollback
+      if (ev.deltaY === 0) return true                   // ignore horizontal wheels
+      if (term.buffer.active.type !== 'alternate') return true // normal buffer has scrollback
+      const screenEl = containerRef.current?.querySelector('.xterm-screen') as HTMLElement | null
+      const rect = screenEl?.getBoundingClientRect()
+      const cellH = rect && term.rows > 0 ? rect.height / term.rows : 0
+      const cellW = rect && term.cols > 0 ? rect.width / term.cols : 0
+      const col = rect && cellW > 0 ? Math.floor((ev.clientX - rect.left) / cellW) + 1 : 1
+      const row = rect && cellH > 0 ? Math.floor((ev.clientY - rect.top) / cellH) + 1 : 1
+      const seq = buildWheelSequence({
+        direction: ev.deltaY < 0 ? 'up' : 'down',
+        lines: wheelNotchLines(ev.deltaY, ev.deltaMode, cellH, term.rows),
+        encoding: mouseEncodingRef.current,
+        col: Math.min(term.cols, Math.max(1, col)),
+        row: Math.min(term.rows, Math.max(1, row)),
+      })
+      if (seq) window.termpolis.writeToTerminal(terminalId, seq)
+      try { ev.preventDefault() } catch { /* passive listener — ignore */ }
+      return false
+    })
 
     // 2. Load FitAddon
     const fitAddon = new FitAddon()
@@ -1193,6 +1244,16 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               }}
             >
               Select All
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                setContextMenu({ visible: false, x: 0, y: 0 })
+                setSearchOpen(true)
+              }}
+              title="Search this terminal's output, including scrollback, and jump to matches."
+            >
+              Find...<span className="float-right text-[#999]">Ctrl+Shift+F</span>
             </button>
             <div className="border-t border-[#454545] my-1"></div>
             <button
