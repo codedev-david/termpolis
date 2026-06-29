@@ -6,7 +6,7 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { TtlLruCache, rankScore, mergeRelated } from './memoryEconomy'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -590,6 +590,13 @@ export interface SearchOptions {
 let searchGen = 0
 const searchCache = new TtlLruCache<MemorySearchResult[]>(128, 5 * 60 * 1000)
 function bumpSearchGen(): void { searchGen++ }
+
+// BB7: GraphRAG one-hop fusion in the hot retrieval path. Default OFF — the
+// mechanism is fully wired and tested, but the roadmap gates enabling it on a
+// measured recall delta vs a plain vector-limit bump (much auto-edge gain is
+// illusory). When off, memorySearch is byte-identical to the pre-BB7 behavior.
+let graphFusionEnabled = false
+export function _setGraphFusionForTests(v: boolean): void { graphFusionEnabled = v; bumpSearchGen() }
 function searchCacheKey(o: SearchOptions, limit: number): string {
   return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}`
 }
@@ -664,7 +671,23 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const now = Date.now()
   const ranked = scored.map(r => ({ r, k: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }) }))
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
-  const result = ranked.map(x => x.r).filter(r => r.score > 0).slice(0, limit)
+  let result = ranked.map(x => x.r).filter(r => r.score > 0).slice(0, limit)
+
+  // BB7: fold in graph-connected neighbours of the top results (off by default, and
+  // skipped when the graph is empty — byte-identical to the non-fused path then).
+  if (graphFusionEnabled && graphStats().edges > 0) {
+    const entriesById = new Map<string, MemoryEntry>(entries.map(e => [e.id, e]))
+    result = expandWithGraph(
+      result,
+      (id) => neighboursOf(id),
+      (id, score) => {
+        const e = entriesById.get(id)
+        return e && passesFilter(e, opts) ? { ...e, score } : null
+      },
+      { seeds: 5, tau: 0.1, lambda: 0.5, cap: limit },
+    ).slice(0, limit)
+  }
+
   searchCache.set(cacheKey, result)
   return result
 }
@@ -755,7 +778,11 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
 
 // Record a typed connection between two memories (agent-facing memory_link).
 export function memoryLink(input: { from: string; to: string; relation?: string; weight?: number; createdBy?: string }): MemoryEdge | null {
-  return addMemoryEdge(input)
+  const edge = addMemoryEdge(input)
+  // BB7: an explicit edge changes graph-fused results — invalidate the search cache
+  // so the new connection is reflected (auto-link writes already bump via memoryWrite).
+  if (edge) bumpSearchGen()
+  return edge
 }
 
 function keywordScore(query: string, content: string): number {

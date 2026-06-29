@@ -5,7 +5,7 @@ import * as path from 'path'
 import {
   normalizeRelation, upsertEdge, bfsTraverse,
   initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, graphStats, _resetGraphForTests,
-  effectiveWeight, EDGE_HALF_LIFE, invertRelation, neighboursOf,
+  effectiveWeight, EDGE_HALF_LIFE, invertRelation, neighboursOf, expandWithGraph,
   type MemoryEdge,
 } from '../../src/main/memoryGraph'
 
@@ -110,6 +110,60 @@ describe('memoryGraph — pure helpers', () => {
     })
     it('honors a custom half-life', () => {
       expect(effectiveWeight(1, 0, 10, 10)).toBeCloseTo(0.5, 10)
+    })
+  })
+
+  describe('expandWithGraph — GraphRAG one-hop fusion (BB7)', () => {
+    type Hit = { id: string; score: number; content: string }
+    const makeHit = (id: string, score: number): Hit => ({ id, score, content: id })
+
+    it('folds in a neighbour of a top seed with a lambda-discounted score', () => {
+      const out = expandWithGraph<Hit>(
+        [{ id: 'a', score: 1, content: 'a' }],
+        (id) => (id === 'a' ? [{ id: 'b', weight: 0.8 }] : []),
+        makeHit,
+        { lambda: 0.5, tau: 0.1, seeds: 5, cap: 5 },
+      )
+      expect(out.map(h => h.id)).toEqual(['a', 'b'])
+      expect(out.find(h => h.id === 'b')!.score).toBeCloseTo(1 * 0.8 * 0.5, 10) // 0.4
+    })
+    it('skips edges below tau and neighbours makeHit cannot resolve (trimmed/tombstoned)', () => {
+      const out = expandWithGraph<Hit>(
+        [{ id: 'a', score: 1, content: 'a' }],
+        () => [{ id: 'weak', weight: 0.05 }, { id: 'gone', weight: 0.9 }],
+        (id, score) => (id === 'gone' ? null : makeHit(id, score)),
+        {},
+      )
+      expect(out.map(h => h.id)).toEqual(['a'])
+    })
+    it('boosts an already-present hit only when the fused score is higher (boost-only)', () => {
+      const lower = expandWithGraph<Hit>(
+        [{ id: 'a', score: 1, content: 'a' }, { id: 'b', score: 0.9, content: 'b' }],
+        (id) => (id === 'a' ? [{ id: 'b', weight: 0.5 }] : []), // fused 0.25 < 0.9 → keep 0.9
+        makeHit, {},
+      )
+      expect(lower.find(h => h.id === 'b')!.score).toBeCloseTo(0.9, 10)
+      const higher = expandWithGraph<Hit>(
+        [{ id: 'a', score: 1, content: 'a' }, { id: 'b', score: 0.1, content: 'b' }],
+        (id) => (id === 'a' ? [{ id: 'b', weight: 1 }] : []), // fused 0.5 > 0.1 → boost
+        makeHit, {},
+      )
+      expect(higher.find(h => h.id === 'b')!.score).toBeCloseTo(0.5, 10)
+    })
+    it('only expands the top-`seeds` and caps the number added', () => {
+      const out = expandWithGraph<Hit>(
+        [{ id: 's1', score: 1, content: 's1' }, { id: 's2', score: 0.9, content: 's2' }],
+        (id) => (id === 's1' ? [{ id: 'n1', weight: 1 }, { id: 'n2', weight: 1 }] : [{ id: 'n3', weight: 1 }]),
+        makeHit, { seeds: 1, cap: 1 }, // only s1 expanded; only 1 neighbour added
+      )
+      expect(out.map(h => h.id).sort()).toEqual(['n1', 's1', 's2'])
+    })
+    it('returns the input re-sorted when nothing qualifies (byte-identical fusion)', () => {
+      const out = expandWithGraph<Hit>(
+        [{ id: 'a', score: 0.5, content: 'a' }, { id: 'b', score: 0.9, content: 'b' }],
+        () => [], makeHit, {},
+      )
+      expect(out.map(h => h.id)).toEqual(['b', 'a'])
     })
   })
 

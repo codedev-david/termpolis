@@ -31,6 +31,8 @@ import {
   _setHnswYieldMsForTests,
   _whenHnswSettledForTests,
   _isHnswReadyForTests,
+  _setGraphFusionForTests,
+  memoryLink,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
 
@@ -261,6 +263,43 @@ describe('rank fusion (QW1: recency + per-kind importance)', () => {
     // token-overlap decision — the 1.15 kind prior only breaks near-ties, never overrides.
     const results = await memorySearch({ query: 'widget widget widget exact widget match' })
     expect(results[0].kind).toBe('message')
+  })
+})
+
+describe('graph fusion in memorySearch (BB7, opt-in)', () => {
+  it('folds a graph-linked neighbour into results only when fusion is enabled', async () => {
+    const a = await memoryWrite({ agentId: 'x', kind: 'note', content: 'alpha topic anchor' })
+    const b = await memoryWrite({ agentId: 'x', kind: 'note', content: 'zzz unrelated neighbour text' })
+    memoryLink({ from: a.id, to: b.id, relation: 'relates-to', weight: 1 }) // B is graph-connected to A
+    try {
+      // Default OFF: only the keyword-matching A comes back (B scores 0 → filtered).
+      const off = await memorySearch({ query: 'alpha topic anchor' })
+      expect(off.some(r => r.id === a.id)).toBe(true)
+      expect(off.some(r => r.id === b.id)).toBe(false)
+
+      // ON: B is folded in one hop from the A->B edge (discounted score).
+      _setGraphFusionForTests(true)
+      const on = await memorySearch({ query: 'alpha topic anchor' })
+      expect(on.some(r => r.id === a.id)).toBe(true)
+      expect(on.some(r => r.id === b.id)).toBe(true)
+    } finally {
+      _setGraphFusionForTests(false)
+    }
+  })
+
+  it('an explicit memory_link invalidates the search cache (BB7 stale-cache fix)', async () => {
+    const a = await memoryWrite({ agentId: 'y', kind: 'note', content: 'cache anchor node' })
+    const b = await memoryWrite({ agentId: 'y', kind: 'note', content: 'qqq distinct neighbour body' })
+    try {
+      _setGraphFusionForTests(true)
+      const before = await memorySearch({ query: 'cache anchor node' }) // cached, no edge yet
+      expect(before.some(r => r.id === b.id)).toBe(false)
+      memoryLink({ from: a.id, to: b.id, relation: 'relates-to', weight: 1 }) // must bust the cache
+      const after = await memorySearch({ query: 'cache anchor node' })
+      expect(after.some(r => r.id === b.id)).toBe(true) // sees the new edge, not the stale cache
+    } finally {
+      _setGraphFusionForTests(false)
+    }
   })
 })
 

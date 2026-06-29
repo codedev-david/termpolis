@@ -253,6 +253,50 @@ export function graphStats(): { edges: number; nodes: number } {
   return { edges: edgeCount, nodes: adjacency.size }
 }
 
+/**
+ * BB7: GraphRAG one-hop fusion. After ranking, expand the top-`seeds` results one
+ * hop along the graph; a neighbour scores `seedScore * edgeWeight * lambda` (lambda
+ * capped at 0.5 so a fused neighbour never outranks a direct hit's full strength) and
+ * is folded in — deduped by id keeping the best score, only edges with weight >= tau,
+ * at most `cap` added. Pure: `neighbours` and `makeHit` are injected; `makeHit`
+ * returns null to SKIP a neighbour whose entry is gone (edges outlive trimmed/
+ * tombstoned entries) or fails the caller's filter. Byte-identical to `ranked` when
+ * no qualifying neighbour is found.
+ */
+export function expandWithGraph<T extends { id: string; score: number }>(
+  ranked: T[],
+  neighbours: (id: string) => Array<{ id: string; weight: number }>,
+  makeHit: (id: string, score: number) => T | null,
+  opts: { seeds?: number; tau?: number; lambda?: number; cap?: number } = {},
+): T[] {
+  const seeds = opts.seeds ?? 5
+  const tau = opts.tau ?? 0.1
+  const lambda = Math.min(opts.lambda ?? 0.5, 0.5)
+  const cap = opts.cap ?? 10
+  const best = new Map<string, T>()
+  for (const r of ranked) best.set(r.id, r)
+  let added = 0
+  for (const seed of ranked.slice(0, seeds)) {
+    if (added >= cap) break
+    for (const n of neighbours(seed.id)) {
+      if (added >= cap) break
+      if (n.weight < tau) continue
+      const fused = seed.score * n.weight * lambda
+      if (!(fused > 0)) continue
+      const existing = best.get(n.id)
+      if (existing) {
+        if (fused > existing.score) best.set(n.id, { ...existing, score: fused }) // boost only
+        continue
+      }
+      const hit = makeHit(n.id, fused)
+      if (!hit) continue // entry trimmed/tombstoned or filtered out — edges outlive entries
+      best.set(n.id, hit)
+      added++
+    }
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score)
+}
+
 export function _resetGraphForTests(): void {
   adjacency.clear()
   reverseAdjacency.clear()
