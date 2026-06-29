@@ -58,6 +58,9 @@ const mocks = vi.hoisted(() => {
     mockStopRecording: vi.fn(),
     mockAppendRecordingEntry: vi.fn(),
     mockSetShowSettings: vi.fn(),
+    mockSearchFindNext: vi.fn(),
+    mockSearchFindPrevious: vi.fn(),
+    mockSearchClearDecorations: vi.fn(),
   }
 })
 
@@ -65,6 +68,7 @@ const mocks = vi.hoisted(() => {
 let mockOnDataCb: ((data: string) => void) | null = null
 let mockKeyHandlerCb: ((e: KeyboardEvent) => boolean) | null = null
 let mockOnTerminalDataCb: ((id: string, data: string) => void) | null = null
+let mockSearchResultsCb: ((e: { resultIndex: number; resultCount: number }) => void) | null = null
 
 // Wire up onData and attachCustomKeyEventHandler to capture callbacks
 mocks.mockTerminal.onData.mockImplementation((cb: (data: string) => void) => {
@@ -107,10 +111,13 @@ vi.mock('@xterm/addon-web-links', () => ({
 vi.mock('@xterm/addon-search', () => ({
   SearchAddon: function () {
     this.dispose = vi.fn()
-    this.findNext = vi.fn()
-    this.findPrevious = vi.fn()
-    this.clearDecorations = vi.fn()
-    this.onDidChangeResults = vi.fn(() => ({ dispose: vi.fn() }))
+    this.findNext = mocks.mockSearchFindNext
+    this.findPrevious = mocks.mockSearchFindPrevious
+    this.clearDecorations = mocks.mockSearchClearDecorations
+    this.onDidChangeResults = (cb: (e: { resultIndex: number; resultCount: number }) => void) => {
+      mockSearchResultsCb = cb
+      return { dispose: vi.fn() }
+    }
   },
 }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
@@ -387,6 +394,46 @@ describe('TerminalPane', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  // =====================================================
+  // 0. In-terminal search (Ctrl+Shift+F find bar)
+  // =====================================================
+  describe('in-terminal search', () => {
+    const openSearch = () => {
+      act(() => {
+        mockKeyHandlerCb?.({ type: 'keydown', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, key: 'F', preventDefault: vi.fn() } as unknown as KeyboardEvent)
+      })
+    }
+
+    it('opens the find bar on the terminalSearch keybinding (Ctrl+Shift+F)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      expect(screen.queryByTestId('terminal-search')).toBeNull()
+      openSearch()
+      expect(screen.getByTestId('terminal-search')).toBeInTheDocument()
+    })
+
+    it('drives the SearchAddon: incremental find on type, next/prev, and clears on close', () => {
+      render(<TerminalPane {...defaultProps} />)
+      openSearch()
+      fireEvent.change(screen.getByTestId('terminal-search-input'), { target: { value: 'needle' } })
+      expect(mocks.mockSearchFindNext).toHaveBeenCalledWith('needle', expect.objectContaining({ incremental: true }))
+      fireEvent.click(screen.getByTestId('terminal-search-next'))
+      expect(mocks.mockSearchFindNext).toHaveBeenCalledWith('needle', expect.objectContaining({ incremental: false }))
+      fireEvent.click(screen.getByTestId('terminal-search-prev'))
+      expect(mocks.mockSearchFindPrevious).toHaveBeenCalledWith('needle', expect.objectContaining({ incremental: false }))
+      fireEvent.click(screen.getByTestId('terminal-search-close'))
+      expect(mocks.mockSearchClearDecorations).toHaveBeenCalled()
+      expect(screen.queryByTestId('terminal-search')).toBeNull()
+    })
+
+    it('shows the live match count fed from the SearchAddon onDidChangeResults', () => {
+      render(<TerminalPane {...defaultProps} />)
+      openSearch()
+      fireEvent.change(screen.getByTestId('terminal-search-input'), { target: { value: 'x' } })
+      act(() => { mockSearchResultsCb?.({ resultIndex: 2, resultCount: 7 }) })
+      expect(screen.getByTestId('terminal-search-count')).toHaveTextContent('3/7')
+    })
   })
 
   // =====================================================
