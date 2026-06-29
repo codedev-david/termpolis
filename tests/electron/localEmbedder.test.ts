@@ -6,6 +6,7 @@ import {
   EMBED_DIM,
   embedText,
   embedBatch,
+  bucketByTokens,
   isEmbedderReady,
   _setBackendForTests,
   _setOrtForTests,
@@ -274,4 +275,38 @@ describe.skipIf(!hasBundledModel)('localEmbedder real native-free backend', () =
     // normalized vectors → dot product is cosine similarity
     expect(dot(query!, auth!)).toBeGreaterThan(dot(query!, pizza!))
   }, 60_000)
+})
+
+describe('bucketByTokens (BB12)', () => {
+  it('bounds each bucket by total estimated tokens and covers every input once', () => {
+    const texts = Array.from({ length: 5 }, () => 'x'.repeat(250)) // ~63 tokens each
+    const buckets = bucketByTokens(texts, 128, 16)
+    for (const b of buckets) {
+      const tokens = b.reduce((s, i) => s + Math.ceil(texts[i].length / 4), 0)
+      expect(b.length === 1 || tokens <= 128).toBe(true) // fits the budget or a lone oversized chunk
+    }
+    expect(buckets.flat().sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4])
+  })
+  it('caps each bucket at maxCount regardless of the token budget', () => {
+    const texts = Array.from({ length: 40 }, () => 'tiny')
+    const buckets = bucketByTokens(texts, 10_000, 16)
+    expect(Math.max(...buckets.map(b => b.length))).toBeLessThanOrEqual(16)
+    expect(buckets.flat()).toHaveLength(40)
+  })
+  it('gives an oversized chunk its own bucket', () => {
+    const buckets = bucketByTokens(['x'.repeat(10_000), 'small'], 1024, 16)
+    expect(buckets.find(b => b.includes(0))).toEqual([0])
+  })
+  it('returns [] for empty input', () => {
+    expect(bucketByTokens([], 1024, 16)).toEqual([])
+  })
+
+  it('embedBatch reassembles bucketed results in original input order', async () => {
+    const vectors = new Map<string, number[]>([['a', [1, 0]], ['b', [0, 1]], ['c', [1, 1]]])
+    _setBackendForTests(async (texts: string[]) => texts.map((t) => vectors.get(t) ?? [0, 0]))
+    // Force tiny buckets via long-ish texts? Here they're short so all in one bucket;
+    // the order-preservation contract must hold regardless of bucketing.
+    const out = await embedBatch(['a', 'b', 'c'])
+    expect(out).toEqual([[1, 0], [0, 1], [1, 1]])
+  })
 })

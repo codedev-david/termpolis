@@ -232,18 +232,49 @@ export async function embedText(text: string, opts?: EmbedOptions): Promise<numb
 }
 
 /**
+ * BB12: length-bucket texts into sub-batches bounded by total ESTIMATED tokens
+ * (~chars/4) and a hard count cap, so one backend run can't become a multi-hundred-
+ * ms main-thread freeze on a batch of near-max chunks, while the many tiny tail
+ * chunks still batch efficiently. Sorts by length first (homogeneous buckets); an
+ * oversized chunk gets its own bucket (the model windows it). Pure — returns arrays
+ * of indices into `texts` so the caller reassembles results in original order.
+ */
+export function bucketByTokens(texts: string[], maxTokens = 1024, maxCount = 16): number[][] {
+  const order = texts
+    .map((t, i) => ({ i, n: Math.ceil((t?.length ?? 0) / 4) }))
+    .sort((a, b) => a.n - b.n)
+  const buckets: number[][] = []
+  let cur: number[] = []
+  let curTokens = 0
+  for (const { i, n } of order) {
+    if (cur.length > 0 && (curTokens + n > maxTokens || cur.length >= maxCount)) {
+      buckets.push(cur); cur = []; curTokens = 0
+    }
+    cur.push(i)
+    curTokens += n
+  }
+  if (cur.length > 0) buckets.push(cur)
+  return buckets
+}
+
+/**
  * Embed many texts at once (efficient for indexing). Returns one slot per
- * input in order; failed/missing rows are null.
+ * input in order; failed/missing rows are null. Runs are token-bucketed (BB12).
  */
 export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<(number[] | null)[]> {
   if (!Array.isArray(texts) || texts.length === 0) return []
   const prepared = opts?.isQuery ? texts.map((t) => QUERY_PREFIX + t) : texts
   const be = await getBackend()
   if (!be) return texts.map(() => null)
-  try {
-    const vecs = await be(prepared)
-    return texts.map((_, i) => (Array.isArray(vecs?.[i]) ? vecs[i] : null))
-  } catch {
-    return texts.map(() => null)
+  const out: (number[] | null)[] = new Array(texts.length).fill(null)
+  for (const bucket of bucketByTokens(prepared)) {
+    try {
+      const vecs = await be(bucket.map((i) => prepared[i]))
+      for (let j = 0; j < bucket.length; j++) {
+        const v = vecs?.[j]
+        out[bucket[j]] = Array.isArray(v) ? v : null
+      }
+    } catch { /* leave this bucket's slots null */ }
   }
+  return out
 }
