@@ -6,7 +6,8 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
-import { TtlLruCache, rankScore, mergeRelated } from './memoryEconomy'
+import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
+import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
@@ -588,6 +589,7 @@ export interface SearchOptions {
   kind?: MemoryEntry['kind']
   taskId?: string
   project?: string                // path or slug — normalized on entry
+  diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
 }
 
 // Search-result cache — identical repeated searches return instantly. Any write
@@ -610,12 +612,15 @@ const lexicalIndex = new LexicalIndex()
 // Saturate unbounded BM25 into 0..1 for the calibrated fusion: bm25 / (bm25 + K).
 const LEX_SAT_K = 1
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.diversify ? 'd' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
   if (!opts || typeof opts.query !== 'string' || !opts.query.trim()) return []
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
+  // BB2: when diversifying, over-fetch a wider candidate pool so MMR has room to swap
+  // near-duplicates for distinct hits; otherwise fetch exactly the requested count.
+  const fetchN = opts.diversify ? Math.min(Math.max(limit * 4, limit), 100) : limit
   // Accept either a raw cwd/path or an already-normalized slug for `project`.
   const projectSlug = opts.project ? normalizeProjectSlug(opts.project) : ''
   if (opts.project && !projectSlug) return []
@@ -654,8 +659,8 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
       const queryF32 = Float32Array.from(queryEmb)
       // Use the graph only when it's fresh; while it's (re)building in the
       // background `hnsw` is null or stale, so we serve the exact brute-force scan.
-      if (hnsw && !hnswStale) { try { hits = hnsw.search(queryF32, limit, allow) } catch { hits = [] } }
-      if (hits.length === 0) hits = vectorStore.searchTopK(queryF32, limit, allow) // exact brute-force fallback
+      if (hnsw && !hnswStale) { try { hits = hnsw.search(queryF32, fetchN, allow) } catch { hits = [] } }
+      if (hits.length === 0) hits = vectorStore.searchTopK(queryF32, fetchN, allow) // exact brute-force fallback
       for (const h of hits) {
         const e = rowToEntry.get(h.row)
         if (e) scored.push({ ...e, score: h.score })
@@ -713,7 +718,27 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const now = Date.now()
   const ranked = scored.map(r => ({ r, k: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }) }))
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
-  let result = ranked.map(x => x.r).filter(r => r.score > 0).slice(0, limit)
+  const survivors = ranked.map(x => x.r).filter(r => r.score > 0)
+  let result: MemorySearchResult[]
+  if (opts.diversify) {
+    // BB2: gate to the relevant pool (with a floor), then MMR-rerank to `limit` using
+    // cosine over the packed vectors (token-Jaccard fallback when vectors are absent),
+    // so a cluster of near-identical hits doesn't crowd out diverse context.
+    let rowById: Map<string, number> | null = null
+    const simFn = (a: MemorySearchResult, b: MemorySearchResult): number => {
+      if (!rowById) rowById = new Map<string, number>([...rowToEntry].map(([row, e]) => [e.id, row]))
+      const ra = rowById.get(a.id), rb = rowById.get(b.id)
+      if (ra !== undefined && rb !== undefined) {
+        const va = vectorStore.get(ra), vb = vectorStore.get(rb)
+        if (va && vb) { let s = 0; for (let i = 0; i < va.length; i++) s += va[i] * vb[i]; return Math.max(0, s) }
+      }
+      return jaccardContentSim(a.content, b.content)
+    }
+    const gated = gateByScore(survivors, { minScore: 0.25, floor: Math.min(3, limit), cap: survivors.length })
+    result = mmrRerank(gated, simFn, { lambda: 0.7, k: limit })
+  } else {
+    result = survivors.slice(0, limit)
+  }
 
   // BB7: fold in graph-connected neighbours of the top results (off by default, and
   // skipped when the graph is empty — byte-identical to the non-fused path then).
@@ -825,6 +850,17 @@ export function memoryLink(input: { from: string; to: string; relation?: string;
   // so the new connection is reflected (auto-link writes already bump via memoryWrite).
   if (edge) bumpSearchGen()
   return edge
+}
+
+// BB2: token-Jaccard similarity between two snippets — the MMR diversity fallback
+// when packed vectors aren't available (embedder down / legacy entries).
+function jaccardContentSim(a: string, b: string): number {
+  const ta = new Set((a || '').toLowerCase().split(/\W+/).filter(t => t.length > 2))
+  const tb = new Set((b || '').toLowerCase().split(/\W+/).filter(t => t.length > 2))
+  if (ta.size === 0 || tb.size === 0) return 0
+  let inter = 0
+  for (const t of ta) if (tb.has(t)) inter++
+  return inter / (ta.size + tb.size - inter)
 }
 
 function keywordScore(query: string, content: string): number {

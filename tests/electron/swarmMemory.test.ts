@@ -303,6 +303,35 @@ describe('hybrid lexical+dense retrieval (BB1)', () => {
   })
 })
 
+describe('MMR diversity re-rank (BB2, opt-in)', () => {
+  // Build a 384-dim vector from {index: value} pairs (vectorStore normalizes on add).
+  const dvec = (pairs: Array<[number, number]>): number[] => {
+    const v = new Array(384).fill(0)
+    for (const [i, val] of pairs) v[i] = val
+    return v
+  }
+  it('diversify drops a near-duplicate in favor of a distinct relevant hit', async () => {
+    const Q = dvec([[0, 1]])                          // query direction e0
+    const A = dvec([[0, 0.9], [1, 0.436]])            // cosine ~0.9 to Q
+    const B = dvec([[0, 0.9], [1, 0.436], [2, 0.05]]) // near-duplicate of A
+    const C = dvec([[0, 0.85], [2, 0.527]])           // relevant but distinct from A
+    const vecOf: Record<string, number[]> = {
+      'postgres replication setup notes': A,
+      'postgres replica configuration notes': B,
+      'mysql cluster tuning and sharding': C,
+    }
+    _setEmbedFnForTests(async (t: string) => vecOf[t] ?? Q)
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'postgres replication setup notes' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'postgres replica configuration notes' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'mysql cluster tuning and sharding' })
+    _setEmbedFnForTests(async () => Q)
+    const plain = await memorySearch({ query: 'database', limit: 2 })
+    const diverse = await memorySearch({ query: 'database', limit: 2, diversify: true })
+    expect(plain.some(h => h.content.includes('mysql'))).toBe(false)   // two near-identical postgres notes
+    expect(diverse.some(h => h.content.includes('mysql'))).toBe(true)  // dup swapped for the distinct hit
+  })
+})
+
 describe('graph fusion in memorySearch (BB7, opt-in)', () => {
   it('folds a graph-linked neighbour into results only when fusion is enabled', async () => {
     const a = await memoryWrite({ agentId: 'x', kind: 'note', content: 'alpha topic anchor' })
