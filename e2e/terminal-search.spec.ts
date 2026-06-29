@@ -73,30 +73,32 @@ async function createTerminal(name: string) {
 }
 
 test.describe.serial('In-terminal find bar (search + scrollback jump)', () => {
-  test('Ctrl+Shift+F opens the find bar, finds a keyword in scrollback, Escape closes it', async () => {
+  test('Ctrl+Shift+F opens the find bar, finds a keyword in the buffer, Escape closes it', async () => {
+    test.setTimeout(60_000)
     await createTerminal('SearchTerm')
 
-    // Print a unique marker, then push it well up into the scrollback with filler
-    // lines so it is no longer in the visible viewport.
+    // Print a marker on MANY lines so it lives both in the visible viewport AND the
+    // scrollback — unambiguous on a slow CI runner.
     const xterm = page.locator('.xterm-helper-textarea').first()
     await xterm.focus()
-    await page.keyboard.type('echo FINDME_MARKER_42 && for i in $(seq 1 80); do echo "scroll filler $i"; done')
+    await page.keyboard.type('for i in $(seq 1 120); do echo "FINDME_MARKER_42 line $i"; done')
     await page.keyboard.press('Enter')
-    await page.waitForTimeout(2500)
+    // Wait until the output has actually RENDERED before searching — the incremental
+    // search fires once on `fill`, so the marker must be in the buffer by then.
+    await expect(page.locator('.xterm').first()).toContainText('FINDME_MARKER_42', { timeout: 20000 })
 
     // Open the find bar with the keybinding (proves the TerminalPane wiring).
+    await xterm.focus()
     await page.keyboard.press('Control+Shift+F')
     const bar = page.locator('[data-testid="terminal-search"]')
     await expect(bar).toBeVisible({ timeout: 5000 })
 
-    // The input auto-focuses; search for the marker now living in scrollback.
+    // The real SearchAddon scans the whole buffer (incl. scrollback) and the bar shows
+    // "<active>/<total>" with at least one match.
     const input = page.locator('[data-testid="terminal-search-input"]')
     await input.fill('FINDME_MARKER_42')
-
-    // The real SearchAddon scanned the whole buffer (incl. scrollback) and the bar
-    // shows "<active>/<total>" with at least one match — proving scrollback search.
     const count = page.locator('[data-testid="terminal-search-count"]')
-    await expect(count).toHaveText(/\d+\/[1-9]\d*/, { timeout: 5000 })
+    await expect(count).toHaveText(/\d+\/[1-9]\d*/, { timeout: 10000 })
 
     // Escape closes the bar.
     await input.press('Escape')

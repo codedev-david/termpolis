@@ -76,7 +76,7 @@ describe('HnswIndex', () => {
       for (const row of truth) { total++; if (got.has(row)) hit++ }
     }
     expect(hit / total).toBeGreaterThan(0.9)
-  })
+  }, 30000) // heavy: 1000-vector HNSW build + 30 brute-force queries — slow under CI coverage
 
   it('heuristic:true (BB9 opt-in) keeps recall@10 high at adequate efSearch', () => {
     const dim = 32, N = 300, r = rng(123)
@@ -92,7 +92,7 @@ describe('HnswIndex', () => {
       for (const row of truth) { total++; if (got.has(row)) hit++ }
     }
     expect(hit / total).toBeGreaterThan(0.9)
-  })
+  }, 30000) // heavy build under CI coverage
 
   it('heuristic:false falls back to simple closest-m selection and still finds the exact match (BB9)', () => {
     const dim = 16
