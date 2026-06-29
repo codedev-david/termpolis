@@ -5,7 +5,7 @@ import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
-import { TtlLruCache } from './memoryEconomy'
+import { TtlLruCache, rankScore } from './memoryEconomy'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
@@ -657,8 +657,14 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     for (const entry of pool) scored.push({ ...entry, score: keywordScore(opts.query, entry.content) })
   }
 
-  scored.sort((a, b) => b.score - a.score || b.ts - a.ts)
-  const result = scored.filter(r => r.score > 0).slice(0, limit)
+  // QW1: fuse relevance with recency + per-kind importance. Decorate ONCE per
+  // candidate (never call rankScore inside the comparator over the keyword pool),
+  // then sort by the stored rank, keeping the original recency tie-break. The
+  // score>0 gate is preserved because rank>0 ⇔ relevance>0 (positive multipliers).
+  const now = Date.now()
+  const ranked = scored.map(r => ({ r, k: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }) }))
+  ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
+  const result = ranked.map(x => x.r).filter(r => r.score > 0).slice(0, limit)
   searchCache.set(cacheKey, result)
   return result
 }

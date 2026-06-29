@@ -32,6 +32,52 @@ export function gateByScore<T extends Scored>(
   return sorted.slice(0, Math.min(keepCount, opts.cap))
 }
 
+export interface RankInput {
+  relevance: number          // base 0..1 similarity / keyword score
+  ts: number                 // entry timestamp (ms)
+  kind?: string              // MemoryEntry kind ('decision' | 'fact' | 'message' | …)
+  now: number                // injected clock — deterministic in tests, Date.now() in prod
+}
+
+export interface RankWeights {
+  alpha?: number             // recency-boost magnitude (cap on the nudge)
+  halfLifeMs?: number        // recency half-life
+  kindPriors?: Record<string, number>
+}
+
+/**
+ * Default rank weights. A 30-day half-life means a month-old hit keeps half its
+ * recency nudge; `alpha` caps that nudge at +25%. Only decision/fact carry a kind
+ * prior (1.15) — message/result/note stay neutral (1.0) so the primer's
+ * message-led project bucket is never starved (spread deliberately held ≤ 1.15).
+ */
+export const RANK_DEFAULTS = {
+  alpha: 0.25,
+  halfLifeMs: 30 * 86_400_000,
+  kindPriors: { decision: 1.15, fact: 1.15 } as Record<string, number>,
+}
+
+/**
+ * Fuse a base relevance score with recency and per-kind importance into one
+ * sortable rank: `relevance * (1 + alpha*recency) * kindPrior`, where
+ * `recency = 2^(-max(0, now-ts)/halfLife)` (a clean 30-day half-life by default).
+ *
+ * Pure and side-effect-free: compute it ONCE per candidate (decorate) and sort by
+ * the stored value — never call this inside a comparator over a large pool. `deltaT`
+ * is clamped ≥ 0 so a future-dated synced-peer clock can't manufacture a boost
+ * beyond the full `1 + alpha`. Relevance 0 ⇒ rank 0 (all multipliers are positive,
+ * so `rank > 0 ⇔ relevance > 0` — the score>0 gate downstream is preserved).
+ */
+export function rankScore(input: RankInput, weights: RankWeights = {}): number {
+  const alpha = weights.alpha ?? RANK_DEFAULTS.alpha
+  const halfLife = weights.halfLifeMs ?? RANK_DEFAULTS.halfLifeMs
+  const priors = weights.kindPriors ?? RANK_DEFAULTS.kindPriors
+  const deltaT = Math.max(0, input.now - input.ts)
+  const recency = halfLife > 0 ? Math.pow(2, -deltaT / halfLife) : 0
+  const kindPrior = (input.kind && priors[input.kind]) || 1
+  return input.relevance * (1 + alpha * recency) * kindPrior
+}
+
 const norm = (s: string): string => (s || '').replace(/\s+/g, ' ').trim().toLowerCase()
 
 /** Drop later hits whose content exactly duplicates an earlier (higher-score) one. */

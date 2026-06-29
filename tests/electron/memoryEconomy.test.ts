@@ -6,7 +6,11 @@ import {
   truncateContent,
   TtlLruCache,
   summarizePrimerCost,
+  rankScore,
+  RANK_DEFAULTS,
 } from '../../src/main/memoryEconomy'
+
+const DAY = 86_400_000
 
 describe('memoryEconomy', () => {
   describe('estimateTokens (~4 chars/token heuristic)', () => {
@@ -104,6 +108,75 @@ describe('memoryEconomy', () => {
       expect(c.get('b')).toBeUndefined()
       expect(c.get('a')).toBe(1)
       expect(c.get('c')).toBe(3)
+    })
+  })
+
+  describe('rankScore — fuse relevance with recency + per-kind importance', () => {
+    it('applies the full recency boost to a brand-new hit (deltaT = 0)', () => {
+      // final = relevance * (1 + alpha*1) * kindPrior(message=1) = 1 * 1.25 * 1
+      expect(rankScore({ relevance: 1, ts: 1000, kind: 'message', now: 1000 })).toBeCloseTo(1.25, 10)
+    })
+
+    it('decays the recency boost toward zero for ancient hits', () => {
+      // ~10 years old → recency ≈ 0 → final ≈ relevance * 1 * prior
+      const r = rankScore({ relevance: 0.8, ts: 0, kind: 'message', now: 3650 * DAY })
+      expect(r).toBeCloseTo(0.8, 5)          // recency boost has fully decayed to the un-boosted score
+      expect(r).toBeLessThan(0.8 * 1.25)     // strictly below a brand-new hit's fully-boosted rank
+    })
+
+    it('halves the recency boost at exactly one half-life (30 days)', () => {
+      // deltaT = halfLife → recency = 0.5 → factor (1 + 0.25*0.5) = 1.125
+      expect(rankScore({ relevance: 1, ts: 0, kind: 'message', now: 30 * DAY })).toBeCloseTo(1.125, 10)
+    })
+
+    it('CLAMPS future-dated timestamps (peer clock skew) to no MORE than the full boost', () => {
+      const future = rankScore({ relevance: 1, ts: 5000, kind: 'message', now: 1000 }) // ts > now
+      expect(future).toBeCloseTo(1.25, 10)  // same as deltaT=0, never exceeds the full boost
+    })
+
+    it('gives decision/fact a higher prior than message/result/note (spread ≤ 1.15)', () => {
+      const base = { relevance: 1, ts: 1000, now: 1000 }
+      const decision = rankScore({ ...base, kind: 'decision' })
+      const fact = rankScore({ ...base, kind: 'fact' })
+      const message = rankScore({ ...base, kind: 'message' })
+      const note = rankScore({ ...base, kind: 'note' })
+      const result = rankScore({ ...base, kind: 'result' })
+      expect(decision).toBeGreaterThan(message)
+      expect(fact).toBeGreaterThan(message)
+      expect(note).toBeCloseTo(message, 10)   // only decision/fact are boosted
+      expect(result).toBeCloseTo(message, 10)
+      expect(decision / message).toBeLessThanOrEqual(1.15 + 1e-9) // never starves the message bucket
+    })
+
+    it('is monotonic in relevance (higher relevance always ranks higher, same ts/kind)', () => {
+      const lo = rankScore({ relevance: 0.4, ts: 1000, kind: 'fact', now: 1000 })
+      const hi = rankScore({ relevance: 0.6, ts: 1000, kind: 'fact', now: 1000 })
+      expect(hi).toBeGreaterThan(lo)
+    })
+
+    it('returns 0 when relevance is 0 regardless of recency/kind', () => {
+      expect(rankScore({ relevance: 0, ts: 1000, kind: 'decision', now: 1000 })).toBe(0)
+    })
+
+    it('treats unknown/missing kind as the neutral prior 1.0', () => {
+      const known = rankScore({ relevance: 1, ts: 1000, kind: 'message', now: 1000 })
+      expect(rankScore({ relevance: 1, ts: 1000, now: 1000 })).toBeCloseTo(known, 10)
+      expect(rankScore({ relevance: 1, ts: 1000, kind: 'mystery', now: 1000 })).toBeCloseTo(known, 10)
+    })
+
+    it('honors injected weights (alpha, halfLifeMs, kindPriors)', () => {
+      // alpha 0 → no recency boost at all → final = relevance * prior
+      expect(rankScore({ relevance: 1, ts: 0, kind: 'message', now: 99 * DAY }, { alpha: 0 })).toBeCloseTo(1, 10)
+      // custom kind prior
+      expect(rankScore({ relevance: 1, ts: 1000, kind: 'message', now: 1000 }, { alpha: 0, kindPriors: { message: 2 } }))
+        .toBeCloseTo(2, 10)
+    })
+
+    it('exposes its defaults (alpha 0.25, 30-day half-life, decision/fact 1.15)', () => {
+      expect(RANK_DEFAULTS.alpha).toBe(0.25)
+      expect(RANK_DEFAULTS.halfLifeMs).toBe(30 * DAY)
+      expect(RANK_DEFAULTS.kindPriors.decision).toBe(1.15)
+      expect(RANK_DEFAULTS.kindPriors.fact).toBe(1.15)
     })
   })
 })

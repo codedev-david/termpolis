@@ -242,6 +242,28 @@ describe('memorySearch', () => {
   })
 })
 
+describe('rank fusion (QW1: recency + per-kind importance)', () => {
+  it('ranks an OLDER decision above a NEWER message at equal keyword relevance (kind prior beats the recency tie-break)', async () => {
+    // Both contents contain the full query as a substring → identical relevance (1.0).
+    // The decision is written FIRST (older). Under the OLD pure-recency tie-break the
+    // newer message would win; under QW1 the decision's kind prior (1.15) lifts it first.
+    await memoryWrite({ agentId: 'a', kind: 'decision', content: 'alpha topic chosen approach' })
+    await new Promise(r => setTimeout(r, 5))
+    await memoryWrite({ agentId: 'a', kind: 'message', content: 'alpha topic casual remark' })
+    const results = await memorySearch({ query: 'alpha topic' })
+    expect(results.map(r => r.kind)).toEqual(['decision', 'message'])
+  })
+
+  it('still orders primarily by relevance — a far more relevant message beats a weak decision', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'decision', content: 'mentions widget once' })
+    await memoryWrite({ agentId: 'a', kind: 'message', content: 'widget widget widget exact widget match' })
+    // Direct substring match (score 1.0) on the message must still outrank a weak
+    // token-overlap decision — the 1.15 kind prior only breaks near-ties, never overrides.
+    const results = await memorySearch({ query: 'widget widget widget exact widget match' })
+    expect(results[0].kind).toBe('message')
+  })
+})
+
 describe('memorySearch with embeddings', () => {
   it('uses embedding similarity when query + entries have embeddings', async () => {
     // Provide deterministic per-prompt vectors via the embed override
