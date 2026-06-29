@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { HnswIndex } from '../../src/main/hnswIndex'
+import { HnswIndex, efForK } from '../../src/main/hnswIndex'
 
 // Deterministic RNG (mulberry32) so build + recall are reproducible.
 function rng(seed: number): () => number {
@@ -78,6 +78,17 @@ describe('HnswIndex', () => {
     expect(hit / total).toBeGreaterThan(0.9)
   })
 
+  it('honors an explicit efSearch override on search() and still finds the exact match (QW3)', () => {
+    const dim = 16
+    const r = rng(1)
+    const vecs = Array.from({ length: 200 }, () => randomUnit(dim, r))
+    const idx = new HnswIndex((row) => vecs[row] ?? null, { rng: rng(7) })
+    for (let i = 0; i < vecs.length; i++) idx.add(i)
+    // Override path (explicit 4th arg) and the default efForK path both find the match.
+    expect(idx.search(vecs[42], 1, undefined, 200)[0].row).toBe(42)
+    expect(idx.search(vecs[42], 30)[0].row).toBe(42) // k>=25 exercises efForK widening
+  })
+
   it('honors the allow() filter so deleted/filtered rows are excluded', () => {
     const dim = 8
     const r = rng(3)
@@ -102,5 +113,29 @@ describe('HnswIndex', () => {
       const q = randomUnit(dim, rng(seed))
       expect(restored.search(q, 5).map((x) => x.row)).toEqual(idx.search(q, 5).map((x) => x.row))
     }
+  })
+})
+
+describe('efForK — Pareto-safe adaptive query breadth (QW3)', () => {
+  it('never drops below the previous max(efS, k) for any realistic k (no recall regression)', () => {
+    const efS = 96
+    for (const k of [1, 5, 10, 24, 25, 40, 50, 96, 97, 100, 150, 200]) {
+      expect(efForK(k, efS)).toBeGreaterThanOrEqual(Math.max(efS, k))
+    }
+  })
+  it('keeps the dominant small-k path unchanged (k<=24 stays at efS)', () => {
+    expect(efForK(10, 96)).toBe(96)
+    expect(efForK(24, 96)).toBe(96)
+  })
+  it('widens the large-k digest/primer path up to the cap', () => {
+    expect(efForK(25, 96)).toBe(100)  // round(25*4)
+    expect(efForK(50, 96)).toBe(200)  // round(50*4)=200 -> at cap
+    expect(efForK(100, 96)).toBe(200) // round(400) -> capped
+  })
+  it('never exceeds the max cap and honors custom mult/max', () => {
+    expect(efForK(1000, 96)).toBe(200)
+    expect(efForK(100, 96, 4, 150)).toBe(150)
+    expect(efForK(10, 96, 8)).toBe(96)   // 80 < efS -> efS
+    expect(efForK(20, 96, 8)).toBe(160)  // round(160)
   })
 })

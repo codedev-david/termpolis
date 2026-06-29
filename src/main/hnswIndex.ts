@@ -27,6 +27,17 @@ function dot(a: Float32Array, b: Float32Array): number {
   return s
 }
 
+/**
+ * Pareto-safe query breadth for a top-k search: `min(max(efS, round(k*mult)), max)`.
+ * Guaranteed `>=` the previous `max(efS, k)` for every realistic k (k <= max), so
+ * recall NEVER regresses, while a large-k digest/primer query is allowed to widen
+ * its candidate pool up to `max`. The dominant small-k path (k <= efS/mult) is
+ * untouched — it stays exactly at efS. Pure.
+ */
+export function efForK(k: number, efS: number, mult = 4, max = 200): number {
+  return Math.min(Math.max(efS, Math.round(k * mult)), max)
+}
+
 // Binary heap of {row, d}. `cmp(a,b) < 0` ⇒ a has priority. We use a min-heap by
 // distance for the exploration frontier and a max-heap by distance for the
 // kept-best set (so the worst is poppable in O(log n)).
@@ -233,13 +244,17 @@ export class HnswIndex {
   /**
    * Approximate k nearest to `query`. `allow(row)` (optional) gates eligible rows
    * (filters + deletions) — ineligible rows are still traversed for connectivity
-   * but never returned. Scores are cosine similarity (higher = better).
+   * but never returned. `efSearch` (optional) overrides the candidate breadth;
+   * when omitted it's derived Pareto-safely from k via {@link efForK}. Scores are
+   * cosine similarity (higher = better).
    */
-  search(query: Float32Array, k: number, allow?: (row: number) => boolean): { row: number; score: number }[] {
+  search(query: Float32Array, k: number, allow?: (row: number) => boolean, efSearch?: number): { row: number; score: number }[] {
     if (this.entry === -1 || k <= 0) return []
     let cur = this.entry
     for (let l = this.topLayer; l > 0; l--) cur = this.greedy(query, [cur], l)
-    const ef = Math.max(this.efS, k)
+    // QW3: widen the candidate pool for large-k digest/primer queries (Pareto-safe —
+    // never below the old max(efS, k)); an explicit override wins when supplied.
+    const ef = efSearch ?? efForK(k, this.efS)
     const found = this.searchLayer(query, [cur], ef, 0)
     const out: { row: number; score: number }[] = []
     for (const f of found) {
