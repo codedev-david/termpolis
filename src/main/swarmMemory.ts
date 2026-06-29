@@ -6,7 +6,7 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
-import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
+import { TtlLruCache, rankScore, mergeRelated, gateByScore, fuseImportance } from './memoryEconomy'
 import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
@@ -153,11 +153,20 @@ function parseShardLine(line: string, adds: MemoryEntry[]): void {
     if (dec === null) { lockedShards = true; return } // no key / wrong key → can't read this entry
     plain = dec
   }
-  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown }
+  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; reinforce?: unknown }
   try { obj = JSON.parse(plain) } catch { return /* skip malformed line */ }
   if (!obj || typeof obj !== 'object') return
   if (typeof obj.deleted === 'string') { tombstones.add(obj.deleted); return }
   if (typeof obj.clearedBefore === 'number') { if (obj.clearedBefore > clearEpoch) clearEpoch = obj.clearedBefore; return }
+  if (Array.isArray(obj.reinforce)) {
+    // BB13/BB14: collect usage deltas; applied after the full state is known (reloadFrom).
+    for (const r of obj.reinforce as Array<{ id?: unknown; used?: unknown; ts?: unknown }>) {
+      if (r && typeof r.id === 'string' && typeof r.used === 'number') {
+        pendingReinforce.push({ id: r.id, used: r.used, ts: typeof r.ts === 'number' ? r.ts : 0 })
+      }
+    }
+    return
+  }
   if (obj.id && typeof obj.content === 'string') adds.push(obj as unknown as MemoryEntry)
 }
 
@@ -170,6 +179,7 @@ function reloadFrom(paths: string[]): void {
   tombstones.clear()
   clearEpoch = 0
   lockedShards = false
+  pendingReinforce = []
   const adds: MemoryEntry[] = []
   for (const p of paths) {
     let raw: string
@@ -192,6 +202,17 @@ function reloadFrom(paths: string[]): void {
     if (dropped?.hash) seenHashes.delete(dropped.hash)
   }
   rebuildVectorIndex()
+  // BB13: replay usage deltas now that the final entry/tombstone/clear state is known —
+  // skip tombstoned ids, anything at/before the clear epoch, and ids not in the window.
+  usageMap.clear()
+  if (pendingReinforce.length > 0) {
+    const liveIds = new Set(entries.map(e => e.id))
+    for (const r of pendingReinforce) {
+      if (tombstones.has(r.id) || r.ts <= clearEpoch || !liveIds.has(r.id)) continue
+      usageMap.set(r.id, (usageMap.get(r.id) ?? 0) + r.used)
+    }
+  }
+  pendingReinforce = []
 }
 
 export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string | null } = {}): void {
@@ -256,6 +277,8 @@ export function _resetForTests(): void {
   entries.length = 0
   seenHashes.clear()
   forgotSet.clear()
+  usageMap.clear()
+  pendingReinforce = []
   tombstones.clear()
   clearEpoch = 0
   encKey = null
@@ -312,6 +335,14 @@ export function _isHnswReadyForTests(): boolean {
 // memoryHasHash so the 30-min idempotent re-ingest doesn't resurrect what we forgot.
 const forgotSet = new Set<string>()
 const FORGOT_CAP = 50_000
+
+// BB13/BB14: in-memory usage counts (how often a memory was confirmed helpful), keyed
+// by id. Persisted as additive CRDT-safe DELTA control lines `{reinforce:[{id,used,ts}]}`
+// in the shard and replayed on reload (pendingReinforce holds the parsed deltas until
+// the full entry/tombstone/clear state is known). Bounded by USAGE_MAP_CAP.
+const usageMap = new Map<string, number>()
+const USAGE_MAP_CAP = 50_000
+let pendingReinforce: Array<{ id: string; used: number; ts: number }> = []
 function forgotFile(): string | null { return userDataDir ? path.join(userDataDir, 'memory-forgot.json') : null }
 function loadForgotSet(): void {
   forgotSet.clear()
@@ -845,7 +876,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // then sort by the stored rank, keeping the original recency tie-break. The
   // score>0 gate is preserved because rank>0 ⇔ relevance>0 (positive multipliers).
   const now = Date.now()
-  const ranked = scored.map(r => ({ r, k: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }) }))
+  const ranked = scored.map(r => ({ r, k: fuseImportance(rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }), usageMap.get(r.id) ?? 0) }))
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
   const survivors = ranked.map(x => x.r).filter(r => r.score > 0)
   let result: MemorySearchResult[]
@@ -1074,6 +1105,7 @@ export function memoryClear(): void {
   seenHashes.clear()
   forgotSet.clear()
   persistForgotSet()
+  usageMap.clear()
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
   lexicalIndex.clear()
@@ -1146,6 +1178,29 @@ export function memoryForget(opts: { now?: number; max?: number } = {}): number 
     bumpSearchGen()
   }
   return victims.length
+}
+
+/**
+ * BB14: record agent feedback that a memory was helpful. `helpful=true` bumps an
+ * additive, CRDT-safe usage counter — persisted as a `{reinforce}` DELTA control line
+ * and replayed on reload — which gently lifts repeatedly-useful memories in ranking
+ * (BB13's fuseImportance, capped so it never overrides relevance). `helpful=false` is a
+ * no-op for now (no suppression until a forgetting curve can consume it). Deliberately
+ * does NOT bump searchGen (reinforcement shouldn't invalidate every cached search).
+ */
+export function memoryFeedback(input: { id: string; helpful?: boolean; query?: string }): { id: string; used: number } {
+  const id = input?.id
+  if (!id || typeof id !== 'string') return { id: '', used: 0 }
+  if (input.helpful === false) return { id, used: usageMap.get(id) ?? 0 }
+  const used = (usageMap.get(id) ?? 0) + 1
+  usageMap.set(id, used)
+  while (usageMap.size > USAGE_MAP_CAP) { // bound the map (evict oldest)
+    const oldest = usageMap.keys().next().value
+    if (oldest === undefined) break
+    usageMap.delete(oldest)
+  }
+  appendShardLine(JSON.stringify({ reinforce: [{ id, used: 1, ts: Date.now() }] }), 'reinforce') // DELTA, not cumulative
+  return { id, used }
 }
 
 // ---- Cross-machine sync control ----

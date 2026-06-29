@@ -115,7 +115,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -1578,6 +1578,7 @@ if (!gotTheLock) {
         depth: opts.depth,
         limit: opts.limit,
       }),
+      memoryFeedback: (opts) => memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query }),
     }
 
     initAuditLog(app.getPath('userData'))

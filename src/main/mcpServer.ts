@@ -358,6 +358,19 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'memory_feedback',
+    description: 'Tell the shared brain that a recalled memory was actually HELPFUL — so it learns which memories matter instead of just accumulating them. After a memory_search/memory_related result genuinely helps you (it answered the question, gave the fix, saved a re-derivation), call this with that entry\'s `id` and `helpful: true`. Repeatedly-helpful memories get a small, capped ranking lift for everyone (it nudges/breaks ties, never overrides relevance). This is the cleanest reinforcement signal there is — use it liberally on hits that paid off.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The memory entry id that was helpful (from a search/related result)' },
+        helpful: { type: 'boolean', description: 'true if this memory helped (default true)' },
+        query: { type: 'string', description: 'The query it helped with (optional context)' },
+      },
+      required: ['id'],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -382,6 +395,7 @@ export interface McpToolHandlers {
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
+  memoryFeedback: (opts: { id: string; helpful?: boolean; query?: string }) => any
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -466,6 +480,8 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         depth: args.depth,
         limit: args.limit,
       })
+    case 'memory_feedback':
+      return handlers.memoryFeedback({ id: args.id, helpful: args.helpful, query: args.query })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

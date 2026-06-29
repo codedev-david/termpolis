@@ -54,6 +54,22 @@ export function adaptiveGate<T extends Scored>(
   return sorted.slice(0, Math.min(keepCount, opts.cap))
 }
 
+export interface FuseImportanceWeights { weight?: number; cap?: number }
+const FUSE_DEFAULTS = { weight: 0.05, cap: 0.2 }
+
+/**
+ * BB13: nudge a base score by a small, CAPPED, saturating function of how often this
+ * memory has proven useful (`usage`) — it breaks ties and gently lifts repeatedly-
+ * helpful memories, but the +20% cap means it can NEVER override relevance. Pure;
+ * `usage` 0 returns the score unchanged.
+ */
+export function fuseImportance(baseScore: number, usage: number, weights: FuseImportanceWeights = {}): number {
+  const w = weights.weight ?? FUSE_DEFAULTS.weight
+  const cap = weights.cap ?? FUSE_DEFAULTS.cap
+  const nudge = Math.min(cap, w * Math.log(1 + Math.max(0, usage)))
+  return baseScore * (1 + nudge)
+}
+
 export interface RankInput {
   relevance: number          // base 0..1 similarity / keyword score
   ts: number                 // entry timestamp (ms)

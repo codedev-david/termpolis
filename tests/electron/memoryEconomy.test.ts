@@ -11,6 +11,7 @@ import {
   adaptiveGate,
   mergeRelated,
   diversifyHits,
+  fuseImportance,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -182,6 +183,25 @@ describe('memoryEconomy', () => {
       expect(RANK_DEFAULTS.halfLifeMs).toBe(30 * DAY)
       expect(RANK_DEFAULTS.kindPriors.decision).toBe(1.15)
       expect(RANK_DEFAULTS.kindPriors.fact).toBe(1.15)
+    })
+  })
+
+  describe('fuseImportance — usage-reinforcement nudge (BB13)', () => {
+    it('returns the score unchanged for zero usage', () => {
+      expect(fuseImportance(0.8, 0)).toBe(0.8)
+    })
+    it('lifts the score for repeated usage, monotonically', () => {
+      const u1 = fuseImportance(0.8, 1), u5 = fuseImportance(0.8, 5), u20 = fuseImportance(0.8, 20)
+      expect(u1).toBeGreaterThan(0.8)
+      expect(u5).toBeGreaterThan(u1)
+      expect(u20).toBeGreaterThan(u5)
+    })
+    it('caps the nudge so it never overrides relevance (+20% max)', () => {
+      expect(fuseImportance(0.8, 1_000_000)).toBeLessThanOrEqual(0.8 * 1.2 + 1e-9)
+    })
+    it('honors custom weight/cap', () => {
+      expect(fuseImportance(1, 100, { weight: 0, cap: 0.5 })).toBe(1)                  // weight 0 → no nudge
+      expect(fuseImportance(1, 1_000_000, { weight: 1, cap: 0.1 })).toBeCloseTo(1.1, 10) // cap 0.1
     })
   })
 

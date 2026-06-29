@@ -38,6 +38,7 @@ import {
   _vectorStoreSizeForTests,
   isForgettable,
   memoryForget,
+  memoryFeedback,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
 import { gateByScore } from '../../src/main/memoryEconomy'
@@ -305,6 +306,28 @@ describe('hybrid lexical+dense retrieval (BB1)', () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'unrelated billing invoice logic' })
     const hits = await memorySearch({ query: 'authentication jwt' })
     expect(hits[0].content).toContain('authentication')
+  })
+})
+
+describe('usage reinforcement (BB13/BB14)', () => {
+  it('feedback nudges a memory up in ranking and persists + replays across reload', async () => {
+    const a = await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha topic one' }) // older
+    await new Promise(r => setTimeout(r, 5))
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha topic two' })            // newer
+    // Without feedback the newer entry wins the recency tie-break; reinforce the OLDER one.
+    for (let i = 0; i < 30; i++) memoryFeedback({ id: a.id, helpful: true })
+    expect((await memorySearch({ query: 'alpha topic' }))[0].id).toBe(a.id)
+
+    // Persisted as additive deltas → survives a reload (replayed from the shard).
+    _resetForTests()
+    initSwarmMemory(tmpDir)
+    _setEmbeddingsAvailable(false)
+    expect((await memorySearch({ query: 'alpha topic' }))[0].id).toBe(a.id)
+  })
+
+  it('helpful:false is a no-op (no suppression yet) and an empty id is ignored', () => {
+    expect(memoryFeedback({ id: 'x', helpful: false })).toEqual({ id: 'x', used: 0 })
+    expect(memoryFeedback({ id: '' })).toEqual({ id: '', used: 0 })
   })
 })
 
