@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { createInputLatencyProbe, type InputLatencySample } from '../../lib/inputLatencyProbe'
@@ -11,6 +12,7 @@ import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlo
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
+import { TerminalSearch, type TerminalSearchOptions } from '../TerminalSearch/TerminalSearch'
 import { v4 as uuid } from 'uuid'
 import { getCompletions } from '../../completions/completionEngine'
 import { getSuggestion } from '../../corrections/correctionEngine'
@@ -103,16 +105,59 @@ function buildCopySnapshot(term: Terminal | null): CopySnapshot | null {
   }
 }
 
+// Highlight colors for the in-terminal find: a dim amber wash on every match and
+// a bright amber box on the active one, plus overview-ruler ticks so off-screen
+// matches are visible in the scrollbar gutter.
+const SEARCH_DECORATIONS = {
+  matchBackground: '#5a4a1e',
+  matchBorder: '#8a6d1f',
+  matchOverviewRuler: '#d9a441',
+  activeMatchBackground: '#d9a441',
+  activeMatchBorder: '#ffffff',
+  activeMatchColorOverviewRuler: '#ffd479',
+}
+
+// Map the find bar's options to xterm SearchAddon's ISearchOptions.
+function toXtermSearchOptions(o: TerminalSearchOptions, incremental: boolean) {
+  return {
+    caseSensitive: o.caseSensitive,
+    wholeWord: o.wholeWord,
+    regex: o.regex,
+    incremental,
+    decorations: SEARCH_DECORATIONS,
+  }
+}
+
 export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const searchAddonRef = useRef<SearchAddon | null>(null)
   const inputBufferRef = useRef('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
   const [groqGateOpen, setGroqGateOpen] = useState(false)
+  // In-terminal find bar (Ctrl+Shift+F). `searchResults` is fed from the
+  // SearchAddon's onDidChangeResults so the bar can show "3/17".
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchResults, setSearchResults] = useState<{ index: number; count: number }>({ index: -1, count: 0 })
+  const handleSearchIncremental = useCallback((term: string, o: TerminalSearchOptions) => {
+    try { searchAddonRef.current?.findNext(term, toXtermSearchOptions(o, true)) } catch { /* addon not ready */ }
+  }, [])
+  const handleSearchNext = useCallback((term: string, o: TerminalSearchOptions) => {
+    try { searchAddonRef.current?.findNext(term, toXtermSearchOptions(o, false)) } catch { /* addon not ready */ }
+  }, [])
+  const handleSearchPrev = useCallback((term: string, o: TerminalSearchOptions) => {
+    try { searchAddonRef.current?.findPrevious(term, toXtermSearchOptions(o, false)) } catch { /* addon not ready */ }
+  }, [])
+  const handleSearchClose = useCallback(() => {
+    setSearchOpen(false)
+    setSearchResults({ index: -1, count: 0 })
+    try { searchAddonRef.current?.clearDecorations() } catch { /* nothing to clear */ }
+    try { termRef.current?.focus() } catch { /* terminal disposed */ }
+  }, [])
   // Input-latency probe surface (lib/inputLatencyProbe). The probe measures every
   // keystroke, but we only surface a readout when input is actually slow (either
   // leg >= 200ms) — so there's no badge in the normal fast case; it appears exactly
@@ -414,6 +459,18 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       term.loadAddon(webLinksAddon)
     } catch {}
 
+    // 6b. Load Search addon — powers the in-terminal find bar (Ctrl+Shift+F). It
+    // searches the whole buffer INCLUDING scrollback and scrolls the viewport to
+    // each match. onDidChangeResults drives the bar's "n/total" readout.
+    try {
+      const searchAddon = new SearchAddon()
+      term.loadAddon(searchAddon)
+      searchAddonRef.current = searchAddon
+      searchAddon.onDidChangeResults((res: { resultIndex: number; resultCount: number }) => {
+        if (!disposed) setSearchResults({ index: res.resultIndex, count: res.resultCount })
+      })
+    } catch { /* search addon unavailable — the find bar will simply no-op */ }
+
     // 7. Fit (deferred to avoid layout thrashing when multiple terminals mount at once)
     requestAnimationFrame(() => {
       if (!disposed) fitAddon.fit()
@@ -494,6 +551,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     }
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // Open the in-terminal find bar (default Ctrl+Shift+F). Keydown only — steal
+      // the combo from the shell and let the find bar's own input take focus.
+      if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.terminalSearch)) {
+        e.preventDefault()
+        setSearchOpen(true)
+        return false
+      }
+
       // Voice activation runs first and (in tap-or-hold mode) handles keyup too, so
       // it must sit ahead of the keydown-only guard below. Inert until enabled.
       const vs = useTerminalStore.getState().voiceSettings
@@ -891,6 +956,18 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }}
       >
         <PinnedOutput pins={pinnedItems} onUnpin={handleUnpin} />
+        {searchOpen && (
+          <div className="absolute top-1.5 right-2 z-40">
+            <TerminalSearch
+              onSearch={handleSearchIncremental}
+              onNext={handleSearchNext}
+              onPrevious={handleSearchPrev}
+              onClose={handleSearchClose}
+              resultIndex={searchResults.index}
+              resultCount={searchResults.count}
+            />
+          </div>
+        )}
         {selectionMode && (
           <div
             data-testid="selection-mode-badge"

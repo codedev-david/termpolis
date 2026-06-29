@@ -5,6 +5,7 @@ export interface KeybindingMap {
   copyAsCodeBlock: string
   paste: string
   historySearch: string
+  terminalSearch: string
   newTerminal: string
   closeTerminal: string
   nextTerminal: string
@@ -25,6 +26,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingMap = {
   copyAsCodeBlock: 'Ctrl+Shift+M',
   paste: 'Ctrl+Shift+V',
   historySearch: 'Ctrl+Shift+H',
+  terminalSearch: 'Ctrl+Shift+F',
   newTerminal: 'Ctrl+Shift+T',
   closeTerminal: 'Ctrl+Shift+W',
   nextTerminal: 'Ctrl+Tab',
@@ -45,6 +47,7 @@ export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   copyAsCodeBlock: 'Copy as Code Block (Slack/Teams)',
   paste: 'Paste',
   historySearch: 'Search History',
+  terminalSearch: 'Find in Terminal',
   newTerminal: 'New Terminal',
   closeTerminal: 'Close Terminal',
   nextTerminal: 'Next Terminal',
@@ -141,6 +144,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 
 // Check if a KeyboardEvent matches a keybinding string like "Ctrl+Shift+H"
 export function matchesKeybinding(e: KeyboardEvent, binding: string): boolean {
+  if (!binding) return false // unset/undefined binding never matches (defensive)
   const parts = binding.toLowerCase().split('+')
   const key = parts[parts.length - 1]
   const needCtrl = parts.includes('ctrl')

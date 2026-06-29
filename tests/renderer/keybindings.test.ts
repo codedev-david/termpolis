@@ -73,6 +73,29 @@ describe('matchesKeybinding', () => {
   it('returns false for no-modifier binding when Ctrl is held', () => {
     expect(matchesKeybinding(key({ ctrlKey: true, key: 'b' }), 'b')).toBe(false)
   })
+
+  it('returns false (never throws) for an unset/empty binding', () => {
+    expect(matchesKeybinding(key({ ctrlKey: true, key: 'f' }), '')).toBe(false)
+    expect(matchesKeybinding(key({ ctrlKey: true, key: 'f' }), undefined as unknown as string)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// terminalSearch binding (in-terminal find bar)
+// ---------------------------------------------------------------------------
+
+describe('terminalSearch binding', () => {
+  it('defaults to Ctrl+Shift+F', () => {
+    expect(DEFAULT_KEYBINDINGS.terminalSearch).toBe('Ctrl+Shift+F')
+  })
+
+  it('has a find-flavored label', () => {
+    expect(KEYBINDING_LABELS.terminalSearch).toMatch(/find|search/i)
+  })
+
+  it('matches a real Ctrl+Shift+F event', () => {
+    expect(matchesKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'F' }), DEFAULT_KEYBINDINGS.terminalSearch)).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------

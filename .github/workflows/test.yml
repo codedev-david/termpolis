@@ -224,6 +224,11 @@ jobs:
       - name: Terminal switch focuses the input line
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/terminal-focus.spec.ts
+      # In-terminal find gate: Ctrl+Shift+F opens the find bar and the real
+      # SearchAddon finds a keyword that has scrolled into the scrollback.
+      - name: In-terminal find bar searches scrollback
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npx playwright test e2e/terminal-search.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

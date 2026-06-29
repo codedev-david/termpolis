@@ -104,6 +104,15 @@ vi.mock('@xterm/addon-unicode11', () => ({
 vi.mock('@xterm/addon-web-links', () => ({
   WebLinksAddon: function () { this.dispose = vi.fn() },
 }))
+vi.mock('@xterm/addon-search', () => ({
+  SearchAddon: function () {
+    this.dispose = vi.fn()
+    this.findNext = vi.fn()
+    this.findPrevious = vi.fn()
+    this.clearDecorations = vi.fn()
+    this.onDidChangeResults = vi.fn(() => ({ dispose: vi.fn() }))
+  },
+}))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
 // --- Mock uuid ---
