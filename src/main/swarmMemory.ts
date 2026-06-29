@@ -720,6 +720,9 @@ export async function memoryRelated(opts: RelatedOptions): Promise<Array<MemoryS
 
 export interface GraphQueryOptions { id?: string; query?: string; relation?: string; depth?: number; limit?: number }
 
+// BB5: per-hop discount for graph-proximity path scoring (score ~ pathWeight * gamma^(hops-1)).
+const GRAPH_GAMMA = 0.8
+
 // Walk the knowledge graph from a seed memory (by id, or by a query that finds the
 // seed) and resolve the connected entries — the agent-facing "follow the chain".
 export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<MemorySearchResult & { relation: string; distance: number }>> {
@@ -738,13 +741,15 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
   for (const h of hits) {
     const e = byId.get(h.id)
     if (!e) continue
-    // QW5: blend the hop-distance penalty with the edge's time-decayed weight, so
-    // memoryGraphQuery finally uses the cosine weight it already stores and stale
-    // edges fade out. Drop hits whose decayed score falls below EDGE_EPSILON.
-    const score = Math.max(0, 1 - h.distance * 0.15) * effectiveWeight(h.weight, h.ts, now)
+    // BB5: graph-proximity weighted-path score — the product of clamped edge weights
+    // along the path (h.pathWeight) discounted by gamma^(hops-1), then time-decayed by
+    // the freshest edge's recency (QW5). So a strong, short, recent connection scores
+    // highest; stale or weak paths fall below EDGE_EPSILON and drop out.
+    const score = h.pathWeight * Math.pow(GRAPH_GAMMA, h.distance - 1) * effectiveWeight(1, h.ts, now)
     if (score < EDGE_EPSILON) continue
     out.push({ ...e, score, relation: h.relation, distance: h.distance })
   }
+  out.sort((a, b) => b.score - a.score)
   return out
 }
 

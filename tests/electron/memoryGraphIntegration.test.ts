@@ -55,6 +55,19 @@ describe('knowledge graph — explicit links + traversal (keyword mode)', () => 
     expect(memoryLink({ from: '', to: 'y' })).toBeNull()
   })
 
+  it('BB5: a strong, short path outranks a weak / longer one in the memory_graph score', async () => {
+    const seed = await memoryWrite({ agentId: 'a', kind: 'note', content: 'seed node alpha' })
+    const strong = await memoryWrite({ agentId: 'a', kind: 'note', content: 'strong direct neighbour' })
+    const mid = await memoryWrite({ agentId: 'a', kind: 'note', content: 'intermediate hop node' })
+    const weak = await memoryWrite({ agentId: 'a', kind: 'note', content: 'weak distant neighbour' })
+    memoryLink({ from: seed.id, to: strong.id, relation: 'relates-to', weight: 1 })   // 1 hop, strong
+    memoryLink({ from: seed.id, to: mid.id, relation: 'relates-to', weight: 0.3 })     // 1 hop, weak
+    memoryLink({ from: mid.id, to: weak.id, relation: 'relates-to', weight: 0.3 })     // 2 hops, weaker
+    const hits = await memoryGraphQuery({ id: seed.id, depth: 2 })
+    expect(hits[0].id).toBe(strong.id) // pathWeight 1, 1 hop → top
+    expect(hits.findIndex(h => h.id === strong.id)).toBeLessThan(hits.findIndex(h => h.id === weak.id))
+  })
+
   it('BB4: a canonical node (only incoming edges) surfaces its connected nodes via reverse traversal', async () => {
     const decision = await memoryWrite({ agentId: 'a', kind: 'decision', content: 'canonical decision: use HNSW' })
     const q1 = await memoryWrite({ agentId: 'a', kind: 'note', content: 'question one about ann index' })

@@ -24,8 +24,9 @@ export interface GraphHit {
   relation: string
   distance: number
   from: string
-  weight: number   // the traversed edge's stored weight (decayed at scoring time)
-  ts: number       // the traversed edge's timestamp — input to the forgetting curve
+  weight: number      // the LAST traversed edge's stored weight (decayed at scoring time)
+  ts: number          // the LAST traversed edge's timestamp — input to the forgetting curve
+  pathWeight: number  // BB5: product of clamped edge weights along the whole path (0,1]
 }
 
 // QW5 — edge forgetting curve. Connections fade out of traversal scoring as they
@@ -111,19 +112,23 @@ export function bfsTraverse(
   const relation = opts.relation ? normalizeRelation(opts.relation) : undefined
   const directed = opts.directed ?? true
   const reverse = opts.reverse
+  // BB5: clamp each edge weight to (0,1] before multiplying into the path product,
+  // so a stray weight:5 (addMemoryEdge has no upper bound) can't dominate the score.
+  const clamp01 = (w: number): number => Math.min(1, Math.max(0, w))
   const visited = new Set<string>([start])
   const out: GraphHit[] = []
-  let frontier: string[] = [start]
+  let frontier: Array<{ id: string; pw: number }> = [{ id: start, pw: 1 }]
   for (let d = 1; d <= depth && out.length < limit; d++) {
-    const next: string[] = []
-    for (const node of frontier) {
+    const next: Array<{ id: string; pw: number }> = []
+    for (const { id: node, pw } of frontier) {
       // Outgoing edges (forward) — relation as stored.
       for (const e of adjacency.get(node) || []) {
         if (relation && e.relation !== relation) continue
         if (visited.has(e.to)) continue
         visited.add(e.to)
-        out.push({ id: e.to, relation: e.relation, distance: d, from: node, weight: e.weight, ts: e.ts })
-        next.push(e.to)
+        const childPw = pw * clamp01(e.weight)
+        out.push({ id: e.to, relation: e.relation, distance: d, from: node, weight: e.weight, ts: e.ts, pathWeight: childPw })
+        next.push({ id: e.to, pw: childPw })
         if (out.length >= limit) break
       }
       if (out.length >= limit) break
@@ -134,8 +139,9 @@ export function bfsTraverse(
           if (relation && rel !== relation) continue
           if (visited.has(e.from)) continue
           visited.add(e.from)
-          out.push({ id: e.from, relation: rel, distance: d, from: node, weight: e.weight, ts: e.ts })
-          next.push(e.from)
+          const childPw = pw * clamp01(e.weight)
+          out.push({ id: e.from, relation: rel, distance: d, from: node, weight: e.weight, ts: e.ts, pathWeight: childPw })
+          next.push({ id: e.from, pw: childPw })
           if (out.length >= limit) break
         }
         if (out.length >= limit) break

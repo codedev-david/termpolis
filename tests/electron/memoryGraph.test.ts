@@ -82,6 +82,17 @@ describe('memoryGraph — pure helpers', () => {
       expect(hit.weight).toBe(0.42)
       expect(hit.ts).toBe(12345)
     })
+    it('accumulates the path-weight product, clamping each edge weight to <=1 (BB5)', () => {
+      const w = (from: string, to: string, weight: number): MemoryEdge => ({ from, to, relation: 'relates-to', weight, ts: 0 })
+      const adj2 = new Map<string, MemoryEdge[]>([
+        ['a', [w('a', 'b', 0.5)]],
+        ['b', [w('b', 'c', 0.4), w('b', 'd', 5)]], // weight 5 is out of range → clamps to 1
+      ])
+      const pw = Object.fromEntries(bfsTraverse(adj2, 'a', { depth: 2 }).map(h => [h.id, h.pathWeight]))
+      expect(pw['b']).toBeCloseTo(0.5, 10)        // 1 * 0.5
+      expect(pw['c']).toBeCloseTo(0.5 * 0.4, 10)  // 0.5 * 0.4
+      expect(pw['d']).toBeCloseTo(0.5, 10)        // 0.5 * clamp01(5)=1 — stray weight can't dominate
+    })
   })
 
   describe('effectiveWeight — edge forgetting curve (QW5)', () => {
