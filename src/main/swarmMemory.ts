@@ -5,8 +5,8 @@ import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
-import { TtlLruCache, rankScore } from './memoryEconomy'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
+import { TtlLruCache, rankScore, mergeRelated } from './memoryEconomy'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -680,18 +680,42 @@ export interface RelatedOptions {
 // nearest-neighbour links). By id: use that entry's content as the query and drop
 // the entry itself; by query: a plain semantic search. Cheap — reuses memorySearch
 // (and its cache). The first concrete step toward an explicit knowledge graph.
-export async function memoryRelated(opts: RelatedOptions): Promise<MemorySearchResult[]> {
+export async function memoryRelated(opts: RelatedOptions): Promise<Array<MemorySearchResult & { relation?: string }>> {
   if (!opts || (!opts.id && !opts.query)) return []
-  let query = opts.query
-  if (opts.id) {
-    const src = entries.find(e => e.id === opts.id)
-    if (!src) return []
-    query = src.content
-  }
-  if (!query || !query.trim()) return []
   const limit = Math.min(Math.max(opts.limit ?? 5, 1), 100)
-  const results = await memorySearch({ query, limit: limit + 1, project: opts.project })
-  return results.filter(r => r.id !== opts.id).slice(0, limit)
+
+  // Query mode is unchanged — a plain semantic search.
+  if (!opts.id) {
+    const query = opts.query
+    if (!query || !query.trim()) return []
+    return memorySearch({ query, limit, project: opts.project })
+  }
+
+  // Id mode (QW6): hybrid of typed-edge neighbours + vector neighbours, so
+  // memory_related actually "follows the thread" (its documented contract) instead
+  // of being a relabeled vector search — and degrades to edges when embeddings are
+  // off (an explicit link surfaces even with zero content overlap).
+  const src = entries.find(e => e.id === opts.id)
+  if (!src) return []
+  const vectorHits = (await memorySearch({ query: src.content, limit: limit + 1, project: opts.project }))
+    .filter(r => r.id !== opts.id)
+  const edges = edgesFrom(opts.id)
+    .filter(e => e.to !== opts.id)
+    .map(e => ({ id: e.to, relation: e.relation, weight: e.weight }))
+  const merged = mergeRelated({ vectorHits: vectorHits.map(r => ({ id: r.id, score: r.score })), edges })
+
+  // Resolve ids back to entries. An edge can point to an entry outside the vector
+  // hits (or trimmed from the hot window) — skip ids we can't resolve.
+  const vById = new Map(vectorHits.map(r => [r.id, r]))
+  const byId = new Map(entries.map(e => [e.id, e]))
+  const out: Array<MemorySearchResult & { relation?: string }> = []
+  for (const m of merged) {
+    const e = vById.get(m.id) || byId.get(m.id)
+    if (!e) continue
+    out.push(m.relation ? { ...e, score: m.score, relation: m.relation } : { ...e, score: m.score })
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 export interface GraphQueryOptions { id?: string; query?: string; relation?: string; depth?: number; limit?: number }

@@ -319,7 +319,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_related',
-    description: 'Find entries CONNECTED to a stored memory — a one-hop traversal of the shared brain. Pass an entry `id` to get its nearest neighbours (the memories most related to it), or a `query` for a plain semantic search. Use it to follow a thread: from a bug to the fix that solved it, from a decision to what superseded it, or to surface similar work by another agent or session — without re-deriving context.',
+    description: 'Find entries CONNECTED to a stored memory — a one-hop traversal of the shared brain. Pass an entry `id` to get the memories most related to it: this blends the TYPED EDGES you have recorded (each such result includes its `relation`) with semantic nearest-neighbours, so an explicit link surfaces even when the wording differs. Or pass a `query` for a plain semantic search. Use it to follow a thread: from a bug to the fix that solved it, from a decision to what superseded it, or to surface similar work by another agent or session — without re-deriving context.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -9,6 +9,7 @@ import {
   rankScore,
   RANK_DEFAULTS,
   adaptiveGate,
+  mergeRelated,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -210,6 +211,36 @@ describe('memoryEconomy', () => {
     it('sorts by score desc and returns [] for empty input', () => {
       expect(adaptiveGate(mk(0.2, 0.9, 0.5), { floor: 0, cap: 10, relFrac: 0, absoluteFloor: 0 }).map(h => h.score)).toEqual([0.9, 0.5, 0.2])
       expect(adaptiveGate([], { floor: 3, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 })).toEqual([])
+    })
+  })
+
+  describe('mergeRelated — fuse vector neighbours with typed-edge neighbours (QW6)', () => {
+    it('dedups by id and soft-OR-combines vector sim with the saturated edge weight', () => {
+      const out = mergeRelated({ vectorHits: [{ id: 'x', score: 0.6 }], edges: [{ id: 'x', relation: 'solves', weight: 1 }] })
+      expect(out).toHaveLength(1)
+      expect(out[0].id).toBe('x')
+      expect(out[0].relation).toBe('solves')
+      expect(out[0].score).toBeCloseTo(1 - (1 - 0.6) * (1 - 0.5), 10) // 0.8 (edge w=1 → 0.5)
+    })
+    it('saturates raw edge weight so a default link (w=1 → 0.5) cannot outrank a strong vector hit', () => {
+      const out = mergeRelated({ vectorHits: [{ id: 'strong', score: 0.9 }], edges: [{ id: 'link', relation: 'relates-to', weight: 1 }] })
+      expect(out.map(o => o.id)).toEqual(['strong', 'link'])
+      expect(out[1].score).toBeCloseTo(0.5, 10)
+    })
+    it('surfaces edge-only neighbours (no vector hit) and keeps the relation', () => {
+      const out = mergeRelated({ vectorHits: [], edges: [{ id: 'e', relation: 'follows', weight: 3 }] })
+      expect(out[0]).toMatchObject({ id: 'e', relation: 'follows' })
+      expect(out[0].score).toBeCloseTo(3 / 4, 10) // saturate(3) = 0.75
+    })
+    it('clamps negative/over-unit vector sims, drops score<=0, returns sorted desc', () => {
+      const out = mergeRelated({ vectorHits: [{ id: 'neg', score: -0.5 }, { id: 'a', score: 0.3 }, { id: 'b', score: 0.7 }], edges: [] })
+      expect(out.map(o => o.id)).toEqual(['b', 'a']) // 'neg' clamps to 0 → score 0 → dropped
+    })
+    it('keeps the strongest edge weight + its relation when an id has multiple edges (order-independent)', () => {
+      const out = mergeRelated({ vectorHits: [], edges: [{ id: 'x', relation: 'weak', weight: 0.2 }, { id: 'x', relation: 'strong', weight: 5 }] })
+      expect(out).toHaveLength(1)
+      expect(out[0].relation).toBe('strong')
+      expect(out[0].score).toBeCloseTo(5 / 6, 10)
     })
   })
 })

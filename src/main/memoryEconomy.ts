@@ -100,6 +100,50 @@ export function rankScore(input: RankInput, weights: RankWeights = {}): number {
   return input.relevance * (1 + alpha * recency) * kindPrior
 }
 
+export interface RelatedScore {
+  id: string
+  score: number
+  relation?: string
+}
+
+/** Saturate a raw (unbounded) edge weight into 0..1 via w/(w+1), so a default
+ *  weight=1 link (→ 0.5) can't trivially outrank a strong vector hit. Pure. */
+const saturateEdge = (w: number): number => { const x = Math.max(0, w); return x / (x + 1) }
+
+/**
+ * Fuse vector neighbours with typed-edge neighbours for memory_related. Dedup by
+ * id; combine each id's best vector similarity (clamped to 0..1) with its best
+ * saturated edge weight via a soft-OR `1 - (1-vsim)(1-edge)` — so an id related
+ * BOTH ways outranks one related a single way, while a lone default link stays at
+ * 0.5 (below a strong vector hit). Surfaces the strongest edge's relation, drops
+ * score ≤ 0, returns sorted by score desc. Pure.
+ */
+export function mergeRelated(input: {
+  vectorHits: Array<{ id: string; score: number }>
+  edges: Array<{ id: string; relation: string; weight: number }>
+}): RelatedScore[] {
+  const byId = new Map<string, { vsim: number; edge: number; relation?: string }>()
+  for (const h of input.vectorHits) {
+    const v = Math.max(0, Math.min(1, h.score))
+    const cur = byId.get(h.id) || { vsim: 0, edge: 0 }
+    cur.vsim = Math.max(cur.vsim, v)
+    byId.set(h.id, cur)
+  }
+  for (const e of input.edges) {
+    const s = saturateEdge(e.weight)
+    const cur = byId.get(e.id) || { vsim: 0, edge: 0 }
+    if (s >= cur.edge) { cur.edge = s; cur.relation = e.relation } // strongest edge wins; keep its relation
+    byId.set(e.id, cur)
+  }
+  const out: RelatedScore[] = []
+  for (const [id, { vsim, edge, relation }] of byId) {
+    const score = 1 - (1 - vsim) * (1 - edge)
+    if (score > 0) out.push(relation !== undefined ? { id, score, relation } : { id, score })
+  }
+  out.sort((a, b) => b.score - a.score)
+  return out
+}
+
 const norm = (s: string): string => (s || '').replace(/\s+/g, ' ').trim().toLowerCase()
 
 /** Drop later hits whose content exactly duplicates an earlier (higher-score) one. */

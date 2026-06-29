@@ -7,6 +7,7 @@ import {
   memoryWrite,
   memorySearch,
   memoryRelated,
+  memoryLink,
   _resetForTests,
   _setEmbeddingsAvailable,
   _setEmbedFnForTests,
@@ -47,6 +48,29 @@ describe('memoryRelated — 1-hop traversal (connected memory)', () => {
   it('returns [] for an unknown id or empty input', async () => {
     expect(await memoryRelated({ id: 'does-not-exist' })).toEqual([])
     expect(await memoryRelated({})).toEqual([])
+  })
+
+  it('QW6: surfaces an explicitly-linked neighbour with zero content overlap, carrying its relation', async () => {
+    const a = await memoryWrite({ agentId: 'claude', kind: 'note', content: 'the auth bug repro steps' })
+    const b = await memoryWrite({ agentId: 'claude', kind: 'note', content: 'totally unrelated zebra giraffe content' })
+    memoryLink({ from: a.id, to: b.id, relation: 'solved-by' })
+    const related = await memoryRelated({ id: a.id, limit: 5 })
+    const hit = related.find(r => r.id === b.id)
+    expect(hit).toBeTruthy()                       // the edge surfaces it despite no keyword overlap
+    expect(hit!.relation).toBe('solved-by')        // and the relation is surfaced
+  })
+
+  it('QW6: a default-weight link does not outrank a strong vector/keyword neighbour', async () => {
+    const a = await memoryWrite({ agentId: 'claude', kind: 'note', content: 'kubernetes docker deploy pipeline' })
+    const strong = await memoryWrite({ agentId: 'claude', kind: 'note', content: 'kubernetes docker deploy pipeline runbook' })
+    const linked = await memoryWrite({ agentId: 'claude', kind: 'note', content: 'unrelated xyzzy content' })
+    memoryLink({ from: a.id, to: linked.id, relation: 'relates-to' }) // weight defaults to 1 → saturates to 0.5
+    const related = await memoryRelated({ id: a.id, limit: 5 })
+    const strongRank = related.findIndex(r => r.id === strong.id)
+    const linkedRank = related.findIndex(r => r.id === linked.id)
+    expect(strongRank).toBeGreaterThanOrEqual(0)
+    expect(linkedRank).toBeGreaterThanOrEqual(0)
+    expect(strongRank).toBeLessThan(linkedRank) // strong keyword hit (1.0) beats the default link (0.5)
   })
 })
 
