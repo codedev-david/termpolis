@@ -274,6 +274,7 @@ export function _resetForTests(): void {
   searchCache.clear()
   lexicalIndex.clear()
   graphFusionEnabled = false
+  prfEnabled = false
   _resetGraphForTests()
 }
 
@@ -611,6 +612,33 @@ export function _setGraphFusionForTests(v: boolean): void { graphFusionEnabled =
 const lexicalIndex = new LexicalIndex()
 // Saturate unbounded BM25 into 0..1 for the calibrated fusion: bm25 / (bm25 + K).
 const LEX_SAT_K = 1
+
+// BB3: pseudo-relevance feedback (Rocchio, dense-only). DEFAULT OFF — enabling is
+// gated on a measured recall lift over a labeled set. When on, a moderately-relevant
+// thin result expands the query toward the centroid of its top hits and unions a
+// second pass by MAX cosine (never RRF — preserves the 0..1 score contract).
+let prfEnabled = false
+export function _setPrfForTests(v: boolean): void { prfEnabled = v; bumpSearchGen() }
+const PRF_M = 3       // top hits whose centroid feeds the expansion
+const PRF_MIN = 0.3   // below this top-1 cosine there's nothing worth expanding around
+const PRF_MAX = 0.65  // above this the first pass is already strong
+const PRF_BETA = 0.3  // expansion strength toward the centroid
+
+/** Rocchio dense query expansion: normalize(q + beta * mean(topVecs)). Pure. */
+export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA): number[] {
+  const dim = q.length
+  const out = q.slice()
+  if (topVecs.length > 0) {
+    const mean = new Array(dim).fill(0)
+    for (const v of topVecs) for (let i = 0; i < dim; i++) mean[i] += v[i] ?? 0
+    for (let i = 0; i < dim; i++) out[i] += beta * (mean[i] / topVecs.length)
+  }
+  let norm = 0
+  for (let i = 0; i < dim; i++) norm += out[i] * out[i]
+  norm = Math.sqrt(norm) || 1
+  for (let i = 0; i < dim; i++) out[i] /= norm
+  return out
+}
 function searchCacheKey(o: SearchOptions, limit: number): string {
   return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.diversify ? 'd' : ''}`
 }
@@ -661,6 +689,22 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
       // background `hnsw` is null or stale, so we serve the exact brute-force scan.
       if (hnsw && !hnswStale) { try { hits = hnsw.search(queryF32, fetchN, allow) } catch { hits = [] } }
       if (hits.length === 0) hits = vectorStore.searchTopK(queryF32, fetchN, allow) // exact brute-force fallback
+      // BB3: optional pseudo-relevance feedback (default OFF). When the top hit is only
+      // MODERATELY relevant and the result is thin, expand the query toward the centroid
+      // of the top-m hits and union a second pass by MAX cosine.
+      if (prfEnabled && hits.length > 0 && hits.length < limit && hits[0].score >= PRF_MIN && hits[0].score <= PRF_MAX) {
+        const topVecs: number[][] = []
+        for (const h of hits.slice(0, PRF_M)) { const v = vectorStore.get(h.row); if (v) topVecs.push(Array.from(v)) }
+        if (topVecs.length > 0) {
+          const q2 = Float32Array.from(rocchioExpand(queryEmb, topVecs))
+          const byRow = new Map<number, number>(hits.map(h => [h.row, h.score]))
+          for (const h of vectorStore.searchTopK(q2, fetchN, allow)) {
+            const prev = byRow.get(h.row)
+            if (prev === undefined || h.score > prev) byRow.set(h.row, h.score) // union by MAX cosine
+          }
+          hits = [...byRow.entries()].map(([row, score]) => ({ row, score })).sort((a, b) => b.score - a.score)
+        }
+      }
       for (const h of hits) {
         const e = rowToEntry.get(h.row)
         if (e) scored.push({ ...e, score: h.score })

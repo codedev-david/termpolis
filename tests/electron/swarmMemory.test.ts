@@ -32,6 +32,8 @@ import {
   _whenHnswSettledForTests,
   _isHnswReadyForTests,
   _setGraphFusionForTests,
+  _setPrfForTests,
+  rocchioExpand,
   memoryLink,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
@@ -300,6 +302,50 @@ describe('hybrid lexical+dense retrieval (BB1)', () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'unrelated billing invoice logic' })
     const hits = await memorySearch({ query: 'authentication jwt' })
     expect(hits[0].content).toContain('authentication')
+  })
+})
+
+describe('rocchioExpand — dense PRF kernel (BB3)', () => {
+  it('normalizes the query when there are no feedback vectors', () => {
+    const out = rocchioExpand([3, 4], [])
+    expect(out[0]).toBeCloseTo(0.6, 10) // [3,4] / 5
+    expect(out[1]).toBeCloseTo(0.8, 10)
+  })
+  it('shifts the query toward the feedback centroid and renormalizes to unit length', () => {
+    const out = rocchioExpand([1, 0], [[0, 1]], 0.5) // q=e0, feedback=e1
+    expect(Math.hypot(out[0], out[1])).toBeCloseTo(1, 10)
+    expect(out[1]).toBeGreaterThan(0)        // moved toward the feedback direction
+    expect(out[0]).toBeGreaterThan(out[1])   // still mostly the original query
+  })
+  it('averages multiple feedback vectors', () => {
+    const out = rocchioExpand([1, 0, 0], [[0, 1, 0], [0, 0, 1]], 1) // mean = [0, .5, .5]
+    expect(out[1]).toBeCloseTo(out[2], 10)
+  })
+})
+
+describe('pseudo-relevance feedback in memorySearch (BB3, opt-in)', () => {
+  const dvec = (pairs: Array<[number, number]>): number[] => {
+    const v = new Array(384).fill(0)
+    for (const [i, val] of pairs) v[i] = val
+    return v
+  }
+  it('expands a moderately-relevant thin result toward its centroid (default-off byte-identical)', async () => {
+    const E0 = dvec([[0, 1]])                    // doc direction
+    const Q = dvec([[0, 0.5], [1, 0.866]])       // query at cosine ~0.5 to the docs (moderate)
+    _setEmbedFnForTests(async () => E0)
+    for (let i = 0; i < 3; i++) await memoryWrite({ agentId: 'a', kind: 'note', content: `document number ${i} alpha` })
+    _setEmbedFnForTests(async () => Q)
+    const off = await memorySearch({ query: 'zzznomatch', limit: 10 }) // no lexical match → pure dense
+    expect(off.length).toBe(3)
+    _setPrfForTests(true)
+    try {
+      const on = await memorySearch({ query: 'zzznomatch', limit: 10 })
+      for (const h of on) { expect(h.score).toBeGreaterThan(0); expect(h.score).toBeLessThanOrEqual(1) }
+      // The expanded query sits closer to the docs → higher (still calibrated) scores.
+      expect(on[0].score).toBeGreaterThan(off[0].score)
+    } finally {
+      _setPrfForTests(false)
+    }
   })
 })
 
