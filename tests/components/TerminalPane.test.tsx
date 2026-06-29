@@ -1636,31 +1636,6 @@ describe('TerminalPane', () => {
       expect(mocks.mockTerminal.write).toHaveBeenCalledWith('hello output')
     })
 
-    it('surfaces the input-latency readout when an echo is slow', () => {
-      let nowVal = 0
-      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => nowVal)
-      // The probe measures the paint leg on rAF; run it synchronously here.
-      const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => { cb(0); return 1 })
-      render(<TerminalPane {...defaultProps} />) // markOpen() at now=0
-      act(() => { mockOnDataCb?.('a') }) // keystroke armed at now=0
-      nowVal = 300 // 300ms elapse before the echo returns
-      act(() => { mockOnTerminalDataCb?.('term-1', 'a') }) // echoMs=300 → over threshold
-      const badge = screen.getByTestId('input-latency-badge')
-      expect(badge).toBeInTheDocument()
-      expect(badge.textContent).toMatch(/echo 300ms/)
-      rafSpy.mockRestore()
-      nowSpy.mockRestore()
-    })
-
-    it('does not surface the readout for a fast echo', () => {
-      const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => { cb(0); return 1 })
-      render(<TerminalPane {...defaultProps} />)
-      act(() => { mockOnDataCb?.('a') })
-      act(() => { mockOnTerminalDataCb?.('term-1', 'a') }) // ~0ms echo, below the 200ms threshold
-      expect(screen.queryByTestId('input-latency-badge')).not.toBeInTheDocument()
-      rafSpy.mockRestore()
-    })
-
     it('ignores data for other terminal IDs', () => {
       render(<TerminalPane {...defaultProps} />)
       const writeCountBefore = mocks.mockTerminal.write.mock.calls.length

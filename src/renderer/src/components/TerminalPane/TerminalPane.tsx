@@ -7,7 +7,6 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { createInputLatencyProbe, type InputLatencySample } from '../../lib/inputLatencyProbe'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
@@ -158,21 +157,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     try { searchAddonRef.current?.clearDecorations() } catch { /* nothing to clear */ }
     try { termRef.current?.focus() } catch { /* terminal disposed */ }
   }, [])
-  // Input-latency probe surface (lib/inputLatencyProbe). The probe measures every
-  // keystroke, but we only surface a readout when input is actually slow (either
-  // leg >= 200ms) — so there's no badge in the normal fast case; it appears exactly
-  // when lag is felt, with numbers that say whether it's the shell (echoMs) or the
-  // renderer (paintMs). The effect below auto-hides it a few seconds later.
-  const [echoLatency, setEchoLatency] = useState<InputLatencySample | null>(null)
-  const latencyReportRef = useRef<(s: InputLatencySample) => void>(() => {})
-  latencyReportRef.current = (s) => {
-    if (s.echoMs >= 200 || s.paintMs >= 200) setEchoLatency(s)
-  }
-  useEffect(() => {
-    if (!echoLatency) return
-    const t = setTimeout(() => setEchoLatency(null), 5000)
-    return () => clearTimeout(t)
-  }, [echoLatency])
   // Keyboard copy mode — select text/words with no mouse (Ctrl+Shift+Space).
   const selectionModeRef = useRef(false)
   const anchorRef = useRef<GridPos>({ x: 0, y: 0 })
@@ -735,13 +719,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       return true // let terminal handle all other keys
     })
 
-    // Input-latency probe: times keystroke→echo (shell round trip) and echo→frame
-    // (renderer starvation) to localize input lag. The probe always measures;
-    // an on-pane readout (input-latency-badge) is surfaced only when a leg is
-    // slow (>= 200ms), so there's no noise in the fast case. See lib/inputLatencyProbe.
-    const latencyProbe = createInputLatencyProbe({ report: (s) => latencyReportRef.current(s) })
-    latencyProbe.markOpen()
-
     term.onData((data) => {
       // When dropdown is visible, intercept certain keys
       if (completion.handleDropdownKeyIntercept(data)) {
@@ -750,7 +727,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
       // Pass data to PTY
       window.termpolis.writeToTerminal(terminalId, data)
-      latencyProbe.onKeystroke(data)
 
       // Record input if recording
       recording.appendRecordingEntry('input', data)
@@ -791,7 +767,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
     const unsub = window.termpolis.onTerminalData((id, data) => {
       if (id !== terminalId) return
-      latencyProbe.onOutput(data.length)
       throttledWrite(data)
 
       // Record output if recording
@@ -1088,15 +1063,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
           )}
         </div>
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
-        {echoLatency && (
-          <div
-            data-testid="input-latency-badge"
-            className="absolute bottom-1.5 left-2 z-30 font-mono text-[10px] px-1.5 py-0.5 rounded bg-black/75 text-[#9fe6ff] border border-[#3c3c3c] pointer-events-none"
-            title="Input latency (shows only when slow). echo = keystroke→shell echo (shell round trip); paint = echo→next animation frame (renderer)."
-          >
-            echo {Math.round(echoLatency.echoMs)}ms · paint {Math.round(echoLatency.paintMs)}ms{echoLatency.firstEcho ? ' · 1st' : ''}
-          </div>
-        )}
         {groqGateOpen && (
           <VoiceGroqGate
             onClose={() => setGroqGateOpen(false)}
