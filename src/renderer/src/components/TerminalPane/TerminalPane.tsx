@@ -39,6 +39,28 @@ import { useSessionRecording } from '../../hooks/useSessionRecording'
 import type { ShellType } from '../../types'
 import '@xterm/xterm/css/xterm.css'
 
+// True only when a real, hardware-accelerated WebGL2 context is available. Gates
+// xterm's WebGL renderer: under software GL (headless CI, VMs, old/blocked
+// drivers) the addon initializes but then throws ASYNCHRONOUSLY (undefined render
+// dimensions / `_isDisposed` on teardown) — a crash that escapes the synchronous
+// guard around loadAddon — so we never load it there and keep the robust DOM
+// renderer. Returns false in non-DOM/jsdom environments too.
+function hasHardwareWebgl(): boolean {
+  try {
+    if (typeof document === 'undefined') return false
+    const probe = document.createElement('canvas')
+    const gl = probe.getContext('webgl2') as WebGL2RenderingContext | null
+    if (!gl) return false
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+    const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : ''
+    // SwiftShader / llvmpipe / softpipe / ANGLE-software / Microsoft Basic Render
+    // are the software rasterizers where the async crash happens.
+    return !/swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/i.test(renderer)
+  } catch {
+    return false
+  }
+}
+
 interface Props {
   terminalId: string
   terminalName: string
@@ -359,19 +381,23 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // 3. Open terminal (attach to DOM) — must come before WebGL
     term.open(containerRef.current)
 
-    // 4. Load the WebGL renderer addon (requires DOM attachment). The GPU
-    // renderer paints far faster than xterm's default DOM renderer, which was the
-    // source of typing/paint latency (the input-latency badge's paintMs leg). It
-    // is version-matched now that the core is @xterm/xterm 5.5 — the old 5.3 core
-    // vs 5.5 addon mismatch is what made it crash/blank before. Fully guarded: if
-    // WebGL is unavailable, or the GPU context is lost at runtime, we dispose the
-    // addon and xterm transparently falls back to the DOM renderer, so the
-    // terminal never goes blank.
-    try {
-      const webglAddon = new WebglAddon()
-      webglAddon.onContextLoss(() => { try { webglAddon.dispose() } catch { /* already disposed */ } })
-      term.loadAddon(webglAddon)
-    } catch { /* no WebGL (old GPU/driver or software rendering) — DOM renderer stays */ }
+    // 4. Renderer. xterm's default DOM renderer is the slowest and is the source
+    // of typing/paint latency. The GPU WebGL renderer is far faster — BUT under a
+    // SOFTWARE GL stack (headless CI, VMs, old/blocked drivers) it initializes and
+    // then throws ASYNCHRONOUSLY inside the addon (undefined render dimensions /
+    // `_isDisposed` on teardown), and that throw escapes the synchronous try/catch
+    // around loadAddon. That async crash is exactly what broke the e2e smoke
+    // ("toggle split view") in the earlier renderer-ladder attempts. So we probe
+    // for a real HARDWARE WebGL2 context up front and only load WebGL then;
+    // otherwise we stay on the DOM renderer (what shipped fine before). A runtime
+    // context loss still disposes the addon → DOM fallback.
+    if (hasHardwareWebgl()) {
+      try {
+        const webglAddon = new WebglAddon()
+        webglAddon.onContextLoss(() => { try { webglAddon.dispose() } catch { /* already disposed */ } })
+        term.loadAddon(webglAddon)
+      } catch { /* WebGL load failed late — DOM renderer stays */ }
+    }
 
     // 5. Load Unicode11 addon
     try {
