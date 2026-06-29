@@ -19,7 +19,7 @@ export interface HnswOptions {
   efConstruction?: number // candidate breadth while building (higher = better graph)
   efSearch?: number       // candidate breadth while querying (higher = better recall)
   rng?: () => number      // layer-assignment randomness; injectable for deterministic tests
-  heuristic?: boolean     // BB9: Alg-4 diversity neighbour selection (default true)
+  heuristic?: boolean     // BB9: Alg-4 diversity neighbour selection (opt-in; default false)
 }
 
 function dot(a: Float32Array, b: Float32Array): number {
@@ -138,7 +138,11 @@ export class HnswIndex {
     this.efS = opts.efSearch ?? 96
     this.mL = 1 / Math.log(this.M)
     this.rng = opts.rng ?? Math.random
-    this.heuristic = opts.heuristic ?? true
+    // BB9: OPT-IN. The simple closest-m select keeps the recall@10>=0.9 gate
+    // comfortably green at efC=100/efS=96; the Alg-4 diversity heuristic trades a
+    // little fixed-ef recall for hub control and shines at lower ef / 50k-1M scale —
+    // enable it explicitly once validated there.
+    this.heuristic = opts.heuristic ?? false
   }
 
   get size(): number { return this.nodeLevel.size }

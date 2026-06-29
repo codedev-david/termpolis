@@ -78,6 +78,22 @@ describe('HnswIndex', () => {
     expect(hit / total).toBeGreaterThan(0.9)
   })
 
+  it('heuristic:true (BB9 opt-in) keeps recall@10 high at adequate efSearch', () => {
+    const dim = 32, N = 300, r = rng(123)
+    const vecs = Array.from({ length: N }, () => randomUnit(dim, r))
+    const idx = new HnswIndex((row) => vecs[row] ?? null, { rng: rng(99), efSearch: 200, heuristic: true })
+    for (let i = 0; i < N; i++) idx.add(i)
+    const k = 10, qr = rng(55)
+    let hit = 0, total = 0
+    for (let t = 0; t < 20; t++) {
+      const q = randomUnit(dim, qr)
+      const truth = vecs.map((v, row) => ({ row, s: dot(q, v) })).sort((a, b) => b.s - a.s).slice(0, k).map((x) => x.row)
+      const got = new Set(idx.search(q, k).map((x) => x.row))
+      for (const row of truth) { total++; if (got.has(row)) hit++ }
+    }
+    expect(hit / total).toBeGreaterThan(0.9)
+  })
+
   it('heuristic:false falls back to simple closest-m selection and still finds the exact match (BB9)', () => {
     const dim = 16
     const r = rng(1)
