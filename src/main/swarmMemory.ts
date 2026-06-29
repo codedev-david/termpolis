@@ -244,6 +244,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
     recordSwarmError('swarmMemory.init.failed', err, { memPath })
     memPath = null
   }
+  loadForgotSet() // BB15: device-local forgot-set (anti-thrash for the 30-min re-ingest)
 }
 
 export function _resetForTests(): void {
@@ -254,6 +255,7 @@ export function _resetForTests(): void {
   syncDir = null
   entries.length = 0
   seenHashes.clear()
+  forgotSet.clear()
   tombstones.clear()
   clearEpoch = 0
   encKey = null
@@ -304,9 +306,48 @@ export function _isHnswReadyForTests(): boolean {
   return hnsw !== null && !hnswStale
 }
 
-/** True if a chunk with this content hash is already stored (idempotent ingest). */
+// BB15: device-local forgot-set — hashes of cold message chunks we've forgotten from
+// the hot window. Stored DEVICE-LOCAL (userData), NEVER in synced shards (a synced
+// {forgot:hash} would silently delete data another device actively uses). Consulted by
+// memoryHasHash so the 30-min idempotent re-ingest doesn't resurrect what we forgot.
+const forgotSet = new Set<string>()
+const FORGOT_CAP = 50_000
+function forgotFile(): string | null { return userDataDir ? path.join(userDataDir, 'memory-forgot.json') : null }
+function loadForgotSet(): void {
+  forgotSet.clear()
+  const f = forgotFile()
+  if (!f) return
+  try {
+    if (fs.existsSync(f)) for (const h of JSON.parse(fs.readFileSync(f, 'utf8')) as string[]) forgotSet.add(h)
+  } catch { /* missing/corrupt → empty set */ }
+}
+function persistForgotSet(): void {
+  const f = forgotFile()
+  if (!f) return
+  try { fs.writeFileSync(f, JSON.stringify([...forgotSet])) } catch { /* best effort */ }
+}
+
+/** True if a chunk with this content hash is already stored OR was forgotten on this
+ *  device (so re-ingest skips it — the anti-thrash prize of BB15). */
 export function memoryHasHash(hash: string): boolean {
-  return typeof hash === 'string' && seenHashes.has(hash)
+  return typeof hash === 'string' && (seenHashes.has(hash) || forgotSet.has(hash))
+}
+
+/**
+ * BB15 cold-chunk predicate: a chunk is forgettable ONLY if it's a cold, untethered
+ * transcript message — kind 'message', older than `minAgeMs`, with no tags and no
+ * outgoing graph edges (never a note/decision/fact, never something linked). Pure.
+ */
+export function isForgettable(
+  entry: { kind: string; ts: number; tags?: string[] },
+  now: number,
+  hasOutgoingEdges: boolean,
+  minAgeMs = 14 * 86_400_000,
+): boolean {
+  return entry.kind === 'message'
+    && now - entry.ts >= minAgeMs
+    && (!entry.tags || entry.tags.length === 0)
+    && !hasOutgoingEdges
 }
 
 /** Backfill project slugs onto already-stored entries by content hash — used by
@@ -1031,6 +1072,8 @@ export function memoryCount(): number {
 export function memoryClear(): void {
   entries.length = 0
   seenHashes.clear()
+  forgotSet.clear()
+  persistForgotSet()
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
   lexicalIndex.clear()
@@ -1063,6 +1106,46 @@ export function memoryDelete(id: string): void {
   lexicalIndex.remove(id)
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete')
+}
+
+/**
+ * BB15: forget up to `max` (≤200) cold message chunks — drop them from the hot window
+ * + indexes and record their hashes in the DEVICE-LOCAL forgot-set so re-ingest won't
+ * resurrect them. NOT a CRDT delete (no tombstone — it's a local working-set trim, not
+ * a propagated deletion). Returns the number forgotten. Off by default — callable for
+ * a power-user near the cap; never auto-runs.
+ */
+export function memoryForget(opts: { now?: number; max?: number } = {}): number {
+  const now = opts.now ?? Date.now()
+  const max = Math.min(Math.max(opts.max ?? 200, 0), 200)
+  if (max === 0) return 0
+  const victims: MemoryEntry[] = []
+  for (const e of entries) {
+    if (victims.length >= max) break
+    if (isForgettable(e, now, edgesFrom(e.id).length > 0)) victims.push(e)
+  }
+  for (const v of victims) {
+    if (v.hash) {
+      forgotSet.add(v.hash)
+      while (forgotSet.size > FORGOT_CAP) { // cap, evict oldest (insertion order)
+        const oldest = forgotSet.values().next().value
+        if (oldest === undefined) break
+        forgotSet.delete(oldest)
+      }
+      seenHashes.delete(v.hash)
+    }
+    const idx = entries.indexOf(v)
+    if (idx !== -1) entries.splice(idx, 1)
+    const r = entryRow.get(v)
+    if (r !== undefined) rowToEntry.delete(r)
+    lexicalIndex.remove(v.id)
+  }
+  if (victims.length > 0) {
+    persistForgotSet()
+    if (!hnswBuilding) compactVectorStore() // reclaim the orphaned rows after the batch
+    bumpSearchGen()
+  }
+  return victims.length
 }
 
 // ---- Cross-machine sync control ----

@@ -36,6 +36,8 @@ import {
   rocchioExpand,
   memoryLink,
   _vectorStoreSizeForTests,
+  isForgettable,
+  memoryForget,
 } from '../../src/main/swarmMemory'
 import { HnswIndex } from '../../src/main/hnswIndex'
 import { gateByScore } from '../../src/main/memoryEconomy'
@@ -303,6 +305,47 @@ describe('hybrid lexical+dense retrieval (BB1)', () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'unrelated billing invoice logic' })
     const hits = await memorySearch({ query: 'authentication jwt' })
     expect(hits[0].content).toContain('authentication')
+  })
+})
+
+describe('isForgettable — cold-chunk predicate (BB15)', () => {
+  const DAY = 86_400_000
+  const base = { kind: 'message', ts: 0 } as { kind: string; ts: number; tags?: string[] }
+  it('forgets only a cold, untethered message', () => {
+    expect(isForgettable({ ...base }, 30 * DAY, false)).toBe(true)
+  })
+  it('never forgets non-message kinds', () => {
+    expect(isForgettable({ ...base, kind: 'note' }, 30 * DAY, false)).toBe(false)
+    expect(isForgettable({ ...base, kind: 'decision' }, 30 * DAY, false)).toBe(false)
+  })
+  it('never forgets a recent message', () => {
+    expect(isForgettable({ ...base, ts: 29 * DAY }, 30 * DAY, false)).toBe(false)
+  })
+  it('never forgets a tagged or graph-linked message', () => {
+    expect(isForgettable({ ...base, tags: ['keep'] }, 30 * DAY, false)).toBe(false)
+    expect(isForgettable({ ...base }, 30 * DAY, true)).toBe(false) // has an outgoing edge
+  })
+  it('honors a custom min age', () => {
+    expect(isForgettable({ ...base }, 5 * DAY, false, 10 * DAY)).toBe(false)
+    expect(isForgettable({ ...base }, 11 * DAY, false, 10 * DAY)).toBe(true)
+  })
+})
+
+describe('memoryForget — device-local forgetting (BB15)', () => {
+  it('forgets a cold message; the forgot-set stops re-ingest from resurrecting it', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2020-01-01T00:00:00Z'))
+      const m = await memoryWrite({ agentId: 'a', kind: 'message', content: 'an old cold transcript line', hash: 'h-cold' })
+      await memoryWrite({ agentId: 'a', kind: 'note', content: 'a kept note', hash: 'h-note' })
+      vi.setSystemTime(new Date('2020-02-01T00:00:00Z')) // 31 days later
+      expect(memoryForget()).toBe(1)             // only the old, untethered message
+      expect(memoryCount()).toBe(1)              // the note remains
+      expect(memoryHasHash('h-cold')).toBe(true) // recorded device-local → re-ingest skips it
+      expect((await memorySearch({ query: 'cold transcript' })).some(r => r.id === m.id)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
