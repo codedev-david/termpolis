@@ -5,7 +5,7 @@ import * as path from 'path'
 import {
   normalizeRelation, upsertEdge, bfsTraverse,
   initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, graphStats, _resetGraphForTests,
-  effectiveWeight, EDGE_HALF_LIFE,
+  effectiveWeight, EDGE_HALF_LIFE, invertRelation, neighboursOf,
   type MemoryEdge,
 } from '../../src/main/memoryGraph'
 
@@ -57,6 +57,25 @@ describe('memoryGraph — pure helpers', () => {
     it('respects the limit', () => {
       expect(bfsTraverse(adj, 'bug', { depth: 5, limit: 2 })).toHaveLength(2)
     })
+    it('is forward-only by default — a target-only node returns [] (BB4 legacy path)', () => {
+      // 'fix' has an incoming edge (bug -> fix) but no outgoing one in `adj`.
+      const fwd = new Map<string, MemoryEdge[]>([['bug', [edge('bug', 'fix', 'solved-by')]]])
+      expect(bfsTraverse(fwd, 'fix', { depth: 3 })).toEqual([])
+    })
+    it('undirected walks incoming edges with the relation inverted (BB4)', () => {
+      const fwd = new Map<string, MemoryEdge[]>([['bug', [edge('bug', 'fix', 'solved-by')]]])
+      const rev = new Map<string, MemoryEdge[]>([['fix', [edge('bug', 'fix', 'solved-by')]]])
+      const hits = bfsTraverse(fwd, 'fix', { depth: 2, directed: false, reverse: rev })
+      expect(hits.map(h => h.id)).toEqual(['bug'])
+      expect(hits[0].relation).toBe('solves') // solved-by, inverted from fix's perspective
+      expect(hits[0].from).toBe('fix')
+    })
+    it('filters reverse edges against the INVERTED relation (BB4)', () => {
+      const fwd = new Map<string, MemoryEdge[]>([['bug', [edge('bug', 'fix', 'solved-by')]]])
+      const rev = new Map<string, MemoryEdge[]>([['fix', [edge('bug', 'fix', 'solved-by')]]])
+      expect(bfsTraverse(fwd, 'fix', { depth: 2, directed: false, reverse: rev, relation: 'solves' }).map(h => h.id)).toEqual(['bug'])
+      expect(bfsTraverse(fwd, 'fix', { depth: 2, directed: false, reverse: rev, relation: 'solved-by' })).toEqual([])
+    })
     it('carries the traversed edge weight + ts onto each hit (QW5 inputs)', () => {
       const adj2 = new Map<string, MemoryEdge[]>([['x', [{ from: 'x', to: 'y', relation: 'relates-to', weight: 0.42, ts: 12345 }]]])
       const [hit] = bfsTraverse(adj2, 'x', { depth: 1 })
@@ -82,6 +101,20 @@ describe('memoryGraph — pure helpers', () => {
       expect(effectiveWeight(1, 0, 10, 10)).toBeCloseTo(0.5, 10)
     })
   })
+
+  describe('invertRelation (BB4)', () => {
+    it('inverts directional pairs and leaves symmetric / unknown relations unchanged', () => {
+      expect(invertRelation('solves')).toBe('solved-by')
+      expect(invertRelation('solved-by')).toBe('solves')
+      expect(invertRelation('supersedes')).toBe('superseded-by')
+      expect(invertRelation('caused-by')).toBe('causes')
+      expect(invertRelation('part-of')).toBe('has-part')
+      expect(invertRelation('refers-to')).toBe('referred-by')
+      expect(invertRelation('relates-to')).toBe('relates-to') // symmetric
+      expect(invertRelation('duplicates')).toBe('duplicates')  // symmetric
+      expect(invertRelation('some-custom-relation')).toBe('some-custom-relation') // unknown → itself
+    })
+  })
 })
 
 describe('memoryGraph — stateful store + persistence', () => {
@@ -97,6 +130,27 @@ describe('memoryGraph — stateful store + persistence', () => {
     expect(traverseGraph('a', { depth: 2 }).map(h => h.id)).toEqual(['b', 'c'])
     expect(edgesFrom('a')).toHaveLength(1)
     expect(graphStats()).toEqual({ edges: 2, nodes: 2 })
+  })
+
+  it('traverseGraph is undirected by default — a target-only node returns its inbound nodes (BB4)', () => {
+    addMemoryEdge({ from: 'q1', to: 'answer', relation: 'refers-to' })
+    addMemoryEdge({ from: 'q2', to: 'answer', relation: 'refers-to' })
+    // Forward-only (legacy) from the canonical "answer" returns nothing...
+    expect(traverseGraph('answer', { depth: 1, directed: true })).toEqual([])
+    // ...but the new undirected default surfaces the inbound nodes (relation inverted).
+    const hits = traverseGraph('answer', { depth: 1 })
+    expect(hits.map(h => h.id).sort()).toEqual(['q1', 'q2'])
+    expect(hits[0].relation).toBe('referred-by')
+  })
+
+  it('neighboursOf merges outgoing + incoming neighbours, inverting inbound relations (BB4)', () => {
+    addMemoryEdge({ from: 'a', to: 'b', relation: 'solves' })   // outgoing from a
+    addMemoryEdge({ from: 'c', to: 'a', relation: 'refers-to' }) // incoming to a
+    const ns = neighboursOf('a')
+    const rel = Object.fromEntries(ns.map(n => [n.id, n.relation]))
+    expect(ns).toHaveLength(2)
+    expect(rel['b']).toBe('solves')        // outgoing, as stored
+    expect(rel['c']).toBe('referred-by')   // incoming, inverted
   })
 
   it('persists to JSONL and reloads on init — the graph survives a restart', () => {

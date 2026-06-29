@@ -57,6 +57,24 @@ export function normalizeRelation(r: string | undefined | null): string {
   return n || 'relates-to'
 }
 
+// Directional relation pairs — when we traverse an edge BACKWARDS we relabel it
+// with its inverse so the result reads correctly from the seed's perspective
+// (X "solved-by" Y, walked from Y, becomes Y "solves" X). Symmetric relations
+// (relates-to, duplicates) and any unknown relation invert to themselves.
+const RELATION_INVERSE: Record<string, string> = {
+  'solves': 'solved-by', 'solved-by': 'solves',
+  'supersedes': 'superseded-by', 'superseded-by': 'supersedes',
+  'causes': 'caused-by', 'caused-by': 'causes',
+  'part-of': 'has-part', 'has-part': 'part-of',
+  'follows': 'precedes', 'precedes': 'follows',
+  'refers-to': 'referred-by', 'referred-by': 'refers-to',
+}
+
+/** The inverse of a relation for backward traversal; unchanged if symmetric/unknown. Pure. */
+export function invertRelation(relation: string): string {
+  return RELATION_INVERSE[relation] ?? relation
+}
+
 /**
  * Insert or update an edge in a node's adjacency list: dedup by from+to+relation,
  * keeping the stronger weight and latest ts, sorted by weight desc. Pure (mutates
@@ -77,30 +95,51 @@ export function upsertEdge(list: MemoryEdge[], edge: MemoryEdge): MemoryEdge[] {
  * Breadth-first n-hop traversal from `start` — cycle-safe, depth- and limit-bounded,
  * optionally filtered to a single relation. Excludes the start node. Pure (operates
  * on the supplied adjacency map).
+ *
+ * BB4: when `directed` is false AND a `reverse` adjacency map is supplied, incoming
+ * edges are also expanded (the neighbour is `e.from`, the relation is inverted) — so
+ * a canonical "answer" node that only has edges pointing AT it stops returning [].
+ * Legacy callers pass neither (directed defaults true) and get the forward-only path.
  */
 export function bfsTraverse(
   adjacency: Map<string, MemoryEdge[]>,
   start: string,
-  opts: { relation?: string; depth?: number; limit?: number } = {},
+  opts: { relation?: string; depth?: number; limit?: number; directed?: boolean; reverse?: Map<string, MemoryEdge[]> } = {},
 ): GraphHit[] {
   const depth = Math.max(1, opts.depth ?? 2)
   const limit = Math.max(1, opts.limit ?? 20)
   const relation = opts.relation ? normalizeRelation(opts.relation) : undefined
+  const directed = opts.directed ?? true
+  const reverse = opts.reverse
   const visited = new Set<string>([start])
   const out: GraphHit[] = []
   let frontier: string[] = [start]
   for (let d = 1; d <= depth && out.length < limit; d++) {
     const next: string[] = []
     for (const node of frontier) {
+      // Outgoing edges (forward) — relation as stored.
       for (const e of adjacency.get(node) || []) {
         if (relation && e.relation !== relation) continue
         if (visited.has(e.to)) continue
         visited.add(e.to)
-        out.push({ id: e.to, relation: e.relation, distance: d, from: e.from, weight: e.weight, ts: e.ts })
+        out.push({ id: e.to, relation: e.relation, distance: d, from: node, weight: e.weight, ts: e.ts })
         next.push(e.to)
         if (out.length >= limit) break
       }
       if (out.length >= limit) break
+      // Incoming edges (reverse), relation inverted — only when undirected.
+      if (!directed && reverse) {
+        for (const e of reverse.get(node) || []) {
+          const rel = invertRelation(e.relation)
+          if (relation && rel !== relation) continue
+          if (visited.has(e.from)) continue
+          visited.add(e.from)
+          out.push({ id: e.from, relation: rel, distance: d, from: node, weight: e.weight, ts: e.ts })
+          next.push(e.from)
+          if (out.length >= limit) break
+        }
+        if (out.length >= limit) break
+      }
     }
     frontier = next
     if (frontier.length === 0) break
@@ -110,12 +149,17 @@ export function bfsTraverse(
 
 // ── Stateful store (persisted JSONL append-log) ──────────────────────────────
 const adjacency = new Map<string, MemoryEdge[]>()
+// BB4: reverse index keyed by edge target — edges pointing AT a node — so we can
+// walk incoming connections without scanning the whole graph. Built alongside the
+// forward map at every mutation; never persisted separately (derived from edges).
+const reverseAdjacency = new Map<string, MemoryEdge[]>()
 let edgeCount = 0
 let graphPath: string | null = null
 
 /** Point the graph at a userData dir and load any existing edges (survives restarts). */
 export function initMemoryGraph(dir: string): void {
   adjacency.clear()
+  reverseAdjacency.clear()
   edgeCount = 0
   graphPath = path.join(dir, 'memory-graph.jsonl')
   try {
@@ -138,6 +182,11 @@ function indexEdge(e: MemoryEdge): void {
   upsertEdge(list, e)
   adjacency.set(e.from, list)
   edgeCount += list.length - before // +1 for a new edge, +0 when it dedups
+  // Mirror into the reverse index (keyed by target). Same dedup semantics; we don't
+  // re-count here — edgeCount tracks distinct edges via the forward map only.
+  const rlist = reverseAdjacency.get(e.to) || []
+  upsertEdge(rlist, e)
+  reverseAdjacency.set(e.to, rlist)
 }
 
 export interface AddEdgeInput { from: string; to: string; relation?: string; weight?: number; createdBy?: string }
@@ -161,13 +210,37 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
   return edge
 }
 
-export function traverseGraph(start: string, opts: { relation?: string; depth?: number; limit?: number } = {}): GraphHit[] {
-  return bfsTraverse(adjacency, start, opts)
+// BB4: traversal is UNDIRECTED by default now — it walks both outgoing and incoming
+// edges (incoming relabeled with the inverse relation), which is what lets a queried
+// "answer" node surface the questions/notes that point at it. Pass `directed: true`
+// for the legacy forward-only walk.
+export function traverseGraph(
+  start: string,
+  opts: { relation?: string; depth?: number; limit?: number; directed?: boolean } = {},
+): GraphHit[] {
+  return bfsTraverse(adjacency, start, { ...opts, directed: opts.directed ?? false, reverse: reverseAdjacency })
 }
 
 export function edgesFrom(id: string): MemoryEdge[] {
   const list = adjacency.get(id)
   return list ? [...list] : []
+}
+
+/**
+ * BB4: all 1-hop neighbours of `id` regardless of edge direction — outgoing edges
+ * as stored, incoming edges relabeled with the inverse relation — deduped by
+ * neighbour id keeping the strongest weight. The basis for bidirectional
+ * `memory_related` and graph fusion.
+ */
+export function neighboursOf(id: string): Array<{ id: string; relation: string; weight: number; ts: number }> {
+  const out = new Map<string, { id: string; relation: string; weight: number; ts: number }>()
+  const consider = (nid: string, relation: string, weight: number, ts: number): void => {
+    const cur = out.get(nid)
+    if (!cur || weight > cur.weight) out.set(nid, { id: nid, relation, weight, ts })
+  }
+  for (const e of adjacency.get(id) || []) consider(e.to, e.relation, e.weight, e.ts)
+  for (const e of reverseAdjacency.get(id) || []) consider(e.from, invertRelation(e.relation), e.weight, e.ts)
+  return [...out.values()]
 }
 
 export function graphStats(): { edges: number; nodes: number } {
@@ -176,6 +249,7 @@ export function graphStats(): { edges: number; nodes: number } {
 
 export function _resetGraphForTests(): void {
   adjacency.clear()
+  reverseAdjacency.clear()
   edgeCount = 0
   graphPath = null
 }

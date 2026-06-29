@@ -55,6 +55,21 @@ describe('knowledge graph — explicit links + traversal (keyword mode)', () => 
     expect(memoryLink({ from: '', to: 'y' })).toBeNull()
   })
 
+  it('BB4: a canonical node (only incoming edges) surfaces its connected nodes via reverse traversal', async () => {
+    const decision = await memoryWrite({ agentId: 'a', kind: 'decision', content: 'canonical decision: use HNSW' })
+    const q1 = await memoryWrite({ agentId: 'a', kind: 'note', content: 'question one about ann index' })
+    const q2 = await memoryWrite({ agentId: 'a', kind: 'note', content: 'question two about ann index' })
+    // Auto-links only ever point new->old; these inbound links make `decision`
+    // canonical. Forward-only traversal returned []; BB4's undirected walk surfaces them.
+    memoryLink({ from: q1.id, to: decision.id, relation: 'refers-to' })
+    memoryLink({ from: q2.id, to: decision.id, relation: 'refers-to' })
+    const hits = await memoryGraphQuery({ id: decision.id, depth: 1 })
+    const ids = hits.map(h => h.id)
+    expect(ids).toContain(q1.id)
+    expect(ids).toContain(q2.id)
+    expect(hits.find(h => h.id === q1.id)!.relation).toBe('referred-by') // inbound refers-to, inverted
+  })
+
   it('QW5: a very stale edge decays below EDGE_EPSILON and drops out of traversal', async () => {
     vi.useFakeTimers()
     try {
