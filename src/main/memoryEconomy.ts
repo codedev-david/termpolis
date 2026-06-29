@@ -146,6 +146,56 @@ export function mergeRelated(input: {
 
 const norm = (s: string): string => (s || '').replace(/\s+/g, ' ').trim().toLowerCase()
 
+/** Lowercased word-token set (len > 2) for cheap Jaccard similarity. */
+function tokenSet(s: string): Set<string> {
+  return new Set((s || '').toLowerCase().split(/\W+/).filter((t) => t.length > 2))
+}
+// Below this many meaningful tokens there isn't enough textual signal to call two
+// snippets near-duplicates — protects short/templated content (ids, codes) from
+// being collapsed just because they share their one common word.
+const MIN_DIVERSITY_TOKENS = 3
+// Callers gate on MIN_DIVERSITY_TOKENS, so both sets are non-empty here (no div-by-zero).
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0
+  for (const t of a) if (b.has(t)) inter++
+  return inter / (a.size + b.size - inter)
+}
+
+/**
+ * Greedy MMR-lite diversity pass: walk hits in their existing (score-desc) order
+ * and keep one only if its similarity to EVERY already-kept hit is ≤ threshold —
+ * so a near-duplicate paraphrase stops occupying several inject slots. A strict
+ * superset of {@link dedupeHits} (exact dupes have similarity 1). Similarity is
+ * the injected `simFn` (cosine over attached vectors) when supplied, else
+ * token-Jaccard on `content`. Pure; survivors keep their input order. No-ops with
+ * no embeddings beyond the token-Jaccard near-dup trim (the non-destructive home
+ * for the rejected write-time semantic dedup).
+ */
+export function diversifyHits<T extends { content: string }>(
+  hits: T[],
+  opts: { threshold: number; simFn?: (a: T, b: T) => number },
+): T[] {
+  const threshold = opts.threshold
+  const kept: T[] = []
+  const keptTokens: Set<string>[] = []
+  for (const h of hits) {
+    const ht = opts.simFn ? null : tokenSet(h.content)
+    let dup = false
+    for (let i = 0; i < kept.length; i++) {
+      let sim: number
+      if (opts.simFn) sim = opts.simFn(h, kept[i])
+      else {
+        const a = ht as Set<string>, b = keptTokens[i]
+        // Too little signal to judge → treat as distinct (never collapse).
+        sim = a.size < MIN_DIVERSITY_TOKENS || b.size < MIN_DIVERSITY_TOKENS ? 0 : jaccard(a, b)
+      }
+      if (sim > threshold) { dup = true; break }
+    }
+    if (!dup) { kept.push(h); if (ht) keptTokens.push(ht) }
+  }
+  return kept
+}
+
 /** Drop later hits whose content exactly duplicates an earlier (higher-score) one. */
 export function dedupeHits<T extends { content: string }>(hits: T[]): T[] {
   const seen = new Set<string>()

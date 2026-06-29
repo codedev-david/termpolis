@@ -10,6 +10,7 @@ import {
   RANK_DEFAULTS,
   adaptiveGate,
   mergeRelated,
+  diversifyHits,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -172,6 +173,8 @@ describe('memoryEconomy', () => {
       // custom kind prior
       expect(rankScore({ relevance: 1, ts: 1000, kind: 'message', now: 1000 }, { alpha: 0, kindPriors: { message: 2 } }))
         .toBeCloseTo(2, 10)
+      // a non-positive half-life disables the recency term entirely (guard branch)
+      expect(rankScore({ relevance: 1, ts: 0, kind: 'message', now: 1000 }, { halfLifeMs: 0 })).toBeCloseTo(1, 10)
     })
 
     it('exposes its defaults (alpha 0.25, 30-day half-life, decision/fact 1.15)', () => {
@@ -241,6 +244,43 @@ describe('memoryEconomy', () => {
       expect(out).toHaveLength(1)
       expect(out[0].relation).toBe('strong')
       expect(out[0].score).toBeCloseTo(5 / 6, 10)
+    })
+  })
+
+  describe('diversifyHits — read-time near-duplicate/diversity pass (QW4)', () => {
+    const mk = (content: string, score = 1) => ({ content, score })
+    it('drops a near-duplicate paraphrase (token-Jaccard) but keeps distinct hits', () => {
+      const out = diversifyHits([
+        mk('we use HNSW for vector search in the brain'),
+        mk('we use HNSW for the vector lookup in the brain'), // ~0.75 Jaccard with #1
+        mk('rate limiting uses a token bucket'),
+      ], { threshold: 0.7 })
+      expect(out.map(h => h.content)).toEqual([
+        'we use HNSW for vector search in the brain',
+        'rate limiting uses a token bucket',
+      ])
+    })
+    it('is a strict superset of dedupeHits — also removes exact duplicates', () => {
+      expect(diversifyHits([mk('alpha beta gamma'), mk('alpha beta gamma')], { threshold: 0.7 })).toHaveLength(1)
+    })
+    it('keeps the FIRST (highest-scored) of a near-dup cluster, preserving order', () => {
+      const out = diversifyHits([mk('keep me one two three'), mk('keep me one two four'), mk('totally different stuff')], { threshold: 0.5 })
+      expect(out.map(h => h.content)).toEqual(['keep me one two three', 'totally different stuff'])
+    })
+    it('uses an injected simFn (cosine) instead of token-Jaccard when provided', () => {
+      const items = [{ content: 'x', vec: 1 }, { content: 'y', vec: 1 }, { content: 'z', vec: 0 }]
+      const simFn = (p: { vec: number }, q: { vec: number }) => (p.vec === q.vec ? 1 : 0)
+      const out = diversifyHits(items, { threshold: 0.9, simFn })
+      expect(out.map(h => h.content)).toEqual(['x', 'z']) // y dropped (sim 1 to x), z kept (sim 0)
+    })
+    it('does not collapse token-sparse snippets that share their one common word', () => {
+      // Each has only one >2-char token ("content") → too little signal to judge.
+      const out = diversifyHits([mk('content p1'), mk('content p2'), mk('content g1')], { threshold: 0.7 })
+      expect(out).toHaveLength(3)
+    })
+    it('no-ops on empty / single-element input', () => {
+      expect(diversifyHits([], { threshold: 0.7 })).toEqual([])
+      expect(diversifyHits([mk('solo')], { threshold: 0.7 })).toHaveLength(1)
     })
   })
 })

@@ -75,6 +75,21 @@ describe('buildContextPrimer', () => {
     expect(out).not.toContain('noise gamma')
   })
 
+  it('QW4: a near-duplicate paraphrase does not occupy a second inject slot — backfills with a distinct hit', async () => {
+    const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
+    const search = vi.fn().mockResolvedValue([
+      mk('we use HNSW for vector search in the brain', 0.9),
+      mk('we use HNSW for the vector lookup in the brain', 0.88), // near-dup paraphrase of #1 (~0.75 Jaccard)
+      mk('rate limiting uses a token bucket algorithm', 0.86),
+      mk('the deploy pipeline runs on kubernetes', 0.84),
+    ])
+    const out = await buildContextPrimer(search, { query: 'q', limit: 3 })
+    expect(out).toContain('we use HNSW for vector search')
+    expect(out).not.toContain('vector lookup')   // near-dup dropped
+    expect(out).toContain('rate limiting')
+    expect(out).toContain('kubernetes')          // backfilled into the freed slot
+  })
+
   it('QW2: trims on a relevance cliff — injects the strong cluster, not the whole tail above the static floor', async () => {
     const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
     // All six clear the old static 0.25 floor, so a FIXED gate would inject all six.

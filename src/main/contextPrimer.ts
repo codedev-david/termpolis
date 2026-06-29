@@ -16,7 +16,7 @@
 // formatting mirrors the cross-AI handoff prompt: no backticks (AI shells often
 // treat them as command substitution), simple dividers, single-line snippets.
 
-import { adaptiveGate, dedupeHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { adaptiveGate, dedupeHits, diversifyHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 
 export interface PrimerHit {
   content: string
@@ -55,6 +55,9 @@ const RELEVANCE_FLOOR = 3
 // to clear the gate (in addition to the absolute MIN_RELEVANCE floor). This is
 // what trims "inject 6" down to "inject 3-4" when results fall off a cliff.
 const RELEVANCE_REL_FRAC = 0.6
+// Token-Jaccard similarity above which two hits are near-duplicates — one is
+// dropped so the same decision/paraphrase doesn't occupy several inject slots.
+const DIVERSITY_THRESHOLD = 0.7
 
 // Estimated cost of the last primer built — the measurable "how much did we inject"
 // number the Memory panel / accounting reads. Zero until the first successful build.
@@ -79,8 +82,14 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // the relevant ones (with a floor so a thin recall never starves the agent) and
   // drop exact duplicates. This is "inject signal, not noise" — the token-saver.
   const candidateLimit = Math.min(Math.max(limit * CANDIDATE_FACTOR, limit), 100)
+  // Order matters: drop exact dupes, then near-duplicate paraphrases over the FULL
+  // over-fetched pool (so a freed slot backfills with a distinct hit), THEN apply
+  // the relevance cut + cap to `limit`.
   const gate = (hits: PrimerHit[]): PrimerHit[] =>
-    dedupeHits(adaptiveGate(hits, { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit }))
+    adaptiveGate(
+      diversifyHits(dedupeHits(hits), { threshold: DIVERSITY_THRESHOLD }),
+      { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
+    )
 
   let projectHits: PrimerHit[] = []
   if (project) {
