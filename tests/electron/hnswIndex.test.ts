@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { HnswIndex, efForK } from '../../src/main/hnswIndex'
+import { HnswIndex, efForK, selectHeuristic } from '../../src/main/hnswIndex'
 
 // Deterministic RNG (mulberry32) so build + recall are reproducible.
 function rng(seed: number): () => number {
@@ -78,6 +78,15 @@ describe('HnswIndex', () => {
     expect(hit / total).toBeGreaterThan(0.9)
   })
 
+  it('heuristic:false falls back to simple closest-m selection and still finds the exact match (BB9)', () => {
+    const dim = 16
+    const r = rng(1)
+    const vecs = Array.from({ length: 80 }, () => randomUnit(dim, r))
+    const idx = new HnswIndex((row) => vecs[row] ?? null, { rng: rng(7), heuristic: false })
+    for (let i = 0; i < vecs.length; i++) idx.add(i)
+    expect(idx.search(vecs[10], 1)[0].row).toBe(10)
+  })
+
   it('honors an explicit efSearch override on search() and still finds the exact match (QW3)', () => {
     const dim = 16
     const r = rng(1)
@@ -137,5 +146,23 @@ describe('efForK — Pareto-safe adaptive query breadth (QW3)', () => {
     expect(efForK(100, 96, 4, 150)).toBe(150)
     expect(efForK(10, 96, 8)).toBe(96)   // 80 < efS -> efS
     expect(efForK(20, 96, 8)).toBe(160)  // round(160)
+  })
+})
+
+describe('selectHeuristic — Alg-4 diversity selection (BB9)', () => {
+  // base node + 3 candidates: 0 and 1 are a tight cluster; 2 is far from both.
+  const dist = (x: number, y: number): number =>
+    ({ '0-1': 0.02, '0-2': 0.5, '1-2': 0.5 } as Record<string, number>)[[x, y].sort().join('-')] ?? 0
+  const cands = [{ row: 0, d: 0.1 }, { row: 1, d: 0.12 }, { row: 2, d: 0.2 }]
+
+  it('keeps a candidate only if it is closer to base than to kept neighbours (drops near-dups)', () => {
+    // 0 kept; 1 is closer to 0 (0.02) than to base (0.12) → pruned; 2 is far → kept.
+    expect(selectHeuristic(cands, 2, dist, false)).toEqual([0, 2])
+  })
+  it('backfills the closest pruned candidates when under m (keepPruned)', () => {
+    expect(selectHeuristic(cands, 3, dist, true).slice().sort()).toEqual([0, 1, 2])
+  })
+  it('returns at most m, closest-to-base first', () => {
+    expect(selectHeuristic([{ row: 5, d: 0.9 }, { row: 3, d: 0.1 }], 1, () => 1)).toEqual([3])
   })
 })

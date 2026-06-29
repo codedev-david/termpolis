@@ -19,6 +19,7 @@ export interface HnswOptions {
   efConstruction?: number // candidate breadth while building (higher = better graph)
   efSearch?: number       // candidate breadth while querying (higher = better recall)
   rng?: () => number      // layer-assignment randomness; injectable for deterministic tests
+  heuristic?: boolean     // BB9: Alg-4 diversity neighbour selection (default true)
 }
 
 function dot(a: Float32Array, b: Float32Array): number {
@@ -36,6 +37,35 @@ function dot(a: Float32Array, b: Float32Array): number {
  */
 export function efForK(k: number, efS: number, mult = 4, max = 200): number {
   return Math.min(Math.max(efS, Math.round(k * mult)), max)
+}
+
+/**
+ * BB9: HNSW Alg-4 diversity (heuristic) neighbour selection. A candidate is kept only
+ * if it's closer to the base node than to every already-kept neighbour — spreading
+ * connections out for better hub control and recall at lower efSearch. `keepPruned`
+ * backfills the closest pruned candidates so node degree isn't under-filled (strict
+ * Alg-4 can LOWER recall). Pure: pairwise distance is injected; `candidates[i].d` is
+ * each candidate's distance to the base node. Returns the kept rows (closest first).
+ */
+export function selectHeuristic(
+  candidates: { row: number; d: number }[],
+  m: number,
+  dist: (a: number, b: number) => number,
+  keepPruned = true,
+): number[] {
+  const sorted = candidates.slice().sort((a, b) => a.d - b.d) // closest to the base first
+  const kept: { row: number; d: number }[] = []
+  const pruned: { row: number; d: number }[] = []
+  for (const e of sorted) {
+    if (kept.length >= m) break
+    let good = true
+    for (const r of kept) {
+      if (dist(e.row, r.row) < e.d) { good = false; break } // closer to a kept neighbour than to base
+    }
+    if (good) kept.push(e); else pruned.push(e)
+  }
+  if (keepPruned) for (const e of pruned) { if (kept.length >= m) break; kept.push(e) }
+  return kept.map((e) => e.row)
 }
 
 // Binary heap of {row, d}. `cmp(a,b) < 0` ⇒ a has priority. We use a min-heap by
@@ -87,6 +117,7 @@ export class HnswIndex {
   private readonly efS: number
   private readonly mL: number
   private readonly rng: () => number
+  private readonly heuristic: boolean
   // row → ONE packed Int32Array of per-layer neighbour rows (-1 = empty slot).
   // Layer 0 gets M0 slots, layers 1..level get M slots each. Keeping adjacency in
   // a typed array (an ArrayBuffer, off the V8 object heap) instead of number[][]
@@ -107,6 +138,7 @@ export class HnswIndex {
     this.efS = opts.efSearch ?? 96
     this.mL = 1 / Math.log(this.M)
     this.rng = opts.rng ?? Math.random
+    this.heuristic = opts.heuristic ?? true
   }
 
   get size(): number { return this.nodeLevel.size }
@@ -114,6 +146,20 @@ export class HnswIndex {
   private d(q: Float32Array, row: number): number {
     const v = this.getVec(row)
     return v ? 1 - dot(q, v) : Infinity
+  }
+
+  // Full-precision distance between two STORED rows (for BB9 heuristic selection).
+  private dRows(a: number, b: number): number {
+    const va = this.getVec(a), vb = this.getVec(b)
+    return va && vb ? 1 - dot(va, vb) : Infinity
+  }
+
+  // Pick `m` neighbours from candidates: Alg-4 diversity heuristic (BB9, default) or
+  // the simple closest-m fallback.
+  private pick(candidates: { row: number; d: number }[], m: number): number[] {
+    return this.heuristic
+      ? selectHeuristic(candidates, m, (a, b) => this.dRows(a, b))
+      : this.select(candidates, m)
   }
 
   // [start, capacity] of layer `layer`'s neighbour slots within a node's packed array.
@@ -218,7 +264,7 @@ export class HnswIndex {
     for (let l = Math.min(this.topLayer, level); l >= 0; l--) {
       const cand = this.searchLayer(q, [cur], this.efC, l)
       const m = l === 0 ? this.M0 : this.M
-      const neigh = this.select(cand, m)
+      const neigh = this.pick(cand, m)
       this.connect(row, l, neigh)
       // Wire back-links and prune over-connected neighbours.
       for (const n of neigh) {
@@ -228,7 +274,7 @@ export class HnswIndex {
         if (nl.length > cap) {
           const nv = this.getVec(n)
           const pruned = nv
-            ? this.select(nl.map((r) => ({ row: r, d: this.d(nv, r) })), cap)
+            ? this.pick(nl.map((r) => ({ row: r, d: this.d(nv, r) })), cap)
             : nl.slice(0, cap)
           this.connect(n, l, pruned)
         } else {
