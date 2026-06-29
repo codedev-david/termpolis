@@ -80,6 +80,7 @@ export interface SessionData {
   aiProfiles?: AIProfile[]
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]
+  allowAppMouseControl?: boolean
   appVersion?: string
 }
 

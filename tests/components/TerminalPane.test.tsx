@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
     selectAll: vi.fn(),
     select: vi.fn(),
     loadAddon: vi.fn(),
+    parser: { registerCsiHandler: vi.fn() },
     unicode: { activeVersion: '11', register: vi.fn() },
     options: {} as Record<string, any>,
     cols: 80,
@@ -88,6 +89,7 @@ mocks.mockGetState.mockImplementation(() => ({
   focusActiveTerminal: mocks.mockFocusActiveTerminal,
   focusNonce: 0,
   autocompleteEnabled: true,
+  allowAppMouseControl: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },
   customKeybindings: [],
 }))
@@ -378,6 +380,7 @@ describe('TerminalPane', () => {
       addTerminal: mocks.mockAddTerminal,
       removeTerminal: mocks.mockRemoveTerminal,
       autocompleteEnabled: true,
+      allowAppMouseControl: false,
       keybindings: { ...DEFAULT_KEYBINDINGS },
       customKeybindings: [],
     }))
@@ -394,6 +397,42 @@ describe('TerminalPane', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  describe('app mouse-control (mouse-tracking suppression)', () => {
+    const lastCsiHandler = () => {
+      const calls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls
+      return calls[calls.length - 1] as [{ prefix?: string; final: string }, (p: (number | number[])[]) => boolean]
+    }
+
+    it('registers a CSI ? h handler that swallows mouse-tracking enables by default', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const [id, cb] = lastCsiHandler()
+      expect(id).toEqual({ prefix: '?', final: 'h' })
+      // mouse-tracking modes are swallowed (true → xterm won't enable them → drag selects text)
+      expect(cb([1000])).toBe(true)
+      expect(cb([1002])).toBe(true)
+      expect(cb([1003])).toBe(true)
+      // unrelated private modes pass through (false → xterm handles them normally)
+      expect(cb([25])).toBe(false)    // cursor visibility
+      expect(cb([2004])).toBe(false)  // bracketed paste
+    })
+
+    it('passes mouse-tracking through when the user allows app mouse control', () => {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        allowAppMouseControl: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      const [, cb] = lastCsiHandler()
+      expect(cb([1002])).toBe(false) // app keeps the mouse
+      expect(cb([25])).toBe(false)
+    })
   })
 
   // =====================================================

@@ -70,6 +70,10 @@ interface TerminalStore {
   defaultShell: ShellType
   showSettings: boolean
   autocompleteEnabled: boolean
+  // When false, Termpolis swallows apps' mouse-tracking requests so a click-drag
+  // selects text (and right-click Copy works) instead of being captured by the TUI
+  // (Claude Code, vim, lazygit…). Set true to let apps use the mouse instead.
+  allowAppMouseControl: boolean
   sidebarCollapsed: boolean
   keybindings: KeybindingMap
   customKeybindings: CustomKeybinding[]
@@ -100,6 +104,7 @@ interface TerminalStore {
   updateWorkspace: (id: string) => void
   removeWorkspace: (id: string) => void
   setAutocompleteEnabled: (enabled: boolean) => void
+  setAllowAppMouseControl: (enabled: boolean) => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setKeybinding: (action: keyof KeybindingMap, binding: string) => void
   resetKeybindings: () => void
@@ -138,6 +143,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   defaultShell: navigator.platform.startsWith('Win') ? 'powershell' : navigator.platform.startsWith('Mac') ? 'zsh' : 'bash',
   showSettings: false,
   autocompleteEnabled: true,
+  allowAppMouseControl: false, // selection-friendly by default (Termpolis is built around copying AI output)
   sidebarCollapsed: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },
   customKeybindings: [],
@@ -234,6 +240,8 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   })),
 
   setAutocompleteEnabled: (enabled) => set({ autocompleteEnabled: enabled }),
+
+  setAllowAppMouseControl: (enabled) => set({ allowAppMouseControl: enabled }),
 
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
 

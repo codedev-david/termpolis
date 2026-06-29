@@ -104,6 +104,7 @@ export interface SessionData {
   promptTemplates?: PromptTemplate[]
   userWorkflows?: WorkflowTemplate[]
   agentRatingOverrides?: Record<string, Record<string, number>>
+  allowAppMouseControl?: boolean
 }
 
 export interface HistoryEntry {

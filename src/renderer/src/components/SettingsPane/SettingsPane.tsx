@@ -40,7 +40,7 @@ function getConfigFiles(home: string): { label: string; path: string; lang: stri
 }
 
 export function SettingsPane() {
-  const { defaultShell, setDefaultShell, autocompleteEnabled, setAutocompleteEnabled } = useTerminalStore()
+  const { defaultShell, setDefaultShell, autocompleteEnabled, setAutocompleteEnabled, allowAppMouseControl, setAllowAppMouseControl } = useTerminalStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [configFiles, setConfigFiles] = useState<{ label: string; path: string; lang: string }[]>([])
   const [activeFile, setActiveFile] = useState('')
@@ -340,6 +340,31 @@ export function SettingsPane() {
                 }`}
               />
             </button>
+          </div>
+          <div className="flex items-start gap-3">
+            <button
+              onClick={() => setAllowAppMouseControl(!allowAppMouseControl)}
+              aria-label="Toggle whether terminal apps may capture the mouse"
+              aria-pressed={allowAppMouseControl}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors mt-0.5 ${
+                allowAppMouseControl ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  allowAppMouseControl ? 'translate-x-4.5' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Let terminal apps control the mouse</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                Off (default) keeps the mouse free for selecting text — so click-drag and right-click
+                Copy work in mouse-driven apps like Claude Code, vim and lazygit. Turn it on to let
+                those apps capture the mouse for their own clickable UI (then hold{' '}
+                <code className="bg-[#3c3c3c] px-1 rounded">Shift</code> to select text).
+              </span>
+            </span>
           </div>
           <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
             <button

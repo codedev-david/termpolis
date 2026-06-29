@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 
 const mockSetDefaultShell = vi.fn()
 const mockSetAutocompleteEnabled = vi.fn()
+const mockSetAllowAppMouseControl = vi.fn()
 const mockSetKeybinding = vi.fn()
 const mockResetKeybindings = vi.fn()
 const mockAddCustomKeybinding = vi.fn()
@@ -58,6 +59,8 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         setDefaultShell: mockSetDefaultShell,
         autocompleteEnabled: true,
         setAutocompleteEnabled: mockSetAutocompleteEnabled,
+        allowAppMouseControl: false,
+        setAllowAppMouseControl: mockSetAllowAppMouseControl,
         keybindings: {},
         customKeybindings: [],
         setKeybinding: mockSetKeybinding,
@@ -74,6 +77,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
       getState: vi.fn(() => ({
         defaultShell: 'bash',
         autocompleteEnabled: true,
+        allowAppMouseControl: false,
         keybindings: {},
         customKeybindings: [],
         agentRatingOverrides: {},
@@ -216,6 +220,14 @@ describe('SettingsPane', () => {
       fireEvent.click(autocompleteToggle)
       expect(mockSetAutocompleteEnabled).toHaveBeenCalledWith(false)
     }
+  })
+
+  it('toggles app mouse control on when its switch is clicked', () => {
+    render(<SettingsPane />)
+    const toggle = screen.getByLabelText('Toggle whether terminal apps may capture the mouse')
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(mockSetAllowAppMouseControl).toHaveBeenCalledWith(true)
   })
 
   it('renders Monaco editor for config files', async () => {

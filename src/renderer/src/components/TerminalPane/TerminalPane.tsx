@@ -10,6 +10,7 @@ import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
+import { suppressesMouseTracking } from '../../lib/mouseMode'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { TerminalSearch, type TerminalSearchOptions } from '../TerminalSearch/TerminalSearch'
 import { v4 as uuid } from 'uuid'
@@ -181,6 +182,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // selection handling) can clear xterm's selection. handleContextMenu prefers
   // the live selection but falls back to this when the selection is already gone.
   const mouseDownSnapRef = useRef<{ snap: CopySnapshot | null; t: number } | null>(null)
+
+  // Whether TUI apps may capture the mouse. Held in a ref so the parser handler
+  // (registered once per terminal) always reads the live value — toggling the setting
+  // takes effect on the next mouse-mode request without recreating the terminal.
+  const allowAppMouseControl = useTerminalStore(s => s.allowAppMouseControl)
+  const allowAppMouseControlRef = useRef(allowAppMouseControl)
+  allowAppMouseControlRef.current = allowAppMouseControl
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -402,6 +410,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // output overlaps the prompt box. null off Windows (native reflow is fine).
       windowsPty: window.termpolis?.platformInfo?.windowsPty ?? null,
     }))
+
+    // Keep the mouse free for text selection unless the user opted into app mouse
+    // control: swallow mouse-tracking DECSET (CSI ? 1000-1003 h) so a click-drag
+    // selects text — making right-click Copy work — instead of being captured by the
+    // TUI app (Claude Code, vim, lazygit). Other private modes pass through untouched.
+    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) =>
+      allowAppMouseControlRef.current ? false : suppressesMouseTracking(params),
+    )
 
     // 2. Load FitAddon
     const fitAddon = new FitAddon()
