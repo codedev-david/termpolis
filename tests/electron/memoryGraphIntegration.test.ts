@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -53,6 +53,23 @@ describe('knowledge graph — explicit links + traversal (keyword mode)', () => 
   it('self-loops and missing endpoints are rejected by memory_link', () => {
     expect(memoryLink({ from: 'x', to: 'x' })).toBeNull()
     expect(memoryLink({ from: '', to: 'y' })).toBeNull()
+  })
+
+  it('QW5: a very stale edge decays below EDGE_EPSILON and drops out of traversal', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2020-01-01T00:00:00Z')) // link created far in the past
+      const a = await memoryWrite({ agentId: 'a', kind: 'note', content: 'ancient cause node' })
+      const b = await memoryWrite({ agentId: 'a', kind: 'note', content: 'ancient effect node' })
+      memoryLink({ from: a.id, to: b.id, relation: 'causes' })
+      // Fresh: the edge is brand-new, so it traverses normally.
+      expect((await memoryGraphQuery({ id: a.id, depth: 1 })).map(r => r.content)).toEqual(['ancient effect node'])
+      // Six years later the 90-day-half-life weight has decayed ~24 half-lives → ~0 → dropped.
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      expect(await memoryGraphQuery({ id: a.id, depth: 1 })).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

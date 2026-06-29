@@ -5,6 +5,7 @@ import * as path from 'path'
 import {
   normalizeRelation, upsertEdge, bfsTraverse,
   initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, graphStats, _resetGraphForTests,
+  effectiveWeight, EDGE_HALF_LIFE,
   type MemoryEdge,
 } from '../../src/main/memoryGraph'
 
@@ -55,6 +56,30 @@ describe('memoryGraph — pure helpers', () => {
     })
     it('respects the limit', () => {
       expect(bfsTraverse(adj, 'bug', { depth: 5, limit: 2 })).toHaveLength(2)
+    })
+    it('carries the traversed edge weight + ts onto each hit (QW5 inputs)', () => {
+      const adj2 = new Map<string, MemoryEdge[]>([['x', [{ from: 'x', to: 'y', relation: 'relates-to', weight: 0.42, ts: 12345 }]]])
+      const [hit] = bfsTraverse(adj2, 'x', { depth: 1 })
+      expect(hit.weight).toBe(0.42)
+      expect(hit.ts).toBe(12345)
+    })
+  })
+
+  describe('effectiveWeight — edge forgetting curve (QW5)', () => {
+    it('returns the full stored weight for a brand-new edge', () => {
+      expect(effectiveWeight(0.8, 1000, 1000)).toBeCloseTo(0.8, 10)
+    })
+    it('halves the weight at exactly one half-life', () => {
+      expect(effectiveWeight(1, 0, EDGE_HALF_LIFE)).toBeCloseTo(0.5, 10)
+    })
+    it('clamps future-dated edges so they never score above the stored weight', () => {
+      expect(effectiveWeight(0.7, 5000, 1000)).toBeCloseTo(0.7, 10) // ts > now → deltaT 0
+    })
+    it('decays toward zero for very old edges', () => {
+      expect(effectiveWeight(1, 0, 100 * EDGE_HALF_LIFE)).toBeLessThan(1e-6)
+    })
+    it('honors a custom half-life', () => {
+      expect(effectiveWeight(1, 0, 10, 10)).toBeCloseTo(0.5, 10)
     })
   })
 })

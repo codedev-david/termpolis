@@ -24,6 +24,25 @@ export interface GraphHit {
   relation: string
   distance: number
   from: string
+  weight: number   // the traversed edge's stored weight (decayed at scoring time)
+  ts: number       // the traversed edge's timestamp — input to the forgetting curve
+}
+
+// QW5 — edge forgetting curve. Connections fade out of traversal scoring as they
+// age, with no extra writes. A 90-day half-life keeps recent links strong while
+// long-stale ones decay below EDGE_EPSILON and drop out.
+export const EDGE_HALF_LIFE = 90 * 86_400_000
+export const EDGE_EPSILON = 1e-3
+
+/**
+ * Time-decayed edge weight: `weight * 0.5^((now-ts)/halfLife)`. Pure. `deltaT` is
+ * clamped ≥ 0 so a future-dated synced-peer edge can't score above its stored
+ * weight. Lets memoryGraphQuery finally USE the cosine weight it already stores
+ * (instead of pure hop-count) and lets stale edges decay out of traversal.
+ */
+export function effectiveWeight(weight: number, ts: number, now: number, halfLife = EDGE_HALF_LIFE): number {
+  const deltaT = Math.max(0, now - ts)
+  return weight * Math.pow(0.5, deltaT / halfLife)
 }
 
 // Suggested relation vocabulary — free-form is allowed, these just guide the agent.
@@ -77,7 +96,7 @@ export function bfsTraverse(
         if (relation && e.relation !== relation) continue
         if (visited.has(e.to)) continue
         visited.add(e.to)
-        out.push({ id: e.to, relation: e.relation, distance: d, from: e.from })
+        out.push({ id: e.to, relation: e.relation, distance: d, from: e.from, weight: e.weight, ts: e.ts })
         next.push(e.to)
         if (out.length >= limit) break
       }

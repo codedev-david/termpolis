@@ -6,7 +6,7 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { TtlLruCache, rankScore } from './memoryEconomy'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -710,9 +710,16 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
   if (hits.length === 0) return []
   const byId = new Map<string, MemoryEntry>(entries.map(e => [e.id, e]))
   const out: Array<MemorySearchResult & { relation: string; distance: number }> = []
+  const now = Date.now()
   for (const h of hits) {
     const e = byId.get(h.id)
-    if (e) out.push({ ...e, score: Math.max(0, 1 - h.distance * 0.15), relation: h.relation, distance: h.distance })
+    if (!e) continue
+    // QW5: blend the hop-distance penalty with the edge's time-decayed weight, so
+    // memoryGraphQuery finally uses the cosine weight it already stores and stale
+    // edges fade out. Drop hits whose decayed score falls below EDGE_EPSILON.
+    const score = Math.max(0, 1 - h.distance * 0.15) * effectiveWeight(h.weight, h.ts, now)
+    if (score < EDGE_EPSILON) continue
+    out.push({ ...e, score, relation: h.relation, distance: h.distance })
   }
   return out
 }
