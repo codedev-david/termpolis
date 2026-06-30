@@ -4,11 +4,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Module-scope variables for dynamic mock state
 let mockConversations: any[] = []
+let mockTerminals: any[] = []
 const mockSetActiveTerminal = vi.fn()
 
 beforeEach(() => {
   mockConversations = []
+  mockTerminals = []
   mockSetActiveTerminal.mockClear()
+  ;(window as any).termpolis = undefined
 })
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
@@ -16,6 +19,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
     (selector?: any) => {
       const state = {
         conversations: mockConversations,
+        terminals: mockTerminals,
         setActiveTerminal: mockSetActiveTerminal,
       }
       return selector ? selector(state) : state
@@ -294,5 +298,55 @@ describe('ConversationSearch', () => {
     // Whitespace query is truthy but trim() is empty, so results array is empty
     // The component checks `query && results.length === 0` which shows "No matching conversations"
     expect(screen.getByText('No matching conversations')).toBeInTheDocument()
+  })
+
+  it('searches the clean live transcript, overriding the partial on-screen parse', async () => {
+    mockTerminals = [{ id: 'term-1', cwd: 'C:/repo' }]
+    mockConversations = [
+      {
+        terminalId: 'term-1',
+        terminalName: 'Terminal 1',
+        agentName: 'Claude Code',
+        turns: [
+          { role: 'user', content: 'only the visible screen text', timestamp: 1, terminalId: 'term-1', terminalName: 'Terminal 1', agentName: 'Claude Code' },
+        ],
+      },
+    ]
+    const readActiveConversation = vi.fn(async () => ({
+      success: true,
+      data: [
+        { role: 'user', text: 'scrolled-away keyword zebra', ts: 10 },
+        { role: 'assistant', text: 'an older answer', ts: 11 },
+      ],
+    }))
+    ;(window as any).termpolis = { readActiveConversation }
+
+    render(<ConversationSearch onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Search AI conversations...')
+    fireEvent.change(input, { target: { value: 'zebra' } })
+
+    // The match lives ONLY in the clean JSONL transcript, not the on-screen parse.
+    expect(await screen.findByText(/scrolled-away keyword/)).toBeInTheDocument()
+    expect(readActiveConversation).toHaveBeenCalledWith('C:/repo', 'claude')
+  })
+
+  it('falls back to the on-screen parse when there is no live transcript', async () => {
+    mockTerminals = [{ id: 'term-1', cwd: 'C:/repo' }]
+    mockConversations = [
+      {
+        terminalId: 'term-1',
+        terminalName: 'Terminal 1',
+        agentName: 'Claude Code',
+        turns: [
+          { role: 'user', content: 'parsed visible content', timestamp: 1, terminalId: 'term-1', terminalName: 'Terminal 1', agentName: 'Claude Code' },
+        ],
+      },
+    ]
+    ;(window as any).termpolis = { readActiveConversation: vi.fn(async () => ({ success: true, data: [] })) }
+
+    render(<ConversationSearch onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Search AI conversations...')
+    fireEvent.change(input, { target: { value: 'parsed visible' } })
+    expect(await screen.findByText(/parsed visible/)).toBeInTheDocument()
   })
 })

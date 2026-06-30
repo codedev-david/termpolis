@@ -24,10 +24,21 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max) + '...'
 }
 
+// Agent display name → transcript agent type (mirrors the transcript watcher map).
+const AGENT_TYPE_BY_NAME: Record<string, 'claude' | 'codex' | 'gemini'> = {
+  'Claude Code': 'claude',
+  Codex: 'codex',
+  'Gemini CLI': 'gemini',
+}
+
 export function ConversationSearch({ onClose }: Props) {
   const [query, setQuery] = useState('')
-  const conversations = useTerminalStore(s => s.conversations)
+  const storeConversations = useTerminalStore(s => s.conversations)
+  const terminals = useTerminalStore(s => s.terminals)
   const setActiveTerminal = useTerminalStore(s => s.setActiveTerminal)
+  // Clean live-transcript turns per terminal (the full JSONL the agent writes to
+  // disk), fetched when the search opens. They replace the partial on-screen parse.
+  const [liveTurns, setLiveTurns] = useState<Record<string, ConversationTurn[]>>({})
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -39,6 +50,51 @@ export function ConversationSearch({ onClose }: Props) {
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
+
+  // When the search opens, pull each AI terminal's CLEAN live transcript — the full
+  // JSONL the agent writes to disk — so we can search the ENTIRE conversation, not
+  // just the visible screen a fullscreen agent (Claude Code) repaints. Best-effort
+  // and Claude-only for now; a terminal with no clean turns keeps its on-screen parse.
+  // Re-runs only when the set of AI terminals changes (not on every streamed turn).
+  const terminalKey = storeConversations.map(c => c.terminalId).join(',')
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const out: Record<string, ConversationTurn[]> = {}
+      for (const conv of storeConversations) {
+        const term = terminals.find(t => t.id === conv.terminalId)
+        const agentType = AGENT_TYPE_BY_NAME[conv.agentName]
+        if (!term?.cwd || !agentType) continue
+        try {
+          const res = await window.termpolis?.readActiveConversation?.(term.cwd, agentType)
+          if (res?.success && Array.isArray(res.data) && res.data.length) {
+            out[conv.terminalId] = res.data.map(t => ({
+              role: t.role,
+              content: t.text,
+              timestamp: t.ts,
+              terminalId: conv.terminalId,
+              terminalName: conv.terminalName,
+              agentName: conv.agentName,
+            }))
+          }
+        } catch {
+          // leave this terminal on its on-screen parse
+        }
+      }
+      if (!cancelled) setLiveTurns(out)
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalKey])
+
+  // Effective conversations: clean live-transcript turns override the partial
+  // on-screen parse per terminal; everything else keeps its existing turns.
+  const conversations = useMemo(
+    () => storeConversations.map(c => (liveTurns[c.terminalId] ? { ...c, turns: liveTurns[c.terminalId] } : c)),
+    [storeConversations, liveTurns],
+  )
 
   // Search across all conversation turns
   const results = useMemo(() => {

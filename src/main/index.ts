@@ -682,6 +682,20 @@ ipcMain.handle('aiSessions:list', async () => {
   }
 })
 
+// Live transcript source for Conversation Search: read + parse the active agent
+// session's JSONL — the COMPLETE, up-to-the-second conversation Claude writes to
+// disk — into clean dialogue turns. Lets the search find anything in the session
+// rather than just the visible screen a fullscreen agent repaints. Best-effort;
+// returns [] for unknown agents or when no session exists.
+ipcMain.handle('conversation:read-active', async (_evt, opts: { cwd?: string; agentType?: string }) => {
+  try {
+    const { readActiveTranscript } = await import('./liveTranscript')
+    return ok(await readActiveTranscript(opts?.cwd ?? '', opts?.agentType ?? ''))
+  } catch (e) {
+    return err((e as Error).message)
+  }
+})
+
 // Context handoff: read a full Claude Code JSONL and return a prompt
 // the renderer can inject into any AI shell (Codex, Gemini, Qwen, or
 // even a fresh Claude). Filepath is supplied by the renderer and must

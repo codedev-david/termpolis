@@ -7,6 +7,8 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const require = createRequire(import.meta.url)
 const HOOK_PATH = join(process.cwd(), 'src', 'mcp-adapter', 'memory-primer-hook.cjs')
@@ -107,8 +109,22 @@ describe('memory-primer-hook', () => {
   // no priming source needs no server, so these are deterministic + CI-safe.
   describe('script invariant — never blocks or crashes', () => {
     const run = (stdin: string) => {
-      const r = spawnSync('node', [HOOK_PATH], { input: stdin, encoding: 'utf-8', timeout: 10000 })
-      return { stdout: r.stdout || '', status: r.status }
+      // Isolate the token path to an empty home so the hook NEVER reaches the network,
+      // regardless of whether a real Termpolis server happens to be running on this
+      // machine (CI has none; a dev box often does). With no token file the hook
+      // returns before any POST — keeping these invariants deterministic and fast.
+      const emptyHome = mkdtempSync(join(tmpdir(), 'primer-hook-'))
+      const env = { ...process.env, APPDATA: emptyHome, HOME: emptyHome, USERPROFILE: emptyHome, XDG_CONFIG_HOME: emptyHome }
+      try {
+        const r = spawnSync('node', [HOOK_PATH], { input: stdin, encoding: 'utf-8', timeout: 10000, env })
+        return { stdout: r.stdout || '', status: r.status }
+      } finally {
+        try {
+          rmSync(emptyHome, { recursive: true, force: true })
+        } catch {
+          /* temp cleanup is best-effort */
+        }
+      }
     }
 
     it('exits 0 and injects nothing for source=compact', () => {

@@ -243,6 +243,7 @@ export interface TermpolisAPI {
 
   listAISessions: () => Promise<IpcResponse<AISessionSummary[]>>
   digestAISession: (filePath: string) => Promise<IpcResponse<{ digest: AISessionDigest; prompt: string }>>
+  readActiveConversation: (cwd: string, agentType: string) => Promise<IpcResponse<{ role: 'user' | 'assistant'; text: string; ts: number }[]>>
 }
 
 export interface AISessionSummary {

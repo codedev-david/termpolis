@@ -174,6 +174,8 @@ const api: TermpolisAPI = {
 
   listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
   digestAISession: (filePath: string) => ipcRenderer.invoke('aiSessions:digest', filePath),
+  readActiveConversation: (cwd: string, agentType: string) =>
+    ipcRenderer.invoke('conversation:read-active', { cwd, agentType }),
 
   // Clipboard — native Electron clipboard via main, so the terminal context menu
   // works regardless of renderer focus. navigator.clipboard is focus/permission
