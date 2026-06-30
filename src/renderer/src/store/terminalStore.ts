@@ -69,6 +69,10 @@ interface TerminalStore {
   viewMode: ViewMode
   defaultShell: ShellType
   showSettings: boolean
+  // Legacy input-history autocomplete dropdown. The dropdown was removed from the
+  // terminal UI in v1.16.3 (it popped "similar past commands" while typing); this
+  // flag now defaults off and is no longer surfaced in Settings. Kept only so the
+  // dormant useCompletionDropdown hook still type-checks.
   autocompleteEnabled: boolean
   // When false, Termpolis swallows apps' mouse-tracking requests so a click-drag
   // selects text (and right-click Copy works) instead of being captured by the TUI
@@ -142,7 +146,8 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   viewMode: 'tabs',
   defaultShell: navigator.platform.startsWith('Win') ? 'powershell' : navigator.platform.startsWith('Mac') ? 'zsh' : 'bash',
   showSettings: false,
-  autocompleteEnabled: true,
+  autocompleteEnabled: false, // removed from the UI in v1.16.3; dropdown no longer renders
+
   allowAppMouseControl: false, // selection-friendly by default (Termpolis is built around copying AI output)
   sidebarCollapsed: false,
   keybindings: { ...DEFAULT_KEYBINDINGS },

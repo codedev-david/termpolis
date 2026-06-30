@@ -10,13 +10,11 @@ import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
-import { suppressesMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
+import { requestsMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { TerminalSearch, type TerminalSearchOptions } from '../TerminalSearch/TerminalSearch'
 import { v4 as uuid } from 'uuid'
-import { getCompletions } from '../../completions/completionEngine'
 import { getSuggestion } from '../../corrections/correctionEngine'
-import { CompletionDropdown } from '../CompletionDropdown/CompletionDropdown'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
@@ -31,7 +29,6 @@ import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { CLAUDE_MODEL_OPTIONS, modelSwitchCommand } from '../../lib/modelBroker'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
-import { useCompletionDropdown } from '../../hooks/useCompletionDropdown'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { agentFromCommand } from '../../lib/agentDetector'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
@@ -192,7 +189,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // Remembers that a TUI app asked for the mouse (we swallowed it for selection)
   // and which encoding it wants, so the wheel handler can forward scroll back to it.
   const appWantedMouseRef = useRef(false)
-  const mouseEncodingRef = useRef<MouseEncoding>('x10')
+  // Default the synthesized wheel encoding to SGR (1006). Every modern full-screen
+  // mouse app — Claude Code, vim, tmux, lazygit, htop — selects SGR; legacy X10
+  // wheel reports are effectively extinct. Defaulting to SGR (instead of X10) means
+  // scroll-forwarding works even if we never positively observe the app's `?1006h`
+  // (e.g. it was sent in an order/timing we don't capture). We still upgrade to SGR
+  // explicitly when we DO see it, and — crucially — never clobber it back to X10.
+  const mouseEncodingRef = useRef<MouseEncoding>('sgr')
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -209,7 +212,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   fixSuggestionRef.current = fixSuggestion
 
   // --- Custom hooks ---
-  const completion = useCompletionDropdown(terminalId, containerRef, inputBufferRef)
   const agent = useAgentDetection()
   // The status-bar badge uses the LAUNCHED agent identity (the authoritative
   // `agentCommand` Termpolis records), NOT output keyword scraping — which
@@ -425,20 +427,30 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
       if (requestsSgrMouseEncoding(params)) mouseEncodingRef.current = 'sgr'
       if (allowAppMouseControlRef.current) return false
-      const swallow = suppressesMouseTracking(params)
-      if (swallow) appWantedMouseRef.current = true
-      return swallow
+      // Swallow ANY mouse-tracking enable — including one bundled with its encoding,
+      // e.g. `CSI ? 1002 ; 1006 h` — so xterm never captures the mouse and a click-drag
+      // keeps selecting text. Remember that the app wanted the mouse so the wheel
+      // handler below can forward scroll to it.
+      if (requestsMouseTracking(params)) {
+        appWantedMouseRef.current = true
+        return true
+      }
+      return false
     })
-    // Clear wheel-forwarding state when the app disables mouse tracking OR leaves the
+    // Clear the wheel-forwarding FLAG when the app disables mouse tracking OR leaves the
     // alternate screen (its session is ending). The alt-screen reset matters when a
     // mouse app exits WITHOUT a tracking-disable (crash / no DECRST): otherwise the
     // stale flag would make the next non-mouse pager (less, man, git) on the alt screen
-    // receive synthesized wheel reports as garbage instead of scrolling. Never swallow
-    // these — return false so xterm still processes them.
+    // receive synthesized wheel reports as garbage instead of scrolling. We deliberately
+    // do NOT reset the ENCODING here: apps routinely toggle tracking granularity mid-
+    // session (e.g. select SGR with `?1006h`, then `?1000l`/`?1002h` to switch trackers),
+    // and clobbering the captured SGR back to X10 made us emit legacy X10 wheel reports
+    // to an SGR-mode app — which it can't parse, so scroll silently died while selection
+    // kept working. The encoding stays at its SGR default. Never swallow these — return
+    // false so xterm still processes them.
     term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
       if (disablesMouseTracking(params) || exitsAltScreen(params)) {
         appWantedMouseRef.current = false
-        mouseEncodingRef.current = 'x10'
       }
       return false
     })
@@ -538,9 +550,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       if (res.data.output) term.write(res.data.output)
     }).catch(() => { /* terminal may have been killed before replay */ })
 
-    // Copy/paste/autocomplete shortcuts are read from the store keybindings at
-    // event time, so rebinding them in Settings takes effect immediately:
-    //   copy / copyAsCodeBlock / paste / toggleAutocomplete  → rebindable
+    // Copy/paste shortcuts are read from the store keybindings at event time, so
+    // rebinding them in Settings takes effect immediately:
+    //   copy / copyAsCodeBlock / paste  → rebindable
     // The two plain-terminal conveniences below stay hardcoded because they are
     // terminal semantics rather than configurable rows:
     //   Ctrl+C        → smart: copy selection if any, else passthrough (SIGINT)
@@ -729,20 +741,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }).catch(() => {})
         return false
       }
-      // Trigger autocomplete on the current input buffer (was Ctrl+Space → \x00
-      // via onData; now driven by the rebindable toggleAutocomplete binding).
-      if (matchesKeybinding(e, kb.toggleAutocomplete)) {
-        e.preventDefault()
-        const input = inputBufferRef.current
-        if (input.length > 0) {
-          getCompletions(input).then(results => {
-            if (disposed) return
-            if (results.length > 0) completion.triggerCompletions(input)
-          }).catch(() => {})
-        }
-        return false
-      }
-
       // App-level shortcuts must be caught HERE when a terminal is focused —
       // otherwise xterm turns Ctrl+<digit>/Ctrl+Alt+<key> into stray control
       // bytes (Ctrl+3 → ESC, Ctrl+4 → FS) sent to the shell. We preventDefault +
@@ -787,18 +785,14 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     })
 
     term.onData((data) => {
-      // When dropdown is visible, intercept certain keys
-      if (completion.handleDropdownKeyIntercept(data)) {
-        return // Key was consumed by dropdown
-      }
-
       // Pass data to PTY
       window.termpolis.writeToTerminal(terminalId, data)
 
       // Record input if recording
       recording.appendRecordingEntry('input', data)
 
-      // Update input buffer
+      // Track the current command line so we can record it to history on Enter and
+      // dismiss the command-fix banner when the user starts a new command.
       if (data === '\r') {
         const cmd = inputBufferRef.current.trim()
         if (cmd) {
@@ -809,24 +803,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
-        // Dismiss dropdown on Enter
-        completion.dismissDropdown()
       } else if (data === '\u007f') {
         inputBufferRef.current = inputBufferRef.current.slice(0, -1)
-        // Re-filter completions after backspace
-        if (completion.autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
-          completion.triggerCompletions(inputBufferRef.current)
-        } else {
-          completion.dismissDropdown()
-        }
       } else if (!data.startsWith('\x1b')) {
         inputBufferRef.current += data
         // Dismiss fix banner when user starts typing a new command
         if (fixSuggestionRef.current) setFixSuggestion(null)
-        // Trigger completions if autocomplete is enabled and input has 2+ chars
-        if (completion.autocompleteEnabledRef.current && inputBufferRef.current.length >= 2) {
-          completion.triggerCompletions(inputBufferRef.current)
-        }
       }
     })
 
@@ -1332,15 +1314,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               </>
             )}
           </div>
-        )}
-        {completion.dropdownVisible && (
-          <CompletionDropdown
-            suggestions={completion.suggestions}
-            selectedIndex={completion.selectedIndex}
-            position={completion.dropdownPosition}
-            onAccept={completion.acceptSuggestion}
-            onDismiss={completion.dismissDropdown}
-          />
         )}
         {fixSuggestion && (
           <CommandFixBanner

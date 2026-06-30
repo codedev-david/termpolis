@@ -3,6 +3,7 @@ import {
   suppressesMouseTracking,
   MOUSE_TRACKING_MODES,
   requestsSgrMouseEncoding,
+  requestsMouseTracking,
   disablesMouseTracking,
   exitsAltScreen,
   wheelNotchLines,
@@ -66,6 +67,34 @@ describe('requestsSgrMouseEncoding', () => {
 
   it('reads the leading value of subparam arrays', () => {
     expect(requestsSgrMouseEncoding([[1006, 0]])).toBe(true)
+  })
+})
+
+describe('requestsMouseTracking', () => {
+  it('is true for each tracking-enable mode (1000-1003)', () => {
+    for (const mode of [1000, 1001, 1002, 1003]) {
+      expect(requestsMouseTracking([mode])).toBe(true)
+    }
+  })
+
+  it('is true when a tracker is BUNDLED with its encoding (1002;1006)', () => {
+    // The case suppressesMouseTracking (every-param) misses: a real app commonly
+    // sends its tracker and SGR encoding in one DECSET. We must still treat this as
+    // "wants the mouse" so the enable is swallowed (selection) and the wheel forwards.
+    expect(requestsMouseTracking([1002, 1006])).toBe(true)
+    expect(suppressesMouseTracking([1002, 1006])).toBe(false) // contrast: strict variant misses it
+  })
+
+  it('is false when no tracker is present', () => {
+    expect(requestsMouseTracking([1006])).toBe(false) // SGR encoding only
+    expect(requestsMouseTracking([25])).toBe(false)   // cursor visibility
+    expect(requestsMouseTracking([1049])).toBe(false) // alternate screen
+    expect(requestsMouseTracking([])).toBe(false)
+  })
+
+  it('reads the leading value of subparam arrays', () => {
+    expect(requestsMouseTracking([[1002, 5]])).toBe(true)
+    expect(requestsMouseTracking([[25, 0]])).toBe(false)
   })
 })
 

@@ -51,6 +51,23 @@ export function requestsSgrMouseEncoding(params: (number | number[])[]): boolean
   return params.some((p) => SGR_MOUSE_MODES.has(leadingMode(p)))
 }
 
+/**
+ * True if a `CSI ? … h` DECSET enables ANY mouse-tracking mode (1000-1003), even
+ * when bundled with other modes (e.g. `1002;1006`). Used to decide BOTH that the
+ * app wants the mouse — so the wheel handler forwards scroll to it — AND that the
+ * enable should be swallowed so a click-drag keeps selecting text.
+ *
+ * This is intentionally broader than {@link suppressesMouseTracking}, which only
+ * matches a PURE all-tracker sequence: a real app commonly bundles its tracker
+ * with its encoding (`CSI ? 1002 ; 1006 h`). Treating that bundle as "wants the
+ * mouse" (and swallowing it) keeps selection working AND lets the wheel forward —
+ * whereas the strict every-param test would let xterm capture the mouse (breaking
+ * selection) and never set the wheel-forward flag.
+ */
+export function requestsMouseTracking(params: (number | number[])[]): boolean {
+  return params.some((p) => MOUSE_TRACKING_MODES.has(leadingMode(p)))
+}
+
 /** True if a `CSI ? … l` DECRST disables a mouse-tracking mode — i.e. the app no
  *  longer wants the mouse, so we should stop forwarding the wheel to it. */
 export function disablesMouseTracking(params: (number | number[])[]): boolean {

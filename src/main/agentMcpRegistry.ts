@@ -31,9 +31,39 @@ function atomicWriteJson(path: string, value: any): void {
   renameSync(tmp, path)
 }
 
+// Scan a Claude `hooks.SessionStart` array (an array of hook groups, each with
+// a nested `hooks: [{ type, command }]`) and collect every command string we
+// can find. Used to detect an existing memory-primer registration without
+// assuming any particular shape — tolerates malformed groups/entries.
+function collectSessionStartCommands(sessionStart: unknown[]): string[] {
+  const cmds: string[] = []
+  const cmdOf = (x: unknown): string | undefined => {
+    if (x && typeof x === 'object') {
+      const c = (x as { command?: unknown }).command
+      if (typeof c === 'string') return c
+    }
+    return undefined
+  }
+  for (const group of sessionStart) {
+    if (!group || typeof group !== 'object') continue
+    const top = cmdOf(group)
+    if (top) cmds.push(top)
+    const hooks = (group as { hooks?: unknown }).hooks
+    if (Array.isArray(hooks)) {
+      for (const h of hooks) {
+        const c = cmdOf(h)
+        if (c) cmds.push(c)
+      }
+    }
+  }
+  return cmds
+}
+
 // Register MCP server in Claude Code's global settings.json + auto-trust
-// the termpolis tool wildcard. Returns changed=true if anything was written.
-export function registerInClaudeSettings(settingsPath: string, adapterPath: string): RegistryResult {
+// the termpolis tool wildcard. When hookScriptPath is provided, ALSO register
+// the portable SessionStart memory-primer hook (deterministic memory recall).
+// Returns changed=true if anything was written.
+export function registerInClaudeSettings(settingsPath: string, adapterPath: string, hookScriptPath?: string): RegistryResult {
   const read = safeReadJson(settingsPath)
   if (!read.ok) {
     if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
@@ -76,6 +106,35 @@ export function registerInClaudeSettings(settingsPath: string, adapterPath: stri
   if (!settings.permissions.allow.includes('mcp__termpolis__*')) {
     settings.permissions.allow.push('mcp__termpolis__*')
     changed = true
+  }
+
+  // Optionally register the portable SessionStart memory-primer hook so EVERY
+  // install gets deterministic memory recall — the digest is injected into
+  // session context at startup instead of relying on the agent to call a tool.
+  // Additive & idempotent: we never remove or reorder the user's own
+  // SessionStart hooks or other hook events, and we never add the hook twice.
+  if (hookScriptPath) {
+    if (!settings.hooks || typeof settings.hooks !== 'object' || Array.isArray(settings.hooks)) {
+      settings.hooks = {}
+      changed = true
+    }
+    if (!Array.isArray(settings.hooks.SessionStart)) {
+      settings.hooks.SessionStart = []
+      changed = true
+    }
+    const alreadyHooked = collectSessionStartCommands(settings.hooks.SessionStart)
+      .some((c) => c.includes('memory-primer-hook'))
+    if (!alreadyHooked) {
+      // Cross-platform command: `node` is assumed on PATH (same as the MCP
+      // server registration above), and we normalize the path to forward
+      // slashes — node accepts them on Windows, and they avoid backslash
+      // escaping ambiguity inside the JSON command string.
+      const portableHookPath = hookScriptPath.replace(/\\/g, '/')
+      settings.hooks.SessionStart.push({
+        hooks: [{ type: 'command', command: `node "${portableHookPath}"` }],
+      })
+      changed = true
+    }
   }
 
   if (!changed) return { changed: false, skipped: 'already-registered' }

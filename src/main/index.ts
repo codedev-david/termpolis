@@ -1706,6 +1706,16 @@ if (!gotTheLock) {
       } catch {}
     }
 
+    // Portable SessionStart memory hook — ships alongside the adapter and is
+    // registered into every user's Claude settings so memory recall is
+    // deterministic (digest injected at session start, not reliant on the model).
+    const hookPath = app.isPackaged
+      ? join(process.resourcesPath, 'mcp-adapter', 'memory-primer-hook.cjs')
+      : join(__dirname, '../../src/mcp-adapter/memory-primer-hook.cjs')
+    if (!require('fs').existsSync(hookPath)) {
+      console.warn(`[memory-primer] SessionStart hook not found at ${hookPath} — deterministic memory recall will be disabled for new Claude sessions (non-fatal).`)
+    }
+
     // Also write standalone config for reference
     const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
     const mcpConfig = { mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }
@@ -1716,8 +1726,10 @@ if (!gotTheLock) {
     // (corrupt JSON, missing file, wrong types, atomic write) lives in the helper.
     {
       const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
-      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath)
-      if (r.changed) console.log('Auto-registered Termpolis MCP server and tool permissions in Claude Code settings')
+      // Normalize to forward slashes for the embedded command string (node
+      // accepts them on every OS; the registry also normalizes defensively).
+      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath, hookPath.replace(/\\/g, '/'))
+      if (r.changed) console.log('Auto-registered Termpolis MCP server, tool permissions, and memory hook in Claude Code settings')
       else if (r.error) console.log('Could not auto-register in Claude Code settings (non-fatal):', r.skipped, r.error)
     }
 

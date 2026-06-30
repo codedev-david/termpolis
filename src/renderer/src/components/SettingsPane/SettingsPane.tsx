@@ -40,7 +40,7 @@ function getConfigFiles(home: string): { label: string; path: string; lang: stri
 }
 
 export function SettingsPane() {
-  const { defaultShell, setDefaultShell, autocompleteEnabled, setAutocompleteEnabled, allowAppMouseControl, setAllowAppMouseControl } = useTerminalStore()
+  const { defaultShell, setDefaultShell, allowAppMouseControl, setAllowAppMouseControl } = useTerminalStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [configFiles, setConfigFiles] = useState<{ label: string; path: string; lang: string }[]>([])
   const [activeFile, setActiveFile] = useState('')
@@ -325,21 +325,6 @@ export function SettingsPane() {
                 </span>
               </span>
             </label>
-          </div>
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium">Enable Autocomplete</label>
-            <button
-              onClick={() => setAutocompleteEnabled(!autocompleteEnabled)}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                autocompleteEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'
-              }`}
-            >
-              <span
-                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                  autocompleteEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
-                }`}
-              />
-            </button>
           </div>
           <div className="flex items-start gap-3">
             <button
