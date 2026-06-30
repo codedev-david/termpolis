@@ -402,6 +402,25 @@ describe('TerminalPane', () => {
     mocks.mockTerminal.buffer.active.type = 'normal'
   })
 
+  // Regression for Sentry issue #16: xterm's WebGL addon throws
+  // "Cannot read properties of undefined (reading '_isDisposed')" during
+  // term.dispose() when a terminal is created and torn down in quick succession
+  // (React StrictMode's dev double-mount; a close/context-loss race in prod). The
+  // effect cleanup must contain it so it never escapes to the app ErrorBoundary.
+  it('does not propagate a WebGL-addon teardown throw on unmount (issue #16)', () => {
+    const original = mocks.mockTerminal.dispose
+    mocks.mockTerminal.dispose = vi.fn(() => {
+      throw new TypeError("Cannot read properties of undefined (reading '_isDisposed')")
+    })
+    try {
+      const { unmount } = render(<TerminalPane {...defaultProps} />)
+      expect(() => unmount()).not.toThrow()
+      expect(mocks.mockTerminal.dispose).toHaveBeenCalled()
+    } finally {
+      mocks.mockTerminal.dispose = original
+    }
+  })
+
   describe('app mouse-control (mouse-tracking suppression)', () => {
     const lastCsiHandler = () => {
       const calls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls

@@ -914,7 +914,15 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       unsub()
       if (resizeTimer) clearTimeout(resizeTimer)
       ro.disconnect()
-      term.dispose()
+      // xterm's WebGL addon can throw during teardown: when a terminal is created
+      // and disposed in quick succession its renderer is briefly undefined, so the
+      // addon's dispose() reads `_isDisposed` off it and throws. This happens
+      // deterministically under React StrictMode's dev double-mount, and
+      // intermittently in production on a close/context-loss race (Sentry issue #16:
+      // "Cannot read properties of undefined (reading '_isDisposed')"). The terminal
+      // is going away regardless, so contain the throw instead of letting it escape
+      // the effect cleanup and trip the app-level ErrorBoundary.
+      try { term.dispose() } catch { /* addon teardown race — nothing to recover */ }
     }
   }, [terminalId])
 
