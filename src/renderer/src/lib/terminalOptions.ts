@@ -36,6 +36,12 @@ export function buildTerminalOptions(input: TerminalOptionsInput): ITerminalOpti
     cursorStyle: 'block',
     cursorInactiveStyle: 'outline',
     scrollback: input.scrollback,
+    // Required by the in-terminal find bar: @xterm/addon-search highlights matches
+    // via term.registerDecoration(), which xterm gates behind allowProposedApi.
+    // Without this, findNext() throws "You must set the allowProposedApi option to
+    // true", the search handlers swallow it, and typing in the find bar silently
+    // does nothing (no highlight, no jump, no match count).
+    allowProposedApi: true,
   }
   // Windows only. Passing the ConPTY backend + build lets modern ConPTY
   // (Win11 >= 21376) use native wrap sequences for correct reflow, and turns on

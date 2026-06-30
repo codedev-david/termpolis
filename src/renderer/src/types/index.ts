@@ -215,7 +215,6 @@ export interface TermpolisAPI {
   clipboardWriteText: (text: string) => Promise<IpcResponse>
   clipboardReadText: () => Promise<IpcResponse<string>>
   clipboardWriteRich: (text: string, html: string) => Promise<IpcResponse>
-  clipboardWriteImage: (dataUrl: string) => Promise<IpcResponse>
 
   // Voice (Groq cloud STT). The API key lives only in main (OS keychain); the
   // renderer can validate/set/clear it and read a masked status, and send PCM to

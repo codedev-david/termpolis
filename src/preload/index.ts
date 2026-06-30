@@ -181,7 +181,6 @@ const api: TermpolisAPI = {
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', { text }),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
   clipboardWriteRich: (text: string, html: string) => ipcRenderer.invoke('clipboard:write-rich', { text, html }),
-  clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
 
   // Voice (Groq cloud STT). The API key stays in main (OS keychain) — these only
   // push the key one-way into main, read back a masked status, or send PCM out.

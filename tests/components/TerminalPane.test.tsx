@@ -297,7 +297,6 @@ const mockKillTerminal = vi.fn()
 const mockClipboardWriteText = vi.fn(() => Promise.resolve({ success: true }))
 const mockClipboardReadText = vi.fn(() => Promise.resolve({ success: true, data: 'pasted-text' }))
 const mockClipboardWriteRich = vi.fn(() => Promise.resolve({ success: true }))
-const mockClipboardWriteImage = vi.fn(() => Promise.resolve({ success: true }))
 
 beforeAll(() => {
   ;(window as any).termpolis = {
@@ -312,7 +311,6 @@ beforeAll(() => {
     clipboardWriteText: mockClipboardWriteText,
     clipboardReadText: mockClipboardReadText,
     clipboardWriteRich: mockClipboardWriteRich,
-    clipboardWriteImage: mockClipboardWriteImage,
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
     groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_test' } })),
     platformInfo: { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } },
@@ -2482,48 +2480,6 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
-    })
-
-    it('Copy as Image grabs the canvas and writes via the native clipboard', async () => {
-      // Set up a fake canvas inside the .xterm element
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const inner = container.querySelector('.flex-1.relative') as HTMLElement
-      const xtermDiv = document.createElement('div')
-      xtermDiv.className = 'xterm'
-      const canvas = document.createElement('canvas') as HTMLCanvasElement
-      ;(canvas as any).toDataURL = () => 'data:image/png;base64,ZmFrZQ=='
-      xtermDiv.appendChild(canvas)
-      inner.appendChild(xtermDiv)
-
-      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy as Image'))
-
-      await waitFor(() => {
-        expect(mockClipboardWriteImage).toHaveBeenCalledWith('data:image/png;base64,ZmFrZQ==')
-      })
-    })
-
-    it('Copy as Image is a no-op when there is no canvas', () => {
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const inner = container.querySelector('.flex-1.relative') as HTMLElement
-      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy as Image'))
-      expect(mockClipboardWriteImage).not.toHaveBeenCalled()
-    })
-
-    it('Copy as Image swallows canvas errors', async () => {
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const inner = container.querySelector('.flex-1.relative') as HTMLElement
-      const xtermDiv = document.createElement('div')
-      xtermDiv.className = 'xterm'
-      const canvas = document.createElement('canvas') as HTMLCanvasElement
-      ;(canvas as any).toDataURL = () => { throw new Error('boom') }
-      xtermDiv.appendChild(canvas)
-      inner.appendChild(xtermDiv)
-
-      fireEvent.contextMenu(inner, { clientX: 100, clientY: 200, shiftKey: true })
-      // Should not throw
-      expect(() => fireEvent.click(screen.getByText('Copy as Image'))).not.toThrow()
     })
   })
 })

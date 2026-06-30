@@ -1206,25 +1206,6 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             </button>
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
-              onClick={async () => {
-                const xtermEl = containerRef.current?.querySelector('.xterm') as HTMLElement | null
-                if (xtermEl) {
-                  try {
-                    const canvas = xtermEl.querySelector('canvas') as HTMLCanvasElement | null
-                    if (canvas) {
-                      const dataUrl = canvas.toDataURL('image/png')
-                      if (dataUrl) await window.termpolis.clipboardWriteImage(dataUrl)
-                    }
-                  } catch {}
-                }
-                setContextMenu({ visible: false, x: 0, y: 0 })
-              }}
-              title="Copy a PNG of the visible terminal area to the clipboard."
-            >
-              Copy as Image
-            </button>
-            <button
-              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {
                 window.termpolis.clipboardReadText().then(res => {
                   const text = res?.success ? res.data : ''

@@ -26,6 +26,13 @@ describe('buildTerminalOptions', () => {
     })
   })
 
+  it('enables allowProposedApi so the in-terminal find bar works', () => {
+    // @xterm/addon-search highlights matches via term.registerDecoration(), which
+    // xterm gates behind allowProposedApi. Without it findNext() throws, the search
+    // handlers swallow it, and typing in the find bar silently does nothing.
+    expect(buildTerminalOptions(base).allowProposedApi).toBe(true)
+  })
+
   it('omits windowsPty when none is supplied (Unix / unknown platform)', () => {
     expect('windowsPty' in buildTerminalOptions(base)).toBe(false)
     expect('windowsPty' in buildTerminalOptions({ ...base, windowsPty: null })).toBe(false)

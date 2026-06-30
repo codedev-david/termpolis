@@ -280,15 +280,6 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
   clipboard.write({ text: text ?? '', html: html ?? '' })
   return ok()
 })
-ipcMain.handle('clipboard:write-image', (_e, { dataUrl }: { dataUrl?: string }) => {
-  try {
-    const img = nativeImage.createFromDataURL(dataUrl ?? '')
-    if (!img.isEmpty()) clipboard.writeImage(img)
-    return ok()
-  } catch (e) {
-    return err(e instanceof Error ? e.message : 'clipboard image write failed')
-  }
-})
 
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) => {
   try {
