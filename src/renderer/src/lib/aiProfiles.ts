@@ -3,6 +3,7 @@ import type { AIProfile, ShellInfo, ShellType, TerminalSession } from '../types'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { getTerminalDefaults, agentTerminalName } from './terminalDefaults'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
+import { useTerminalStore } from '../store/terminalStore'
 import qwenIcon from '../assets/qwen-ai-logo.svg'
 import { claudeModelArg } from './modelBroker'
 
@@ -75,6 +76,10 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
         const fileArg = primerRes.data.replace(/\\/g, '/')
         launchCommand = `${launchCommand} --append-system-prompt-file "${fileArg}"`
         launchPrimed = true
+        // Claude's priming is invisible (system-prompt file + SessionStart hook),
+        // so surface a brief confirmation — otherwise a working memory load looks
+        // like nothing happened. The banner auto-dismisses (see App.tsx).
+        useTerminalStore.getState().setMemoryNotice(`Project memory loaded for "${project || 'this project'}"`)
       }
     } catch {
       // Memory unavailable — fall back to a bare launch + the normal typed pointer.

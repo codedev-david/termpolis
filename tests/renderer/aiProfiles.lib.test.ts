@@ -14,6 +14,7 @@ vi.mock('../../src/renderer/src/hooks/useAutoPrimer', () => ({
 }))
 
 import { DEFAULT_AI_PROFILES, resolveShellType, launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
+import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import type { ShellInfo } from '../../src/renderer/src/types'
 
 const shells: ShellInfo[] = [
@@ -39,6 +40,7 @@ beforeEach(() => {
     writeToTerminal: vi.fn(),
     memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: null }),
   }
+  useTerminalStore.getState().setMemoryNotice(null)
 })
 
 describe('DEFAULT_AI_PROFILES', () => {
@@ -106,6 +108,8 @@ describe('launchAgentProfile', () => {
     })
     await launchAgentProfile(claude, deps())
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: true }))
+    // The silent Claude priming now surfaces a visible confirmation banner.
+    expect(useTerminalStore.getState().memoryNotice).toContain('Project memory loaded for')
     await vi.waitFor(() => {
       const calls = (window as any).termpolis.writeToTerminal.mock.calls
       expect(calls.some((c: any[]) =>
@@ -119,5 +123,6 @@ describe('launchAgentProfile', () => {
   it('launches bare (launchPrimed false) when there is no relevant memory', async () => {
     await launchAgentProfile(claude, deps())
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: false }))
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
   })
 })

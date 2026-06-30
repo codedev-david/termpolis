@@ -485,16 +485,23 @@ describe('TerminalPane', () => {
       expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<65;')
     })
 
-    it('does NOT forward (lets xterm scroll its scrollback) on the normal buffer', () => {
+    it('forwards the wheel on the NORMAL buffer too — Claude Code renders fullscreen there (no alt screen)', () => {
+      // Claude Code v2.x paints its fullscreen UI on the normal buffer (it never
+      // sends ?1049h; it clears with ESC[2J and repaints) yet enables mouse tracking
+      // to scroll its own transcript. Gating the forward on the alternate buffer
+      // dropped its wheel entirely — so we must forward whenever the app asked for
+      // the mouse, regardless of buffer type.
       render(<TerminalPane {...defaultProps} />)
-      hCsiHandler()([1002])
+      const h = hCsiHandler()
+      h([1000]); h([1002]); h([1003]); h([1006]) // exact DECSET Claude Code v2.1.196 emits
       mocks.mockTerminal.buffer.active.type = 'normal'
       mockWriteToTerminal.mockClear()
 
-      const handled = wheelHandler()(wheel())
+      const handled = wheelHandler()(wheel({ deltaY: -100 }))
 
-      expect(handled).toBe(true)
-      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(handled).toBe(false) // we handle it; xterm's (useless) normal-buffer scroll is cancelled
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(1)
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;') // forwarded SGR wheel-UP report
     })
 
     it('does not forward when the app never requested the mouse', () => {

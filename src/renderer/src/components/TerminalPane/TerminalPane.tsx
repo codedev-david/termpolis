@@ -454,16 +454,25 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       }
       return false
     })
-    // Wheel forwarding. When we swallowed the app's mouse tracking AND it owns the
-    // screen (alternate buffer = no scrollback), synthesize wheel reports to the pty
-    // so the app scrolls its own content (e.g. Claude Code's transcript). On the
-    // normal buffer we return true and let xterm scroll its scrollback as before.
+    // Wheel forwarding. When we swallowed the app's mouse tracking, xterm no longer
+    // delivers wheel events to the app — so synthesize wheel reports to the pty here so
+    // the app can scroll its own content (Claude Code's transcript, vim, lazygit, htop).
+    //
+    // Forward whenever the app ASKED for the mouse (appWantedMouse) — NOT only on the
+    // alternate buffer. Claude Code v2.x renders its fullscreen UI on the NORMAL buffer:
+    // it never sends the alt-screen DECSET (?1049h), it clears with ESC[2J and repaints
+    // in place, yet it enables mouse tracking (?1000/1002/1003h + SGR ?1006h) to scroll
+    // its own transcript. Gating the forward on `buffer.type === 'alternate'` therefore
+    // dropped Claude's wheel entirely, and xterm's normal-buffer scrollback holds none of
+    // Claude's repainted content — so scroll-back was dead. If the app enabled mouse
+    // tracking it owns the wheel; a plain shell (no tracking → appWantedMouse false) keeps
+    // xterm's own scrollback via the early return above. This matches how a real terminal
+    // forwards the wheel to any app in mouse-tracking mode.
     // Returning false cancels xterm's own wheel handling for the forwarded case.
     term.attachCustomWheelEventHandler((ev: WheelEvent) => {
       if (allowAppMouseControlRef.current) return true   // app already gets the mouse natively
       if (!appWantedMouseRef.current) return true        // plain shell → xterm scrolls scrollback
       if (ev.deltaY === 0) return true                   // ignore horizontal wheels
-      if (term.buffer.active.type !== 'alternate') return true // normal buffer has scrollback
       const screenEl = containerRef.current?.querySelector('.xterm-screen') as HTMLElement | null
       const rect = screenEl?.getBoundingClientRect()
       const cellH = rect && term.rows > 0 ? rect.height / term.rows : 0

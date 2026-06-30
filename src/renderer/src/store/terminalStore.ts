@@ -91,6 +91,10 @@ interface TerminalStore {
   swarmAgents: SwarmAgentEntry[]
   launchingAgent: string | null
   swarmNotification: { message: string; type: 'success' | 'error' } | null
+  // Transient "project memory loaded for X" confirmation, shown briefly when an
+  // agent launches with recalled context — so the silent (system-prompt / hook)
+  // priming for Claude is actually visible to the user.
+  memoryNotice: string | null
   swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null
   agentRatingOverrides: AgentRatingOverrides
 
@@ -134,6 +138,7 @@ interface TerminalStore {
   updateSwarmAgentStatus: (terminalId: string, status: SwarmAgentStatus, summary?: string) => void
   setLaunchingAgent: (name: string | null) => void
   setSwarmNotification: (notification: { message: string; type: 'success' | 'error' } | null) => void
+  setMemoryNotice: (message: string | null) => void
   setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null) => void
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
 }
@@ -162,6 +167,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   swarmAgents: [],
   launchingAgent: null,
   swarmNotification: null,
+  memoryNotice: null,
   swarmCompletionSummary: null,
   agentRatingOverrides: {},
 
@@ -362,6 +368,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   setLaunchingAgent: (name) => set({ launchingAgent: name }),
 
   setSwarmNotification: (notification) => set({ swarmNotification: notification }),
+  setMemoryNotice: (message) => set({ memoryNotice: message }),
 
   setSwarmCompletionSummary: (summary) => set({ swarmCompletionSummary: summary }),
   setAgentRatingOverrides: (overrides) => set({ agentRatingOverrides: overrides }),

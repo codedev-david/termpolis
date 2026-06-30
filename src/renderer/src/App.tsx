@@ -62,6 +62,8 @@ export default function App() {
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
   const swarmNotification = useTerminalStore(s => s.swarmNotification)
   const setSwarmNotification = useTerminalStore(s => s.setSwarmNotification)
+  const memoryNotice = useTerminalStore(s => s.memoryNotice)
+  const setMemoryNotice = useTerminalStore(s => s.setMemoryNotice)
   const swarmCompletionSummary = useTerminalStore(s => s.swarmCompletionSummary)
   const setSwarmCompletionSummary = useTerminalStore(s => s.setSwarmCompletionSummary)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
@@ -688,6 +690,13 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [swarmNotification, setSwarmNotification])
 
+  // Auto-dismiss the "project memory loaded" confirmation after 6 seconds.
+  useEffect(() => {
+    if (!memoryNotice) return
+    const timer = setTimeout(() => setMemoryNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [memoryNotice, setMemoryNotice])
+
   const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()
     const cwd = await getHomedir()
@@ -897,6 +906,21 @@ export default function App() {
                   <i className="fa-solid fa-xmark"></i>
                 </button>
               </div>
+            </div>
+          )}
+          {memoryNotice && (
+            <div className="px-4 py-2 flex items-center justify-between text-sm bg-[#D97706]/15 border-b border-[#D97706]/40 text-[#F0B86E]">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-brain"></i>
+                <span>{memoryNotice}</span>
+              </div>
+              <button
+                onClick={() => setMemoryNotice(null)}
+                className="text-xs px-1.5 py-1 rounded hover:bg-white/10"
+                aria-label="Dismiss memory notice"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
             </div>
           )}
           <div className="flex-1 overflow-hidden relative">
