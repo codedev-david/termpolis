@@ -328,6 +328,23 @@ describe('discoverTranscriptFiles', () => {
     expect(await discoverTranscriptFiles('claude', path.join(root, 'nope'))).toEqual([])
     expect(await discoverTranscriptFiles('qwen', root)).toEqual([])
   })
+
+  it('freshness filter (#2): returns only files modified at/after the cutoff', async () => {
+    const proj = path.join(root, 'projF')
+    fs.mkdirSync(proj)
+    const oldF = path.join(proj, 'old.jsonl')
+    const newF = path.join(proj, 'new.jsonl')
+    fs.writeFileSync(oldF, 'x')
+    fs.writeFileSync(newF, 'x')
+    // Explicit absolute mtimes so the test doesn't depend on wall-clock timing.
+    fs.utimesSync(oldF, new Date(1000_000), new Date(1000_000)) // mtimeMs = 1,000,000
+    fs.utimesSync(newF, new Date(5000_000), new Date(5000_000)) // mtimeMs = 5,000,000
+    const fresh = await discoverTranscriptFiles('claude', root, 3000_000) // cutoff between them
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]).toMatch(/new\.jsonl$/)
+    // No cutoff (default) returns BOTH — zero regression from the fast tier.
+    expect(await discoverTranscriptFiles('claude', root)).toHaveLength(2)
+  })
 })
 
 describe('runConversationIngest', () => {

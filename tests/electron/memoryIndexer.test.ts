@@ -107,4 +107,46 @@ describe('memoryIndexer', () => {
     await vi.advanceTimersByTimeAsync(10_000)
     expect(run).toHaveBeenCalledTimes(1) // drain was cancelled
   })
+
+  describe('fast tier (#2 live-session lag)', () => {
+    it('runs fastRun on the fast interval, independently of the full run', async () => {
+      const run = vi.fn().mockResolvedValue({ written: 0 })
+      const fastRun = vi.fn().mockResolvedValue({ written: 2 })
+      startIndexer({ run, fastRun, initialDelayMs: 1e9, intervalMs: 1e9, fastIntervalMs: 90 })
+      expect(fastRun).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(90)
+      expect(fastRun).toHaveBeenCalledTimes(1)
+      expect(run).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(90)
+      expect(fastRun).toHaveBeenCalledTimes(2)
+    })
+
+    it('tick(true) uses fastRun; tick() uses the full run', async () => {
+      const run = vi.fn().mockResolvedValue({ written: 1 })
+      const fastRun = vi.fn().mockResolvedValue({ written: 9 })
+      startIndexer({ run, fastRun, initialDelayMs: 1e9, intervalMs: 1e9 })
+      expect((await tick(true)).written).toBe(9)
+      expect((await tick()).written).toBe(1)
+      expect(fastRun).toHaveBeenCalledTimes(1)
+      expect(run).toHaveBeenCalledTimes(1)
+    })
+
+    it('schedules no fast tier when fastRun is omitted, and a fast tick reports no runner', async () => {
+      const run = vi.fn().mockResolvedValue({ written: 0 })
+      startIndexer({ run, initialDelayMs: 1e9, intervalMs: 1e9 }) // no fastRun
+      await vi.advanceTimersByTimeAsync(1_000_000)
+      expect(run).not.toHaveBeenCalled()
+      expect((await tick(true)).error).toBe('no runner')
+    })
+
+    it('stopIndexer cancels the fast interval', async () => {
+      const fastRun = vi.fn().mockResolvedValue({ written: 0 })
+      startIndexer({ run: vi.fn().mockResolvedValue({ written: 0 }), fastRun, initialDelayMs: 1e9, intervalMs: 1e9, fastIntervalMs: 50 })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(fastRun).toHaveBeenCalledTimes(1)
+      stopIndexer()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(fastRun).toHaveBeenCalledTimes(1)
+    })
+  })
 })

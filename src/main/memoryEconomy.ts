@@ -50,7 +50,13 @@ export function adaptiveGate<T extends Scored>(
   const topScore = sorted.length ? sorted[0].score : 0
   const threshold = Math.max(opts.absoluteFloor, Math.max(0, topScore) * opts.relFrac)
   const above = sorted.filter((h) => h.score >= threshold).length
-  const keepCount = Math.max(above, Math.min(opts.floor, sorted.length))
+  // The floor guarantees a minimum useful recall when results fall off a cliff —
+  // but it must NOT resurrect hits below the absolute noise bar just to meet the
+  // count. A thin/irrelevant memory anchors the agent and can mislead it (worse
+  // than no recall). Cap the floor by how many hits clear `absoluteFloor`; when
+  // even the best hit is noise, `above` is 0 and nothing is injected.
+  const aboveAbsolute = sorted.filter((h) => h.score >= opts.absoluteFloor).length
+  const keepCount = Math.max(above, Math.min(opts.floor, aboveAbsolute))
   return sorted.slice(0, Math.min(keepCount, opts.cap))
 }
 

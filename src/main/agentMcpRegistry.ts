@@ -6,6 +6,7 @@
 // a broken config file should log-and-skip, never crash the main process.
 
 import { existsSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'fs'
+import { join } from 'path'
 
 export interface RegistryResult {
   changed: boolean
@@ -59,11 +60,42 @@ function collectSessionStartCommands(sessionStart: unknown[]): string[] {
   return cmds
 }
 
+/**
+ * Resolve an absolute `node` executable so the SessionStart memory hook and the
+ * MCP adapter still run when the shell Claude Code uses to launch them has a PATH
+ * without node — the GUI-launch-vs-login-shell discrepancy, and version managers
+ * (nvm / fnm / volta) whose node isn't on the non-interactive PATH. Scans this
+ * process's PATH plus a few well-known install dirs and returns the first node
+ * that ACTUALLY EXISTS on disk; falls back to the bare `node` command (the prior
+ * behavior — no regression) when none resolves, so a non-existent path is never
+ * baked into the user's config. Pure: env + a file-existence probe are injectable.
+ */
+export function resolveNodeCommand(
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (p: string) => boolean = existsSync,
+): string {
+  const win = process.platform === 'win32'
+  const exe = win ? 'node.exe' : 'node'
+  const dirs = (env.PATH || env.Path || '').split(win ? ';' : ':').map((d) => d.trim()).filter(Boolean)
+  // Well-known absolute install locations as a backstop for stripped PATHs.
+  if (win) {
+    if (env.ProgramFiles) dirs.push(join(env.ProgramFiles, 'nodejs'))
+    dirs.push('C:\\Program Files\\nodejs')
+  } else {
+    dirs.push('/usr/local/bin', '/usr/bin', '/opt/homebrew/bin')
+  }
+  for (const dir of dirs) {
+    const candidate = join(dir, exe)
+    if (fileExists(candidate)) return candidate
+  }
+  return 'node'
+}
+
 // Register MCP server in Claude Code's global settings.json + auto-trust
 // the termpolis tool wildcard. When hookScriptPath is provided, ALSO register
 // the portable SessionStart memory-primer hook (deterministic memory recall).
 // Returns changed=true if anything was written.
-export function registerInClaudeSettings(settingsPath: string, adapterPath: string, hookScriptPath?: string): RegistryResult {
+export function registerInClaudeSettings(settingsPath: string, adapterPath: string, hookScriptPath?: string, nodeCommand: string = 'node'): RegistryResult {
   const read = safeReadJson(settingsPath)
   if (!read.ok) {
     if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
@@ -81,8 +113,8 @@ export function registerInClaudeSettings(settingsPath: string, adapterPath: stri
     changed = true
   }
   const existing = settings.mcpServers.termpolis
-  if (!existing || existing.args?.[0] !== adapterPath) {
-    settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
+  if (!existing || existing.args?.[0] !== adapterPath || (existing.command && existing.command !== nodeCommand)) {
+    settings.mcpServers.termpolis = { command: nodeCommand, args: [adapterPath] }
     changed = true
   }
 
@@ -125,13 +157,15 @@ export function registerInClaudeSettings(settingsPath: string, adapterPath: stri
     const alreadyHooked = collectSessionStartCommands(settings.hooks.SessionStart)
       .some((c) => c.includes('memory-primer-hook'))
     if (!alreadyHooked) {
-      // Cross-platform command: `node` is assumed on PATH (same as the MCP
-      // server registration above), and we normalize the path to forward
-      // slashes — node accepts them on Windows, and they avoid backslash
-      // escaping ambiguity inside the JSON command string.
+      // Path normalized to forward slashes — node accepts them on Windows and
+      // they avoid backslash-escaping ambiguity in the JSON command string.
+      // nodeCommand is an absolute node path when resolvable (so the hook runs
+      // even when the hook shell's PATH lacks node — nvm/fnm installs), else the
+      // bare `node`. An absolute path is quoted (it may contain spaces).
       const portableHookPath = hookScriptPath.replace(/\\/g, '/')
+      const nodeForHook = nodeCommand === 'node' ? 'node' : `"${nodeCommand.replace(/\\/g, '/')}"`
       settings.hooks.SessionStart.push({
-        hooks: [{ type: 'command', command: `node "${portableHookPath}"` }],
+        hooks: [{ type: 'command', command: `${nodeForHook} "${portableHookPath}"` }],
       })
       changed = true
     }

@@ -203,7 +203,7 @@ export interface TermpolisAPI {
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
-  memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<string | null>>
+  memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
   memorySetSyncDir: (dir: string | null) => Promise<IpcResponse<MemorySyncStatus>>
   memoryChooseSyncDir: () => Promise<IpcResponse<MemorySyncStatus>>

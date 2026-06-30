@@ -38,7 +38,7 @@ beforeEach(() => {
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/test/project' }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
-    memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: null }),
+    memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
   }
   useTerminalStore.getState().setMemoryNotice(null)
 })
@@ -104,12 +104,12 @@ describe('launchAgentProfile', () => {
 
   it('seeds the Claude launch with --append-system-prompt-file when memory exists', async () => {
     ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
-      success: true, data: 'C:\\Users\\me\\primers\\p.txt',
+      success: true, data: { file: 'C:\\Users\\me\\primers\\p.txt', count: 7 },
     })
     await launchAgentProfile(claude, deps())
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: true }))
-    // The silent Claude priming now surfaces a visible confirmation banner.
-    expect(useTerminalStore.getState().memoryNotice).toContain('Project memory loaded for')
+    // The silent Claude priming now surfaces a visible confirmation with the count.
+    expect(useTerminalStore.getState().memoryNotice).toContain('Loaded 7 memories for')
     await vi.waitFor(() => {
       const calls = (window as any).termpolis.writeToTerminal.mock.calls
       expect(calls.some((c: any[]) =>
@@ -124,5 +124,18 @@ describe('launchAgentProfile', () => {
     await launchAgentProfile(claude, deps())
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: false }))
     expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+
+  it('surfaces a visible warning when memory recall fails (#1 observability)', async () => {
+    ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({ success: false, error: 'brain down' })
+    await launchAgentProfile(claude, deps())
+    expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: false }))
+    expect(useTerminalStore.getState().memoryNotice).toContain('Memory recall unavailable')
+  })
+
+  it('surfaces the warning when the recall call throws (#1)', async () => {
+    ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockRejectedValue(new Error('ipc boom'))
+    await launchAgentProfile(claude, deps())
+    expect(useTerminalStore.getState().memoryNotice).toContain('Memory recall unavailable')
   })
 })

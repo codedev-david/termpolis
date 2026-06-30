@@ -66,23 +66,30 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   let launchPrimed = false
   const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
   if (isClaude && isAutoPrimerEnabled()) {
+    const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+    const label = project || 'this project'
     try {
-      const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
       const query = project
         ? `recent work, decisions, conventions, and context for ${project}`
         : 'recent work, key decisions, and conventions'
       const primerRes = await window.termpolis.memoryPreparePrimerFile(query, cwd)
-      if (primerRes?.success && primerRes.data) {
-        const fileArg = primerRes.data.replace(/\\/g, '/')
+      if (primerRes?.success && primerRes.data?.file) {
+        const fileArg = primerRes.data.file.replace(/\\/g, '/')
         launchCommand = `${launchCommand} --append-system-prompt-file "${fileArg}"`
         launchPrimed = true
         // Claude's priming is invisible (system-prompt file + SessionStart hook),
-        // so surface a brief confirmation — otherwise a working memory load looks
-        // like nothing happened. The banner auto-dismisses (see App.tsx).
-        useTerminalStore.getState().setMemoryNotice(`Project memory loaded for "${project || 'this project'}"`)
+        // so surface HOW MUCH recall was injected — otherwise a working memory load
+        // looks like nothing happened (#1 observable recall). Auto-dismisses (App.tsx).
+        const n = primerRes.data.count
+        useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
+      } else if (primerRes && !primerRes.success) {
+        // The recall call FAILED (brain unreachable / error) — make the silent
+        // failure visible instead of pretending nothing was available (#1).
+        useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
       }
     } catch {
-      // Memory unavailable — fall back to a bare launch + the normal typed pointer.
+      // The recall call threw — surface it rather than silently dropping recall (#1).
+      useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
     }
   }
   // Per-profile model selection: append a validated --model for Claude launches.

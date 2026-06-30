@@ -16,6 +16,7 @@
 // formatting mirrors the cross-AI handoff prompt: no backticks (AI shells often
 // treat them as command substitution), simple dividers, single-line snippets.
 
+import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 
 export interface PrimerHit {
@@ -35,6 +36,10 @@ export interface PrimerOptions {
   maxSnippetChars?: number
   /** Normalized project slug (e.g. derived from the terminal cwd). Enables current-project precedence. */
   project?: string
+  /** Injectable file-existence probe (defaults to fs.existsSync). Powers the
+   *  staleness guard: a code memory whose source file is gone is flagged so the
+   *  agent treats it as history, not a live path to recommend. */
+  fileExists?: (path: string) => boolean
 }
 
 // Ingested transcript chunks — the "past conversations" the project bucket leads with.
@@ -64,10 +69,26 @@ const DIVERSITY_THRESHOLD = 0.7
 let lastPrimerCost: PrimerCost = { chars: 0, tokens: 0, lines: 0 }
 export function getLastPrimerCost(): PrimerCost { return lastPrimerCost }
 
-function renderLine(h: PrimerHit, maxSnip: number): string | null {
-  const label = h.source || h.kind || 'note'
+// A code memory's content begins with "<path>:<start>[-<end>]". The path may
+// contain a Windows drive colon, so strip only the trailing ":<digits>[-<digits>]"
+// line-range suffix. Returns the source file path for a code hit, else null.
+function codeFilePath(h: PrimerHit): string | null {
+  if (h.source !== 'code') return null
+  const firstLine = (h.content || '').split('\n', 1)[0] || ''
+  const m = firstLine.match(/^(.+?):\d+(?:-\d+)?$/)
+  return m ? m[1] : null
+}
+
+function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => boolean): string | null {
   const snip = truncateContent((h.content || '').replace(/\s+/g, ' ').trim(), maxSnip)
   if (!snip) return null
+  // Staleness guard (#3): a code memory whose source file no longer exists is
+  // flagged so the agent treats it as historical context, not a live path it can
+  // recommend — the #1 stale-memory hallucination vector.
+  const path = codeFilePath(h)
+  const label = path !== null && !fileExists(path)
+    ? `${h.source || 'code'} ⚠ STALE — file removed, verify before use`
+    : (h.source || h.kind || 'note')
   return `- [${label}] ${snip}`
 }
 
@@ -77,6 +98,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const limit = Math.min(Math.max(opts.limit ?? 6, 1), 100)
   const maxSnip = opts.maxSnippetChars ?? 400
   const project = (opts.project || '').trim().toLowerCase()
+  const fileExists = opts.fileExists ?? existsSync
 
   // Over-fetch candidates (capped at the hot-window practical max), then keep only
   // the relevant ones (with a floor so a thin recall never starves the agent) and
@@ -105,7 +127,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const body: string[] = []
   if (!project) {
     for (const h of globalHits) {
-      const line = renderLine(h, maxSnip)
+      const line = renderLine(h, maxSnip, fileExists)
       if (line) body.push(line)
     }
   } else {
@@ -130,13 +152,13 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     const projLines: string[] = []
     for (const h of bucket) {
       if (projLines.length >= limit) break
-      const line = renderLine(h, maxSnip)
+      const line = renderLine(h, maxSnip, fileExists)
       if (line) projLines.push(line)
     }
     const otherLines: string[] = []
     for (const h of others) {
       if (projLines.length + otherLines.length >= limit) break
-      const line = renderLine(h, maxSnip)
+      const line = renderLine(h, maxSnip, fileExists)
       if (line) otherLines.push(line)
     }
     if (projLines.length > 0) body.push(`This project (${project}) — past conversations first:`, ...projLines)

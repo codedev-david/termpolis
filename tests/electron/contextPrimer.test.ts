@@ -105,16 +105,52 @@ describe('buildContextPrimer', () => {
     expect(out).not.toContain('weakish six')
   })
 
-  it('never starves — keeps a floor of hits even when all are low-relevance', async () => {
+  it('injects NOTHING when every hit is below the absolute noise bar (#5)', async () => {
     const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
     const search = vi.fn().mockResolvedValue([
       mk('low one', 0.2), mk('low two', 0.15), mk('low three', 0.1), mk('low four', 0.05),
     ])
     const out = await buildContextPrimer(search, { query: 'q' })
-    // a floor of 3 keeps the top three even below the bar; only the 4th is dropped
-    expect(out).toContain('low one')
-    expect(out).toContain('low three')
-    expect(out).not.toContain('low four')
+    // #5: when even the best hit is below the 0.25 noise bar the recall is noise —
+    // weak filler anchors the agent and can mislead it, so we inject nothing.
+    expect(out).toBeNull()
+  })
+
+  it('still surfaces a genuine-but-thin recall via the floor — keeps real hits, drops noise (#5)', async () => {
+    const mk = (content: string, score: number): PrimerHit => ({ content, kind: 'note', score })
+    const search = vi.fn().mockResolvedValue([
+      mk('real one', 0.9), mk('real two', 0.4), mk('real three', 0.3), mk('noise four', 0.05),
+    ])
+    const out = await buildContextPrimer(search, { query: 'q' })
+    expect(out).toContain('real one')
+    expect(out).toContain('real three')
+    expect(out).not.toContain('noise four')
+  })
+
+  it('flags a code memory whose source file no longer exists as STALE (#3)', async () => {
+    const search = vi.fn().mockResolvedValue([
+      { content: 'C:\\repo\\src\\gone.ts:10-20\nconst x = 1', source: 'code', kind: 'note', score: 0.9 },
+    ])
+    const out = await buildContextPrimer(search, { query: 'q', fileExists: () => false })
+    expect(out).toContain('STALE')
+    expect(out).toContain('gone.ts')
+  })
+
+  it('does NOT flag a code memory whose source file still exists (#3)', async () => {
+    const search = vi.fn().mockResolvedValue([
+      { content: '/home/u/repo/here.ts:10-20\nconst x = 1', source: 'code', kind: 'note', score: 0.9 },
+    ])
+    const out = await buildContextPrimer(search, { query: 'q', fileExists: () => true })
+    expect(out).not.toContain('STALE')
+    expect(out).toContain('here.ts')
+  })
+
+  it('never flags a non-code memory even with a path-like first line (#3)', async () => {
+    const search = vi.fn().mockResolvedValue([
+      { content: 'C:\\repo\\notes.md:1-5\nsome note', source: 'note', kind: 'note', score: 0.9 },
+    ])
+    const out = await buildContextPrimer(search, { query: 'q', fileExists: () => false })
+    expect(out).not.toContain('STALE')
   })
 
   it('records the injection cost (chars/tokens) of the last primer for accounting', async () => {

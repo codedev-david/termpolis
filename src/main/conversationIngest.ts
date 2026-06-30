@@ -409,7 +409,7 @@ function filePattern(source: ConversationSource): RegExp {
 
 // Recursively discover transcript files for a source (bounded depth, tolerant
 // of unreadable dirs). The on-disk roots differ per agent.
-export async function discoverTranscriptFiles(source: ConversationSource, root?: string): Promise<string[]> {
+export async function discoverTranscriptFiles(source: ConversationSource, root?: string, freshSinceTs?: number): Promise<string[]> {
   const base = root ?? defaultRoot(source)
   if (!base) return []
   const pattern = filePattern(source)
@@ -425,7 +425,16 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
     for (const e of entries) {
       const full = join(dir, e.name)
       if (e.isDirectory()) await walk(full, depth + 1)
-      else if (pattern.test(e.name)) out.push(full)
+      else if (pattern.test(e.name)) {
+        // Freshness filter (#2 live-session lag): a fast incremental pass only
+        // reads files modified recently (the ACTIVE session), so it stays cheap —
+        // a stat is far cheaper than re-reading + re-parsing every transcript on
+        // disk. Unset (default) = scan everything, the original full-pass behavior.
+        if (freshSinceTs !== undefined) {
+          try { if ((await fsp.stat(full)).mtimeMs < freshSinceTs) continue } catch { continue }
+        }
+        out.push(full)
+      }
     }
   }
   await walk(base, 0)
@@ -446,7 +455,7 @@ export interface IngestMemory {
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
   memory: IngestMemory,
-  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number } = {},
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number } = {},
 ): Promise<IngestStats> {
   // BB6: track the last-written chunk id per session so we can lay down a 'follows'
   // edge between consecutive same-session chunks. Idempotent: already-stored chunks
@@ -457,7 +466,7 @@ export async function runConversationIngest(
     sources: opts.sources,
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
-    listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source]),
+    listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
     patchProjects: memory.patchProjects,

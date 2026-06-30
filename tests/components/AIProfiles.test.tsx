@@ -31,6 +31,7 @@ const mockAddTerminal = vi.fn()
 const mockSetLaunchingAgent = vi.fn()
 const mockAddAIProfile = vi.fn()
 const mockRemoveAIProfile = vi.fn()
+const mockSetMemoryNotice = vi.fn()
 let mockAiProfiles: any[] = []
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
@@ -42,6 +43,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         removeAIProfile: mockRemoveAIProfile,
         addTerminal: mockAddTerminal,
         setLaunchingAgent: mockSetLaunchingAgent,
+        setMemoryNotice: mockSetMemoryNotice,
       }
       return selector ? selector(state) : state
     },
@@ -52,6 +54,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         removeAIProfile: mockRemoveAIProfile,
         addTerminal: mockAddTerminal,
         setLaunchingAgent: mockSetLaunchingAgent,
+        setMemoryNotice: mockSetMemoryNotice,
       })),
       setState: vi.fn(),
     },
@@ -71,7 +74,7 @@ beforeEach(() => {
     pickDirectory: vi.fn().mockResolvedValue({ success: true, data: '/test/project' }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
-    memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: null }),
+    memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
   }
 })
 
@@ -263,7 +266,7 @@ describe('AIProfiles', () => {
 
     it('Claude launch seeds memory via --append-system-prompt-file when memory exists', async () => {
       ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
-        success: true, data: 'C:\\Users\\me\\AppData\\primers\\primer-x.txt',
+        success: true, data: { file: 'C:\\Users\\me\\AppData\\primers\\primer-x.txt', count: 5 },
       })
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
@@ -287,7 +290,7 @@ describe('AIProfiles', () => {
     }, 10000)
 
     it('Claude launch stays bare when there is no relevant memory', async () => {
-      ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({ success: true, data: null })
+      ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } })
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)

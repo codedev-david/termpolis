@@ -218,18 +218,29 @@ describe('memoryEconomy', () => {
       expect(adaptiveGate(mk(0.3, 0.28, 0.2, 0.1), { floor: 1, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
         .toEqual([0.3, 0.28])
     })
-    it('never starves — keeps at least `floor` even past a steep cliff', () => {
-      // top 0.9 → threshold 0.54 → only 0.9 qualifies, but floor 3 keeps the top 3
+    it('the floor never resurrects hits below the absolute noise bar (#5)', () => {
+      // 0.9 qualifies; 0.1/0.08/0.05 are below absoluteFloor 0.25 — the floor must
+      // NOT pull noise back in just to hit the count, so only 0.9 survives.
       expect(adaptiveGate(mk(0.9, 0.1, 0.08, 0.05), { floor: 3, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
-        .toEqual([0.9, 0.1, 0.08])
+        .toEqual([0.9])
+    })
+    it('keeps the floor among hits that DO clear the bar (genuine-but-thin recall)', () => {
+      // 0.9/0.4/0.3 all clear 0.25, so the floor surfaces the thin tail; 0.05 is noise.
+      expect(adaptiveGate(mk(0.9, 0.4, 0.3, 0.05), { floor: 3, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
+        .toEqual([0.9, 0.4, 0.3])
+    })
+    it('injects NOTHING when even the best hit is noise (#5)', () => {
+      expect(adaptiveGate(mk(0.2, 0.1, 0.05), { floor: 3, cap: 10, relFrac: 0.6, absoluteFloor: 0.25 })).toEqual([])
     })
     it('caps the result even when many clear the dynamic threshold', () => {
       expect(adaptiveGate(mk(0.9, 0.88, 0.86, 0.84, 0.82), { floor: 1, cap: 2, relFrac: 0.6, absoluteFloor: 0.25 }).map(h => h.score))
         .toEqual([0.9, 0.88])
     })
-    it('clamps a negative top score so the floor still surfaces the best hit (never a negative threshold)', () => {
-      const out = adaptiveGate(mk(-0.1, -0.3, -0.5), { floor: 1, cap: 10, relFrac: 0.6, absoluteFloor: 0 })
-      expect(out.map(h => h.score)).toEqual([-0.1])
+    it('clamps a negative top score to a non-negative threshold; all-negative scores are noise → [] (#5)', () => {
+      // max(0, topScore) keeps the threshold from going negative (which would
+      // accept everything); anti-correlated (negative) hits clear nothing above
+      // absoluteFloor 0, so nothing is injected rather than negative filler.
+      expect(adaptiveGate(mk(-0.1, -0.3, -0.5), { floor: 1, cap: 10, relFrac: 0.6, absoluteFloor: 0 })).toEqual([])
     })
     it('sorts by score desc and returns [] for empty input', () => {
       expect(adaptiveGate(mk(0.2, 0.9, 0.5), { floor: 0, cap: 10, relFrac: 0, absoluteFloor: 0 }).map(h => h.score)).toEqual([0.9, 0.5, 0.2])

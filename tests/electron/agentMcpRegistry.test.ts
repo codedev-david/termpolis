@@ -14,6 +14,7 @@ import {
   registerInCodex,
   registerInGemini,
   registerInQwen,
+  resolveNodeCommand,
 } from '../../src/main/agentMcpRegistry'
 
 const ADAPTER = '/path/to/stdio-adapter.cjs'
@@ -508,6 +509,61 @@ describe('agentMcpRegistry', () => {
         writeFileSync(p, input)
         expect(() => registerInQwen(p, ADAPTER)).not.toThrow()
       }
+    })
+  })
+
+  describe('resolveNodeCommand (#4 node-PATH robustness)', () => {
+    const exe = process.platform === 'win32' ? 'node.exe' : 'node'
+    const sep = process.platform === 'win32' ? ';' : ':'
+
+    it('returns the first node that actually exists on PATH', () => {
+      const yesDir = join(dir, 'yes')
+      const target = join(yesDir, exe)
+      const env = { PATH: [join(dir, 'no'), yesDir].join(sep) } as NodeJS.ProcessEnv
+      expect(resolveNodeCommand(env, (p) => p === target)).toBe(target)
+    })
+
+    it('checks well-known install dirs when PATH has nothing', () => {
+      const backstop = process.platform === 'win32' ? 'C:\\Program Files\\nodejs' : '/usr/local/bin'
+      const target = join(backstop, exe)
+      expect(resolveNodeCommand({ PATH: '' } as NodeJS.ProcessEnv, (p) => p === target)).toBe(target)
+    })
+
+    it('falls back to bare "node" when nothing exists — never bakes a bad path', () => {
+      expect(resolveNodeCommand({ PATH: join(dir, 'x') } as NodeJS.ProcessEnv, () => false)).toBe('node')
+    })
+  })
+
+  describe('registerInClaudeSettings — nodeCommand (#4)', () => {
+    const NODE = process.platform === 'win32' ? 'C:/Program Files/nodejs/node.exe' : '/usr/local/bin/node'
+    const hookCmd = (s: any): string =>
+      s.hooks.SessionStart.flatMap((g: any) => g.hooks).map((h: any) => h.command).find((c: string) => c.includes('memory-primer-hook'))
+
+    it('bakes an absolute node into BOTH the MCP command and the (quoted) hook command', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{}')
+      const r = registerInClaudeSettings(p, ADAPTER, HOOK, NODE)
+      expect(r.changed).toBe(true)
+      const s = JSON.parse(readFileSync(p, 'utf-8'))
+      expect(s.mcpServers.termpolis.command).toBe(NODE)
+      expect(hookCmd(s)).toBe(`"${NODE}" "${HOOK}"`)
+    })
+
+    it('defaults to bare "node" when no nodeCommand is given (back-compat)', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{}')
+      registerInClaudeSettings(p, ADAPTER, HOOK)
+      const s = JSON.parse(readFileSync(p, 'utf-8'))
+      expect(s.mcpServers.termpolis.command).toBe('node')
+      expect(hookCmd(s).startsWith('node "')).toBe(true)
+    })
+
+    it('upgrades a previously bare-node MCP command to the absolute path', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, JSON.stringify({ mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } } }))
+      const r = registerInClaudeSettings(p, ADAPTER, undefined, NODE)
+      expect(r.changed).toBe(true)
+      expect(JSON.parse(readFileSync(p, 'utf-8')).mcpServers.termpolis.command).toBe(NODE)
     })
   })
 })

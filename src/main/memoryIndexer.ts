@@ -24,6 +24,10 @@ export interface IndexRunResult {
 
 interface IndexerConfig {
   run: () => Promise<{ written: number; more?: boolean }>
+  /** Optional cheap pass run on a faster cadence (#2): typically a freshness-
+   *  limited ingest of only the active session, so new turns become searchable in
+   *  seconds instead of waiting the full interval. */
+  fastRun?: () => Promise<{ written: number; more?: boolean }>
   log?: (msg: string) => void
   drainDelayMs: number
 }
@@ -34,22 +38,25 @@ const DEFAULT_DRAIN_DELAY_MS = 3_000 // when a pass hit its cap, continue draini
 
 let config: IndexerConfig | null = null
 let interval: ReturnType<typeof setInterval> | null = null
+let fastInterval: ReturnType<typeof setInterval> | null = null
 let initial: ReturnType<typeof setTimeout> | null = null
 let drain: ReturnType<typeof setTimeout> | null = null
 let running = false
 
 /** Run one ingestion pass now. No-op (with a reason) if busy or not started. */
-export async function tick(): Promise<IndexRunResult> {
+export async function tick(fast = false): Promise<IndexRunResult> {
   if (!config) return { ranAt: Date.now(), written: 0, error: 'not started' }
   if (running) return { ranAt: Date.now(), written: 0, error: 'busy' }
+  const runner = fast ? config.fastRun : config.run
+  if (!runner) return { ranAt: Date.now(), written: 0, error: 'no runner' }
   running = true
   try {
-    const r = await config.run()
-    config.log?.(`memory indexer: +${r.written} new chunks${r.more ? ' (more queued)' : ''}`)
+    const r = await runner()
+    config.log?.(`memory indexer${fast ? ' (fast)' : ''}: +${r.written} new chunks${r.more ? ' (more queued)' : ''}`)
     return { ranAt: Date.now(), written: r.written, more: r.more }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    config.log?.(`memory indexer error: ${msg}`)
+    config.log?.(`memory indexer${fast ? ' (fast)' : ''} error: ${msg}`)
     return { ranAt: Date.now(), written: 0, error: msg }
   } finally {
     running = false
@@ -59,8 +66,8 @@ export async function tick(): Promise<IndexRunResult> {
 // Timer-driven pass. Unlike a manual tick(), this self-schedules a fast
 // follow-up while a bulk backlog is still draining. Manual tick() stays pure so
 // tests/callers don't get surprise timers.
-async function scheduledTick(): Promise<void> {
-  const r = await tick()
+async function scheduledTick(fast = false): Promise<void> {
+  const r = await tick(fast)
   if (r.more && config) scheduleDrain()
 }
 
@@ -71,12 +78,18 @@ function scheduleDrain(): void {
 }
 
 export function startIndexer(
-  cfg: { run: () => Promise<{ written: number; more?: boolean }>; log?: (msg: string) => void; intervalMs?: number; initialDelayMs?: number; drainDelayMs?: number },
+  cfg: { run: () => Promise<{ written: number; more?: boolean }>; fastRun?: () => Promise<{ written: number; more?: boolean }>; log?: (msg: string) => void; intervalMs?: number; fastIntervalMs?: number; initialDelayMs?: number; drainDelayMs?: number },
 ): void {
   stopIndexer()
-  config = { run: cfg.run, log: cfg.log, drainDelayMs: cfg.drainDelayMs ?? DEFAULT_DRAIN_DELAY_MS }
+  config = { run: cfg.run, fastRun: cfg.fastRun, log: cfg.log, drainDelayMs: cfg.drainDelayMs ?? DEFAULT_DRAIN_DELAY_MS }
   initial = setTimeout(() => void scheduledTick(), cfg.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS)
   interval = setInterval(() => void scheduledTick(), cfg.intervalMs ?? DEFAULT_INTERVAL_MS)
+  // Optional fast tier (#2): a cheap freshness-limited pass on a short cadence so
+  // the ACTIVE session is searchable in seconds, not after the full interval.
+  if (cfg.fastRun && cfg.fastIntervalMs) {
+    fastInterval = setInterval(() => void scheduledTick(true), cfg.fastIntervalMs)
+    if (fastInterval && typeof (fastInterval as { unref?: () => void }).unref === 'function') (fastInterval as { unref: () => void }).unref()
+  }
   // Don't keep the process alive just for the indexer (Node refs).
   if (initial && typeof (initial as { unref?: () => void }).unref === 'function') (initial as { unref: () => void }).unref()
   if (interval && typeof (interval as { unref?: () => void }).unref === 'function') (interval as { unref: () => void }).unref()
@@ -84,9 +97,11 @@ export function startIndexer(
 
 export function stopIndexer(): void {
   if (interval) clearInterval(interval)
+  if (fastInterval) clearInterval(fastInterval)
   if (initial) clearTimeout(initial)
   if (drain) clearTimeout(drain)
   interval = null
+  fastInterval = null
   initial = null
   drain = null
 }

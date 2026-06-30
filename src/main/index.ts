@@ -165,6 +165,7 @@ import {
   registerInCodex,
   registerInGemini,
   registerInQwen,
+  resolveNodeCommand,
 } from './agentMcpRegistry'
 
 // Load the window/taskbar icon from a Buffer. We previously used
@@ -1091,7 +1092,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
   try {
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', project: project || undefined })
-    if (!digest) return ok(null) // no relevant memory → launch bare, skip seeding
+    if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
     const dir = join(app.getPath('userData'), 'primers')
     try { mkdirSync(dir, { recursive: true }) } catch { /* already exists */ }
     // Sweep stale primer files so the dir can't grow unbounded — Claude reads the
@@ -1112,7 +1113,11 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
     ].join(' ')
     const file = join(dir, `primer-${uuidv4()}.txt`)
     writeFileSync(file, instruction, 'utf8')
-    return ok(file)
+    // Count the memories in the digest so the launch banner can show how much
+    // recall was injected (observable recall — #1). Each gate-passed memory is
+    // rendered as one "- [...]" line.
+    const count = digest.split('\n').filter((l) => l.startsWith('- [')).length
+    return ok({ file, count })
   } catch (e: any) { return err(e.message) }
 })
 
@@ -1618,6 +1623,20 @@ if (!gotTheLock) {
         try { persistMemoryIndex() } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },
+      // Fast tier (#2 live-session lag): every 90s, ingest ONLY transcripts touched
+      // in the last 10 min — i.e. the ACTIVE session — so its new turns become
+      // searchable via memory_search within seconds instead of waiting the full
+      // 30-min pass. The freshness stat-filter keeps this cheap even with hundreds
+      // of past sessions on disk (it stats, not re-reads, the cold ones).
+      fastIntervalMs: 90_000,
+      fastRun: async () => {
+        const stats = await runConversationIngest(
+          { hasHash: memoryHasHash, write: memoryWrite, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) },
+          { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000 },
+        )
+        try { persistMemoryIndex() } catch { /* best effort */ }
+        return { written: stats.chunksWritten, more: stats.truncated }
+      },
     })
 
     // Sensitive-file-read watcher: subscribe to agent tool_call events from
@@ -1733,7 +1752,7 @@ if (!gotTheLock) {
       const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
       // Normalize to forward slashes for the embedded command string (node
       // accepts them on every OS; the registry also normalizes defensively).
-      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath, hookPath.replace(/\\/g, '/'))
+      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath, hookPath.replace(/\\/g, '/'), resolveNodeCommand())
       if (r.changed) console.log('Auto-registered Termpolis MCP server, tool permissions, and memory hook in Claude Code settings')
       else if (r.error) console.log('Could not auto-register in Claude Code settings (non-fatal):', r.skipped, r.error)
     }
