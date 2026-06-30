@@ -188,9 +188,9 @@ describe('SettingsPane', () => {
     expect(screen.getByText('Default Shell')).toBeInTheDocument()
   })
 
-  it('shows Keyboard Shortcuts section via KeybindingsSettings', () => {
+  it('shows the terminal-behavior settings (app mouse control toggle)', () => {
     render(<SettingsPane />)
-    expect(screen.getByText('Enable Autocomplete')).toBeInTheDocument()
+    expect(screen.getByText('Let terminal apps control the mouse')).toBeInTheDocument()
   })
 
   it('renders the default shell label', () => {
@@ -208,18 +208,6 @@ describe('SettingsPane', () => {
     const shellSelect = selects[0]
     fireEvent.change(shellSelect, { target: { value: 'powershell' } })
     expect(mockSetDefaultShell).toHaveBeenCalledWith('powershell')
-  })
-
-  it('toggles autocomplete when the toggle button is clicked', () => {
-    render(<SettingsPane />)
-    // Find the toggle button near "Enable Autocomplete"
-    const toggles = screen.getAllByRole('button')
-    // The autocomplete toggle is the rounded-full button
-    const autocompleteToggle = toggles.find(btn => btn.className.includes('rounded-full'))
-    if (autocompleteToggle) {
-      fireEvent.click(autocompleteToggle)
-      expect(mockSetAutocompleteEnabled).toHaveBeenCalledWith(false)
-    }
   })
 
   it('toggles app mouse control on when its switch is clicked', () => {

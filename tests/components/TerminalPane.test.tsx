@@ -575,6 +575,57 @@ describe('TerminalPane', () => {
       expect(handled).toBe(true) // defer to xterm; do NOT inject wheel reports into the pager
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
+
+    it('swallows a tracker BUNDLED with its encoding (1002;1006) and still forwards the wheel', () => {
+      render(<TerminalPane {...defaultProps} />)
+      const h = hCsiHandler()
+      // A single DECSET carrying both the tracker and SGR encoding. The old strict
+      // every-param swallow let xterm capture the mouse here (breaking selection) and
+      // never set the wheel-forward flag. Now it is swallowed AND remembered.
+      expect(h([1002, 1006])).toBe(true) // swallowed → xterm never enables mouse → drag selects
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      const handled = wheelHandler()(wheel({ deltaY: -100 }))
+
+      expect(handled).toBe(false)
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;') // SGR forwarded
+    })
+
+    it('keeps SGR after a disable→enable tracker dance (does not clobber encoding to X10)', () => {
+      // THE fullscreen-Claude scroll bug: the app selects SGR, then toggles tracking
+      // granularity. The DECRST used to reset the encoding to legacy X10, so the wheel
+      // then emitted `\x1b[M…` X10 reports an SGR-mode app cannot parse — scroll died
+      // while selection still worked. The encoding must survive the dance.
+      render(<TerminalPane {...defaultProps} />)
+      const csiCalls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls
+      const h = hCsiHandler()
+      const l = [...csiCalls].reverse().find((c) => c[0]?.final === 'l')?.[1] as (p: (number | number[])[]) => boolean
+      h([1006])  // app selects SGR encoding
+      l([1000])  // app turns off basic tracking (granularity switch) — must NOT reset encoding
+      h([1002])  // app turns on button tracking (this DECSET carries no 1006)
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      wheelHandler()(wheel({ deltaY: -100 }))
+
+      const seq = mockWriteToTerminal.mock.calls[0][1] as string
+      expect(seq).toContain('\x1b[<64;')              // SGR, NOT legacy X10
+      expect(seq.startsWith('\x1b[M')).toBe(false)
+    })
+
+    it('forwards SGR by default even if the app never sent an explicit ?1006h', () => {
+      // SGR is the universal modern encoding; default to it so scroll works even when
+      // we never positively observe the encoding DECSET (ordering/timing we miss).
+      render(<TerminalPane {...defaultProps} />)
+      hCsiHandler()([1002]) // tracker only, no encoding DECSET observed
+      mocks.mockTerminal.buffer.active.type = 'alternate'
+      mockWriteToTerminal.mockClear()
+
+      wheelHandler()(wheel({ deltaY: -100 }))
+
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;')
+    })
   })
 
   // =====================================================
@@ -1488,17 +1539,6 @@ describe('TerminalPane', () => {
       mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'C' }))
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
-
-    it('honors a rebound autocomplete combo (toggleAutocomplete = Ctrl+J)', async () => {
-      const { getCompletions } = await import('../../src/renderer/src/completions/completionEngine')
-      ;(getCompletions as any).mockResolvedValue([{ text: 'git', source: 'command' }])
-      withKeybindings({ toggleAutocomplete: 'Ctrl+J' })
-      render(<TerminalPane {...defaultProps} />)
-      act(() => { mockOnDataCb?.('g') })
-      act(() => { mockOnDataCb?.('i') })
-      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, key: 'j' })) })
-      await waitFor(() => { expect(getCompletions).toHaveBeenCalled() })
-    })
   })
 
   // =====================================================
@@ -2071,40 +2111,45 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
-  // 14. Ctrl+Space triggers completions
+  // 14. Autocomplete dropdown removed (v1.16.3)
+  // The input-history autocomplete dropdown was removed: typing no longer pops a
+  // "similar past commands" box, the Ctrl+Space manual trigger is dormant, and
+  // keys the dropdown used to intercept (Tab, arrows) now pass straight to the PTY.
   // =====================================================
-  describe('Ctrl+Space completions', () => {
-    it('Ctrl+Space triggers manual completions when buffer has content', async () => {
+  describe('autocomplete dropdown removed', () => {
+    it('typing does not trigger completion lookups', async () => {
       const { getCompletions } = await import('../../src/renderer/src/completions/completionEngine')
-      ;(getCompletions as any).mockResolvedValue([{ text: 'git', source: 'command' }])
+      ;(getCompletions as any).mockClear()
 
       render(<TerminalPane {...defaultProps} />)
 
       act(() => { mockOnDataCb?.('g') })
       act(() => { mockOnDataCb?.('i') })
+      act(() => { mockOnDataCb?.('t') })
 
-      // Ctrl+Space is now handled in the key handler (rebindable toggleAutocomplete)
-      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, key: ' ' })) })
-
-      await waitFor(() => {
-        expect(getCompletions).toHaveBeenCalled()
-      })
+      expect(getCompletions).not.toHaveBeenCalled()
     })
-  })
 
-  // =====================================================
-  // 15. Dropdown key intercept
-  // =====================================================
-  describe('dropdown key intercept', () => {
-    it('consumes key when dropdown intercepts it', () => {
-      mocks.mockHandleDropdownKeyIntercept.mockReturnValue(true)
+    it('Ctrl+Space no longer triggers completions (binding is dormant)', async () => {
+      const { getCompletions } = await import('../../src/renderer/src/completions/completionEngine')
+      ;(getCompletions as any).mockClear()
 
       render(<TerminalPane {...defaultProps} />)
 
+      act(() => { mockOnDataCb?.('g') })
+      act(() => { mockOnDataCb?.('i') })
+      act(() => { mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, key: ' ' })) })
+
+      expect(getCompletions).not.toHaveBeenCalled()
+    })
+
+    it('Tab passes straight through to the PTY (no dropdown to intercept it)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+
       act(() => { mockOnDataCb?.('\t') })
 
-      // writeToTerminal should NOT be called because the key was consumed
-      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', '\t')
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\t')
     })
   })
 

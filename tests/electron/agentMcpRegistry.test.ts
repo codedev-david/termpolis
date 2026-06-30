@@ -17,6 +17,10 @@ import {
 } from '../../src/main/agentMcpRegistry'
 
 const ADAPTER = '/path/to/stdio-adapter.cjs'
+const HOOK = '/path/to/mcp-adapter/memory-primer-hook.cjs'
+// Windows-style absolute path (backslashes) — used to prove the registered
+// command is normalized to a cross-platform forward-slash `node "..."` form.
+const WIN_HOOK = 'C:\\Users\\me\\AppData\\Roaming\\termpolis\\resources\\mcp-adapter\\memory-primer-hook.cjs'
 
 describe('agentMcpRegistry', () => {
   let dir: string
@@ -124,6 +128,151 @@ describe('agentMcpRegistry', () => {
       const v = JSON.parse(readFileSync(p, 'utf-8'))
       expect(Array.isArray(v.permissions.allow)).toBe(true)
       expect(v.permissions.allow).toContain('mcp__termpolis__*')
+    })
+
+    // 3-arg form: also register the portable SessionStart memory-primer hook
+    // so every Termpolis install gets deterministic memory recall.
+    describe('memory-primer hook (3-arg form)', () => {
+      const primerCommands = (v: any): string[] =>
+        (v?.hooks?.SessionStart ?? []).flatMap((g: any) =>
+          Array.isArray(g?.hooks) ? g.hooks.map((h: any) => h?.command) : [])
+
+      it('registers a SessionStart memory hook into an empty {} settings file', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, '{}')
+        const r = registerInClaudeSettings(p, ADAPTER, HOOK)
+        expect(r.changed).toBe(true)
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        // MCP + permissions still registered alongside the hook.
+        expect(v.mcpServers.termpolis.args[0]).toBe(ADAPTER)
+        expect(v.permissions.allow).toContain('mcp__termpolis__*')
+        // SessionStart hook present, command references the primer script.
+        expect(Array.isArray(v.hooks.SessionStart)).toBe(true)
+        const cmds = primerCommands(v)
+        expect(cmds.some((c) => typeof c === 'string' && c.includes('memory-primer-hook'))).toBe(true)
+        expect(cmds.some((c) => typeof c === 'string' && c.includes(HOOK))).toBe(true)
+        // Cross-platform shape: `node "<path>"`, no platform-specific shell.
+        const cmd = cmds.find((c) => typeof c === 'string' && c.includes('memory-primer-hook')) as string
+        expect(cmd.startsWith('node ')).toBe(true)
+        expect(cmd.toLowerCase()).not.toContain('bash')
+        expect(cmd).not.toContain('.sh')
+        // The hook ships as a Node .cjs script.
+        expect(cmd).toContain('memory-primer-hook.cjs')
+      })
+
+      it('normalizes a Windows backslash path to a cross-platform forward-slash command', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, '{}')
+        const r = registerInClaudeSettings(p, ADAPTER, WIN_HOOK)
+        expect(r.changed).toBe(true)
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        const cmd = primerCommands(v).find((c) => typeof c === 'string' && c.includes('memory-primer-hook')) as string
+        expect(cmd).toBeTruthy()
+        // (a) references the primer script; (b) invoked via node; (c) no shell.
+        expect(cmd).toContain('memory-primer-hook')
+        expect(cmd.startsWith('node ')).toBe(true)
+        expect(cmd.toLowerCase()).not.toContain('bash')
+        expect(cmd).not.toContain('.sh')
+        // Backslashes normalized away → node accepts forward slashes on Windows.
+        expect(cmd).not.toContain('\\')
+        expect(cmd).toContain('C:/Users/me/')
+        // Idempotent even when re-called with the raw backslash path.
+        const r2 = registerInClaudeSettings(p, ADAPTER, WIN_HOOK)
+        expect(r2.changed).toBe(false)
+        expect(r2.skipped).toBe('already-registered')
+        const v2 = JSON.parse(readFileSync(p, 'utf-8'))
+        const matches = primerCommands(v2).filter((c) => typeof c === 'string' && c.includes('memory-primer-hook'))
+        expect(matches.length).toBe(1)
+      })
+
+      it('is idempotent — second call does not duplicate the memory hook', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, '{}')
+        const r1 = registerInClaudeSettings(p, ADAPTER, HOOK)
+        expect(r1.changed).toBe(true)
+        const r2 = registerInClaudeSettings(p, ADAPTER, HOOK)
+        expect(r2.changed).toBe(false)
+        expect(r2.skipped).toBe('already-registered')
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        const matches = primerCommands(v).filter((c) => typeof c === 'string' && c.includes('memory-primer-hook'))
+        expect(matches.length).toBe(1)
+      })
+
+      it("preserves a user's pre-existing unrelated SessionStart hook (and other events)", () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, JSON.stringify({
+          mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } },
+          permissions: { allow: ['mcp__termpolis__*'] },
+          hooks: {
+            SessionStart: [
+              { hooks: [{ type: 'command', command: 'echo user-session-hook' }] },
+            ],
+            PreToolUse: [
+              { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo pretool' }] },
+            ],
+          },
+        }))
+        const r = registerInClaudeSettings(p, ADAPTER, HOOK)
+        // Only the hook is newly added → changed must be true.
+        expect(r.changed).toBe(true)
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        const cmds = primerCommands(v)
+        expect(cmds).toContain('echo user-session-hook') // user's hook preserved
+        expect(cmds.some((c) => typeof c === 'string' && c.includes('memory-primer-hook'))).toBe(true)
+        // Unrelated hook event untouched.
+        expect(v.hooks.PreToolUse[0].hooks[0].command).toBe('echo pretool')
+      })
+
+      it('recovers when settings.hooks is a wrong type (string instead of object)', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, JSON.stringify({
+          mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } },
+          permissions: { allow: ['mcp__termpolis__*'] },
+          hooks: 'garbage',
+        }))
+        const r = registerInClaudeSettings(p, ADAPTER, HOOK)
+        expect(r.changed).toBe(true)
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        expect(typeof v.hooks).toBe('object')
+        expect(Array.isArray(v.hooks.SessionStart)).toBe(true)
+        expect(primerCommands(v).some((c) => typeof c === 'string' && c.includes('memory-primer-hook'))).toBe(true)
+      })
+
+      it('recovers when hooks.SessionStart is a non-array (and keeps other events)', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, JSON.stringify({
+          mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } },
+          permissions: { allow: ['mcp__termpolis__*'] },
+          hooks: { SessionStart: 'oops', PreToolUse: [{ hooks: [{ type: 'command', command: 'keep-me' }] }] },
+        }))
+        const r = registerInClaudeSettings(p, ADAPTER, HOOK)
+        expect(r.changed).toBe(true)
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        expect(Array.isArray(v.hooks.SessionStart)).toBe(true)
+        expect(primerCommands(v).some((c) => typeof c === 'string' && c.includes('memory-primer-hook'))).toBe(true)
+        expect(v.hooks.PreToolUse[0].hooks[0].command).toBe('keep-me')
+      })
+
+      it('does not add the hook when called with only 2 args (back-compat)', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, '{}')
+        const r = registerInClaudeSettings(p, ADAPTER)
+        expect(r.changed).toBe(true)
+        const v = JSON.parse(readFileSync(p, 'utf-8'))
+        expect(v.hooks).toBeUndefined()
+      })
+
+      it('returns already-registered when MCP + hook are all present', () => {
+        const p = join(dir, 'settings.json')
+        writeFileSync(p, JSON.stringify({
+          mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } },
+          permissions: { allow: ['mcp__termpolis__*'] },
+          hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `node "${HOOK}"` }] }] },
+        }))
+        const r = registerInClaudeSettings(p, ADAPTER, HOOK)
+        expect(r.changed).toBe(false)
+        expect(r.skipped).toBe('already-registered')
+      })
     })
   })
 
@@ -320,6 +469,20 @@ describe('agentMcpRegistry', () => {
       for (const input of inputs) {
         writeFileSync(p, input)
         expect(() => registerInClaudeSettings(p, ADAPTER)).not.toThrow()
+      }
+    })
+    it('claude (3-arg): never throws with a hook path on sabotaged input', () => {
+      const inputs = [
+        '', '{', 'null', '[]', '"string"', '42', '{{{{{',
+        '{"hooks": "garbage"}',
+        '{"hooks": []}',
+        '{"hooks": {"SessionStart": 42}}',
+        '{"hooks": {"SessionStart": [null, 1, "x", {"hooks": "nope"}, {"hooks": [null, 7]}]}}',
+      ]
+      const p = join(dir, 'settings.json')
+      for (const input of inputs) {
+        writeFileSync(p, input)
+        expect(() => registerInClaudeSettings(p, ADAPTER, HOOK)).not.toThrow()
       }
     })
     it('global-mcp: returns RegistryResult on every input', () => {
