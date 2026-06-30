@@ -108,6 +108,7 @@ Every Claude session today starts cold; you re-explain what you're doing and bur
 - **Scales into six figures.** Vectors are packed into a typed-array store (about half the RAM of boxed arrays), and past tens of thousands of entries an **HNSW** approximate-nearest-neighbour index engages automatically so search stays sub-linear (a few ms/query, measured). The graph lives *off* the JS heap and persists to disk. It builds once, lazily, in the background **without blocking your searches** — the first query after the store crosses the threshold returns instantly from the exact fallback while the index builds (frame-budgeted so the UI never stalls); every later search and launch uses the saved graph.
 - **Auto-recovers from compaction.** When Claude Code compacts its conversation to fit the context window, it summarizes detail away — but that detail still lives in the brain. Termpolis watches the terminal, waits for the compaction to settle (debounced through the whole thing), and **re-adds a one-line memory pointer** to the agent's input — *ready to send, never auto-submitted* — so the agent reloads what it lost **behind the scenes** over MCP (`memory_primer`) instead of a wall of pasted text. Cooldown-guarded to fire once per compaction; opt-out in Settings. Your durable memory is the large working set; the model's window only holds the active task.
 - **See compaction coming.** A live **context-pressure pill** in the status bar shows how full the focused agent's window is — *healthy → filling up → nearly full → compaction imminent* — from real token counts when the agent reports them (Claude's `token_update` stream) or a clearly-labeled heuristic otherwise. So you watch the pressure build and know recovery is handled, instead of being surprised by a compaction.
+- **You can see it working — and trust what it returns (v1.16.7).** Memory used to load invisibly, so a successful recall looked identical to no recall at all. Now every primed launch shows a banner — `🧠 Loaded N memories for "<project>"` on success, or a clear `⚠️ Memory recall unavailable` if the brain couldn't be reached — so you always know whether context loaded. Four reliability fixes back it up: a **fast indexer tier** makes your *current* conversation searchable within seconds instead of waiting for the next 30-minute pass; recall **flags any code reference whose file has since been deleted** as `⚠ STALE — verify before use` instead of asserting it as fact; the memory hook **resolves an absolute Node path** so it still fires under thin-PATH login shells (NVM and friends); and an **adaptive relevance floor** keeps weak, off-topic hits out of the digest entirely — the agent gets the relevant slice, never padding.
 
 **How it works:**
 
@@ -119,6 +120,24 @@ Every Claude session today starts cold; you re-explain what you're doing and bur
 The result: stop re-explaining context every session, and stop paying to reload it.
 
 **Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), **inject the most relevant context into the active agent** with one click, and **turn on cross-machine sync** (point it at a synced folder). Launched agents are also auto-primed with the project's relevant context (toggle in Settings): a **one-line note** in the agent's input points it at the `memory_primer` MCP tool, so the digest loads **behind the scenes** — no giant dump on the terminal — and the agent **holds it as background** instead of acting on it or resuming old work uninvited. Context from the **current directory's project comes first** (its past conversations, then its code/notes), and anything recalled from other projects is clearly labeled as possibly not applying.
+
+---
+
+### 🆚 How Termpolis improves on other AI harnesses
+
+Termpolis doesn't replace Claude Code, Codex, Gemini CLI, or Qwen Code — **it runs them, unchanged, and adds the layer they're all missing.** A bare AI CLI (or an IDE assistant like Cursor or Copilot) is a single vendor's model talking to a single session: no memory of yesterday, no awareness of the other tools you use, and no guardrail on what leaves your machine. Termpolis turns that into a coordinated, persistent, auditable workspace.
+
+| What you actually get | A bare AI CLI / IDE assistant | The same agent inside Termpolis |
+| --- | --- | --- |
+| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **all four agents share**, surviving restarts and (optionally) syncing across machines; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
+| **More than one model** | Locked to one vendor's family | Claude + Codex + Gemini + Qwen run **as a team** under a local conductor that routes each subtask to the best-suited model |
+| **Secrets / code leaving the machine** | Whatever you type is sent as-is | Every prompt is scanned against **70+ secret patterns** and redacted before it reaches the provider, with a local audit entry |
+| **Knowing what the agent contacted** | Opaque — you can't tell who it talked to | **Per-agent egress audit** (netstat / ss / lsof) records every remote host the agent reached |
+| **Telemetry on you** | Often product analytics or cloud-stored chat history | **None by default** — memory, history, and the audit log stay in local JSONL on your disk |
+| **Lock-in** | Vendor account, cloud backend, or a specific IDE | **Apache-2.0, local-first, no Termpolis account, no Termpolis server** |
+| **Coordinating parallel agents** | You juggle terminals by hand | Real-time **observability** — activity feed, redundancy detector, efficiency panel, and a swarm dashboard |
+
+**The short version:** other harnesses optimize a single agent's loop. Termpolis optimizes *your whole agent fleet* — giving four competing models one shared, durable, trustworthy memory (hardened in v1.16.7 so a working recall is visible, fresh, and never cites a file that no longer exists), a security perimeter around the hosted-model path, and a single place to watch and review everything they do. See the full, sourced [feature-by-feature comparison vs Warp, Wave, JetBrains Air, and Tabby](https://termpolis.com/#compare).
 
 ---
 
