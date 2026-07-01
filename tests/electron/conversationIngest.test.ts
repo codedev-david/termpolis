@@ -10,6 +10,7 @@ import {
   parseBySource,
   ingestConversations,
   discoverTranscriptFiles,
+  findLatestTranscriptFile,
   runConversationIngest,
   type IngestTurn,
   type IngestChunk,
@@ -344,6 +345,48 @@ describe('discoverTranscriptFiles', () => {
     expect(fresh[0]).toMatch(/new\.jsonl$/)
     // No cutoff (default) returns BOTH — zero regression from the fast tier.
     expect(await discoverTranscriptFiles('claude', root)).toHaveLength(2)
+  })
+})
+
+describe('findLatestTranscriptFile — newest matching session for solo-session learning', () => {
+  let root: string
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-latest-'))
+  })
+  afterEach(() => {
+    try { fs.rmSync(root, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  it('finds the newest codex rollout across a nested YYYY/MM/DD layout (the real Codex bug)', async () => {
+    const deep = path.join(root, '2026', '02', '05')
+    fs.mkdirSync(deep, { recursive: true })
+    const older = path.join(deep, 'rollout-a.jsonl')
+    const newer = path.join(deep, 'rollout-b.jsonl')
+    fs.writeFileSync(older, 'x')
+    fs.writeFileSync(newer, 'x')
+    fs.utimesSync(older, new Date(1000_000), new Date(1000_000))
+    fs.utimesSync(newer, new Date(5000_000), new Date(5000_000))
+    expect(await findLatestTranscriptFile('codex', root)).toBe(newer)
+  })
+
+  it('finds the newest gemini session-*.json under tmp/<proj>/chats, ignoring logs.json (the real Gemini bug)', async () => {
+    const chats = path.join(root, 'proj', 'chats')
+    fs.mkdirSync(chats, { recursive: true })
+    const s1 = path.join(chats, 'session-1.json')
+    const s2 = path.join(chats, 'session-2.json')
+    fs.writeFileSync(s1, 'x')
+    fs.writeFileSync(s2, 'x')
+    fs.writeFileSync(path.join(chats, 'logs.json'), 'x') // wrong file — must be ignored
+    fs.utimesSync(s1, new Date(1000_000), new Date(1000_000))
+    fs.utimesSync(s2, new Date(9000_000), new Date(9000_000))
+    expect(await findLatestTranscriptFile('gemini', root)).toBe(s2)
+  })
+
+  it('returns null for a missing root, for qwen, and when nothing matches the pattern', async () => {
+    expect(await findLatestTranscriptFile('codex', path.join(root, 'nope'))).toBeNull()
+    expect(await findLatestTranscriptFile('qwen', root)).toBeNull()
+    fs.writeFileSync(path.join(root, 'notes.txt'), 'x')
+    expect(await findLatestTranscriptFile('gemini', root)).toBeNull()
   })
 })
 

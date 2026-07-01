@@ -137,4 +137,14 @@ describe('readSessionTranscript — cross-agent active-session reader', () => {
   it('with default deps, an unsupported agent (qwen) resolves no file → []', async () => {
     expect(await readSessionTranscript('C:/repo', 'qwen')).toEqual([])
   })
+
+  it('awaits an ASYNC findFile (codex/gemini resolve their newest session asynchronously)', async () => {
+    const findFile = vi.fn(async () => '/deep/2026/02/05/rollout-x.jsonl')
+    const turns = await readSessionTranscript('C:/repo', 'codex', sessionDeps({ findFile }))
+    expect(findFile).toHaveBeenCalledWith('C:/repo', 'codex')
+    expect(turns).toEqual([
+      { role: 'user', text: 'fix the bug' },
+      { role: 'assistant', text: 'fixed, tests pass now' },
+    ])
+  })
 })

@@ -14,9 +14,7 @@
 
 import { promises as fsp } from 'fs'
 import { findLatestSessionFile } from './transcriptWatchers/claudeCodeWatcher'
-import { findLatestCodexSessionFile } from './transcriptWatchers/codexWatcher'
-import { findLatestGeminiSessionFile } from './transcriptWatchers/geminiWatcher'
-import { parseClaudeTranscript, parseBySource, type ConversationSource } from './conversationIngest'
+import { parseClaudeTranscript, parseBySource, findLatestTranscriptFile, type ConversationSource } from './conversationIngest'
 
 export interface LiveTurn {
   role: 'user' | 'assistant'
@@ -74,20 +72,24 @@ export interface SessionTurn {
 
 /** Injectable deps for readSessionTranscript — real filesystem + parser by default. */
 export interface SessionTranscriptDeps {
-  /** (cwd, agent) → the agent's active session file path, or null. */
-  findFile: (cwd: string, agent: string) => string | null
+  /** (cwd, agent) → the agent's active session file path, or null (may be async). */
+  findFile: (cwd: string, agent: string) => string | null | Promise<string | null>
   readFile: (file: string) => Promise<string>
   parse: (agent: string, content: string) => Array<{ role: 'user' | 'assistant'; text: string }>
 }
 
 const defaultSessionDeps: SessionTranscriptDeps = {
+  // Claude resolves per-cwd (precise). Codex/Gemini resolve to the newest matching
+  // session via the indexer's PROVEN discovery — correct roots + patterns + recursion —
+  // which handles Codex's nested `sessions/YYYY/MM/DD/rollout-*.jsonl` and Gemini's
+  // `tmp/<proj>/chats/session-*.json` layouts (the old watcher finders silently missed both).
   findFile: (cwd, agent) =>
     agent === 'claude'
       ? findLatestSessionFile(cwd)
       : agent === 'codex'
-        ? findLatestCodexSessionFile()
+        ? findLatestTranscriptFile('codex')
         : agent === 'gemini'
-          ? findLatestGeminiSessionFile()
+          ? findLatestTranscriptFile('gemini')
           : null,
   readFile: (file) => fsp.readFile(file, 'utf8'),
   parse: (agent, content) => parseBySource(agent as ConversationSource, content),
@@ -106,7 +108,7 @@ export async function readSessionTranscript(
   deps: SessionTranscriptDeps = defaultSessionDeps,
 ): Promise<SessionTurn[]> {
   if (!cwd || !agent) return []
-  const file = deps.findFile(cwd, agent)
+  const file = await deps.findFile(cwd, agent)
   if (!file) return []
   let content: string
   try {

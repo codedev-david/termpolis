@@ -441,6 +441,25 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
   return out
 }
 
+// Newest matching transcript file for a source — used by solo-session learning to read
+// the ACTIVE session. Reuses the PROVEN discovery above (correct roots + patterns +
+// depth-6 recursion), so it handles Codex's nested `sessions/YYYY/MM/DD/rollout-*.jsonl`
+// and Gemini's `tmp/<proj>/chats/session-*.json` layouts — where the old per-agent
+// watcher finders silently found nothing. Newest by mtime; null when nothing matches.
+export async function findLatestTranscriptFile(source: ConversationSource, root?: string): Promise<string | null> {
+  const files = await discoverTranscriptFiles(source, root)
+  let best: { path: string; mtime: number } | null = null
+  for (const f of files) {
+    try {
+      const mtime = (await fsp.stat(f)).mtimeMs
+      if (!best || mtime > best.mtime) best = { path: f, mtime }
+    } catch {
+      /* skip an unreadable file */
+    }
+  }
+  return best ? best.path : null
+}
+
 export interface IngestMemory {
   hasHash: (hash: string) => boolean
   write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
