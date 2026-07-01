@@ -115,7 +115,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDelete, consolidationCandidates,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -132,6 +132,7 @@ import { initCompetence, recordOutcome, assessCompetence, competenceSummary, com
 import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
 import { augmentPrimer } from './mnemePrimerAugment'
+import { runConsolidation } from './mnemeConsolidateRun'
 
 /**
  * Mneme reflex: when a swarm task finishes, learn from it — ground the outcome
@@ -1676,6 +1677,13 @@ if (!gotTheLock) {
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { persistMemoryIndex() } catch { /* best effort */ }
+        // Mneme P2: the consolidation "sleep" — forget cold, low-value, edge-free
+        // episodic noise so signal stays high as the store grows. Conservative and
+        // capped; curated lessons (tagged / edged / high-importance / recalled) are
+        // never touched. Decay-only on the scheduled pass; merge is on-demand.
+        try {
+          runConsolidation({ candidates: () => consolidationCandidates(500), simOf: () => 0, forget: memoryDelete, now: Date.now() })
+        } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },
       // Fast tier (#2 live-session lag): every 90s, ingest ONLY transcripts touched

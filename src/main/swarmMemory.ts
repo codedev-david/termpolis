@@ -11,6 +11,7 @@ import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { learnedUtility } from './mnemeRetrieval'
+import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -1147,6 +1148,25 @@ export function memoryClear(): void {
 }
 
 /** Delete a single entry everywhere — writes a tombstone that propagates via shards. */
+/** A bounded snapshot of the oldest hot-window entries as P2 consolidation
+ *  candidates — with edge presence and usage attached so that curated, connected,
+ *  or frequently-recalled memories are protected from the "sleep" pass. */
+export function consolidationCandidates(limit = 500): ConsolEntry[] {
+  const edgeIds = new Set<string>()
+  for (const e of getAllEdges()) { edgeIds.add(e.from); edgeIds.add(e.to) }
+  return entries.slice(0, Math.max(0, limit)).map((e) => ({
+    id: e.id,
+    content: e.content,
+    ts: e.ts,
+    kind: e.kind,
+    memoryType: e.memoryType,
+    importance: e.importance,
+    useCount: usageMap.get(e.id) ?? 0,
+    tags: e.tags,
+    hasEdges: edgeIds.has(e.id),
+  }))
+}
+
 export function memoryDelete(id: string): void {
   if (!id) return
   const idx = entries.findIndex((e) => e.id === id)
