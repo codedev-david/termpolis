@@ -457,6 +457,19 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.memory.autoPrimerOnLaunch')
   })
 
+  it('solo-learning toggle defaults ON and persists "0" when switched off', () => {
+    localStorage.removeItem('termpolis.memory.learnFromSessions')
+    render(<SettingsPane />)
+    const toggle = screen.getByTestId('settings-solo-learning-toggle')
+    // default ON → first click turns it OFF
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.memory.learnFromSessions')).toBe('0')
+    // click again → back ON
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('termpolis.memory.learnFromSessions')).toBe('1')
+    localStorage.removeItem('termpolis.memory.learnFromSessions')
+  })
+
   it('auto-reprime-on-compaction toggle defaults ON and persists "0" when switched off', () => {
     localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
     render(<SettingsPane />)

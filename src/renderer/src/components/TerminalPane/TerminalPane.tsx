@@ -32,7 +32,7 @@ import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { agentFromCommand } from '../../lib/agentDetector'
 import { useTranscriptWatcher } from '../../hooks/useTranscriptWatcher'
-import { useAutoPrimer, useCompactionReprimer } from '../../hooks/useAutoPrimer'
+import { useAutoPrimer, useCompactionReprimer, useSessionReflection } from '../../hooks/useAutoPrimer'
 import { useAutoCodeIndex } from '../../hooks/useAutoCodeIndex'
 import { useSessionRecording } from '../../hooks/useSessionRecording'
 import type { ShellType } from '../../types'
@@ -225,6 +225,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // Re-seed it after Claude compacts its conversation, restoring the detail it
   // summarized away from the durable memory brain (opt-out in Settings).
   const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)
+  // Learn from this solo agent session: reflect the transcript delta into the brain on a
+  // task pause / terminal close. Uses the authoritative launched-agent identity so Codex/
+  // Gemini/Claude are all covered (opt-out in Settings).
+  const onSessionOutput = useSessionReflection(terminalId, badgeAgent, parsedCwd || cwd)
   // Auto-index this terminal's repo code into the shared memory brain when its
   // cwd resolves to a Git repo — once per repo per session (opt-out in Settings).
   useAutoCodeIndex(parsedCwd || cwd)
@@ -869,6 +873,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       // Re-prime memory after the agent compacts its conversation (settles, then
       // re-injects recalled context). Stable callback; internally gated + debounced.
       onCompactionOutput(stripped)
+
+      // Learn from this solo session: on a task pause / close, reflect the transcript
+      // delta into the brain. Stable callback; internally gated + debounced.
+      onSessionOutput(stripped)
 
       // Watch for OSC 633 exit code marker (if shell integration is enabled)
       const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)

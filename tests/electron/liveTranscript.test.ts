@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { readActiveTranscript, type TranscriptDeps } from '../../src/main/liveTranscript'
+import {
+  readActiveTranscript,
+  readSessionTranscript,
+  type TranscriptDeps,
+  type SessionTranscriptDeps,
+} from '../../src/main/liveTranscript'
 
 function deps(over: Partial<TranscriptDeps> = {}): TranscriptDeps {
   return {
@@ -67,5 +72,69 @@ describe('readActiveTranscript', () => {
     ]
     const turns = await readActiveTranscript('C:/repo', 'claude', deps({ parse }))
     expect(turns).toEqual([{ role: 'user', text: 'q', ts: 5 }])
+  })
+})
+
+function sessionDeps(over: Partial<SessionTranscriptDeps> = {}): SessionTranscriptDeps {
+  return {
+    findFile: () => '/fake/rollout.jsonl',
+    readFile: async () => 'CONTENT',
+    parse: () => [
+      { role: 'user', text: 'fix the bug' },
+      { role: 'assistant', text: 'fixed, tests pass now' },
+    ],
+    ...over,
+  }
+}
+
+describe('readSessionTranscript — cross-agent active-session reader', () => {
+  it('resolves + parses a Codex session into role/text turns', async () => {
+    const turns = await readSessionTranscript('C:/repo', 'codex', sessionDeps())
+    expect(turns).toEqual([
+      { role: 'user', text: 'fix the bug' },
+      { role: 'assistant', text: 'fixed, tests pass now' },
+    ])
+  })
+
+  it('threads the agent through to both findFile and parse', async () => {
+    const findFile = vi.fn(() => '/x/session.json')
+    const parse = vi.fn(() => [{ role: 'assistant' as const, text: 'ok' }])
+    await readSessionTranscript('C:/repo', 'gemini', sessionDeps({ findFile, parse }))
+    expect(findFile).toHaveBeenCalledWith('C:/repo', 'gemini')
+    expect(parse).toHaveBeenCalledWith('gemini', 'CONTENT')
+  })
+
+  it('drops extra parser fields, keeping only role/text', async () => {
+    const parse = () => [{ role: 'user' as const, text: 'q', ts: 9, source: 'codex', cwd: 'C:/repo' }]
+    expect(await readSessionTranscript('C:/repo', 'codex', sessionDeps({ parse }))).toEqual([
+      { role: 'user', text: 'q' },
+    ])
+  })
+
+  it('returns [] when cwd or agent is missing', async () => {
+    expect(await readSessionTranscript('', 'codex', sessionDeps())).toEqual([])
+    expect(await readSessionTranscript('C:/repo', '', sessionDeps())).toEqual([])
+  })
+
+  it('returns [] when no session file resolves', async () => {
+    expect(await readSessionTranscript('C:/repo', 'codex', sessionDeps({ findFile: () => null }))).toEqual([])
+  })
+
+  it('returns [] (never throws) when the file is unreadable', async () => {
+    const readFile = async () => {
+      throw new Error('ENOENT')
+    }
+    expect(await readSessionTranscript('C:/repo', 'codex', sessionDeps({ readFile }))).toEqual([])
+  })
+
+  it('returns [] (never throws) when parsing fails', async () => {
+    const parse = () => {
+      throw new Error('bad')
+    }
+    expect(await readSessionTranscript('C:/repo', 'codex', sessionDeps({ parse }))).toEqual([])
+  })
+
+  it('with default deps, an unsupported agent (qwen) resolves no file → []', async () => {
+    expect(await readSessionTranscript('C:/repo', 'qwen')).toEqual([])
   })
 })

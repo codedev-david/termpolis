@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { onTaskComplete, taskToTurns, type CompletedTask, type ReflexDeps } from '../../src/main/mnemeReflex'
-import type { Lesson } from '../../src/main/mnemeReflect'
+import { onTaskComplete, onSessionEpisode, taskToTurns, type CompletedTask, type ReflexDeps } from '../../src/main/mnemeReflex'
+import type { Lesson, Episode } from '../../src/main/mnemeReflect'
 
 const lesson = (o: Partial<Lesson> = {}): Lesson => ({
   memoryType: 'procedural',
@@ -95,5 +95,58 @@ describe('mnemeReflex — task-completion reflex', () => {
     ])
     expect(taskToTurns({ id: 't', status: 'completed', result: 'only result' })).toEqual([{ role: 'assistant', content: 'only result' }])
     expect(taskToTurns({ id: 't', status: 'completed' })).toEqual([])
+  })
+})
+
+const episode = (o: Partial<Episode> = {}): Episode => ({
+  id: 's1',
+  turns: [
+    { role: 'user', text: 'the build is broken with a module error' },
+    { role: 'assistant', text: 'fixed it by adding the dep; tests pass now' },
+  ],
+  ...o,
+})
+
+describe('mnemeReflex — solo-session reflex (onSessionEpisode)', () => {
+  it('records competence AND reflects when the episode has a confident outcome', async () => {
+    const d = deps()
+    const res = await onSessionEpisode(episode({ project: 'termpolis', outcome: { kind: 'test', success: true } }), d)
+    expect(res).toEqual({ fired: true, lessons: 1, written: ['mem-1'] })
+    expect(d.recordOutcome).toHaveBeenCalledWith('termpolis', true, 1000)
+    expect(d.distill).toHaveBeenCalledTimes(1)
+  })
+
+  it('reflects but records NO competence when the outcome is unknown (neutral session)', async () => {
+    const d = deps()
+    const res = await onSessionEpisode(episode({ project: 'termpolis' }), d)
+    expect(res.fired).toBe(true)
+    expect(res.lessons).toBe(1)
+    expect(d.recordOutcome).not.toHaveBeenCalled()
+    expect(d.distill).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing for a thin, non-reflectable episode', async () => {
+    const d = deps()
+    const res = await onSessionEpisode({ id: 's', turns: [{ role: 'user', text: 'hi' }] }, d)
+    expect(res).toEqual({ fired: false, lessons: 0, written: [] })
+    expect(d.recordOutcome).not.toHaveBeenCalled()
+    expect(d.distill).not.toHaveBeenCalled()
+  })
+
+  it('records a failed outcome and falls back to the "general" domain without a project', async () => {
+    const d = deps()
+    await onSessionEpisode(episode({ outcome: { kind: 'error', success: false } }), d)
+    expect(d.recordOutcome).toHaveBeenCalledWith('general', false, 1000)
+  })
+
+  it('survives a recordOutcome failure and still reflects', async () => {
+    const d = deps({
+      recordOutcome: vi.fn(() => {
+        throw new Error('disk')
+      }),
+    })
+    const res = await onSessionEpisode(episode({ project: 'p', outcome: { kind: 'manual', success: true } }), d)
+    expect(res.fired).toBe(true)
+    expect(res.lessons).toBe(1)
   })
 })

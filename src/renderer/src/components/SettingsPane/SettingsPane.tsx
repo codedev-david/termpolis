@@ -8,6 +8,7 @@ import { SecuritySettings } from './SecuritySettings'
 import { VoiceSettings } from './VoiceSettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
+import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
 import { isAutoIndexEnabled, setAutoIndexEnabled } from '../../hooks/useAutoCodeIndex'
 import {
@@ -51,6 +52,7 @@ export function SettingsPane() {
     try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
   })
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
+  const [soloLearning, setSoloLearning] = useState(() => isSoloLearningEnabled())
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
   const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
@@ -373,6 +375,29 @@ export function SettingsPane() {
                 the most relevant memories for this project behind the scenes (current repo/directory
                 first, then cross-project), holds them as background, and waits for your instruction
                 instead of acting on them. Only fires when relevant memory exists.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={() => { const next = !soloLearning; setSoloLearning(next); setSoloLearningEnabled(next) }}
+              aria-label="Toggle learning from solo agent sessions"
+              data-testid="settings-solo-learning-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                soloLearning ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                soloLearning ? 'translate-x-4.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Learn from solo agent sessions</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                Grow the memory brain from individual agent terminals — not just swarms. When an agent
+                session (Claude, Codex, or Gemini) pauses or closes, Termpolis reflects on what happened
+                and distils reusable lessons and self-competence into the shared brain, so the fleet gets
+                smarter from your everyday solo work. Runs locally in the background.
               </span>
             </div>
           </div>

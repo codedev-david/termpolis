@@ -143,6 +143,7 @@ const api: TermpolisAPI = {
   memoryIngestCode: (repoRoot: string) => ipcRenderer.invoke('memory:ingest-code', { repoRoot }),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
+  memoryReflectSession: (terminalId: string, cwd: string, agent: string) => ipcRenderer.invoke('memory:reflect-session', { terminalId, cwd, agent }),
   memorySyncStatus: () => ipcRenderer.invoke('memory:sync-status'),
   memorySetSyncDir: (dir: string | null) => ipcRenderer.invoke('memory:set-sync-dir', { dir }),
   memoryChooseSyncDir: () => ipcRenderer.invoke('memory:choose-sync-dir'),

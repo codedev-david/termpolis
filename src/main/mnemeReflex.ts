@@ -77,3 +77,27 @@ export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Pro
   const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write })
   return { fired: true, lessons, written }
 }
+
+/**
+ * Reflex for a SOLO agent session (Claude/Codex/Gemini/Qwen), where the caller has
+ * already assembled an Episode from the live transcript (see mnemeSession). Unlike a
+ * swarm task, a solo session carries no explicit pass/fail, so competence is recorded
+ * ONLY when the episode has a confidently-inferred outcome; reflection still runs on
+ * any substantive episode. No-op (fired:false) on a thin / non-reflectable episode, so
+ * trivial exchanges never distil noise or skew self-competence.
+ */
+export async function onSessionEpisode(episode: Episode, deps: ReflexDeps): Promise<ReflexResult> {
+  if (!episode || !isReflectable(episode)) return { fired: false, lessons: 0, written: [] }
+
+  if (episode.outcome) {
+    const domain = (episode.project || 'general').trim() || 'general'
+    try {
+      deps.recordOutcome(domain, episode.outcome.success, deps.now)
+    } catch {
+      /* a competence-store failure must never break reflection */
+    }
+  }
+
+  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write })
+  return { fired: true, lessons, written }
+}

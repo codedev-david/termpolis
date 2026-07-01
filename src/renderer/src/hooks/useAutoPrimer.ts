@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { AgentInfo } from '../lib/agentDetector'
 import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
+import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
 
 // Auto context-primer: when an AI agent is first detected in a terminal, paste a
@@ -126,6 +127,64 @@ export function useCompactionReprimer(
   }
 
   useEffect(() => () => controllerRef.current?.dispose(), [])
+
+  return useCallback((stripped: string) => {
+    controllerRef.current?.onOutput(stripped)
+  }, [])
+}
+
+// Map a detected / badged agent identity to its transcript source id (the value the
+// reflect-session IPC uses to locate + parse the right transcript).
+function agentSourceId(a: AgentInfo | null): string | null {
+  const n = a?.name?.toLowerCase() ?? ''
+  if (n.includes('claude')) return 'claude'
+  if (n.includes('codex')) return 'codex'
+  if (n.includes('gemini')) return 'gemini'
+  if (n.includes('qwen')) return 'qwen'
+  return null
+}
+
+// Learn from a SOLO agent session: watch a terminal's output for a task pause
+// (idle-settle) and, on that pause or on terminal close, reflect the session's
+// transcript delta into the learning brain — so self-competence + reusable lessons grow
+// from individual Claude / Codex / Gemini terminals, not only completed swarm tasks.
+// Returns a STABLE onOutput to feed from the terminal's data handler; cwd/agent are read
+// through refs so it never goes stale. One TerminalPane mounts this per terminal. Opt-out
+// in Settings. Best-effort: a gone-away window or missing API is a silent no-op.
+export function useSessionReflection(
+  terminalId: string,
+  detectedAgent: AgentInfo | null,
+  cwd: string,
+): (stripped: string) => void {
+  const cwdRef = useRef(cwd)
+  cwdRef.current = cwd
+  const cur = agentSourceId(detectedAgent)
+  const agentRef = useRef<string | null>(cur)
+  agentRef.current = cur
+  // Keep the last known agent so a flush at close still has an id even if the badge
+  // has already cleared by the time the pane unmounts.
+  const lastAgentRef = useRef<string | null>(cur)
+  if (cur) lastAgentRef.current = cur
+
+  const controllerRef = useRef<SessionReflectionController | null>(null)
+  if (!controllerRef.current) {
+    controllerRef.current = createSessionReflectionController({
+      hasAgent: () => agentRef.current != null,
+      reflect: () => {
+        const agent = lastAgentRef.current
+        if (!agent) return
+        void window.termpolis?.memoryReflectSession?.(terminalId, cwdRef.current, agent)
+      },
+    })
+  }
+
+  useEffect(
+    () => () => {
+      controllerRef.current?.flush()
+      controllerRef.current?.dispose()
+    },
+    [],
+  )
 
   return useCallback((stripped: string) => {
     controllerRef.current?.onOutput(stripped)

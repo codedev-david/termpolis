@@ -127,7 +127,9 @@ import { runCodeIngest } from './codeIngest'
 import { startIndexer, stopIndexer } from './memoryIndexer'
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
-import { onTaskComplete } from './mnemeReflex'
+import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
+import { reflectSoloSession, type SessionCursor } from './mnemeSession'
+import { readSessionTranscript } from './liveTranscript'
 import { initCompetence, recordOutcome, assessCompetence, competenceSummary, competenceRecords } from './mnemeCompetence'
 import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
@@ -169,6 +171,12 @@ async function reflectOnTask(
     /* best effort — reflection never breaks task completion */
   }
 }
+
+// Per-terminal reflection cursors for solo-session learning: how far each agent
+// terminal's transcript has already been reflected, so each pass only distils the
+// newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
+// just re-reads, and the content-addressed store dedups any overlap.
+const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
@@ -1162,6 +1170,34 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
     // rendered as one "- [...]" line.
     const count = digest.split('\n').filter((l) => l.startsWith('- [')).length
     return ok({ file, count })
+  } catch (e: any) { return err(e.message) }
+})
+
+// Solo-session learning: reflect on a solo agent terminal's transcript delta so the
+// learning brain (self-competence, distilled lessons, cross-agent pooling) grows from
+// individual Claude / Codex / Gemini sessions — not only completed swarm tasks. Called
+// by the renderer's useSessionReflection hook on idle-settle and on terminal close.
+// Guarded / best-effort: a read, distill, or write failure never disturbs the terminal.
+ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
+  try {
+    if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
+    const project = normalizeProjectSlug(opts.cwd)
+    const res = await reflectSoloSession(
+      { terminalId: opts.terminalId, cwd: opts.cwd, agent: opts.agent, project },
+      {
+        readTranscript: (cwd, agent) => readSessionTranscript(cwd, agent),
+        getCursor: (id) => sessionCursors.get(id),
+        setCursor: (id, c) => { sessionCursors.set(id, c) },
+        reflect: (episode) =>
+          onSessionEpisode(episode, {
+            distill: (ep) => distillEpisode(ep),
+            write: (input) => memoryWrite(input),
+            recordOutcome,
+            now: Date.now(),
+          }).then((r) => ({ fired: r.fired, lessons: r.lessons })),
+      },
+    )
+    return ok(res)
   } catch (e: any) { return err(e.message) }
 })
 
