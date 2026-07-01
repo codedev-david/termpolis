@@ -128,7 +128,10 @@ import { startIndexer, stopIndexer } from './memoryIndexer'
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete } from './mnemeReflex'
-import { initCompetence, recordOutcome, assessCompetence, competenceSummary } from './mnemeCompetence'
+import { initCompetence, recordOutcome, assessCompetence, competenceSummary, competenceRecords } from './mnemeCompetence'
+import { initIdentity, identitySummary } from './mnemeIdentity'
+import { findGaps, curiosityPrompts } from './mnemeCuriosity'
+import { augmentPrimer } from './mnemePrimerAugment'
 
 /**
  * Mneme reflex: when a swarm task finishes, learn from it — ground the outcome
@@ -1614,11 +1617,14 @@ if (!gotTheLock) {
           maxSnippetChars: 600,
           project: project || undefined,
         })
-        // Metacognition (P1c): surface the brain's self-assessed weak spots so the
-        // agent knows where to be careful. A no-op until competence has accrued.
-        const comp = competenceSummary(3)
-        const block = comp ? `Self-competence — proceed carefully here:\n${comp}` : ''
-        const primerOut = block ? (primer ? `${primer}\n\n${block}` : block) : primer
+        // Metacognition + curiosity + identity (P1c/P5): augment the primer with the
+        // brain's self-assessed weak spots, open questions worth exploring, and its
+        // continuous-identity digest. All no-ops until that state accrues.
+        const primerOut = augmentPrimer(primer, {
+          competence: competenceSummary(3),
+          curiosity: curiosityPrompts(findGaps(competenceRecords()), 2),
+          identity: identitySummary(3),
+        })
         return { project: project || null, primer: primerOut }
       },
       memoryRelated: (opts) => memoryRelated({
@@ -1647,6 +1653,7 @@ if (!gotTheLock) {
     setSafeStorage(safeStorage)
     initSwarmMemory(app.getPath('userData'))
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
+    initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
     initWorkspaceTrust()
 
     // Auto-feed the memory brain: ingest past AI conversations on a quiet timer

@@ -60,6 +60,11 @@ export function competenceSummary(limit?: number): string {
   return summarizeCompetence(Array.from(records.values()), limit)
 }
 
+/** All competence records — for the curiosity layer (knowledge-gap finding). */
+export function competenceRecords(): CompetenceRecord[] {
+  return Array.from(records.values())
+}
+
 // --- test seam ---
 export function _resetCompetenceForTests(): void {
   records = new Map()
