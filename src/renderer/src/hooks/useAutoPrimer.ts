@@ -25,13 +25,21 @@ const BP_END = '\x1b[201~'
 // digest loads behind the scenes, (2) frame the memory as background only — the
 // agent must NOT start acting on it or resuming past work, and (3) pin a minimal
 // ack so an Enter on the bare pointer doesn't turn into spontaneous work.
-export function buildPrimerPointer(cwd: string): string {
+export function buildPrimerPointer(cwd: string, selfRecord = false): string {
   const target = cwd ? `with cwd set to "${cwd}"` : 'with no arguments'
-  return (
+  let pointer =
     `Termpolis memory: call the termpolis MCP tool memory_primer ${target} and read it as background only — ` +
     'do NOT act on it, resume past work, or summarize it. Reply exactly "Memory loaded." then wait. ' +
     'Use memory_search before re-deriving a stored fix; if memory_primer is unavailable, reply "Memory tools unavailable." then wait.'
-  )
+  if (selfRecord) {
+    // Qwen (and any agent without a parseable on-disk transcript) can't be auto-learned
+    // FROM the way Claude/Codex/Gemini are, so ask it to record its own lesson via MCP —
+    // that is how its work reaches the shared brain. One paste-safe line (no newline/backtick).
+    pointer +=
+      ' Also, when you finish a task or before ending this session, call the termpolis memory_write tool once with a short lesson' +
+      ' (the problem, the fix or decision, and any gotcha) tagged to this project — your sessions are not auto-recorded, so this is how your work is remembered for other agents.'
+  }
+  return pointer
 }
 
 /** Auto-primer is ON by default; users opt out in Settings. */
@@ -56,7 +64,7 @@ export function setAutoPrimerEnabled(on: boolean): void {
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
 // Best-effort and silent: a no-op if the API is unavailable or there is no
 // relevant memory yet. Returns whether it injected.
-export async function injectAutoPrimer(terminalId: string, cwd: string): Promise<boolean> {
+export async function injectAutoPrimer(terminalId: string, cwd: string, selfRecord = false): Promise<boolean> {
   try {
     const api = window.termpolis
     if (!api?.memoryBuildPrimer || !api?.writeToTerminal) return false
@@ -68,7 +76,7 @@ export async function injectAutoPrimer(terminalId: string, cwd: string): Promise
     // paste only the pointer — the agent pulls the content itself over MCP.
     const res = await api.memoryBuildPrimer(query, undefined, cwd || undefined)
     if (!res?.success || !res.data) return false
-    const wrapped = BP_START + buildPrimerPointer(cwd) + BP_END
+    const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     return true
   } catch {
@@ -94,8 +102,11 @@ export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | nul
       return
     }
     primedRef.current = true
+    // Qwen has no parseable on-disk transcript, so it can't be auto-learned from like the
+    // others — prime it to record its own lessons via memory_write instead.
+    const selfRecord = (agentName ?? '').toLowerCase().includes('qwen')
     const handle = setTimeout(() => {
-      void injectAutoPrimer(terminalId, cwd)
+      void injectAutoPrimer(terminalId, cwd, selfRecord)
     }, INJECT_DELAY_MS)
     return () => clearTimeout(handle)
   }, [terminalId, agentName, cwd])

@@ -120,3 +120,14 @@ terminal. Failures are swallowed; the cursor only advances on a successful pass.
 Deterministic + default-ON + opt-out. Ship as v1.17.2 (version bump + `v1.17.2` tag →
 release.yml). Proof: run a solo Claude terminal in a repo, let it settle, then
 `memory_selfcheck`/`memory_pool`/`memory_anticipate` return real data.
+
+## Follow-up: Qwen (v1.17.3)
+
+Qwen Code writes no parseable on-disk transcript (undocumented/unstable format; confirmed:
+`~/.qwen/` holds only settings). So the disk-transcript reflection above can't cover Qwen.
+Instead — since Qwen is MCP-native — its launch primer (`buildPrimerPointer(cwd, selfRecord)`,
+wired in `useAutoPrimer` for detected Qwen agents) asks Qwen to call `memory_write` itself
+with a concise lesson at task end. Higher fidelity (the agent summarizes its own work),
+reuses the existing primer injection, and is gated by the same auto-primer setting. Result:
+all four agents contribute learning — Claude/Codex/Gemini via automatic disk-transcript
+reflection, Qwen via MCP self-record.

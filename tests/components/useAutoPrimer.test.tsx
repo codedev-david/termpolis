@@ -6,6 +6,7 @@ import {
   isAutoPrimerEnabled,
   setAutoPrimerEnabled,
   injectAutoPrimer,
+  buildPrimerPointer,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -228,5 +229,53 @@ describe('useCompactionReprimer', () => {
     unmount()
     await vi.advanceTimersByTimeAsync(5000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+})
+
+describe('Qwen self-record (no disk transcript → the agent writes its own lessons)', () => {
+  it('buildPrimerPointer is a single paste-safe line with NO self-record clause by default', () => {
+    const p = buildPrimerPointer('/home/me/proj')
+    expect(p).not.toContain('\n')
+    expect(p).not.toContain('`')
+    expect(p).toContain('memory_primer')
+    expect(p).not.toContain('memory_write')
+  })
+
+  it('buildPrimerPointer appends a single-line memory_write self-record instruction when asked', () => {
+    const p = buildPrimerPointer('/home/me/proj', true)
+    expect(p).not.toContain('\n') // still one paste-safe line
+    expect(p).not.toContain('`')
+    expect(p).toContain('memory_write')
+    expect(p).toContain('not auto-recorded')
+  })
+
+  it('injectAutoPrimer pastes the self-record clause when selfRecord is set', async () => {
+    await injectAutoPrimer('t', '/x/proj', true)
+    const [, payload] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+    expect(payload).toContain('memory_write')
+  })
+
+  it('injectAutoPrimer omits the self-record clause by default (disk-transcript agents)', async () => {
+    await injectAutoPrimer('t', '/x/proj')
+    const [, payload] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+    expect(payload).not.toContain('memory_write')
+  })
+
+  it('useAutoPrimer adds the self-record clause for a detected Qwen agent', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useAutoPrimer('term-qwen', { name: 'Qwen Code' } as any, '/home/me/proj'))
+    await vi.advanceTimersByTimeAsync(1500)
+    const calls = (window as any).termpolis.writeToTerminal.mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).toContain('memory_write')
+  })
+
+  it('useAutoPrimer does NOT add the clause for a disk-transcript agent (Claude)', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useAutoPrimer('term-claude', { name: 'Claude Code' } as any, '/home/me/proj'))
+    await vi.advanceTimersByTimeAsync(1500)
+    const calls = (window as any).termpolis.writeToTerminal.mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).not.toContain('memory_write')
   })
 })
