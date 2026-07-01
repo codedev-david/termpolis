@@ -143,7 +143,7 @@ describe('mnemeRetrieval', () => {
     })
 
     it('dedups repeated tokens and skips blank backtick spans', () => {
-      // `config.ts` (backtick) + bare config.ts (file) → one token; `​ ` blank span skipped;
+      // `config.ts` (backtick) + bare config.ts (file) → one token; `  ` blank span skipped;
       // MAX_LEN appears twice → one token.
       const q = proactiveQuery('update config.ts then `config.ts` fails with ` ` and MAX_LEN plus MAX_LEN')
       expect(q).toContain('config.ts')
