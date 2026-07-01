@@ -125,6 +125,44 @@ import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest } from './codeIngest'
 import { startIndexer, stopIndexer } from './memoryIndexer'
+// Mneme — the learning layer (see docs/learning-architecture.md).
+import { distillEpisode } from './mnemeReflect'
+import { onTaskComplete } from './mnemeReflex'
+import { initCompetence, recordOutcome } from './mnemeCompetence'
+
+/**
+ * Mneme reflex: when a swarm task finishes, learn from it — ground the outcome
+ * into self-competence and reflect the episode into distilled lessons.
+ * Deterministic (zero-token) distillation by default. Fully guarded and
+ * fire-and-forget: reflection never breaks or delays the task-update path.
+ */
+async function reflectOnTask(
+  task: { id?: string; title?: string; description?: string; result?: string; project?: string } | null | undefined,
+  status: string,
+  result?: string,
+): Promise<void> {
+  try {
+    await onTaskComplete(
+      {
+        id: task?.id ?? 'unknown',
+        status,
+        title: task?.title,
+        description: task?.description,
+        result: result ?? task?.result,
+        project: task?.project,
+        source: 'swarm',
+      },
+      {
+        distill: (ep) => distillEpisode(ep),
+        write: (input) => memoryWrite(input),
+        recordOutcome,
+        now: Date.now(),
+      },
+    )
+  } catch {
+    /* best effort — reflection never breaks task completion */
+  }
+}
 import { buildContextPrimer } from './contextPrimer'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
@@ -1530,7 +1568,10 @@ if (!gotTheLock) {
       swarmUpdateTask: (taskId, status, result) => {
         const validStatuses = ['pending', 'in_progress', 'completed', 'failed'] as const
         if (!validStatuses.includes(status as any)) throw new Error(`Invalid task status: ${status}`)
-        return updateTask(taskId, status as typeof validStatuses[number], result)
+        const task = updateTask(taskId, status as typeof validStatuses[number], result)
+        // Mneme reflex: a finished task is an episode to learn from. Fire-and-forget.
+        if (status === 'completed' || status === 'failed') void reflectOnTask(task, status, result)
+        return task
       },
       swarmListAgents: () => {
         const session = loadSession()
@@ -1599,6 +1640,7 @@ if (!gotTheLock) {
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
     initSwarmMemory(app.getPath('userData'))
+    initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initWorkspaceTrust()
 
     // Auto-feed the memory brain: ingest past AI conversations on a quiet timer

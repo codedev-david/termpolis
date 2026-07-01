@@ -33,6 +33,11 @@ export interface MemoryEntry {
   source?: string                 // provenance (e.g. 'claude'|'codex'|'gemini' for ingested transcripts)
   project?: string                // normalized project slug (cwd basename) — current-directory recall
   hash?: string                   // content hash for idempotent ingestion dedup
+  // --- Mneme learning layer (see docs/learning-architecture.md). All optional and
+  // additive: old records simply lack them, and JSONL round-trips them for free. ---
+  memoryType?: 'episodic' | 'semantic' | 'procedural' | 'entity' | 'summary' // cognitive facet — ORTHOGONAL to `kind`
+  importance?: number             // 0..1 base salience set at write (reflection sets this high for lessons)
+  originEpisode?: string          // the task/session id a distilled lesson was derived from
 }
 
 /** Normalize a cwd/path or bare name into a lowercase project slug (its basename). */
@@ -418,6 +423,9 @@ export interface WriteInput {
   source?: string
   project?: string                // raw cwd/path or slug — normalized on write
   hash?: string
+  memoryType?: MemoryEntry['memoryType'] // Mneme cognitive facet (episodic/semantic/procedural/entity/summary)
+  importance?: number             // 0..1 base salience — clamped on write
+  originEpisode?: string          // task/session id a distilled lesson was derived from
 }
 
 // Auto-link only high-signal kinds so the knowledge graph stays meaningful (not
@@ -470,6 +478,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     ...(input.taskId && { taskId: input.taskId }),
     ...(input.source && { source: input.source }),
     ...(projectSlug && { project: projectSlug }),
+    ...(input.memoryType && { memoryType: input.memoryType }),
+    ...(typeof input.importance === 'number' && { importance: Math.min(1, Math.max(0, input.importance)) }),
+    ...(input.originEpisode && { originEpisode: input.originEpisode }),
     hash: effectiveHash,
   }
 

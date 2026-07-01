@@ -282,6 +282,10 @@ export interface MemoryEntry {
   taskId?: string
   source?: string
   hash?: string
+  // Mneme learning layer (see docs/learning-architecture.md) — optional, additive.
+  memoryType?: 'episodic' | 'semantic' | 'procedural' | 'entity' | 'summary'
+  importance?: number
+  originEpisode?: string
 }
 
 export interface MemorySearchResult extends MemoryEntry { score: number }
@@ -302,6 +306,9 @@ export interface MemoryWriteInput {
   content: string
   tags?: string[]
   taskId?: string
+  memoryType?: MemoryEntry['memoryType']
+  importance?: number
+  originEpisode?: string
 }
 
 export interface MemorySearchOptions {
