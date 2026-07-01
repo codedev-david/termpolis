@@ -8,7 +8,8 @@ import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore, fuseImportance } from './memoryEconomy'
 import { mmrRerank } from './mmrRerank'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
+import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -1006,12 +1007,18 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
     // along the path (h.pathWeight) discounted by gamma^(hops-1), then time-decayed by
     // the freshest edge's recency (QW5). So a strong, short, recent connection scores
     // highest; stale or weak paths fall below EDGE_EPSILON and drop out.
-    const score = h.pathWeight * Math.pow(GRAPH_GAMMA, h.distance - 1) * effectiveWeight(1, h.ts, now)
+    // P3: causal/solution edges (solves/causes/...) outrank generic 'relates-to'
+    // links via a per-relation prior — the graph now knows a fix matters more than
+    // a mere association.
+    const score = h.pathWeight * Math.pow(GRAPH_GAMMA, h.distance - 1) * effectiveWeight(1, h.ts, now) * relationPrior(h.relation)
     if (score < EDGE_EPSILON) continue
     out.push({ ...e, score, relation: h.relation, distance: h.distance })
   }
-  out.sort((a, b) => b.score - a.score)
-  return out
+  // P3: never hand back a memory that a later one supersedes — the "no confusion as
+  // the store grows" guarantee (superseded ids derive from supersedes/superseded-by edges).
+  const active = filterSuperseded(out, getAllEdges())
+  active.sort((a, b) => b.score - a.score)
+  return active
 }
 
 // Record a typed connection between two memories (agent-facing memory_link).

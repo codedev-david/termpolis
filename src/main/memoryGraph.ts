@@ -253,6 +253,14 @@ export function graphStats(): { edges: number; nodes: number } {
   return { edges: edgeCount, nodes: adjacency.size }
 }
 
+/** All forward edges as a flat list — for consumers that need the whole edge set
+ *  (e.g. P3 supersession filtering). Reverse edges are these same edges, indexed by target. */
+export function getAllEdges(): MemoryEdge[] {
+  const out: MemoryEdge[] = []
+  for (const list of adjacency.values()) out.push(...list)
+  return out
+}
+
 /**
  * BB7: GraphRAG one-hop fusion. After ranking, expand the top-`seeds` results one
  * hop along the graph; a neighbour scores `seedScore * edgeWeight * lambda` (lambda
