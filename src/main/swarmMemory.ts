@@ -10,6 +10,7 @@ import { TtlLruCache, rankScore, mergeRelated, gateByScore, fuseImportance } fro
 import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
+import { learnedUtility } from './mnemeRetrieval'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 
@@ -888,7 +889,11 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // then sort by the stored rank, keeping the original recency tie-break. The
   // score>0 gate is preserved because rank>0 ⇔ relevance>0 (positive multipliers).
   const now = Date.now()
-  const ranked = scored.map(r => ({ r, k: fuseImportance(rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }), usageMap.get(r.id) ?? 0) }))
+  // P4: learned utility — the existing recency+kind rank and capped usage nudge,
+  // PLUS a capped boost from a typed memory's `importance` (reflection sets lessons
+  // high). Byte-identical for memories with no importance field; the score>0 gate is
+  // preserved (all factors positive, relevance 0 → 0).
+  const ranked = scored.map(r => ({ r, k: learnedUtility({ id: r.id, relevance: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }), importance: r.importance, useCount: usageMap.get(r.id) ?? 0 }, now) }))
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
   const survivors = ranked.map(x => x.r).filter(r => r.score > 0)
   let result: MemorySearchResult[]
