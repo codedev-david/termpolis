@@ -41,9 +41,9 @@
 
 ---
 
-## 🧠 One memory. Every agent. It learns as you work.
+## 🧠 Meet Mneme — one memory, every agent, that learns as you work
 
-Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. Termpolis gives Claude, Codex, Gemini, and Qwen **one shared local brain** that **remembers across sessions and learns from each one**, so you stop repeating yourself.
+Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude, Codex, Gemini, and Qwen all read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself.
 
 - **One memory, four agents.** All four read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the others — no copy-paste, no re-discovery.
 - **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude, Codex, and Gemini (from their session transcripts); Qwen records its own.
@@ -54,6 +54,22 @@ Every AI session normally starts cold — you re-explain the task and burn 20–
 > **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **4,500+ tests at ~92% coverage**.
 
 **The result: stop re-explaining context every session — and stop paying to reload it.**
+
+---
+
+### 🆚 Why not just use Claude Code or Codex on their own?
+
+Termpolis **runs those exact CLIs, unchanged** — and fixes the one thing they can't do alone: remember.
+
+| What you get | Claude Code / Codex on their own | The same agent inside Termpolis |
+| --- | --- | --- |
+| **Long-term memory** | Starts cold every launch; you re-explain and re-pay tokens to reload context | **Mneme** — a local brain holding months of context, surviving restarts, recalled in ms |
+| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | All four agents read/write **one memory**; a fact one learns, the others recall |
+| **It learns** | No learning — every session is a blank slate | Distills a lesson from every finished task + tracks its own competence |
+| **Every new session** | Re-explain your codebase from scratch | Opens already knowing the project; one-click cross-agent handoff, no re-explaining |
+| **Your data & lock-in** | One vendor's account + cloud; telemetry varies | 100% local, Apache-2.0, no account/backend; prompts scanned for secrets |
+
+**Same agents, same accounts you already pay for** — Termpolis is the workspace around them that remembers and learns.
 
 ---
 
