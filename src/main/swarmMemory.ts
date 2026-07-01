@@ -6,7 +6,7 @@ import { embedText, EMBED_DIM } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
-import { TtlLruCache, rankScore, mergeRelated, gateByScore, fuseImportance } from './memoryEconomy'
+import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
@@ -1166,6 +1166,27 @@ export function consolidationCandidates(limit = 500): ConsolEntry[] {
     tags: e.tags,
     hasEdges: edgeIds.has(e.id),
   }))
+}
+
+/** A fast id→vector cosine similarity over the current hot window, for P2 near-
+ *  duplicate clustering (summaries). Returns 0 when vectors are unavailable (embedder
+ *  off / model absent), so summarization cleanly no-ops without the model. */
+export function consolidationSimOf(): (a: ConsolEntry, b: ConsolEntry) => number {
+  const vecById = new Map<string, Float32Array>()
+  for (const e of entries) {
+    const row = entryRow.get(e)
+    if (row === undefined) continue
+    const v = vectorStore.get(row)
+    if (v) vecById.set(e.id, v)
+  }
+  return (a, b) => {
+    const va = vecById.get(a.id)
+    const vb = vecById.get(b.id)
+    if (!va || !vb) return 0
+    let s = 0
+    for (let i = 0; i < va.length; i++) s += va[i] * vb[i]
+    return Math.max(0, s)
+  }
 }
 
 export function memoryDelete(id: string): void {

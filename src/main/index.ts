@@ -115,7 +115,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDelete, consolidationCandidates,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -132,7 +132,7 @@ import { initCompetence, recordOutcome, assessCompetence, competenceSummary, com
 import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
 import { augmentPrimer } from './mnemePrimerAugment'
-import { runConsolidation } from './mnemeConsolidateRun'
+import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons } from './mnemeSociety'
 import { proactiveQuery } from './mnemeRetrieval'
 
@@ -1695,7 +1695,18 @@ if (!gotTheLock) {
         // capped; curated lessons (tagged / edged / high-importance / recalled) are
         // never touched. Decay-only on the scheduled pass; merge is on-demand.
         try {
-          runConsolidation({ candidates: () => consolidationCandidates(500), simOf: () => 0, forget: memoryDelete, now: Date.now() })
+          const cnow = Date.now()
+          runConsolidation({ candidates: () => consolidationCandidates(500), simOf: () => 0, forget: memoryDelete, now: cnow })
+          // P2 (summaries): cluster near-duplicates in a bounded window and write a
+          // higher-level `summary` node linking them (additive; a no-op when the
+          // embedder is unavailable, since it needs real vectors).
+          await runSummarization({
+            candidates: () => consolidationCandidates(200),
+            simOf: consolidationSimOf(),
+            write: (i) => memoryWrite(i),
+            link: (from, to, relation) => { memoryLink({ from, to, relation }) },
+            now: cnow,
+          })
         } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },
