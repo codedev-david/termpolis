@@ -429,6 +429,7 @@ export interface WriteInput {
   memoryType?: MemoryEntry['memoryType'] // Mneme cognitive facet (episodic/semantic/procedural/entity/summary)
   importance?: number             // 0..1 base salience — clamped on write
   originEpisode?: string          // task/session id a distilled lesson was derived from
+  ts?: number                     // optional backdate (ingestion / tests); defaults to Date.now()
 }
 
 // Auto-link only high-signal kinds so the knowledge graph stays meaningful (not
@@ -473,7 +474,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 
   const entry: MemoryEntry = {
     id: `mem-${Date.now()}-${++seq}-${crypto.randomBytes(3).toString('hex')}`,
-    ts: Date.now(),
+    ts: input.ts ?? Date.now(),
     agentId: input.agentId || 'unknown',
     kind,
     content,
@@ -1160,7 +1161,7 @@ export function consolidationCandidates(limit = 500): ConsolEntry[] {
     ts: e.ts,
     kind: e.kind,
     memoryType: e.memoryType,
-    importance: e.importance,
+    importance: e.importance ?? 0.2, // un-scored raw chunks decay as low-value noise (consolidation-only default)
     useCount: usageMap.get(e.id) ?? 0,
     tags: e.tags,
     hasEdges: edgeIds.has(e.id),

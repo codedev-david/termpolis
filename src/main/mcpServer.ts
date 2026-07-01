@@ -382,6 +382,29 @@ const TOOLS: McpTool[] = [
       required: ['domain'],
     },
   },
+  {
+    name: 'memory_pool',
+    description: 'Pool the shared brain\'s lessons across ALL agents and surface the ones multiple agents independently arrived at — cross-agent corroboration. A lesson learned by 2+ agents (Claude, Codex, Gemini, Qwen) is stronger than one; this returns each pooled lesson with its source list and corroboration count, importance-boosted for agreement. Use it to find the fleet\'s most-trusted, cross-validated knowledge.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max lesson memories to pool over (default 200)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'memory_anticipate',
+    description: 'BEFORE you start solving something, call this with a description of the current task to proactively surface solutions the fleet has ALREADY found — so you never re-derive what is already known. It extracts the error/file/identifier signals from your task and returns the matching procedural / high-value lessons. This is the anti-re-derivation tool: check it first, act second.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'The current task or problem description' },
+        limit: { type: 'number', description: 'Max results (default 5)' },
+      },
+      required: ['task'],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -408,6 +431,8 @@ export interface McpToolHandlers {
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
   memoryFeedback: (opts: { id: string; helpful?: boolean; query?: string }) => any
   memorySelfcheck: (opts: { domain: string }) => any
+  memoryPool: (opts: { limit?: number }) => any
+  memoryAnticipate: (opts: { task: string; limit?: number }) => Promise<any>
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -496,6 +521,10 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return handlers.memoryFeedback({ id: args.id, helpful: args.helpful, query: args.query })
     case 'memory_selfcheck':
       return handlers.memorySelfcheck({ domain: args.domain })
+    case 'memory_pool':
+      return handlers.memoryPool({ limit: args.limit })
+    case 'memory_anticipate':
+      return await handlers.memoryAnticipate({ task: args.task, limit: args.limit })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
