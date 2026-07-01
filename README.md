@@ -2,36 +2,34 @@
   <img src="assets/logo-termpolis.png" alt="Termpolis Logo" width="200">
 </p>
 
-<h1 align="center">Termpolis — Secure AI-Assisted Development</h1>
+<h1 align="center">Termpolis</h1>
 
 <p align="center">
-  <strong>The open-source multi-agent terminal where Claude, Codex, Gemini, and Qwen work together as a team — without your source code leaving the machine.</strong>
+  <strong>Stop re-explaining your codebase to AI.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/🛡_Local--first-no_cloud_no_telemetry-1f6e3a?style=for-the-badge" alt="Local-first">
-  <img src="https://img.shields.io/badge/🔒_No_browser/IDE_extension-0078d4?style=for-the-badge" alt="No extension">
-  <img src="https://img.shields.io/badge/🔎_Auto--scan_every_prompt_(70+_patterns)-FFB74D?style=for-the-badge" alt="Auto-scan every prompt">
-  <img src="https://img.shields.io/badge/📜_Auditable_outbound_log-7ee2a3?style=for-the-badge" alt="Audit log">
+  Claude, Codex, Gemini, and Qwen share <strong>one local memory that learns as you work</strong> —<br>
+  so every agent already knows your project, your decisions, and what got figured out yesterday.<br>
+  <strong>100% on your machine. No cloud. No telemetry.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md"><img src="https://img.shields.io/badge/%F0%9F%90%9B%20Found%20a%20bug%3F%20Report%20it-e53935?style=for-the-badge" alt="Submit a bug report"></a>
+  <img src="https://img.shields.io/badge/🧠_One_shared_memory-across_all_4_agents-6E56CF?style=for-the-badge" alt="One shared memory across all four agents">
+  <img src="https://img.shields.io/badge/🌱_Learns_every_session-never_re--explain-1f6e3a?style=for-the-badge" alt="Learns from every session">
+  <img src="https://img.shields.io/badge/🔒_100%25_local-no_cloud,_no_telemetry-0078d4?style=for-the-badge" alt="100% local, no cloud, no telemetry">
+</p>
+
+<p align="center">
+  <a href="https://github.com/codedev-david/termpolis/releases/latest"><img src="https://img.shields.io/badge/%E2%AC%87%20Download-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-1976D2?style=for-the-badge" alt="Download for Windows, macOS, Linux"></a>
   &nbsp;
-  <a href="https://github.com/codedev-david/termpolis/issues/new?template=feature_request.md"><img src="https://img.shields.io/badge/%E2%9C%A8%20Request%20a%20feature-1976D2?style=for-the-badge" alt="Request a feature"></a>
+  <a href="https://termpolis.com"><img src="https://img.shields.io/badge/%F0%9F%8C%90%20termpolis.com-How%20it%20works-0078d4?style=for-the-badge" alt="termpolis.com"></a>
   &nbsp;
-  <a href="https://github.com/codedev-david/termpolis/issues"><img src="https://img.shields.io/badge/%F0%9F%92%AC%20All%20issues-555555?style=for-the-badge" alt="All issues"></a>
+  <a href="https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md"><img src="https://img.shields.io/badge/%F0%9F%90%9B%20Report%20a%20bug-e53935?style=for-the-badge" alt="Report a bug"></a>
 </p>
 
 <p align="center">
-  <sub>🙏 <strong>We want to fix bugs fast.</strong> If anything is broken, please open an issue — we read every one.</sub>
-</p>
-
-<p align="center">
-  Smart task routing assigns the right work to the right AI model.<br>
-  An intelligent conductor that knows who plays what instrument best.<br>
-  Local-first app — no Termpolis backend, no telemetry by default, no subscription.<br>
-  <strong>Free and open source — your agents, your terminal, your rules.</strong>
+  <sub>🙏 <strong>Free &amp; open source.</strong> Found a bug? Open an issue — we read every one.</sub>
 </p>
 
 <p align="center">
@@ -43,36 +41,19 @@
 
 ---
 
-### 🎯 Flagship Feature: Multi-Agent Swarm with Smart Routing
+## 🧠 One memory. Every agent. It learns as you work.
 
-Describe your task. Termpolis analyzes it, breaks it into subtasks, and assigns each to the AI model that's best at that type of work — automatically.
+Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. Termpolis gives Claude, Codex, Gemini, and Qwen **one shared local brain** that **remembers across sessions and learns from each one**, so you stop repeating yourself.
 
-```
-You: "Refactor the auth module, write comprehensive tests,
-      document the API, and review for security vulnerabilities"
+- **One memory, four agents.** All four read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the others — no copy-paste, no re-discovery.
+- **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude, Codex, and Gemini (from their session transcripts); Qwen records its own.
+- **Every new agent starts warm.** Open a fresh Codex or Gemini terminal and it already knows your project — the relevant memory loads at launch, behind the scenes, no wall of text.
+- **100% local & private.** Embeddings run in-process (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry, nothing leaves your machine. Optional at-rest encryption (AES-256-GCM) and conflict-free sync across machines via a folder you already sync.
+- **Built to trust.** Content-addressed dedup (never stores the same thing twice), millisecond HNSW retrieval at scale, staleness-guarded recall, and an observable `🧠 Loaded N memories` banner so you always know it fired.
 
-Termpolis Smart Router:
-  📝 Refactor auth module    → Claude Code (100/100) — strongest at refactoring
-  🧪 Write tests             → Codex (95/100)        — top-rated for test writing
-  📄 Document the API        → Gemini CLI (90/100)    — best at docs, lowest cost
-  🔒 Security review         → Claude Code (95/100)   — best at code review
+> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **4,500+ tests at ~92% coverage**.
 
-  💰 Token Budget: Claude ~$0.60 | Codex ~$0.23 | Gemini ~$0.10 | Total ~$0.93
-```
-
-A dedicated Claude Code instance acts as the conductor — it reasons about your task, delegates subtasks to agents via MCP tools, and monitors completion. You watch it happen in the Swarm Dashboard. Every assignment is transparent and overridable. When the swarm finishes, a summary dialog shows what each agent accomplished.
-
-| Capability | Claude Code | Codex | Gemini CLI | Qwen Code |
-|-----------|:-----------:|:-----:|:----------:|:---------:|
-| Refactoring | ★★★★★ | ★★★★ | ★★★ | ★★★ |
-| Testing | ★★★★ | ★★★★★ | ★★★ | ★★★ |
-| Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★★ |
-| Code Review | ★★★★★ | ★★★ | ★★★★ | ★★★ |
-| DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★★ |
-| Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★ |
-| Token Cost | $$$$ | $$$ | $$ | $$ |
-
----
+**The result: stop re-explaining context every session — and stop paying to reload it.**
 
 ---
 
@@ -96,9 +77,9 @@ What Termpolis **can** do is make the hosted path *substantially* safer than typ
 
 See [`PRIVACY.md`](PRIVACY.md) for the data-flow spec, [`TERMS.md`](TERMS.md) for the Apache-2.0 / "AS IS" disclaimer.
 
-### 🧠 Persistent Shared Memory — context that lasts across agents, terminals, and restarts
+### 🧠 Shared memory — the deep dive
 
-Every Claude session today starts cold; you re-explain what you're doing and burn 20–50K tokens reloading context. Termpolis fixes that with a **local memory brain that all four agents share** and that **persists between terminals, between agents, and between app restarts.**
+The moat above in full — every capability of the brain that all four agents share:
 
 - **One memory, four agents.** Claude, Codex, Gemini, and Qwen all read and write the same store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`). A fact one agent figures out is instantly available to the others — no copy-paste, no re-discovery.
 - **It survives quitting the app.** Stored as plain JSONL (`swarm-memory.jsonl`) in Termpolis's per-user app-data folder — `%APPDATA%\termpolis\` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with its embeddings at startup. Because it lives in your user profile (not the install folder), it survives app updates and even an uninstall/reinstall — close Termpolis, reopen it tomorrow, the context is still there.
