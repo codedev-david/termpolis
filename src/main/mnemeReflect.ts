@@ -91,6 +91,15 @@ function truncate(s: string, max = MAX_CONTENT): string {
   return t.length > max ? t.slice(0, max - 1).trimEnd() + '…' : t
 }
 
+const THIN_LESSON_CHARS = 55
+/** A short trigger sentence ("Found the root cause.", "The plan is clear.") usually
+ *  carries its real substance in the NEXT sentence, so pull it in rather than store a
+ *  useless stub. Guarded against an identical adjacent sentence so exact-duplicate
+ *  decisions still de-duplicate. */
+function extendThin(s: string, next: string | undefined): string {
+  return s.length < THIN_LESSON_CHARS && next && next !== s ? `${s} ${next}` : s
+}
+
 /** Split a turn's text into candidate lesson sentences (fragments are dropped). */
 export function splitSentences(text: string): string[] {
   return text
@@ -187,31 +196,35 @@ export async function distillEpisode(episode: Episode, opts: DistillOptions = {}
     })
   }
 
-  // 2) Decisions → semantic decision lessons.
-  for (const s of assistantSentences.filter((x) => DECISION_RE.test(x))) {
-    const entities = extractEntities(s)
-    pushUnique(lessons, {
-      memoryType: 'semantic',
-      kind: 'decision',
-      content: truncate(s),
-      entities,
-      importance: importanceFor('semantic', 'decision', outcome, entities.length),
-      links: [],
-    })
-  }
-
-  // 3) Gotchas / root causes → semantic fact lessons (skip if the sentence is really a fix).
-  for (const s of assistantSentences.filter((x) => GOTCHA_RE.test(x) && !FIX_RE.test(x))) {
-    const entities = extractEntities(s)
-    pushUnique(lessons, {
-      memoryType: 'semantic',
-      kind: 'fact',
-      content: truncate(s),
-      gotcha: truncate(s, 240),
-      entities,
-      importance: importanceFor('semantic', 'fact', outcome, entities.length),
-      links: [],
-    })
+  // 2+3) Decisions and gotchas/root-causes → semantic lessons. A short trigger
+  // sentence often has its real substance in the NEXT sentence, so extend thin ones.
+  for (let i = 0; i < assistantSentences.length; i++) {
+    const s = assistantSentences[i]
+    const next = assistantSentences[i + 1]
+    if (DECISION_RE.test(s)) {
+      const content = extendThin(s, next)
+      const entities = extractEntities(content)
+      pushUnique(lessons, {
+        memoryType: 'semantic',
+        kind: 'decision',
+        content: truncate(content),
+        entities,
+        importance: importanceFor('semantic', 'decision', outcome, entities.length),
+        links: [],
+      })
+    } else if (GOTCHA_RE.test(s) && !FIX_RE.test(s)) {
+      const content = extendThin(s, next)
+      const entities = extractEntities(content)
+      pushUnique(lessons, {
+        memoryType: 'semantic',
+        kind: 'fact',
+        content: truncate(content),
+        gotcha: truncate(content, 240),
+        entities,
+        importance: importanceFor('semantic', 'fact', outcome, entities.length),
+        links: [],
+      })
+    }
   }
 
   // 4) Optional LLM enrichment (cheap headless model, injected). Additive + deduped.
