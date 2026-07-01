@@ -194,7 +194,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **No duplicate data** — every write is content-addressed (SHA-256 over normalized text); storing the same information twice is a no-op, so the vector store and the on-disk log never accumulate duplicates and never re-embed what they already hold
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 21 tools for AI agents to control terminals programmatically (incl. shared-memory search, write, list, the background primer, 1-hop `memory_related` traversal, and the knowledge graph: `memory_link` + multi-hop `memory_graph`)
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 25 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, and the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback`)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
@@ -334,7 +334,7 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 
 Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~/.claude/settings.json` so Claude Code sees it as an MCP server immediately. No manual configuration needed.
 
-### Available Tools (14)
+### Available Tools (25)
 
 **Terminal Management:**
 
@@ -359,6 +359,22 @@ Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~
 | `swarm_list_tasks` | List all tasks with statuses |
 | `swarm_update_task` | Update task status and report results |
 | `swarm_list_agents` | List all active terminals/agents |
+
+**Shared Memory & Learning:**
+
+| Tool | Description |
+|------|-------------|
+| `memory_search` | Semantic + keyword search across the shared memory brain |
+| `memory_write` | Persist a fact, decision, or note for every agent to recall |
+| `memory_list` | List recent memory entries with filters |
+| `memory_primer` | Load a ranked background-memory digest for the current project |
+| `memory_related` | 1-hop traversal from a memory entry (or query) to its neighbours |
+| `memory_link` | Record a typed edge between two memories (knowledge graph) |
+| `memory_graph` | Multi-hop walk of the knowledge graph from a seed memory |
+| `memory_anticipate` | Surface lessons the fleet already found for a task before you start |
+| `memory_pool` | Pool cross-agent lessons multiple agents independently arrived at |
+| `memory_selfcheck` | Report the brain's calibrated self-competence in a domain |
+| `memory_feedback` | Mark a recalled memory as helpful so the useful ones rank higher |
 
 ### CLI Tool
 
