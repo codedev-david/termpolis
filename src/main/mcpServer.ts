@@ -371,6 +371,17 @@ const TOOLS: McpTool[] = [
       required: ['id'],
     },
   },
+  {
+    name: 'memory_selfcheck',
+    description: 'Ask the shared brain how reliable it (and the agent fleet) has been in a given area — its calibrated self-competence learned from past task outcomes. Call this BEFORE committing to an approach in a domain you have worked in before: pass a `domain` (a project slug, feature area, or task-type) and get back { confidence 0-1, attempts, verdict }. A verdict of "caution" or "unproven" means think harder, retrieve more, or verify before trusting yourself; "confident" means there is a real track record. This is the metacognition layer — knowing what you know.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'The domain to self-assess (a project slug, feature area, or task type)' },
+      },
+      required: ['domain'],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -396,6 +407,7 @@ export interface McpToolHandlers {
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
   memoryFeedback: (opts: { id: string; helpful?: boolean; query?: string }) => any
+  memorySelfcheck: (opts: { domain: string }) => any
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -482,6 +494,8 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       })
     case 'memory_feedback':
       return handlers.memoryFeedback({ id: args.id, helpful: args.helpful, query: args.query })
+    case 'memory_selfcheck':
+      return handlers.memorySelfcheck({ domain: args.domain })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

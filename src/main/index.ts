@@ -128,7 +128,7 @@ import { startIndexer, stopIndexer } from './memoryIndexer'
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete } from './mnemeReflex'
-import { initCompetence, recordOutcome } from './mnemeCompetence'
+import { initCompetence, recordOutcome, assessCompetence, competenceSummary } from './mnemeCompetence'
 
 /**
  * Mneme reflex: when a swarm task finishes, learn from it — ground the outcome
@@ -1614,7 +1614,12 @@ if (!gotTheLock) {
           maxSnippetChars: 600,
           project: project || undefined,
         })
-        return { project: project || null, primer }
+        // Metacognition (P1c): surface the brain's self-assessed weak spots so the
+        // agent knows where to be careful. A no-op until competence has accrued.
+        const comp = competenceSummary(3)
+        const block = comp ? `Self-competence — proceed carefully here:\n${comp}` : ''
+        const primerOut = block ? (primer ? `${primer}\n\n${block}` : block) : primer
+        return { project: project || null, primer: primerOut }
       },
       memoryRelated: (opts) => memoryRelated({
         id: opts.id,
@@ -1630,6 +1635,7 @@ if (!gotTheLock) {
         limit: opts.limit,
       }),
       memoryFeedback: (opts) => memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query }),
+      memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),
     }
 
     initAuditLog(app.getPath('userData'))
