@@ -111,6 +111,40 @@ async function scrollToText(text: string) {
   } catch {}
 }
 
+// Reliably close ANY open modal. All app modals render a full-screen
+// `div.fixed.inset-0` backdrop whose onClick calls onClose — so clicking the
+// backdrop element itself dismisses them (Escape is unreliable: some modals
+// have no Escape handler, and one modal's text — e.g. "Prompt Templates" — also
+// lives in the StatusBar, breaking text-based waitForHidden). Loops to peel off
+// nested modals (wizard-over-dashboard), with an Escape fallback per pass.
+async function closeModals() {
+  if (!appAlive) return
+  for (let i = 0; i < 6; i++) {
+    await pressIf('Escape') // closes Escape-aware modals (PromptTemplates, SwarmDashboard)
+    await safeWait(120)
+    const done = await page.evaluate(() => {
+      // NOTE: position:fixed elements always have offsetParent === null, so we
+      // measure visibility with getBoundingClientRect, not offsetParent.
+      const vis = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 20 }
+      const overlays = Array.from(document.querySelectorAll<HTMLElement>('div.fixed.inset-0')).filter(vis)
+      // The Quick Start Guide / Help modal has NO backdrop-onClose and ignores
+      // Escape — close it via its visible "Close"/"Skip tour" button. Matching
+      // button TEXT is safe; the TitleBar app-close uses an aria-label, not text.
+      const textClose = Array.from(document.querySelectorAll<HTMLElement>('button')).filter(vis)
+        .find(b => { const t = (b.textContent || '').trim(); return t === 'Close' || t === 'Skip tour' })
+      if (overlays.length === 0 && !textClose) return true
+      const top = overlays[overlays.length - 1]
+      const aria = top && top.querySelector<HTMLElement>('button[aria-label*="lose"], button[aria-label*="workflows"]')
+      if (aria) aria.click()
+      else if (textClose) textClose.click()
+      else if (top) top.click() // backdrop-click → onClose
+      return false
+    }).catch(() => true)
+    await safeWait(250)
+    if (done) break
+  }
+}
+
 test.describe.configure({ retries: 0 })
 
 test.beforeAll(async () => {
@@ -267,10 +301,12 @@ test('capture all docs screenshots', async () => {
   await safeWait(1400)
   await ss('05-tab-view-multiple')
 
-  // 06 — Split view via sidebar toggle (title="Split View" or "Tab View")
-  if (await clickIf('button[title="Split View"]', 2000)) {
-    await safeWait(700)
-  }
+  // 06 — Split view via sidebar toggle. Confirm the toggle actually applied by
+  // waiting for the button title to flip to "Tab View" before capturing.
+  await clickIf('button[title="Split View"]', 2500)
+  await page.locator('button[title="Tab View"]').first()
+    .waitFor({ state: 'visible', timeout: 2500 }).catch(() => {})
+  await safeWait(800)
   await ss('06-split-view')
   // Revert so later shots look normal
   await clickIf('button[title="Tab View"]', 1500)
@@ -289,28 +325,17 @@ test('capture all docs screenshots', async () => {
   await safeWait(500)
   await ss('07-settings-panel')
 
-  // 09 — Keybindings section. Scroll the settings pane directly since the
-  // scroll ancestor is a specific `overflow-y-auto` container inside a flex
-  // column that Playwright's scrollIntoViewIfNeeded sometimes misses.
-  await page.evaluate(() => {
-    const label = Array.from(document.querySelectorAll<HTMLElement>('label'))
-      .find(el => el.textContent?.trim() === 'Keyboard Shortcuts')
-    if (label) {
-      label.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior })
-    }
-  }).catch(() => {})
-  await safeWait(600)
+  // 09 — Keybindings TAB. Settings is now tabbed (settings-tab-*), so switch
+  // tabs by click; scrolling to the section does nothing (it's a different tab).
+  await clickIf('[data-testid="settings-tab-keybindings"]', 2500)
+  await waitForText('Keyboard Shortcuts', 2500)
+  await safeWait(400)
   await ss('09-keybindings')
 
-  // 10 — Agent Capability Ratings section
-  await page.evaluate(() => {
-    const h3 = Array.from(document.querySelectorAll<HTMLElement>('h3'))
-      .find(el => el.textContent?.trim() === 'Agent Capability Ratings')
-    if (h3) {
-      h3.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior })
-    }
-  }).catch(() => {})
-  await safeWait(600)
+  // 10 — Agent Ratings TAB
+  await clickIf('[data-testid="settings-tab-agents"]', 2500)
+  await waitForText('Agent Capability Ratings', 2500)
+  await safeWait(400)
   await ss('10-agent-capability-ratings')
 
   // Close Settings
@@ -333,37 +358,29 @@ test('capture all docs screenshots', async () => {
   await waitForHidden('input[placeholder="Type a command..."]', 2000)
   await safeWait(300)
 
-  // 12 — Prompt templates
+  // 12 — Prompt templates (Ctrl+Shift+P). Scope the wait to the modal H2 — the
+  // StatusBar also renders the text "Prompt Templates", which broke text waits.
   await pressIf('Control+Shift+P')
-  await waitForText('Prompt Templates', 2000)
+  await page.locator('h2:text-is("Prompt Templates")').first()
+    .waitFor({ state: 'visible', timeout: 2500 }).catch(() => {})
   await safeWait(400)
   await ss('12-prompt-templates')
-  await pressIf('Escape')
-  await waitForHidden('text=Prompt Templates', 2000)
-  await safeWait(300)
+  await closeModals() // must fully close, or it blocks the Workflows button (13/13b)
 
-  // 13 — Workflow templates. Sidebar "Workflows" button only *opens*; there's
-  // no Escape handler either, so close by clicking the backdrop at a coordinate
-  // that sits to the right of the sidebar and to the left of the centered modal.
-  await clickIf('button[title="Workflows"]', 2000)
+  // 13 — Workflow templates
+  await clickIf('button[title="Workflows"]', 2500)
   await page.locator('h2:text-is("Workflow Templates")').first()
-    .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
+    .waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
   await safeWait(500)
   await ss('13-workflow-templates')
 
   // 13b — Create-workflow form (the New Workflow editor)
   await clickIf('button:has-text("New Workflow")', 2000)
-  await page.locator('text=New Workflow').first()
-    .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
-  await safeWait(500)
+  await safeWait(700)
   await ss('13b-workflow-create')
-  // Back out of the editor into the list before closing the modal
-  await clickIf('button:has-text("Cancel")', 1500)
+  await clickIf('button[aria-label="Back to workflow list"]', 1500)
   await safeWait(300)
-
-  try { await page.mouse.click(350, 400) } catch {}
-  await waitForHidden('h2:text-is("Workflow Templates")', 2000)
-  await safeWait(300)
+  await closeModals()
 
   // 14 — Context panel (right-hand file tree)
   await pressIf('Control+Shift+E')
@@ -446,20 +463,12 @@ test('capture all docs screenshots', async () => {
   await safeWait(described ? 600 : 1200)
   await ss('22-start-swarm-wizard')
 
-  // Close wizard via Escape (stopConductor happens async in the background
-  // after this, but nothing downstream needs the IPC channel except the
-  // app's own shutdown).
-  if (await page.locator('h2:text-is("Start Swarm")').first().isVisible().catch(() => false)) {
-    await pressIf('Escape')
-    await waitForHidden('h2:text-is("Start Swarm")', 3000)
-  }
-  await safeWait(500)
-
-  // Close the dashboard too
-  if (await page.locator('h2:text-is("Swarm Dashboard")').first().isVisible().catch(() => false)) {
-    await pressIf('Escape')
-    await waitForHidden('h2:text-is("Swarm Dashboard")', 3000)
-  }
+  // Close the wizard AND the dashboard reliably. Escape is gated while the
+  // wizard shows, and the dashboard only closes via its X / backdrop — so peel
+  // both off with closeModals() (it loops for nested modals). This was the cause
+  // of the 28–31 cascade: a lingering dashboard blocked the Settings panel.
+  await closeModals()
+  await waitForHidden('h2:text-is("Swarm Dashboard")', 3000)
   await safeWait(500)
 
   // 23 — Activity feed (Ctrl+Shift+A per App.tsx registration)
@@ -469,18 +478,21 @@ test('capture all docs screenshots', async () => {
   await pressIf('Control+Shift+A')
   await safeWait(300)
 
-  // 24 — Status bar: hover over the bottom strip to show its tooltip/highlight,
-  // making it visually distinct from the plain terminal view in 25.
+  // 24 — Status bar: a full-window shot is indistinguishable from the plain tab
+  // view (05), so CLIP to the bottom strip — that's what the caption describes.
   await clickIf('.xterm', 1500)
   await safeWait(300)
   try {
-    const viewport = page.viewportSize()
-    if (viewport) {
-      await page.mouse.move(viewport.width / 2, viewport.height - 12)
+    const vp = page.viewportSize()
+    if (vp) {
+      await page.mouse.move(vp.width / 2, vp.height - 12)
+      await safeWait(400)
+      await page.screenshot({ path: path.join(OUT, '24-status-bar.png'), clip: { x: 0, y: vp.height - 32, width: vp.width, height: 32 }, timeout: 6000 })
+      console.log('[docs-ss] 24-status-bar (clipped) ✓')
+    } else {
+      await ss('24-status-bar')
     }
-  } catch {}
-  await safeWait(500)
-  await ss('24-status-bar')
+  } catch { await ss('24-status-bar') }
 
   // 25 — Final state: collapse the sidebar via Ctrl+B (if bound) for a
   // clean zoomed-out terminal frame that differs from 24's status-bar hover.
@@ -506,24 +518,29 @@ test('capture all docs screenshots', async () => {
   await clickIf('button:has-text("Help / Support")', 3000)
   await safeWait(800)
   await ss('26-help-modal')
-  // Scroll the Help body to the AI Security Center section for a second shot
-  // documenting that surface specifically.
+  // Scroll the Help modal body down so this second shot differs from 26 and
+  // reveals the lower sections (Security / Observability). Scroll every scroll
+  // container that's actually scrollable — the help modal's body is the only
+  // one open at this point.
   await page.evaluate(() => {
-    const h3 = Array.from(document.querySelectorAll<HTMLElement>('h3'))
-      .find(el => el.textContent?.includes('AI Security Center'))
-    if (h3) h3.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior })
+    document.querySelectorAll<HTMLElement>('.overflow-y-auto').forEach(p => {
+      if (p.scrollHeight > p.clientHeight) p.scrollTop = Math.round(p.scrollHeight * 0.55)
+    })
   }).catch(() => {})
-  await safeWait(400)
+  await safeWait(500)
   await ss('27-help-security-section')
   await pressIf('Escape')
   await safeWait(400)
 
-  // 28 — AI Security Center (Settings → AI Security tab, top of panel).
-  await clickIf('button[title="Settings"]', 2000)
-  await waitForText('Settings', 2000)
+  // 28 — AI Security Center (Settings → AI Security TAB, top of panel).
+  await closeModals()
+  await clickIf('button[title="Settings"]', 2500)
+  await page.locator('[data-testid="settings-tabs"]').first()
+    .waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
+  await clickIf('[data-testid="settings-tab-security"]', 2500)
+  await page.locator('[data-testid="security-watchers"]').first()
+    .waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
   await safeWait(400)
-  await clickIf('button:has-text("AI Security")', 2000)
-  await safeWait(800)
   {
     // Reset scroll to top of the security panel
     await page.evaluate(() => {
