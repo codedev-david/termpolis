@@ -80,8 +80,9 @@ describe('modelBroker', () => {
   })
 
   describe('single-agent model picker helpers', () => {
-    it('offers Claude options premium→economy with savings vs Opus', () => {
+    it('offers Claude options most-capable→cheapest: Fable (flagship), then premium→economy with savings vs Opus', () => {
       expect(CLAUDE_MODEL_OPTIONS).toEqual([
+        { alias: 'fable', label: 'Fable', savingsPct: 0, note: 'most capable' },
         { alias: 'opus', label: 'Opus', savingsPct: 0 },
         { alias: 'sonnet', label: 'Sonnet', savingsPct: 40 },
         { alias: 'haiku', label: 'Haiku', savingsPct: 80 },
@@ -90,14 +91,25 @@ describe('modelBroker', () => {
     it('claudeModelArg appends only a validated alias for launch', () => {
       expect(claudeModelArg('sonnet')).toBe(' --model sonnet')
       expect(claudeModelArg('opus')).toBe(' --model opus')
+      expect(claudeModelArg('fable')).toBe(' --model fable')
       expect(claudeModelArg('gpt-4')).toBe('')
       expect(claudeModelArg('')).toBe('')
       expect(claudeModelArg(undefined)).toBe('')
     })
     it('modelSwitchCommand builds /model only for a validated alias (no injection)', () => {
       expect(modelSwitchCommand('haiku')).toBe('/model haiku')
+      expect(modelSwitchCommand('fable')).toBe('/model fable')
       expect(modelSwitchCommand('sonnet; rm -rf /')).toBe('')
       expect(modelSwitchCommand('bogus')).toBe('')
+    })
+    it('keeps Fable a manual-only pick: selectable in the picker, but never auto-brokered or in conductor guidance', () => {
+      // The flagship is offered in the picker (launch + hot-swap)...
+      expect(CLAUDE_MODEL_OPTIONS.some((o) => o.alias === 'fable')).toBe(true)
+      // ...but the swarm broker only downshifts to save tokens, so no tier maps to it.
+      expect((['economy', 'standard', 'premium'] as const).map((t) => resolveModelFlag('claude', t)))
+        .not.toContain('--model fable')
+      // ...and the conductor is never instructed to launch it.
+      expect(claudeModelGuidance()).not.toContain('fable')
     })
   })
 

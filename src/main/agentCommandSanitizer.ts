@@ -8,13 +8,16 @@ export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
 }
 
 // The ONLY model aliases the model broker may pass through `--model`, per agent.
-// This is the AUTHORITATIVE security allowlist (the renderer's modelBroker.ts
-// AGENT_MODEL_TIERS must stay in sync with these values). Claude only today:
-// Claude Code's --model accepts the opus/sonnet/haiku aliases. Agents absent here
-// get no --model flag at all (they run their own default model). An alias must
-// match EXACTLY — nothing else can ride along on the command.
+// This is the AUTHORITATIVE security allowlist. Claude only today: Claude Code's
+// --model accepts opus/sonnet/haiku (the broker's cost tiers) plus fable (Fable 5,
+// the most-capable flagship — a manual pick ABOVE the tiers, so it is a valid alias
+// here but intentionally absent from modelBroker.ts AGENT_MODEL_TIERS, which the
+// swarm uses to DOWNSHIFT for savings and must never auto-upgrade). Keep this list =
+// the broker's tier aliases + fable. Agents absent here get no --model flag at all
+// (they run their own default model). An alias must match EXACTLY — nothing else can
+// ride along on the command.
 export const AGENT_MODEL_ALIASES: Record<string, string[]> = {
-  'claude': ['opus', 'sonnet', 'haiku'],
+  'claude': ['fable', 'opus', 'sonnet', 'haiku'],
 }
 
 // Find a single, exactly-allowlisted `--model <alias>` (or `--model=<alias>`) in a

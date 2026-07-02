@@ -74,7 +74,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
           <option value="">Model: default (Claude only)</option>
           {CLAUDE_MODEL_OPTIONS.map(m => (
             <option key={m.alias} value={m.alias}>
-              {m.label}{m.savingsPct > 0 ? ` — ${m.savingsPct}% cheaper` : ''}
+              {m.label}{m.note ? ` — ${m.note}` : m.savingsPct > 0 ? ` — ${m.savingsPct}% cheaper` : ''}
             </option>
           ))}
         </select>

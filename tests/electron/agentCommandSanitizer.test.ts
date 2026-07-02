@@ -104,6 +104,8 @@ describe('sanitizeAgentCommand', () => {
       .toBe('claude --dangerously-skip-permissions --model haiku')
     expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model opus'))
       .toBe('claude --dangerously-skip-permissions --model opus')
+    expect(sanitizeAgentCommand('claude --dangerously-skip-permissions --model fable'))
+      .toBe('claude --dangerously-skip-permissions --model fable')
   })
 
   it('reconstructs the safe base command even when the conductor omits the base flag', () => {
@@ -149,7 +151,7 @@ describe('sanitizeAgentCommand', () => {
   })
 
   it('exposes Claude-only model aliases', () => {
-    expect(AGENT_MODEL_ALIASES.claude).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(AGENT_MODEL_ALIASES.claude).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
     expect(AGENT_MODEL_ALIASES.gemini).toBeUndefined()
   })
 })

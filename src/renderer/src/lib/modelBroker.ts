@@ -5,7 +5,7 @@
 // Termpolis orchestrates CLI agents; it does not call model APIs. "Brokering a
 // model" therefore means passing a validated `--model <alias>` to the agent CLI
 // it launches. Today only Claude Code exposes that control (its --model accepts
-// the opus/sonnet/haiku aliases); other agents run their own default model until
+// the opus/sonnet/haiku/fable aliases); other agents run their own default model until
 // their flags are validated (see the design doc — Phase 2). The security boundary
 // that actually enforces which model flags may run lives in the MAIN process
 // (src/main/agentCommandSanitizer.ts AGENT_MODEL_ALIASES) — this module is the
@@ -93,22 +93,38 @@ export interface ModelOption {
   /** CLI model alias — Claude Code's --model and /model accept these. */
   alias: string
   label: string
-  /** % token-cost saved vs. the premium (Opus) model. */
+  /** % token-cost saved vs. the premium (Opus) model. 0 for Opus and for the flagship. */
   savingsPct: number
+  /** Optional tag shown in the picker in place of the savings %, for a model that
+   *  is NOT "cheaper than Opus" (the flagship, which costs more). */
+  note?: string
 }
 
-// The aliases Claude Code accepts, derived from the tier registry so the picker,
-// the sanitizer allowlist, and the broker never drift apart.
-const CLAUDE_ALIASES = new Set(
-  ([AGENT_MODEL_TIERS.claude?.premium, AGENT_MODEL_TIERS.claude?.standard, AGENT_MODEL_TIERS.claude?.economy]
-    .filter(Boolean)) as string[],
-)
+// Fable 5 — Anthropic's most capable model, a rung ABOVE the premium (Opus) tier.
+// Deliberately NOT part of AGENT_MODEL_TIERS: the swarm broker downshifts to save
+// tokens and must never auto-pick a model that costs MORE than Opus (~2×). Fable is
+// offered only as a manual pick (the launch + hot-swap picker) for when maximum
+// capability is worth the price. Claude Code resolves the `fable` alias to the
+// latest Fable 5, so this needs no update when a newer Fable ships.
+export const CLAUDE_FLAGSHIP: ModelOption = {
+  alias: 'fable',
+  label: 'Fable',
+  savingsPct: 0, // above premium — not "cheaper than Opus"
+  note: 'most capable',
+}
 
-/** Claude model picker options, premium→economy, each with its savings vs Opus. */
-export const CLAUDE_MODEL_OPTIONS: ModelOption[] = (['premium', 'standard', 'economy'] as ModelTier[]).map((tier) => {
-  const alias = AGENT_MODEL_TIERS.claude[tier] as string
-  return { alias, label: alias.charAt(0).toUpperCase() + alias.slice(1), savingsPct: estimateSavingsPct('claude', tier) }
-})
+/** Claude model picker options, most-capable→cheapest: the flagship, then premium→economy with savings vs Opus. */
+export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
+  CLAUDE_FLAGSHIP,
+  ...(['premium', 'standard', 'economy'] as ModelTier[]).map((tier) => {
+    const alias = AGENT_MODEL_TIERS.claude[tier] as string
+    return { alias, label: alias.charAt(0).toUpperCase() + alias.slice(1), savingsPct: estimateSavingsPct('claude', tier) }
+  }),
+]
+
+// The aliases Claude Code accepts, derived from the picker options so the picker,
+// the sanitizer allowlist, and the broker never drift apart.
+const CLAUDE_ALIASES = new Set(CLAUDE_MODEL_OPTIONS.map((o) => o.alias))
 
 /** The ` --model <alias>` to append to a Claude LAUNCH command, or '' if not a valid alias. Pure. */
 export function claudeModelArg(model: string | undefined | null): string {

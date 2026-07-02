@@ -1131,7 +1131,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             >
               <option value="">Model…</option>
               {CLAUDE_MODEL_OPTIONS.map((m) => (
-                <option key={m.alias} value={m.alias}>{m.label}{m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
+                <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
               ))}
             </select>
           )}
