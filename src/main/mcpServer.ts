@@ -424,7 +424,7 @@ export interface McpToolHandlers {
   swarmUpdateTask: (taskId: string, status: string, result?: string) => any
   swarmListAgents: () => any
   memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string; project?: string }) => Promise<any>
-  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean }) => Promise<any>
+  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean; fuseGraph?: boolean }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
   memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
@@ -492,6 +492,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         taskId: args.taskId,
         project: args.project,
         diversify: args.diversify !== false,
+        fuseGraph: args.fuseGraph !== false, // BB7: expand top hits one hop along typed graph edges
       })
     case 'memory_list':
       return handlers.memoryList({

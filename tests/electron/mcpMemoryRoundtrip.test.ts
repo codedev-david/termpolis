@@ -84,6 +84,13 @@ describe('MCP shared brain — the dispatch path all four agents use', () => {
     expect(memorySearch).toHaveBeenCalledWith(expect.objectContaining({ diversify: false }))
   })
 
+  it('memory_search fuses graph-connected neighbours for agents by default (fuseGraph:true)', async () => {
+    const memorySearch = vi.fn(async () => [])
+    const h = { memoryWrite, memorySearch, memoryList } as unknown as McpToolHandlers
+    await executeTool('memory_search', { query: 'x' }, h)
+    expect(memorySearch).toHaveBeenCalledWith(expect.objectContaining({ fuseGraph: true }))
+  })
+
   it('memory_feedback forwards the caller agentId (the cross-agent teaching signal)', async () => {
     const memoryFeedback = vi.fn(() => ({ id: 'mem-1', used: 1 }))
     const h = { memoryWrite, memorySearch, memoryList, memoryFeedback } as unknown as McpToolHandlers

@@ -1701,6 +1701,7 @@ if (!gotTheLock) {
           taskId: opts.taskId,
           project: opts.project,
           diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
+          fuseGraph: opts.fuseGraph, // …and fuses graph-connected neighbours one hop out
         })
         try {
           const ready = isEmbedderReady()

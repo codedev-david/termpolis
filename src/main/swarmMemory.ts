@@ -756,6 +756,7 @@ export interface SearchOptions {
   taskId?: string
   project?: string                // path or slug — normalized on entry
   diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
+  fuseGraph?: boolean             // BB7: expand top hits one hop along graph edges (agent-facing recall)
 }
 
 // Search-result cache — identical repeated searches return instantly. Any write
@@ -812,7 +813,7 @@ export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA)
   return out
 }
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.diversify ? 'd' : ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.diversify ? 'd' : ''}|${o.fuseGraph ? 'g' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
@@ -963,7 +964,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
 
   // BB7: fold in graph-connected neighbours of the top results (off by default, and
   // skipped when the graph is empty — byte-identical to the non-fused path then).
-  if (graphFusionEnabled && graphStats().edges > 0) {
+  if ((graphFusionEnabled || opts.fuseGraph) && graphStats().edges > 0) {
     const entriesById = new Map<string, MemoryEntry>(entries.map(e => [e.id, e]))
     result = expandWithGraph(
       result,
