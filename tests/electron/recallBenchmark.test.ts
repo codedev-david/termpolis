@@ -110,7 +110,6 @@ describe.skipIf(!hasBundledModel)('recall benchmark — does each option actuall
 
     const row = (name: string, m: { r5: number; r10: number; mrr: number }): string =>
       `BENCH| ${name.padEnd(14)} recall@5=${m.r5.toFixed(3)} recall@10=${m.r10.toFixed(3)} mrr=${m.mrr.toFixed(3)}`
-    // eslint-disable-next-line no-console
     console.log('\n' + [
       row('baseline', baseline),
       row('gate+div', gatediv),
