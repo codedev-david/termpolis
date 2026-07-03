@@ -11,6 +11,7 @@ import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { learnedUtility } from './mnemeRetrieval'
+import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
@@ -771,6 +772,13 @@ function bumpSearchGen(): void { searchGen++ }
 let graphFusionEnabled = false
 export function _setGraphFusionForTests(v: boolean): void { graphFusionEnabled = v; bumpSearchGen() }
 
+// Frontier: training-free taste-vector adaptation (mnemeAdapt). DEFAULT OFF — the
+// review found full corpus-whitening's payoff uncertain for an already-tuned bge model,
+// so this ships the endorsed positive-only interest-centroid boost, gated on a measured
+// recall lift before enabling. When off, memorySearch ranking is byte-identical.
+let adaptEnabled = false
+export function _setAdaptForTests(v: boolean): void { adaptEnabled = v; bumpSearchGen() }
+
 // BB1: BM25 lexical index maintained beside the vector store — the exact-token half
 // of hybrid retrieval and the graceful-degrade signal when the embedder is down.
 const lexicalIndex = new LexicalIndex()
@@ -929,6 +937,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // high). Byte-identical for memories with no importance field; the score>0 gate is
   // preserved (all factors positive, relevance 0 → 0).
   const ranked = scored.map(r => ({ r, k: learnedUtility({ id: r.id, relevance: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }), importance: r.importance, useCount: usageMap.get(r.id) ?? 0 }, now) }))
+  if (adaptEnabled) applyTasteBoost(ranked) // frontier: default-off interest-centroid nudge
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
   const survivors = ranked.map(x => x.r).filter(r => r.score > 0)
   let result: MemorySearchResult[]
@@ -969,6 +978,28 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
 
   searchCache.set(cacheKey, result)
   return result
+}
+
+// Nudge the ranking toward the centroid of the memories the fleet has reinforced
+// (positive-only, capped — a zero-relevance hit stays zero). Only invoked when
+// adaptEnabled (default off); best-effort, skips any candidate without a packed vector.
+function applyTasteBoost(ranked: Array<{ r: MemorySearchResult; k: number }>): void {
+  const byId = new Map(entries.map(e => [e.id, e]))
+  const vecOf = (id: string): number[] | null => {
+    const e = byId.get(id); if (!e) return null
+    const row = entryRow.get(e); if (row === undefined) return null
+    const v = vectorStore.get(row); return v ? Array.from(v) : null
+  }
+  const reinforcedIds = [...usageMap.entries()]
+    .filter(([, c]) => c > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 200)
+    .map(([id]) => id)
+  const reinforced: number[][] = []
+  for (const id of reinforcedIds) { const v = vecOf(id); if (v) reinforced.push(v) }
+  const centroid = interestCentroid(reinforced)
+  if (!centroid) return
+  for (const x of ranked) { const v = vecOf(x.r.id); if (v) x.k = tasteBoost(x.k, cosineSim(v, centroid)) }
 }
 
 export interface RelatedOptions {
