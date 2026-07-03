@@ -5,6 +5,7 @@ import type { ShellInfo, ShellType } from '../../types'
 import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
+import { MemoryLearningSettings } from './MemoryLearningSettings'
 import { VoiceSettings } from './VoiceSettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
@@ -190,6 +191,7 @@ export function SettingsPane() {
       <div className="flex gap-1 border-b border-[#3c3c3c] -mt-2" data-testid="settings-tabs">
         {[
           { id: 'general', label: 'General' },
+          { id: 'memory', label: 'Memory & Learning' },
           { id: 'security', label: 'AI Security' },
           { id: 'voice', label: 'Voice' },
           { id: 'keybindings', label: 'Keybindings' },
@@ -206,6 +208,7 @@ export function SettingsPane() {
                 : 'border-transparent text-[#9ca3af] hover:text-white'
             }`}
           >
+            {t.id === 'memory' && <i className="fa-solid fa-brain text-[10px] mr-1.5 text-[#22D3EE]"></i>}
             {t.id === 'security' && <i className="fa-solid fa-shield-halved text-[10px] mr-1.5 text-[#7ee2a3]"></i>}
             {t.label}
           </button>
@@ -489,6 +492,8 @@ export function SettingsPane() {
           </div>
         </>
       )}
+
+      {activeTab === 'memory' && <MemoryLearningSettings />}
 
       {activeTab === 'security' && <SecuritySettings />}
 
