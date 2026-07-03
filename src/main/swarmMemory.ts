@@ -440,6 +440,14 @@ export function memoryDashboardStats(): MemoryDashboardStats {
   return { total: entries.length, capacity: maxEntries, byType, bySource, lessons }
 }
 
+/** The authoring source (agent) of a stored memory by id — for cross-agent
+ *  attribution: who authored a memory that another agent later reused. Prefers
+ *  the provenance `source` (claude/codex/gemini/qwen/mneme) over the writer id. */
+export function memorySourceById(id: string): string | undefined {
+  const e = entries.find((x) => x.id === id)
+  return e ? (e.source || e.agentId) : undefined
+}
+
 // ---- Write ----
 
 export interface WriteInput {

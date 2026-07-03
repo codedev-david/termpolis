@@ -360,13 +360,14 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_feedback',
-    description: 'Tell the shared brain that a recalled memory was actually HELPFUL — so it learns which memories matter instead of just accumulating them. After a memory_search/memory_related result genuinely helps you (it answered the question, gave the fix, saved a re-derivation), call this with that entry\'s `id` and `helpful: true`. Repeatedly-helpful memories get a small, capped ranking lift for everyone (it nudges/breaks ties, never overrides relevance). This is the cleanest reinforcement signal there is — use it liberally on hits that paid off.',
+    description: 'Tell the shared brain that a recalled memory was actually HELPFUL — so it learns which memories matter instead of just accumulating them. After a memory_search/memory_related result genuinely helps you (it answered the question, gave the fix, saved a re-derivation), call this with that entry\'s `id` and `helpful: true`. Repeatedly-helpful memories get a small, capped ranking lift for everyone (it nudges/breaks ties, never overrides relevance). This is the cleanest reinforcement signal there is — use it liberally on hits that paid off. If you know your own agent id, pass it as `agentId`: when you reuse a memory another agent authored, that cross-agent teaching gets recorded.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'The memory entry id that was helpful (from a search/related result)' },
         helpful: { type: 'boolean', description: 'true if this memory helped (default true)' },
         query: { type: 'string', description: 'The query it helped with (optional context)' },
+        agentId: { type: 'string', description: 'Your own agent id (optional) — lets the brain record cross-agent teaching when you reuse another agent\'s memory' },
       },
       required: ['id'],
     },
@@ -429,7 +430,7 @@ export interface McpToolHandlers {
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
-  memoryFeedback: (opts: { id: string; helpful?: boolean; query?: string }) => any
+  memoryFeedback: (opts: { id: string; helpful?: boolean; query?: string; agentId?: string }) => any
   memorySelfcheck: (opts: { domain: string }) => any
   memoryPool: (opts: { limit?: number }) => any
   memoryAnticipate: (opts: { task: string; limit?: number }) => Promise<any>
@@ -518,7 +519,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         limit: args.limit,
       })
     case 'memory_feedback':
-      return handlers.memoryFeedback({ id: args.id, helpful: args.helpful, query: args.query })
+      return handlers.memoryFeedback({ id: args.id, helpful: args.helpful, query: args.query, agentId: args.agentId })
     case 'memory_selfcheck':
       return handlers.memorySelfcheck({ domain: args.domain })
     case 'memory_pool':

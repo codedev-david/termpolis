@@ -8,6 +8,7 @@ import {
   _setEmbeddingsAvailable,
   memoryWrite,
   memoryDashboardStats,
+  memorySourceById,
 } from '../../src/main/swarmMemory'
 
 describe('memoryDashboardStats — store composition for the dashboard', () => {
@@ -53,5 +54,19 @@ describe('memoryDashboardStats — store composition for the dashboard', () => {
     const s = memoryDashboardStats()
     expect(s.byType.untyped).toBe(1)
     expect(s.bySource.gizmo).toBe(1)
+  })
+
+  it('memorySourceById returns the authoring source, preferring source over agentId', async () => {
+    const e = await memoryWrite({ agentId: 'claude-term', kind: 'fact', content: 'a lesson authored by gemini', source: 'gemini' })
+    expect(memorySourceById(e.id)).toBe('gemini')
+  })
+
+  it('memorySourceById falls back to the writer agentId when no source', async () => {
+    const e = await memoryWrite({ agentId: 'codex', kind: 'note', content: 'a note with no provenance source' })
+    expect(memorySourceById(e.id)).toBe('codex')
+  })
+
+  it('memorySourceById returns undefined for an unknown id', () => {
+    expect(memorySourceById('mem-does-not-exist')).toBeUndefined()
   })
 })

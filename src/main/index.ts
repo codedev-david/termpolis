@@ -115,7 +115,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryDelete, consolidationCandidates, consolidationSimOf,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -1754,7 +1754,16 @@ if (!gotTheLock) {
         limit: opts.limit,
       }),
       memoryFeedback: (opts) => {
-        try { recordMetric({ t: 'feedback', ts: Date.now(), helpful: opts.helpful !== false }) } catch { /* best effort */ }
+        const helpful = opts.helpful !== false
+        try {
+          recordMetric({ t: 'feedback', ts: Date.now(), helpful })
+          // Cross-agent teaching: a helpful memory authored by a DIFFERENT agent than the
+          // one giving feedback is real cross-agent reuse — the teaching-matrix signal.
+          if (helpful && opts.agentId) {
+            const author = memorySourceById(opts.id)
+            if (author && author !== opts.agentId) recordMetric({ t: 'cross_recall', ts: Date.now(), author, reader: opts.agentId })
+          }
+        } catch { /* best effort */ }
         return memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query })
       },
       memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),

@@ -69,4 +69,11 @@ describe('MCP shared brain — the dispatch path all four agents use', () => {
   it('throws on an unknown tool', async () => {
     await expect(executeTool('bogus_tool', {}, handlers())).rejects.toThrow(/Unknown tool/)
   })
+
+  it('memory_feedback forwards the caller agentId (the cross-agent teaching signal)', async () => {
+    const memoryFeedback = vi.fn(() => ({ id: 'mem-1', used: 1 }))
+    const h = { memoryWrite, memorySearch, memoryList, memoryFeedback } as unknown as McpToolHandlers
+    await executeTool('memory_feedback', { id: 'mem-1', helpful: true, agentId: 'codex' }, h)
+    expect(memoryFeedback).toHaveBeenCalledWith(expect.objectContaining({ id: 'mem-1', helpful: true, agentId: 'codex' }))
+  })
 })
