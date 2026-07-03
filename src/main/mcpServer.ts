@@ -424,7 +424,7 @@ export interface McpToolHandlers {
   swarmUpdateTask: (taskId: string, status: string, result?: string) => any
   swarmListAgents: () => any
   memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string; project?: string }) => Promise<any>
-  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string }) => Promise<any>
+  memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
   memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
@@ -481,6 +481,9 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         project: args.project,
       })
     case 'memory_search':
+      // Agent-facing recall is de-noised by default: diversify applies the relevance
+      // gate (drop < MIN_RELEVANCE, keep a floor) + MMR so near-duplicates don't crowd
+      // the top-k. Agents can opt out with diversify:false for a raw ranked list.
       return await handlers.memorySearch({
         query: args.query,
         limit: args.limit,
@@ -488,6 +491,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         kind: args.kind,
         taskId: args.taskId,
         project: args.project,
+        diversify: args.diversify !== false,
       })
     case 'memory_list':
       return handlers.memoryList({

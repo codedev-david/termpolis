@@ -1700,6 +1700,7 @@ if (!gotTheLock) {
           kind: opts.kind as MemoryEntry['kind'] | undefined,
           taskId: opts.taskId,
           project: opts.project,
+          diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
         })
         try {
           const ready = isEmbedderReady()

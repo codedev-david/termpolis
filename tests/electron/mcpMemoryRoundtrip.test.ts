@@ -70,6 +70,20 @@ describe('MCP shared brain — the dispatch path all four agents use', () => {
     await expect(executeTool('bogus_tool', {}, handlers())).rejects.toThrow(/Unknown tool/)
   })
 
+  it('memory_search de-noises agent recall by default (gate + diversity via diversify:true)', async () => {
+    const memorySearch = vi.fn(async () => [])
+    const h = { memoryWrite, memorySearch, memoryList } as unknown as McpToolHandlers
+    await executeTool('memory_search', { query: 'x' }, h)
+    expect(memorySearch).toHaveBeenCalledWith(expect.objectContaining({ query: 'x', diversify: true }))
+  })
+
+  it('memory_search lets an agent opt out of gating with diversify:false', async () => {
+    const memorySearch = vi.fn(async () => [])
+    const h = { memoryWrite, memorySearch, memoryList } as unknown as McpToolHandlers
+    await executeTool('memory_search', { query: 'x', diversify: false }, h)
+    expect(memorySearch).toHaveBeenCalledWith(expect.objectContaining({ diversify: false }))
+  })
+
   it('memory_feedback forwards the caller agentId (the cross-agent teaching signal)', async () => {
     const memoryFeedback = vi.fn(() => ({ id: 'mem-1', used: 1 }))
     const h = { memoryWrite, memorySearch, memoryList, memoryFeedback } as unknown as McpToolHandlers
