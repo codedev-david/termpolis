@@ -286,6 +286,7 @@ const TOOLS: McpTool[] = [
         kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Filter by kind (optional)' },
         taskId: { type: 'string', description: 'Filter by task correlation id (optional)' },
         project: { type: 'string', description: 'Scope to one project — pass your working directory or repo name to recall only that project’s memories (optional)' },
+        fuseGraph: { type: 'boolean', description: 'Opt-in (default off): also walk the knowledge graph one hop from the top hits to pull in CONNECTED memories — a bug\'s fix, a decision\'s supersession. Use it when you want to follow connections, not just closest matches.' },
       },
       required: ['query'],
     },
@@ -492,7 +493,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         taskId: args.taskId,
         project: args.project,
         diversify: args.diversify !== false,
-        fuseGraph: args.fuseGraph !== false, // BB7: expand top hits one hop along typed graph edges
+        fuseGraph: args.fuseGraph === true, // BB7: OPT-IN — the recall benchmark showed on-by-default gives no recall gain and a small top-5 cost (diversify's over-fetch already recovers distant items)
       })
     case 'memory_list':
       return handlers.memoryList({
