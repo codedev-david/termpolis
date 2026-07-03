@@ -83,3 +83,49 @@ describe('mnemeGround — write-and-ground path', () => {
     expect(res).toEqual({ written: [], lessons: 0 })
   })
 })
+
+describe('mnemeGround — connections (entity nodes + typed edges)', () => {
+  it('links each written lesson to an entity node via refers-to', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([lesson({ content: 'fix', entities: ['swarmMemory.ts', 'ENOENT'] })])
+    const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
+    const link = vi.fn()
+    await groundEpisode(episode(), { distill, write, ensureEntity, link })
+    expect(ensureEntity).toHaveBeenCalledWith('swarmMemory.ts', 'termpolis')
+    expect(ensureEntity).toHaveBeenCalledWith('ENOENT', 'termpolis')
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-swarmMemory.ts', 'refers-to')
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-ENOENT', 'refers-to')
+  })
+
+  it('creates typed edges for resolved lesson links (with a target)', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-7' })
+    const distill = vi.fn().mockResolvedValue([lesson({ links: [{ to: 'mem-bug', relation: 'solves' }] })])
+    const link = vi.fn()
+    await groundEpisode(episode(), { distill, write, link })
+    expect(link).toHaveBeenCalledWith('mem-7', 'mem-bug', 'solves')
+  })
+
+  it('ignores links that have no resolved target', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-7' })
+    const distill = vi.fn().mockResolvedValue([lesson({ links: [{ relation: 'solves' }] })])
+    const link = vi.fn()
+    await groundEpisode(episode(), { distill, write, link })
+    expect(link).not.toHaveBeenCalled()
+  })
+
+  it('is best-effort: an entity/link failure never breaks the batch', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([lesson({ entities: ['x'], links: [{ to: 'y', relation: 'solves' }] })])
+    const ensureEntity = vi.fn().mockRejectedValue(new Error('nope'))
+    const link = vi.fn().mockImplementation(() => { throw new Error('graph down') })
+    const res = await groundEpisode(episode(), { distill, write, ensureEntity, link })
+    expect(res).toEqual({ written: ['mem-1'], lessons: 1 })
+  })
+
+  it('works without link/ensureEntity deps (back-compat, no edges)', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([lesson({ entities: ['a'], links: [{ to: 'b', relation: 'solves' }] })])
+    const res = await groundEpisode(episode(), { distill, write })
+    expect(res).toEqual({ written: ['mem-1'], lessons: 1 })
+  })
+})

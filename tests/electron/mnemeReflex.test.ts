@@ -88,6 +88,22 @@ describe('mnemeReflex — task-completion reflex', () => {
     expect(res.fired).toBe(true)
   })
 
+  it('threads link + ensureEntity so a completed task mints entity edges', async () => {
+    const link = vi.fn()
+    const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
+    const d = deps({
+      distill: vi.fn().mockResolvedValue([lesson({ content: 'fix', entities: ['foo.ts'] })]),
+      link,
+      ensureEntity,
+    })
+    await onTaskComplete(
+      { id: 't6', status: 'completed', project: 'p', title: 'x', result: 'Fixed a long enough thing to reflect on here now.' },
+      d,
+    )
+    expect(ensureEntity).toHaveBeenCalledWith('foo.ts', 'p')
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-foo.ts', 'refers-to')
+  })
+
   it('taskToTurns builds turns from task text (and handles missing parts)', () => {
     expect(taskToTurns({ id: 't', status: 'completed', title: 'T', description: 'D', result: 'R' })).toEqual([
       { role: 'user', content: 'T\nD' },
@@ -148,5 +164,18 @@ describe('mnemeReflex — solo-session reflex (onSessionEpisode)', () => {
     const res = await onSessionEpisode(episode({ project: 'p', outcome: { kind: 'manual', success: true } }), d)
     expect(res.fired).toBe(true)
     expect(res.lessons).toBe(1)
+  })
+
+  it('threads link + ensureEntity so a solo session mints entity edges', async () => {
+    const link = vi.fn()
+    const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
+    const d = deps({
+      distill: vi.fn().mockResolvedValue([lesson({ content: 'fix', entities: ['bar.ts'] })]),
+      link,
+      ensureEntity,
+    })
+    await onSessionEpisode(episode({ project: 'p', outcome: { kind: 'test', success: true } }), d)
+    expect(ensureEntity).toHaveBeenCalledWith('bar.ts', 'p')
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-bar.ts', 'refers-to')
   })
 })

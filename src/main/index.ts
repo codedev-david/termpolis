@@ -138,6 +138,29 @@ import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons } from './mnemeSociety'
 import { proactiveQuery } from './mnemeRetrieval'
 
+// Mneme entity layer: upsert an `entity` node by name (idempotent via content-hash)
+// and return its id, so a distilled lesson can link to the files/functions/errors it
+// references — the connective tissue the knowledge graph was missing. Low importance
+// so entity stubs never dominate recall. Best-effort: never breaks reflection.
+async function ensureEntityNode(name: string, project?: string): Promise<string | null> {
+  const n = (name || '').trim()
+  if (!n) return null
+  try {
+    const e = await memoryWrite({
+      agentId: 'mneme',
+      kind: 'fact',
+      memoryType: 'entity',
+      content: n,
+      source: 'mneme',
+      importance: 0.3,
+      ...(project ? { project } : {}),
+    })
+    return e?.id ?? null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Mneme reflex: when a swarm task finishes, learn from it — ground the outcome
  * into self-competence and reflect the episode into distilled lessons.
@@ -165,6 +188,8 @@ async function reflectOnTask(
         write: (input) => memoryWrite(input),
         recordOutcome,
         now: Date.now(),
+        link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
+        ensureEntity: ensureEntityNode,
       },
     )
   } catch {
@@ -1194,6 +1219,8 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
             write: (input) => memoryWrite(input),
             recordOutcome,
             now: Date.now(),
+            link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
+            ensureEntity: ensureEntityNode,
           }).then((r) => ({ fired: r.fired, lessons: r.lessons })),
       },
     )

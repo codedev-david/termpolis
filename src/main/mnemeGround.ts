@@ -46,14 +46,30 @@ export function lessonToWriteInput(lesson: Lesson, episode: Episode): LessonWrit
   }
 }
 
+/** Create a typed graph edge (best-effort). Injected so mnemeGround stays pure. */
+export type LessonLinker = (from: string, to: string, relation: string, weight?: number) => void
+/** Upsert an entity node by name → its memory id (best-effort). Injected. */
+export type EntityEnsurer = (name: string, project?: string) => Promise<string | null>
+
+export interface GroundDeps {
+  distill: EpisodeDistiller
+  write: MemoryWriter
+  /** When present, a lesson's RESOLVED links (with a target) and its referenced
+   *  entities are minted as graph edges — this is what makes the knowledge graph's
+   *  causal + entity connections real instead of only cosine 'relates-to' auto-links. */
+  link?: LessonLinker
+  /** Paired with `link`: upsert an `entity` node per referenced file/function/error
+   *  and connect the lesson to it, so two lessons about the same thing share a node. */
+  ensureEntity?: EntityEnsurer
+}
+
 /**
  * Distill an episode and write each lesson to the store as a grounded typed
- * memory. Returns the ids written and the total lesson count.
+ * memory. When graph deps are provided, each written lesson also mints edges to
+ * its resolved link targets and to entity nodes for the things it references.
+ * Returns the ids written and the total lesson count.
  */
-export async function groundEpisode(
-  episode: Episode,
-  deps: { distill: EpisodeDistiller; write: MemoryWriter },
-): Promise<GroundResult> {
+export async function groundEpisode(episode: Episode, deps: GroundDeps): Promise<GroundResult> {
   let lessons: Lesson[] = []
   try {
     lessons = await deps.distill(episode)
@@ -63,12 +79,39 @@ export async function groundEpisode(
 
   const written: string[] = []
   for (const lesson of lessons) {
+    let id: string | undefined
     try {
       const res = await deps.write(lessonToWriteInput(lesson, episode))
-      if (res && res.id) written.push(res.id)
+      if (res && res.id) { id = res.id; written.push(res.id) }
     } catch {
-      /* best effort — skip this lesson, keep the rest */
+      continue // best effort — skip this lesson, keep the rest
     }
+    if (!id) continue
+    await connectLesson(id, lesson, episode, deps)
   }
   return { written, lessons: lessons.length }
+}
+
+/** Turn a written lesson's typed links + referenced entities into graph edges.
+ *  Fully guarded: a graph failure never costs us the lesson that was already stored. */
+async function connectLesson(id: string, lesson: Lesson, episode: Episode, deps: GroundDeps): Promise<void> {
+  const link = deps.link
+  if (!link) return
+  // Resolved typed links (solves / caused-by / supersedes …). A link with no target
+  // is just a relation label the extractor couldn't resolve — skip it, don't guess.
+  for (const lk of lesson.links || []) {
+    if (lk && lk.to && lk.relation) {
+      try { link(id, lk.to, lk.relation) } catch { /* best effort */ }
+    }
+  }
+  // Entity layer: connect the lesson to each file/function/error it names, so two
+  // lessons about the same entity become reachable through the shared entity node.
+  if (deps.ensureEntity) {
+    for (const name of lesson.entities || []) {
+      try {
+        const eid = await deps.ensureEntity(name, episode.project)
+        if (eid) { try { link(id, eid, 'refers-to') } catch { /* best effort */ } }
+      } catch { /* best effort */ }
+    }
+  }
 }

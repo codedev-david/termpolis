@@ -15,7 +15,7 @@ import {
   isReflectable,
   type RawTurn,
 } from './mnemeEpisode'
-import { groundEpisode, type MemoryWriter } from './mnemeGround'
+import { groundEpisode, type MemoryWriter, type LessonLinker, type EntityEnsurer } from './mnemeGround'
 
 export interface CompletedTask {
   id: string
@@ -32,6 +32,10 @@ export interface ReflexDeps {
   write: MemoryWriter
   recordOutcome: (domain: string, success: boolean, now: number) => void
   now: number
+  /** Optional graph deps: when present, distilled lessons mint typed + entity edges
+   *  (see mnemeGround.groundEpisode). Absent in pure tests that only check reflection. */
+  link?: LessonLinker
+  ensureEntity?: EntityEnsurer
 }
 
 export interface ReflexResult {
@@ -74,7 +78,7 @@ export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Pro
   })
   if (!isReflectable(episode)) return { fired: true, lessons: 0, written: [] }
 
-  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write })
+  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity })
   return { fired: true, lessons, written }
 }
 
@@ -98,6 +102,6 @@ export async function onSessionEpisode(episode: Episode, deps: ReflexDeps): Prom
     }
   }
 
-  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write })
+  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity })
   return { fired: true, lessons, written }
 }
