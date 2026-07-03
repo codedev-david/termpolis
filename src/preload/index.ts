@@ -139,6 +139,7 @@ const api: TermpolisAPI = {
   memoryCount: () => ipcRenderer.invoke('memory:count'),
   memoryClear: () => ipcRenderer.invoke('memory:clear'),
   memoryStats: () => ipcRenderer.invoke('memory:stats'),
+  memoryMetrics: () => ipcRenderer.invoke('memory:metrics'),
   memoryIngestConversations: () => ipcRenderer.invoke('memory:ingest-conversations'),
   memoryIngestCode: (repoRoot: string) => ipcRenderer.invoke('memory:ingest-code', { repoRoot }),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),

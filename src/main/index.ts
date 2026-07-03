@@ -115,7 +115,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDelete, consolidationCandidates, consolidationSimOf,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -137,6 +137,9 @@ import { augmentPrimer } from './mnemePrimerAugment'
 import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons } from './mnemeSociety'
 import { proactiveQuery } from './mnemeRetrieval'
+import { getAllEdges, graphStats } from './memoryGraph'
+import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
+import { isEmbedderReady } from './localEmbedder'
 
 // Mneme entity layer: upsert an `entity` node by name (idempotent via content-hash)
 // and return its id, so a distilled lesson can link to the files/functions/errors it
@@ -173,7 +176,7 @@ async function reflectOnTask(
   result?: string,
 ): Promise<void> {
   try {
-    await onTaskComplete(
+    const res = await onTaskComplete(
       {
         id: task?.id ?? 'unknown',
         status,
@@ -192,6 +195,7 @@ async function reflectOnTask(
         ensureEntity: ensureEntityNode,
       },
     )
+    try { if (res.fired && res.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons }) } catch { /* best effort */ }
   } catch {
     /* best effort — reflection never breaks task completion */
   }
@@ -1122,6 +1126,27 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 ipcMain.handle('memory:count', () => ok(memoryCount()))
 ipcMain.handle('memory:clear', () => { memoryClear(); return ok() })
 ipcMain.handle('memory:stats', () => ok(memoryStats()))
+// Memory & Learning dashboard: the proof numbers, computed locally and offline.
+// Store-derived composition + graph connections are always real; the ledger adds
+// live reliability/receipt SLIs (sparse until the brain has been used a while).
+ipcMain.handle('memory:metrics', () => {
+  try {
+    const byRelation: Record<string, number> = {}
+    for (const e of getAllEdges()) byRelation[e.relation] = (byRelation[e.relation] || 0) + 1
+    const gs = graphStats()
+    const competence = competenceRecords()
+      .slice()
+      .sort((a, b) => b.attempts - a.attempts)
+      .slice(0, 8)
+      .map((c) => ({ domain: c.domain, attempts: c.attempts, confidence: c.confidence }))
+    return ok({
+      ledger: metricsSummary(Date.now()),
+      store: memoryDashboardStats(),
+      graph: { nodes: gs.nodes, edges: gs.edges, byRelation },
+      competence,
+    })
+  } catch (e: any) { return err(e.message) }
+})
 
 // Ingest past AI sessions (Claude/Codex/Gemini transcripts on disk) into the
 // shared memory so every agent can semantically recall them. Idempotent — only
@@ -1221,7 +1246,10 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
             now: Date.now(),
             link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
             ensureEntity: ensureEntityNode,
-          }).then((r) => ({ fired: r.fired, lessons: r.lessons })),
+          }).then((r) => {
+            try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons }) } catch { /* best effort */ }
+            return { fired: r.fired, lessons: r.lessons }
+          }),
       },
     )
     return ok(res)
@@ -1646,22 +1674,40 @@ if (!gotTheLock) {
         const session = loadSession()
         return session.terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd }))
       },
-      memoryWrite: (input) => memoryWrite({
-        agentId: input.agentId,
-        kind: (input.kind as MemoryEntry['kind']) || 'note',
-        content: input.content,
-        tags: input.tags,
-        taskId: input.taskId,
-        project: input.project,
-      }),
-      memorySearch: (opts) => memorySearch({
-        query: opts.query,
-        limit: opts.limit,
-        agentId: opts.agentId,
-        kind: opts.kind as MemoryEntry['kind'] | undefined,
-        taskId: opts.taskId,
-        project: opts.project,
-      }),
+      memoryWrite: async (input) => {
+        try {
+          const e = await memoryWrite({
+            agentId: input.agentId,
+            kind: (input.kind as MemoryEntry['kind']) || 'note',
+            content: input.content,
+            tags: input.tags,
+            taskId: input.taskId,
+            project: input.project,
+          })
+          try { recordMetric({ t: 'write', ts: Date.now(), ok: true, memoryType: e.memoryType }) } catch { /* best effort */ }
+          return e
+        } catch (writeErr) {
+          try { recordMetric({ t: 'write', ts: Date.now(), ok: false }) } catch { /* best effort */ }
+          throw writeErr
+        }
+      },
+      memorySearch: async (opts) => {
+        const started = Date.now()
+        const res = await memorySearch({
+          query: opts.query,
+          limit: opts.limit,
+          agentId: opts.agentId,
+          kind: opts.kind as MemoryEntry['kind'] | undefined,
+          taskId: opts.taskId,
+          project: opts.project,
+        })
+        try {
+          const ready = isEmbedderReady()
+          recordMetric({ t: 'recall', ts: Date.now(), hits: res.length, topScore: res[0]?.score ?? 0, path: ready ? 'vector' : 'keyword', ms: Date.now() - started })
+          recordMetric({ t: 'embed', ts: Date.now(), available: ready })
+        } catch { /* metrics are best-effort */ }
+        return res
+      },
       memoryList: (opts) => memoryList({
         limit: opts.limit,
         agentId: opts.agentId,
@@ -1691,6 +1737,7 @@ if (!gotTheLock) {
           curiosity: curiosityPrompts(findGaps(competenceRecords()), 2),
           identity: identitySummary(3),
         })
+        try { if (primerOut) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primerOut.length / 4) }) } catch { /* best effort */ }
         return { project: project || null, primer: primerOut }
       },
       memoryRelated: (opts) => memoryRelated({
@@ -1706,7 +1753,10 @@ if (!gotTheLock) {
         depth: opts.depth,
         limit: opts.limit,
       }),
-      memoryFeedback: (opts) => memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query }),
+      memoryFeedback: (opts) => {
+        try { recordMetric({ t: 'feedback', ts: Date.now(), helpful: opts.helpful !== false }) } catch { /* best effort */ }
+        return memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query })
+      },
       memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),
       memoryPool: (opts) => poolLessons(
         memoryList({ limit: opts.limit ?? 200 })
@@ -1730,6 +1780,7 @@ if (!gotTheLock) {
     setSafeStorage(safeStorage)
     initSwarmMemory(app.getPath('userData'))
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
+    initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
     initWorkspaceTrust()
 

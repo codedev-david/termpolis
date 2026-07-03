@@ -415,6 +415,31 @@ export function memoryStats(): { count: number; capacity: number } {
   return { count: entries.length, capacity: maxEntries }
 }
 
+export interface MemoryDashboardStats {
+  total: number
+  capacity: number
+  byType: Record<string, number>   // episodic / semantic / procedural / entity / summary / untyped
+  bySource: Record<string, number> // claude / codex / gemini / qwen / code / mneme / …
+  lessons: number                  // semantic + procedural (the distilled, reusable knowledge)
+}
+
+/** Store composition for the Memory & Learning dashboard: counts over the hot
+ *  window by cognitive type and by authoring source, plus the lesson total.
+ *  Computed on demand from live state — no persistence, no side effects. */
+export function memoryDashboardStats(): MemoryDashboardStats {
+  const byType: Record<string, number> = {}
+  const bySource: Record<string, number> = {}
+  let lessons = 0
+  for (const e of entries) {
+    const t = e.memoryType || 'untyped'
+    byType[t] = (byType[t] || 0) + 1
+    const s = e.source || e.agentId || 'unknown'
+    bySource[s] = (bySource[s] || 0) + 1
+    if (e.memoryType === 'semantic' || e.memoryType === 'procedural') lessons++
+  }
+  return { total: entries.length, capacity: maxEntries, byType, bySource, lessons }
+}
+
 // ---- Write ----
 
 export interface WriteInput {

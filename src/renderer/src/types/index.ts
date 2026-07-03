@@ -198,6 +198,8 @@ export interface TermpolisAPI {
   memoryCount: () => Promise<IpcResponse<number>>
   memoryClear: () => Promise<IpcResponse>
   memoryStats: () => Promise<IpcResponse<{ count: number; capacity: number }>>
+  /** Memory & Learning dashboard proof numbers — computed locally/offline. */
+  memoryMetrics: () => Promise<IpcResponse<MemoryMetrics>>
   memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
   memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
@@ -326,6 +328,37 @@ export interface MemoryListOptions {
   agentId?: string
   kind?: MemoryEntry['kind']
   since?: number
+}
+
+/** Memory & Learning dashboard payload — all computed locally/offline. `ledger` is
+ *  the live event roll-up (recall/write/inject/feedback/reflect/embed), `store` is
+ *  the current composition, `graph` the connection counts, `competence` the
+ *  self-assessed per-domain confidence. */
+export interface MemoryMetrics {
+  ledger: {
+    generatedTs: number
+    recalls: number
+    recallFiredRate: number
+    avgHits: number
+    avgTopScore: number
+    avgLatencyMs: number
+    byPath: { vector: number; keyword: number; cache: number }
+    embedAvailability: number
+    writes: number
+    writeDurability: number
+    injects: number
+    tokensInjected: number
+    reusedSolutions: number
+    tokensSavedEstimate: number
+    feedbackCount: number
+    feedbackHelpfulRate: number
+    lessonsLearned: number
+    crossAgentRecalls: number
+    teachingMatrix: Record<string, Record<string, number>>
+  }
+  store: { total: number; capacity: number; byType: Record<string, number>; bySource: Record<string, number>; lessons: number }
+  graph: { nodes: number; edges: number; byRelation: Record<string, number> }
+  competence: Array<{ domain: string; attempts: number; confidence: number }>
 }
 
 export interface SwarmMessage {
