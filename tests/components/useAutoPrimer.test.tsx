@@ -279,3 +279,69 @@ describe('Qwen self-record (no disk transcript → the agent writes its own less
     expect(calls[0][1]).not.toContain('memory_write')
   })
 })
+
+describe('memories-loaded banner (Codex / Gemini / Qwen typed-pointer path)', () => {
+  beforeEach(() => {
+    useTerminalStore.setState({ memoryNotice: null, terminals: [] })
+  })
+
+  // A primer digest is a set of "- [source] snippet" recall lines (renderLine),
+  // the same lines the Claude banner counts. Build one with n hits.
+  const digest = (n: number) =>
+    Array.from({ length: n }, (_, i) => `- [codex] recalled item ${i}`).join('\n')
+
+  it('injectAutoPrimer with notify sets a "🧠 Loaded N memories" banner counting the digest hits', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(3) })) })
+    await injectAutoPrimer('t', '/home/me/myproject', false, true)
+    expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 3 memories for "myproject"')
+  })
+
+  it('uses the singular "memory" when exactly one hit is recalled', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(1) })) })
+    await injectAutoPrimer('t', '/home/me/solo', false, true)
+    expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 1 memory for "solo"')
+  })
+
+  it('counts only the "- [" recall lines, ignoring header/augmentation lines', async () => {
+    const mixed = 'Project memory (may apply):\n- [claude] a\n- [code] b\nCompetence: 0.8 in x\n- [codex] c'
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: mixed })) })
+    await injectAutoPrimer('t', '/home/me/proj', false, true)
+    expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 3 memories for "proj"')
+  })
+
+  it('falls back to "this project" when there is no cwd', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(2) })) })
+    await injectAutoPrimer('t', '', false, true)
+    expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 2 memories for "this project"')
+  })
+
+  it('does NOT set the banner when notify is not requested (compaction re-prime stays silent)', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(3) })) })
+    await injectAutoPrimer('t', '/home/me/myproject') // notify defaults false
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+
+  it('does NOT set the banner when there is no relevant memory (nothing loaded)', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: null })) })
+    await injectAutoPrimer('t', '/home/me/myproject', false, true)
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+
+  it('useAutoPrimer shows the banner on launch for a detected Codex agent', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(4) })) })
+    vi.useFakeTimers()
+    renderHook(() => useAutoPrimer('term-codex', { name: 'OpenAI Codex' } as any, '/home/me/proj'))
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 4 memories for "proj"')
+  })
+
+  it('useCompactionReprimer re-primes WITHOUT showing the banner (silent recovery)', async () => {
+    mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(3) })) })
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCompactionReprimer('t', { name: 'OpenAI Codex' } as any, '/home/me/proj'))
+    result.current('✻ Compacting conversation… (2m 30s)')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+})

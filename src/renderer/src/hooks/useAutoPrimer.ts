@@ -59,12 +59,19 @@ export function setAutoPrimerEnabled(on: boolean): void {
   }
 }
 
+// Count the gate-passed recall lines in a primer digest — the honest "how many
+// memories" metric, matching the Claude launch banner (digest lines start with
+// "- [", one per recalled memory; header/competence/curiosity lines don't).
+function countPrimerMemories(digest: string): number {
+  return digest.split('\n').filter((l) => l.startsWith('- [')).length
+}
+
 // Check that relevant memory exists for this project and, if so, paste a short
 // pointer into the freshly-launched agent terminal directing it to load the
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
 // Best-effort and silent: a no-op if the API is unavailable or there is no
 // relevant memory yet. Returns whether it injected.
-export async function injectAutoPrimer(terminalId: string, cwd: string, selfRecord = false): Promise<boolean> {
+export async function injectAutoPrimer(terminalId: string, cwd: string, selfRecord = false, notify = false): Promise<boolean> {
   try {
     const api = window.termpolis
     if (!api?.memoryBuildPrimer || !api?.writeToTerminal) return false
@@ -76,6 +83,14 @@ export async function injectAutoPrimer(terminalId: string, cwd: string, selfReco
     // paste only the pointer — the agent pulls the content itself over MCP.
     const res = await api.memoryBuildPrimer(query, undefined, cwd || undefined)
     if (!res?.success || !res.data) return false
+    // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
+    // memories" banner Claude gets — so Codex/Gemini/Qwen recall doesn't look like
+    // nothing happened. Compaction re-primes pass notify=false and stay silent.
+    if (notify) {
+      const n = countPrimerMemories(String(res.data))
+      const label = project || 'this project'
+      useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
+    }
     const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     return true
@@ -106,7 +121,8 @@ export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | nul
     // others — prime it to record its own lessons via memory_write instead.
     const selfRecord = (agentName ?? '').toLowerCase().includes('qwen')
     const handle = setTimeout(() => {
-      void injectAutoPrimer(terminalId, cwd, selfRecord)
+      // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
+      void injectAutoPrimer(terminalId, cwd, selfRecord, true)
     }, INJECT_DELAY_MS)
     return () => clearTimeout(handle)
   }, [terminalId, agentName, cwd])
