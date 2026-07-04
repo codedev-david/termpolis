@@ -315,6 +315,24 @@ export function bucketByTokens(texts: string[], maxTokens = 1024, maxCount = 16)
   return buckets
 }
 
+// One-time diagnostic (dev/live only, silent under test): announce whether embedding
+// runs on the off-main worker_thread or fell back to the in-process (main-thread) path,
+// so a run can confirm the typing-lag fix is actually engaged. console is already used
+// across src/main.
+let workerStatusLogged = false
+function noteWorkerStatus(usedWorker: boolean): void {
+  if (workerStatusLogged) return
+  workerStatusLogged = true
+  if (process.env.NODE_ENV === 'test') return
+  try {
+    console.log(
+      usedWorker
+        ? '[termpolis][embed] worker_thread active — embedding OFF the main thread'
+        : '[termpolis][embed] in-process fallback — embedding on the MAIN thread',
+    )
+  } catch { /* ignore */ }
+}
+
 /**
  * Embed many texts at once (efficient for indexing). Returns one slot per
  * input in order; failed/missing rows are null. Runs are token-bucketed (BB12).
@@ -333,8 +351,9 @@ export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<
       if (!r.ok) { ok = false; break }
       out.push(r.vec)
     }
-    if (ok) return out
+    if (ok) { noteWorkerStatus(true); return out }
   }
+  noteWorkerStatus(false)
   const be = await getBackend()
   if (!be) return texts.map(() => null)
   const out: (number[] | null)[] = new Array(texts.length).fill(null)
