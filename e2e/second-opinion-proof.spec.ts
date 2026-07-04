@@ -48,7 +48,6 @@ for (const { agent, model, label, required } of [
     }
     const feedback = res.data?.feedback || ''
     expect(feedback.length, `${label} should return non-empty review feedback`).toBeGreaterThan(10)
-    // eslint-disable-next-line no-console
     console.log(`\n===== ${label} second opinion (${feedback.length} chars) =====\n${feedback.slice(0, 600)}\n`)
   })
 }
