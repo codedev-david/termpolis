@@ -32,7 +32,8 @@ docs/mockups/shots/
 coverage/
 *.tsbuildinfo
 
-.claude/
+.claude/*
+!.claude/skills/
 test-output.json
 
 # Stray debug artifacts

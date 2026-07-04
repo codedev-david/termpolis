@@ -1,0 +1,142 @@
+name: Release Email
+
+# Emails engelhart.david.john@gmail.com when the "Release" workflow finishes, so David
+# learns that a version shipped (or why it didn't) without watching CI.
+#
+# Fires on BOTH outcomes:
+#   ✅ success  — a "published" mail with the version, asset count, release URL, and the
+#                 conclusion of BOTH release-pipeline (this run) and the push-triggered
+#                 "Tests" workflow for the same commit, so "all pipelines green" is truthful.
+#   ❌ failure  — a "release FAILED" mail (on failure / timed_out; a deliberate cancel is
+#                 skipped) pointing at the failing run.
+#
+# Reuses the same MAIL_USERNAME / MAIL_PASSWORD Gmail app-password secrets that
+# issue-email.yml and notify-auto-triage-pr.yml already use (smtp.gmail.com:465).
+#
+# workflow_run runs from the DEFAULT branch (main) after the tag-triggered Release run
+# completes; github.event.workflow_run.head_branch carries the tag (e.g. v1.19.2).
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch: {}          # manual dry-run: emails the latest release as a "success"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gather release + pipeline status
+        id: info
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WF_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WF_SHA: ${{ github.event.workflow_run.head_sha }}
+          WF_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WF_URL: ${{ github.event.workflow_run.html_url }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          conclusion="${WF_CONCLUSION:-success}"        # workflow_dispatch has none → treat as success dry-run
+
+          # Version = the tag the Release ran on; fall back to the latest published release.
+          version="${WF_BRANCH:-}"
+          if ! printf '%s' "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            version="$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null || echo "${WF_BRANCH:-unknown}")"
+          fi
+
+          sha="${WF_SHA:-$GITHUB_SHA}"
+
+          # Conclusion of the push-triggered "Tests" workflow for the same commit (best-effort).
+          tests_concl="$(gh run list --repo "$REPO" --workflow Tests --commit "$sha" --limit 1 --json conclusion -q '.[0].conclusion' 2>/dev/null || echo "")"
+          [ -z "$tests_concl" ] && tests_concl="not-found"
+
+          # Release details (best-effort — may be absent on failure).
+          rel_json="$(gh release view "$version" --repo "$REPO" --json url,assets,publishedAt 2>/dev/null || echo '{}')"
+          rel_url="$(printf '%s' "$rel_json" | jq -r '.url // ""')"
+          assets="$(printf '%s' "$rel_json" | jq -r '(.assets // []) | length')"
+          published_at="$(printf '%s' "$rel_json" | jq -r '.publishedAt // ""')"
+          asset_list="$(printf '%s' "$rel_json" | jq -r '(.assets // [])[].name' 2>/dev/null | sed 's/^/  - /')"
+          [ -z "$asset_list" ] && asset_list="  (none found)"
+
+          # "All green" only when the release run succeeded AND Tests passed for this commit.
+          if [ "$conclusion" = "success" ] && [ "$tests_concl" = "success" ]; then
+            subject_ok="✅ Termpolis ${version} published — all pipelines green"
+          else
+            subject_ok="✅ Termpolis ${version} published (Release: ${conclusion}; Tests: ${tests_concl})"
+          fi
+
+          {
+            echo "conclusion=$conclusion"
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "tests_concl=$tests_concl"
+            echo "rel_url=$rel_url"
+            echo "assets=$assets"
+            echo "published_at=$published_at"
+            echo "wf_url=${WF_URL:-}"
+            echo "subject_ok=$subject_ok"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo 'asset_list<<__EOF__'
+            echo "$asset_list"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Email — release published ✅
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+        uses: dawidd6/action-send-mail@v5
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Termpolis Releases <${{ secrets.MAIL_USERNAME }}>
+          to: engelhart.david.john@gmail.com
+          subject: ${{ steps.info.outputs.subject_ok }}
+          body: |
+            Termpolis ${{ steps.info.outputs.version }} shipped. 🎉
+
+            Release:       ${{ steps.info.outputs.rel_url }}
+            Assets:        ${{ steps.info.outputs.assets }} attached
+            Published at:  ${{ steps.info.outputs.published_at }}
+            Commit:        ${{ steps.info.outputs.sha }}
+
+            Pipeline status
+              Release workflow: ${{ steps.info.outputs.conclusion }}   ${{ steps.info.outputs.wf_url }}
+              Tests workflow:   ${{ steps.info.outputs.tests_concl }}
+
+            Release assets:
+            ${{ steps.info.outputs.asset_list }}
+
+            — Termpolis CI (automated on every Release run)
+
+      - name: Email — release FAILED ❌
+        if: ${{ github.event_name == 'workflow_run' && (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') }}
+        uses: dawidd6/action-send-mail@v5
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Termpolis Releases <${{ secrets.MAIL_USERNAME }}>
+          to: engelhart.david.john@gmail.com
+          subject: "❌ Termpolis ${{ steps.info.outputs.version }} release FAILED (${{ steps.info.outputs.conclusion }})"
+          body: |
+            The Release workflow for ${{ steps.info.outputs.version }} finished with: ${{ steps.info.outputs.conclusion }}.
+            A complete release was NOT published (or is incomplete).
+
+            Release run:  ${{ steps.info.outputs.wf_url }}
+            Commit:       ${{ steps.info.outputs.sha }}
+            Tests:        ${{ steps.info.outputs.tests_concl }}
+
+            Open the logs, fix the failing job, then ship a clean patch release.
+
+            — Termpolis CI (automated on every Release run)

@@ -47,9 +47,14 @@ describe('mnemeAdapt integration — taste boost reorders recall toward reinforc
       if (t.includes('orthogonal')) return V(0, 1)
       return V(1, 1) // the query
     })
-    const seed = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'reinforced seed memory' })
-    const A = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'aligned hit memory' })
-    const B = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'orthogonal hit memory' })
+    // Explicit, distinct timestamps (B newest) so the recency tie-break in ranking is
+    // deterministic. Without them, three sub-millisecond writes can share one Date.now()
+    // value; the equal-relevance sort then falls back to insertion order and the
+    // B-before-A baseline flakes across platforms (passed on Windows, failed on macOS CI).
+    const t = Date.now()
+    const seed = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'reinforced seed memory', ts: t - 20 })
+    const A = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'aligned hit memory', ts: t - 10 })
+    const B = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'orthogonal hit memory', ts: t })
     memoryFeedback({ id: seed.id, helpful: true }) // reinforce the seed → interest centroid ≈ [1,0]
 
     const idxOf = (hits: Array<{ id: string }>, id: string): number => hits.findIndex((h) => h.id === id)
@@ -58,7 +63,7 @@ describe('mnemeAdapt integration — taste boost reorders recall toward reinforc
     const off = await memorySearch({ query: 'q', limit: 10 })
     expect(idxOf(off, A.id)).toBeGreaterThanOrEqual(0)
     expect(idxOf(off, B.id)).toBeGreaterThanOrEqual(0)
-    // Equal base relevance → the newer write (B) is not behind A.
+    // Equal base relevance → the newer write (B) leads A purely on the recency tie-break.
     expect(idxOf(off, B.id)).toBeLessThan(idxOf(off, A.id))
 
     _setAdaptForTests(true)
