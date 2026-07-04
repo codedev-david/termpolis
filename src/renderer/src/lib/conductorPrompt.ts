@@ -73,7 +73,7 @@ STEP 4 — Start agents in INTERACTIVE mode:
   Use these commands — copy them verbatim (Claude may also choose a model; see below):
     Claude Code → 'claude --dangerously-skip-permissions'
     Codex       → 'codex --full-auto'
-    Gemini CLI  → 'gemini'
+    Gemini CLI  → 'agy --dangerously-skip-permissions'
     Qwen Code   → 'qwen'
 ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
 
@@ -128,7 +128,7 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   → taskId: 'task-def-456'
   create_terminal(name='Gemini (Docs)', shell='${shell}', cwd='${options.projectCwd}')
   → terminalId: 'term-002'
-  run_command(terminalId='term-002', command='gemini')
+  run_command(terminalId='term-002', command='agy --dangerously-skip-permissions')
   // wait ~15 seconds...
   write_to_terminal(terminalId='term-002', text='You are working in ${options.projectCwd}. Write project documentation. Task ID: task-def-456\\r')
 

@@ -28,6 +28,7 @@ import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type Gr
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { CLAUDE_MODEL_OPTIONS, modelSwitchCommand } from '../../lib/modelBroker'
+import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
 import { agentFromCommand } from '../../lib/agentDetector'
@@ -136,6 +137,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
   const [pastSessionsOpen, setPastSessionsOpen] = useState(false)
   const [groqGateOpen, setGroqGateOpen] = useState(false)
+  // Which agents are installed on this machine (green-check source) — gates the models
+  // dropdown and the Second Opinion menu to only what's actually available.
+  const [installedAgents, setInstalledAgents] = useState<Record<string, boolean> | null>(null)
+  const [secondOpinionBusy, setSecondOpinionBusy] = useState(false)
   // In-terminal find bar (Ctrl+Shift+F). `searchResults` is fed from the
   // SearchAddon's onDidChangeResults so the bar can show "3/17".
   const [searchOpen, setSearchOpen] = useState(false)
@@ -283,6 +288,47 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     if (voiceListeningRef.current) { voice.toggle(); return }
     if (await ensureGroqOrGate()) voice.toggle()
   }, [voice, ensureGroqOrGate])
+
+  // Detect installed agents once so the model + Second Opinion menus only offer what's
+  // actually available on this machine (same source as the sidebar green check).
+  useEffect(() => {
+    let alive = true
+    try {
+      window.termpolis.detectAgents?.()
+        ?.then((res) => { if (alive && res?.success && res.data) setInstalledAgents(res.data) })
+        ?.catch(() => { /* leave null — menus stay conservative */ })
+    } catch { /* API unavailable (e.g. in tests) — menus stay conservative */ }
+    return () => { alive = false }
+  }, [])
+
+  // Second Opinion: capture this terminal's recent output, have the chosen agent/model
+  // review it headless, and paste the feedback back here as an unsent block (bracketed
+  // paste, no CR) so the user can read it and choose to send it to the primary agent.
+  const handleSecondOpinion = useCallback(async (value: string) => {
+    const parsed = parseSecondOpinion(value)
+    if (!parsed) return
+    const label = parsed.model ? `Claude ${parsed.model}`
+      : parsed.agent === 'codex' ? 'OpenAI Codex' : parsed.agent === 'gemini' ? 'Gemini' : parsed.agent === 'qwen' ? 'Qwen' : parsed.agent
+    const bp = (t: string): string => `\x1b[200~${t.replace(/\r?\n/g, '\r')}\x1b[201~`
+    setSecondOpinionBusy(true)
+    try {
+      const buf = await window.termpolis.readTerminalBuffer(terminalId)
+      const raw = buf?.success && buf.data ? buf.data.output : ''
+      const content = stripAnsi(raw).split('\n').slice(-160).join('\n').trim()
+      if (!content) {
+        window.termpolis.writeToTerminal(terminalId, bp('\n[Second Opinion: nothing to review yet in this terminal]\n'))
+        return
+      }
+      const res = await window.termpolis.secondOpinion({ agent: parsed.agent, model: parsed.model, content })
+      if (res?.success && res.data?.feedback) {
+        window.termpolis.writeToTerminal(terminalId, bp(`\n=== Second Opinion (${label}) ===\n${res.data.feedback}\n=== end second opinion — review, then send or clear ===\n`))
+      } else {
+        window.termpolis.writeToTerminal(terminalId, bp(`\n[Second Opinion from ${label} failed: ${res?.error || 'no response'}]\n`))
+      }
+    } finally {
+      setSecondOpinionBusy(false)
+    }
+  }, [terminalId])
 
   const handleExport = useCallback((mode: 'full' | 'visible') => {
     const term = termRef.current
@@ -1079,7 +1125,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             <button onClick={voice.clearError} aria-label="Dismiss" className="px-1.5 py-0.5 rounded text-[#caa] hover:text-white">✕</button>
           </div>
         )}
-        <div className="absolute top-1.5 right-2 z-30 flex items-center gap-1.5">
+        <div className="absolute top-1.5 right-8 z-30 flex items-center gap-1.5">
           {voiceEnabled && (
             <button
               type="button"
@@ -1104,37 +1150,82 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               {voice.listening ? 'Stop' : voice.status === 'transcribing' ? 'Transcribing…' : 'Voice'}
             </button>
           )}
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setPastSessionsOpen(true) }}
-            className="flex items-center gap-1.5 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-2 py-1 transition-colors"
-            title="Browse past Claude AI sessions across every project on this machine. Click to resume any session in a new terminal at its original folder."
-            data-testid="past-ai-sessions-btn"
-          >
-            <i className="fa-solid fa-clock-rotate-left text-[9px]"></i>
-            Past AI Sessions
-          </button>
-          {agentFromCommand(agentCommand)?.name === 'Claude Code' && (
-            <select
-              data-testid="model-picker"
-              value={liveModel}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation()
-                const alias = e.target.value
-                setLiveModel(alias)
-                const cmd = modelSwitchCommand(alias)
-                if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
-              }}
-              title="Switch this Claude agent's model on the fly (takes effect next message). Cheaper models save tokens."
-              className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none"
+          {/* Past AI Sessions / Model / Second Opinion only apply to AI terminals — an
+              agent launched here, OR an AI CLI (claude/codex/…) the user started in a
+              plain shell (picked up by output detection). `badgeAgent` captures both. */}
+          {badgeAgent && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setPastSessionsOpen(true) }}
+              className="flex items-center gap-1.5 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-2 py-1 transition-colors"
+              title="Browse past Claude AI sessions across every project on this machine. Click to resume any session in a new terminal at its original folder."
+              data-testid="past-ai-sessions-btn"
             >
-              <option value="">Model…</option>
-              {CLAUDE_MODEL_OPTIONS.map((m) => (
-                <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
-              ))}
-            </select>
+              <i className="fa-solid fa-clock-rotate-left text-[9px]"></i>
+              Past AI Sessions
+            </button>
           )}
+          {badgeAgent?.name === 'Claude Code' && (
+            installedAgents?.claude === false ? (
+              // Claude terminal but Claude Code isn't detected on PATH — no models to offer;
+              // the tooltip explains why (matches the Second Opinion install-gating).
+              <select
+                data-testid="model-picker"
+                value=""
+                onClick={(e) => e.stopPropagation()}
+                title="Claude Code must be installed to switch models."
+                className="text-[10px] font-medium text-[#9ca3af] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded px-1.5 py-1 outline-none"
+                onChange={(e) => e.stopPropagation()}
+              >
+                <option value="">Model — needs Claude</option>
+              </select>
+            ) : (
+              <select
+                data-testid="model-picker"
+                value={liveModel}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  e.stopPropagation()
+                  const alias = e.target.value
+                  setLiveModel(alias)
+                  const cmd = modelSwitchCommand(alias)
+                  if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
+                }}
+                title="Switch this Claude agent's model on the fly (takes effect next message). Cheaper models save tokens."
+                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none"
+              >
+                <option value="">Model…</option>
+                {CLAUDE_MODEL_OPTIONS.map((m) => (
+                  <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
+                ))}
+              </select>
+            )
+          )}
+          {badgeAgent && (() => {
+            // Second Opinion: only installed agents; Claude's models nested under it. A
+            // native <optgroup> gives the indented Fable/Opus/Sonnet/Haiku for free.
+            const so = buildSecondOpinionMenu(installedAgents, CLAUDE_MODEL_OPTIONS)
+            if (!so.hasAny) return null
+            return (
+              <select
+                data-testid="second-opinion-picker"
+                value=""
+                disabled={secondOpinionBusy}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => { e.stopPropagation(); void handleSecondOpinion(e.target.value) }}
+                title="Get a second opinion — another installed agent (or a different Claude model) reviews the most recent response in this terminal and pastes concise feedback back here."
+                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none disabled:opacity-60"
+              >
+                <option value="">{secondOpinionBusy ? 'Reviewing…' : 'Second Opinion…'}</option>
+                {so.flat.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                {so.claude && (
+                  <optgroup label="Claude">
+                    {so.claude.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                  </optgroup>
+                )}
+              </select>
+            )
+          })()}
         </div>
         <PastAISessions open={pastSessionsOpen} onClose={() => setPastSessionsOpen(false)} />
         {groqGateOpen && (

@@ -8,6 +8,8 @@ import {
   teachingRows,
   competenceRows,
   isBrainEmpty,
+  svgLine,
+  portabilityRows,
 } from '../../src/renderer/src/lib/memoryDashboard'
 import type { MemoryMetrics } from '../../src/renderer/src/types'
 
@@ -23,9 +25,10 @@ function mm(over: Partial<MemoryMetrics> = {}): MemoryMetrics {
       lessonsLearned: 0, crossAgentRecalls: 0, teachingMatrix: {},
       ...(over.ledger || {}),
     },
-    store: { total: 0, capacity: 500000, byType: {}, bySource: {}, lessons: 0, ...(over.store || {}) },
+    store: { total: 0, capacity: 500000, byType: {}, bySource: {}, lessons: 0, timeline: [], ...(over.store || {}) },
     graph: { nodes: 0, edges: 0, byRelation: {}, ...(over.graph || {}) },
     competence: over.competence || [],
+    recentActivity: over.recentActivity || [],
   }
 }
 
@@ -51,7 +54,7 @@ describe('memoryDashboard — formatters', () => {
 describe('memoryDashboard — transforms', () => {
   it('dashboardReceipts surfaces the four headline numbers', () => {
     const r = dashboardReceipts(mm({
-      store: { total: 12847, capacity: 500000, byType: { episodic: 9000, semantic: 2000 }, bySource: { claude: 6000 }, lessons: 2920 },
+      store: { total: 12847, capacity: 500000, byType: { episodic: 9000, semantic: 2000 }, bySource: { claude: 6000 }, lessons: 2920, timeline: [] },
       graph: { nodes: 12847, edges: 18431, byRelation: { 'relates-to': 9000, solves: 100 } },
       ledger: { ...mm().ledger, tokensInjected: 3100, injects: 4 },
     }))
@@ -85,8 +88,8 @@ describe('memoryDashboard — transforms', () => {
     const byLabel = Object.fromEntries(tiles.map((t) => [t.label, t]))
     expect(byLabel['Recall fired'].status).toBe('good')
     expect(byLabel['Recall fired'].value).toBe('99%')
-    expect(byLabel['Avg recall latency'].value).toBe('12ms')
-    expect(byLabel['Avg recall latency'].status).toBe('good')
+    expect(byLabel['Recall latency'].value).toBe('12ms')
+    expect(byLabel['Recall latency'].status).toBe('good')
   })
 
   it('teachingRows flattens the matrix and flags cross-agent reuse, sorted desc', () => {
@@ -107,6 +110,35 @@ describe('memoryDashboard — transforms', () => {
 
   it('isBrainEmpty is true only when nothing is stored', () => {
     expect(isBrainEmpty(mm())).toBe(true)
-    expect(isBrainEmpty(mm({ store: { total: 1, capacity: 1, byType: {}, bySource: {}, lessons: 0 } }))).toBe(false)
+    expect(isBrainEmpty(mm({ store: { total: 1, capacity: 1, byType: {}, bySource: {}, lessons: 0, timeline: [] } }))).toBe(false)
+  })
+})
+
+describe('memoryDashboard — chart + portability helpers', () => {
+  it('svgLine builds line + closed-area paths and reports the max', () => {
+    const { line, area, max } = svgLine([0, 5, 10], 100, 50, 5)
+    expect(max).toBe(10)
+    expect(line.startsWith('M')).toBe(true)
+    expect(area.endsWith('Z')).toBe(true)
+    expect(line).toContain('L') // more than one point
+  })
+
+  it('svgLine is safe for empty and single-point series', () => {
+    expect(svgLine([], 100, 50)).toEqual({ line: '', area: '', max: 0 })
+    const one = svgLine([7], 100, 50)
+    expect(one.max).toBe(7)
+    expect(one.line.startsWith('M')).toBe(true)
+  })
+
+  it('portabilityRows shows authored counts (desc) and real cross-agent reuse', () => {
+    const rows = portabilityRows(
+      { claude: 6000, code: 55000, gemini: 30 },
+      { gemini: { claude: 12, gemini: 3 }, claude: { claude: 5 } }, // gemini taught claude 12×; claude only self-reuse
+    )
+    expect(rows[0]).toMatchObject({ model: 'code', label: 'Code index', wrote: 55000, cross: 0 })
+    const gem = rows.find((r) => r.model === 'gemini')!
+    expect(gem).toMatchObject({ label: 'Gemini', wrote: 30, cross: 12 })
+    const cla = rows.find((r) => r.model === 'claude')!
+    expect(cla.cross).toBe(0) // self-reuse is not cross-agent
   })
 })

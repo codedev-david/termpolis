@@ -33,6 +33,11 @@ describe('agentDetector', () => {
       expect(result!.name).toBe('Gemini CLI')
     })
 
+    it('detects Gemini from Antigravity CLI (agy) output', () => {
+      expect(detectAgent('Antigravity CLI ready')!.name).toBe('Gemini CLI')
+      expect(detectAgent('agy v1.0 starting')!.name).toBe('Gemini CLI')
+    })
+
     it('detects Qwen Code from output containing "qwen"', () => {
       const result = detectAgent('qwen v0.35.0')
       expect(result).not.toBeNull()
@@ -78,6 +83,10 @@ describe('agentDetector', () => {
     })
     it('maps gemini to Gemini CLI', () => {
       expect(agentFromCommand('gemini')!.name).toBe('Gemini CLI')
+    })
+    it('maps agy (Antigravity CLI) to Gemini CLI', () => {
+      expect(agentFromCommand('agy')!.name).toBe('Gemini CLI')
+      expect(agentFromCommand('agy --dangerously-skip-permissions')!.name).toBe('Gemini CLI')
     })
     it('maps qwen to Qwen Code', () => {
       expect(agentFromCommand('qwen')!.name).toBe('Qwen Code')

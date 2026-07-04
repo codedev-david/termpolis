@@ -91,8 +91,14 @@ describe('sanitizeAgentCommand', () => {
 
   // ---- Allowlist has all expected agents ----
 
-  it('has entries for all four MCP-native agent types', () => {
-    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'gemini', 'qwen'])
+  it('has entries for the MCP-native agents incl. Gemini via the Antigravity CLI (agy)', () => {
+    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'agy', 'gemini', 'qwen'])
+  })
+
+  it('launches Gemini as `agy --dangerously-skip-permissions` and strips headless/positional flags', () => {
+    expect(sanitizeAgentCommand('agy')).toBe('agy --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('agy -p "Write docs"')).toBe('agy --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('agy --print --sandbox')).toBe('agy --dangerously-skip-permissions')
   })
 
   // ---- Model brokering: a validated `--model <alias>` is allowed for Claude only ----

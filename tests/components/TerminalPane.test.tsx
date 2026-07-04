@@ -723,7 +723,22 @@ describe('TerminalPane', () => {
       expect(screen.getByTestId('pinned-output')).toBeInTheDocument()
     })
 
-    it('renders the Past AI Sessions overlay button on every terminal pane', () => {
+    // Past AI Sessions / Model / Second Opinion are gated to AI terminals now, so seed a
+    // Claude terminal (agentCommand) for these.
+    const claudeTerminalState = (): void => {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'claude --dangerously-skip-permissions' }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        allowAppMouseControl: false,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+      }))
+    }
+
+    it('renders the Past AI Sessions overlay button on an AI terminal pane', () => {
+      claudeTerminalState()
       render(<TerminalPane {...defaultProps} />)
       const btn = screen.getByTestId('past-ai-sessions-btn')
       expect(btn).toBeInTheDocument()
@@ -731,6 +746,7 @@ describe('TerminalPane', () => {
     })
 
     it('clicking the Past AI Sessions button opens the modal overlay', async () => {
+      claudeTerminalState()
       render(<TerminalPane {...defaultProps} />)
       // Modal should not be mounted before click
       expect(screen.queryByTestId('past-ai-sessions-overlay')).not.toBeInTheDocument()
@@ -1038,6 +1054,17 @@ describe('TerminalPane', () => {
       expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '/model sonnet\r')
     })
 
+    it('switches models back and forth midstream, sending /model each time', () => {
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker')
+      for (const alias of ['opus', 'sonnet', 'haiku', 'opus', 'fable']) {
+        mockWriteToTerminal.mockClear()
+        fireEvent.change(picker, { target: { value: alias } })
+        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', `/model ${alias}\r`)
+      }
+    })
+
     it('does NOT show the picker for a plain (non-agent) terminal', () => {
       withClaudeTerminal(undefined)
       render(<TerminalPane {...defaultProps} />)
@@ -1050,6 +1077,122 @@ describe('TerminalPane', () => {
       mockWriteToTerminal.mockClear()
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: '' } })
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
+  // Second Opinion dropdown + review pipeline
+  // =====================================================
+  describe('Second Opinion', () => {
+    const INSTALLED = { claude: true, codex: true, gemini: true, agy: true, 'qwen-code': true }
+    const mockSecondOpinion = vi.fn(async () => ({ success: true, data: { feedback: 'Consider quicksort instead.' } }))
+
+    function withAgents(installed: Record<string, boolean> = INSTALLED, agentCommand: string | undefined = 'claude --dangerously-skip-permissions') {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false, agentCommand }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        focusActiveTerminal: mocks.mockFocusActiveTerminal,
+        focusNonce: 0,
+        voiceSettings: { enabled: false },
+      }))
+      ;(window as any).termpolis.detectAgents = vi.fn(async () => ({ success: true, data: installed }))
+      ;(window as any).termpolis.secondOpinion = mockSecondOpinion
+      mockReadTerminalBuffer.mockResolvedValue({ success: true, data: { output: 'PROPOSED SOLUTION: use bubble sort', length: 33 } })
+    }
+
+    beforeEach(() => { mockSecondOpinion.mockReset(); mockSecondOpinion.mockResolvedValue({ success: true, data: { feedback: 'Consider quicksort instead.' } }) })
+
+    it('lists installed agents with Claude models nested under a Claude group', async () => {
+      withAgents()
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('second-opinion-picker')
+      fireEvent.click(picker) // opening the dropdown must not bubble to the terminal
+      const group = picker.querySelector('optgroup[label="Claude"]') as HTMLOptGroupElement | null
+      expect(group).toBeTruthy()
+      expect(Array.from(group!.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Fable', 'Opus', 'Sonnet', 'Haiku'])
+      const topValues = Array.from(picker.children).filter((c) => c.tagName === 'OPTION').map((o) => (o as HTMLOptionElement).value)
+      expect(topValues).toEqual(expect.arrayContaining(['codex', 'gemini', 'qwen']))
+    })
+
+    it('does not crash when agent detection fails (menus stay hidden)', async () => {
+      withAgents()
+      ;(window as any).termpolis.detectAgents = vi.fn(async () => { throw new Error('detect failed') })
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      expect(screen.queryByTestId('second-opinion-picker')).not.toBeInTheDocument()
+    })
+
+    it('is hidden entirely when no agents are installed', async () => {
+      withAgents({ claude: false, codex: false, gemini: false, 'qwen-code': false })
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      expect(screen.queryByTestId('second-opinion-picker')).not.toBeInTheDocument()
+    })
+
+    it('hides Past AI Sessions / Model / Second Opinion on a plain (non-AI) terminal', async () => {
+      // plain shell: no agent launched (empty agentCommand) AND none detected in output.
+      // Pass '' not undefined — undefined would trigger withAgents' default (a Claude cmd).
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null, costInfo: null, processAgentDetection: mocks.mockProcessAgentDetection, agentDetectedRef: { current: false } })
+      withAgents(INSTALLED, '')
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      expect(screen.queryByTestId('second-opinion-picker')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('past-ai-sessions-btn')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('model-picker')).not.toBeInTheDocument()
+    })
+
+    it('captures the buffer, runs the review, and injects the feedback block', async () => {
+      withAgents()
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('second-opinion-picker')
+      fireEvent.change(picker, { target: { value: 'claude:haiku' } })
+      await waitFor(() => expect(mockSecondOpinion).toHaveBeenCalledWith(expect.objectContaining({ agent: 'claude', model: 'haiku' })))
+      await waitFor(() => {
+        const injected = mockWriteToTerminal.mock.calls.map((c) => c[1] as string).join('')
+        expect(injected).toContain('Second Opinion (Claude haiku)')
+        expect(injected).toContain('Consider quicksort instead.')
+      })
+    })
+
+    it('injects a failure note when the review errors', async () => {
+      withAgents()
+      mockSecondOpinion.mockResolvedValueOnce({ success: false, error: 'agent unavailable' })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('second-opinion-picker')
+      fireEvent.change(picker, { target: { value: 'codex' } })
+      await waitFor(() => {
+        const injected = mockWriteToTerminal.mock.calls.map((c) => c[1] as string).join('')
+        expect(injected).toMatch(/Second Opinion from OpenAI Codex failed/)
+      })
+    })
+
+    it('injects "nothing to review" and skips the agent when the buffer is empty', async () => {
+      withAgents()
+      mockReadTerminalBuffer.mockResolvedValue({ success: true, data: { output: '   ', length: 3 } }) // persistent: setup may read it too
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('second-opinion-picker')
+      fireEvent.change(picker, { target: { value: 'gemini' } })
+      await waitFor(() => {
+        const injected = mockWriteToTerminal.mock.calls.map((c) => c[1] as string).join('')
+        expect(injected).toMatch(/nothing to review/)
+      })
+      expect(mockSecondOpinion).not.toHaveBeenCalled()
+    })
+
+    it('gates the models picker when the terminal is Claude but Claude is not installed', async () => {
+      withAgents({ claude: false, codex: true, gemini: false, 'qwen-code': false }, 'claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      const mp = await screen.findByTestId('model-picker')
+      await waitFor(() => expect(mp.textContent || '').toMatch(/needs Claude/))
+      // interacting with the gated picker is inert (no model switch, no bubbling)
+      fireEvent.click(mp)
+      fireEvent.change(mp, { target: { value: '' } })
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', expect.stringContaining('/model'))
     })
   })
 
@@ -1131,8 +1274,6 @@ describe('TerminalPane', () => {
       withVoice({ enabled: false })
       render(<TerminalPane {...defaultProps} />)
       expect(screen.queryByTestId('voice-toggle-btn')).not.toBeInTheDocument()
-      // the neighbouring Past AI Sessions button is unaffected
-      expect(screen.getByTestId('past-ai-sessions-btn')).toBeInTheDocument()
     })
 
     it('renders a start (Voice) button when enabled and idle', () => {

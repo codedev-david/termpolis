@@ -17,6 +17,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/🧠_One_shared_memory-across_all_4_agents-6E56CF?style=for-the-badge" alt="One shared memory across all four agents">
   <img src="https://img.shields.io/badge/🌱_Learns_every_session-never_re--explain-1f6e3a?style=for-the-badge" alt="Learns from every session">
+  <img src="https://img.shields.io/badge/🔀_Second_Opinion-agents_review_each_other-b07407?style=for-the-badge" alt="Second Opinion — agents review each other">
   <img src="https://img.shields.io/badge/🔒_100%25_local-no_cloud,_no_telemetry-0078d4?style=for-the-badge" alt="100% local, no cloud, no telemetry">
 </p>
 
@@ -135,6 +136,38 @@ Termpolis doesn't replace Claude Code, Codex, Gemini CLI, or Qwen Code — **it 
 | **Coordinating parallel agents** | You juggle terminals by hand | Real-time **observability** — activity feed, redundancy detector, efficiency panel, and a swarm dashboard |
 
 **The short version:** other harnesses optimize a single agent's loop. Termpolis optimizes *your whole agent fleet* — giving four competing models one shared, durable, trustworthy memory (hardened in v1.16.7 so a working recall is visible, fresh, and never cites a file that no longer exists), a security perimeter around the hosted-model path, and a single place to watch and review everything they do. See the full, sourced [feature-by-feature comparison vs Warp, Wave, JetBrains Air, and Tabby](https://termpolis.com/#compare).
+
+---
+
+## 🔀 Second Opinion — a different agent double-checks the last answer
+
+Every model has blind spots. **Second Opinion** hands the most recent answer in any AI terminal to a *different* agent for a fast, read-only critique — the feedback is pasted back into the same terminal, ready for you to send to your primary agent or just read and discard.
+
+- **Pick any installed agent.** A **Second Opinion** dropdown on each AI terminal lists exactly the agents you have installed — **OpenAI Codex, Gemini, Qwen** — with **Claude** and its models (**Fable · Opus · Sonnet · Haiku**) nested underneath. So while you're driving Opus, you can have **Fable** — or Codex, or Gemini — sanity-check the last solution.
+- **It reviews the real, recent work.** Termpolis captures the terminal's most recent output, asks the chosen agent to review the latest solution/answer/approach, and injects its concise feedback back into your terminal as an **unsent block** — you decide whether to act on it.
+- **Read-only by design.** A review needs no file access, so it runs the agent in one-shot headless mode — nothing it says touches your repo. The captured text is passed **out-of-band** (never on a command line), so a prompt scraped from your terminal can't inject a command.
+- **Only what's installed shows up**, and it appears only on AI terminals. Gemini runs through the **Antigravity CLI (`agy`)**, its current headless entry point.
+
+> **Proven end-to-end.** A CI test drives a real review from **Claude, Codex, and Gemini (via `agy`)** against a deliberately-bad solution ("sort 1,000,000 items with bubble sort") and confirms each returns substantive feedback.
+
+---
+
+## 📊 Memory & Learning dashboard — proof it's working, computed locally
+
+A **Memory & Learning** tab in Settings turns the brain from a black box into an inspectable instrument — **every number computed on your machine, offline, from the append-only store.** No word-taking; nothing on the screen leaves your machine.
+
+<p align="center">
+  <img src="assets/memory-dashboard.png" alt="Termpolis Memory & Learning dashboard" width="820">
+</p>
+
+- **What's stored** — memories by cognitive type (episodic · semantic · procedural · entity · summary) and by which agent authored them.
+- **Live knowledge graph** — a force-directed view of the real typed edges recall walks (bug → fix → what superseded it), colored by type.
+- **Learning over time** — cumulative growth of the store and the distilled lessons within it.
+- **Reliability SLIs** — recall-fired rate, embedder availability, write durability, and typical (median) recall latency.
+- **Model portability & cross-agent learning** — which agents authored what, and where a lesson one agent learned was later reused by another.
+- **Receipts** — recalls served, solutions reused, and estimated tokens saved.
+
+> The screenshot shows the dashboard's layout with representative sample data; your instance fills in with your own local numbers as you work.
 
 ---
 

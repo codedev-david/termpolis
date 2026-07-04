@@ -3,7 +3,8 @@
 export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
   'claude': 'claude --dangerously-skip-permissions',
   'codex': 'codex --full-auto',
-  'gemini': 'gemini',
+  'agy': 'agy --dangerously-skip-permissions', // Gemini via the Antigravity CLI (autonomous swarm worker → auto-approve, like Claude)
+  'gemini': 'gemini', // legacy fallback
   'qwen': 'qwen',
 }
 

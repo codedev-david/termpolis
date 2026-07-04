@@ -37,8 +37,21 @@ describe('metricsLedger — summarizeMetrics (pure aggregation)', () => {
     expect(s.recalls).toBe(4)
     expect(s.recallFiredRate).toBeCloseTo(3 / 4) // 3 of 4 returned hits
     expect(s.avgHits).toBeCloseTo((4 + 0 + 2 + 1) / 4)
-    expect(s.avgLatencyMs).toBeCloseTo((10 + 6 + 20 + 1) / 4)
+    expect(s.avgLatencyMs).toBeCloseTo(8) // MEDIAN of [1,6,10,20] = (6+10)/2, not the mean 9.25
     expect(s.byPath).toEqual({ vector: 2, keyword: 1, cache: 1 })
+  })
+
+  it('reports MEDIAN recall latency so a cold-start outlier does not skew it', () => {
+    const evs: MetricEvent[] = [
+      { t: 'recall', ts: 1, hits: 1, topScore: 0.5, path: 'vector', ms: 1500 }, // first recall = model cold-load
+      { t: 'recall', ts: 2, hits: 1, topScore: 0.5, path: 'vector', ms: 20 },
+      { t: 'recall', ts: 3, hits: 1, topScore: 0.5, path: 'vector', ms: 25 },
+      { t: 'recall', ts: 4, hits: 1, topScore: 0.5, path: 'vector', ms: 18 },
+      { t: 'recall', ts: 5, hits: 1, topScore: 0.5, path: 'vector', ms: 22 },
+    ]
+    const s = summarizeMetrics(evs, 100)
+    // mean would be ~317ms (red); median of [18,20,22,25,1500] = 22ms (green) — the honest steady state
+    expect(s.avgLatencyMs).toBe(22)
   })
 
   it('computes embedding availability from embed events', () => {

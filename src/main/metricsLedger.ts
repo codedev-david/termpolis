@@ -67,7 +67,8 @@ export interface MetricsSummary {
 
 /** Aggregate a list of metric events into the dashboard summary. Pure. */
 export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSummary {
-  let recalls = 0, recallFired = 0, hitsSum = 0, topSum = 0, msSum = 0
+  let recalls = 0, recallFired = 0, hitsSum = 0, topSum = 0
+  const latencies: number[] = [] // per-recall ms — reported as a median, not a mean
   const byPath = { vector: 0, keyword: 0, cache: 0 }
   let embedTotal = 0, embedUp = 0
   let writes = 0, writesOk = 0
@@ -84,7 +85,7 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
         if (e.hits > 0) recallFired++
         hitsSum += e.hits || 0
         topSum += e.topScore || 0
-        msSum += e.ms || 0
+        latencies.push(e.ms || 0)
         if (e.path === 'vector' || e.path === 'keyword' || e.path === 'cache') byPath[e.path]++
         break
       case 'embed':
@@ -119,13 +120,20 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
 
   const reusedSolutions = feedbackHelpful
   const avgInjectTokens = injects > 0 ? tokensInjected / injects : 0
+  // Median latency, not mean — the very first recall of a session pays the one-time
+  // embedding-model cold-load (~1s+), which would drag a mean into the "slow/red" band
+  // and misrepresent steady-state performance. The median ignores that lone outlier.
+  const sortedMs = latencies.slice().sort((a, b) => a - b)
+  const medianLatencyMs = sortedMs.length === 0 ? 0
+    : sortedMs.length % 2 === 1 ? sortedMs[(sortedMs.length - 1) / 2]
+      : (sortedMs[sortedMs.length / 2 - 1] + sortedMs[sortedMs.length / 2]) / 2
   return {
     generatedTs: now,
     recalls,
     recallFiredRate: recalls > 0 ? recallFired / recalls : 0,
     avgHits: recalls > 0 ? hitsSum / recalls : 0,
     avgTopScore: recalls > 0 ? topSum / recalls : 0,
-    avgLatencyMs: recalls > 0 ? msSum / recalls : 0,
+    avgLatencyMs: medianLatencyMs,
     byPath,
     embedAvailability: embedTotal > 0 ? embedUp / embedTotal : 1,
     writes,

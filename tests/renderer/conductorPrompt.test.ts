@@ -158,7 +158,7 @@ describe('buildConductorPrompt', () => {
   it('includes worked examples for both Claude and Gemini agents', () => {
     const prompt = buildDefault()
     expect(prompt).toContain("command='claude --dangerously-skip-permissions'")
-    expect(prompt).toContain("command='gemini'")
+    expect(prompt).toContain("command='agy --dangerously-skip-permissions'") // Gemini launches via the Antigravity CLI
     expect(prompt).toContain('Gemini (Docs)')
   })
 

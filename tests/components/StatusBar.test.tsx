@@ -369,7 +369,9 @@ describe('StatusBar', () => {
   it('help dialog documents Past AI Sessions', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    expect(screen.getByText('Past AI Sessions')).toBeInTheDocument()
+    // Documented in both the "Past AI Sessions" feature section and the new
+    // "Terminal buttons" section, so there may be more than one mention.
+    expect(screen.getAllByText('Past AI Sessions').length).toBeGreaterThan(0)
   })
 
   it('help dialog documents the Live AI Observability panels', () => {

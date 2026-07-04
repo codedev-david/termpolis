@@ -14,7 +14,7 @@ import { claudeModelArg } from './modelBroker'
 export const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
-  { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'gemini', shell: 'bash', color: '#4285F4' },
+  { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'agy', shell: 'bash', color: '#4285F4' },
   { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', iconImage: qwenIcon, command: 'qwen', shell: 'bash', color: '#A855F7' },
 ]
 

@@ -70,6 +70,20 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             </ul>
           </section>
 
+          {/* Terminal top-bar buttons: Voice / Past AI Sessions / Model / Second Opinion */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-sliders text-xs"></i> Terminal buttons (top-right of an AI terminal)
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">These appear at the top-right of any <strong>AI terminal</strong> — an agent you launched there, or an AI CLI (<code>claude</code>, <code>codex</code>, <code>agy</code>…) you started in a plain shell.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong><i className="fa-solid fa-microphone text-[10px]"></i> Voice</strong> — dictate into the terminal. <strong>Tap</strong> to start, tap again to stop; or <strong>hold</strong> the push-to-talk hotkey and release to send. (Enable it in <strong>Settings → Voice</strong>.)</li>
+              <li><strong><i className="fa-solid fa-clock-rotate-left text-[10px]"></i> Past AI Sessions</strong> — browse every past Claude Code session on this machine and resume any one in a new terminal at its original folder.</li>
+              <li><strong>Model…</strong> — switch this Claude agent's model <strong>mid-session</strong> (Fable · Opus · Sonnet · Haiku). Takes effect on the next message; cheaper models save tokens. <em>(Claude terminals only.)</em></li>
+              <li><strong>Second Opinion…</strong> — have a <strong>different</strong> installed agent review the terminal's most recent answer. Pick <strong>Codex, Gemini, or Qwen</strong>, or a nested <strong>Claude</strong> model (e.g. run Opus but ask <strong>Fable</strong>). Its concise feedback is pasted back as an <strong>unsent block</strong> — send it to your agent or clear it. Only installed agents appear.</li>
+            </ul>
+          </section>
+
           {/* AI Agents */}
           <section>
             <h3 className="font-semibold text-[#D97706] mb-1.5 flex items-center gap-2">

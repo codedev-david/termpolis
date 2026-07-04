@@ -60,7 +60,8 @@ if (process.platform === 'linux') {
 import { join } from 'path'
 import { homedir, release } from 'os'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
-import { execSync } from 'child_process'
+import { execSync, spawn } from 'child_process'
+import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress } from './egressAudit'
@@ -115,7 +116,7 @@ import {
 } from './contextPinStore'
 import {
   initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
@@ -1094,12 +1095,17 @@ ipcMain.handle('memory:write', async (_, input: { agentId: string; kind: string;
       tags: input.tags,
       taskId: input.taskId,
     })
+    try { recordMetric({ t: 'write', ts: Date.now(), ok: true, memoryType: entry.memoryType }) } catch { /* best effort */ }
     return ok(entry)
-  } catch (e: any) { return err(e.message) }
+  } catch (e: any) {
+    try { recordMetric({ t: 'write', ts: Date.now(), ok: false }) } catch { /* best effort */ }
+    return err(e.message)
+  }
 })
 
 ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string }) => {
   try {
+    const started = Date.now()
     const results = await memorySearch({
       query: opts.query,
       limit: opts.limit,
@@ -1107,6 +1113,12 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
       kind: opts.kind as MemoryEntry['kind'] | undefined,
       taskId: opts.taskId,
     })
+    // Reliability/receipt SLIs: a UI recall is a real recall — record it so the
+    // dashboard reflects actual usage, not just agent-side MCP tool calls.
+    try {
+      recordMetric({ t: 'recall', ts: Date.now(), hits: results.length, topScore: results[0]?.score ?? 0, path: 'vector', ms: Date.now() - started })
+      recordMetric({ t: 'embed', ts: Date.now(), available: embeddingsReady() })
+    } catch { /* best effort */ }
     return ok(results)
   } catch (e: any) { return err(e.message) }
 })
@@ -1144,7 +1156,17 @@ ipcMain.handle('memory:metrics', () => {
       store: memoryDashboardStats(),
       graph: { nodes: gs.nodes, edges: gs.edges, byRelation },
       competence,
+      recentActivity: memoryRecentActivity(14),
     })
+  } catch (e: any) { return err(e.message) }
+})
+
+// Live connections graph — a legible sample of the REAL knowledge graph (the densest
+// subgraph: nodes + induced edges, labeled + typed). Fetched on demand rather than in
+// the 5s metrics poll, since it's heavier and the force layout shouldn't reset each tick.
+ipcMain.handle('memory:graph-sample', (_e, opts: { limit?: number } = {}) => {
+  try {
+    return ok(memoryGraphSample({ limit: opts?.limit }))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -1179,6 +1201,9 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     // primer; unrelated global hits are labeled "may NOT apply".
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit, project: project || undefined })
+    // Economics SLI: a built primer that gets returned is context injected on the
+    // agent's behalf — record the (estimated) tokens so "tokens injected" is real.
+    try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
     return ok(primer)
   } catch (e: any) { return err(e.message) }
 })
@@ -1195,6 +1220,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', project: project || undefined })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
+    try { recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(digest.length / 4) }) } catch { /* best effort */ }
     const dir = join(app.getPath('userData'), 'primers')
     try { mkdirSync(dir, { recursive: true }) } catch { /* already exists */ }
     // Sweep stale primer files so the dir can't grow unbounded — Claude reads the
@@ -1419,13 +1445,18 @@ function findAgentInstalled(command: string): boolean {
 }
 
 ipcMain.handle('agents:detect', async () => {
-  const agents = ['claude', 'codex', 'gemini']
+  const agents = ['claude', 'codex']
   const results: Record<string, boolean> = {}
   for (const agent of agents) {
     results[agent] = findAgentInstalled(agent)
   }
   // Qwen-Code: id 'qwen-code', binary 'qwen' (Alibaba's Gemini-CLI fork)
   results['qwen-code'] = findAgentInstalled('qwen')
+  // Gemini's CLI is the Antigravity CLI (`agy`) now — both the sidebar "Gemini CLI" profile
+  // (id 'gemini') and the Second Opinion Gemini option key off agy availability, not the
+  // deprecated `gemini` binary.
+  results['agy'] = findAgentInstalled('agy')
+  results['gemini'] = results['agy']
   // Test hook: force a comma-separated list of agent ids to report as not installed,
   // so Playwright can deterministically open the InstallHint modal for that agent.
   const forceMissing = process.env.TERMPOLIS_FORCE_MISSING_AGENTS
@@ -1443,6 +1474,57 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
   const buffer = terminalOutputBuffers.get(terminalId) || ''
   const sliced = buffer.slice(fromOffset || 0)
   return ok({ output: sliced, length: sliced.length })
+})
+
+// Second Opinion: run a chosen agent headless over captured terminal output and return its
+// review text. `args` carries a PROMPT_TOKEN placeholder where the (UNTRUSTED, terminal-
+// scraped) prompt goes — the prompt is NEVER placed on a shell command line: on Windows the
+// .cmd shims run through PowerShell with the prompt read from a temp file into a $p variable
+// (the token position becomes $p); on unix the binary is exec'd directly (no shell) with the
+// token swapped for the prompt. Only the validated argv tokens are ever interpolated.
+const deliverSecondOpinion = (bin: string, args: string[], prompt: string, promptToken: string, opts: { timeoutMs: number }): Promise<{ stdout: string; stderr?: string; code: number }> =>
+  new Promise((resolve) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: getExtendedPath() }
+    const isWin = process.platform === 'win32'
+    let tmp: string | null = null
+    if (isWin) {
+      // .cmd/.ps1 shims run through PowerShell; the prompt is read from a temp file into $p
+      // (never on the command line — see secondOpinionSpawnPlan for the argv shaping).
+      tmp = join(app.getPath('temp'), `termpolis-so-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`)
+      try { writeFileSync(tmp, prompt, 'utf8') } catch { resolve({ stdout: '', code: 1 }); return }
+      env.TP_SO_FILE = tmp
+    }
+    const { cmd, cmdArgs } = secondOpinionSpawnPlan(isWin, bin, args, promptToken, prompt)
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const finish = (r: { stdout: string; stderr?: string; code: number }): void => {
+      if (settled) return
+      settled = true
+      if (tmp) { try { unlinkSync(tmp) } catch { /* best effort */ } }
+      resolve(r)
+    }
+    try {
+      // stdin:'ignore' gives the child an immediately-closed stdin — agents that read it
+      // (e.g. `codex exec` logs "Reading additional input from stdin…") won't block. The
+      // `timeout` kills a runaway review; stderr is captured so failures stay legible.
+      const child = spawn(cmd, cmdArgs, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: opts.timeoutMs })
+      child.stdout?.on('data', (d) => { stdout += d.toString() })
+      child.stderr?.on('data', (d) => { stderr += d.toString() })
+      child.on('error', (e) => finish({ stdout: '', stderr: (e as Error).message, code: 1 }))
+      child.on('close', (code) => finish({ stdout, stderr, code: code ?? 1 }))
+    } catch (e) {
+      finish({ stdout: '', stderr: (e as Error)?.message, code: 1 })
+    }
+  })
+
+ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?: string; content: string }) => {
+  try {
+    const agent = opts?.agent as SecondOpinionAgent
+    if (!['claude', 'codex', 'gemini', 'qwen'].includes(agent)) return err('unsupported agent')
+    const res = await runSecondOpinion({ agent, model: opts?.model, content: opts?.content || '' }, deliverSecondOpinion)
+    return res.ok ? ok({ feedback: res.feedback }) : err(res.error || 'second opinion failed')
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('swarm:messages', async () => ok(getAllMessages()))

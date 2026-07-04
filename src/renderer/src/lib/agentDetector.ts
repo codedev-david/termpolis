@@ -7,7 +7,7 @@ export interface AgentInfo {
 const AI_AGENT_PATTERNS = [
   { name: 'Claude Code', pattern: /claude|anthropic/i, icon: 'fa-solid fa-robot', color: '#D97706' },
   { name: 'Codex', pattern: /codex|openai/i, icon: 'fa-solid fa-microchip', color: '#10B981' },
-  { name: 'Gemini CLI', pattern: /gemini|google ai/i, icon: 'fa-brands fa-google', color: '#4285F4' },
+  { name: 'Gemini CLI', pattern: /gemini|google ai|antigravity|\bagy\b/i, icon: 'fa-brands fa-google', color: '#4285F4' },
   { name: 'Qwen Code', pattern: /qwen/i, icon: 'fa-solid fa-feather', color: '#A855F7' },
 ]
 
@@ -29,6 +29,8 @@ export function detectAgent(output: string): AgentInfo | null {
 const AGENT_COMMAND_MAP: { prefix: string; info: AgentInfo }[] = [
   { prefix: 'claude', info: { name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' } },
   { prefix: 'codex', info: { name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', color: '#10B981' } },
+  // Gemini's CLI is the Antigravity CLI (`agy`) now; keep `gemini` for legacy sessions.
+  { prefix: 'agy', info: { name: 'Gemini CLI', icon: 'fa-brands fa-google', color: '#4285F4' } },
   { prefix: 'gemini', info: { name: 'Gemini CLI', icon: 'fa-brands fa-google', color: '#4285F4' } },
   { prefix: 'qwen', info: { name: 'Qwen Code', icon: 'fa-solid fa-feather', color: '#A855F7' } },
 ]

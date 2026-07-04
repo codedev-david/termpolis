@@ -75,6 +75,7 @@ export function getAgentExtraPaths(): string[] {
       join(home, 'AppData', 'Roaming', 'npm'),                      // npm global (claude, codex)
       join(home, 'AppData', 'Local', 'pnpm'),                       // pnpm global
       join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin'), // gemini via gcloud
+      join(home, 'AppData', 'Local', 'agy', 'bin'),                 // Antigravity CLI (agy) — Gemini's headless access; its installer only adds this to .bashrc
     ]
   }
   const paths: string[] = [

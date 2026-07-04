@@ -12,6 +12,9 @@ import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf,
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { learnedUtility } from './mnemeRetrieval'
 import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
+import { inferMemoryType, isLessonType } from './mnemeTypeInfer'
+import { sampleGraph, graphNodeLabel, type GraphSample } from './memoryGraphSample'
+import { weeklyGrowth, activityOp, type TimeBucket } from './memoryTimeline'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
@@ -419,10 +422,14 @@ export function memoryStats(): { count: number; capacity: number } {
 export interface MemoryDashboardStats {
   total: number
   capacity: number
-  byType: Record<string, number>   // episodic / semantic / procedural / entity / summary / untyped
+  byType: Record<string, number>   // episodic / semantic / procedural / entity / summary (inferred)
   bySource: Record<string, number> // claude / codex / gemini / qwen / code / mneme / …
   lessons: number                  // semantic + procedural (the distilled, reusable knowledge)
+  timeline: TimeBucket[]           // cumulative store growth over the last 12 weeks
 }
+
+/** One row of the dashboard's live activity ticker. */
+export interface ActivityRow { ts: number; op: string; type: string; detail: string }
 
 /** Store composition for the Memory & Learning dashboard: counts over the hot
  *  window by cognitive type and by authoring source, plus the lesson total.
@@ -431,14 +438,50 @@ export function memoryDashboardStats(): MemoryDashboardStats {
   const byType: Record<string, number> = {}
   const bySource: Record<string, number> = {}
   let lessons = 0
+  const items: Array<{ ts: number; lesson: boolean }> = []
   for (const e of entries) {
-    const t = e.memoryType || 'untyped'
+    // Read-time cognitive classification (mnemeTypeInfer): most legacy entries carry
+    // no explicit memoryType, so we project their real kind/source onto a facet instead
+    // of dumping everything into "untyped". An explicitly-typed entry keeps its type.
+    const t = inferMemoryType(e)
     byType[t] = (byType[t] || 0) + 1
     const s = e.source || e.agentId || 'unknown'
     bySource[s] = (bySource[s] || 0) + 1
-    if (e.memoryType === 'semantic' || e.memoryType === 'procedural') lessons++
+    const lesson = isLessonType(t)
+    if (lesson) lessons++
+    items.push({ ts: e.ts, lesson })
   }
-  return { total: entries.length, capacity: maxEntries, byType, bySource, lessons }
+  const timeline = weeklyGrowth(items, Date.now(), 12)
+  return { total: entries.length, capacity: maxEntries, byType, bySource, lessons, timeline }
+}
+
+/** The most recent memory operations, newest first — the dashboard's live ticker. Reads
+ *  the tail of the store (newest entries) and labels each with the op that created it
+ *  (index / ingest / reflect / write). Cheap: only formats the last handful. */
+export function memoryRecentActivity(limit = 14): ActivityRow[] {
+  const tail = entries.slice(Math.max(0, entries.length - limit * 6))
+  const rows: ActivityRow[] = tail.map((e) => {
+    const isCode = e.source === 'code' || e.agentId === 'code-index'
+    const type = inferMemoryType(e)
+    const op = activityOp({ source: e.source, kind: e.kind, lesson: isLessonType(type) })
+    return { ts: e.ts, op, type, detail: `${e.source || e.agentId} · ${graphNodeLabel(e.content, isCode, e.kind)}` }
+  })
+  return rows.sort((a, b) => b.ts - a.ts).slice(0, limit)
+}
+
+/** A legible sample of the live knowledge graph for the dashboard's connections view:
+ *  the densest subgraph (see memoryGraphSample.ts), each node labeled from its content
+ *  and colored by inferred cognitive type. Computed on demand from live state. */
+export function memoryGraphSample(opts: { limit?: number } = {}): GraphSample {
+  const byId = new Map(entries.map((e) => [e.id, e]))
+  const meta = (id: string): { label: string; type: ReturnType<typeof inferMemoryType> } | null => {
+    const e = byId.get(id)
+    if (!e) return null
+    const isCode = e.source === 'code' || e.agentId === 'code-index'
+    return { label: graphNodeLabel(e.content, isCode, e.kind), type: inferMemoryType(e) }
+  }
+  const raw = getAllEdges().map((e) => ({ from: e.from, to: e.to, relation: e.relation }))
+  return sampleGraph(raw, meta, { limit: opts.limit ?? 160 })
 }
 
 /** The authoring source (agent) of a stored memory by id — for cross-agent
@@ -1507,6 +1550,13 @@ async function embed(text: string, isQuery: boolean): Promise<number[] | null> {
     embeddingsAvailable = false
     return null
   }
+}
+
+/** Whether the local semantic embedder is available (vs the keyword-only fallback).
+ *  Not-yet-probed (null) reports true — the bge model is bundled and normally loads; a
+ *  probe flips it false only on a real failure. Feeds the dashboard reliability SLI. */
+export function embeddingsReady(): boolean {
+  return embeddingsAvailable !== false
 }
 
 // Exposed for tests

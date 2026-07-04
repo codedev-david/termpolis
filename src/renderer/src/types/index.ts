@@ -148,6 +148,7 @@ export interface TermpolisAPI {
   completionEnvVars: () => Promise<IpcResponse<Record<string, string>>>
   exportTerminal: (opts: { content: string; defaultFilename: string }) => Promise<IpcResponse<{ filePath: string }>>
   detectAgents: () => Promise<IpcResponse<Record<string, boolean>>>
+  secondOpinion: (opts: { agent: string; model?: string; content: string }) => Promise<IpcResponse<{ feedback: string }>>
   pickDirectory: (defaultPath?: string) => Promise<IpcResponse<string | null>>
   openPath: (path: string) => Promise<IpcResponse>
   openExternal: (url: string) => Promise<IpcResponse>
@@ -200,6 +201,8 @@ export interface TermpolisAPI {
   memoryStats: () => Promise<IpcResponse<{ count: number; capacity: number }>>
   /** Memory & Learning dashboard proof numbers — computed locally/offline. */
   memoryMetrics: () => Promise<IpcResponse<MemoryMetrics>>
+  /** A sampled subgraph of the live knowledge graph for the connections view. */
+  memoryGraphSample: (limit?: number) => Promise<IpcResponse<GraphSample>>
   memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
   memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
@@ -356,10 +359,23 @@ export interface MemoryMetrics {
     crossAgentRecalls: number
     teachingMatrix: Record<string, Record<string, number>>
   }
-  store: { total: number; capacity: number; byType: Record<string, number>; bySource: Record<string, number>; lessons: number }
+  store: {
+    total: number
+    capacity: number
+    byType: Record<string, number>
+    bySource: Record<string, number>
+    lessons: number
+    timeline: Array<{ t: number; total: number; lessons: number }>
+  }
   graph: { nodes: number; edges: number; byRelation: Record<string, number> }
   competence: Array<{ domain: string; attempts: number; confidence: number }>
+  recentActivity: Array<{ ts: number; op: string; type: string; detail: string }>
 }
+
+/** A sampled, legible slice of the live knowledge graph for the connections view. */
+export interface GraphSampleNode { id: string; label: string; type: string; degree: number }
+export interface GraphSampleEdge { from: string; to: string; relation: string }
+export interface GraphSample { nodes: GraphSampleNode[]; edges: GraphSampleEdge[]; totalNodes: number; totalEdges: number }
 
 export interface SwarmMessage {
   id: string

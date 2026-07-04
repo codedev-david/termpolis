@@ -16,24 +16,31 @@ function metrics(over: Partial<MemoryMetrics> = {}): MemoryMetrics {
       lessonsLearned: 0, crossAgentRecalls: 0, teachingMatrix: {},
       ...(over.ledger || {}),
     },
-    store: { total: 0, capacity: 500000, byType: {}, bySource: {}, lessons: 0, ...(over.store || {}) },
+    store: { total: 0, capacity: 500000, byType: {}, bySource: {}, lessons: 0, timeline: [], ...(over.store || {}) },
     graph: { nodes: 0, edges: 0, byRelation: {}, ...(over.graph || {}) },
     competence: over.competence || [],
+    recentActivity: over.recentActivity || [],
   }
 }
 
+const EMPTY_GRAPH = { success: true, data: { nodes: [], edges: [], totalNodes: 0, totalEdges: 0 } }
+
 function stub(data: MemoryMetrics | null, ok = true, error = ''): ReturnType<typeof vi.fn> {
   const fn = vi.fn(async () => (ok ? { success: true, data } : { success: false, error }))
-  ;(window as unknown as { termpolis: unknown }).termpolis = { memoryMetrics: fn }
+  ;(window as unknown as { termpolis: unknown }).termpolis = {
+    memoryMetrics: fn,
+    memoryGraphSample: vi.fn(async () => EMPTY_GRAPH),
+  }
   return fn
 }
 
 describe('MemoryLearningSettings', () => {
   it('renders the populated dashboard with real receipt numbers', async () => {
     stub(metrics({
-      store: { total: 12847, capacity: 500000, byType: { episodic: 9000, semantic: 2000 }, bySource: { claude: 6000, codex: 2000 }, lessons: 2920 },
+      store: { total: 12847, capacity: 500000, byType: { episodic: 9000, semantic: 2000 }, bySource: { claude: 6000, codex: 2000 }, lessons: 2920, timeline: [{ t: 1, total: 100, lessons: 5 }, { t: 2, total: 12847, lessons: 2920 }] },
       graph: { nodes: 12847, edges: 18431, byRelation: { 'relates-to': 9000, solves: 100 } },
       ledger: { ...metrics().ledger, recalls: 40, recallFiredRate: 0.99, avgLatencyMs: 12 },
+      recentActivity: [{ ts: Date.now(), op: 'index', type: 'entity', detail: 'code · index.ts:1-40' }],
     }))
     render(<MemoryLearningSettings />)
     const receipts = await screen.findByTestId('ml-receipts')
@@ -43,6 +50,11 @@ describe('MemoryLearningSettings', () => {
     expect(screen.getByTestId('ml-connections')).toBeInTheDocument()
     expect(screen.getByTestId('ml-reliability')).toBeInTheDocument()
     expect(screen.getByTestId('ml-cross')).toBeInTheDocument()
+    // new full-parity panels
+    expect(screen.getByTestId('ml-timeline')).toBeInTheDocument()
+    expect(screen.getByTestId('ml-portability')).toBeInTheDocument()
+    const ticker = screen.getByTestId('ml-ticker')
+    expect(within(ticker).getByText('index.ts:1-40', { exact: false })).toBeInTheDocument()
   })
 
   it('shows the empty-brain onboarding note when nothing is stored', async () => {
@@ -54,7 +66,7 @@ describe('MemoryLearningSettings', () => {
 
   it('renders a directional teaching row when cross-agent reuse exists', async () => {
     stub(metrics({
-      store: { total: 3, capacity: 10, byType: { semantic: 3 }, bySource: { gemini: 2, claude: 1 }, lessons: 3 },
+      store: { total: 3, capacity: 10, byType: { semantic: 3 }, bySource: { gemini: 2, claude: 1 }, lessons: 3, timeline: [] },
       ledger: { ...metrics().ledger, crossAgentRecalls: 1, teachingMatrix: { gemini: { claude: 5 } } },
     }))
     render(<MemoryLearningSettings />)
@@ -70,7 +82,7 @@ describe('MemoryLearningSettings', () => {
   })
 
   it('re-reads metrics when Refresh is clicked', async () => {
-    const fn = stub(metrics({ store: { total: 5, capacity: 10, byType: { semantic: 5 }, bySource: { mneme: 5 }, lessons: 5 } }))
+    const fn = stub(metrics({ store: { total: 5, capacity: 10, byType: { semantic: 5 }, bySource: { mneme: 5 }, lessons: 5, timeline: [] } }))
     render(<MemoryLearningSettings />)
     await screen.findByTestId('ml-receipts')
     const before = fn.mock.calls.length

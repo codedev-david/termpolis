@@ -53,6 +53,9 @@ const api: TermpolisAPI = {
   detectAgents: () =>
     ipcRenderer.invoke('agents:detect'),
 
+  secondOpinion: (opts: { agent: string; model?: string; content: string }) =>
+    ipcRenderer.invoke('agent:second-opinion', opts),
+
   pickDirectory: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', { defaultPath }),
 
@@ -140,6 +143,7 @@ const api: TermpolisAPI = {
   memoryClear: () => ipcRenderer.invoke('memory:clear'),
   memoryStats: () => ipcRenderer.invoke('memory:stats'),
   memoryMetrics: () => ipcRenderer.invoke('memory:metrics'),
+  memoryGraphSample: (limit?: number) => ipcRenderer.invoke('memory:graph-sample', { limit }),
   memoryIngestConversations: () => ipcRenderer.invoke('memory:ingest-conversations'),
   memoryIngestCode: (repoRoot: string) => ipcRenderer.invoke('memory:ingest-code', { repoRoot }),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),

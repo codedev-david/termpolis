@@ -126,13 +126,14 @@ describe('getInteractiveShellPath', () => {
 // getAgentExtraPaths
 // =========================================================================
 describe('getAgentExtraPaths', () => {
-  it('on Windows returns the three Windows install dirs and nothing else', () => {
+  it('on Windows returns the Windows install dirs (incl. the Antigravity CLI) and nothing else', () => {
     setPlatform('win32')
     const paths = getAgentExtraPaths()
-    expect(paths).toHaveLength(3)
+    expect(paths).toHaveLength(4)
     expect(paths[0]).toMatch(/AppData[\\/]Roaming[\\/]npm$/)
     expect(paths[1]).toMatch(/AppData[\\/]Local[\\/]pnpm$/)
     expect(paths[2]).toMatch(/Google[\\/]Cloud SDK[\\/]bin$/)
+    expect(paths[3]).toMatch(/AppData[\\/]Local[\\/]agy[\\/]bin$/) // agy (Antigravity CLI) — Gemini's headless access
     // No fs scan should run on Windows.
     expect(mockReaddirSync).not.toHaveBeenCalled()
   })
