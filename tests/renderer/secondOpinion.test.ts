@@ -15,6 +15,12 @@ describe('buildSecondOpinionMenu', () => {
     expect(menu.claude?.map((o) => o.value)).toEqual(['claude:fable', 'claude:opus', 'claude:sonnet', 'claude:haiku'])
     expect(menu.hasAny).toBe(true)
   })
+  it('hasAny is true from the Claude group alone when no flat agents are installed', () => {
+    const menu = buildSecondOpinionMenu({ claude: true }, CLAUDE_MODELS) // no codex/agy/qwen
+    expect(menu.flat).toEqual([])
+    expect(menu.claude).toHaveLength(4)
+    expect(menu.hasAny).toBe(true) // exercises the `flat.length>0 || !!(claude && claude.length>0)` right side
+  })
   it('shows Gemini only when agy (the Antigravity CLI) is installed — not the deprecated gemini binary', () => {
     expect(buildSecondOpinionMenu({ agy: true }, CLAUDE_MODELS).flat.map((o) => o.value)).toContain('gemini')
     expect(buildSecondOpinionMenu({ gemini: true }, CLAUDE_MODELS).flat.map((o) => o.value)).not.toContain('gemini')

@@ -166,10 +166,12 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 
 const mockExecSync = vi.fn()
 const mockExecFileSync = vi.fn()
+const mockSpawn = vi.fn()
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync, execFileSync: mockExecFileSync },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, spawn: mockSpawn },
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  spawn: mockSpawn,
 }))
 
 // safeGit forwards through mockExecSync so existing tests that assert on a
@@ -3058,5 +3060,65 @@ describe('memory cross-machine sync handlers', () => {
     await invokeHandler('memory:set-sync-dir', { dir: null })
     const res = await invokeHandler('memory:set-sync-passphrase', { passphrase: 'x' })
     expect(res.success).toBe(false) // setSyncPassphrase throws "not enabled" → handler maps to err
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v1.19: on-demand knowledge-graph sample + Second Opinion review handlers
+// ---------------------------------------------------------------------------
+describe('memory:graph-sample handler', () => {
+  it('returns a response for an explicit limit (never throws — try/catch wrapped)', async () => {
+    const r = await invokeHandler('memory:graph-sample', { limit: 5 })
+    expect(r).toHaveProperty('success')
+  })
+  it('tolerates missing opts (default limit path)', async () => {
+    const r = await invokeHandler('memory:graph-sample')
+    expect(r).toHaveProperty('success')
+  })
+})
+
+describe('agent:second-opinion handler', () => {
+  // Minimal controllable child: capture the listeners deliverSecondOpinion attaches, then
+  // (next microtask, after they're all attached synchronously) drive stdout/stderr/close or
+  // an 'error' event. Works on every platform (the win32 temp-file branch writes to os.tmpdir).
+  function fakeChild(plan: { stdout?: string; stderr?: string; code?: number; errorEvent?: string }) {
+    const out: Record<string, Function> = {}
+    const errBag: Record<string, Function> = {}
+    const self: Record<string, Function> = {}
+    const child = {
+      stdout: { on: (ev: string, cb: Function) => { out[ev] = cb } },
+      stderr: { on: (ev: string, cb: Function) => { errBag[ev] = cb } },
+      on: (ev: string, cb: Function) => { self[ev] = cb },
+    }
+    queueMicrotask(() => {
+      if (plan.errorEvent) { self.error?.(new Error(plan.errorEvent)); return }
+      if (plan.stdout) out.data?.(Buffer.from(plan.stdout))
+      if (plan.stderr) errBag.data?.(Buffer.from(plan.stderr))
+      self.close?.(plan.code ?? 0)
+    })
+    return child
+  }
+
+  it('rejects an unsupported agent before spawning anything', async () => {
+    const r = await invokeHandler('agent:second-opinion', { agent: 'bogus', content: 'x' })
+    expect(r).toEqual({ success: false, error: 'unsupported agent' })
+  })
+  it('returns trimmed feedback on a successful review', async () => {
+    mockSpawn.mockReturnValueOnce(fakeChild({ stdout: '  Looks correct to me.  ', code: 0 }))
+    const r = await invokeHandler('agent:second-opinion', { agent: 'codex', content: 'some answer' })
+    expect(r.success).toBe(true)
+    expect(r.data.feedback).toBe('Looks correct to me.')
+    expect(mockSpawn).toHaveBeenCalled()
+  })
+  it('surfaces the agent stderr when it exits non-zero', async () => {
+    mockSpawn.mockReturnValueOnce(fakeChild({ stderr: 'not authenticated', code: 1 }))
+    const r = await invokeHandler('agent:second-opinion', { agent: 'gemini', content: 'answer' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('not authenticated')
+  })
+  it('reports a spawn error event as a failure', async () => {
+    mockSpawn.mockReturnValueOnce(fakeChild({ errorEvent: 'spawn ENOENT' }))
+    const r = await invokeHandler('agent:second-opinion', { agent: 'claude', model: 'opus', content: 'answer' })
+    expect(r.success).toBe(false)
   })
 })

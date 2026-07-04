@@ -100,4 +100,10 @@ describe('runSecondOpinion', () => {
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/IneligibleTierError/)
   })
+  it('falls back to a generic message when the thrown value has no .message', async () => {
+    const deliver = (async () => { throw 'boom' }) as unknown as DeliverFn // non-Error throw
+    const r = await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver)
+    expect(r.ok).toBe(false)
+    expect(r.error).toBe('second opinion failed') // the `|| 'second opinion failed'` fallback
+  })
 })
