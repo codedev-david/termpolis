@@ -140,7 +140,8 @@ import { poolLessons } from './mnemeSociety'
 import { proactiveQuery } from './mnemeRetrieval'
 import { getAllEdges, graphStats } from './memoryGraph'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
-import { isEmbedderReady } from './localEmbedder'
+import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
+import { createWorkerTransport } from './embedWorker'
 
 // Mneme entity layer: upsert an `entity` node by name (idempotent via content-hash)
 // and return its id, so a distilled lesson can link to the files/functions/errors it
@@ -1660,6 +1661,15 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     createWindow()
+
+    // Move ALL embedding onto a worker_thread so the memory brain's one-time model
+    // load + per-chunk forward passes never peg the MAIN thread that also pumps PTY
+    // echo. This is the fix for "typing lags for the first few minutes after opening
+    // an AI agent terminal, then warms up": keystroke round-trips no longer wait behind
+    // embedding. Safe by construction — any spawn/timeout/failure disables the worker
+    // and falls back to the in-process embedder (today's behavior), so recall cannot
+    // regress. The worker is spawned lazily on the first embed, off the main thread.
+    try { setWorkerSpawner(() => createWorkerTransport()) } catch { /* keep in-process embedding */ }
 
     // Tier 3 heartbeat — counts unique daily launches. Internally de-duped
     // to once per UTC day, so re-opening the window does not re-fire.
