@@ -27,10 +27,15 @@ describe('memory de-duplication — no duplicate data in the vector db or on dis
     expect(b.id).toBe(a.id) // the existing entry is returned, not a fresh duplicate
   })
 
-  it('normalizes whitespace so trivially-different copies collapse to one', async () => {
-    await memoryWrite({ agentId: 'a', kind: 'note', content: 'hello   world' })
-    await memoryWrite({ agentId: 'a', kind: 'note', content: '  hello world  ' })
+  it('collapses TRAILING whitespace but preserves internal whitespace (F25)', async () => {
+    // Trailing whitespace / trailing blank lines are insignificant → still dedup.
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'hello world' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'hello world   \n\n' })
     expect(memoryCount()).toBe(1)
+    // Internal whitespace (indentation) IS significant now → distinct entries, not false-dedup.
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'def f():\n  return risky()' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'def f():\n    return risky()' })
+    expect(memoryCount()).toBe(3)
   })
 
   it('keeps genuinely different content', async () => {
@@ -46,9 +51,11 @@ describe('memory de-duplication — no duplicate data in the vector db or on dis
     expect(memoryCount()).toBe(1)
   })
 
-  it('contentHash is stable and whitespace-insensitive but distinguishes real differences', () => {
-    expect(contentHash('a b')).toBe(contentHash('a   b'))
-    expect(contentHash(' a b ')).toBe(contentHash('a b'))
+  it('contentHash preserves internal whitespace but ignores trailing (F25)', () => {
+    expect(contentHash('a b   ')).toBe(contentHash('a b'))        // trailing whitespace ignored
+    expect(contentHash('a b\n\n')).toBe(contentHash('a b'))       // trailing blank lines ignored
+    expect(contentHash('a b')).not.toBe(contentHash('a   b'))     // internal whitespace is significant
+    expect(contentHash('x:\n  y')).not.toBe(contentHash('x:\n    y')) // indentation is significant
     expect(contentHash('a b')).not.toBe(contentHash('a c'))
   })
 

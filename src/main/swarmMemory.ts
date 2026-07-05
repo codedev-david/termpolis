@@ -49,6 +49,11 @@ export interface MemoryEntry {
   // and never present on stored entries. `durable === false` means the append did not reach
   // disk (the write is RAM-only this session and will be retried), so the caller isn't misled.
   durable?: boolean
+  // F14: TRANSIENT — set on the returned entry when content exceeded MAX_CONTENT and its
+  // tail was dropped, so the caller (agent) knows to split rather than believing it filed
+  // the whole note. Never persisted.
+  truncated?: boolean
+  originalChars?: number
 }
 
 /** Normalize a cwd/path or bare name into a lowercase project slug (its basename). */
@@ -661,7 +666,11 @@ const DENSIFY_MIN_COSINE = 0.6
  *  different copies (reflowed, padded) of the same text map to one entry. Case
  *  is preserved so we never merge genuinely distinct content. */
 export function contentHash(content: string): string {
-  const normalized = (content || '').normalize('NFC').replace(/\s+/g, ' ').trim()
+  // F25: normalize Unicode form and strip trailing whitespace per line + trailing blank
+  // lines, but PRESERVE internal newlines/indentation — otherwise whitespace-significant
+  // content (Python, YAML, diffs, Markdown fences, ASCII tables) false-dedups into a
+  // different snippet and the second, genuinely-distinct write is silently dropped.
+  const normalized = (content || '').normalize('NFC').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '')
   return crypto.createHash('sha256').update(normalized).digest('hex')
 }
 
@@ -671,19 +680,30 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   }
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
-  const content = input.content.length > MAX_CONTENT
-    ? input.content.slice(0, MAX_CONTENT)
-    : input.content
+  const truncated = input.content.length > MAX_CONTENT
+  const content = truncated ? input.content.slice(0, MAX_CONTENT) : input.content
 
   // De-duplicate by content so the same information never lands twice — not in
   // the packed vector store, not in the JSONL on disk. Ingestion supplies its
   // own source-scoped hash (idempotent re-ingest of a transcript/file); direct
   // writes get a content hash. A hit returns the already-stored entry and skips
   // the embed + persist + index work entirely (the Memex content-addressed win).
-  const effectiveHash = input.hash || contentHash(content)
+  // F14: hash over the ORIGINAL (untruncated) content so a corrected/identical long
+  // note dedups to one entry instead of proliferating truncated fragments.
+  const effectiveHash = input.hash || contentHash(input.content)
   if (seenHashes.has(effectiveHash)) {
     const existing = entries.find(e => e.hash === effectiveHash)
     if (existing) {
+      // F15: a dedup hit must not silently discard the new call's scoping metadata — the
+      // agent believes it filed the note under THIS project/tags/task. Backfill what's missing.
+      let changed = false
+      if (!existing.project && projectSlug) { existing.project = projectSlug; changed = true }
+      if (input.tags && input.tags.length > 0) {
+        const merged = Array.from(new Set([...(existing.tags || []), ...input.tags])).slice(0, 20)
+        if (merged.length !== (existing.tags?.length ?? 0)) { existing.tags = merged; changed = true }
+      }
+      if (!existing.taskId && input.taskId) { existing.taskId = input.taskId; changed = true }
+      if (changed) bumpSearchGen() // scoping changed → invalidate cached searches
       await backfillVectorIfMissing(existing) // F18: upgrade a vector-less entry now that the embedder is back
       return existing
     }
@@ -710,6 +730,14 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     const emb = await embed(content, false)
     if (emb) entry.embedding = emb
   } catch { /* ignore */ }
+
+  // F17: the dedup check above ran BEFORE the embed await yielded the event loop, so a
+  // concurrent write of identical content could have interleaved. Re-check now (no await
+  // between here and the insert) so two racing writers can't both land the same content.
+  if (seenHashes.has(effectiveHash)) {
+    const existing = entries.find(e => e.hash === effectiveHash)
+    if (existing) return existing
+  }
 
   const durable = persist(entry) // disk gets the full entry incl. embedding, BEFORE we pack it
 
@@ -764,6 +792,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     } catch { /* best effort */ }
   }
   if (!durable) entry.durable = false // F6: surface a non-durable write so the API doesn't lie
+  if (truncated) { entry.truncated = true; entry.originalChars = input.content.length } // F14
   return entry
 }
 
