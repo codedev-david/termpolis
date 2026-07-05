@@ -9,7 +9,7 @@ import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { mmrRerank } from './mmrRerank'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, type MemoryEdge } from './memoryGraph'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { learnedUtility } from './mnemeRetrieval'
 import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
@@ -378,6 +378,7 @@ function reloadFrom(paths: string[]): void {
     }
     if (e.hash && seenHashes.has(e.hash)) continue  // same content from another shard
     seenIds.add(e.id)
+    if ((e.ts || 0) > skewCap) e.ts = skewCap // Wave2: a mis-clocked peer can't pin an entry to the top of list/rank (and immune to decay) forever
     entries.push(e)
     if (e.hash) seenHashes.add(e.hash)
   }
@@ -418,6 +419,7 @@ function reloadFrom(paths: string[]): void {
     const toEmit = [...tombstones].filter(id => !ownTombstoned.has(id))
     if (toEmit.length > 0) appendShardLine(JSON.stringify({ clearedIds: toEmit }), 'replicate-tombstones')
   }
+  bumpSearchGen() // Wave2: a reload can add/drop entries (peer sync) — don't serve stale cached results
 }
 
 export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string | null } = {}): void {
@@ -790,7 +792,8 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 
   const entry: MemoryEntry = {
     id: `mem-${Date.now()}-${++seq}-${crypto.randomBytes(3).toString('hex')}`,
-    ts: input.ts ?? Date.now(),
+    ts: Math.min(input.ts ?? Date.now(), Date.now() + MAX_CLOCK_SKEW_MS), // Wave2: clamp a future ts so it can't dominate ranking/list forever
+
     agentId: input.agentId || 'unknown',
     kind,
     content,
@@ -1353,7 +1356,10 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     const gated = gateByScore(survivors, { minScore: 0.25, floor: Math.min(3, limit), cap: survivors.length })
     result = mmrRerank(gated, simFn, { lambda: 0.7, k: limit })
   } else {
-    result = survivors.slice(0, limit)
+    // Wave2 (diversify-false-no-relevance-floor): apply the same 0.25 relevance floor (with a
+    // floor-count so a thin result never starves) on the non-diversify path too, so internal
+    // callers (memory_related, the graph-seed search) don't treat sub-0.25 dense noise as a hit.
+    result = gateByScore(survivors, { minScore: 0.25, floor: Math.min(3, limit), cap: limit })
   }
 
   // BB7: fold in graph-connected neighbours of the top results (off by default, and
@@ -1618,6 +1624,8 @@ export function memoryClear(): void {
   hnsw = null
   hnswStale = false
   try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  clearMemoryGraph() // Wave2 (clear-doesnt-reset-graph): don't leave dangling edges / a growing graph file
+  bumpSearchGen() // Wave2: a cleared store must not serve pre-clear results from the search cache
   if (!memPath) return
   if (syncDir) {
     // Propagating clear: the (clamped) epoch sweeps not-yet-synced OLDER peer content by
@@ -1694,6 +1702,7 @@ export function memoryDelete(id: string): void {
     }
   }
   lexicalIndex.remove(id)
+  removeNodeEdges(id) // Wave2 (graph-edges-dangle-after-delete): prune incident edges so traversals don't hit a dangling link
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete', { fsync: true })
   // F22: dedup is content-addressed but deletion was id-addressed, so deleting one copy of
@@ -1716,6 +1725,11 @@ export function memoryDelete(id: string): void {
     seenHashes.delete(removedHash)
   }
   bumpSearchGen() // deleted entries must not linger in cached search results
+  // Wave2 (hnsw-stale-after-delete): delete removed a packed row but left the HNSW graph
+  // referencing it; mark stale + drop the persisted graph so it can't reload against the
+  // renumbered store and silently mis-rank recall (memoryForget/compact already do this).
+  hnswStale = true
+  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
   persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
 }
 

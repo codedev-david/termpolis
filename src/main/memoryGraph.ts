@@ -174,7 +174,10 @@ export function initMemoryGraph(dir: string): void {
         const t = line.trim()
         if (!t) continue
         try {
-          const e = JSON.parse(t) as MemoryEdge
+          const e = JSON.parse(t) as MemoryEdge & { removeNode?: unknown }
+          // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
+          // deleted memory — applied in append order so edges re-added after it survive.
+          if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
           if (e && e.from && e.to && e.relation) indexEdge(e)
         } catch { /* skip a corrupt line */ }
       }
@@ -216,6 +219,48 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
     try { fs.appendFileSync(graphPath, JSON.stringify(edge) + '\n') } catch { /* best effort */ }
   }
   return edge
+}
+
+// Wave2: remove all edges incident to `id` from the in-memory adjacency (both directions),
+// keeping edgeCount consistent. Pure in-memory — the log side is handled by the callers.
+function removeIncidentInMemory(id: string): number {
+  let removed = 0
+  const out = adjacency.get(id)
+  if (out) { edgeCount -= out.length; removed += out.length; adjacency.delete(id) }
+  for (const [from, list] of [...adjacency]) {
+    const kept = list.filter((e) => e.to !== id)
+    if (kept.length !== list.length) {
+      edgeCount -= list.length - kept.length; removed += list.length - kept.length
+      if (kept.length) adjacency.set(from, kept); else adjacency.delete(from)
+    }
+  }
+  reverseAdjacency.delete(id)
+  for (const [to, list] of [...reverseAdjacency]) {
+    const kept = list.filter((e) => e.from !== id)
+    if (kept.length !== list.length) { if (kept.length) reverseAdjacency.set(to, kept); else reverseAdjacency.delete(to) }
+  }
+  return removed
+}
+
+/** Wave2 (graph-edges-dangle-after-delete): prune edges incident to a deleted memory so a
+ *  later traversal doesn't hit a dangling link, and persist a {removeNode} marker so the
+ *  pruning survives reload. Returns how many edges were removed. */
+export function removeNodeEdges(id: string): number {
+  if (!id) return 0
+  const removed = removeIncidentInMemory(id)
+  if (removed > 0 && graphPath) {
+    try { fs.appendFileSync(graphPath, JSON.stringify({ removeNode: id }) + '\n') } catch { /* best effort */ }
+  }
+  return removed
+}
+
+/** Wave2 (clear-doesnt-reset-graph): reset the knowledge graph (in-memory + on-disk) so a
+ *  memory clear doesn't leave every edge dangling and the graph file growing forever. */
+export function clearMemoryGraph(): void {
+  adjacency.clear()
+  reverseAdjacency.clear()
+  edgeCount = 0
+  if (graphPath) { try { fs.writeFileSync(graphPath, '') } catch { /* best effort */ } }
 }
 
 // BB4: traversal is UNDIRECTED by default now — it walks both outgoing and incoming
