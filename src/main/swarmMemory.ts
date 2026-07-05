@@ -124,6 +124,35 @@ const SYNC_CONFIG_FILE = 'memory-sync.json'
 const DEVICE_ID_FILE = 'device-id'
 const SALT_FILE = '.termpolis-salt'      // lives in the SYNC folder — shared across devices, not secret
 const KEY_CACHE_FILE = 'memory-sync.key' // lives in userData — LOCAL to this device, never synced
+const DELETES_FILE = 'memory-deletes.json' // userData — device-local DURABLE floor of clearEpoch + tombstones
+// F1: reject a clear epoch further than this into the future — a mis-clocked (dead-CMOS/
+// drifted-VM) or corrupt peer must never be able to poison the global epoch and wipe the brain.
+const MAX_CLOCK_SKEW_MS = 2 * 86_400_000
+
+function deletesFile(): string | null { return userDataDir ? path.join(userDataDir, DELETES_FILE) : null }
+
+// Device-local durable delete floor: the highest clear epoch and the union of tombstoned
+// ids this device has ever observed, persisted in userData. It (a) refuses an absurd
+// future epoch (F1), (b) keeps a clear/delete in force after the shard that first carried
+// it is lost or lags (F10), and (c) is seeded into every reload instead of resetting to ∅.
+function loadDeletesFloor(): { clearEpoch: number; tombstones: string[] } {
+  const f = deletesFile()
+  if (!f) return { clearEpoch: 0, tombstones: [] }
+  try {
+    if (fs.existsSync(f)) {
+      const o = JSON.parse(fs.readFileSync(f, 'utf8')) as { clearEpoch?: unknown; tombstones?: unknown }
+      const ce = typeof o.clearEpoch === 'number' && o.clearEpoch >= 0 && o.clearEpoch <= Date.now() + MAX_CLOCK_SKEW_MS ? o.clearEpoch : 0
+      const ts = Array.isArray(o.tombstones) ? (o.tombstones as unknown[]).filter((x): x is string => typeof x === 'string') : []
+      return { clearEpoch: ce, tombstones: ts }
+    }
+  } catch { /* corrupt → empty floor (never throws) */ }
+  return { clearEpoch: 0, tombstones: [] }
+}
+function persistDeletesFloor(): void {
+  const f = deletesFile()
+  if (!f) return
+  try { fs.writeFileSync(f, JSON.stringify({ clearEpoch, tombstones: [...tombstones] })) } catch { /* best effort */ }
+}
 
 function loadOrCreateDeviceId(dir: string): string {
   const p = path.join(dir, DEVICE_ID_FILE)
@@ -156,30 +185,42 @@ function shardFiles(): string[] {
   } catch { return memPath ? [memPath] : [] }
 }
 
-function parseShardLine(line: string, adds: MemoryEntry[]): void {
+type ShardLineClass =
+  | { t: 'add'; entry: MemoryEntry }
+  | { t: 'delete'; id: string }
+  | { t: 'clear'; before: number }
+  | { t: 'clearIds'; ids: string[] }
+  | { t: 'reinforce'; deltas: Array<{ id: string; used: number; ts: number }> }
+  | { t: 'locked' }   // encrypted line we couldn't decrypt (need passphrase)
+  | { t: 'skip' }     // blank / malformed / non-object
+
+// Classify ONE shard line without mutating any module state. The stateful merge —
+// tombstones, the clamped clear epoch, own-shard causal exemption — lives in reloadFrom
+// so it can reason about which shard a line came from and where it sits in that shard.
+function classifyShardLine(line: string): ShardLineClass {
   const s = line.trim()
-  if (!s) return
+  if (!s) return { t: 'skip' }
   let plain: string = s
   if (isEncryptedLine(s)) {
     const dec = encKey ? decryptLine(encKey, s) : null
-    if (dec === null) { lockedShards = true; return } // no key / wrong key → can't read this entry
+    if (dec === null) return { t: 'locked' } // no key / wrong key → can't read this entry
     plain = dec
   }
-  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; reinforce?: unknown }
-  try { obj = JSON.parse(plain) } catch { return /* skip malformed line */ }
-  if (!obj || typeof obj !== 'object') return
-  if (typeof obj.deleted === 'string') { tombstones.add(obj.deleted); return }
-  if (typeof obj.clearedBefore === 'number') { if (obj.clearedBefore > clearEpoch) clearEpoch = obj.clearedBefore; return }
+  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown }
+  try { obj = JSON.parse(plain) } catch { return { t: 'skip' } }
+  if (!obj || typeof obj !== 'object') return { t: 'skip' }
+  if (typeof obj.deleted === 'string') return { t: 'delete', id: obj.deleted }
+  if (Array.isArray(obj.clearedIds)) return { t: 'clearIds', ids: (obj.clearedIds as unknown[]).filter((x): x is string => typeof x === 'string') }
+  if (typeof obj.clearedBefore === 'number') return { t: 'clear', before: obj.clearedBefore }
   if (Array.isArray(obj.reinforce)) {
-    // BB13/BB14: collect usage deltas; applied after the full state is known (reloadFrom).
+    const deltas: Array<{ id: string; used: number; ts: number }> = []
     for (const r of obj.reinforce as Array<{ id?: unknown; used?: unknown; ts?: unknown }>) {
-      if (r && typeof r.id === 'string' && typeof r.used === 'number') {
-        pendingReinforce.push({ id: r.id, used: r.used, ts: typeof r.ts === 'number' ? r.ts : 0 })
-      }
+      if (r && typeof r.id === 'string' && typeof r.used === 'number') deltas.push({ id: r.id, used: r.used, ts: typeof r.ts === 'number' ? r.ts : 0 })
     }
-    return
+    return { t: 'reinforce', deltas }
   }
-  if (obj.id && typeof obj.content === 'string') adds.push(obj as unknown as MemoryEntry)
+  if (obj.id && typeof obj.content === 'string') return { t: 'add', entry: obj as unknown as MemoryEntry }
+  return { t: 'skip' }
 }
 
 // Rebuild the hot window from a set of shard files: union of adds, minus
@@ -188,22 +229,69 @@ function parseShardLine(line: string, adds: MemoryEntry[]): void {
 function reloadFrom(paths: string[]): void {
   entries.length = 0
   seenHashes.clear()
+  // F1/F10: seed from the device-local durable floor rather than from ∅, so a clear/delete
+  // survives the loss of whatever shard first carried it, and a bogus future epoch is
+  // refused (loadDeletesFloor already clamps it) instead of poisoning the store.
+  const floor = loadDeletesFloor()
+  clearEpoch = floor.clearEpoch
   tombstones.clear()
-  clearEpoch = 0
+  for (const id of floor.tombstones) tombstones.add(id)
   lockedShards = false
   pendingReinforce = []
+  const skewCap = Date.now() + MAX_CLOCK_SKEW_MS
   const adds: MemoryEntry[] = []
+  const ownAddIds = new Set<string>()      // adds that came from THIS device's own shard
+  const ownVulnerable = new Set<string>()  // own adds appearing BEFORE an own clear line (pre-clear → epoch-droppable)
+  const ownTombstoned = new Set<string>()  // ids the own shard already records (delete/clearIds) — re-emission dedup
   for (const p of paths) {
     let raw: string
     try { raw = fs.readFileSync(p, 'utf8') } catch { continue }
-    for (const line of raw.split('\n')) parseShardLine(line, adds)
+    const isOwn = !!memPath && path.resolve(p) === path.resolve(memPath)
+    const shardAdds: string[] = [] // own-shard add ids seen so far — marked vulnerable when a clear line follows
+    for (const line of raw.split('\n')) {
+      const c = classifyShardLine(line)
+      switch (c.t) {
+        case 'add':
+          adds.push(c.entry)
+          if (isOwn) { ownAddIds.add(c.entry.id); shardAdds.push(c.entry.id) }
+          break
+        case 'delete':
+          tombstones.add(c.id)
+          if (isOwn) ownTombstoned.add(c.id)
+          break
+        case 'clearIds':
+          for (const id of c.ids) { tombstones.add(id); if (isOwn) ownTombstoned.add(id) }
+          break
+        case 'clear':
+          // F1: never let an unbounded/absurd future epoch (bad clock / corruption) poison the store.
+          if (c.before > clearEpoch && c.before > 0 && c.before <= skewCap) clearEpoch = c.before
+          // F23: entries written to this shard BEFORE this clear line pre-date the clear.
+          if (isOwn) for (const id of shardAdds) ownVulnerable.add(id)
+          break
+        case 'reinforce':
+          for (const d of c.deltas) pendingReinforce.push(d)
+          break
+        case 'locked':
+          lockedShards = true
+          break
+        case 'skip':
+          break
+      }
+    }
   }
   adds.sort((a, b) => (a.ts || 0) - (b.ts || 0)) // stable, oldest→newest
   const seenIds = new Set<string>()
+  const clearedByEpoch: string[] = [] // ids suppressed by the epoch this reload — pinned as identity tombstones
   for (const e of adds) {
     if (seenIds.has(e.id)) continue                 // same id in >1 file (e.g. legacy migration)
-    if (tombstones.has(e.id)) continue              // explicitly deleted
-    if ((e.ts || 0) <= clearEpoch) continue         // cleared epoch
+    if (tombstones.has(e.id)) continue              // explicitly deleted / identity-cleared
+    if ((e.ts || 0) <= clearEpoch) {
+      // F23: the wall-clock epoch clears PEER entries (a peer's pre-clear content) and this
+      // device's OWN entries only when they predate an own clear line — so a slow local
+      // clock can never wipe this device's post-clear writes (own & not vulnerable).
+      const own = ownAddIds.has(e.id)
+      if (!own || ownVulnerable.has(e.id)) { clearedByEpoch.push(e.id); continue }
+    }
     if (e.hash && seenHashes.has(e.hash)) continue  // same content from another shard
     seenIds.add(e.id)
     entries.push(e)
@@ -225,6 +313,16 @@ function reloadFrom(paths: string[]): void {
     }
   }
   pendingReinforce = []
+  // F10: persist the observed delete state device-locally, and replicate into THIS device's
+  // own shard any tombstone it knows but hasn't recorded there yet — so a deletion survives
+  // losing the peer/originating shard that first carried it. Pin epoch-cleared ids by
+  // identity too, so the clear holds even if its clearedBefore line is later lost.
+  for (const id of clearedByEpoch) tombstones.add(id)
+  persistDeletesFloor()
+  if (syncDir && memPath) {
+    const toEmit = [...tombstones].filter(id => !ownTombstoned.has(id))
+    if (toEmit.length > 0) appendShardLine(JSON.stringify({ clearedIds: toEmit }), 'replicate-tombstones')
+  }
 }
 
 export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string | null } = {}): void {
@@ -1237,6 +1335,7 @@ export function memoryCount(): number {
 }
 
 export function memoryClear(): void {
+  const liveIds = entries.map(e => e.id) // F23: capture the concrete live set BEFORE wiping
   entries.length = 0
   seenHashes.clear()
   forgotSet.clear()
@@ -1250,12 +1349,22 @@ export function memoryClear(): void {
   try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
   if (!memPath) return
   if (syncDir) {
-    // Propagating clear: an epoch tombstone so every device drops everything up
-    // to now (truncating the shard would just resurrect from peers on next sync).
+    // Propagating clear: the (clamped) epoch sweeps not-yet-synced OLDER peer content by
+    // time, while an IDENTITY clear (F23) tombstones the concrete set we currently know —
+    // so a fast-clock peer's future-ts entry can't survive, and a slow local clock can't
+    // over-delete future writes (they get fresh, un-tombstoned ids). Both persist in the
+    // device-local floor (F10) so the clear holds even if this shard is later lost.
     clearEpoch = Date.now()
+    for (const id of liveIds) tombstones.add(id)
     appendShardLine(JSON.stringify({ clearedBefore: clearEpoch }), 'clear')
+    if (liveIds.length > 0) appendShardLine(JSON.stringify({ clearedIds: liveIds }), 'clear-ids')
+    persistDeletesFloor()
   } else {
+    // Local-only: truncating the single file is a real, durable clear (no peers to merge).
     try { fs.writeFileSync(memPath, '') } catch { /* best effort */ }
+    clearEpoch = 0
+    tombstones.clear()
+    persistDeletesFloor()
   }
 }
 
@@ -1314,6 +1423,7 @@ export function memoryDelete(id: string): void {
   lexicalIndex.remove(id)
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete')
+  persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
 }
 
 /**
