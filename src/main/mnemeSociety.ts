@@ -193,3 +193,10 @@ export function heuristicContradicts(a: AgentLesson, b: AgentLesson): boolean {
   if (union === 0 || inter / union < 0.7) return false // must be about the SAME subject (minus polarity)
   return NEG_RE.test(a.content) !== NEG_RE.test(b.content) // …and exactly one negates it
 }
+
+/** Map a stored memory row to an AgentLesson for pooling / conflict detection — the
+ *  source is the authoring agent, falling back to the raw agentId then 'unknown'. Shared
+ *  by the memory_pool and memory_conflicts wiring so the projection lives in one tested place. */
+export function toAgentLesson(m: { source?: string; agentId?: string; content: string; memoryType?: string; importance?: number }): AgentLesson {
+  return { source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }
+}

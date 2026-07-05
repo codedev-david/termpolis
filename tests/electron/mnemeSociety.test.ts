@@ -4,6 +4,7 @@ import {
   poolLessons,
   detectConflicts,
   heuristicContradicts,
+  toAgentLesson,
   type AgentLesson,
 } from '../../src/main/mnemeSociety'
 
@@ -249,6 +250,23 @@ describe('mnemeSociety', () => {
         A('claude', 'Never run migrations before seeding'),
       ]
       expect(detectConflicts(lessons, heuristicContradicts)).toEqual([])
+    })
+  })
+
+  describe('toAgentLesson — source projection for pooling/conflicts', () => {
+    it('prefers the explicit source', () => {
+      expect(toAgentLesson({ source: 'codex', agentId: 'a1', content: 'x' }).source).toBe('codex')
+    })
+    it('falls back to the raw agentId when source is missing', () => {
+      expect(toAgentLesson({ agentId: 'a1', content: 'x' }).source).toBe('a1')
+    })
+    it("falls back to 'unknown' when neither is present", () => {
+      expect(toAgentLesson({ content: 'x' }).source).toBe('unknown')
+    })
+    it('carries content, memoryType and importance through', () => {
+      expect(toAgentLesson({ source: 's', content: 'c', memoryType: 'procedural', importance: 0.9 })).toEqual({
+        source: 's', content: 'c', memoryType: 'procedural', importance: 0.9,
+      })
     })
   })
 })

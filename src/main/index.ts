@@ -136,7 +136,7 @@ import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
 import { augmentPrimer } from './mnemePrimerAugment'
 import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
-import { poolLessons, detectConflicts, heuristicContradicts } from './mnemeSociety'
+import { poolLessons, detectConflicts, heuristicContradicts, toAgentLesson } from './mnemeSociety'
 import { proactiveQuery } from './mnemeRetrieval'
 import { getAllEdges, graphStats } from './memoryGraph'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
@@ -1881,9 +1881,7 @@ if (!gotTheLock) {
         // Wire the (previously dead) society-layer contradiction detector over the SAME cross-agent
         // lesson set memory_pool uses, with the conservative heuristicContradicts predicate. Read-only:
         // it never mutates the store or graph — the agent resolves a surfaced conflict via memory_link.
-        const lessons = memoryLessons(opts.limit ?? 200).map((m) => ({
-          source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance,
-        }))
+        const lessons = memoryLessons(opts.limit ?? 200).map(toAgentLesson)
         return detectConflicts(lessons, heuristicContradicts).map((c) => ({
           a: { source: c.a.source, content: c.a.content },
           b: { source: c.b.source, content: c.b.content },
