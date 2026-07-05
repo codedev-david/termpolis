@@ -122,6 +122,31 @@ describe('codeGraph store', () => {
     expect(stats).toEqual({ files: 0, symbols: 0, edges: 0 })
   })
 
+  it('handles unknown-name queries and edge limits gracefully', async () => {
+    indexFileContent(A, aSrc)
+    rebuildEdges()
+    expect(codeCallers('doesNotExist')).toEqual([])
+    expect(codeCallees('doesNotExist')).toEqual([])
+    expect(codeImpact('doesNotExist')).toEqual([])
+    expect(codeSymbols('alpha', 0)).toEqual([]) // limit 0
+  })
+
+  it('codeExplore without an injected reader reads from disk (empty source when the file is gone)', () => {
+    indexFileContent('/nowhere/gone.ts', 'export function ghost() { return 1 }')
+    rebuildEdges()
+    const res = codeExplore('ghost') // no reader → fs.readFileSync of a non-existent path → caught
+    expect(res?.symbol.name).toBe('ghost')
+    expect(res?.source).toBe('') // source unavailable, structure still returned
+  })
+
+  it('buildCodeGraph skips a file whose read fails', async () => {
+    const stats = await buildCodeGraph({
+      listFiles: async () => ['/repo/ok.ts', '/repo/bad.ts'],
+      readFile: async (f) => { if (f.endsWith('bad.ts')) throw new Error('EACCES'); return 'export function ok() {}' },
+    })
+    expect(stats.symbols).toBe(1) // only ok.ts indexed
+  })
+
   it('persists and reloads the graph (edges rebuilt from disk)', () => {
     initCodeGraph(dir)
     indexFileContent(A, aSrc)

@@ -3,7 +3,9 @@ import {
   normalizeKey,
   poolLessons,
   detectConflicts,
+  detectConflictsAsync,
   heuristicContradicts,
+  sameSubject,
   toAgentLesson,
   type AgentLesson,
 } from '../../src/main/mnemeSociety'
@@ -250,6 +252,20 @@ describe('mnemeSociety', () => {
         A('claude', 'Never run migrations before seeding'),
       ]
       expect(detectConflicts(lessons, heuristicContradicts)).toEqual([])
+    })
+  })
+
+  describe('detectConflictsAsync + sameSubject', () => {
+    const L2 = (source: string, content: string): AgentLesson => ({ source, content })
+    it('detectConflictsAsync awaits the predicate, cross-source pairs only', async () => {
+      const lessons = [L2('claude', 'one'), L2('codex', 'two'), L2('claude', 'three')]
+      expect(await detectConflictsAsync(lessons, async () => true)).toHaveLength(2) // (one,two),(two,three); (one,three) same source skipped
+      expect(await detectConflictsAsync(lessons, async () => false)).toEqual([])
+    })
+    it('sameSubject is true for shared-subject lessons and false for unrelated ones', () => {
+      expect(sameSubject(L2('a', 'Use Postgres for the sync store'), L2('b', 'Use MySQL for the sync store'), 0.5)).toBe(true)
+      expect(sameSubject(L2('a', 'Use Postgres for the store'), L2('b', 'Prefer tabs over spaces'), 0.5)).toBe(false)
+      expect(sameSubject(L2('a', 'x'), L2('b', 'y'), 0.5)).toBe(false) // too thin
     })
   })
 
