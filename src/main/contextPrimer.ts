@@ -26,6 +26,7 @@ export interface PrimerHit {
   score: number
   id?: string
   project?: string
+  ts?: number // conversation/write time — powers the F24 relative-age marker
 }
 
 export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>
@@ -79,16 +80,36 @@ function codeFilePath(h: PrimerHit): string | null {
   return m ? m[1] : null
 }
 
-function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => boolean): string | null {
+// Escape a slug for safe insertion into a word-boundary RegExp (F21).
+function escapeRegExp(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+
+// A compact relative-age marker (F24) so the agent can weigh recency and never mistakes
+// a year-old chat for a current one. Coarse by design — the primer is a lean digest.
+function relativeAge(ts: number, now: number): string {
+  const sec = Math.max(0, Math.floor((now - ts) / 1000))
+  const day = Math.floor(sec / 86_400)
+  if (day >= 365) return `${Math.floor(day / 365)}y ago`
+  if (day >= 30) return `${Math.floor(day / 30)}mo ago`
+  if (day >= 1) return `${day}d ago`
+  const hr = Math.floor(sec / 3600)
+  if (hr >= 1) return `${hr}h ago`
+  const min = Math.floor(sec / 60)
+  return min >= 1 ? `${min}m ago` : 'just now'
+}
+
+function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => boolean, now: number): string | null {
   const snip = truncateContent((h.content || '').replace(/\s+/g, ' ').trim(), maxSnip)
   if (!snip) return null
   // Staleness guard (#3): a code memory whose source file no longer exists is
   // flagged so the agent treats it as historical context, not a live path it can
   // recommend — the #1 stale-memory hallucination vector.
   const path = codeFilePath(h)
-  const label = path !== null && !fileExists(path)
+  const base = path !== null && !fileExists(path)
     ? `${h.source || 'code'} ⚠ STALE — file removed, verify before use`
     : (h.source || h.kind || 'note')
+  // F24: stamp a relative age so recency is legible in the primer (the leading line
+  // is what the agent 'holds' about the project).
+  const label = typeof h.ts === 'number' && h.ts > 0 ? `${base} · ${relativeAge(h.ts, now)}` : base
   return `- [${label}] ${snip}`
 }
 
@@ -99,6 +120,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const maxSnip = opts.maxSnippetChars ?? 400
   const project = (opts.project || '').trim().toLowerCase()
   const fileExists = opts.fileExists ?? existsSync
+  const now = Date.now()
 
   // Over-fetch candidates (capped at the hot-window practical max), then keep only
   // the relevant ones (with a floor so a thin recall never starves the agent) and
@@ -127,7 +149,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const body: string[] = []
   if (!project) {
     for (const h of globalHits) {
-      const line = renderLine(h, maxSnip, fileExists)
+      const line = renderLine(h, maxSnip, fileExists, now)
       if (line) body.push(line)
     }
   } else {
@@ -136,10 +158,14 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // tagged for, or literally mention, this project into the project bucket.
     const promoted: PrimerHit[] = []
     const others: PrimerHit[] = []
+    // F21: promote a global hit into THIS project only on an exact tag match, or a
+    // WORD-BOUNDARY mention of a slug that is at least 4 chars — never a bare substring
+    // (which made short slugs like 'app'/'api'/'go' match 'mapping'/'category'/'logo').
+    const slugRe = project.length >= 4 ? new RegExp(`\\b${escapeRegExp(project)}\\b`, 'i') : null
     for (const h of globalHits) {
       if (seen.has(hitKey(h))) continue
       seen.add(hitKey(h))
-      if (h.project === project || (h.content || '').toLowerCase().includes(project)) promoted.push(h)
+      if (h.project === project || (slugRe && slugRe.test(h.content || ''))) promoted.push(h)
       else others.push(h)
     }
     // Past conversations lead the project bucket; the stable sort preserves the
@@ -152,13 +178,13 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     const projLines: string[] = []
     for (const h of bucket) {
       if (projLines.length >= limit) break
-      const line = renderLine(h, maxSnip, fileExists)
+      const line = renderLine(h, maxSnip, fileExists, now)
       if (line) projLines.push(line)
     }
     const otherLines: string[] = []
     for (const h of others) {
       if (projLines.length + otherLines.length >= limit) break
-      const line = renderLine(h, maxSnip, fileExists)
+      const line = renderLine(h, maxSnip, fileExists, now)
       if (line) otherLines.push(line)
     }
     if (projLines.length > 0) body.push(`This project (${project}) — past conversations first:`, ...projLines)
@@ -169,8 +195,13 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   }
   if (body.length === 0) return null
 
+  // F24: only the flat (score-sorted) path is truly "most relevant first"; the project
+  // path leads with conversations under its own sub-headers, so don't claim it up top.
+  const header = project
+    ? 'Relevant context from your memory — background only:'
+    : 'Relevant context from your memory (most relevant first) — background only:'
   const result = [
-    'Relevant context from your memory (most relevant first) — background only:',
+    header,
     '',
     ...body,
     '',

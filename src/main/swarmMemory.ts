@@ -1242,8 +1242,13 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     ).slice(0, limit)
   }
 
-  searchCache.set(cacheKey, result)
-  return result
+  // F2: never hand back a memory that a later one supersedes. The memory_link tool
+  // actively solicits supersedes/superseded-by edges to keep replaced decisions from
+  // resurfacing, but only the graph-query path honored them — search (and the primer that
+  // rides on it) returned the deprecated answer as top recall. Filter it here too.
+  const active = filterSuperseded(result, getAllEdges())
+  searchCache.set(cacheKey, active)
+  return active
 }
 
 // Nudge the ranking toward the centroid of the memories the fleet has reinforced
