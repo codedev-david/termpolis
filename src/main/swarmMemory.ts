@@ -1672,7 +1672,14 @@ export function memoryClear(): void {
  *  or frequently-recalled memories are protected from the "sleep" pass. */
 export function consolidationCandidates(limit = 500): ConsolEntry[] {
   const edgeIds = new Set<string>()
-  for (const e of getAllEdges()) { edgeIds.add(e.from); edgeIds.add(e.to) }
+  for (const e of getAllEdges()) {
+    // Wave2 (consolidation-decay-inert): the BB6 'follows' temporal backbone + auto 'relates-to'
+    // links give nearly EVERY message chunk an edge, so the isForgettable !hasEdges guard
+    // protected almost everything and the sleep pass forgot nothing. Only MEANINGFUL links
+    // (explicit memory_link, causal solves/causes/part-of/supersedes) should protect a memory.
+    if (e.relation === 'follows' || e.createdBy === 'auto') continue
+    edgeIds.add(e.from); edgeIds.add(e.to)
+  }
   return entries.slice(0, Math.max(0, limit)).map((e) => ({
     id: e.id,
     content: e.content,

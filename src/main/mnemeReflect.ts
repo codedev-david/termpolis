@@ -109,6 +109,16 @@ export function splitSentences(text: string): string[] {
 }
 
 /** Extract referenced entities: backtick spans, file-ish paths, SCREAMING codes. */
+// Wave2 (junk-entity-hubs): common all-caps tokens that the SCREAMING-code rule would
+// otherwise mint as entity nodes — every lesson naming them links to the same node, making
+// them high-degree hubs that connect unrelated lessons and pollute graph traversal/fusion.
+const ENTITY_STOPWORDS = new Set([
+  'API', 'JSON', 'HTTP', 'HTTPS', 'TODO', 'FIXME', 'NULL', 'TRUE', 'FALSE', 'HTML', 'CSS', 'URL', 'URI',
+  'SQL', 'XML', 'YAML', 'CLI', 'GUI', 'REST', 'GRPC', 'TCP', 'UDP', 'DNS', 'SSL', 'TLS', 'JWT', 'UUID',
+  'ENV', 'CPU', 'GPU', 'RAM', 'PDF', 'CSV', 'UTF', 'ASCII', 'GET', 'POST', 'PUT', 'DELETE', 'OK', 'ERROR',
+  'WARN', 'INFO', 'DEBUG', 'NPM', 'NODE', 'IDE', 'MCP', 'RAG',
+])
+
 export function extractEntities(text: string): string[] {
   const out = new Set<string>()
   for (const m of text.matchAll(/`([^`\n]{1,60})`/g)) {
@@ -119,6 +129,7 @@ export function extractEntities(text: string): string[] {
     out.add(m[0])
   }
   for (const m of text.matchAll(/\b[A-Z][A-Z0-9_]{2,}\b/g)) {
+    if (ENTITY_STOPWORDS.has(m[0])) continue // Wave2: don't mint a hub node for common all-caps tokens
     out.add(m[0])
   }
   return Array.from(out).slice(0, MAX_ENTITIES)
@@ -181,8 +192,11 @@ export async function distillEpisode(episode: Episode, opts: DistillOptions = {}
     (outcome?.kind === 'error' ? outcome.detail : undefined)
   const fix = assistantSentences.find((s) => FIX_RE.test(s))
 
-  // 1) Procedural lesson: a problem that got solved.
-  if (problem && fix) {
+  // 1) Procedural lesson: a problem that got SOLVED. Wave2 (failed-fix-stored-as-solution):
+  // never mint a 'solves' recipe from a FAILED episode — memory_anticipate keys on
+  // memoryType:'procedural' regardless of importance, so it would later recommend a fix that
+  // never worked, violating the module's "a confident-but-wrong lesson is worse than none".
+  if (problem && fix && outcome?.success !== false) {
     const entities = extractEntities(`${problem} ${fix}`)
     pushUnique(lessons, {
       memoryType: 'procedural',

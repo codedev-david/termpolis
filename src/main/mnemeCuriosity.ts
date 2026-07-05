@@ -52,7 +52,11 @@ export function findGaps(records: CompetenceRecord[], opts: FindGapsOptions = {}
   const minAttempts = opts.minAttempts ?? DEFAULT_MIN_ATTEMPTS
   const maxConfidence = opts.maxConfidence ?? DEFAULT_MAX_CONFIDENCE
   return records
-    .filter((r) => r.attempts >= minAttempts && r.confidence <= maxConfidence)
+    // Wave2 (curiosity-mislabels-perfect-records): require REAL failure evidence. A small but
+    // PERFECT record has a Wilson-smoothed confidence under 0.5 (2/2 ≈ 0.34, 3/3 ≈ 0.44) and
+    // would otherwise be surfaced as "recurring failures in X" — telling the agent it keeps
+    // failing where it has a flawless record. Only a domain with an actual failure is a gap.
+    .filter((r) => r.attempts >= minAttempts && r.confidence <= maxConfidence && r.attempts - r.successes >= 1)
     .map((r) => ({
       domain: r.domain,
       confidence: r.confidence,

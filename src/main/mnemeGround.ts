@@ -42,7 +42,10 @@ export function lessonToWriteInput(lesson: Lesson, episode: Episode): LessonWrit
     importance: lesson.importance,
     originEpisode: episode.id,
     ...(episode.project ? { project: episode.project } : {}),
-    source: 'mneme',
+    // Wave2 (lessons-source-mneme-pooling-inert): carry the AUTHORING agent (episode.source)
+    // instead of hardcoding 'mneme', so memory_pool's cross-agent corroboration (a distinct-
+    // source count) actually fires when different agents independently learn the same lesson.
+    source: episode.source || 'mneme',
   }
 }
 

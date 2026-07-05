@@ -31,7 +31,7 @@ describe('mnemeGround — write-and-ground path', () => {
       importance: 0.9,
       originEpisode: 'ep-1',
       project: 'termpolis',
-      source: 'mneme',
+      source: 'claude', // Wave2: the lesson now carries the authoring agent (episode.source), not a hardcoded 'mneme'
     })
   })
 

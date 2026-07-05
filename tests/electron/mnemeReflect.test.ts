@@ -67,26 +67,34 @@ describe('mnemeReflect — deterministic distillation', () => {
   })
 
   it('scores a grounded success higher than a failure', async () => {
-    const turns = [
-      { role: 'user' as const, text: 'Error: request failed with ETIMEDOUT' },
-      { role: 'assistant' as const, text: 'Fixed by adding a retry in `client.ts`.' },
-    ]
+    // A decision lesson is minted regardless of outcome (unlike a 'solves' recipe, which
+    // Wave2 suppresses on failure), so use it to compare success-vs-failure importance.
+    const turns = [{ role: 'assistant' as const, text: 'We decided to adopt Postgres for the sync store.' }]
     const ok = await distillEpisode(ep({ turns, outcome: { kind: 'test', success: true } }))
     const bad = await distillEpisode(ep({ turns, outcome: { kind: 'test', success: false } }))
     expect(ok[0].importance).toBeGreaterThan(bad[0].importance)
   })
 
-  it('uses outcome.detail as the problem when the error kind is set', async () => {
+  it('Wave2: does NOT mint a procedural solves lesson from a FAILED episode', async () => {
     const lessons = await distillEpisode(
       ep({
         turns: [{ role: 'assistant', text: 'Resolved it by rebuilding the native module.' }],
         outcome: { kind: 'error', success: false, detail: 'segfault loading addon.node' },
       }),
     )
+    expect(lessons.some((l) => l.memoryType === 'procedural')).toBe(false)
+  })
+
+  it('uses outcome.detail as the problem for a SUCCESSFUL error-kind fix', async () => {
+    const lessons = await distillEpisode(
+      ep({
+        turns: [{ role: 'assistant', text: 'Resolved it by rebuilding the native module.' }],
+        outcome: { kind: 'error', success: true, detail: 'segfault loading addon.node' },
+      }),
+    )
     const proc = lessons.find((l) => l.memoryType === 'procedural')
     expect(proc).toBeDefined()
     expect(proc!.problem).toMatch(/segfault/i)
-    expect(proc!.importance).toBeLessThan(0.6) // failed outcome → low importance
   })
 
   it('is deterministic', async () => {
