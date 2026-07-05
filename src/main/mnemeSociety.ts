@@ -184,14 +184,41 @@ function coreTokens(content: string): Set<string> {
  *  precision-favouring cross-agent contradiction check. Exported + pure so it's unit-tested
  *  and the production wiring stays a one-liner. */
 export function heuristicContradicts(a: AgentLesson, b: AgentLesson): boolean {
+  if (!sameSubject(a, b, 0.7)) return false // tight same-subject (minus polarity words)
+  return NEG_RE.test(a.content) !== NEG_RE.test(b.content) // …and exactly one negates it
+}
+
+/** Are two lessons ABOUT THE SAME SUBJECT? Core-token (non-polarity) Jaccard ≥ minJaccard.
+ *  Broader than heuristicContradicts (no negation requirement) — used as the cheap PRE-FILTER
+ *  for the expensive NLI pass, so a real model only judges plausibly-related pairs instead of
+ *  every O(n²) combination (and it catches contradictions with no explicit negation word, like
+ *  "use Postgres" vs "use MySQL", which the heuristic alone can't). */
+export function sameSubject(a: AgentLesson, b: AgentLesson, minJaccard = 0.5): boolean {
   const ca = coreTokens(a.content)
   const cb = coreTokens(b.content)
-  if (ca.size < 2 || cb.size < 2) return false // too thin to establish a shared subject
+  if (ca.size < 2 || cb.size < 2) return false
   let inter = 0
   for (const t of ca) if (cb.has(t)) inter++
   const union = ca.size + cb.size - inter
-  if (union === 0 || inter / union < 0.7) return false // must be about the SAME subject (minus polarity)
-  return NEG_RE.test(a.content) !== NEG_RE.test(b.content) // …and exactly one negates it
+  return union > 0 && inter / union >= minJaccard
+}
+
+/** Async twin of detectConflicts for a model-backed (NLI) predicate — same cross-source,
+ *  each-pair-once contract, awaiting the predicate. */
+export async function detectConflictsAsync(
+  lessons: AgentLesson[],
+  contradicts: (a: AgentLesson, b: AgentLesson) => Promise<boolean>,
+): Promise<LessonConflict[]> {
+  const conflicts: LessonConflict[] = []
+  for (let i = 0; i < lessons.length; i++) {
+    for (let j = i + 1; j < lessons.length; j++) {
+      const a = lessons[i]
+      const b = lessons[j]
+      if (a.source === b.source) continue
+      if (await contradicts(a, b)) conflicts.push({ a, b })
+    }
+  }
+  return conflicts
 }
 
 /** Map a stored memory row to an AgentLesson for pooling / conflict detection — the
