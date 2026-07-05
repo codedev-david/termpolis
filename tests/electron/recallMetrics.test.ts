@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { recallAtK, precisionAtK, reciprocalRank, mrr, meanRecallAtK } from '../../src/main/recallMetrics'
+import { recallAtK, precisionAtK, reciprocalRank, mrr, meanRecallAtK, dcgAtK, ndcgAtK, meanNdcgAtK, evaluate, evaluateSlices } from '../../src/main/recallMetrics'
 
 describe('recallMetrics — IR metrics over (rankedIds, relevantSet)', () => {
   it('recallAtK = fraction of the relevant set found in the top k', () => {
@@ -34,5 +34,47 @@ describe('recallMetrics — IR metrics over (rankedIds, relevantSet)', () => {
     expect(meanRecallAtK(qs, 2)).toBeCloseTo(1)
     expect(mrr([])).toBe(0)
     expect(meanRecallAtK([], 5)).toBe(0)
+  })
+
+  describe('nDCG — order-sensitive quality', () => {
+    it('dcgAtK rewards higher-ranked relevant hits more', () => {
+      expect(dcgAtK(['a', 'x', 'y'], new Set(['a']), 3)).toBeCloseTo(1) // rank 1 → 1/log2(2) = 1
+      expect(dcgAtK(['x', 'a', 'y'], new Set(['a']), 3)).toBeCloseTo(1 / Math.log2(3)) // rank 2
+    })
+    it('ndcgAtK is 1 when the relevant items are ranked first, less otherwise', () => {
+      expect(ndcgAtK(['a', 'b', 'x'], new Set(['a', 'b']), 3)).toBeCloseTo(1) // ideal ordering
+      expect(ndcgAtK(['x', 'a', 'b'], new Set(['a', 'b']), 3)).toBeLessThan(1) // relevant demoted
+      expect(ndcgAtK(['x', 'y'], new Set<string>(), 2)).toBe(0) // nothing relevant
+    })
+    it('meanNdcgAtK averages across queries (0 for none)', () => {
+      const qs = [
+        { rankedIds: ['a', 'b'], relevant: new Set(['a']) },
+        { rankedIds: ['b', 'a'], relevant: new Set(['a']) },
+      ]
+      expect(meanNdcgAtK(qs, 2)).toBeGreaterThan(0)
+      expect(meanNdcgAtK([], 2)).toBe(0)
+    })
+  })
+
+  describe('evaluate + slices', () => {
+    it('evaluate returns mrr + recall@k + ndcg@k for the given cutoffs', () => {
+      const qs = [{ rankedIds: ['a', 'b', 'c'], relevant: new Set(['a', 'c']) }]
+      const s = evaluate(qs, [1, 3])
+      expect(s.n).toBe(1)
+      expect(s.mrr).toBeCloseTo(1) // first hit at rank 1
+      expect(s.recallAtK[3]).toBeCloseTo(1)
+      expect(s.ndcgAtK[1]).toBeCloseTo(1) // relevant 'a' at rank 1; ideal@1 is also one hit → 1.0
+      expect(s.ndcgAtK[3]).toBeGreaterThan(0.9) // 'a'@1 + 'c'@3 — near-ideal but 'c' one slot low
+    })
+    it('evaluateSlices summarizes each tagged scenario independently', () => {
+      const qs = [
+        { scenario: 'cross-project', rankedIds: ['a'], relevant: new Set(['a']) },
+        { scenario: 'superseded', rankedIds: ['x', 'y'], relevant: new Set(['y']) },
+      ]
+      const slices = evaluateSlices(qs, [1])
+      expect(Object.keys(slices).sort()).toEqual(['cross-project', 'superseded'])
+      expect(slices['cross-project'].recallAtK[1]).toBeCloseTo(1)
+      expect(slices['superseded'].recallAtK[1]).toBeCloseTo(0) // relevant not in top-1
+    })
   })
 })
