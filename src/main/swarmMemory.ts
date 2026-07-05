@@ -1868,6 +1868,32 @@ export interface SyncStatus {
   locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
   degraded: boolean  // F5: init failed and fell back to a local writable store (sync unavailable)
   corruptLinesSkipped: number // F28: unparseable shard lines dropped on the last reload
+  embeddings: EmbeddingsStatus // honest tri-state — must not imply healthy before the first embed
+}
+
+export type EmbeddingsStatus = 'ready' | 'unavailable' | 'unprobed'
+
+/** Honest embedder state: 'ready' (a real embed has SUCCEEDED), 'unavailable' (the model is
+ *  known-dead or forced off), or 'unprobed' (not exercised yet — the status must NOT read as
+ *  healthy before the first embed, which is the embeddingsready-overreports bug). */
+export function embeddingsStatus(): EmbeddingsStatus {
+  return embeddingsAvailable === true ? 'ready' : embeddingsAvailable === false ? 'unavailable' : 'unprobed'
+}
+
+/** Off-thread warm probe: if the embedder hasn't been exercised yet, run ONE embed to move the
+ *  status out of 'unprobed'. It goes through the normal embed path, which uses the worker thread
+ *  when one is registered — so it never blocks the PTY/main thread (that was the whole point of
+ *  not doing this at init). Idempotent; only latches TRUE on success (a transient failure is left
+ *  for the normal dead-model detection to latch, so we never false-downgrade to keyword-only). */
+export async function warmProbeEmbeddings(): Promise<boolean> {
+  if (embeddingsAvailable !== null) return embeddingsAvailable === true // already probed
+  try {
+    const vec = await embed('warm probe', true)
+    if (vec && vec.length > 0 && embeddingsAvailable === null) embeddingsAvailable = true
+  } catch {
+    /* leave the state to the normal path's dead-model latch */
+  }
+  return embeddingsAvailable === true
 }
 
 /** Re-read all shards to pick up entries synced from other devices. No-op when local-only. */
@@ -1891,6 +1917,7 @@ export function getSyncStatus(): SyncStatus {
     locked: lockedShards,
     degraded: initDegraded,
     corruptLinesSkipped,
+    embeddings: embeddingsStatus(),
   }
 }
 

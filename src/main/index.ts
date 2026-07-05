@@ -117,7 +117,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
-  memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath,
+  memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -1925,6 +1925,10 @@ if (!gotTheLock) {
     setSafeStorage(safeStorage)
     initSwarmMemory(app.getPath('userData'))
     initCodeGraph(app.getPath('userData')) // native code graph: load any persisted structural graph
+    // Warm the embedder OFF the main thread ~20s after startup so the dashboard's status reflects
+    // reality (ready/unavailable, not a misleading pre-probe "healthy") without a startup model load
+    // stalling the first keystrokes — the worker thread carries it.
+    setTimeout(() => { warmProbeEmbeddings().catch(() => {}) }, 20000)
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
