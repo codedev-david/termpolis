@@ -195,7 +195,7 @@ function indexEdge(e: MemoryEdge): void {
   reverseAdjacency.set(e.to, rlist)
 }
 
-export interface AddEdgeInput { from: string; to: string; relation?: string; weight?: number; createdBy?: string }
+export interface AddEdgeInput { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number }
 
 /** Record a typed edge (in memory + appended to the JSONL log). Returns it, or null
  *  for a self-loop / missing endpoint. */
@@ -206,7 +206,9 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
     to: String(input.to),
     relation: normalizeRelation(input.relation),
     weight: typeof input.weight === 'number' && input.weight > 0 ? input.weight : 1,
-    ts: Date.now(),
+    // P0 sibling: honor an explicit conversation ts so a backdated (re-ingested)
+    // memory's edges don't look freshly created (which would skew BB5 time-decay).
+    ts: typeof input.ts === 'number' ? input.ts : Date.now(),
     ...(input.createdBy && { createdBy: input.createdBy }),
   }
   indexEdge(edge)

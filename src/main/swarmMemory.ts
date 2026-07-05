@@ -607,7 +607,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       // (re)build or a disk-persist — those stay owned by memorySearch alone.
       for (const n of nearestNeighbours(entry.embedding, AUTO_LINK_K, entry.id)) {
         if (n.score <= 0) continue
-        addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto' })
+        addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto', ts: entry.ts })
       }
     } catch { /* best effort — linking never blocks a write */ }
   } else if (DENSIFY_KINDS.has(kind) && entry.embedding) {
@@ -617,7 +617,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     try {
       const [n] = nearestNeighbours(entry.embedding, 1, entry.id)
       if (n && n.score >= DENSIFY_MIN_COSINE) {
-        addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto' })
+        addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto', ts: entry.ts })
       }
     } catch { /* best effort */ }
   }
@@ -1222,7 +1222,10 @@ export interface ListOptions {
 
 export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500)
-  let pool = entries.slice().reverse()  // newest first
+  // P0: order by real conversation ts (desc), not insertion order — a backdated
+  // re-ingest is appended LAST but must not masquerade as newest. Reverse first so
+  // the stable sort keeps newest-inserted first among equal-ts entries.
+  let pool = entries.slice().reverse().sort((a, b) => (b.ts || 0) - (a.ts || 0))
   if (opts.agentId) pool = pool.filter(e => e.agentId === opts.agentId)
   if (opts.kind) pool = pool.filter(e => e.kind === opts.kind)
   if (opts.since) pool = pool.filter(e => e.ts >= opts.since!)

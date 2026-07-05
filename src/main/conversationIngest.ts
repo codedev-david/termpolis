@@ -462,7 +462,7 @@ export async function findLatestTranscriptFile(source: ConversationSource, root?
 
 export interface IngestMemory {
   hasHash: (hash: string) => boolean
-  write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
+  write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string; project?: string; ts?: number }) => Promise<unknown>
   patchProjects?: (patches: Array<{ hash: string; project: string }>) => void
   /** BB6: optionally link each newly-written chunk to the previous one in the same
    *  session with a 'follows' edge — a per-session temporal backbone for the
@@ -496,6 +496,11 @@ export async function runConversationIngest(
         content: chunk.text,
         source: chunk.source,
         hash: chunk.hash,
+        // P0: stamp the entry with the REAL conversation time (last message in the
+        // chunk), not the ingest wall-clock, so a re-ingested old transcript never
+        // ranks as "most recent". Falls back to Date.now() in the store when a
+        // transcript carries no timestamps.
+        ts: chunk.endTs ?? chunk.startTs,
         ...(chunk.cwd && { project: chunk.cwd }), // store normalizes to a slug
       })) as { id?: string } | null | undefined
       const curId = entry?.id
