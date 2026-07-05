@@ -658,13 +658,19 @@ describe('ring buffer cap', () => {
     expect(memoryStats()).toEqual({ count: 5, capacity: 5, corruptLinesSkipped: 0 })
   })
 
-  it("removes evicted entries' hashes from the dedup set", async () => {
+  it("remembers an evicted hash for re-ingest, yet still allows an explicit re-write (Wave2)", async () => {
     _setMaxEntriesForTests(2)
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'old', hash: 'old-h' })
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'mid', hash: 'mid-h' })
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'new', hash: 'new-h' }) // evicts 'old'
-    expect(memoryHasHash('old-h')).toBe(false) // evicted hash removed from dedup set
+    // Wave2 (eviction-reingest-dup): the evicted content is REMEMBERED so the auto-indexer
+    // (memoryHasHash) won't re-ingest it and thrash the window...
+    expect(memoryHasHash('old-h')).toBe(true)
     expect(memoryHasHash('new-h')).toBe(true)
+    // ...but seenHashes was freed, so an explicit memoryWrite of the evicted content still lands.
+    const rew = await memoryWrite({ agentId: 'a', kind: 'note', content: 'old', hash: 'old-h' })
+    expect(rew.content).toBe('old')
+    expect(memoryList().some((e) => e.content === 'old')).toBe(true)
   })
 
   it('defaults to a large semantic window', () => {

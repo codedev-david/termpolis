@@ -384,7 +384,7 @@ function reloadFrom(paths: string[]): void {
   }
   while (entries.length > maxEntries) {
     const dropped = entries.shift()
-    if (dropped?.hash) seenHashes.delete(dropped.hash)
+    if (dropped?.hash) { seenHashes.delete(dropped.hash); rememberForgot(dropped.hash) } // Wave2: evicted content must not re-ingest
   }
   // F30: apply persisted project backfills so legacy conversation chunks (written before
   // `project` existed) stay current-directory-recallable across reloads/sync — the docstring
@@ -584,10 +584,24 @@ function persistForgotSet(): void {
   try { fs.writeFileSync(f, JSON.stringify([...forgotSet])) } catch { /* best effort */ }
 }
 
+// Add a content hash to the device-local forgot-set (anti-re-ingest), bounded by FORGOT_CAP.
+function rememberForgot(hash: string): void {
+  if (!hash) return
+  forgotSet.add(hash)
+  while (forgotSet.size > FORGOT_CAP) {
+    const oldest = forgotSet.values().next().value
+    if (oldest === undefined) break
+    forgotSet.delete(oldest)
+  }
+}
+
 /** True if a chunk with this content hash is already stored OR was forgotten on this
  *  device (so re-ingest skips it — the anti-thrash prize of BB15). */
 export function memoryHasHash(hash: string): boolean {
-  return typeof hash === 'string' && (seenHashes.has(hash) || forgotSet.has(hash))
+  // Wave2 (consolidation-forget-resurrected): a content-hash tombstone (from memoryDelete /
+  // the "sleep" forget pass) must also count as "already accounted for", so the auto-indexer
+  // doesn't re-ingest a memory the fleet just forgot (which would flap + thrash the shard).
+  return typeof hash === 'string' && (seenHashes.has(hash) || forgotSet.has(hash) || tombstonedHashes.has(hash))
 }
 
 /**
@@ -837,7 +851,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (entries.length > maxEntries) {
     const dropped = entries.shift()
     if (dropped) {
-      if (dropped.hash) seenHashes.delete(dropped.hash)
+      if (dropped.hash) { seenHashes.delete(dropped.hash); rememberForgot(dropped.hash) } // Wave2: evicted content must not re-ingest
       lexicalIndex.remove(dropped.id)
       const r = entryRow.get(dropped)
       if (r !== undefined) rowToEntry.delete(r) // its packed row is now dead
@@ -1613,9 +1627,14 @@ export function memoryLessons(limit = 200): MemoryEntry[] {
 
 export function memoryClear(): void {
   const liveIds = entries.map(e => e.id) // F23: capture the concrete live set BEFORE wiping
+  const liveHashes = entries.map(e => e.hash).filter((h): h is string => typeof h === 'string')
   entries.length = 0
   seenHashes.clear()
   forgotSet.clear()
+  // Wave2 (memory-clear-undone-by-reingest): remember the cleared content hashes so the
+  // auto-indexer doesn't silently re-ingest the same on-disk transcripts minutes later and
+  // undo the clear (clear doesn't touch ~/.claude etc; forgotSet is the anti-re-ingest guard).
+  for (const h of liveHashes) rememberForgot(h)
   persistForgotSet()
   usageMap.clear()
   vectorStore = new VectorStore(EMBED_DIM)
