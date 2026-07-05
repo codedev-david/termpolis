@@ -1936,7 +1936,9 @@ if (!gotTheLock) {
       fastRun: async () => {
         const stats = await runConversationIngest(
           { hasHash: memoryHasHash, write: memoryWrite, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) },
-          { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000 },
+          // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
+          // growing trailing partial doesn't deposit a superset duplicate every 90s.
+          { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true } },
         )
         try { persistMemoryIndex() } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }

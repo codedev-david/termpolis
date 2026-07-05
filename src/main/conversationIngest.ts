@@ -212,6 +212,9 @@ export function parseGeminiSession(content: string): IngestTurn[] {
 export interface ChunkOptions {
   /** Max characters per chunk (~4 chars/token; 2000 ≈ 500 tokens, the bge window). */
   maxChars?: number
+  /** F16: emit ONLY sealed (full) chunks — drop the not-yet-full trailing chunk. Set on the
+   *  incremental/active-session pass so a growing tail doesn't deposit a new superset dup each run. */
+  sealedOnly?: boolean
 }
 
 function makeChunk(turns: IngestTurn[], text: string): IngestChunk {
@@ -265,7 +268,11 @@ export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): Ingest
     buf.push({ turn: t, line })
     len += line.length + 2
   }
-  flush()
+  // F16: only sealed (full) chunks are stable across passes. On an incremental pass over the
+  // ACTIVE session, skip the trailing partial — it grows by one turn each pass and would
+  // deposit a new strict-superset duplicate every ~90s (and, since ts is now conversation
+  // time, they'd all rank as freshest). The tail is captured once it fills, or by the full pass.
+  if (!opts.sealedOnly) flush()
   return chunks
 }
 
