@@ -45,6 +45,10 @@ export interface MemoryEntry {
   memoryType?: 'episodic' | 'semantic' | 'procedural' | 'entity' | 'summary' // cognitive facet — ORTHOGONAL to `kind`
   importance?: number             // 0..1 base salience set at write (reflection sets this high for lessons)
   originEpisode?: string          // the task/session id a distilled lesson was derived from
+  // F6: TRANSIENT write-result flag on the value RETURNED by memoryWrite — never persisted
+  // and never present on stored entries. `durable === false` means the append did not reach
+  // disk (the write is RAM-only this session and will be retried), so the caller isn't misled.
+  durable?: boolean
 }
 
 /** Normalize a cwd/path or bare name into a lowercase project slug (its basename). */
@@ -89,6 +93,10 @@ let embeddingsAvailable: boolean | null = null  // cached probe result
 let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
 let encKey: Buffer | null = null      // AES key for at-rest shard encryption (null = plaintext)
 let lockedShards = false              // encrypted shards present that we couldn't read (need passphrase)
+let initDegraded = false              // F5: init failed and fell back to a local writable store (writes still persist)
+let corruptLinesSkipped = 0           // F28: unparseable shard lines dropped on the last reload (surfaced, not silent)
+let lockedLinesSkipped = 0            // F28: encrypted-but-undecryptable lines on the last reload
+let fsyncCount = 0                    // F26: observable count of durable (fsync'd) appends — for tests
 // Packed vector index: real (EMBED_DIM) embeddings live in one Float32Array
 // instead of per-entry number[] (the memory win), with bidirectional maps to the
 // owning entry. Non-EMBED_DIM vectors (tests/legacy) stay as number[] on the
@@ -192,7 +200,8 @@ type ShardLineClass =
   | { t: 'clearIds'; ids: string[] }
   | { t: 'reinforce'; deltas: Array<{ id: string; used: number; ts: number }> }
   | { t: 'locked' }   // encrypted line we couldn't decrypt (need passphrase)
-  | { t: 'skip' }     // blank / malformed / non-object
+  | { t: 'corrupt' }  // unparseable bytes (torn write / bit-rot / bad merge) — counted, not silent
+  | { t: 'skip' }     // blank / valid-JSON-but-not-a-record
 
 // Classify ONE shard line without mutating any module state. The stateful merge —
 // tombstones, the clamped clear epoch, own-shard causal exemption — lives in reloadFrom
@@ -207,7 +216,7 @@ function classifyShardLine(line: string): ShardLineClass {
     plain = dec
   }
   let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown }
-  try { obj = JSON.parse(plain) } catch { return { t: 'skip' } }
+  try { obj = JSON.parse(plain) } catch { return { t: 'corrupt' } } // F28: a genuine parse failure is corruption, not noise
   if (!obj || typeof obj !== 'object') return { t: 'skip' }
   if (typeof obj.deleted === 'string') return { t: 'delete', id: obj.deleted }
   if (Array.isArray(obj.clearedIds)) return { t: 'clearIds', ids: (obj.clearedIds as unknown[]).filter((x): x is string => typeof x === 'string') }
@@ -237,6 +246,8 @@ function reloadFrom(paths: string[]): void {
   tombstones.clear()
   for (const id of floor.tombstones) tombstones.add(id)
   lockedShards = false
+  corruptLinesSkipped = 0
+  lockedLinesSkipped = 0
   pendingReinforce = []
   const skewCap = Date.now() + MAX_CLOCK_SKEW_MS
   const adds: MemoryEntry[] = []
@@ -273,11 +284,20 @@ function reloadFrom(paths: string[]): void {
           break
         case 'locked':
           lockedShards = true
+          lockedLinesSkipped++
+          break
+        case 'corrupt':
+          corruptLinesSkipped++ // F28: count, don't silently swallow
           break
         case 'skip':
           break
       }
     }
+  }
+  // F28: partial corruption used to shrink the brain invisibly. Surface it so the UI can
+  // warn and the raw bytes can be recovered before the next rewrite overwrites them.
+  if (corruptLinesSkipped > 0) {
+    recordSwarmError('swarmMemory.reload.corruptLines', new Error(`skipped ${corruptLinesSkipped} corrupt shard line(s)`), { corruptLinesSkipped, lockedLinesSkipped })
   }
   adds.sort((a, b) => (a.ts || 0) - (b.ts || 0)) // stable, oldest→newest
   const seenIds = new Set<string>()
@@ -342,6 +362,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   tombstones.clear()
   clearEpoch = 0
   lockedShards = false
+  initDegraded = false
   encKey = null
   seq = 0
   embeddingsAvailable = null
@@ -359,21 +380,33 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
           fs.writeFileSync(memPath, '')
         }
       }
+      ensureTrailingNewline(memPath) // F27: heal a torn tail before any new append
       // Load this device's locally-cached encryption key (if the user enabled
       // encryption previously) so reloadFrom can decrypt — auto-unlocks on launch.
       encKey = loadCachedKey()
       reloadFrom(shardFiles())
     } else {
       memPath = legacyPath
-      if (fs.existsSync(memPath)) reloadFrom([memPath])
+      if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
       else fs.writeFileSync(memPath, '')
     }
   } catch (err) {
-    // Real failure — disk unwritable, perms broken, sync folder gone, etc.
-    // memPath -> null means subsequent writes silently disappear (data loss for
-    // the user's context). Worth surfacing.
+    // Real failure — sync folder offline/not-yet-mounted, perms broken, disk full, etc.
+    // F5: do NOT null memPath for the whole session (that silently discards every write
+    // while the API keeps reporting success). Degrade to the local legacy store so writes
+    // still persist, and flag it so the UI can warn; sync re-attaches on a later init.
     recordSwarmError('swarmMemory.init.failed', err, { memPath })
-    memPath = null
+    initDegraded = true
+    try {
+      memPath = legacyPath
+      if (memPath) {
+        if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
+        else fs.writeFileSync(memPath, '')
+      }
+    } catch (err2) {
+      recordSwarmError('swarmMemory.init.localFallback.failed', err2, {})
+      memPath = null
+    }
   }
   loadForgotSet() // BB15: device-local forgot-set (anti-thrash for the 30-min re-ingest)
 }
@@ -405,6 +438,10 @@ export function _resetForTests(): void {
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
   embedOverride = null
+  initDegraded = false
+  corruptLinesSkipped = 0
+  lockedLinesSkipped = 0
+  fsyncCount = 0
   searchGen = 0
   searchCache.clear()
   lexicalIndex.clear()
@@ -512,9 +549,11 @@ export function memoryPatchProjects(patches: Array<{ hash: string; project: stri
   return patched
 }
 
-/** Store stats for observability / UI: current count + the hot-window capacity. */
-export function memoryStats(): { count: number; capacity: number } {
-  return { count: entries.length, capacity: maxEntries }
+/** Store stats for observability / UI: current count + the hot-window capacity, plus
+ *  how many corrupt shard lines the last reload skipped (F28 — a shrinking store is no
+ *  longer indistinguishable from "nothing was there"). */
+export function memoryStats(): { count: number; capacity: number; corruptLinesSkipped: number } {
+  return { count: entries.length, capacity: maxEntries, corruptLinesSkipped }
 }
 
 export interface MemoryDashboardStats {
@@ -669,7 +708,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     if (emb) entry.embedding = emb
   } catch { /* ignore */ }
 
-  persist(entry) // disk gets the full entry incl. embedding, BEFORE we pack it
+  const durable = persist(entry) // disk gets the full entry incl. embedding, BEFORE we pack it
 
   // Keep a lean copy in the hot window: its EMBED_DIM vector moves to the packed
   // store and the number[] is freed (the memory win). Return the ORIGINAL (with
@@ -678,7 +717,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   indexEntryVector(stored)
   lexicalIndex.add(stored.id, stored.content) // BB1: keep the lexical index in sync
   entries.push(stored)
-  if (stored.hash) seenHashes.add(stored.hash)
+  // F6: only guard the dedup hash once the write actually reached disk — a swallowed
+  // append failure can then be retried by an identical re-write instead of being masked.
+  if (durable && stored.hash) seenHashes.add(stored.hash)
   if (entries.length > maxEntries) {
     const dropped = entries.shift()
     if (dropped) {
@@ -719,24 +760,54 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       }
     } catch { /* best effort */ }
   }
+  if (!durable) entry.durable = false // F6: surface a non-durable write so the API doesn't lie
   return entry
 }
 
-// Append one raw JSON line to this device's shard, encrypting it at rest when a
-// key is set. Best-effort: a write failure is surfaced but never thrown.
-function appendShardLine(raw: string, ctx: string): void {
-  if (!memPath) return
+// Append one raw JSON line to this device's shard, encrypting it at rest when a key
+// is set. Returns whether the bytes reached disk so callers can stop pretending a
+// failed write succeeded (F6). F26: `fsync` forces the OS to flush before returning,
+// so a power loss right after can't roll back an acknowledged high-value write.
+function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {}): boolean {
+  if (!memPath) return false
+  const line = (encKey ? encryptLine(encKey, raw) : raw) + '\n'
   try {
-    fs.appendFileSync(memPath, (encKey ? encryptLine(encKey, raw) : raw) + '\n')
+    if (opts.fsync) {
+      const fd = fs.openSync(memPath, 'a')
+      try { fs.appendFileSync(fd, line); fs.fsyncSync(fd); fsyncCount++ } finally { fs.closeSync(fd) }
+    } else {
+      fs.appendFileSync(memPath, line)
+    }
+    return true
   } catch (err) {
-    // Append failure means this swarm fact never reaches disk — agents
-    // will lose context on next launch. Surface it.
+    // Append failure means this swarm fact never reaches disk — agents would lose
+    // context on next launch. Surface it AND report non-durability to the caller.
     recordSwarmError('swarmMemory.persist.failed', err, { entryId: ctx })
+    return false
   }
 }
 
-function persist(entry: MemoryEntry): void {
-  appendShardLine(JSON.stringify(entry), entry.id)
+// F26: curated knowledge (decision/fact/result) is fsync'd; bulk transcript/code
+// chunks (message/note) trade durability for throughput on a big ingest pass.
+const FSYNC_KINDS = new Set<MemoryEntry['kind']>(['decision', 'fact', 'result'])
+
+function persist(entry: MemoryEntry): boolean {
+  return appendShardLine(JSON.stringify(entry), entry.id, { fsync: FSYNC_KINDS.has(entry.kind) })
+}
+
+// F27: guarantee JSONL frame integrity. A crash mid-append can leave the shard ending
+// in a truncated, newline-less line; the NEXT append would then land on that same
+// physical line and corrupt an otherwise-good record. If the file doesn't end in '\n',
+// terminate the torn line so a torn tail costs at most the torn entry, never the next.
+function ensureTrailingNewline(p: string): void {
+  try {
+    const size = fs.statSync(p).size
+    if (size === 0) return
+    const fd = fs.openSync(p, 'r')
+    let last = 0x0a
+    try { const b = Buffer.alloc(1); fs.readSync(fd, b, 0, 1, size - 1); last = b[0] } finally { fs.closeSync(fd) }
+    if (last !== 0x0a) fs.appendFileSync(p, '\n')
+  } catch { /* best effort — a repair failure must never block init */ }
 }
 
 // ---- Packed vector index helpers ----
@@ -1356,8 +1427,8 @@ export function memoryClear(): void {
     // device-local floor (F10) so the clear holds even if this shard is later lost.
     clearEpoch = Date.now()
     for (const id of liveIds) tombstones.add(id)
-    appendShardLine(JSON.stringify({ clearedBefore: clearEpoch }), 'clear')
-    if (liveIds.length > 0) appendShardLine(JSON.stringify({ clearedIds: liveIds }), 'clear-ids')
+    appendShardLine(JSON.stringify({ clearedBefore: clearEpoch }), 'clear', { fsync: true })
+    if (liveIds.length > 0) appendShardLine(JSON.stringify({ clearedIds: liveIds }), 'clear-ids', { fsync: true })
     persistDeletesFloor()
   } else {
     // Local-only: truncating the single file is a real, durable clear (no peers to merge).
@@ -1422,7 +1493,7 @@ export function memoryDelete(id: string): void {
   }
   lexicalIndex.remove(id)
   tombstones.add(id)
-  appendShardLine(JSON.stringify({ deleted: id }), 'delete')
+  appendShardLine(JSON.stringify({ deleted: id }), 'delete', { fsync: true })
   persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
 }
 
@@ -1499,6 +1570,8 @@ export interface SyncStatus {
   count: number
   encrypted: boolean // this device holds the key and writes ciphertext at rest
   locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
+  degraded: boolean  // F5: init failed and fell back to a local writable store (sync unavailable)
+  corruptLinesSkipped: number // F28: unparseable shard lines dropped on the last reload
 }
 
 /** Re-read all shards to pick up entries synced from other devices. No-op when local-only. */
@@ -1520,6 +1593,8 @@ export function getSyncStatus(): SyncStatus {
     count: entries.length,
     encrypted: encKey !== null,
     locked: lockedShards,
+    degraded: initDegraded,
+    corruptLinesSkipped,
   }
 }
 
@@ -1682,3 +1757,7 @@ export function _setEmbedFnForTests(fn: ((text: string) => Promise<number[] | nu
   embedOverride = fn
   bumpSearchGen() // swapping the embedder changes results — invalidate the cache
 }
+
+/** F26: how many durable (fsync'd) appends have happened — lets tests prove high-value
+ *  writes are flushed to disk while bulk chunks are not, without spying on fs. */
+export function _fsyncCountForTests(): number { return fsyncCount }

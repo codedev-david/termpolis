@@ -655,7 +655,7 @@ describe('ring buffer cap', () => {
     }
     expect(memoryCount()).toBe(5)
     expect(memoryList({ limit: 1 })[0].content).toBe('e6') // newest kept
-    expect(memoryStats()).toEqual({ count: 5, capacity: 5 })
+    expect(memoryStats()).toEqual({ count: 5, capacity: 5, corruptLinesSkipped: 0 })
   })
 
   it("removes evicted entries' hashes from the dedup set", async () => {
@@ -720,15 +720,20 @@ describe('swarm error reporting', () => {
     )
   })
 
-  it('does NOT report a malformed JSONL line as a swarm error (expected)', () => {
+  it('DOES surface a malformed JSONL line as corrupt (F28) while still loading the good lines', () => {
     _resetForTests()
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-malformed-'))
     fs.writeFileSync(path.join(dir, 'swarm-memory.jsonl'),
       '{"id":"valid","ts":1,"agentId":"a","kind":"note","content":"ok"}\nNOT JSON\n',
     )
     initSwarmMemory(dir)
-    expect(mockRecordSwarmError).not.toHaveBeenCalled()
-    expect(memoryCount()).toBe(1)
+    // F28: silent skipping made on-disk corruption indistinguishable from "nothing was
+    // there". A genuine parse failure is now counted, surfaced on stats, and reported.
+    expect(memoryCount()).toBe(1) // the good line still loads
+    expect(memoryStats().corruptLinesSkipped).toBe(1)
+    expect(mockRecordSwarmError).toHaveBeenCalledWith(
+      'swarmMemory.reload.corruptLines', expect.any(Error), expect.objectContaining({ corruptLinesSkipped: 1 }),
+    )
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
   })
 
