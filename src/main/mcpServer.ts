@@ -418,6 +418,39 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'code_explore',
+    description: 'Ask ONE structural question about the codebase and get back the relevant symbol\'s verbatim source plus its direct callers and callees — instead of grepping and reading files. Pass a symbol name (e.g. "memoryWrite") or a short phrase; returns the best-matching function/class/etc, its source, who calls it, and what it calls. Use this FIRST for "where/how is X" and "what does X touch" — it is backed by a pre-indexed local code graph, so it is cheaper and more precise than file crawling.',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'A symbol name or short description' } },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'code_callers',
+    description: 'List the symbols that CALL a given symbol (by name). Answers "who uses this?" from the local code graph without grepping.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'The symbol name' } }, required: ['name'] },
+  },
+  {
+    name: 'code_callees',
+    description: 'List the symbols a given symbol CALLS (by name). Answers "what does this depend on?" from the local code graph.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'The symbol name' } }, required: ['name'] },
+  },
+  {
+    name: 'code_impact',
+    description: 'BLAST RADIUS: the transitive set of symbols that directly or indirectly call a given symbol — i.e. what could break if you change it. Use BEFORE editing a shared function to see the full reach of the change.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'The symbol name you intend to change' } }, required: ['name'] },
+  },
+  {
+    name: 'code_search',
+    description: 'Find symbols (functions/classes/types/…) whose name matches a substring, across the whole indexed codebase. A fast structural index lookup — use it to locate where something is defined.',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Name substring' }, limit: { type: 'number', description: 'Max results (default 50)' } },
+      required: [],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -447,6 +480,11 @@ export interface McpToolHandlers {
   memoryPool: (opts: { limit?: number }) => any
   memoryAnticipate: (opts: { task: string; limit?: number }) => Promise<any>
   memoryConflicts: (opts: { limit?: number }) => any
+  codeExplore: (opts: { query: string }) => any
+  codeCallers: (opts: { name: string }) => any
+  codeCallees: (opts: { name: string }) => any
+  codeImpact: (opts: { name: string }) => any
+  codeSearch: (opts: { query?: string; limit?: number }) => any
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -546,6 +584,16 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return await handlers.memoryAnticipate({ task: args.task, limit: args.limit })
     case 'memory_conflicts':
       return handlers.memoryConflicts({ limit: args.limit })
+    case 'code_explore':
+      return handlers.codeExplore({ query: args.query })
+    case 'code_callers':
+      return handlers.codeCallers({ name: args.name })
+    case 'code_callees':
+      return handlers.codeCallees({ name: args.name })
+    case 'code_impact':
+      return handlers.codeImpact({ name: args.name })
+    case 'code_search':
+      return handlers.codeSearch({ query: args.query, limit: args.limit })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

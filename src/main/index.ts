@@ -124,7 +124,8 @@ import {
 } from './swarmMemory'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
-import { runCodeIngest } from './codeIngest'
+import { runCodeIngest, discoverRepoFiles } from './codeIngest'
+import { initCodeGraph, buildCodeGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats } from './codeGraph'
 import { startIndexer, stopIndexer } from './memoryIndexer'
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
@@ -1188,9 +1189,28 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
     const stats = await runCodeIngest({ hasHash: memoryHasHash, write: memoryWrite, prunePath: memoryPruneCodePath }, { repoRoot: opts.repoRoot })
-    return ok(stats)
+    // Also (re)build the native STRUCTURAL code graph over the same repo — best-effort, so a
+    // graph hiccup never fails the semantic ingest that already succeeded.
+    let codeGraph
+    try {
+      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') })
+    } catch { /* best effort */ }
+    return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
 })
+
+// Native code-graph IPC (for the app UI / on-demand build + structural queries).
+ipcMain.handle('code-graph:build', async (_, opts: { repoRoot: string }) => {
+  try {
+    if (!opts?.repoRoot) return err('repoRoot required')
+    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }))
+  } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('code-graph:stats', async () => { try { return ok(codeGraphStats()) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('code-graph:explore', async (_, opts: { query: string }) => { try { return ok(codeExplore(opts?.query || '')) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('code-graph:search', async (_, opts: { query?: string; limit?: number }) => { try { return ok(codeSymbols(opts?.query, opts?.limit ?? 50)) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('code-graph:callers', async (_, opts: { name: string }) => { try { return ok(codeCallers(opts?.name || '')) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try { return ok(codeImpact(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's
@@ -1887,6 +1907,13 @@ if (!gotTheLock) {
           b: { source: c.b.source, content: c.b.content },
         }))
       },
+      // Native code graph — structural "what/where" over the repo (complements the semantic
+      // "roughly where is X" of memory_search). Read-only queries over the pre-indexed graph.
+      codeExplore: (opts) => codeExplore(opts.query),
+      codeCallers: (opts) => codeCallers(opts.name),
+      codeCallees: (opts) => codeCallees(opts.name),
+      codeImpact: (opts) => codeImpact(opts.name),
+      codeSearch: (opts) => codeSymbols(opts.query, opts.limit ?? 50),
     }
 
     initAuditLog(app.getPath('userData'))
@@ -1897,6 +1924,7 @@ if (!gotTheLock) {
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
     initSwarmMemory(app.getPath('userData'))
+    initCodeGraph(app.getPath('userData')) // native code graph: load any persisted structural graph
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
