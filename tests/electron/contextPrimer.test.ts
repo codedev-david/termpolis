@@ -32,6 +32,13 @@ describe('buildContextPrimer', () => {
     expect(out).toContain('before re-deriving')
   })
 
+  it('points the agent at the code_* tools for structural (who-calls / blast-radius) questions', async () => {
+    const out = await buildContextPrimer(vi.fn().mockResolvedValue(hits), { query: 'auth' })
+    expect(out).toContain('code_explore')
+    expect(out).toContain('blast radius')
+    expect(out).toContain('over grepping')
+  })
+
   it('returns null for an empty query', async () => {
     const search = vi.fn()
     expect(await buildContextPrimer(search, { query: '   ' })).toBeNull()
