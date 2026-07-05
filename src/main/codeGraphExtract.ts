@@ -18,6 +18,10 @@ export type SymbolKind =
   | 'enum'
   | 'struct'
   | 'trait'
+  | 'module'
+  | 'resource'
+  | 'variable'
+  | 'method'
 
 export interface CodeSymbol {
   name: string
@@ -57,6 +61,10 @@ const JS_TS: LangRules = {
     { kind: 'type', re: /^[ \t]*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*[=<]/gm },
     { kind: 'enum', re: /^[ \t]*(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/gm },
     { kind: 'const', re: /^[ \t]*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/gm },
+    // Class/object methods: an INDENTED `name(params) {` (optionally typed) that is not a
+    // control-flow keyword — so `render() {}` / `async load(): Promise<void> {` are captured but
+    // `if (x) {` / `for (…) {` are not. Indent requirement keeps top-level functions out.
+    { kind: 'method', re: /^[ \t]+(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)\s+)*(?!(?:if|for|while|switch|catch|return|do|else|await|yield|typeof|delete|new|function|constructor|super|in|of|case|throw|try|with)\b)([A-Za-z_$][\w$]*)\s*(?:<[^>{}]{0,80}>)?\([^{}]*\)\s*(?::\s*[^={;]{1,120})?\{/gm },
   ],
   imports: [
     /import\s+(?:[^'"]*\s+from\s+)?['"]([^'"]+)['"]/g,
@@ -98,6 +106,12 @@ const RUST: LangRules = {
   imports: [/\buse\s+([A-Za-z_][\w:]*)/g],
 }
 
+// Java/C# share `[modifiers] ReturnType name(params) {` methods — the return type + name (two
+// identifiers) requirement keeps calls/fields/control-flow out (constructors, which have no
+// return type, are intentionally not captured).
+const CURLY_METHOD =
+  /^[ \t]+(?:(?:public|private|protected|internal|static|final|abstract|virtual|override|async|sealed|unsafe|extern|new|partial|synchronized|default)\s+)*(?:[A-Za-z_][\w.<>[\],?]*)\s+([A-Za-z_]\w*)\s*\([^{}]*\)\s*(?:where\s[^{]+)?\{/gm
+
 const JAVA: LangRules = {
   lang: 'java',
   block: 'brace',
@@ -105,8 +119,84 @@ const JAVA: LangRules = {
     { kind: 'class', re: /^[ \t]*(?:public|private|protected|final|abstract|static|\s)*class\s+([A-Za-z_]\w*)/gm },
     { kind: 'interface', re: /^[ \t]*(?:public|private|protected|\s)*interface\s+([A-Za-z_]\w*)/gm },
     { kind: 'enum', re: /^[ \t]*(?:public|private|protected|\s)*enum\s+([A-Za-z_]\w*)/gm },
+    { kind: 'method', re: CURLY_METHOD },
   ],
   imports: [/^[ \t]*import\s+(?:static\s+)?([\w.]+)/gm],
+}
+
+// C# (.NET). Braces + typed signatures, so the paren-aware block detection applies.
+const CSHARP: LangRules = {
+  lang: 'csharp',
+  block: 'brace',
+  defs: [
+    { kind: 'class', re: /^[ \t]*(?:public|private|protected|internal|abstract|sealed|static|partial|\s)*class\s+([A-Za-z_]\w*)/gm },
+    { kind: 'class', re: /^[ \t]*(?:public|private|protected|internal|sealed|\s)*record\s+(?:class\s+|struct\s+)?([A-Za-z_]\w*)/gm },
+    { kind: 'interface', re: /^[ \t]*(?:public|private|protected|internal|partial|\s)*interface\s+([A-Za-z_]\w*)/gm },
+    { kind: 'struct', re: /^[ \t]*(?:public|private|protected|internal|readonly|ref|\s)*struct\s+([A-Za-z_]\w*)/gm },
+    { kind: 'enum', re: /^[ \t]*(?:public|private|protected|internal|\s)*enum\s+([A-Za-z_]\w*)/gm },
+    { kind: 'method', re: CURLY_METHOD },
+  ],
+  imports: [/^[ \t]*(?:global\s+)?using\s+(?:static\s+)?([A-Za-z_][\w.]*)\s*;/gm],
+}
+
+// Swift — `func` covers BOTH free functions and methods (like Python/Ruby/Go/Rust), so it's
+// deep without a separate method rule. Protocols map to interfaces.
+const SWIFT: LangRules = {
+  lang: 'swift',
+  block: 'brace',
+  defs: [
+    { kind: 'function', re: /^[ \t]*(?:@[\w()]+\s+)*(?:public|private|internal|fileprivate|open|static|final|override|class|mutating|nonmutating|\s)*func\s+([A-Za-z_]\w*)/gm },
+    { kind: 'class', re: /^[ \t]*(?:public|private|internal|fileprivate|open|final|\s)*class\s+(?!func\b)([A-Za-z_]\w*)/gm },
+    { kind: 'struct', re: /^[ \t]*(?:public|private|internal|fileprivate|\s)*struct\s+([A-Za-z_]\w*)/gm },
+    { kind: 'enum', re: /^[ \t]*(?:public|private|internal|indirect|\s)*enum\s+([A-Za-z_]\w*)/gm },
+    { kind: 'interface', re: /^[ \t]*(?:public|private|internal|\s)*protocol\s+([A-Za-z_]\w*)/gm },
+  ],
+  imports: [/^[ \t]*import\s+([A-Za-z_]\w*)/gm],
+}
+
+// Bicep (Azure IaC). Brace blocks (`= { … }`). Like Terraform, dependencies are symbolic
+// dot-paths, not calls — SURFACE level: symbol discovery (resource/param/var/output/module).
+const BICEP: LangRules = {
+  lang: 'bicep',
+  block: 'brace',
+  defs: [
+    { kind: 'resource', re: /^[ \t]*resource\s+([A-Za-z_]\w*)\s+'/gm },
+    { kind: 'module', re: /^[ \t]*module\s+([A-Za-z_]\w*)\s+'/gm },
+    { kind: 'variable', re: /^[ \t]*param\s+([A-Za-z_]\w*)/gm },
+    { kind: 'variable', re: /^[ \t]*var\s+([A-Za-z_]\w*)\s*=/gm },
+    { kind: 'variable', re: /^[ \t]*output\s+([A-Za-z_]\w*)/gm },
+    { kind: 'type', re: /^[ \t]*type\s+([A-Za-z_]\w*)\s*=/gm },
+  ],
+  imports: [],
+}
+
+// Ruby. Keyword-delimited (def/class/module … end); Ruby is conventionally indented and `end`
+// sits at the opener's indent, so the indent block heuristic captures the body well enough.
+const RUBY: LangRules = {
+  lang: 'ruby',
+  block: 'indent',
+  defs: [
+    { kind: 'function', re: /^[ \t]*def\s+(?:self\.)?([A-Za-z_]\w*[?!=]?)/gm },
+    { kind: 'class', re: /^[ \t]*class\s+([A-Za-z_]\w*)/gm },
+    { kind: 'module', re: /^[ \t]*module\s+([A-Za-z_]\w*)/gm },
+  ],
+  imports: [/^[ \t]*require(?:_relative)?\s+['"]([^'"]+)['"]/gm],
+}
+
+// Terraform / OpenTofu (HCL). Brace blocks. NOTE: HCL dependencies are dot-paths
+// (aws_instance.web.id), not `name()` calls, so the reference/edge model is thin here — the
+// value is symbol discovery (resources/variables/outputs/modules) via search + explore.
+const TERRAFORM: LangRules = {
+  lang: 'terraform',
+  block: 'brace',
+  defs: [
+    { kind: 'resource', re: /^[ \t]*resource\s+"[^"]+"\s+"([^"]+)"/gm },
+    { kind: 'resource', re: /^[ \t]*data\s+"[^"]+"\s+"([^"]+)"/gm },
+    { kind: 'variable', re: /^[ \t]*variable\s+"([^"]+)"/gm },
+    { kind: 'variable', re: /^[ \t]*output\s+"([^"]+)"/gm },
+    { kind: 'module', re: /^[ \t]*module\s+"([^"]+)"/gm },
+  ],
+  imports: [],
 }
 
 const BY_EXT: Array<{ ext: RegExp; rules: LangRules }> = [
@@ -115,6 +205,11 @@ const BY_EXT: Array<{ ext: RegExp; rules: LangRules }> = [
   { ext: /\.go$/i, rules: GO },
   { ext: /\.rs$/i, rules: RUST },
   { ext: /\.java$/i, rules: JAVA },
+  { ext: /\.(cs|csx)$/i, rules: CSHARP },
+  { ext: /\.rb$/i, rules: RUBY },
+  { ext: /\.tf$/i, rules: TERRAFORM },
+  { ext: /\.swift$/i, rules: SWIFT },
+  { ext: /\.bicep$/i, rules: BICEP },
 ]
 
 function rulesForFile(file: string): LangRules | null {
@@ -133,6 +228,10 @@ const CALL_KEYWORDS = new Set([
   'with', 'yield', 'super', 'constructor', 'throw', 'case', 'instanceof', 'async', 'import', 'export', 'print',
   'range', 'def', 'class', 'fn', 'func', 'match', 'use', 'type', 'interface', 'enum', 'struct', 'trait', 'and', 'or',
   'not', 'in', 'is', 'elif', 'else', 'try', 'except', 'finally', 'assert', 'lambda', 'require',
+  // C#/Java/Swift/Ruby/HCL keywords + common non-call builtins that appear as `name(`
+  'using', 'namespace', 'lock', 'fixed', 'unless', 'until', 'when', 'begin', 'rescue', 'ensure', 'yield', 'raise',
+  'puts', 'guard', 'defer', 'repeat', 'where', 'var', 'let', 'val', 'foreach', 'select', 'from', 'resource', 'variable',
+  'output', 'module', 'data', 'provider', 'param', 'protocol', 'extension', 'init', 'deinit', 'subscript', 'get', 'set',
 ])
 
 function lineOfIndex(content: string, index: number): number {

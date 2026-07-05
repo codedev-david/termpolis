@@ -122,6 +122,14 @@ describe('codeGraph store', () => {
     expect(stats).toEqual({ files: 0, symbols: 0, edges: 0 })
   })
 
+  it('does NOT create call edges to interfaces/types (name-resolution noise fix)', () => {
+    indexFileContent('a.ts', 'export interface Foo { x: number }\nexport function bar() { return 1 }\nexport function caller() { bar(); Foo() }')
+    rebuildEdges()
+    const callees = codeCallees('caller').map((s) => s.name)
+    expect(callees).toContain('bar') // real function call → edge
+    expect(callees).not.toContain('Foo') // interface referenced like a call → filtered out
+  })
+
   it('handles unknown-name queries and edge limits gracefully', async () => {
     indexFileContent(A, aSrc)
     rebuildEdges()

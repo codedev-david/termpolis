@@ -150,4 +150,73 @@ describe('codeGraphExtract', () => {
       expect(g.endLine).toBe(6) // param-type `{}` on a continuation line no longer ends the block
     })
   })
+
+  describe('class methods (limitation fix)', () => {
+    it('extracts TS/JS class methods, not just top-level symbols', () => {
+      const src = 'export class Svc {\n  async load(): Promise<void> { fetchIt() }\n  private compute(x: number) { return x }\n  get size() { return 1 }\n}'
+      const ex = extractFile('svc.ts', src)!
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['Svc', 'load', 'compute', 'size']))
+      expect(byName(ex.symbols, 'load')!.kind).toBe('method')
+    })
+    it('does NOT capture control-flow blocks as methods', () => {
+      const ex = extractFile('a.ts', 'function f() {\n  if (x) { go() }\n  for (const y of z) { hop() }\n  while (a) { spin() }\n}')!
+      const n = names(ex.symbols)
+      expect(n).toContain('f')
+      expect(n).not.toContain('if')
+      expect(n).not.toContain('for')
+      expect(n).not.toContain('while')
+    })
+  })
+
+  describe('deep languages — C# / Ruby / Swift (symbols + methods + refs)', () => {
+    it('C# — types, methods, using, references', () => {
+      const src = 'using System.Threading.Tasks;\npublic class Service {\n  public async Task<int> GetAsync(int id) { return Fetch(id); }\n  private int Fetch(int id) { return id; }\n}\npublic interface IRepo {}\npublic record Person(string Name);\nenum Color { Red }'
+      const ex = extractFile('Service.cs', src)!
+      expect(languageForFile('Service.cs')).toBe('csharp')
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['Service', 'GetAsync', 'Fetch', 'IRepo', 'Person', 'Color']))
+      expect(byName(ex.symbols, 'GetAsync')!.kind).toBe('method')
+      expect(byName(ex.symbols, 'IRepo')!.kind).toBe('interface')
+      expect(ex.imports).toContain('System.Threading.Tasks')
+      expect(ex.references).toContain('Fetch')
+    })
+    it('Ruby — def/class/module, require, references, indent blocks', () => {
+      const src = "require 'json'\nclass Parser\n  def parse(input)\n    validate(input)\n  end\n  def valid?\n    true\n  end\nend\nmodule Util\nend"
+      const ex = extractFile('parser.rb', src)!
+      expect(languageForFile('parser.rb')).toBe('ruby')
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['Parser', 'parse', 'valid?', 'Util']))
+      expect(byName(ex.symbols, 'Util')!.kind).toBe('module')
+      expect(byName(ex.symbols, 'parse')!.kind).toBe('function')
+      expect(ex.imports).toContain('json')
+      expect(ex.references).toContain('validate')
+    })
+    it('Swift — func (incl. methods), class/struct/enum/protocol, import, references', () => {
+      const src = 'import Foundation\nclass Downloader {\n  func start() { fetch() }\n  private func fetch() {}\n}\nstruct Point {}\nenum State { case idle }\nprotocol Drawable {}'
+      const ex = extractFile('dl.swift', src)!
+      expect(languageForFile('dl.swift')).toBe('swift')
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['Downloader', 'start', 'fetch', 'Point', 'State', 'Drawable']))
+      expect(byName(ex.symbols, 'Drawable')!.kind).toBe('interface') // protocol → interface
+      expect(byName(ex.symbols, 'start')!.kind).toBe('function') // func covers methods
+      expect(ex.imports).toContain('Foundation')
+      expect(ex.references).toContain('fetch')
+    })
+  })
+
+  describe('surface IaC — Terraform / Bicep (symbol discovery)', () => {
+    it('Terraform — resource/variable/output/module symbols', () => {
+      const src = 'variable "region" {\n  default = "us-east-1"\n}\nresource "aws_instance" "web" {\n  ami = var.ami\n}\noutput "ip" {\n  value = aws_instance.web.private_ip\n}\nmodule "vpc" {\n  source = "./vpc"\n}'
+      const ex = extractFile('main.tf', src)!
+      expect(languageForFile('main.tf')).toBe('terraform')
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['region', 'web', 'ip', 'vpc']))
+      expect(byName(ex.symbols, 'web')!.kind).toBe('resource')
+      expect(byName(ex.symbols, 'vpc')!.kind).toBe('module')
+    })
+    it('Bicep — resource/param/var/output/module symbols', () => {
+      const src = "param location string = 'eastus'\nvar appName = 'app'\nresource site 'Microsoft.Web/sites@2021-01-01' = {\n  name: appName\n}\noutput endpoint string = site.properties.defaultHostName\nmodule vpc './vpc.bicep' = {\n  name: 'vpc'\n}"
+      const ex = extractFile('main.bicep', src)!
+      expect(languageForFile('main.bicep')).toBe('bicep')
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['location', 'appName', 'site', 'endpoint', 'vpc']))
+      expect(byName(ex.symbols, 'site')!.kind).toBe('resource')
+      expect(byName(ex.symbols, 'vpc')!.kind).toBe('module')
+    })
+  })
 })
