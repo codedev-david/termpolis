@@ -139,7 +139,7 @@ export function CodeGraphPanel({ cwd }: Props): JSX.Element {
           onClick={() => void search()}
           disabled={busy}
         >
-          Search
+          Find
         </button>
       </div>
 
