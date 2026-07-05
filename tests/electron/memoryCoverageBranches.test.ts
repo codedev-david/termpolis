@@ -24,9 +24,13 @@ import {
   _setEmbedFnForTests,
   _setPrfForTests,
   _vectorStoreSizeForTests,
+  memoryLink,
+  memoryPruneCodePath,
+  consolidationCandidates,
 } from '../../src/main/swarmMemory'
 import { buildContextPrimer, type PrimerHit } from '../../src/main/contextPrimer'
 import { embedBatch, setWorkerSpawner, _setBackendForTests, _resetEmbedderForTests } from '../../src/main/localEmbedder'
+import { graphStats } from '../../src/main/memoryGraph'
 
 let userDir: string
 let syncDir: string
@@ -176,6 +180,48 @@ describe('localEmbedder fallback branches', () => {
 
   it('returns [] for an empty batch', async () => {
     expect(await embedBatch([])).toEqual([])
+  })
+})
+
+describe('Wave2 graph/prune/consolidation branches', () => {
+  it('deleting the SOURCE of an edge prunes it (forward list)', async () => {
+    initSwarmMemory(userDir)
+    _setEmbeddingsAvailable(false)
+    const a = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'source A' })
+    const b = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'dest B' })
+    memoryLink({ from: a.id, to: b.id, relation: 'relates-to' })
+    memoryDelete(a.id)
+    expect(graphStats().edges).toBe(0)
+  })
+
+  it('deleting a node with edges in BOTH directions prunes all of them', async () => {
+    initSwarmMemory(userDir)
+    _setEmbeddingsAvailable(false)
+    const a = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'node A' })
+    const b = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'node B' })
+    const c = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'node C' })
+    memoryLink({ from: a.id, to: b.id, relation: 'relates-to' }) // b is a target
+    memoryLink({ from: b.id, to: c.id, relation: 'relates-to' }) // b is a source
+    expect(graphStats().edges).toBe(2)
+    memoryDelete(b.id)
+    expect(graphStats().edges).toBe(0)
+  })
+
+  it('memoryPruneCodePath returns 0 for an unknown/empty path', () => {
+    initSwarmMemory(userDir)
+    expect(memoryPruneCodePath('/repo/nonexistent.ts')).toBe(0)
+    expect(memoryPruneCodePath('')).toBe(0)
+  })
+
+  it('a meaningful link protects a memory even alongside a follows edge', async () => {
+    initSwarmMemory(userDir)
+    _setEmbeddingsAvailable(false)
+    const a = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'protected A' })
+    const b = await memoryWrite({ agentId: 'x', kind: 'message', content: 'backbone B' })
+    const c = await memoryWrite({ agentId: 'x', kind: 'decision', content: 'meaningful C' })
+    memoryLink({ from: a.id, to: b.id, relation: 'follows' }) // backbone → does NOT protect
+    memoryLink({ from: a.id, to: c.id, relation: 'solves' })  // meaningful → protects
+    expect(consolidationCandidates(500).find((x) => x.id === a.id)?.hasEdges).toBe(true)
   })
 })
 
