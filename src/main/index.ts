@@ -126,6 +126,7 @@ import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { initCodeGraph, buildCodeGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats } from './codeGraph'
+import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
@@ -1206,6 +1207,7 @@ ipcMain.handle('code-graph:build', async (_, opts: { repoRoot: string }) => {
     return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }))
   } catch (e: any) { return err(e.message) }
 })
+ipcMain.handle('memory:anomalies', async (_, opts?: { limit?: number }) => { try { return ok({ anomalies: getAnomalies(opts?.limit ?? 100), total: anomalyCount() }) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:stats', async () => { try { return ok(codeGraphStats()) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:explore', async (_, opts: { query: string }) => { try { return ok(codeExplore(opts?.query || '')) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:search', async (_, opts: { query?: string; limit?: number }) => { try { return ok(codeSymbols(opts?.query, opts?.limit ?? 50)) } catch (e: any) { return err(e.message) } })
@@ -1923,6 +1925,7 @@ if (!gotTheLock) {
     // Back the memory sync-key cache with the OS keychain (safeStorage: DPAPI /
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
+    initAnomalyLog(app.getPath('userData')) // burn-in: capture surprising memory events (incl. this init's)
     initSwarmMemory(app.getPath('userData'))
     initCodeGraph(app.getPath('userData')) // native code graph: load any persisted structural graph
     // Warm the embedder OFF the main thread ~20s after startup so the dashboard's status reflects

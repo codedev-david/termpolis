@@ -3,6 +3,7 @@ import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
+import { recordAnomaly } from './memoryAnomalyLog'
 import { embedText, EMBED_DIM, isEmbedderReady } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
@@ -419,6 +420,7 @@ function reloadFrom(paths: string[]): void {
     const toEmit = [...tombstones].filter(id => !ownTombstoned.has(id))
     if (toEmit.length > 0) appendShardLine(JSON.stringify({ clearedIds: toEmit }), 'replicate-tombstones')
   }
+  if (corruptLinesSkipped > 0) recordAnomaly('corrupt-lines', `${corruptLinesSkipped} unparseable shard line(s) skipped on reload`)
   bumpSearchGen() // Wave2: a reload can add/drop entries (peer sync) — don't serve stale cached results
 }
 
@@ -474,6 +476,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
     // still persist, and flag it so the UI can warn; sync re-attaches on a later init.
     recordSwarmError('swarmMemory.init.failed', err, { memPath })
     initDegraded = true
+    recordAnomaly('degraded-init', 'memory init failed — degraded to the local fallback store')
     try {
       memPath = legacyPath
       if (memPath) {
