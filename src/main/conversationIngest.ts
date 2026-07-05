@@ -104,9 +104,11 @@ export function parseClaudeTranscript(content: string): IngestTurn[] {
     if (obj.type === 'user') {
       const m = message as { role?: string; content?: unknown }
       if (m.role !== 'user' && m.role !== undefined) continue
-      // Real human turns are plain strings; an array is tool_result output — skip.
-      if (typeof m.content !== 'string') continue
-      const text = m.content.trim()
+      // Wave2 (claude-array-content): a user turn can be an ARRAY (image/attachment + text
+      // blocks), not just a plain string. Extract the text blocks (joinTextBlocks ignores
+      // tool_result/thinking) instead of dropping the whole turn — a pure tool_result array
+      // yields no text and is still skipped.
+      const text = typeof m.content === 'string' ? m.content.trim() : joinTextBlocks(m.content)
       if (!text || isCommandNoise(text)) continue
       turns.push({ role: 'user', text, ts, source: 'claude', sessionId, cwd })
     } else if (obj.type === 'assistant') {
@@ -494,8 +496,10 @@ export interface IngestMemory {
   patchProjects?: (patches: Array<{ hash: string; project: string }>) => void
   /** BB6: optionally link each newly-written chunk to the previous one in the same
    *  session with a 'follows' edge — a per-session temporal backbone for the
-   *  otherwise edge-less message chunks. Wired to memoryLink in the app. */
-  link?: (from: string, to: string, relation: string, weight: number) => void
+   *  otherwise edge-less message chunks. Wired to memoryLink in the app.
+   *  Wave2 (ingest-follows-edges-ts-now): `ts` carries the conversation time so a
+   *  backbone edge over an ancient transcript isn't stamped Date.now() and mis-ranked as fresh. */
+  link?: (from: string, to: string, relation: string, weight: number, ts?: number) => void
 }
 
 // Compose real ingestion: discover on disk + dedup/write via the memory store.
@@ -535,7 +539,7 @@ export async function runConversationIngest(
       const sid = chunk.sessionId
       if (curId && sid) {
         const prevId = lastIdBySession.get(sid)
-        if (prevId && memory.link) memory.link(prevId, curId, 'follows', 1)
+        if (prevId && memory.link) memory.link(prevId, curId, 'follows', 1, chunk.endTs ?? chunk.startTs) // Wave2: conversation-time backbone edge
         lastIdBySession.set(sid, curId)
       }
     },

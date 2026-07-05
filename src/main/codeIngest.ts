@@ -90,6 +90,9 @@ export interface CodeIngestDeps {
   readFile: (filePath: string) => Promise<string>
   hasHash: (hash: string) => boolean
   write: (chunk: CodeChunk) => Promise<void>
+  /** Wave2 (codeIngest-stale-chunks): remove a file's previously-indexed chunks before
+   *  re-writing, so an edited file replaces its chunks instead of accumulating stale ones. */
+  prunePath?: (filePath: string) => Promise<void> | void
   chunkOptions?: CodeChunkOptions
   /** Awaited between embeds so a bulk pass can't freeze the UI. Default: a setImmediate macrotask. */
   yield?: () => Promise<void>
@@ -123,7 +126,13 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
       continue
     }
     stats.filesScanned++
-    for (const chunk of chunkCode(filePath, content, deps.chunkOptions)) {
+    const fileChunks = chunkCode(filePath, content, deps.chunkOptions)
+    // Wave2 (codeIngest-stale-chunks): if ANY chunk is new, the file changed (edits shift line
+    // numbers → hashes) → prune its stale chunks before re-writing; else it's unchanged, skip.
+    const changed = fileChunks.some((c) => !deps.hasHash(c.hash))
+    if (!changed) { stats.chunksSkipped += fileChunks.length; continue }
+    if (deps.prunePath) { try { await deps.prunePath(filePath) } catch { /* best effort */ } }
+    for (const chunk of fileChunks) {
       if (deps.hasHash(chunk.hash)) {
         stats.chunksSkipped++
         continue
@@ -168,6 +177,8 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
 export interface CodeIngestMemory {
   hasHash: (hash: string) => boolean
   write: (input: { agentId: string; kind: 'note'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
+  /** Wave2: prune a file's stale code chunks before re-indexing it. */
+  prunePath?: (filePath: string) => void
 }
 
 export async function runCodeIngest(
@@ -180,6 +191,7 @@ export async function runCodeIngest(
     listFiles: () => discoverRepoFiles(opts.repoRoot),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
+    prunePath: memory.prunePath,
     write: async (chunk) => {
       await memory.write({ agentId: 'code-index', kind: 'note', content: chunk.text, source: 'code', hash: chunk.hash, project: opts.repoRoot })
     },

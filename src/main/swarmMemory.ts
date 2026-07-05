@@ -1513,7 +1513,7 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
 }
 
 // Record a typed connection between two memories (agent-facing memory_link).
-export function memoryLink(input: { from: string; to: string; relation?: string; weight?: number; createdBy?: string }): MemoryEdge | null {
+export function memoryLink(input: { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number }): MemoryEdge | null {
   const edge = addMemoryEdge(input)
   // BB7: an explicit edge changes graph-fused results — invalidate the search cache
   // so the new connection is reflected (auto-link writes already bump via memoryWrite).
@@ -1744,12 +1744,39 @@ export function memoryDelete(id: string): void {
     seenHashes.delete(removedHash)
   }
   bumpSearchGen() // deleted entries must not linger in cached search results
-  // Wave2 (hnsw-stale-after-delete): delete removed a packed row but left the HNSW graph
-  // referencing it; mark stale + drop the persisted graph so it can't reload against the
-  // renumbered store and silently mis-rank recall (memoryForget/compact already do this).
+  hnswStaleAfterDelete()
+  persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
+}
+
+/** Wave2 (codeIngest-stale-chunks): remove all stored code chunks for a file path so a
+ *  re-index of an EDITED file REPLACES its chunks instead of accumulating stale copies with
+ *  wrong line numbers / deleted code (code chunks are kind:'note', so the sleep pass never
+ *  reclaims them). Tombstones by id (propagates + survives reload) but NOT by content hash,
+ *  so unchanged regions can be re-written on the same pass. Returns how many were pruned. */
+export function memoryPruneCodePath(filePath: string): number {
+  if (!filePath || typeof filePath !== 'string') return 0
+  const prefix = `${filePath}:`
+  const victims = entries.filter(e => e.source === 'code' && typeof e.content === 'string' && e.content.startsWith(prefix))
+  for (const v of victims) {
+    const idx = entries.indexOf(v)
+    if (idx !== -1) entries.splice(idx, 1)
+    if (v.hash) seenHashes.delete(v.hash) // NOT tombstonedHashes — the new chunk for an unchanged region may reuse the hash
+    const r = entryRow.get(v); if (r !== undefined) rowToEntry.delete(r)
+    lexicalIndex.remove(v.id)
+    removeNodeEdges(v.id)
+    tombstones.add(v.id)
+    appendShardLine(JSON.stringify({ deleted: v.id }), 'prune-code')
+  }
+  if (victims.length > 0) { hnswStaleAfterDelete(); bumpSearchGen(); persistDeletesFloor() }
+  return victims.length
+}
+
+// Shared with memoryDelete/prune: a removal leaves an orphan packed row + a graph the HNSW
+// index no longer matches — mark stale + drop the persisted graph so it can't reload against
+// the renumbered store and silently mis-rank recall.
+function hnswStaleAfterDelete(): void {
   hnswStale = true
   try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
-  persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
 }
 
 /**

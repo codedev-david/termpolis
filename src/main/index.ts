@@ -117,7 +117,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
-  memoryPatchProjects, normalizeProjectSlug, memoryLessons,
+  memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -1176,7 +1176,7 @@ ipcMain.handle('memory:graph-sample', (_e, opts: { limit?: number } = {}) => {
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
-    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) })
+    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts }) })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -1187,7 +1187,7 @@ ipcMain.handle('memory:ingest-conversations', async () => {
 ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
-    const stats = await runCodeIngest({ hasHash: memoryHasHash, write: memoryWrite }, { repoRoot: opts.repoRoot })
+    const stats = await runCodeIngest({ hasHash: memoryHasHash, write: memoryWrite, prunePath: memoryPruneCodePath }, { repoRoot: opts.repoRoot })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -1907,7 +1907,7 @@ if (!gotTheLock) {
         // when cross-machine sync is off).
         try { reloadMemoryFromSync() } catch { /* best effort */ }
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) }, // F30: backfill legacy project tags each pass (now persisted)
+          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts }) }, // F30: backfill legacy project tags each pass (now persisted)
           { maxChunks: 250 },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
@@ -1940,7 +1940,7 @@ if (!gotTheLock) {
       fastIntervalMs: 90_000,
       fastRun: async () => {
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight) => memoryLink({ from, to, relation, weight }) }, // F30: backfill legacy project tags each pass (now persisted)
+          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts }) }, // F30: backfill legacy project tags each pass (now persisted)
           // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
           // growing trailing partial doesn't deposit a superset duplicate every 90s.
           { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true } },
