@@ -216,6 +216,12 @@ async function loadDefaultBackend(): Promise<EmbedBackend | null> {
       return meanPoolNormalize(hidden.data as Float32Array, enc.attentionMask, B, S, H)
     }
     backend = fn
+    // F29: verify the model's real output dimension matches EMBED_DIM before trusting it.
+    // A wrong bundled model (e.g. bge-base at 768) would otherwise be accepted, fail the
+    // packed-store's ===EMBED_DIM check, and silently collapse recall onto the slow path.
+    // Treat a mismatch as a hard load failure (keyword-only) rather than a corrupt index.
+    const probe = await fn(['dimension contract check'])
+    if (!probe[0] || probe[0].length !== EMBED_DIM) { backend = null; return markFailed() }
     return fn
   } catch {
     // Load failure degrades to keyword-only search. Once the model is bundled
@@ -279,7 +285,11 @@ async function tryWorkerEmbed(text: string): Promise<{ ok: boolean; vec: number[
       w.embed(text),
       new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('worker timeout')), WORKER_TIMEOUT_MS) }),
     ])
-    return { ok: true, vec }
+    // F9: a worker that RESOLVES null (crash/exit/model-absent — embedWorker's failAll
+    // resolves pending with null) is a MISS, not a success. Report ok:false so embedBatch
+    // falls through to the in-process backend instead of silently returning a null vector
+    // (which swarmMemory would read as "embedder dead" → whole session keyword-only).
+    return { ok: vec !== null, vec }
   } catch {
     try { w.dispose?.() } catch { /* ignore */ }
     workerTransport = null // disable on failure/timeout → fall back to in-process

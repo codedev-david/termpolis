@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
-import { embedText, EMBED_DIM } from './localEmbedder'
+import { embedText, EMBED_DIM, isEmbedderReady } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
@@ -683,7 +683,10 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   const effectiveHash = input.hash || contentHash(content)
   if (seenHashes.has(effectiveHash)) {
     const existing = entries.find(e => e.hash === effectiveHash)
-    if (existing) return existing
+    if (existing) {
+      await backfillVectorIfMissing(existing) // F18: upgrade a vector-less entry now that the embedder is back
+      return existing
+    }
   }
 
   const entry: MemoryEntry = {
@@ -840,6 +843,39 @@ function indexEntryVector(entry: MemoryEntry): void {
   delete entry.embedding
   if (hnsw && !hnswStale) hnsw.add(row)                        // keep the graph fresh incrementally
   else if (vectorStore.size >= hnswThreshold) hnswStale = true // crossed the threshold → (re)build on next search
+}
+
+// F18: an entry stored while the embedder was down carries no packed vector, so it is
+// reachable ONLY by lexical/BM25 overlap — never by semantic similarity — and dedup
+// otherwise blocks it from ever being re-embedded. If the embedder is back and this entry
+// lacks a vector, embed + index it so it becomes first-class semantically recallable.
+async function backfillVectorIfMissing(entry: MemoryEntry): Promise<void> {
+  if (entryRow.has(entry)) return                                                       // already packed
+  if (entry.embedding && entry.embedding.length === EMBED_DIM) { indexEntryVector(entry); bumpSearchGen(); return }
+  if (entry.embedding) return                                                           // non-EMBED_DIM legacy vector — leave it
+  if (embeddingsAvailable === false) return
+  try {
+    const emb = await embed(entry.content, false)
+    if (emb && emb.length === EMBED_DIM) { entry.embedding = emb; indexEntryVector(entry); bumpSearchGen() }
+  } catch { /* best effort — a backfill failure never breaks the write */ }
+}
+
+/** F18: bounded background pass — embed hot-window entries that lack a packed vector once
+ *  the embedder is available (e.g. captured during a model outage). Returns how many were
+ *  backfilled. Safe to call on launch after the embedder is ready. */
+export async function memoryBackfillVectors(max = 200): Promise<number> {
+  if (embeddingsAvailable === false || !isEmbedderReady()) return 0
+  let done = 0
+  for (const e of entries) {
+    if (done >= max) break
+    if (entryRow.has(e) || e.embedding) continue
+    try {
+      const emb = await embed(e.content, false)
+      if (emb && emb.length === EMBED_DIM) { e.embedding = emb; indexEntryVector(e); done++ }
+    } catch { /* best effort */ }
+  }
+  if (done > 0) bumpSearchGen()
+  return done
 }
 
 // Rebuild the packed store from the current hot window (after reload/trim/clear).
@@ -1776,17 +1812,30 @@ async function embed(text: string, isQuery: boolean): Promise<number[] | null> {
       return null
     }
   }
-  if (embeddingsAvailable === false) return null  // forced off / known-dead
+  if (embeddingsAvailable === false) return null  // forced off (tests) / known-dead model
   try {
     const emb = await embedText(text, { isQuery })
-    if (!emb || emb.length > MAX_EMBEDDING_DIM) {
-      embeddingsAvailable = false
+    // F29: the REAL model must output EXACTLY EMBED_DIM — a wrong bundled model (e.g. 768)
+    // would otherwise pass a loose <=1024 gate, fail the packed store's ===EMBED_DIM check,
+    // and silently collapse recall onto the slow/legacy path.
+    if (!emb || emb.length !== EMBED_DIM) {
+      // F8: only latch OFF when the model is genuinely dead (localEmbedder owns the terminal
+      // loadFailed latch → isEmbedderReady()===false). A transient per-call null with a
+      // loaded model must NOT permanently downgrade the whole session to keyword-only.
+      // (embeddingsAvailable is true|null here — the early `=== false` return excluded false.)
+      if (!isEmbedderReady()) {
+        embeddingsAvailable = false
+        recordSwarmError('swarmMemory.embed.unavailable', new Error('embedder not ready or wrong dim'), {})
+      }
       return null
     }
     embeddingsAvailable = true
     return emb
-  } catch {
-    embeddingsAvailable = false
+  } catch (err) {
+    if (!isEmbedderReady()) {
+      embeddingsAvailable = false
+      recordSwarmError('swarmMemory.embed.unavailable', err, {})
+    }
     return null
   }
 }

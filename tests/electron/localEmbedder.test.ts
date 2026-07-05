@@ -30,7 +30,7 @@ afterEach(() => {
 
 // Fake onnxruntime-web: returns an all-ones hidden state so mean-pool +
 // L2-normalize over H dims is deterministic (each component = 1/sqrt(H)).
-function makeFakeOrt(opts: { typeIds?: boolean; throwOnCreate?: boolean; noEnv?: boolean } = {}): unknown {
+function makeFakeOrt(opts: { typeIds?: boolean; throwOnCreate?: boolean; noEnv?: boolean; hidden?: number } = {}): unknown {
   class FakeTensor {
     type: string
     data: unknown
@@ -55,7 +55,7 @@ function makeFakeOrt(opts: { typeIds?: boolean; throwOnCreate?: boolean; noEnv?:
           outputNames: ['last_hidden_state'],
           run: async (feeds: Record<string, { dims: number[] }>) => {
             const [B, S] = feeds.input_ids.dims
-            const H = 4
+            const H = opts.hidden ?? 384 // realistic bge-small dim; override to exercise the dim-contract guard
             return { last_hidden_state: { data: new Float32Array(B * S * H).fill(1), dims: [B, S, H] } }
           },
         }
@@ -197,16 +197,16 @@ describe('localEmbedder real load path (fake ort)', () => {
     _setOrtForTests(makeFakeOrt(), () => dir)
     const out = await embedBatch(['hello', 'hello world']) // different lengths → exercises padding skip
     expect(out).toHaveLength(2)
-    expect(out[0]).toHaveLength(4)
-    // all-ones hidden → mean-pooled + L2-normalized over H=4 → 0.5 each
-    expect(out[0]!.every((x) => Math.abs(x - 0.5) < 1e-6)).toBe(true)
+    expect(out[0]).toHaveLength(384)
+    // all-ones hidden → mean-pooled + L2-normalized over H=384 → 1/sqrt(384) each
+    expect(out[0]!.every((x) => Math.abs(x - 1 / Math.sqrt(384)) < 1e-6)).toBe(true)
     expect(isEmbedderReady()).toBe(true)
   })
 
   it('handles a model with no token_type_ids input', async () => {
     const dir = writeModelFixture()
     _setOrtForTests(makeFakeOrt({ typeIds: false }), () => dir)
-    expect(await embedText('hello world')).toHaveLength(4)
+    expect(await embedText('hello world')).toHaveLength(384)
   })
 
   it('degrades to null when the asset dir is not found', async () => {
@@ -230,7 +230,7 @@ describe('localEmbedder real load path (fake ort)', () => {
   it('tolerates an ort module without env.wasm', async () => {
     const dir = writeModelFixture()
     _setOrtForTests(makeFakeOrt({ noEnv: true }), () => dir)
-    expect(await embedText('hello world')).toHaveLength(4)
+    expect(await embedText('hello world')).toHaveLength(384)
   })
 
   it('resolves the bundled model via process.resourcesPath (packaged path)', async () => {
@@ -253,10 +253,17 @@ describe('localEmbedder real load path (fake ort)', () => {
     try {
       proc.resourcesPath = root
       _setOrtForTests(makeFakeOrt()) // no asset-dir override → real resolveAssetDir runs
-      expect(await embedText('hello')).toHaveLength(4)
+      expect(await embedText('hello')).toHaveLength(384)
     } finally {
       proc.resourcesPath = orig
     }
+  })
+
+  it('rejects a model whose output dim != EMBED_DIM as a hard load failure (F29)', async () => {
+    const dir = writeModelFixture()
+    _setOrtForTests(makeFakeOrt({ hidden: 768 }), () => dir) // wrong bundled model (bge-base)
+    expect(await embedText('hello world')).toBeNull()        // not accepted at a wrong dimension
+    expect(isEmbedderReady()).toBe(false)                    // degrades to keyword-only, not a corrupt index
   })
 })
 
@@ -322,6 +329,15 @@ describe('worker-backed embedding orchestration (BB11)', () => {
     const out = await embedBatch(['abc'])
     expect(out).toEqual([[3, 0, 0]]) // from the worker (len 3), not the in-process backend
     expect(workerEmbed).toHaveBeenCalledWith('abc')
+  })
+
+  it('falls back to the in-process backend when the worker RESOLVES null (crash/exit) (F9)', async () => {
+    // embedWorker's failAll resolves pending with null on worker error/exit — a null result
+    // is a MISS, so we must consult the working in-process backend, not report keyword-only.
+    setWorkerSpawner(() => ({ embed: async () => null }))
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [7, 7, 7]))
+    const out = await embedBatch(['abc'])
+    expect(out).toEqual([[7, 7, 7]]) // came from the in-process backend, not the null worker
   })
 
   it('falls back to the in-process backend when the worker embed fails', async () => {
