@@ -1733,13 +1733,25 @@ export function disableSyncEncryption(): SyncStatus {
 export function setSyncDir(dir: string | null): SyncStatus {
   if (!userDataDir) throw new Error('setSyncDir: memory not initialised')
   const clean = dir && dir.trim() ? path.resolve(dir.trim()) : null
-  // Turning sync OFF: snapshot the current (unioned) memories into the local
-  // store so we don't appear to lose everything synced from peers.
+  // Turning sync OFF: snapshot the current (unioned) memories into the local store so we
+  // don't appear to lose everything synced from peers. F3: ALSO serialize the usage
+  // (reinforcement) deltas so the learning layer survives the round-trip (serializeEntry
+  // emits ONLY entries, so usageMap was silently lost before), plus tombstones for
+  // deletion durability. Write it ATOMICALLY and ABORT the switch on failure so a disk
+  // hiccup never drops the user onto a stale/empty local store. (clearEpoch is carried by
+  // the device-local floor, NOT written here — a clear line after the entries would
+  // wrongly mark these post-clear survivors epoch-vulnerable on the next reload.)
   if (!clean && syncDir && legacyPath) {
+    const lines: string[] = entries.map(serializeEntry)
+    const reinforce = [...usageMap.entries()].filter(([, u]) => u > 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
+    if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
+    for (const id of tombstones) lines.push(JSON.stringify({ deleted: id }))
     try {
-      const snap = entries.map(serializeEntry).join('\n')
-      fs.writeFileSync(legacyPath, snap ? snap + '\n' : '')
-    } catch { /* best effort */ }
+      atomicWriteFile(legacyPath, lines.length ? lines.join('\n') + '\n' : '')
+    } catch (err) {
+      recordSwarmError('swarmMemory.syncOff.snapshot.failed', err, { legacyPath })
+      throw new Error('Could not snapshot memory to the local store — sync left ON to avoid data loss. Retry once the disk is writable.')
+    }
   }
   writeSyncConfig(userDataDir, clean)
   initSwarmMemory(userDataDir, { syncDir: clean })
