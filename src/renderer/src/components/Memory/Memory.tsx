@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { MemorySearchResult, MemorySyncStatus } from '../../types'
+import { CodeGraphPanel } from './CodeGraphPanel'
 
 interface Props {
   onClose: () => void
@@ -263,6 +264,8 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
             <i className="fa-solid fa-code mr-1"></i> Index this repo&apos;s code
           </button>
         </div>
+
+        <CodeGraphPanel cwd={activeCwd} />
 
         <div className="border-t border-[#3c3c3c] pt-2 flex flex-col gap-1" data-testid="memory-sync">
           <div className="text-[#666] text-[10px] uppercase tracking-wider flex items-center gap-1">

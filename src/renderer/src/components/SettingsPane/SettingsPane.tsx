@@ -447,8 +447,11 @@ export function SettingsPane() {
                 Keep the memory brain current with no clicks. Your past AI conversations are always
                 indexed in the background; with this on, the code of each Git repo you open in a
                 terminal is indexed automatically too — once per repo, and content-hash deduped, so
-                unchanged code is never re-embedded. Turn it off to index a repo only when you click
-                &ldquo;Index this repo&rsquo;s code&rdquo; in the Memory panel.
+                unchanged code is never re-embedded. This also builds a structural code graph —
+                symbols and call relationships your AI agents query (via the code_* tools) to answer
+                &ldquo;who calls this&rdquo; or &ldquo;what would this change break&rdquo; without
+                grepping, and which you can browse in the Memory panel. Turn it off to index a repo
+                only when you click &ldquo;Index this repo&rsquo;s code&rdquo; in the Memory panel.
               </span>
             </div>
           </div>

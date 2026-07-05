@@ -128,6 +128,27 @@ export interface PlatformInfo {
   windowsPty: { backend: 'conpty' | 'winpty'; buildNumber: number } | null
 }
 
+export interface CodeGraphStats {
+  files: number
+  symbols: number
+  edges: number
+}
+export interface CodeSymbolHit {
+  id: string
+  name: string
+  kind: string
+  file: string
+  startLine: number
+  endLine: number
+  lang: string
+}
+export interface CodeExploreResult {
+  symbol: CodeSymbolHit
+  source: string
+  callers: CodeSymbolHit[]
+  callees: CodeSymbolHit[]
+}
+
 export interface TermpolisAPI {
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[]) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
@@ -205,6 +226,13 @@ export interface TermpolisAPI {
   memoryGraphSample: (limit?: number) => Promise<IpcResponse<GraphSample>>
   memoryIngestConversations: () => Promise<IpcResponse<{ filesScanned: number; chunksWritten: number; chunksSkipped: number }>>
   memoryIngestCode: (repoRoot: string) => Promise<IpcResponse<{ filesScanned: number; filesSkipped: number; chunksWritten: number; chunksSkipped: number }>>
+  // Native code graph (structural) — powers the in-app Code Graph browser + the code_* MCP tools.
+  codeGraphStats: () => Promise<IpcResponse<CodeGraphStats>>
+  codeGraphSearch: (query: string, limit?: number) => Promise<IpcResponse<CodeSymbolHit[]>>
+  codeGraphExplore: (query: string) => Promise<IpcResponse<CodeExploreResult | null>>
+  codeGraphImpact: (name: string) => Promise<IpcResponse<CodeSymbolHit[]>>
+  codeGraphCallers: (name: string) => Promise<IpcResponse<CodeSymbolHit[]>>
+  codeGraphBuild: (repoRoot: string) => Promise<IpcResponse<CodeGraphStats>>
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */

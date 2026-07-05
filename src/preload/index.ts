@@ -146,6 +146,13 @@ const api: TermpolisAPI = {
   memoryGraphSample: (limit?: number) => ipcRenderer.invoke('memory:graph-sample', { limit }),
   memoryIngestConversations: () => ipcRenderer.invoke('memory:ingest-conversations'),
   memoryIngestCode: (repoRoot: string) => ipcRenderer.invoke('memory:ingest-code', { repoRoot }),
+  // Native code graph (structural)
+  codeGraphStats: () => ipcRenderer.invoke('code-graph:stats'),
+  codeGraphSearch: (query: string, limit?: number) => ipcRenderer.invoke('code-graph:search', { query, limit }),
+  codeGraphExplore: (query: string) => ipcRenderer.invoke('code-graph:explore', { query }),
+  codeGraphImpact: (name: string) => ipcRenderer.invoke('code-graph:impact', { name }),
+  codeGraphCallers: (name: string) => ipcRenderer.invoke('code-graph:callers', { name }),
+  codeGraphBuild: (repoRoot: string) => ipcRenderer.invoke('code-graph:build', { repoRoot }),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => ipcRenderer.invoke('memory:reflect-session', { terminalId, cwd, agent }),
