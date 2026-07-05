@@ -201,7 +201,7 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.status).toBe('ok')
     expect(body.name).toBe('termpolis-mcp')
-    expect(body.tools).toBe(25)
+    expect(body.tools).toBe(26)
   })
 
   it('OPTIONS returns 204 with CORS headers', async () => {
@@ -265,7 +265,7 @@ describe('MCP HTTP server', () => {
 
   // --- JSON-RPC: tools/list ---
 
-  it('tools/list returns 25 tools', async () => {
+  it('tools/list returns 26 tools', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',
       method: 'tools/list',
@@ -273,7 +273,7 @@ describe('MCP HTTP server', () => {
     })
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
-    expect(body.result.tools).toHaveLength(25)
+    expect(body.result.tools).toHaveLength(26)
     const names = body.result.tools.map((t: any) => t.name)
     expect(names).toContain('list_terminals')
     expect(names).toContain('run_command')
@@ -286,6 +286,7 @@ describe('MCP HTTP server', () => {
     expect(names).toContain('memory_link')
     expect(names).toContain('memory_graph')
     expect(names).toContain('memory_feedback')
+    expect(names).toContain('memory_conflicts')
   })
 
   // --- JSON-RPC: tools/call ---

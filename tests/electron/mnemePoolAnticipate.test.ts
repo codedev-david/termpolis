@@ -3,13 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { executeTool, type McpToolHandlers } from '../../src/main/mcpServer'
-import { poolLessons } from '../../src/main/mnemeSociety'
+import { poolLessons, detectConflicts, heuristicContradicts } from '../../src/main/mnemeSociety'
 import { proactiveQuery } from '../../src/main/mnemeRetrieval'
 import {
   initSwarmMemory,
   memoryWrite,
   memorySearch,
   memoryList,
+  memoryLessons,
   _resetForTests,
   _setEmbeddingsAvailable,
 } from '../../src/main/swarmMemory'
@@ -20,12 +21,16 @@ describe('memory_pool + memory_anticipate — MCP dispatch', () => {
   it('routes both tools through their handlers with the right args', async () => {
     const memoryPool = vi.fn().mockReturnValue([{ content: 'x', sources: ['a', 'b'], corroboration: 2, importance: 0.8 }])
     const memoryAnticipate = vi.fn().mockResolvedValue([{ id: 'm1' }])
-    const handlers = { memoryPool, memoryAnticipate } as unknown as McpToolHandlers
+    const memoryConflicts = vi.fn().mockReturnValue([{ a: { source: 'claude', content: 'x' }, b: { source: 'codex', content: 'y' } }])
+    const handlers = { memoryPool, memoryAnticipate, memoryConflicts } as unknown as McpToolHandlers
     const pooled = await executeTool('memory_pool', { limit: 50 }, handlers)
     expect(pooled).toHaveLength(1)
     expect(memoryPool).toHaveBeenCalledWith({ limit: 50 })
     await executeTool('memory_anticipate', { task: 'fix the build', limit: 3 }, handlers)
     expect(memoryAnticipate).toHaveBeenCalledWith({ task: 'fix the build', limit: 3 })
+    const conflicts = await executeTool('memory_conflicts', { limit: 80 }, handlers)
+    expect(conflicts).toHaveLength(1)
+    expect(memoryConflicts).toHaveBeenCalledWith({ limit: 80 })
   })
 })
 
@@ -56,6 +61,17 @@ describe('society pooling + proactive recall over the real store', () => {
     expect(corroborated).toBeDefined()
     expect(corroborated!.sources).toEqual(expect.arrayContaining(['claude', 'codex']))
     expect(corroborated!.importance).toBeGreaterThan(0.7) // boosted for cross-agent agreement
+  })
+
+  it('surfaces a cross-agent contradiction end-to-end (the memory_conflicts handler path)', async () => {
+    await memoryWrite({ agentId: 'claude', source: 'claude', kind: 'decision', content: 'Always run migrations before seeding', memoryType: 'semantic', importance: 0.7 })
+    await memoryWrite({ agentId: 'codex', source: 'codex', kind: 'decision', content: 'Never run migrations before seeding', memoryType: 'semantic', importance: 0.7 })
+    await memoryWrite({ agentId: 'gemini', source: 'gemini', kind: 'decision', content: 'Use structured logging across the API', memoryType: 'semantic', importance: 0.6 })
+    // Exactly what the index.ts memory_conflicts handler does — read-only, no store/graph mutation.
+    const lessons = memoryLessons(200).map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }))
+    const conflicts = detectConflicts(lessons, heuristicContradicts)
+    expect(conflicts).toHaveLength(1)
+    expect([conflicts[0].a.source, conflicts[0].b.source].sort()).toEqual(['claude', 'codex'])
   })
 
   it('anticipates a past solution from a new, differently-worded task', async () => {

@@ -407,6 +407,17 @@ const TOOLS: McpTool[] = [
       required: ['task'],
     },
   },
+  {
+    name: 'memory_conflicts',
+    description: 'Surface CROSS-AGENT CONTRADICTIONS in the shared brain — pairs of lessons that DIFFERENT agents (Claude, Codex, Gemini, Qwen) learned that assert OPPOSITE things about the same subject (e.g. one says "always run migrations before seeding", another "never run migrations before seeding"). Read-only and deliberately conservative (it would rather miss a subtle conflict than report a false one). Use it to spot where the fleet disagrees so you can resolve it — investigate, then record the winner and mark the loser with a `supersedes` memory_link.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max lesson memories to scan for conflicts (default 200)' },
+      },
+      required: [],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -435,6 +446,7 @@ export interface McpToolHandlers {
   memorySelfcheck: (opts: { domain: string }) => any
   memoryPool: (opts: { limit?: number }) => any
   memoryAnticipate: (opts: { task: string; limit?: number }) => Promise<any>
+  memoryConflicts: (opts: { limit?: number }) => any
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -532,6 +544,8 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return handlers.memoryPool({ limit: args.limit })
     case 'memory_anticipate':
       return await handlers.memoryAnticipate({ task: args.task, limit: args.limit })
+    case 'memory_conflicts':
+      return handlers.memoryConflicts({ limit: args.limit })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

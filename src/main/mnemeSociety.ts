@@ -152,3 +152,44 @@ export function detectConflicts(
   }
   return conflicts
 }
+
+// ---- Conservative default contradiction predicate ---------------------------
+// A DELIBERATELY high-precision heuristic: it would rather MISS a real conflict than
+// FLAG a false one — the society layer's job is to "surface conflicts for resolution",
+// and a false conflict is worse than silence (it wastes attention and pollutes any UI).
+// Two lessons contradict only when they are near-identical ABOUT THE SAME SUBJECT except
+// that exactly ONE of them negates it (e.g. "always run migrations before seeding" vs
+// "never run migrations before seeding"). Different subjects, or both-negated-about-
+// different-objects, are intentionally NOT flagged. Pure + deterministic (no clock, no fs).
+const NEG_RE = /\b(not|never|no|avoid|avoids|avoided|don'?t|doesn'?t|cannot|can'?t|without|deprecated|disabled?|removed?|dropped?|stop|stopped|instead of|rather than|no longer)\b/i
+// Stopwords + polarity/directive words excluded from the topical "core" — so "always X"
+// and "never X" reduce to the same core and are compared on X alone.
+const CORE_STOP = new Set([
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'to', 'of', 'in', 'on', 'for', 'and', 'or',
+  'but', 'with', 'that', 'this', 'it', 'its', 'as', 'by', 'at', 'we', 'you', 'our', 'your', 'their', 'they', 'from',
+  'into', 'over', 'under', 'then', 'than', 'so', 'if', 'when', 'while', 'do', 'does', 'did', 'done', 'not', 'no',
+  'never', 'always', 'avoid', 'dont', 'doesnt', 'cant', 'cannot', 'use', 'using', 'used', 'prefer', 'prefers', 'adopt',
+  'enable', 'enabled', 'disable', 'remove', 'removed', 'add', 'keep', 'must', 'should', 'shall', 'instead', 'rather',
+  'without', 'stop', 'stopped', 'drop', 'dropped', 'deprecated', 'longer', 'can', 'will',
+])
+function coreTokens(content: string): Set<string> {
+  const out = new Set<string>()
+  for (const t of (content || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (t.length >= 3 && !CORE_STOP.has(t)) out.add(t)
+  }
+  return out
+}
+
+/** The default injected `contradicts` predicate for detectConflicts — a conservative,
+ *  precision-favouring cross-agent contradiction check. Exported + pure so it's unit-tested
+ *  and the production wiring stays a one-liner. */
+export function heuristicContradicts(a: AgentLesson, b: AgentLesson): boolean {
+  const ca = coreTokens(a.content)
+  const cb = coreTokens(b.content)
+  if (ca.size < 2 || cb.size < 2) return false // too thin to establish a shared subject
+  let inter = 0
+  for (const t of ca) if (cb.has(t)) inter++
+  const union = ca.size + cb.size - inter
+  if (union === 0 || inter / union < 0.7) return false // must be about the SAME subject (minus polarity)
+  return NEG_RE.test(a.content) !== NEG_RE.test(b.content) // …and exactly one negates it
+}

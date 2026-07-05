@@ -3,6 +3,7 @@ import {
   normalizeKey,
   poolLessons,
   detectConflicts,
+  heuristicContradicts,
   type AgentLesson,
 } from '../../src/main/mnemeSociety'
 
@@ -193,6 +194,61 @@ describe('mnemeSociety', () => {
     it('returns [] when no cross-source pair contradicts', () => {
       const lessons = [L('claude', 'a'), L('codex', 'b')]
       expect(detectConflicts(lessons, () => false)).toEqual([])
+    })
+  })
+
+  describe('heuristicContradicts — the conservative default predicate', () => {
+    const A = (source: string, content: string): AgentLesson => ({ source, content })
+
+    it('flags a clear negation of the SAME statement (always vs never)', () => {
+      expect(heuristicContradicts(A('claude', 'Always run migrations before seeding'), A('codex', 'Never run migrations before seeding'))).toBe(true)
+    })
+
+    it('flags an explicit "does not" contradiction about the same subject', () => {
+      // core token overlap must clear 0.7, so keep the non-polarity words identical.
+      expect(heuristicContradicts(A('claude', 'The payment webhook retries on failure'), A('gemini', 'The payment webhook retries on failure? No, it does not retry'))).toBe(true)
+    })
+
+    it('does NOT flag two lessons that AGREE (same statement, no polarity flip)', () => {
+      expect(heuristicContradicts(A('claude', 'Run migrations before seeding the database'), A('codex', 'Run migrations before seeding the database first'))).toBe(false)
+    })
+
+    it('does NOT flag unrelated lessons about different subjects', () => {
+      expect(heuristicContradicts(A('claude', 'Use Postgres for the sync store'), A('codex', 'Never expose the admin gRPC port publicly'))).toBe(false)
+    })
+
+    it('does NOT flag when both sides are negated (ambiguous — conservative miss)', () => {
+      // "use pnpm not npm" vs "use npm not pnpm" genuinely conflict, but both carry a negation;
+      // the predicate deliberately abstains rather than risk a false positive elsewhere.
+      expect(heuristicContradicts(A('claude', 'Prefer pnpm not npm for installs'), A('codex', 'Prefer npm not pnpm for installs'))).toBe(false)
+    })
+
+    it('does NOT flag lessons too thin to establish a shared subject', () => {
+      expect(heuristicContradicts(A('claude', 'never'), A('codex', 'always'))).toBe(false)
+    })
+
+    it('is case- and punctuation-insensitive on the subject', () => {
+      expect(heuristicContradicts(A('claude', 'ALWAYS validate the JWT signature.'), A('codex', 'never validate the jwt signature'))).toBe(true)
+    })
+
+    it('drives detectConflicts end-to-end for a cross-agent contradiction', () => {
+      const lessons = [
+        A('claude', 'Always run migrations before seeding'),
+        A('codex', 'Never run migrations before seeding'),
+        A('gemini', 'Use structured logging for the API'),
+      ]
+      const conflicts = detectConflicts(lessons, heuristicContradicts)
+      expect(conflicts).toHaveLength(1)
+      expect(conflicts[0].a.source).toBe('claude')
+      expect(conflicts[0].b.source).toBe('codex')
+    })
+
+    it('never reports a same-agent self-contradiction (society conflicts are cross-agent)', () => {
+      const lessons = [
+        A('claude', 'Always run migrations before seeding'),
+        A('claude', 'Never run migrations before seeding'),
+      ]
+      expect(detectConflicts(lessons, heuristicContradicts)).toEqual([])
     })
   })
 })
