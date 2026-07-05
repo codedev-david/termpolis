@@ -117,7 +117,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
-  memoryPatchProjects, normalizeProjectSlug,
+  memoryPatchProjects, normalizeProjectSlug, memoryLessons,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -1863,15 +1863,19 @@ if (!gotTheLock) {
       },
       memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),
       memoryPool: (opts) => poolLessons(
-        memoryList({ limit: opts.limit ?? 200 })
-          .filter((m) => m.memoryType === 'semantic' || m.memoryType === 'procedural')
+        // F13: pool over the LESSONS in the full window, not just the newest ~200 rows (which an
+        // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).
+        memoryLessons(opts.limit ?? 200)
           .map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance })),
       ),
       memoryAnticipate: async (opts) => {
         const q = proactiveQuery(opts.task || '')
         if (!q) return []
-        const hits = await memorySearch({ query: q, limit: opts.limit ?? 5 })
-        return hits.filter((h) => h.memoryType === 'procedural' || (h.importance ?? 0) >= 0.6)
+        const limit = opts.limit ?? 5
+        // F12: over-fetch, THEN filter to procedural/high-importance and cap — otherwise a lesson
+        // ranked just below the naive top-`limit` is a false negative and the fleet re-derives it.
+        const hits = await memorySearch({ query: q, limit: limit * 8 })
+        return hits.filter((h) => h.memoryType === 'procedural' || (h.importance ?? 0) >= 0.6).slice(0, limit)
       },
     }
 

@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import * as os from 'os'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
 import { embedText, EMBED_DIM, isEmbedderReady } from './localEmbedder'
@@ -105,6 +106,7 @@ let syncDir: string | null = null     // null = local-only (default); a folder =
 const entries: MemoryEntry[] = []
 const seenHashes = new Set<string>()  // content hashes present — idempotent ingest guard
 const tombstones = new Set<string>()  // deleted entry ids (OR-Set) — propagate across devices via shards
+const tombstonedHashes = new Set<string>() // F22: deleted CONTENT hashes — kills the dedup twin so a deleted memory can't resurface under a different id
 let clearEpoch = 0                    // epoch tombstone: entries with ts <= this are cleared everywhere
 let seq = 0
 let embeddingsAvailable: boolean | null = null  // cached probe result
@@ -132,6 +134,7 @@ let hnsw: HnswIndex | null = null
 let hnswStale = false
 let hnswThreshold = 50_000
 let hnswBuilding = false                       // a background build is in flight
+let buildGen = 0                               // F34: bumped when the store is replaced (reload/rebuild) — an in-flight build aborts if this changed under it
 let hnswBuildDone: Promise<void> = Promise.resolve() // resolves when it finishes (tests await this)
 let hnswYieldMs = 8                            // yield to the event loop every N ms of build work
 
@@ -161,33 +164,56 @@ function deletesFile(): string | null { return userDataDir ? path.join(userDataD
 // ids this device has ever observed, persisted in userData. It (a) refuses an absurd
 // future epoch (F1), (b) keeps a clear/delete in force after the shard that first carried
 // it is lost or lags (F10), and (c) is seeded into every reload instead of resetting to ∅.
-function loadDeletesFloor(): { clearEpoch: number; tombstones: string[] } {
+function loadDeletesFloor(): { clearEpoch: number; tombstones: string[]; tombstonedHashes: string[] } {
   const f = deletesFile()
-  if (!f) return { clearEpoch: 0, tombstones: [] }
+  if (!f) return { clearEpoch: 0, tombstones: [], tombstonedHashes: [] }
   try {
     if (fs.existsSync(f)) {
-      const o = JSON.parse(fs.readFileSync(f, 'utf8')) as { clearEpoch?: unknown; tombstones?: unknown }
+      const o = JSON.parse(fs.readFileSync(f, 'utf8')) as { clearEpoch?: unknown; tombstones?: unknown; tombstonedHashes?: unknown }
       const ce = typeof o.clearEpoch === 'number' && o.clearEpoch >= 0 && o.clearEpoch <= Date.now() + MAX_CLOCK_SKEW_MS ? o.clearEpoch : 0
       const ts = Array.isArray(o.tombstones) ? (o.tombstones as unknown[]).filter((x): x is string => typeof x === 'string') : []
-      return { clearEpoch: ce, tombstones: ts }
+      const th = Array.isArray(o.tombstonedHashes) ? (o.tombstonedHashes as unknown[]).filter((x): x is string => typeof x === 'string') : []
+      return { clearEpoch: ce, tombstones: ts, tombstonedHashes: th }
     }
   } catch { /* corrupt → empty floor (never throws) */ }
-  return { clearEpoch: 0, tombstones: [] }
+  return { clearEpoch: 0, tombstones: [], tombstonedHashes: [] }
 }
 function persistDeletesFloor(): void {
   const f = deletesFile()
   if (!f) return
-  try { fs.writeFileSync(f, JSON.stringify({ clearEpoch, tombstones: [...tombstones] })) } catch { /* best effort */ }
+  try { fs.writeFileSync(f, JSON.stringify({ clearEpoch, tombstones: [...tombstones], tombstonedHashes: [...tombstonedHashes] })) } catch { /* best effort */ }
+}
+
+// F35: a coarse per-machine fingerprint. deviceId names this device's shard, and the
+// merge model relies on single-writer-per-shard. If the device-id file rides along in a
+// restored backup / cloned disk / imaged VM onto a DIFFERENT machine, that invariant breaks
+// (two machines append to one shard → interleaved-write corruption). Binding the id to a
+// machine fingerprint lets us detect the restore and mint a fresh id.
+function machineFingerprint(): string {
+  let host = ''
+  try { host = os.hostname() } catch { /* ignore */ }
+  return crypto.createHash('sha1').update(`${host}|${process.platform}|${process.arch}`).digest('hex').slice(0, 16)
 }
 
 function loadOrCreateDeviceId(dir: string): string {
   const p = path.join(dir, DEVICE_ID_FILE)
+  const fp = machineFingerprint()
   try {
-    const existing = fs.readFileSync(p, 'utf8').trim()
-    if (existing) return existing
+    const raw = fs.readFileSync(p, 'utf8').trim()
+    let stored: { id?: unknown; fp?: unknown }
+    try { stored = JSON.parse(raw) } catch { stored = { id: raw } } // legacy: a bare id string
+    if (stored && typeof stored.id === 'string' && stored.id) {
+      // Same machine (or a legacy file with no fingerprint) → adopt the id, upgrading the
+      // format to record this machine's fingerprint. A DIFFERENT fingerprint means the file
+      // was restored onto another machine → fall through and mint a fresh id.
+      if (typeof stored.fp !== 'string' || stored.fp === fp) {
+        if (stored.fp !== fp) { try { fs.writeFileSync(p, JSON.stringify({ id: stored.id, fp })) } catch { /* best effort */ } }
+        return stored.id
+      }
+    }
   } catch { /* create below */ }
   const id = crypto.randomBytes(8).toString('hex')
-  try { fs.writeFileSync(p, id) } catch { /* best effort — falls back to an ephemeral id */ }
+  try { fs.writeFileSync(p, JSON.stringify({ id, fp })) } catch { /* best effort — falls back to an ephemeral id */ }
   return id
 }
 
@@ -214,6 +240,7 @@ function shardFiles(): string[] {
 type ShardLineClass =
   | { t: 'add'; entry: MemoryEntry }
   | { t: 'delete'; id: string }
+  | { t: 'deleteHash'; hash: string } // F22: tombstone by content hash (kills the dedup twin)
   | { t: 'clear'; before: number }
   | { t: 'clearIds'; ids: string[] }
   | { t: 'reinforce'; deltas: Array<{ id: string; used: number; ts: number }> }
@@ -234,10 +261,11 @@ function classifyShardLine(line: string): ShardLineClass {
     if (dec === null) return { t: 'locked' } // no key / wrong key → can't read this entry
     plain = dec
   }
-  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown; patch?: unknown }
+  let obj: { id?: unknown; content?: unknown; deleted?: unknown; deletedHash?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown; patch?: unknown }
   try { obj = JSON.parse(plain) } catch { return { t: 'corrupt' } } // F28: a genuine parse failure is corruption, not noise
   if (!obj || typeof obj !== 'object') return { t: 'skip' }
   if (typeof obj.deleted === 'string') return { t: 'delete', id: obj.deleted }
+  if (typeof obj.deletedHash === 'string') return { t: 'deleteHash', hash: obj.deletedHash }
   if (obj.patch && typeof obj.patch === 'object') {
     const p = obj.patch as { hash?: unknown; project?: unknown; projectKey?: unknown }
     if (typeof p.hash === 'string' && typeof p.project === 'string') {
@@ -271,6 +299,8 @@ function reloadFrom(paths: string[]): void {
   clearEpoch = floor.clearEpoch
   tombstones.clear()
   for (const id of floor.tombstones) tombstones.add(id)
+  tombstonedHashes.clear()
+  for (const h of floor.tombstonedHashes) tombstonedHashes.add(h)
   lockedShards = false
   corruptLinesSkipped = 0
   lockedLinesSkipped = 0
@@ -296,6 +326,9 @@ function reloadFrom(paths: string[]): void {
         case 'delete':
           tombstones.add(c.id)
           if (isOwn) ownTombstoned.add(c.id)
+          break
+        case 'deleteHash':
+          tombstonedHashes.add(c.hash)
           break
         case 'clearIds':
           for (const id of c.ids) { tombstones.add(id); if (isOwn) ownTombstoned.add(id) }
@@ -335,6 +368,7 @@ function reloadFrom(paths: string[]): void {
   for (const e of adds) {
     if (seenIds.has(e.id)) continue                 // same id in >1 file (e.g. legacy migration)
     if (tombstones.has(e.id)) continue              // explicitly deleted / identity-cleared
+    if (e.hash && tombstonedHashes.has(e.hash)) continue // F22: content-hash tombstone kills the twin
     if ((e.ts || 0) <= clearEpoch) {
       // F23: the wall-clock epoch clears PEER entries (a peer's pre-clear content) and this
       // device's OWN entries only when they predate an own clear line — so a slow local
@@ -464,6 +498,7 @@ export function _resetForTests(): void {
   usageMap.clear()
   pendingReinforce = []
   tombstones.clear()
+  tombstonedHashes.clear()
   clearEpoch = 0
   encKey = null
   lockedShards = false
@@ -473,6 +508,7 @@ export function _resetForTests(): void {
   hnswStale = false
   hnswThreshold = 50_000
   hnswBuilding = false
+  buildGen = 0
   hnswBuildDone = Promise.resolve()
   hnswYieldMs = 8
   seq = 0
@@ -953,6 +989,7 @@ export async function memoryBackfillVectors(max = 200): Promise<number> {
 
 // Rebuild the packed store from the current hot window (after reload/trim/clear).
 function rebuildVectorIndex(): void {
+  buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
   vectorStore = new VectorStore(EMBED_DIM)
   rowToEntry.clear()
   hnsw = null
@@ -1005,16 +1042,21 @@ async function ensureHnsw(): Promise<void> {
   const loaded = loadPersistedHnsw()
   if (loaded) { hnsw = loaded; hnswStale = false; return }
   hnswBuilding = true
+  const gen = buildGen // F34: capture the store generation; abort if a sync reload swaps the store under us
   hnswBuildDone = (async () => {
     try {
       const rows = [...rowToEntry.keys()] // snapshot: mid-build writes don't corrupt the walk
       const idx = new HnswIndex((r) => vectorStore.get(r))
       let last = Date.now()
       for (const row of rows) {
+        // F34: a reload replaced the VectorStore (rows now point at DIFFERENT entries' vectors) —
+        // abandon this build so it can't wire a mis-matched graph or mark itself fresh/persist.
+        if (buildGen !== gen) return
         if (!rowToEntry.has(row)) continue // deleted mid-build → skip
         idx.add(row)
         if (Date.now() - last >= hnswYieldMs) { await new Promise<void>((r) => setImmediate(r)); last = Date.now() }
       }
+      if (buildGen !== gen) return // final guard before publishing the graph
       hnsw = idx
       // Only mark fresh + persist if the store didn't grow during the build; if it
       // did, the snapshot is incomplete → keep it usable but stale (a later search
@@ -1550,6 +1592,19 @@ export function memoryCount(): number {
   return entries.length
 }
 
+/** F13: the lessons (semantic/procedural) in the hot window, newest-first, up to `limit` —
+ *  scanning the FULL window so distilled, cross-validated knowledge isn't missed just because
+ *  newer bulk transcript chunks fill the most-recent rows. Powers memory_pool. */
+export function memoryLessons(limit = 200): MemoryEntry[] {
+  const cap = Math.min(Math.max(limit, 1), 5000)
+  const out: MemoryEntry[] = []
+  for (let i = entries.length - 1; i >= 0 && out.length < cap; i--) {
+    const e = entries[i]
+    if (e.memoryType === 'semantic' || e.memoryType === 'procedural') out.push(e)
+  }
+  return out
+}
+
 export function memoryClear(): void {
   const liveIds = entries.map(e => e.id) // F23: capture the concrete live set BEFORE wiping
   entries.length = 0
@@ -1627,10 +1682,12 @@ export function consolidationSimOf(): (a: ConsolEntry, b: ConsolEntry) => number
 
 export function memoryDelete(id: string): void {
   if (!id) return
+  let removedHash: string | undefined
   const idx = entries.findIndex((e) => e.id === id)
   if (idx !== -1) {
     const [removed] = entries.splice(idx, 1)
     if (removed) {
+      removedHash = removed.hash
       if (removed.hash) seenHashes.delete(removed.hash)
       const r = entryRow.get(removed)
       if (r !== undefined) rowToEntry.delete(r)
@@ -1639,6 +1696,26 @@ export function memoryDelete(id: string): void {
   lexicalIndex.remove(id)
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete', { fsync: true })
+  // F22: dedup is content-addressed but deletion was id-addressed, so deleting one copy of
+  // de-duplicated content left the twin (same hash, different id) alive to resurface on the
+  // next reload. Tombstone the CONTENT hash too, and drop any in-window twins right now.
+  if (removedHash) {
+    tombstonedHashes.add(removedHash)
+    appendShardLine(JSON.stringify({ deletedHash: removedHash }), 'deleteHash', { fsync: true })
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].hash === removedHash) {
+        const [twin] = entries.splice(i, 1)
+        if (twin) {
+          tombstones.add(twin.id)
+          lexicalIndex.remove(twin.id)
+          const r = entryRow.get(twin)
+          if (r !== undefined) rowToEntry.delete(r)
+        }
+      }
+    }
+    seenHashes.delete(removedHash)
+  }
+  bumpSearchGen() // deleted entries must not linger in cached search results
   persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
 }
 
