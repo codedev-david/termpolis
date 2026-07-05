@@ -795,6 +795,23 @@ function persist(entry: MemoryEntry): boolean {
   return appendShardLine(JSON.stringify(entry), entry.id, { fsync: FSYNC_KINDS.has(entry.kind) })
 }
 
+// Atomic whole-file write: temp + fsync + rename, so a crash or a concurrent cloud-sync
+// read during a full-file rewrite can never leave a truncated or half-written file. The
+// original is untouched until the rename, so a failure loses nothing (F7/F33).
+function atomicWriteFile(target: string, data: string): void {
+  const tmp = target + '.tmp'
+  const fd = fs.openSync(tmp, 'w')
+  try { fs.writeFileSync(fd, data); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+  try {
+    fs.renameSync(tmp, target)
+  } catch (err) {
+    // Windows can reject a rename over an existing/locked target — unlink then rename
+    // (the contextPinStore fallback). On any failure, drop the temp and surface.
+    try { fs.rmSync(target, { force: true }); fs.renameSync(tmp, target) }
+    catch (err2) { try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ } throw err2 }
+  }
+}
+
 // F27: guarantee JSONL frame integrity. A crash mid-append can leave the shard ending
 // in a truncated, newline-less line; the NEXT append would then land on that same
 // physical line and corrupt an otherwise-good record. If the file doesn't end in '\n',
@@ -1432,7 +1449,7 @@ export function memoryClear(): void {
     persistDeletesFloor()
   } else {
     // Local-only: truncating the single file is a real, durable clear (no peers to merge).
-    try { fs.writeFileSync(memPath, '') } catch { /* best effort */ }
+    try { atomicWriteFile(memPath, '') } catch { /* best effort */ } // F33: atomic truncate
     clearEpoch = 0
     tombstones.clear()
     persistDeletesFloor()
@@ -1621,13 +1638,29 @@ function loadCachedKey(): Buffer | null {
 function loadOrCreateSalt(): Buffer {
   const p = saltPath()
   if (!p) return newSalt()
-  try {
-    const b = Buffer.from(fs.readFileSync(p, 'utf8').trim(), 'base64')
-    if (b.length === 16) return b
-  } catch { /* create below */ }
+  // F4: an existing salt is AUTHORITATIVE — read it and NEVER overwrite it. Minting a
+  // replacement on a transient read hiccup, a half-synced file, or a bad merge would
+  // re-derive a different key and permanently orphan every peer's ciphertext. Surface it.
+  if (fs.existsSync(p)) {
+    let b: Buffer
+    try { b = Buffer.from(fs.readFileSync(p, 'utf8').trim(), 'base64') }
+    catch { throw new Error('memory salt unavailable — retry (the encryption salt could not be read)') }
+    if (b.length !== 16) throw new Error('memory salt malformed — retry (refusing to overwrite the existing salt)')
+    return b
+  }
+  // F11: create write-once. If a peer wins the race after existsSync, adopt the winner
+  // rather than clobbering it — the same passphrase must derive the same key everywhere.
   const s = newSalt()
-  try { fs.writeFileSync(p, s.toString('base64')) } catch { /* best effort */ }
-  return s
+  try {
+    fs.writeFileSync(p, s.toString('base64'), { flag: 'wx' })
+    return s
+  } catch {
+    try {
+      const b = Buffer.from(fs.readFileSync(p, 'utf8').trim(), 'base64')
+      if (b.length === 16) return b
+    } catch { /* fall through to surface */ }
+    throw new Error('memory salt unavailable — retry (could not create or read the encryption salt)')
+  }
 }
 
 // Find one encrypted line across the synced shards, to validate a passphrase.
@@ -1653,7 +1686,13 @@ function rewriteSelfShard(xform: (plain: string) => string): void {
     const plain = isEncryptedLine(s) ? (encKey ? decryptLine(encKey, s) : null) : s
     out.push(plain === null ? s : xform(plain))
   }
-  try { fs.writeFileSync(memPath, out.length ? out.join('\n') + '\n' : '') } catch { /* best effort */ }
+  try {
+    atomicWriteFile(memPath, out.length ? out.join('\n') + '\n' : '') // F7/F33: never truncate mid-rewrite
+  } catch (err) {
+    // The atomic write kept the ORIGINAL shard intact — surface the failure instead of
+    // silently leaving a truncated/half-rewritten store.
+    recordSwarmError('swarmMemory.rewriteShard.failed', err, { memPath })
+  }
 }
 
 // Enable encryption (first time) OR unlock an already-encrypted store on a new

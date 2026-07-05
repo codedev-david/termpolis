@@ -212,12 +212,21 @@ vi.mock('../../src/main/gitCommand', async () => {
 
 const mockExistsSync = vi.fn(() => false)
 const mockWriteFileSync = vi.fn()
-const mockReadFileSync = vi.fn(() => '{}')
+// Return a VALID 16-byte base64 salt for the encryption-salt path (loadOrCreateSalt now
+// refuses to overwrite an existing-but-malformed salt — F4), '{}' for everything else.
+const mockReadFileSync = vi.fn((p?: unknown) =>
+  typeof p === 'string' && p.endsWith('.termpolis-salt') ? Buffer.alloc(16, 1).toString('base64') : '{}',
+)
 const mockReaddirSync = vi.fn(() => [])
 const mockMkdirSync = vi.fn()
 const mockAppendFileSync = vi.fn()
 const mockRenameSync = vi.fn()
 const mockUnlinkSync = vi.fn()
+const mockOpenSync = vi.fn(() => 3)
+const mockCloseSync = vi.fn()
+const mockFsyncSync = vi.fn()
+const mockStatSync = vi.fn(() => ({ size: 0 }))
+const mockRmSync = vi.fn()
 vi.mock('fs', () => ({
   writeFileSync: mockWriteFileSync,
   existsSync: mockExistsSync,
@@ -227,6 +236,11 @@ vi.mock('fs', () => ({
   appendFileSync: mockAppendFileSync,
   renameSync: mockRenameSync,
   unlinkSync: mockUnlinkSync,
+  openSync: mockOpenSync,
+  closeSync: mockCloseSync,
+  fsyncSync: mockFsyncSync,
+  statSync: mockStatSync,
+  rmSync: mockRmSync,
   default: {
     writeFileSync: mockWriteFileSync,
     existsSync: mockExistsSync,
@@ -236,6 +250,11 @@ vi.mock('fs', () => ({
     appendFileSync: mockAppendFileSync,
     renameSync: mockRenameSync,
     unlinkSync: mockUnlinkSync,
+    openSync: mockOpenSync,
+    closeSync: mockCloseSync,
+    fsyncSync: mockFsyncSync,
+    statSync: mockStatSync,
+    rmSync: mockRmSync,
   },
 }))
 
