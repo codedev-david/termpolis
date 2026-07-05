@@ -967,6 +967,7 @@ function indexEntryVector(entry: MemoryEntry): void {
   rowToEntry.set(row, entry)
   entryRow.set(entry, row)
   delete entry.embedding
+  if (hnswBuilding) buildGen++ // Wave2 (hnsw-build-freshness-by-count): a live add during a build must abort it — the count check alone is fooled by a concurrent add+delete
   if (hnsw && !hnswStale) hnsw.add(row)                        // keep the graph fresh incrementally
   else if (vectorStore.size >= hnswThreshold) hnswStale = true // crossed the threshold → (re)build on next search
 }
@@ -1272,7 +1273,12 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
       // Use the graph only when it's fresh; while it's (re)building in the
       // background `hnsw` is null or stale, so we serve the exact brute-force scan.
       if (hnsw && !hnswStale) { try { hits = hnsw.search(queryF32, fetchN, allow) } catch { hits = [] } }
-      if (hits.length === 0) hits = vectorStore.searchTopK(queryF32, fetchN, allow) // exact brute-force fallback
+      // Wave2 (hnsw-filtered-underrecall): HNSW applies `allow` AFTER walking ~ef GLOBAL neighbours,
+      // so a SELECTIVE filter (project/agent/kind/task) can leave most of them rejected and in-scope
+      // hits unreturned. When a filter is active and the graph result is short, run the exact scan
+      // (which is filter-exhaustive across the whole store) instead of only falling back on empty.
+      const filtered = !!(opts.project || opts.agentId || opts.kind || opts.taskId)
+      if (hits.length === 0 || (filtered && hits.length < fetchN)) hits = vectorStore.searchTopK(queryF32, fetchN, allow)
       // BB3: optional pseudo-relevance feedback (default OFF). When the top hit is only
       // MODERATELY relevant and the result is thin, expand the query toward the centroid
       // of the top-m hits and union a second pass by MAX cosine.
@@ -1783,6 +1789,7 @@ export function memoryPruneCodePath(filePath: string): number {
 // the renumbered store and silently mis-rank recall.
 function hnswStaleAfterDelete(): void {
   hnswStale = true
+  if (hnswBuilding) buildGen++ // Wave2 (hnsw-build-freshness-by-count): a delete during a build must abort it too
   try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
 }
 
