@@ -125,10 +125,23 @@ function sendToServer(body) {
   })
 }
 
-// Read JSON-RPC messages from stdin (newline-delimited)
-const rl = readline.createInterface({ input: process.stdin })
+// F31: default a curated write's project scope to THIS adapter's cwd (= the terminal's
+// directory where the agent was launched) when the agent omits `project`, so high-value
+// decisions/facts are recalled with current-directory priority by default. Pure + guarded —
+// never blocks a call. Search/primer are intentionally NOT defaulted (that would narrow a
+// global memory_search into the current project unexpectedly).
+function applyDefaultProjectScope(request, cwd) {
+  try {
+    if (request && request.method === 'tools/call' && request.params && request.params.name === 'memory_write') {
+      const a = request.params.arguments
+      if (a && (a.project === undefined || a.project === null || a.project === '')) a.project = cwd
+    }
+  } catch { /* never block a tool call on scoping */ }
+  return request
+}
 
-rl.on('line', async (line) => {
+// Read JSON-RPC messages from stdin (newline-delimited)
+async function handleLine(line) {
   if (!line.trim()) return
   let request
   try {
@@ -136,6 +149,7 @@ rl.on('line', async (line) => {
   } catch {
     return // malformed input — drop silently, nothing useful we can reply with
   }
+  applyDefaultProjectScope(request, process.cwd())
   // MCP notifications are fire-and-forget — don't forward to server
   if (!request.id && (request.method?.startsWith('notifications/') || request.method === 'initialized')) {
     return
@@ -160,9 +174,7 @@ rl.on('line', async (line) => {
     }
     process.stdout.write(JSON.stringify(rpcError(request.id, err.message)) + '\n')
   }
-})
-
-rl.on('close', () => process.exit(0))
+}
 
 // Health check on start — outcome decides whether we proxy or degrade.
 function probeHealth() {
@@ -191,4 +203,15 @@ function probeHealth() {
   })
 }
 
-probeHealth()
+// Runtime startup — guarded so `require()` in tests can exercise the pure helpers without
+// attaching a stdin reader or firing the health probe.
+function startAdapter() {
+  const rl = readline.createInterface({ input: process.stdin })
+  rl.on('line', handleLine)
+  rl.on('close', () => process.exit(0))
+  probeHealth()
+}
+
+if (require.main === module) startAdapter()
+
+module.exports = { applyDefaultProjectScope }
