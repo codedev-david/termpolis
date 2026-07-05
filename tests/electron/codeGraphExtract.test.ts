@@ -132,5 +132,22 @@ describe('codeGraphExtract', () => {
       const ex = extractFile('m.py', 'def only():\n    return 1\n    x = 2')!
       expect(byName(ex.symbols, 'only')!.endLine).toBe(3)
     })
+
+    it('inline object types in param/return annotations do NOT truncate the block (real-repo bug)', () => {
+      // Before the fix, the return-type `{ ok: boolean }` closed the block on line 1, so the symbol
+      // spanned only its signature — and since the store attributes calls by scanning a symbol's
+      // start→end body slice, every reference below the signature was lost (under-counted edges).
+      const src = 'export function f(o: { a: number }): { ok: boolean } {\n  return doThing(o)\n}'
+      const f = byName(extractFile('x.ts', src)!.symbols, 'f')!
+      expect(f.startLine).toBe(1)
+      expect(f.endLine).toBe(3) // was 1 before the fix
+    })
+
+    it('a MULTI-LINE signature with an inline object param type is not truncated', () => {
+      const src = ['export async function g(', '  items: string[],', '  opts: { flag?: boolean } = {},', '): Promise<number> {', '  return compute(items)', '}'].join('\n')
+      const g = byName(extractFile('x.ts', src)!.symbols, 'g')!
+      expect(g.startLine).toBe(1)
+      expect(g.endLine).toBe(6) // param-type `{}` on a continuation line no longer ends the block
+    })
   })
 })

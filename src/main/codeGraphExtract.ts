@@ -156,20 +156,32 @@ function blockEnd(lines: string[], startLine: number, block: 'brace' | 'indent')
     }
     return lastContent
   }
+  // Body detection that survives typed signatures (a real-repo bug the unit snippets missed):
+  //  - braces INSIDE the parameter parens (`(o: { x: number })`) are skipped (paren depth > 0),
+  //    which covers multi-line signatures where the object type sits on a continuation line;
+  //  - a paren-depth-0 brace block that opens AND closes on the SAME line is a type annotation
+  //    (a `): { ok: boolean }` return type), not the body — the real body is the first
+  //    paren-depth-0 block that spans a newline.
+  let paren = 0
   let depth = 0
-  let seen = false
+  let openLine = -1
   for (let i = startIdx; i < lines.length; i++) {
-    for (const ch of lines[i]) {
-      if (ch === '{') {
-        depth++
-        seen = true
-      } else if (ch === '}') {
+    const line = lines[i]
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j]
+      if (ch === '(') paren++
+      else if (ch === ')') { if (paren > 0) paren-- }
+      else if (paren === 0 && ch === '{') { if (depth === 0) openLine = i; depth++ }
+      else if (paren === 0 && ch === '}' && depth > 0) {
         depth--
-        if (seen && depth === 0) return i + 1
+        if (depth === 0) {
+          if (i > openLine) return i + 1 // opened on an earlier line → the real (multi-line) body
+          openLine = -1 // same-line {} → an annotation; keep scanning for the body
+        }
       }
     }
   }
-  return seen ? lines.length : Math.min(startLine, lines.length) // unterminated block → EOF; no block → single line
+  return depth > 0 ? lines.length : Math.min(startLine, lines.length) // unterminated body → EOF; no multi-line block → single line
 }
 
 /** Extract the structure of one source file. Returns null for an unsupported extension or
