@@ -2001,6 +2001,84 @@ function rewriteSelfShard(xform: (plain: string) => string): void {
   }
 }
 
+// Shard compaction thresholds — only worth rewriting a large shard that's mostly dead lines.
+const COMPACT_MIN_LINES = 200
+const COMPACT_DEAD_RATIO = 0.5
+
+/**
+ * Compact THIS device's append-only shard (shard-never-compacted). The log accumulates a line
+ * per write/edit/delete/reinforce forever, so per-reload parse cost grows even as the live count
+ * stays flat. Compaction rewrites the shard down to its EXACT CRDT contribution — the current
+ * live own entries (dropping superseded edits + adds for since-deleted entries), the coalesced
+ * usage deltas, and every tombstone / deleted-hash / clear-epoch line (kept so the deletions
+ * still propagate to peers). A reload here or on any peer therefore converges to the identical
+ * state. It is ATOMIC (temp+rename) and ABORTS if any line is locked/corrupt, so it can never
+ * drop data it couldn't account for. Gated on size + dead-ratio unless forced.
+ */
+export function compactSelfShard(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {
+  if (!memPath || !syncDir) return { compacted: false, before: 0, after: 0 }
+  let raw: string
+  try { raw = fs.readFileSync(memPath, 'utf8') } catch { return { compacted: false, before: 0, after: 0 } }
+  const rawLines = raw.split('\n').filter((l) => l.trim())
+  const before = rawLines.length
+  if (before === 0) return { compacted: false, before: 0, after: 0 }
+
+  const ownAddIds = new Set<string>()
+  const shardTombstones = new Set<string>()
+  const shardDeletedHashes = new Set<string>()
+  const shardClearedIds = new Set<string>()
+  let shardClearEpoch = 0
+  const shardReinforce = new Map<string, number>()
+  const patchLines: string[] = []
+  for (const line of rawLines) {
+    const c = classifyShardLine(line)
+    switch (c.t) {
+      case 'add': ownAddIds.add(c.entry.id); break
+      case 'delete': shardTombstones.add(c.id); break
+      case 'deleteHash': shardDeletedHashes.add(c.hash); break
+      case 'clear': shardClearEpoch = Math.max(shardClearEpoch, c.before); break
+      case 'clearIds': for (const id of c.ids) shardClearedIds.add(id); break
+      case 'reinforce': for (const d of c.deltas) shardReinforce.set(d.id, (shardReinforce.get(d.id) ?? 0) + d.used); break
+      case 'patch': patchLines.push(JSON.stringify({ patch: { hash: c.hash, project: c.project, ...(c.projectKey && { projectKey: c.projectKey }) } })); break
+      case 'locked':
+      case 'corrupt':
+        return { compacted: false, before, after: before } // never rewrite over data we can't read
+      case 'skip':
+        break
+    }
+  }
+
+  // Live own entries = own add-ids still present in the merged hot window (all tombstones / clears
+  // / dedup already applied), re-emitted in their CURRENT form.
+  const liveById = new Map<string, MemoryEntry>(entries.map((e) => [e.id, e] as [string, MemoryEntry]))
+  const liveOwn: MemoryEntry[] = []
+  for (const id of ownAddIds) { const e = liveById.get(id); if (e) liveOwn.push(e) }
+
+  const emit = (plain: string): string => (encKey ? encryptLine(encKey, plain) : plain)
+  const out: string[] = []
+  if (shardClearEpoch > 0) out.push(emit(JSON.stringify({ clearedBefore: shardClearEpoch })))
+  if (shardClearedIds.size > 0) out.push(emit(JSON.stringify({ clearedIds: [...shardClearedIds] })))
+  for (const e of liveOwn) out.push(emit(serializeEntry(e)))
+  const reinforce = [...shardReinforce.entries()].filter(([id, u]) => u > 0 && liveById.has(id)).map(([id, used]) => ({ id, used, ts: Date.now() }))
+  if (reinforce.length > 0) out.push(emit(JSON.stringify({ reinforce })))
+  for (const id of shardTombstones) out.push(emit(JSON.stringify({ deleted: id })))
+  for (const hash of shardDeletedHashes) out.push(emit(JSON.stringify({ deletedHash: hash })))
+  for (const p of patchLines) out.push(emit(p))
+
+  const after = out.length
+  if (!opts?.force && (before < COMPACT_MIN_LINES || (before - after) / before < COMPACT_DEAD_RATIO)) {
+    return { compacted: false, before, after: before } // not enough dead weight to bother
+  }
+  try {
+    atomicWriteFile(memPath, out.length ? out.join('\n') + '\n' : '')
+  } catch (err) {
+    recordSwarmError('swarmMemory.compact.failed', err, { memPath })
+    return { compacted: false, before, after: before }
+  }
+  reloadFrom(shardFiles())
+  return { compacted: true, before, after }
+}
+
 // Enable encryption (first time) OR unlock an already-encrypted store on a new
 // device: derive the key from the passphrase + the store's salt, validate it
 // against any existing ciphertext, cache it locally, (re-)encrypt this device's

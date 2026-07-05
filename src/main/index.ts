@@ -117,7 +117,7 @@ import {
 import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
-  memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings,
+  memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -1929,6 +1929,10 @@ if (!gotTheLock) {
     // reality (ready/unavailable, not a misleading pre-probe "healthy") without a startup model load
     // stalling the first keystrokes — the worker thread carries it.
     setTimeout(() => { warmProbeEmbeddings().catch(() => {}) }, 20000)
+    // Periodically compact this device's append-only shard once it's mostly dead lines
+    // (threshold-gated + non-forced → a no-op until it's worth it), so per-reload parse cost
+    // stays bounded as the log grows. Lossless + atomic (compactSelfShard proves the round-trip).
+    setInterval(() => { try { compactSelfShard() } catch { /* best effort */ } }, 30 * 60 * 1000)
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
