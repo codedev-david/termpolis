@@ -210,16 +210,22 @@ export function extractFile(file: string, content: string): FileExtract | null {
     }
   }
 
-  const references: string[] = []
-  const seenRef = new Set<string>()
-  const callRe = /([A-Za-z_$][\w$]*)\s*\(/g
-  let cm: RegExpExecArray | null
-  while ((cm = callRe.exec(content)) !== null) {
-    const name = cm[1]
-    if (CALL_KEYWORDS.has(name) || seenRef.has(name)) continue
-    seenRef.add(name)
-    references.push(name)
-  }
+  return { file, lang: rules.lang, symbols, imports, references: extractReferences(content) }
+}
 
-  return { file, lang: rules.lang, symbols, imports, references }
+/** Callable names referenced in `text` (a name immediately followed by `(`), de-duplicated in
+ *  first-seen order, with control-flow keywords/builtins filtered out. Reused by the graph
+ *  layer to attribute calls to the enclosing symbol (scan its body slice). Pure. */
+export function extractReferences(text: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const callRe = /([A-Za-z_$][\w$]*)\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = callRe.exec(text)) !== null) {
+    const name = m[1]
+    if (CALL_KEYWORDS.has(name) || seen.has(name)) continue
+    seen.add(name)
+    out.push(name)
+  }
+  return out
 }
