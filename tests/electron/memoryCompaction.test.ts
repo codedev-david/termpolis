@@ -11,6 +11,7 @@ import {
   initSwarmMemory,
   memoryWrite,
   memoryDelete,
+  memoryClear,
   memoryFeedback,
   memoryList,
   memoryHasHash,
@@ -62,6 +63,18 @@ describe('compactSelfShard', () => {
 
     // usage survived: the next bump continues from 3 → 4 (not reset)
     expect(memoryFeedback({ id: a.id }).used).toBe(4)
+  })
+
+  it('preserves a clear epoch across compaction (pre-clear stays gone, post-clear survives)', async () => {
+    initSwarmMemory(userDir, { syncDir })
+    _setEmbeddingsAvailable(false)
+    await memoryWrite({ agentId: 'x', kind: 'note', content: 'pre-clear', ts: 1000 })
+    memoryClear() // writes clearedBefore + clearedIds; drops everything so far
+    const keep = await memoryWrite({ agentId: 'x', kind: 'note', content: 'post-clear' })
+    const res = compactSelfShard({ force: true })
+    expect(res.compacted).toBe(true)
+    expect(memoryList().map((e) => e.content)).toEqual(['post-clear']) // clear survived the rewrite
+    expect(memoryList().some((e) => e.id === keep.id)).toBe(true)
   })
 
   it('does not compact a small / mostly-live shard unless forced', async () => {
