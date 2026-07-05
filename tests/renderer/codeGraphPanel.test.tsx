@@ -69,4 +69,32 @@ describe('CodeGraphPanel', () => {
     await waitFor(() => expect(screen.getByTestId('code-graph-status').textContent).toContain('git repo'))
     expect(api.codeGraphBuild).not.toHaveBeenCalled()
   })
+
+  it('Enter triggers search; an empty query clears results without a call', async () => {
+    const api = setApi()
+    render(<CodeGraphPanel cwd="/repo" />)
+    const input = screen.getByTestId('code-graph-search')
+    fireEvent.change(input, { target: { value: 'foo' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.codeGraphSearch).toHaveBeenCalledWith('foo', 30))
+    api.codeGraphSearch.mockClear()
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.click(screen.getByTestId('code-graph-search-btn'))
+    expect(api.codeGraphSearch).not.toHaveBeenCalled()
+  })
+
+  it('handles a stats failure and a null explore gracefully', async () => {
+    const api = setApi({
+      codeGraphStats: vi.fn().mockRejectedValue(new Error('nope')),
+      codeGraphExplore: vi.fn().mockResolvedValue({ success: true, data: null }),
+    })
+    render(<CodeGraphPanel cwd="/repo" />)
+    expect(screen.getByTestId('code-graph-stats').textContent).toContain('…') // stats stayed unknown, no crash
+    fireEvent.change(screen.getByTestId('code-graph-search'), { target: { value: 'foo' } })
+    fireEvent.click(screen.getByTestId('code-graph-search-btn'))
+    await waitFor(() => screen.getByTestId('cg-sym-foo'))
+    fireEvent.click(screen.getByTestId('cg-sym-foo'))
+    await waitFor(() => expect(api.codeGraphExplore).toHaveBeenCalled())
+    expect(screen.queryByTestId('code-graph-detail')).toBeNull() // null explore → no detail
+  })
 })

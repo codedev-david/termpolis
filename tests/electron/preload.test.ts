@@ -804,4 +804,20 @@ describe('preload: updater API', () => {
     cleanup()
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('updater:state', expect.any(Function))
   })
+
+  it('code graph bridge methods invoke the right IPC channels', async () => {
+    const api = exposed.termpolis
+    await api.codeGraphStats()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:stats')
+    await api.codeGraphSearch('foo', 10)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:search', { query: 'foo', limit: 10 })
+    await api.codeGraphExplore('foo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:explore', { query: 'foo' })
+    await api.codeGraphImpact('foo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:impact', { name: 'foo' })
+    await api.codeGraphCallers('foo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:callers', { name: 'foo' })
+    await api.codeGraphBuild('/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:build', { repoRoot: '/repo' })
+  })
 })
