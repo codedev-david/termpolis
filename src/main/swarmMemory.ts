@@ -973,7 +973,7 @@ async function backfillVectorIfMissing(entry: MemoryEntry): Promise<void> {
  *  the embedder is available (e.g. captured during a model outage). Returns how many were
  *  backfilled. Safe to call on launch after the embedder is ready. */
 export async function memoryBackfillVectors(max = 200): Promise<number> {
-  if (embeddingsAvailable === false || !isEmbedderReady()) return 0
+  if (embeddingsAvailable === false) return 0 // embed() self-skips per-entry if the model isn't ready
   let done = 0
   for (const e of entries) {
     if (done >= max) break
