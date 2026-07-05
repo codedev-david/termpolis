@@ -37,6 +37,9 @@ export interface PrimerOptions {
   maxSnippetChars?: number
   /** Normalized project slug (e.g. derived from the terminal cwd). Enables current-project precedence. */
   project?: string
+  /** F19: the FULL terminal cwd, used to SCOPE the search precisely (projectKey) so two repos
+   *  with the same basename don't collide. `project` (slug) is still used for display/promotion. */
+  projectPath?: string
   /** Injectable file-existence probe (defaults to fs.existsSync). Powers the
    *  staleness guard: a code memory whose source file is gone is flagged so the
    *  agent treats it as history, not a live path to recommend. */
@@ -135,9 +138,12 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
+  // F19: scope the project-bucket search by the FULL cwd when available (precise projectKey),
+  // falling back to the slug. Display/promotion still use the slug `project`.
+  const searchScope = (opts.projectPath && opts.projectPath.trim()) ? opts.projectPath.trim() : project
   let projectHits: PrimerHit[] = []
   if (project) {
-    try { projectHits = gate((await search({ query: opts.query, limit: candidateLimit, project })) || []) } catch { projectHits = [] }
+    try { projectHits = gate((await search({ query: opts.query, limit: candidateLimit, project: searchScope })) || []) } catch { projectHits = [] }
   }
   let globalHits: PrimerHit[] = []
   try {

@@ -39,6 +39,7 @@ export interface MemoryEntry {
   embedding?: number[]
   source?: string                 // provenance (e.g. 'claude'|'codex'|'gemini' for ingested transcripts)
   project?: string                // normalized project slug (cwd basename) — current-directory recall
+  projectKey?: string             // F19: stable unique key of the FULL path — disambiguates same-basename repos
   hash?: string                   // content hash for idempotent ingestion dedup
   // --- Mneme learning layer (see docs/learning-architecture.md). All optional and
   // additive: old records simply lack them, and JSONL round-trips them for free. ---
@@ -56,11 +57,23 @@ export interface MemoryEntry {
   originalChars?: number
 }
 
-/** Normalize a cwd/path or bare name into a lowercase project slug (its basename). */
+/** Normalize a cwd/path or bare name into a lowercase project slug (its basename). This is
+ *  the DISPLAY scope; it collides across repos with the same folder name (see projectKeyOf). */
 export function normalizeProjectSlug(pathOrName: string): string {
   if (typeof pathOrName !== 'string') return ''
   const base = pathOrName.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
   return base.trim().toLowerCase().slice(0, 128)
+}
+
+/** F19: a STABLE, UNIQUE key for a project derived from its FULL path — so `~/work/acme/api`
+ *  and `~/work/globex/api` (same basename `api`) never share a scope. Returns undefined for a
+ *  bare name (no path separator) since there's nothing to disambiguate on. */
+export function projectKeyOf(pathOrName: string): string | undefined {
+  if (typeof pathOrName !== 'string') return undefined
+  const t = pathOrName.trim().replace(/[\\/]+$/, '')
+  if (!t || !/[\\/]/.test(t)) return undefined // bare name — no full path to key on
+  const norm = t.replace(/\\/g, '/').toLowerCase()
+  return crypto.createHash('sha1').update(norm).digest('hex').slice(0, 16)
 }
 
 export interface MemorySearchResult extends MemoryEntry {
@@ -204,6 +217,7 @@ type ShardLineClass =
   | { t: 'clear'; before: number }
   | { t: 'clearIds'; ids: string[] }
   | { t: 'reinforce'; deltas: Array<{ id: string; used: number; ts: number }> }
+  | { t: 'patch'; hash: string; project: string; projectKey?: string } // F30: persisted project backfill
   | { t: 'locked' }   // encrypted line we couldn't decrypt (need passphrase)
   | { t: 'corrupt' }  // unparseable bytes (torn write / bit-rot / bad merge) — counted, not silent
   | { t: 'skip' }     // blank / valid-JSON-but-not-a-record
@@ -220,10 +234,17 @@ function classifyShardLine(line: string): ShardLineClass {
     if (dec === null) return { t: 'locked' } // no key / wrong key → can't read this entry
     plain = dec
   }
-  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown }
+  let obj: { id?: unknown; content?: unknown; deleted?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown; patch?: unknown }
   try { obj = JSON.parse(plain) } catch { return { t: 'corrupt' } } // F28: a genuine parse failure is corruption, not noise
   if (!obj || typeof obj !== 'object') return { t: 'skip' }
   if (typeof obj.deleted === 'string') return { t: 'delete', id: obj.deleted }
+  if (obj.patch && typeof obj.patch === 'object') {
+    const p = obj.patch as { hash?: unknown; project?: unknown; projectKey?: unknown }
+    if (typeof p.hash === 'string' && typeof p.project === 'string') {
+      return { t: 'patch', hash: p.hash, project: p.project, projectKey: typeof p.projectKey === 'string' ? p.projectKey : undefined }
+    }
+    return { t: 'skip' }
+  }
   if (Array.isArray(obj.clearedIds)) return { t: 'clearIds', ids: (obj.clearedIds as unknown[]).filter((x): x is string => typeof x === 'string') }
   if (typeof obj.clearedBefore === 'number') return { t: 'clear', before: obj.clearedBefore }
   if (Array.isArray(obj.reinforce)) {
@@ -256,6 +277,7 @@ function reloadFrom(paths: string[]): void {
   pendingReinforce = []
   const skewCap = Date.now() + MAX_CLOCK_SKEW_MS
   const adds: MemoryEntry[] = []
+  const patches: Array<{ hash: string; project: string; projectKey?: string }> = [] // F30
   const ownAddIds = new Set<string>()      // adds that came from THIS device's own shard
   const ownVulnerable = new Set<string>()  // own adds appearing BEFORE an own clear line (pre-clear → epoch-droppable)
   const ownTombstoned = new Set<string>()  // ids the own shard already records (delete/clearIds) — re-emission dedup
@@ -286,6 +308,9 @@ function reloadFrom(paths: string[]): void {
           break
         case 'reinforce':
           for (const d of c.deltas) pendingReinforce.push(d)
+          break
+        case 'patch':
+          patches.push({ hash: c.hash, project: c.project, projectKey: c.projectKey })
           break
         case 'locked':
           lockedShards = true
@@ -325,6 +350,17 @@ function reloadFrom(paths: string[]): void {
   while (entries.length > maxEntries) {
     const dropped = entries.shift()
     if (dropped?.hash) seenHashes.delete(dropped.hash)
+  }
+  // F30: apply persisted project backfills so legacy conversation chunks (written before
+  // `project` existed) stay current-directory-recallable across reloads/sync — the docstring
+  // used to promise this "for free" but the tags were RAM-only and vanished on every reload.
+  if (patches.length > 0) {
+    const byHash = new Map<string, MemoryEntry>()
+    for (const e of entries) if (e.hash) byHash.set(e.hash, e)
+    for (const p of patches) {
+      const e = byHash.get(p.hash)
+      if (e) { if (!e.project) e.project = p.project; if (p.projectKey && !e.projectKey) e.projectKey = p.projectKey }
+    }
   }
   rebuildVectorIndex()
   // BB13: replay usage deltas now that the final entry/tombstone/clear state is known —
@@ -533,12 +569,11 @@ export function isForgettable(
     && !hasOutgoingEdges
 }
 
-/** Backfill project slugs onto already-stored entries by content hash — used by
- *  re-ingest so legacy conversation chunks (written before `project` existed)
- *  become current-directory-recallable. IN-MEMORY ONLY by design: the durable
- *  JSONL/shard format stays append-only and untouched; the auto-indexer re-runs
- *  ingest every launch, so the tags re-derive for free each session. Never
- *  overwrites an existing tag. Returns how many entries were patched. */
+/** Backfill project scope onto already-stored entries by content hash — used by re-ingest
+ *  so legacy conversation chunks (written before `project` existed) become current-directory-
+ *  recallable. F30: the backfill is now PERSISTED as an additive `{patch}` control line and
+ *  re-applied on reload, so it survives relaunch/sync (it used to be RAM-only and vanish).
+ *  Never overwrites an existing tag. Returns how many entries were patched. */
 export function memoryPatchProjects(patches: Array<{ hash: string; project: string }>): number {
   if (!Array.isArray(patches) || patches.length === 0) return 0
   const byHash = new Map<string, MemoryEntry>()
@@ -549,8 +584,15 @@ export function memoryPatchProjects(patches: Array<{ hash: string; project: stri
     const slug = p.project ? normalizeProjectSlug(p.project) : ''
     if (!slug) continue
     const e = byHash.get(p.hash)
-    if (e && !e.project) { e.project = slug; patched++ }
+    if (e && !e.project) {
+      e.project = slug
+      const key = projectKeyOf(p.project)
+      if (key && !e.projectKey) e.projectKey = key
+      appendShardLine(JSON.stringify({ patch: { hash: p.hash, project: slug, ...(key && { projectKey: key }) } }), 'patch-project')
+      patched++
+    }
   }
+  if (patched > 0) bumpSearchGen() // scope changed → invalidate cached searches
   return patched
 }
 
@@ -680,6 +722,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   }
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
+  const projectKey = input.project ? projectKeyOf(input.project) : undefined // F19
   const truncated = input.content.length > MAX_CONTENT
   const content = truncated ? input.content.slice(0, MAX_CONTENT) : input.content
 
@@ -719,6 +762,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     ...(input.taskId && { taskId: input.taskId }),
     ...(input.source && { source: input.source }),
     ...(projectSlug && { project: projectSlug }),
+    ...(projectKey && { projectKey }),
     ...(input.memoryType && { memoryType: input.memoryType }),
     ...(typeof input.importance === 'number' && { importance: Math.min(1, Math.max(0, input.importance)) }),
     ...(input.originEpisode && { originEpisode: input.originEpisode }),
@@ -1032,11 +1076,23 @@ function serializeEntry(e: MemoryEntry): string {
   return JSON.stringify(v ? { ...e, embedding: Array.from(v) } : e)
 }
 
+// F19: match a project scope by the precise full-path key when the search supplied one
+// (so `.../acme/api` and `.../globex/api` never collide), falling back to the display slug
+// for bare-name searches and legacy entries written before projectKey existed.
+function matchesProject(e: MemoryEntry, opts: SearchOptions): boolean {
+  if (!opts.project) return true
+  if (opts.projectKey) {
+    if (e.projectKey) return e.projectKey === opts.projectKey
+    return e.project === opts.project // legacy entry (no key) — best-effort slug match
+  }
+  return e.project === opts.project
+}
+
 function passesFilter(e: MemoryEntry, opts: SearchOptions): boolean {
   if (opts.agentId && e.agentId !== opts.agentId) return false
   if (opts.kind && e.kind !== opts.kind) return false
   if (opts.taskId && e.taskId !== opts.taskId) return false
-  if (opts.project && e.project !== opts.project) return false
+  if (!matchesProject(e, opts)) return false
   return true
 }
 
@@ -1049,6 +1105,7 @@ export interface SearchOptions {
   kind?: MemoryEntry['kind']
   taskId?: string
   project?: string                // path or slug — normalized on entry
+  projectKey?: string             // F19: internal — the full-path key, derived from `project` in memorySearch
   diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
   fuseGraph?: boolean             // BB7: expand top hits one hop along graph edges (agent-facing recall)
 }
@@ -1107,7 +1164,7 @@ export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA)
   return out
 }
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.diversify ? 'd' : ''}|${o.fuseGraph ? 'g' : ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${o.fuseGraph ? 'g' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
@@ -1119,7 +1176,8 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // Accept either a raw cwd/path or an already-normalized slug for `project`.
   const projectSlug = opts.project ? normalizeProjectSlug(opts.project) : ''
   if (opts.project && !projectSlug) return []
-  if (projectSlug) opts = { ...opts, project: projectSlug }
+  const projectKey = opts.project ? projectKeyOf(opts.project) : undefined // F19: precise full-path scope
+  if (projectSlug) opts = { ...opts, project: projectSlug, projectKey }
 
   const cacheKey = searchCacheKey(opts, limit)
   const cached = searchCache.get(cacheKey)
@@ -1130,7 +1188,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   if (opts.agentId) pool = pool.filter(e => e.agentId === opts.agentId)
   if (opts.kind) pool = pool.filter(e => e.kind === opts.kind)
   if (opts.taskId) pool = pool.filter(e => e.taskId === opts.taskId)
-  if (opts.project) pool = pool.filter(e => e.project === opts.project)
+  if (opts.project) pool = pool.filter(e => matchesProject(e, opts))
   if (pool.length === 0) return []
 
   // Try vector search first

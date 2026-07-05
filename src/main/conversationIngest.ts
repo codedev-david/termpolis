@@ -92,7 +92,9 @@ export function parseClaudeTranscript(content: string): IngestTurn[] {
 
   for (const obj of iterJsonl(content)) {
     if (!sessionId && typeof obj.sessionId === 'string') sessionId = obj.sessionId
-    if (!cwd && typeof obj.cwd === 'string') cwd = obj.cwd
+    // F32: track cwd PER-TURN (update on every occurrence, not first-wins) so a session that
+    // moves between repos (/add-dir, resume) tags each turn with the cwd it actually ran under.
+    if (typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd
     if (obj.isMeta === true) continue
 
     const ts = parseTs(obj.timestamp)
@@ -185,8 +187,22 @@ function joinGeminiContent(content: unknown): string {
   return ''
 }
 
-export function parseGeminiSession(content: string): IngestTurn[] {
-  let obj: { sessionId?: unknown; messages?: unknown }
+// F20: Gemini transcripts carry no cwd inline, so every Gemini memory was permanently
+// project-unscoped. Recover it from an explicit field if present, else from the on-disk
+// layout `<root>/.gemini/tmp/<proj>/chats/session-*.json` (the <proj> dir is the scope).
+function geminiCwd(obj: { cwd?: unknown; projectPath?: unknown }, filePath?: string): string | undefined {
+  if (typeof obj.cwd === 'string' && obj.cwd) return obj.cwd
+  if (typeof obj.projectPath === 'string' && obj.projectPath) return obj.projectPath
+  if (filePath) {
+    const parts = filePath.replace(/\\/g, '/').split('/')
+    const ci = parts.lastIndexOf('chats')
+    if (ci > 0) return parts.slice(0, ci).join('/') // .../tmp/<proj>
+  }
+  return undefined
+}
+
+export function parseGeminiSession(content: string, filePath?: string): IngestTurn[] {
+  let obj: { sessionId?: unknown; messages?: unknown; cwd?: unknown; projectPath?: unknown }
   try {
     obj = JSON.parse(content)
   } catch {
@@ -194,6 +210,7 @@ export function parseGeminiSession(content: string): IngestTurn[] {
   }
   if (!obj || !Array.isArray(obj.messages)) return []
   const sessionId = typeof obj.sessionId === 'string' ? obj.sessionId : undefined
+  const cwd = geminiCwd(obj, filePath)
 
   const turns: IngestTurn[] = []
   for (const m of obj.messages) {
@@ -203,7 +220,7 @@ export function parseGeminiSession(content: string): IngestTurn[] {
     if (!role) continue
     const text = joinGeminiContent((m as { content?: unknown }).content)
     if (!text) continue
-    turns.push({ role, text, ts: parseTs((m as { timestamp?: unknown }).timestamp), source: 'gemini', sessionId })
+    turns.push({ role, text, ts: parseTs((m as { timestamp?: unknown }).timestamp), source: 'gemini', sessionId, cwd })
   }
   return turns
 }
@@ -257,6 +274,10 @@ export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): Ingest
   for (const t of turns) {
     const line = `${t.role}: ${t.text}`.trim()
     if (!line) continue
+    // F32: a chunk carries ONE cwd (makeChunk stamps turns[0].cwd on all its turns), so split
+    // on a cwd change — otherwise a session that moves between repos mis-tags the later repo's
+    // work with the first repo's project (and loses it from the true project's recall).
+    if (buf.length > 0 && buf[0].turn.cwd !== t.cwd) flush()
     if (line.length > maxChars) {
       flush()
       for (let i = 0; i < line.length; i += maxChars) {
@@ -314,14 +335,14 @@ export interface IngestDeps {
 // the PTY stream elsewhere (its on-disk format is undocumented/unstable).
 export const DISK_SOURCES: ConversationSource[] = ['claude', 'codex', 'gemini']
 
-export function parseBySource(source: ConversationSource, content: string): IngestTurn[] {
+export function parseBySource(source: ConversationSource, content: string, filePath?: string): IngestTurn[] {
   switch (source) {
     case 'claude':
       return parseClaudeTranscript(content)
     case 'codex':
       return parseCodexRollout(content)
     case 'gemini':
-      return parseGeminiSession(content)
+      return parseGeminiSession(content, filePath) // F20: derive cwd from the on-disk path
     default:
       return []
   }
@@ -359,7 +380,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         continue
       }
       stats.filesScanned++
-      const turns = parseBySource(source, content)
+      const turns = parseBySource(source, content, filePath)
       if (turns.length === 0) continue
       for (const chunk of chunkTurns(turns, deps.chunkOptions)) {
         if (deps.hasHash(chunk.hash)) {

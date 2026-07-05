@@ -991,12 +991,17 @@ describe('project metadata (current-directory recall)', () => {
     expect(hit.project).toBe('termpolis')
   })
 
-  it('memorySearch({ project }) filters to that project, accepting a path or slug', async () => {
+  it('memorySearch({ project }) filters to that project — by exact full-path key, or by bare slug (F19)', async () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha in termpolis', project: '/repos/termpolis' })
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'alpha in other', project: '/repos/other' })
-    const hits = await memorySearch({ query: 'alpha', project: 'C:/repos/Termpolis' })
-    expect(hits).toHaveLength(1)
-    expect(hits[0].content).toContain('termpolis')
+    // Same full path → precise key match (a DIFFERENT path with the same basename must NOT match — that's the collision fix).
+    const byPath = await memorySearch({ query: 'alpha', project: '/repos/termpolis' })
+    expect(byPath).toHaveLength(1)
+    expect(byPath[0].content).toContain('termpolis')
+    // Bare slug → legacy slug match (still supported for backward compatibility).
+    const bySlug = await memorySearch({ query: 'alpha', project: 'termpolis' })
+    expect(bySlug).toHaveLength(1)
+    expect(bySlug[0].content).toContain('termpolis')
   })
 
   it('normalizeProjectSlug handles windows/posix paths, bare names, and junk', () => {
