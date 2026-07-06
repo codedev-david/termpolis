@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { watchRepo, ensureRepoWatch, stopRepoWatches, _activeWatchCountForTests, _resetWatchesForTests, type WatchDeps } from '../../src/main/codeWatch'
+import { watchRepo, ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps, _activeWatchCountForTests, _resetWatchesForTests, type WatchDeps } from '../../src/main/codeWatch'
 
 function harness(over: Partial<WatchDeps> = {}) {
   let listener: (event: string, filename: string | null) => void = () => {}
@@ -96,5 +96,20 @@ describe('codeWatch', () => {
     expect(_activeWatchCountForTests()).toBe(2)
     stopRepoWatches()
     expect(_activeWatchCountForTests()).toBe(0)
+  })
+
+  it('fsBackedWatchDeps wires fs.watch (recursive) + real timers', () => {
+    const closed = vi.fn()
+    const fsWatchFn = vi.fn(() => ({ close: closed }))
+    const reindex = vi.fn()
+    const deps = fsBackedWatchDeps(fsWatchFn, reindex)
+    const listener = vi.fn()
+    const handle = deps.watch('/d', listener)
+    expect(fsWatchFn).toHaveBeenCalledWith('/d', { recursive: true }, listener)
+    handle.close()
+    expect(closed).toHaveBeenCalled()
+    expect(deps.reindex).toBe(reindex)
+    const t = deps.setTimer(() => {}, 0) // real setTimeout
+    expect(() => deps.clearTimer(t)).not.toThrow()
   })
 })

@@ -118,7 +118,6 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
-  exportMemorySnapshot, importMemorySnapshot,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -127,7 +126,7 @@ import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { initCodeGraph, buildCodeGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats } from './codeGraph'
-import { ensureRepoWatch, stopRepoWatches } from './codeWatch'
+import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
@@ -144,8 +143,8 @@ import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons, toAgentLesson } from './mnemeSociety'
 import { detectConflictsNli } from './nliContradict'
 import { proactiveQuery } from './mnemeRetrieval'
-import { getAllEdges, graphStats, exportGraphEdges, importGraphEdges } from './memoryGraph'
-import { buildBrainZip, importBrainZip } from './brainExport'
+import { getAllEdges, graphStats } from './memoryGraph'
+import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
@@ -1202,12 +1201,10 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') })
       // Keep the graph FRESH: watch the repo and re-index (debounced) on source-file changes, so
       // edits show up in seconds rather than waiting for the periodic re-sweep.
-      ensureRepoWatch(opts.repoRoot, {
-        watch: (dir, l) => { const w = fsWatch(dir, { recursive: true }, l); return { close: () => w.close() } },
-        reindex: (root) => { void buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: async (f) => readFileSync(f, 'utf8') }) },
-        setTimer: (fn, ms) => setTimeout(fn, ms),
-        clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
-      })
+      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(
+        fsWatch,
+        (root) => { void buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: async (f) => readFileSync(f, 'utf8') }) },
+      ))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
@@ -1237,13 +1234,7 @@ ipcMain.handle('brain:export', async () => {
     })
     if (result.canceled || !result.filePath) return ok({ canceled: true })
     const ud = app.getPath('userData')
-    const zip = buildBrainZip({
-      memorySnapshot: exportMemorySnapshot,
-      graphSnapshot: exportGraphEdges,
-      readFile: (name) => { try { return readFileSync(join(ud, name)) } catch { return null } },
-      appVersion: app.getVersion(),
-      now: Date.now(),
-    })
+    const zip = buildBrainArchive(ud, app.getVersion(), Date.now(), realBrainFs())
     writeFileSync(result.filePath, zip)
     return ok({ canceled: false, path: result.filePath, bytes: zip.length })
   } catch (e: any) { return err(e.message) }
@@ -1258,21 +1249,13 @@ ipcMain.handle('brain:import', async () => {
     if (result.canceled || !result.filePaths?.[0]) return ok({ canceled: true })
     const buf = readFileSync(result.filePaths[0])
     const ud = app.getPath('userData')
-    const res = importBrainZip(buf, {
-      importMemory: importMemorySnapshot,
-      importGraph: importGraphEdges,
-      restoreFile: (name, data) => {
-        const p = join(ud, name)
-        let hasContent = false
-        try { hasContent = statSync(p).size > 0 } catch { /* absent → restore below */ }
-        if (!hasContent) { try { writeFileSync(p, data) } catch { /* best effort */ } }
-      },
-    })
+    const res = mergeBrainArchive(ud, buf, realBrainFs())
     if (!res.ok) return err(res.error || 'Import failed')
     // Reload stores whose files a fresh-machine import may have restored, so they take effect now.
-    for (const reinit of [() => initCompetence(ud), () => initIdentity(ud), () => initMetrics(ud), () => initCodeGraph(ud)]) {
-      try { reinit() } catch { /* best effort */ }
-    }
+    try { initCompetence(ud) } catch { /* best effort */ }
+    try { initIdentity(ud) } catch { /* best effort */ }
+    try { initMetrics(ud) } catch { /* best effort */ }
+    try { initCodeGraph(ud) } catch { /* best effort */ }
     return ok({ canceled: false, memoriesImported: res.memoriesImported, edgesImported: res.edgesImported, restored: res.restored })
   } catch (e: any) { return err(e.message) }
 })

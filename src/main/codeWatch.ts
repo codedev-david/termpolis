@@ -97,3 +97,24 @@ export function _activeWatchCountForTests(): number {
 export function _resetWatchesForTests(): void {
   stopRepoWatches()
 }
+
+export interface FsWatchLike {
+  close: () => void
+}
+
+/** Build real (fs-backed) WatchDeps — kept out of index.ts so the wiring is tested, not a dark
+ *  corner of the entrypoint. `fsWatchFn` is Node's fs.watch; `reindex` rebuilds the code graph. */
+export function fsBackedWatchDeps(
+  fsWatchFn: (dir: string, opts: { recursive: boolean }, listener: (event: string, filename: string | null) => void) => FsWatchLike,
+  reindex: (root: string) => void,
+): WatchDeps {
+  return {
+    watch: (dir, listener) => {
+      const w = fsWatchFn(dir, { recursive: true }, listener)
+      return { close: () => w.close() }
+    },
+    reindex,
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+  }
+}
