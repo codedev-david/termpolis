@@ -241,9 +241,10 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Cost-Aware Model Picker** — pin a Claude model per profile (launches with `--model`) or hot-swap a running agent's model live from the terminal header (`/model`), with savings hints — Sonnet ≈40% cheaper than Opus, Haiku ≈80% — so routine work runs cheap while hard work stays on Opus
 - **Knowledge Graph** — the shared memory stores **typed connections** between entries (`bug → solved-by → fix`, `decision → supersedes → …`), built explicitly via `memory_link` and **automatically** as curated memories are written. Agents follow the chain with `memory_graph` to reuse prior solutions fast instead of re-deriving them — the graph gets denser, and the agents get smarter, the more you use it
 - **No duplicate data** — every write is content-addressed (SHA-256 over normalized text); storing the same information twice is a no-op, so the vector store and the on-disk log never accumulate duplicates and never re-embed what they already hold
+- **Code Graph** — a native, **AST-precise** map of your repository built with **web-tree-sitter** (WebAssembly — native-free, nothing compiled, nothing leaves your machine): every function, class, method, and the calls between them. Agents query it over MCP with `code_explore` / `code_callers` / `code_callees` / `code_impact` (change blast-radius) / `code_search` instead of grepping the same files repeatedly. Deep support for TypeScript/JavaScript, Python, Go, Rust, Java, C#, Ruby, and Swift; Terraform and Bicep fall back to a regex heuristic for symbol discovery. Auto-indexed once per session and refreshed as you edit (opt-out in Settings), with an in-app **Code Graph browser** (`Ctrl+Shift+M`)
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 25 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, and the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback`)
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 31 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search`)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
@@ -383,7 +384,7 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 
 Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~/.claude/settings.json` so Claude Code sees it as an MCP server immediately. No manual configuration needed.
 
-### Available Tools (25)
+### Available Tools (31)
 
 **Terminal Management:**
 
@@ -424,6 +425,17 @@ Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~
 | `memory_pool` | Pool cross-agent lessons multiple agents independently arrived at |
 | `memory_selfcheck` | Report the brain's calibrated self-competence in a domain |
 | `memory_feedback` | Mark a recalled memory as helpful so the useful ones rank higher |
+| `memory_conflicts` | Surface pairs of lessons different agents learned that assert opposite things about the same subject |
+
+**Code Graph** (AST-precise via web-tree-sitter, native-free):
+
+| Tool | Description |
+|------|-------------|
+| `code_explore` | A symbol's source plus its direct callers and callees, in one call |
+| `code_callers` | List the symbols that call a given symbol |
+| `code_callees` | List the symbols a given symbol calls |
+| `code_impact` | Transitive blast radius of changing a symbol — what could break |
+| `code_search` | Locate any symbol by name across the codebase |
 
 ### CLI Tool
 
@@ -461,7 +473,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9315/mcp \
 
 ```bash
 curl http://localhost:9315/health
-# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":8,"auth":"required"}
+# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":31,"auth":"required"}
 ```
 
 ## Security
