@@ -587,6 +587,16 @@ describe('preload: termpolis API — workspace trust + memory + swarm-review git
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:clear')
   })
 
+  it('memoryGetPrimerLimit invokes memory:get-primer-limit', async () => {
+    await exposed.termpolis.memoryGetPrimerLimit()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:get-primer-limit')
+  })
+
+  it('memorySetPrimerLimit invokes memory:set-primer-limit with the value', async () => {
+    await exposed.termpolis.memorySetPrimerLimit(12)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('memory:set-primer-limit', { value: 12 })
+  })
+
   it('gitRevParseHead', async () => {
     await exposed.termpolis.gitRevParseHead('/r')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('git:rev-parse-head', { cwd: '/r' })

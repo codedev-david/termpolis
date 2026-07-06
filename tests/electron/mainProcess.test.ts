@@ -3141,3 +3141,21 @@ describe('agent:second-opinion handler', () => {
     expect(r.success).toBe(false)
   })
 })
+
+describe('memory primer-limit handlers', () => {
+  it('memory:get-primer-limit returns the current primer size', async () => {
+    const res = await invokeHandler('memory:get-primer-limit')
+    expect(res.success).toBe(true)
+    expect(typeof res.data).toBe('number')
+  })
+
+  it('memory:set-primer-limit persists and clamps the value', async () => {
+    const set = await invokeHandler('memory:set-primer-limit', { value: 25 })
+    expect(set.success).toBe(true)
+    expect(set.data.primerLimit).toBe(25)
+    expect((await invokeHandler('memory:get-primer-limit')).data).toBe(25)
+    // out-of-range clamps to the 1..50 bounds
+    expect((await invokeHandler('memory:set-primer-limit', { value: 999 })).data.primerLimit).toBe(50)
+    expect((await invokeHandler('memory:set-primer-limit', { value: 0 })).data.primerLimit).toBe(1)
+  })
+})

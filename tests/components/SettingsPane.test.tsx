@@ -126,6 +126,13 @@ describe('SettingsPane', () => {
     expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(1)
   })
 
+  it('primer size control tolerates a failed load without crashing', async () => {
+    ;(window as any).termpolis.memoryGetPrimerLimit.mockRejectedValueOnce(new Error('boom'))
+    render(<SettingsPane />)
+    const input = await screen.findByTestId('settings-primer-limit') as HTMLInputElement
+    await waitFor(() => expect(input).toBeInTheDocument())
+  })
+
   it('renders the Terminal Defaults section with theme, size, font, and folder-name controls', () => {
     render(<SettingsPane />)
     expect(screen.getByTestId('settings-terminal-defaults')).toBeInTheDocument()
