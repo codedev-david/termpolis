@@ -83,6 +83,7 @@ export function SettingsPane() {
     try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
   })
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
+  const [primerLimit, setPrimerLimit] = useState<number>(10)
   const [soloLearning, setSoloLearning] = useState(() => isSoloLearningEnabled())
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
@@ -92,6 +93,12 @@ export function SettingsPane() {
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => consumePendingSettingsTab() ?? 'general')
+
+  useEffect(() => {
+    void window.termpolis.memoryGetPrimerLimit?.()?.then((res) => {
+      if (res?.success && typeof res.data === 'number') setPrimerLimit(res.data)
+    })?.catch(() => {})
+  }, [])
 
   useEffect(() => {
     const onOpenShortcuts = () => setActiveTab('keybindings')
@@ -408,6 +415,30 @@ export function SettingsPane() {
                 the most relevant memories for this project behind the scenes (current repo/directory
                 first, then cross-project), holds them as background, and waits for your instruction
                 instead of acting on them. Only fires when relevant memory exists.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={primerLimit}
+              aria-label="Primer size — memories loaded per agent"
+              data-testid="settings-primer-limit"
+              onChange={(e) => {
+                const v = Math.min(50, Math.max(1, Math.round(Number(e.target.value) || 0)))
+                setPrimerLimit(v)
+                void window.termpolis.memorySetPrimerLimit?.(v)
+              }}
+              className="w-16 mt-0.5 flex-shrink-0 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm text-center text-[#e5e5e5]"
+            />
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Primer size (memories loaded)</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                How many of the most relevant memories are primed when an agent launches or calls the
+                memory_primer tool — and the number shown in the “🧠 Loaded N” banner. Default 10.
+                Higher means richer context but more tokens injected per launch; lower is leaner and cheaper.
               </span>
             </div>
           </div>

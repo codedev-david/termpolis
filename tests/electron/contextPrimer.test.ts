@@ -15,7 +15,7 @@ describe('buildContextPrimer', () => {
     expect(out).not.toContain('`')
     expect(out).toContain('background only')
     // Over-fetches candidates (4x the inject limit) so the relevance gate can trim noise.
-    expect(search).toHaveBeenCalledWith({ query: 'auth', limit: 24 })
+    expect(search).toHaveBeenCalledWith({ query: 'auth', limit: 40 })
   })
 
   it('frames the memory as background only — never an instruction to continue past work', async () => {
@@ -180,8 +180,8 @@ describe('buildContextPrimer — current-project precedence', () => {
       return [{ id: 'g1', content: 'unrelated react tips', source: 'claude', kind: 'message', score: 0.95 }]
     })
     const out = await buildContextPrimer(search, { query: 'q', project: proj })
-    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 24, project: proj })
-    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 24 })
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 40, project: proj })
+    expect(search).toHaveBeenCalledWith({ query: 'q', limit: 40 })
     const pIdx = out!.indexOf('project decision about MCP ports')
     const gIdx = out!.indexOf('unrelated react tips')
     expect(pIdx).toBeGreaterThan(-1)

@@ -241,6 +241,9 @@ export interface TermpolisAPI {
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
+  /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
+  memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
+  memorySetPrimerLimit: (value: number) => Promise<IpcResponse<{ primerLimit: number }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => Promise<IpcResponse<{ fired: boolean; lessons: number }>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>

@@ -19,6 +19,12 @@
 import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 
+// Default number of memories injected into a primer when the caller passes no
+// explicit limit. User-tunable via the Memory panel (persisted in
+// memorySettings.ts, which re-exports this as its own default); this literal is
+// the fallback the pure builder uses in isolation (e.g. unit tests).
+export const DEFAULT_PRIMER_LIMIT = 10
+
 export interface PrimerHit {
   content: string
   source?: string
@@ -62,7 +68,7 @@ const MIN_RELEVANCE = 0.25
 const RELEVANCE_FLOOR = 3
 // Per-query relevance cliff: a hit must score within this fraction of the top hit
 // to clear the gate (in addition to the absolute MIN_RELEVANCE floor). This is
-// what trims "inject 6" down to "inject 3-4" when results fall off a cliff.
+// what trims the full inject set (e.g. 10 → 3-4) when results fall off a cliff.
 const RELEVANCE_REL_FRAC = 0.6
 // Token-Jaccard similarity above which two hits are near-duplicates — one is
 // dropped so the same decision/paraphrase doesn't occupy several inject slots.
@@ -119,7 +125,7 @@ function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => bo
 export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptions): Promise<string | null> {
   lastPrimerCost = { chars: 0, tokens: 0, lines: 0 }
   if (!opts.query || !opts.query.trim()) return null
-  const limit = Math.min(Math.max(opts.limit ?? 6, 1), 100)
+  const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PRIMER_LIMIT, 1), 100)
   const maxSnip = opts.maxSnippetChars ?? 400
   const project = (opts.project || '').trim().toLowerCase()
   const fileExists = opts.fileExists ?? existsSync

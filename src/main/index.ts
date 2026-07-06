@@ -215,6 +215,7 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
+import { getPrimerLimit, setPrimerLimit } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1266,12 +1267,21 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     // Current-directory precedence: context for the cwd's project leads the
     // primer; unrelated global hits are labeled "may NOT apply".
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit, project: project || undefined })
+    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined })
     // Economics SLI: a built primer that gets returned is context injected on the
     // agent's behalf — record the (estimated) tokens so "tokens injected" is real.
     try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
     return ok(primer)
   } catch (e: any) { return err(e.message) }
+})
+
+// Primer size (memories injected per primer) — user-tunable in the Memory panel.
+// Lives in main because the MCP memory_primer handler reads it server-side too.
+ipcMain.handle('memory:get-primer-limit', async () => {
+  try { return ok(getPrimerLimit()) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => {
+  try { return ok(setPrimerLimit(opts?.value)) } catch (e: any) { return err(e.message) }
 })
 
 // Claude launch primer: when relevant memory exists, write the memory-recall
@@ -1284,7 +1294,7 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
 ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string }) => {
   try {
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', project: project || undefined })
+    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
     try { recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(digest.length / 4) }) } catch { /* best effort */ }
     const dir = join(app.getPath('userData'), 'primers')
@@ -1884,7 +1894,7 @@ if (!gotTheLock) {
             : 'recent work, key decisions, and conventions')
         const primer = await buildContextPrimer(memorySearch, {
           query,
-          limit: opts.limit ?? 40,
+          limit: opts.limit ?? getPrimerLimit(),
           maxSnippetChars: 600,
           project: project || undefined,
           projectPath: opts.cwd || undefined, // F19: scope precisely by the full cwd (projectKey)

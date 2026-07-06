@@ -27,6 +27,8 @@ beforeAll(() => {
     codeGraphStats: vi.fn().mockResolvedValue({ success: true, data: { files: 0, symbols: 0, edges: 0 } }),
     brainExport: vi.fn().mockResolvedValue({ success: true, data: { canceled: false, path: '/tmp/brain.zip', bytes: 2048 } }),
     brainImport: vi.fn().mockResolvedValue({ success: true, data: { canceled: false, memoriesImported: 5, edgesImported: 3, restored: [] } }),
+    memoryGetPrimerLimit: vi.fn().mockResolvedValue({ success: true, data: 15 }),
+    memorySetPrimerLimit: vi.fn().mockResolvedValue({ success: true, data: { primerLimit: 30 } }),
   }
   ;(window as any).updater = {
     getStatus: vi.fn().mockResolvedValue({ status: 'idle' }),
@@ -107,6 +109,21 @@ describe('SettingsPane', () => {
   it('renders settings panel with heading', () => {
     render(<SettingsPane />)
     expect(screen.getByText('Settings')).toBeInTheDocument()
+  })
+
+  it('loads the primer size from main and persists changes (clamped)', async () => {
+    render(<SettingsPane />)
+    const input = await screen.findByTestId('settings-primer-limit') as HTMLInputElement
+    // the mount effect pulls the persisted value from main
+    await waitFor(() => expect(input.value).toBe('15'))
+    // a change persists via IPC
+    fireEvent.change(input, { target: { value: '30' } })
+    expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(30)
+    // above-max clamps to 50, below-min clamps to 1
+    fireEvent.change(input, { target: { value: '999' } })
+    expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(50)
+    fireEvent.change(input, { target: { value: '0' } })
+    expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(1)
   })
 
   it('renders the Terminal Defaults section with theme, size, font, and folder-name controls', () => {
