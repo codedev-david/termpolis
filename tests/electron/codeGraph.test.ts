@@ -15,6 +15,7 @@ import {
   codeImpact,
   codeExplore,
   codeGraphStats,
+  reindexRepoGraph,
   _resetCodeGraphForTests,
 } from '../../src/main/codeGraph'
 
@@ -167,5 +168,14 @@ describe('codeGraph store', () => {
     initCodeGraph(dir) // reload
     expect(codeGraphStats().symbols).toBe(3)
     expect(codeCallers('beta').map((s) => s.name)).toContain('alpha') // edges rebuilt on load
+  })
+})
+
+describe('reindexRepoGraph (file-watch freshness path)', () => {
+  it('runs a from-disk rebuild, degrading to empty stats when the path lists no files', async () => {
+    initCodeGraph(dir)
+    const stats = await reindexRepoGraph(path.join(dir, 'not-a-repo'))
+    expect(stats).toHaveProperty('symbols')
+    expect(typeof stats.symbols).toBe('number')
   })
 })

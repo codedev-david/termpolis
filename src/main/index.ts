@@ -125,7 +125,7 @@ import {
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -1201,10 +1201,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') })
       // Keep the graph FRESH: watch the repo and re-index (debounced) on source-file changes, so
       // edits show up in seconds rather than waiting for the periodic re-sweep.
-      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(
-        fsWatch,
-        (root) => { void buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: async (f) => readFileSync(f, 'utf8') }) },
-      ))
+      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root) => { void reindexRepoGraph(root) }))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
