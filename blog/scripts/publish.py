@@ -163,6 +163,46 @@ def email_fallback(post, reason: str) -> None:
         log(f"email fallback failed: {e}")
 
 
+def notify_medium_import(post, substack_url: str) -> None:
+    """Nudge a manual Medium cross-post via 'Import a story'.
+
+    Medium closed its publishing API to new integration tokens in 2025, so most
+    accounts can't auto-publish. Importing from the Substack URL is the supported
+    alternative and keeps the canonical link pointed back at Substack. Set
+    MEDIUM_IMPORT_REMINDER=false to silence this.
+    """
+    if (os.getenv("MEDIUM_IMPORT_REMINDER") or "true").strip().lower() in ("false", "0", "no", "off"):
+        return
+    user = os.getenv("MAIL_USERNAME", "").strip()
+    pw = os.getenv("MAIL_PASSWORD", "").strip()
+    if not (user and pw):
+        log("no MAIL_* creds; skipping medium-import reminder")
+        return
+    to = os.getenv("MAIL_TO", "").strip() or user
+    host = os.getenv("MAIL_HOST", "smtp.gmail.com").strip()
+    port = int(os.getenv("MAIL_PORT", "587").strip() or "587")
+
+    body = (
+        f"Published to Substack: {substack_url}\n\n"
+        f"To mirror it on Medium (keeps the canonical link -> Substack):\n"
+        f"  1. Open https://medium.com/p/import\n"
+        f"  2. Paste this URL: {substack_url}\n"
+        f"  3. Review, then Publish.\n"
+    )
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"[Termpolis blog] Cross-post to Medium: {post['title']}"
+    msg["From"] = user
+    msg["To"] = to
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls()
+            s.login(user, pw)
+            s.sendmail(user, [to], msg.as_string())
+        log(f"medium-import reminder emailed to {to}")
+    except Exception as e:  # noqa: BLE001
+        log(f"medium-import reminder failed: {e}")
+
+
 def main() -> int:
     articles = load_articles()
     if not articles:
@@ -211,6 +251,9 @@ def main() -> int:
             attempted_failure = True
             log(f"medium FAILED: {e}")
             email_fallback(post, f"Automated Medium publish failed: {e}")
+
+    if results.get("substack") and not results.get("medium"):
+        notify_medium_import(post, results["substack"])
 
     if not results:
         if attempted_failure:

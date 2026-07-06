@@ -45,6 +45,7 @@ jobs:
           MAIL_USERNAME:    ${{ secrets.MAIL_USERNAME }}
           MAIL_PASSWORD:    ${{ secrets.MAIL_PASSWORD }}
           MAIL_TO:          ${{ secrets.MAIL_TO }}
+          MEDIUM_IMPORT_REMINDER: ${{ vars.MEDIUM_IMPORT_REMINDER }}
           DRY_RUN:          ${{ github.event.inputs.dryRun }}
           FORCE_SLUG:       ${{ github.event.inputs.slug }}
         run: python blog/scripts/publish.py
