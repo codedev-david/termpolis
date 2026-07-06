@@ -1,0 +1,59 @@
+name: Publish weekly blog article
+
+# Ships one queued article per week to Substack (canonical) + Medium (syndicated).
+# The publisher (blog/scripts/publish.py) is idempotent and dormant until the
+# SUBSTACK_* / MEDIUM_TOKEN secrets are set, so this is safe to merge immediately.
+
+on:
+  schedule:
+    - cron: '0 14 * * 1'          # Mondays 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: 'Force-publish a specific slug (optional)'
+        required: false
+      dryRun:
+        description: 'Select + report only (do not publish)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write                  # to commit the status flip back to main
+
+concurrency:
+  group: blog-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r blog/requirements.txt
+
+      - name: Publish next queued article
+        env:
+          SUBSTACK_COOKIES: ${{ secrets.SUBSTACK_COOKIES }}
+          SUBSTACK_PUB_URL: ${{ secrets.SUBSTACK_PUB_URL }}
+          MEDIUM_TOKEN:     ${{ secrets.MEDIUM_TOKEN }}
+          MAIL_USERNAME:    ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD:    ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO:          ${{ secrets.MAIL_TO }}
+          DRY_RUN:          ${{ github.event.inputs.dryRun }}
+          FORCE_SLUG:       ${{ github.event.inputs.slug }}
+        run: python blog/scripts/publish.py
+
+      - name: Commit status flip
+        if: ${{ github.event.inputs.dryRun != 'true' }}
+        run: |
+          git config user.name  "termpolis-bot"
+          git config user.email "termpolis-bot@users.noreply.github.com"
+          git add blog/content
+          git commit -m "chore(blog): publish next article [skip ci]" || echo "nothing to commit"
+          git push
