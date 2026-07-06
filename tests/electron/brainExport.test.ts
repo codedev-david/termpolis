@@ -70,4 +70,19 @@ describe('brainExport', () => {
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/newer termpolis/i)
   })
+
+  it('REJECTS a manifest missing required fields', () => {
+    const zip = createZip([{ name: MANIFEST_ENTRY, data: Buffer.from(JSON.stringify({ app: 'x' })) }])
+    expect(importBrainZip(zip, noopImport()).error).toMatch(/invalid/i)
+  })
+
+  it('skips an empty graph + empty files, and counts zero memories cleanly', () => {
+    const zip = buildBrainZip(exportDeps({ graphSnapshot: () => '', readFile: () => Buffer.from(''), memorySnapshot: () => '' }))
+    const entries = readZip(zip)
+    const names = entries.map((e) => e.name)
+    expect(names).toContain(MEMORY_ENTRY)
+    expect(names).not.toContain('memory-graph.jsonl') // empty graph → not bundled
+    expect(names).not.toContain('mneme-competence.jsonl') // empty file → not bundled
+    expect(JSON.parse(entries.find((e) => e.name === MANIFEST_ENTRY)!.data.toString()).memories).toBe(0)
+  })
 })
