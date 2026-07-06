@@ -546,4 +546,21 @@ describe('SettingsPane', () => {
     render(<SettingsPane />)
     expect(screen.getByTestId('code-graph-panel')).toBeTruthy()
   })
+
+  it('clears status on a canceled export and surfaces export/import failures', async () => {
+    const api = (window as any).termpolis
+    api.brainExport.mockResolvedValueOnce({ success: true, data: { canceled: true } })
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('brain-export-btn'))
+    await waitFor(() => expect(api.brainExport).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByTestId('brain-io-status')).toBeNull()) // canceled → no status
+
+    api.brainExport.mockResolvedValueOnce({ success: false, error: 'disk full' })
+    fireEvent.click(screen.getByTestId('brain-export-btn'))
+    await waitFor(() => expect(screen.getByTestId('brain-io-status').textContent).toMatch(/Export failed: disk full/))
+
+    api.brainImport.mockRejectedValueOnce(new Error('bridge gone'))
+    fireEvent.click(screen.getByTestId('brain-import-btn'))
+    await waitFor(() => expect(screen.getByTestId('brain-io-status').textContent).toMatch(/Import failed: bridge gone/))
+  })
 })

@@ -217,3 +217,23 @@ describe('startRepoResweep', () => {
     expect(REPO_RESWEEP_INTERVAL_MS).toBe(15 * 60_000)
   })
 })
+
+describe('code-graph observability', () => {
+  it('surfaces a "🧭 Code graph: N symbols" notice after a repo is indexed', async () => {
+    const { useTerminalStore } = await import('../../src/renderer/src/store/terminalStore')
+    useTerminalStore.getState().setMemoryNotice('')
+    mockApi({ memoryIngestCode: vi.fn(async () => ({ success: true, data: { filesScanned: 3, codeGraph: { symbols: 42, edges: 99 } } })) })
+    _resetAutoIndexedRoots()
+    await autoIndexRepo('/repo/root')
+    expect(useTerminalStore.getState().memoryNotice).toMatch(/Code graph: 42 symbols/)
+  })
+
+  it('does not notice when the graph has zero symbols', async () => {
+    const { useTerminalStore } = await import('../../src/renderer/src/store/terminalStore')
+    useTerminalStore.getState().setMemoryNotice('untouched')
+    mockApi({ memoryIngestCode: vi.fn(async () => ({ success: true, data: { codeGraph: { symbols: 0 } } })) })
+    _resetAutoIndexedRoots()
+    await autoIndexRepo('/repo/root')
+    expect(useTerminalStore.getState().memoryNotice).toBe('untouched')
+  })
+})

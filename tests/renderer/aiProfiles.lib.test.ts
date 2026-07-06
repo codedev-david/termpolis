@@ -85,6 +85,16 @@ describe('launchAgentProfile', () => {
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ agentCommand: 'claude' }))
   })
 
+  it('deterministically indexes the picked repo for EVERY agent, not just Claude', async () => {
+    const api = (window as any).termpolis
+    api.gitFindRoot = vi.fn().mockResolvedValue({ success: true, data: '/test/project' })
+    api.memoryIngestCode = vi.fn().mockResolvedValue({ success: true, data: { codeGraph: { symbols: 7 } } })
+    const { _resetAutoIndexedRoots } = await import('../../src/renderer/src/hooks/useAutoCodeIndex')
+    _resetAutoIndexedRoots()
+    await launchAgentProfile(DEFAULT_AI_PROFILES[1], deps()) // Codex — a non-Claude agent
+    await vi.waitFor(() => expect(api.memoryIngestCode).toHaveBeenCalledWith('/test/project'))
+  })
+
   it('does nothing when the directory picker is cancelled', async () => {
     ;(window as any).termpolis.pickDirectory = vi.fn().mockResolvedValue({ success: true, data: null })
     await launchAgentProfile(claude, deps())
