@@ -47,4 +47,25 @@ describe('mnemeConsolidateRun — the consolidation "sleep" pass', () => {
     const res = runConsolidation({ candidates: () => [], simOf: () => 0, forget: () => {}, now: 0 })
     expect(res).toEqual({ mergedDuplicates: 0, decayedCold: 0 })
   })
+
+  it('swallows forget failures in BOTH the merge and decay passes (best-effort)', () => {
+    const now = 20 * DAY
+    const A: ConsolEntry = { id: 'a', content: 'dup one', ts: now - 1000, kind: 'note', memoryType: 'episodic', importance: 0.3, useCount: 0, tags: [], hasEdges: false }
+    const B: ConsolEntry = { id: 'b', content: 'dup one but a longer version', ts: now - 900, kind: 'note', memoryType: 'episodic', importance: 0.3, useCount: 0, tags: [], hasEdges: false }
+    const C: ConsolEntry = { id: 'c', content: 'ancient cold message', ts: 0, kind: 'message', memoryType: 'episodic', importance: 0.1, useCount: 0, tags: [], hasEdges: false }
+    const simOf = (x: ConsolEntry, y: ConsolEntry): number => ((x.id === 'a' && y.id === 'b') || (x.id === 'b' && y.id === 'a') ? 0.95 : 0)
+    const res = runConsolidation({ candidates: () => [A, B, C], simOf, forget: () => { throw new Error('store locked') }, now })
+    expect(res.mergedDuplicates).toBe(0) // merge forget threw → not counted (catch exercised)
+    expect(res.decayedCold).toBe(0) // decay forget threw → not counted (catch exercised)
+  })
+
+  it('does not double-forget an entry already dropped in the merge pass (dedup skip)', () => {
+    const now = 40 * DAY
+    const A: ConsolEntry = { id: 'a', content: 'cold dup', ts: 0, kind: 'message', memoryType: 'episodic', importance: 0.1, useCount: 0, tags: [], hasEdges: false }
+    const B: ConsolEntry = { id: 'b', content: 'cold dup but longer', ts: now - 100, kind: 'note', memoryType: 'episodic', importance: 0.3, useCount: 0, tags: [], hasEdges: false }
+    const simOf = (x: ConsolEntry, y: ConsolEntry): number => ((x.id === 'a' && y.id === 'b') || (x.id === 'b' && y.id === 'a') ? 0.95 : 0)
+    const forgotten: string[] = []
+    runConsolidation({ candidates: () => [A, B], simOf, forget: (id) => forgotten.push(id), now })
+    expect(forgotten.filter((id) => id === 'a')).toHaveLength(1) // merged once; decay saw it in `done` and skipped
+  })
 })

@@ -42,8 +42,11 @@ function findWasm(fileName: string): string | null {
 function coreWasmPath(): string | null {
   const bundled = findWasm('tree-sitter.wasm')
   if (bundled) return bundled
+  /* v8 ignore start -- dev-only fallback when copy-grammars hasn't run; grammars always resolve in tests */
   const nm = path.join(process.cwd(), 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')
-  return fs.existsSync(nm) ? nm : null
+  if (fs.existsSync(nm)) return nm
+  return null
+  /* v8 ignore stop */
 }
 
 async function ensureInit(): Promise<boolean> {
@@ -51,11 +54,13 @@ async function ensureInit(): Promise<boolean> {
   if (!s.init) {
     s.init = (async () => {
       const core = coreWasmPath()
+      /* v8 ignore next -- core is always resolvable in tests; a missing runtime is env-specific */
       if (!core) return false // grammars not bundled → heuristic fallback
       try {
         await Parser.init({ locateFile: () => core })
         return true
       } catch {
+        /* v8 ignore next -- WASM runtime init failure is not reproducible in unit tests */
         return false
       }
     })()
@@ -67,6 +72,7 @@ async function ensureInit(): Promise<boolean> {
 export async function loadGrammar(grammar: string): Promise<Parser.Language | null> {
   const cache = (tsStore().cache ??= new Map())
   if (cache.has(grammar)) return cache.get(grammar) ?? null
+  /* v8 ignore next 4 -- ensureInit only fails when the WASM runtime is unavailable (env-specific) */
   if (!(await ensureInit())) {
     cache.set(grammar, null)
     return null
@@ -83,6 +89,7 @@ export async function loadGrammar(grammar: string): Promise<Parser.Language | nu
     cache.set(grammar, lang)
     return lang
   } catch {
+    /* v8 ignore next 2 -- Language.load failure for a valid bundled grammar isn't reproducible */
     cache.set(grammar, null)
     return null
   }

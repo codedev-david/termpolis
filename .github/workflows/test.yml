@@ -54,6 +54,11 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
+      # Populate resources/grammars so the code-graph tree-sitter loader resolves grammars from the
+      # SAME candidate dir CI-and-local (deterministic branch coverage — otherwise CI falls back to
+      # node_modules and lands a fraction lower on the razor-thin branch gate).
+      - name: Copy tree-sitter grammars
+        run: node scripts/copy-grammars.cjs
       # Coverage gates run on Windows only. src/main has ~19
       # `process.platform === 'win32'` checks whose win32 side never
       # executes on Linux/macOS, so each platform lands at a slightly

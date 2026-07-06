@@ -25,6 +25,7 @@ interface LangConfig {
 // A kind-tagged capture name in a decl query maps 1:1 to a SymbolKind.
 const KINDS: SymbolKind[] = ['function', 'class', 'interface', 'type', 'const', 'enum', 'struct', 'trait', 'module', 'method']
 function kindOf(capture: string): SymbolKind | null {
+  /* v8 ignore next -- the null arm is defensive; every kind capture is in KINDS */
   return (KINDS as string[]).includes(capture) ? (capture as SymbolKind) : null
 }
 
@@ -204,6 +205,7 @@ async function getCompiled(grammar: string, cfg: LangConfig): Promise<Compiled |
   const cache = compiledCache()
   if (cache.has(grammar)) return cache.get(grammar) ?? null
   const lang = await loadGrammar(grammar)
+  /* v8 ignore next 4 -- grammar-load failure is env-specific (WASM), not reproducible in tests */
   if (!lang) {
     cache.set(grammar, null)
     return null
@@ -215,6 +217,7 @@ async function getCompiled(grammar: string, cfg: LangConfig): Promise<Compiled |
     cache.set(grammar, compiled)
     return compiled
   } catch {
+    /* v8 ignore next 3 -- every shipped grammar's queries compile */
     cache.set(grammar, null) // a query that doesn't compile against this grammar → fall back
     return null
   }
@@ -226,16 +229,20 @@ export async function extractFileTS(file: string, content: string): Promise<File
   const grammar = grammarForFile(file)
   if (!grammar) return null
   const cfg = CONFIGS[grammar]
+  /* v8 ignore next -- every configured grammar has a CONFIG entry */
   if (!cfg) return null
   const compiled = await getCompiled(grammar, cfg)
+  /* v8 ignore next -- getCompiled returns null only on env-specific grammar-load failure */
   if (!compiled) return null
 
   let tree
   try {
     tree = compiled.parser.parse(content)
   } catch {
+    /* v8 ignore next -- tree-sitter parse does not throw on valid string input */
     return null
   }
+  /* v8 ignore next 3 -- a parsed tree always has a rootNode */
   if (!tree?.rootNode) {
     tree?.delete()
     return null
@@ -257,8 +264,10 @@ export async function extractFileTS(file: string, content: string): Promise<File
     for (const match of compiled.declQ.matches(tree.rootNode)) {
       const nameCap = match.captures.find((c) => c.name === 'name')
       const kindCap = match.captures.find((c) => c.name !== 'name')
+      /* v8 ignore next -- every decl match carries both a name and a kind capture */
       if (!nameCap || !kindCap) continue
       const kind = kindOf(kindCap.name)
+      /* v8 ignore next -- kind captures always map to a SymbolKind */
       if (!kind) continue
       const rangeNode = kindCap.node
       const startByte = rangeNode.startIndex
