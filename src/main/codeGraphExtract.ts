@@ -30,6 +30,10 @@ export interface CodeSymbol {
   startLine: number // 1-based
   endLine: number // 1-based, best-effort (brace/indent matched)
   lang: string
+  // AST-precise callee names inside this symbol's body, set by the tree-sitter extractor. When
+  // present the graph uses them verbatim; when absent (heuristic extractor) it derives refs from
+  // the sliced body text. Optional so heuristic symbols stay unchanged.
+  refs?: string[]
 }
 
 export interface FileExtract {

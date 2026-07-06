@@ -48,3 +48,6 @@ resources/models/bge-small-en-v1.5/
 resources/models/whisper-base/
 resources/models/whisper-base.en/
 resources/voice-runtime/
+
+# tree-sitter grammar WASMs — regenerated from the tree-sitter-wasms devDep by scripts/copy-grammars.cjs
+resources/grammars/

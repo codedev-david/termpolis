@@ -179,3 +179,17 @@ describe('reindexRepoGraph (file-watch freshness path)', () => {
     expect(typeof stats.symbols).toBe('number')
   })
 })
+
+describe('buildCodeGraph — tree-sitter integration + heuristic fallback', () => {
+  it('extracts supported languages via AST and falls back to heuristic for the rest (mix)', async () => {
+    const files = ['/repo/a.ts', '/repo/infra.tf']
+    const contents: Record<string, string> = {
+      '/repo/a.ts': 'export function alpha() { return beta() }\nexport function beta() { return 1 }',
+      '/repo/infra.tf': 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}',
+    }
+    const stats = await buildCodeGraph({ listFiles: async () => files, readFile: async (f) => contents[f] })
+    expect(codeSymbols('alpha')).toHaveLength(1) // TS via tree-sitter
+    expect(codeCallees('alpha').map((s) => s.name)).toContain('beta') // AST edge
+    expect(stats.symbols).toBeGreaterThanOrEqual(2) // .tf added via heuristic — build didn't crash on the mix
+  })
+})

@@ -11,7 +11,8 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { extractFile, extractReferences, languageForFile, type CodeSymbol, type SymbolKind } from './codeGraphExtract'
+import { extractFile, extractReferences, languageForFile, type CodeSymbol, type SymbolKind, type FileExtract } from './codeGraphExtract'
+import { extractFileTS } from './codeGraphTreeSitter'
 import { isIndexableCodeFile, discoverRepoFiles } from './codeIngest'
 
 export interface CodeGraphEdge {
@@ -144,17 +145,25 @@ export function rebuildEdges(): void {
 
 /** Index (or re-index) one file's content, pruning its prior symbols. Does NOT rebuild edges
  *  (batch first, then rebuildEdges once). Returns the symbol count for the file. */
+/** Store a FileExtract's symbols + imports. Per-symbol refs come from the AST extractor
+ *  (sym.refs) when present, else are derived from the sliced body text (heuristic path). */
+function indexExtract(ex: FileExtract, content: string): number {
+  const lines = content.split('\n')
+  for (const sym of ex.symbols) {
+    const refs = sym.refs ?? extractReferences(lines.slice(sym.startLine - 1, sym.endLine).join('\n'))
+    addSymbolRec({ ...sym, id: symbolId(sym.file, sym.name, sym.startLine), refs })
+  }
+  if (ex.imports.length) fileImports.set(ex.file, ex.imports)
+  return ex.symbols.length
+}
+
+/** Index (or re-index) one file's content via the heuristic extractor, pruning its prior symbols.
+ *  Synchronous — used by the incremental single-file path and tests. The full build path
+ *  (buildCodeGraph) prefers the AST extractor. Does NOT rebuild edges. */
 export function indexFileContent(file: string, content: string): number {
   removeFile(file)
   const ex = extractFile(file, content)
-  if (!ex) return 0
-  const lines = content.split('\n')
-  for (const sym of ex.symbols) {
-    const body = lines.slice(sym.startLine - 1, sym.endLine).join('\n')
-    addSymbolRec({ ...sym, id: symbolId(sym.file, sym.name, sym.startLine), refs: extractReferences(body) })
-  }
-  if (ex.imports.length) fileImports.set(file, ex.imports)
-  return ex.symbols.length
+  return ex ? indexExtract(ex, content) : 0
 }
 
 /** Incremental single-file re-index: index + rebuild edges + persist. */
@@ -193,7 +202,11 @@ export async function buildCodeGraph(deps: CodeGraphDeps): Promise<CodeGraphStat
     } catch {
       continue
     }
-    indexFileContent(file, content)
+    // Prefer AST-precise extraction (web-tree-sitter); fall back to the heuristic for languages
+    // without a grammar, or if the grammar can't load. The graph degrades, it never breaks.
+    removeFile(file)
+    const ex = (await extractFileTS(file, content)) ?? extractFile(file, content)
+    if (ex) indexExtract(ex, content)
   }
   rebuildEdges()
   persistCodeGraph()

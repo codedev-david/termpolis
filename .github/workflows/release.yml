@@ -101,6 +101,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
+      - name: Copy tree-sitter grammars
+        # Populates resources/grammars/ from the tree-sitter-wasms devDep — required by both the
+        # renderer build and electron-builder's extraResources (the grammars are gitignored).
+        run: node scripts/copy-grammars.cjs
+
       - name: Build app
         run: npx electron-vite build
         env:

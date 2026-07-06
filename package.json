@@ -13,9 +13,10 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "grammars": "node scripts/copy-grammars.cjs",
+    "build": "node scripts/copy-grammars.cjs && electron-vite build",
     "gen:icon": "node scripts/gen-icon.cjs",
-    "package": "electron-vite build && electron-builder",
+    "package": "npm run build && electron-builder",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -46,12 +47,17 @@
       {
         "from": "resources/models",
         "to": "models"
+      },
+      {
+        "from": "resources/grammars",
+        "to": "grammars"
       }
     ],
     "afterPack": "scripts/afterPack.cjs",
     "asarUnpack": [
       "node_modules/node-pty/**",
       "node_modules/onnxruntime-web/**",
+      "node_modules/web-tree-sitter/**",
       "resources/tools/**"
     ],
     "win": {
@@ -152,6 +158,7 @@
     "react-dom": "18.3.1",
     "tailwindcss": "3.4.19",
     "uuid": "13.0.0",
+    "web-tree-sitter": "^0.21.0",
     "zustand": "5.0.12"
   },
   "devDependencies": {
@@ -175,6 +182,7 @@
     "eslint-plugin-react-refresh": "0.4.26",
     "jsdom": "29.0.0",
     "sharp": "0.34.5",
+    "tree-sitter-wasms": "^0.1.13",
     "typescript": "5.9.3",
     "vite": "5.4.21",
     "vitest": "4.1.0"
