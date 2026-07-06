@@ -5,9 +5,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockExecSync, mockExecFileSync } = vi.hoisted(() => ({
+const { mockExecSync, mockExecFileSync, mockExistsSync } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
   mockExecFileSync: vi.fn(),
+  mockExistsSync: vi.fn(),
 }))
 
 vi.mock('child_process', () => ({
@@ -15,12 +16,36 @@ vi.mock('child_process', () => ({
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
 }))
+vi.mock('fs', () => ({ existsSync: mockExistsSync, default: { existsSync: mockExistsSync } }))
 
-import { safeGit, runSafeCommand, parseSafeCommand, isValidGitRef } from '../../src/main/gitCommand'
+import { safeGit, runSafeCommand, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
 
 beforeEach(() => {
   mockExecSync.mockReset()
   mockExecFileSync.mockReset()
+  mockExistsSync.mockReset()
+  _resetGitBinForTests()
+})
+
+describe('safeGit — git-not-on-PATH fallback', () => {
+  it('resolves git from a known install path when the PATH lookup ENOENTs, and caches it', () => {
+    const enoent = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
+    mockExecFileSync.mockImplementationOnce(() => { throw enoent }) // `git` on PATH → not found
+    mockExistsSync.mockImplementation((p: string) => String(p).toLowerCase().includes('git')) // an install exists
+    mockExecFileSync.mockReturnValue(Buffer.from('/repo/root\n')) // the resolved absolute git works
+    expect(safeGit(['rev-parse', '--show-toplevel'], { cwd: '/repo' }).trim()).toBe('/repo/root')
+    // cached: a second call does NOT retry `git` on PATH (no more ENOENT path)
+    mockExecFileSync.mockClear()
+    expect(safeGit(['rev-parse', 'HEAD'], { cwd: '/repo' }).trim()).toBe('/repo/root')
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-throws a genuine git error (not ENOENT) without falling back', () => {
+    const notRepo = Object.assign(new Error('not a git repository'), { status: 128 })
+    mockExecFileSync.mockImplementation(() => { throw notRepo })
+    expect(() => safeGit(['rev-parse', '--show-toplevel'], { cwd: '/tmp' })).toThrow(/not a git repository/)
+    expect(mockExistsSync).not.toHaveBeenCalled() // no fallback attempted
+  })
 })
 
 describe('safeGit', () => {

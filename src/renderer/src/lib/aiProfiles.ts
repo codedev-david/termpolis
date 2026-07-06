@@ -3,6 +3,7 @@ import type { AIProfile, ShellInfo, ShellType, TerminalSession } from '../types'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { getTerminalDefaults, agentTerminalName } from './terminalDefaults'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
+import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import qwenIcon from '../assets/qwen-ai-logo.svg'
 import { claudeModelArg } from './modelBroker'
@@ -104,6 +105,10 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     agentCommand: profile.command,
     launchPrimed,
   })
+  // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini/Qwen) — the
+  // folder was chosen explicitly, so don't wait on cwd-tracking (agent TUIs don't emit OSC 633).
+  // Deduped against the per-terminal effect, and it surfaces a "🧭 Code graph: N symbols" notice.
+  void autoIndexRepo(cwd)
   // These timers fire seconds after the call returns. In unit tests jsdom may
   // tear down before they run — guard each writeToTerminal call so a gone-away
   // window doesn't raise an unhandled exception.

@@ -24,6 +24,9 @@ beforeAll(() => {
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
     setTelemetryOptIn: vi.fn().mockResolvedValue({ success: true, data: { optIn: true } }),
     getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
+    codeGraphStats: vi.fn().mockResolvedValue({ success: true, data: { files: 0, symbols: 0, edges: 0 } }),
+    brainExport: vi.fn().mockResolvedValue({ success: true, data: { canceled: false, path: '/tmp/brain.zip', bytes: 2048 } }),
+    brainImport: vi.fn().mockResolvedValue({ success: true, data: { canceled: false, memoriesImported: 5, edgesImported: 3, restored: [] } }),
   }
   ;(window as any).updater = {
     getStatus: vi.fn().mockResolvedValue({ status: 'idle' }),
@@ -527,5 +530,20 @@ describe('SettingsPane', () => {
     } finally {
       window.removeEventListener('termpolis:openMemory', onOpen)
     }
+  })
+
+  it('exports and imports the brain from Settings → General', async () => {
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('brain-export-btn'))
+    await waitFor(() => expect((window as any).termpolis.brainExport).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('brain-io-status').textContent).toMatch(/Exported/))
+    fireEvent.click(screen.getByTestId('brain-import-btn'))
+    await waitFor(() => expect((window as any).termpolis.brainImport).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('brain-io-status').textContent).toMatch(/Imported 5 memories/))
+  })
+
+  it('renders the Code Graph browser in Settings → General', () => {
+    render(<SettingsPane />)
+    expect(screen.getByTestId('code-graph-panel')).toBeTruthy()
   })
 })

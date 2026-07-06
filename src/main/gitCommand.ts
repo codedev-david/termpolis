@@ -9,6 +9,7 @@
 // compromised renderer (or unsanitised MCP client) sends a crafted string.
 
 import { execFileSync, execSync } from 'child_process'
+import { existsSync } from 'fs'
 
 export interface GitOptions {
   cwd: string
@@ -16,16 +17,48 @@ export interface GitOptions {
   maxBuffer?: number
 }
 
-export function safeGit(args: string[], opts: GitOptions): string {
-  const buf = execFileSync('git', args, {
+// A packaged Electron app (especially on Windows launched from the Start Menu) can inherit a PATH
+// without git — which silently broke code indexing, git-root detection, and the status bar. Resolve
+// git from common install locations if the PATH lookup ENOENTs, and cache the result.
+let resolvedGit: string | null = null
+function gitInstallCandidates(): string[] {
+  return process.platform === 'win32'
+    ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe']
+    : ['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/bin/git']
+}
+
+function runGit(bin: string, args: string[], opts: GitOptions): string {
+  return execFileSync(bin, args, {
     cwd: opts.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: opts.timeout ?? 10000,
     maxBuffer: opts.maxBuffer ?? 1024 * 1024,
     windowsHide: true,
     shell: false,
-  })
-  return buf.toString()
+  }).toString()
+}
+
+export function safeGit(args: string[], opts: GitOptions): string {
+  const bin = resolvedGit ?? 'git'
+  try {
+    return runGit(bin, args, opts)
+  } catch (e) {
+    // Only fall back when git itself couldn't be found (not on a real git error like "not a repo").
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT' && bin === 'git') {
+      for (const candidate of gitInstallCandidates()) {
+        if (existsSync(candidate)) {
+          resolvedGit = candidate
+          return runGit(candidate, args, opts)
+        }
+      }
+    }
+    throw e
+  }
+}
+
+/** Test seam: reset the cached git binary resolution. */
+export function _resetGitBinForTests(): void {
+  resolvedGit = null
 }
 
 // Conservative subset of git-check-ref-format(1): start with alphanumeric,

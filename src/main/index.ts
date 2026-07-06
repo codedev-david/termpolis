@@ -118,6 +118,7 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
+  exportMemorySnapshot, importMemorySnapshot,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -141,7 +142,8 @@ import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons, toAgentLesson } from './mnemeSociety'
 import { detectConflictsNli } from './nliContradict'
 import { proactiveQuery } from './mnemeRetrieval'
-import { getAllEdges, graphStats } from './memoryGraph'
+import { getAllEdges, graphStats, exportGraphEdges, importGraphEdges } from './memoryGraph'
+import { buildBrainZip, importBrainZip } from './brainExport'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
@@ -1214,6 +1216,56 @@ ipcMain.handle('code-graph:explore', async (_, opts: { query: string }) => { try
 ipcMain.handle('code-graph:search', async (_, opts: { query?: string; limit?: number }) => { try { return ok(codeSymbols(opts?.query, opts?.limit ?? 50)) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:callers', async (_, opts: { name: string }) => { try { return ok(codeCallers(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try { return ok(codeImpact(opts?.name || '')) } catch (e: any) { return err(e.message) } })
+
+// Brain export / import (portable .zip) — integrity-gated (zipArchive CRC + manifest SHA-256).
+ipcMain.handle('brain:export', async () => {
+  try {
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: 'Export Memory',
+      defaultPath: `termpolis-brain-${new Date().toISOString().slice(0, 10)}.zip`,
+      filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
+    })
+    if (result.canceled || !result.filePath) return ok({ canceled: true })
+    const ud = app.getPath('userData')
+    const zip = buildBrainZip({
+      memorySnapshot: exportMemorySnapshot,
+      graphSnapshot: exportGraphEdges,
+      readFile: (name) => { try { return readFileSync(join(ud, name)) } catch { return null } },
+      appVersion: app.getVersion(),
+      now: Date.now(),
+    })
+    writeFileSync(result.filePath, zip)
+    return ok({ canceled: false, path: result.filePath, bytes: zip.length })
+  } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('brain:import', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Import Memory',
+      properties: ['openFile'],
+      filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
+    })
+    if (result.canceled || !result.filePaths?.[0]) return ok({ canceled: true })
+    const buf = readFileSync(result.filePaths[0])
+    const ud = app.getPath('userData')
+    const res = importBrainZip(buf, {
+      importMemory: importMemorySnapshot,
+      importGraph: importGraphEdges,
+      restoreFile: (name, data) => {
+        const p = join(ud, name)
+        let hasContent = false
+        try { hasContent = statSync(p).size > 0 } catch { /* absent → restore below */ }
+        if (!hasContent) { try { writeFileSync(p, data) } catch { /* best effort */ } }
+      },
+    })
+    if (!res.ok) return err(res.error || 'Import failed')
+    // Reload stores whose files a fresh-machine import may have restored, so they take effect now.
+    for (const reinit of [() => initCompetence(ud), () => initIdentity(ud), () => initMetrics(ud), () => initCodeGraph(ud)]) {
+      try { reinit() } catch { /* best effort */ }
+    }
+    return ok({ canceled: false, memoriesImported: res.memoriesImported, edgesImported: res.edgesImported, restored: res.restored })
+  } catch (e: any) { return err(e.message) }
+})
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's

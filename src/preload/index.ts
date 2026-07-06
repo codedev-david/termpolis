@@ -153,6 +153,9 @@ const api: TermpolisAPI = {
   codeGraphImpact: (name: string) => ipcRenderer.invoke('code-graph:impact', { name }),
   codeGraphCallers: (name: string) => ipcRenderer.invoke('code-graph:callers', { name }),
   codeGraphBuild: (repoRoot: string) => ipcRenderer.invoke('code-graph:build', { repoRoot }),
+  // Brain export / import (portable .zip)
+  brainExport: () => ipcRenderer.invoke('brain:export'),
+  brainImport: () => ipcRenderer.invoke('brain:import'),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => ipcRenderer.invoke('memory:reflect-session', { terminalId, cwd, agent }),

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
 import { useTerminalStore } from '../../store/terminalStore'
+import { CodeGraphPanel } from '../Memory/CodeGraphPanel'
 import type { ShellInfo, ShellType } from '../../types'
 import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
@@ -43,6 +44,35 @@ function getConfigFiles(home: string): { label: string; path: string; lang: stri
 
 export function SettingsPane() {
   const { defaultShell, setDefaultShell, allowAppMouseControl, setAllowAppMouseControl } = useTerminalStore()
+  const activeCwd = useTerminalStore((s) => s.terminals?.find((t) => t.id === s.activeTerminalId)?.cwd ?? '')
+  const [brainBusy, setBrainBusy] = useState(false)
+  const [brainStatus, setBrainStatus] = useState('')
+  const doExport = useCallback(async () => {
+    setBrainBusy(true)
+    setBrainStatus('Exporting…')
+    try {
+      const res = await window.termpolis.brainExport()
+      if (res.success) setBrainStatus(res.data.canceled ? '' : `Exported ${Math.round((res.data.bytes ?? 0) / 1024)} KB → ${res.data.path}`)
+      else setBrainStatus(`Export failed: ${res.error}`)
+    } catch (e) {
+      setBrainStatus(`Export failed: ${(e as Error).message}`)
+    } finally {
+      setBrainBusy(false)
+    }
+  }, [])
+  const doImport = useCallback(async () => {
+    setBrainBusy(true)
+    setBrainStatus('Importing…')
+    try {
+      const res = await window.termpolis.brainImport()
+      if (res.success) setBrainStatus(res.data.canceled ? '' : `Imported ${res.data.memoriesImported ?? 0} memories and ${res.data.edgesImported ?? 0} graph edges.`)
+      else setBrainStatus(`Import failed: ${res.error}`)
+    } catch (e) {
+      setBrainStatus(`Import failed: ${(e as Error).message}`)
+    } finally {
+      setBrainBusy(false)
+    }
+  }, [])
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [configFiles, setConfigFiles] = useState<{ label: string; path: string; lang: string }[]>([])
   const [activeFile, setActiveFile] = useState('')
@@ -492,6 +522,39 @@ export function SettingsPane() {
                 personal data. Takes effect on next launch.
               </span>
             </div>
+          </div>
+
+          <div className="border-t border-[#3c3c3c] pt-3 flex flex-col gap-2" data-testid="brain-io">
+            <span className="text-sm font-medium">Import / Export Memory</span>
+            <span className="text-xs text-[#9ca3af] leading-relaxed">
+              Move your full brain — memories, knowledge graph, learning, and code graph — between machines
+              as a single <code>.zip</code>. Export it, copy it however you like (Google Drive, OneDrive, a USB
+              stick — anything), and import it on another computer. The archive is integrity-checked (CRC + SHA-256),
+              and importing MERGES into this machine&rsquo;s brain — it never deletes what&rsquo;s already here.
+            </span>
+            <div className="flex gap-2">
+              <button
+                data-testid="brain-export-btn"
+                className="bg-[#2d2d30] hover:bg-[#37373a] border border-[#3c3c3c] rounded px-3 py-1 text-sm text-[#d4d4d4] cursor-pointer disabled:opacity-50"
+                onClick={() => void doExport()}
+                disabled={brainBusy}
+              >
+                <i className="fa-solid fa-file-export mr-1"></i> Export…
+              </button>
+              <button
+                data-testid="brain-import-btn"
+                className="bg-[#2d2d30] hover:bg-[#37373a] border border-[#3c3c3c] rounded px-3 py-1 text-sm text-[#d4d4d4] cursor-pointer disabled:opacity-50"
+                onClick={() => void doImport()}
+                disabled={brainBusy}
+              >
+                <i className="fa-solid fa-file-import mr-1"></i> Import…
+              </button>
+            </div>
+            {brainStatus && <span data-testid="brain-io-status" className="text-xs text-[#9ca3af] break-all">{brainStatus}</span>}
+          </div>
+
+          <div className="border-t border-[#3c3c3c] pt-3">
+            <CodeGraphPanel cwd={activeCwd} />
           </div>
         </>
       )}

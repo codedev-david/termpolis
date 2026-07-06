@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useTerminalStore } from '../store/terminalStore'
 
 // Auto-index everything: keep the shared memory brain current with no clicks.
 // Past AI conversations are already ingested by the main-process background
@@ -52,7 +53,19 @@ export async function autoIndexRepo(cwd: string): Promise<boolean> {
     if (indexedRoots.has(root)) return false
     // Mark before awaiting the ingest so concurrent panes don't double-fire.
     indexedRoots.add(root)
-    void api.memoryIngestCode(root)
+    // AWAIT so we can surface the result — a silent index looks like nothing happened, which is
+    // exactly why the code graph seemed "not to work". The code-graph build is fast (regex over
+    // git-tracked files); the slower semantic embedding runs on inside the same handler.
+    const ingest = await api.memoryIngestCode(root)
+    const name = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'repo'
+    const cg = ingest?.success ? (ingest.data as { codeGraph?: { symbols?: number } } | undefined)?.codeGraph : null
+    try {
+      if (cg && typeof cg.symbols === 'number' && cg.symbols > 0) {
+        useTerminalStore.getState().setMemoryNotice(`🧭 Code graph: ${cg.symbols} symbols indexed in "${name}"`)
+      }
+    } catch {
+      /* store may be unavailable in some test contexts */
+    }
     return true
   } catch {
     return false

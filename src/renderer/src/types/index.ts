@@ -233,6 +233,10 @@ export interface TermpolisAPI {
   codeGraphImpact: (name: string) => Promise<IpcResponse<CodeSymbolHit[]>>
   codeGraphCallers: (name: string) => Promise<IpcResponse<CodeSymbolHit[]>>
   codeGraphBuild: (repoRoot: string) => Promise<IpcResponse<CodeGraphStats>>
+  /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */
+  brainExport: () => Promise<IpcResponse<{ canceled: boolean; path?: string; bytes?: number }>>
+  /** Integrity-verify + MERGE a brain .zip into this machine (additive; never destructive). */
+  brainImport: () => Promise<IpcResponse<{ canceled: boolean; memoriesImported?: number; edgesImported?: number; restored?: string[] }>>
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */

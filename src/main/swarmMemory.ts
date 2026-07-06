@@ -2082,6 +2082,37 @@ export function compactSelfShard(opts?: { force?: boolean }): { compacted: boole
   return { compacted: true, before, after }
 }
 
+// ---- Brain export / import (portable .zip) --------------------------------
+
+/** Serialize the FULL current brain (the live merged entries + usage) as JSONL — the portable
+ *  memory content for an export. Always plaintext (the archive carries its own integrity/opt
+ *  encryption). Deliberately add-only: no tombstones/clear lines, so importing this into another
+ *  brain never DELETES anything there — it only contributes memories. */
+export function exportMemorySnapshot(): string {
+  const lines: string[] = entries.map(serializeEntry)
+  const reinforce = [...usageMap.entries()].filter(([, u]) => u > 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
+  if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
+  return lines.length ? lines.join('\n') + '\n' : ''
+}
+
+/** Merge an exported memory snapshot into THIS brain (grow-only CRDT union — additive, never
+ *  destructive). Adds are deduped by id/content-hash on reload; usage deltas are folded in. Lines
+ *  are appended through the normal path, so they inherit at-rest encryption if this store is
+ *  encrypted. Returns how many memory rows were contributed. */
+export function importMemorySnapshot(jsonl: string): { imported: number } {
+  if (!memPath || !jsonl) return { imported: 0 }
+  let imported = 0
+  for (const line of jsonl.split('\n')) {
+    const s = line.trim()
+    if (!s) continue
+    const c = classifyShardLine(s)
+    if (c.t !== 'add' && c.t !== 'reinforce') continue // only additive content is imported
+    if (appendShardLine(s, 'brain-import', { fsync: false }) && c.t === 'add') imported++
+  }
+  reloadFrom(shardFiles())
+  return { imported }
+}
+
 // Enable encryption (first time) OR unlock an already-encrypted store on a new
 // device: derive the key from the passphrase + the store's salt, validate it
 // against any existing ciphertext, cache it locally, (re-)encrypt this device's

@@ -308,6 +308,39 @@ export function getAllEdges(): MemoryEdge[] {
   return out
 }
 
+/** Serialize every edge as JSONL — the portable knowledge-graph content for a brain export. */
+export function exportGraphEdges(): string {
+  return getAllEdges().map((e) => JSON.stringify(e)).join('\n')
+}
+
+/** Merge edges from an exported graph into this one (upsert — additive, never removes). Returns
+ *  how many valid edges were merged. Malformed lines are skipped, not fatal. */
+export function importGraphEdges(jsonl: string): number {
+  if (!jsonl) return 0
+  let n = 0
+  for (const line of jsonl.split('\n')) {
+    const s = line.trim()
+    if (!s) continue
+    try {
+      const e = JSON.parse(s) as { from?: unknown; to?: unknown; relation?: unknown; weight?: unknown; ts?: unknown; createdBy?: unknown }
+      if (typeof e.from === 'string' && typeof e.to === 'string') {
+        addMemoryEdge({
+          from: e.from,
+          to: e.to,
+          relation: typeof e.relation === 'string' ? e.relation : undefined,
+          weight: typeof e.weight === 'number' ? e.weight : undefined,
+          ts: typeof e.ts === 'number' ? e.ts : undefined,
+          createdBy: typeof e.createdBy === 'string' ? e.createdBy : undefined,
+        })
+        n++
+      }
+    } catch {
+      /* skip a malformed edge line */
+    }
+  }
+  return n
+}
+
 /**
  * BB7: GraphRAG one-hop fusion. After ranking, expand the top-`seeds` results one
  * hop along the graph; a neighbour scores `seedScore * edgeWeight * lambda` (lambda
