@@ -181,6 +181,60 @@ export function formatAsPlainTextFromTerm(term: TerminalLike): string {
   return cleanForExportFromTerm(term)
 }
 
+// =====================================================
+// Message form — for pasting into a Teams/Slack *message*, NOT a code box.
+// The three prior attempts all shipped a <pre><code> code box; that is not what
+// a chat message wants. This form pastes as normal message text: emojis render,
+// line breaks stay tight (no big paragraph gaps), indentation/columns are
+// preserved, and it is NOT a grey code box. Validated by real paste into Teams
+// and Slack before shipping.
+//
+// The recipe — this is the exact part every prior attempt got wrong:
+//   - newlines                     -> <br>     (tight breaks; never <p>/<div>,
+//                                               which are what caused the big gaps)
+//   - leading spaces + runs of 2+  -> &nbsp;   (survives chat clients that collapse
+//                                               whitespace; single interior spaces
+//                                               stay breakable so long lines wrap)
+//   - NO <pre>, NO <code>          (so neither Teams nor Slack turns it into a box)
+//   - unboxed monospace span       (alignment where the target honors the font;
+//                                    degrades gracefully otherwise)
+//   - emojis pass through as literal unicode
+// The font-family lives ONLY inside this clipboard payload — it does not touch
+// the terminal font, the text/plain half, or any other copy action.
+// =====================================================
+
+const MESSAGE_HTML_FONT = "Consolas,Menlo,Monaco,'Courier New',monospace"
+
+// Encode significant whitespace on a single (already HTML-escaped) line: leading
+// spaces, and any run of 2+ interior spaces, become &nbsp; so the destination
+// chat client can't collapse them. Single interior spaces are left as ordinary
+// breakable spaces so long prose lines still wrap instead of overflowing.
+function encodeSignificantSpaces(escapedLine: string): string {
+  const m = escapedLine.match(/^( *)([\s\S]*)$/)
+  const lead = (m ? m[1] : '').replace(/ /g, '&nbsp;')
+  const rest = (m ? m[2] : escapedLine).replace(/ {2,}/g, (run) => '&nbsp;'.repeat(run.length))
+  return lead + rest
+}
+
+// Turn cleaned plain text into message-form HTML (see section header). Exported
+// so it can be unit-tested without a Terminal handle.
+export function toMessageHtml(text: string): string {
+  const body = text
+    .replace(/\t/g, '    ')
+    .split('\n')
+    .map((line) => line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+    .map(encodeSignificantSpaces)
+    .join('<br>')
+  return `<span style="font-family:${MESSAGE_HTML_FONT}">${body}</span>`
+}
+
+// Buffer-aware message-form HTML for a live selection. Pair the returned HTML
+// with formatAsPlainTextFromTerm(term) as the text/plain half when writing the
+// clipboard, so Slack (plain) and Teams (html) each get the right thing.
+export function formatAsMessageHtmlFromTerm(term: TerminalLike): string {
+  return toMessageHtml(cleanForExportFromTerm(term))
+}
+
 // Write a code block to the clipboard in BOTH text/html and text/plain so
 // rich-text targets (Teams, Outlook) get a real code box and plain-text
 // targets (Slack compose, GitHub MD source, terminals) get the markdown

@@ -1,7 +1,7 @@
 # Copy for Teams/Slack (message form) — Design
 
 - **Date:** 2026-07-09
-- **Status:** Design agreed; pending spec sign-off, then implementation
+- **Status:** Implemented and shipped in v1.22.4 (recipe validated by real Teams + Slack paste before build)
 - **Repo:** termpolis
 
 ## Problem

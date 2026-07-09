@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => {
     attachCustomKeyEventHandler: vi.fn(),
     attachCustomWheelEventHandler: vi.fn(),
     getSelection: vi.fn(() => ''),
+    hasSelection: vi.fn(() => false),
+    onSelectionChange: vi.fn(() => ({ dispose: vi.fn() })),
     clearSelection: vi.fn(),
     selectAll: vi.fn(),
     select: vi.fn(),
@@ -71,6 +73,7 @@ const mocks = vi.hoisted(() => {
 let mockOnDataCb: ((data: string) => void) | null = null
 let mockKeyHandlerCb: ((e: KeyboardEvent) => boolean) | null = null
 let mockOnTerminalDataCb: ((id: string, data: string) => void) | null = null
+let mockSelectionChangeCb: (() => void) | null = null
 let mockSearchResultsCb: ((e: { resultIndex: number; resultCount: number }) => void) | null = null
 
 // Wire up onData and attachCustomKeyEventHandler to capture callbacks
@@ -177,6 +180,7 @@ vi.mock('../../src/renderer/src/lib/exportTerminal', () => {
     formatAsCodeBlockFromTerm: vi.fn((term: any) => '```text\n' + sel(term) + '\n```'),
     formatAsCodeBlockHtmlFromTerm: vi.fn((term: any) => '<pre><code>' + sel(term) + '</code></pre>'),
     formatAsPlainTextFromTerm: vi.fn((term: any) => sel(term)),
+    formatAsMessageHtmlFromTerm: vi.fn((term: any) => '<span style="font-family:monospace">' + sel(term) + '</span>'),
     writeCodeBlockToClipboardFromTerm: vi.fn((term: any) => {
       return navigator.clipboard.writeText('```text\n' + sel(term) + '\n```')
     }),
@@ -389,6 +393,12 @@ describe('TerminalPane', () => {
     mockOnTerminalData.mockImplementation((cb: (id: string, data: string) => void) => {
       mockOnTerminalDataCb = cb
       return vi.fn()
+    })
+    mockSelectionChangeCb = null
+    mocks.mockTerminal.hasSelection.mockReturnValue(false)
+    mocks.mockTerminal.onSelectionChange.mockImplementation((cb: () => void) => {
+      mockSelectionChangeCb = cb
+      return { dispose: vi.fn() }
     })
     mockReadTerminalBuffer.mockReturnValue(
       Promise.resolve({ success: true, data: { output: '' } })
@@ -2257,6 +2267,80 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 12b. Output pauses during an active selection (selection-drop fix)
+  // Streaming agent output while the user is selecting used to scroll/trim the
+  // buffer out from under the selection. Output into xterm is now deferred while
+  // a selection/drag is active and flushed on release.
+  // =====================================================
+  describe('output pauses while selecting (selection-drop fix)', () => {
+    it('defers writes into xterm while a selection exists, then flushes when it clears', () => {
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.write.mockClear()
+
+      act(() => { mockOnTerminalDataCb?.('term-1', 'streamed while selecting') })
+      // Paused — nothing hits xterm, so trim/scroll can't eat the selection.
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+
+      // Selection clears -> queued output flushes in one write.
+      mocks.mockTerminal.hasSelection.mockReturnValue(false)
+      act(() => { mockSelectionChangeCb?.() })
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('streamed while selecting')
+    })
+
+    it('pauses from left-mousedown (drag start) and flushes on mouseup', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.mouseDown(terminalContainer, { button: 0 })
+      mocks.mockTerminal.write.mockClear()
+
+      act(() => { mockOnTerminalDataCb?.('term-1', 'during drag') })
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+
+      fireEvent.mouseUp(document)
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('during drag')
+    })
+
+    it('writes normally when there is no selection', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.write.mockClear()
+      act(() => { mockOnTerminalDataCb?.('term-1', 'normal output') })
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('normal output')
+    })
+
+    it('keeps string side effects (recording) live even while output is paused', () => {
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'paused output') })
+      // term.write is deferred, but recording still captured the data.
+      expect(mocks.mockAppendRecordingEntry).toHaveBeenCalledWith('output', 'paused output')
+    })
+
+    it('safety valve: flushes anyway if buffered output exceeds the cap while selecting', () => {
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.write.mockClear()
+      const big = 'x'.repeat(1_000_001) // > PENDING_WRITE_CAP
+      act(() => { mockOnTerminalDataCb?.('term-1', big) })
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith(big)
+    })
+
+    it('stays paused on mouseup / selection-change while a selection still exists', () => {
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.write.mockClear()
+      act(() => { mockOnTerminalDataCb?.('term-1', 'still selected') })
+
+      // Selection-change fires but the selection is still present -> keep pausing.
+      act(() => { mockSelectionChangeCb?.() })
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+      // Mouseup with the selection still present -> keep pausing.
+      fireEvent.mouseUp(document)
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
   // 13. Recording entries
   // =====================================================
   describe('session recording', () => {
@@ -2559,6 +2643,30 @@ describe('TerminalPane', () => {
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy as Code Block'))
+      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
+    })
+
+    it('Copy for Teams/Slack copies the message form (plain + unboxed HTML, never a code box)', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('selected')
+
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
+      fireEvent.click(screen.getByText('Copy for Teams/Slack'))
+
+      // text/plain for Slack, unboxed HTML for Teams — and crucially NOT a code box.
+      expect(mockClipboardWriteRich).toHaveBeenCalledWith('selected', '<span style="font-family:monospace">selected</span>')
+      const lastCall = mockClipboardWriteRich.mock.calls[mockClipboardWriteRich.mock.calls.length - 1]
+      expect(lastCall[1]).not.toContain('<pre')
+      expect(lastCall[1]).not.toContain('<code')
+    })
+
+    it('Copy for Teams/Slack with empty selection does nothing', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
+      fireEvent.click(screen.getByText('Copy for Teams/Slack'))
       expect(mockClipboardWriteRich).not.toHaveBeenCalled()
     })
 

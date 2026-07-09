@@ -7,7 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
 import { requestsMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
@@ -86,6 +86,7 @@ type CopySnapshot = {
   codeBlockMd: string
   codeBlockHtml: string
   plainText: string
+  messageHtml: string
 }
 
 // Build the copy payloads from the terminal's CURRENT selection (null if none).
@@ -100,6 +101,7 @@ function buildCopySnapshot(term: Terminal | null): CopySnapshot | null {
     codeBlockMd: formatAsCodeBlockFromTerm(term),
     codeBlockHtml: formatAsCodeBlockHtmlFromTerm(term),
     plainText: formatAsPlainTextFromTerm(term),
+    messageHtml: formatAsMessageHtmlFromTerm(term),
   }
 }
 
@@ -132,6 +134,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   const fitRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const inputBufferRef = useRef('')
+  // Selection-drop fix: pause streamed output into xterm while the user is
+  // selecting (a drag is in progress, or a selection exists), so agent output
+  // can't scroll/trim the buffer out from under the selection. selectingRef
+  // flips true on left-mousedown and false on a document mouseup; pendingWriteRef
+  // holds the deferred output until the selection is released/cleared.
+  const selectingRef = useRef(false)
+  const pendingWriteRef = useRef('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
@@ -390,6 +399,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // Capture the selection at the EARLIEST instant of a right-click — the
   // mousedown, capture phase — before xterm or a React re-render can clear it.
   const handleMouseDownCapture = useCallback((e: React.MouseEvent) => {
+    // A left-button press begins a potential drag-select — start pausing output
+    // into xterm from this instant, before the selection is even non-empty, so
+    // the very start of the drag is protected. Released on a document mouseup.
+    if (e.button === 0) selectingRef.current = true
     if (e.button !== 2) return
     mouseDownSnapRef.current = { snap: buildCopySnapshot(termRef.current), t: Date.now() }
   }, [])
@@ -873,9 +886,46 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
 
     const throttledWrite = createOutputThrottle((data) => term.write(data))
 
+    // Freeze writes into xterm while a selection/drag is active. Agent output
+    // that scrolls or trims the buffer mid-selection is what drops the selection
+    // (SelectionModel.handleTrim clears it when lines fall off the top; a
+    // viewport scroll during a flush remaps the drag endpoint). We keep every
+    // string-based side effect below live — only the term.write is deferred,
+    // then flushed on release / when the selection clears. A hard cap stops
+    // runaway buffering if output floods while a selection just sits there.
+    const PENDING_WRITE_CAP = 1_000_000
+    const isSelectionActive = (): boolean => selectingRef.current || (termRef.current?.hasSelection() ?? false)
+    const flushPendingWrite = (): void => {
+      const buffered = pendingWriteRef.current
+      if (!buffered) return
+      pendingWriteRef.current = ''
+      throttledWrite(buffered)
+    }
+    const writeOutput = (data: string): void => {
+      if (isSelectionActive()) {
+        pendingWriteRef.current += data
+        // Safety valve: never balloon memory or appear frozen forever — if a lot
+        // of output arrives while a selection sits active, resume live writes.
+        if (pendingWriteRef.current.length > PENDING_WRITE_CAP) flushPendingWrite()
+        return
+      }
+      flushPendingWrite()
+      throttledWrite(data)
+    }
+    // Flush the moment the selection is gone (a plain click clears it, or the
+    // user copies then clicks away). hasSelection() going false is the signal.
+    const selectionChangeDisposable = term.onSelectionChange(() => {
+      if (!isSelectionActive()) flushPendingWrite()
+    })
+    const handleDocumentMouseUp = (): void => {
+      selectingRef.current = false
+      if (!isSelectionActive()) flushPendingWrite()
+    }
+    document.addEventListener('mouseup', handleDocumentMouseUp)
+
     const unsub = window.termpolis.onTerminalData((id, data) => {
       if (id !== terminalId) return
-      throttledWrite(data)
+      writeOutput(data)
 
       // Record output if recording
       recording.appendRecordingEntry('output', data)
@@ -953,19 +1003,29 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     })
 
     let resizeTimer: ReturnType<typeof setTimeout> | null = null
+    const doFit = (): void => {
+      if (disposed) return
+      // fit() reflows the buffer, and xterm doesn't remap an active selection
+      // across a resize — it'd be lost. Defer the reflow until the selection is
+      // released so resizing the split/window mid-drag can't drop it.
+      if (isSelectionActive()) {
+        resizeTimer = setTimeout(doFit, 150)
+        return
+      }
+      fitAddon.fit()
+      window.termpolis.resizeTerminal(terminalId, term.cols, term.rows)
+    }
     const ro = new ResizeObserver(() => {
       if (resizeTimer) clearTimeout(resizeTimer)
-      resizeTimer = setTimeout(() => {
-        if (disposed) return
-        fitAddon.fit()
-        window.termpolis.resizeTerminal(terminalId, term.cols, term.rows)
-      }, 100)
+      resizeTimer = setTimeout(doFit, 100)
     })
     ro.observe(containerRef.current)
 
     return () => {
       disposed = true
       unsub()
+      selectionChangeDisposable.dispose()
+      document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)
       ro.disconnect()
       // xterm's WebGL addon can throw during teardown: when a terminal is created
@@ -1260,6 +1320,19 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               }}
             >
               Copy<span className="float-right text-[#999]">Ctrl+Shift+C</span>
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              onClick={() => {
+                const snap = copySnapshotRef.current
+                if (snap) {
+                  window.termpolis.clipboardWriteRich(snap.plainText, snap.messageHtml).catch(() => {})
+                }
+                setContextMenu({ visible: false, x: 0, y: 0 })
+              }}
+              title="Copy for pasting into a Teams or Slack message — emojis, tight line breaks, and spacing preserved. Not a code box."
+            >
+              Copy for Teams/Slack
             </button>
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
