@@ -2343,6 +2343,102 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 12b-ii. Scrolling stays alive while selecting (user-scroll window)
+  // A mouse-tracking TUI (Claude Code, vim, lazygit) has no xterm scrollback to
+  // pan: we forward a wheel report to the pty and the app REPAINTS. That repaint
+  // is output the user asked for, so it must render even mid-selection —
+  // otherwise the wheel looks dead. Unsolicited streamed output still pauses.
+  // =====================================================
+  describe('scroll while selecting (user-scroll window)', () => {
+    const hCsiHandler = () => {
+      const calls = mocks.mockTerminal.parser.registerCsiHandler.mock.calls
+      const h = [...calls].reverse().find((c) => c[0]?.final === 'h')
+      return h?.[1] as (p: (number | number[])[]) => boolean
+    }
+    const wheelHandler = () => {
+      const calls = mocks.mockTerminal.attachCustomWheelEventHandler.mock.calls
+      return calls[calls.length - 1]?.[0] as (e: WheelEvent) => boolean
+    }
+    const wheel = (over: Partial<WheelEvent> = {}) =>
+      ({ deltaY: -100, deltaMode: 0, clientX: 0, clientY: 0, preventDefault: vi.fn(), ...over }) as unknown as WheelEvent
+    // Put the pane in "TUI owns the mouse" mode, the only mode that forwards the wheel.
+    const enableMouseTracking = () => { const h = hCsiHandler(); h([1002]); h([1006]) }
+
+    it('renders the app repaint for a wheel scroll even while a selection is active', () => {
+      render(<TerminalPane {...defaultProps} />)
+      enableMouseTracking()
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      mocks.mockTerminal.write.mockClear()
+
+      // The user scrolls with the wheel while text is selected. We forward it...
+      wheelHandler()(wheel({ deltaY: -100 }))
+      // ...and the app repaints. That repaint MUST land, or scrolling does nothing.
+      act(() => { mockOnTerminalDataCb?.('term-1', 'repaint after scroll') })
+
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('repaint after scroll')
+    })
+
+    it('still defers unsolicited streamed output while selecting (no recent scroll)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      enableMouseTracking()
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      mocks.mockTerminal.write.mockClear()
+
+      // No wheel — this is the agent streaming on its own. v1.22.4 protection holds.
+      act(() => { mockOnTerminalDataCb?.('term-1', 'streamed output') })
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+    })
+
+    it('flushes buffered output ahead of the repaint so ordering is preserved', () => {
+      render(<TerminalPane {...defaultProps} />)
+      enableMouseTracking()
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      mocks.mockTerminal.write.mockClear()
+
+      act(() => { mockOnTerminalDataCb?.('term-1', 'earlier ') })
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+
+      wheelHandler()(wheel({ deltaY: -100 }))
+      act(() => { mockOnTerminalDataCb?.('term-1', 'repaint') })
+
+      // The deferred bytes go in first, then the repaint — never reordered.
+      const written = mocks.mockTerminal.write.mock.calls.map((c) => c[0]).join('')
+      expect(written).toBe('earlier repaint')
+    })
+
+    it('re-engages the freeze once the scroll window lapses', () => {
+      vi.useFakeTimers()
+      try {
+        render(<TerminalPane {...defaultProps} />)
+        enableMouseTracking()
+        mocks.mockTerminal.hasSelection.mockReturnValue(true)
+        wheelHandler()(wheel({ deltaY: -100 }))
+        mocks.mockTerminal.write.mockClear()
+
+        // Long after the wheel, output is the agent's again — protect the selection.
+        vi.advanceTimersByTime(400)
+        act(() => { mockOnTerminalDataCb?.('term-1', 'later stream') })
+        expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not open the window for a plain shell — xterm scrolls it, no repaint needed', () => {
+      render(<TerminalPane {...defaultProps} />)
+      // No mouse tracking: the handler defers to xterm's own scrollback scroll.
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      mocks.mockTerminal.write.mockClear()
+
+      expect(wheelHandler()(wheel({ deltaY: -100 }))).toBe(true) // xterm handles it
+      act(() => { mockOnTerminalDataCb?.('term-1', 'streamed during selection') })
+
+      // Nothing was forwarded, so nothing may bypass the freeze.
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
   // 12c. Resize reflow guard (doFit) — a fit() reflows the buffer and xterm
   // doesn't remap an active selection across it, so the reflow is deferred
   // while selecting and runs once released.

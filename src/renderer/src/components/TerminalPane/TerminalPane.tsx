@@ -141,6 +141,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // holds the deferred output until the selection is released/cleared.
   const selectingRef = useRef(false)
   const pendingWriteRef = useRef('')
+  // When the user scrolls a mouse-tracking TUI we forward a wheel report to the
+  // pty and the app answers by repainting. That repaint is output the user ASKED
+  // for, unlike the streamed agent output the pause above guards against — so it
+  // has to render even mid-selection, or the wheel looks dead. Stamped by the
+  // wheel handler, read by writeOutput.
+  const lastUserScrollRef = useRef(0)
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
@@ -549,7 +555,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         col: Math.min(term.cols, Math.max(1, col)),
         row: Math.min(term.rows, Math.max(1, row)),
       })
-      if (seq) window.termpolis.writeToTerminal(terminalId, seq)
+      if (seq) {
+        window.termpolis.writeToTerminal(terminalId, seq)
+        lastUserScrollRef.current = Date.now()
+      }
       try { ev.preventDefault() } catch { /* passive listener — ignore */ }
       return false
     })
@@ -894,7 +903,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // then flushed on release / when the selection clears. A hard cap stops
     // runaway buffering if output floods while a selection just sits there.
     const PENDING_WRITE_CAP = 1_000_000
+    // Long enough to cover a wheel report's round trip through the pty and the
+    // app's repaint, short enough that the selection is protected again as soon
+    // as the user stops scrolling. Each notch re-stamps it, so a continuous
+    // scroll stays live.
+    const USER_SCROLL_WINDOW_MS = 250
     const isSelectionActive = (): boolean => selectingRef.current || term.hasSelection()
+    const isUserScroll = (): boolean => Date.now() - lastUserScrollRef.current < USER_SCROLL_WINDOW_MS
     const flushPendingWrite = (): void => {
       const buffered = pendingWriteRef.current
       if (!buffered) return
@@ -902,7 +917,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
       throttledWrite(buffered)
     }
     const writeOutput = (data: string): void => {
-      if (isSelectionActive()) {
+      if (isSelectionActive() && !isUserScroll()) {
         pendingWriteRef.current += data
         // Safety valve: never balloon memory or appear frozen forever — if a lot
         // of output arrives while a selection sits active, resume live writes.
