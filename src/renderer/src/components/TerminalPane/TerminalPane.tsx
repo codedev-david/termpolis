@@ -894,7 +894,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // then flushed on release / when the selection clears. A hard cap stops
     // runaway buffering if output floods while a selection just sits there.
     const PENDING_WRITE_CAP = 1_000_000
-    const isSelectionActive = (): boolean => selectingRef.current || (termRef.current?.hasSelection() ?? false)
+    const isSelectionActive = (): boolean => selectingRef.current || term.hasSelection()
     const flushPendingWrite = (): void => {
       const buffered = pendingWriteRef.current
       if (!buffered) return

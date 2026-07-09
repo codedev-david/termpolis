@@ -210,9 +210,9 @@ const MESSAGE_HTML_FONT = "Consolas,Menlo,Monaco,'Courier New',monospace"
 // chat client can't collapse them. Single interior spaces are left as ordinary
 // breakable spaces so long prose lines still wrap instead of overflowing.
 function encodeSignificantSpaces(escapedLine: string): string {
-  const m = escapedLine.match(/^( *)([\s\S]*)$/)
-  const lead = (m ? m[1] : '').replace(/ /g, '&nbsp;')
-  const rest = (m ? m[2] : escapedLine).replace(/ {2,}/g, (run) => '&nbsp;'.repeat(run.length))
+  const leadLen = escapedLine.length - escapedLine.replace(/^ +/, '').length
+  const lead = '&nbsp;'.repeat(leadLen)
+  const rest = escapedLine.slice(leadLen).replace(/ {2,}/g, (run) => '&nbsp;'.repeat(run.length))
   return lead + rest
 }
 

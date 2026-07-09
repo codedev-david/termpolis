@@ -74,6 +74,7 @@ let mockOnDataCb: ((data: string) => void) | null = null
 let mockKeyHandlerCb: ((e: KeyboardEvent) => boolean) | null = null
 let mockOnTerminalDataCb: ((id: string, data: string) => void) | null = null
 let mockSelectionChangeCb: (() => void) | null = null
+let mockResizeObserverCb: (() => void) | null = null
 let mockSearchResultsCb: ((e: { resultIndex: number; resultCount: number }) => void) | null = null
 
 // Wire up onData and attachCustomKeyEventHandler to capture callbacks
@@ -320,10 +321,11 @@ beforeAll(() => {
     platformInfo: { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } },
   }
 
-  // Mock ResizeObserver
+  // Mock ResizeObserver — capture the callback so tests can fire a resize.
   vi.stubGlobal(
     'ResizeObserver',
     class {
+      constructor(cb: () => void) { mockResizeObserverCb = cb }
       observe() {}
       unobserve() {}
       disconnect() {}
@@ -2337,6 +2339,42 @@ describe('TerminalPane', () => {
       // Mouseup with the selection still present -> keep pausing.
       fireEvent.mouseUp(document)
       expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
+  // 12c. Resize reflow guard (doFit) — a fit() reflows the buffer and xterm
+  // doesn't remap an active selection across it, so the reflow is deferred
+  // while selecting and runs once released.
+  // =====================================================
+  describe('resize reflow guard (doFit)', () => {
+    it('fits when idle, defers the reflow while selecting, then fits on release', () => {
+      vi.useFakeTimers()
+      try {
+        mocks.mockTerminal.hasSelection.mockReturnValue(false)
+        render(<TerminalPane {...defaultProps} />)
+        vi.advanceTimersByTime(200) // flush any mount-scheduled work
+        mockResizeTerminal.mockClear()
+
+        // Idle -> ResizeObserver fires -> doFit reflows after its debounce.
+        mockResizeObserverCb?.()
+        vi.advanceTimersByTime(120)
+        expect(mockResizeTerminal).toHaveBeenCalled()
+
+        // Selection active -> doFit defers (no reflow that would drop it).
+        mockResizeTerminal.mockClear()
+        mocks.mockTerminal.hasSelection.mockReturnValue(true)
+        mockResizeObserverCb?.()
+        vi.advanceTimersByTime(120)
+        expect(mockResizeTerminal).not.toHaveBeenCalled()
+
+        // Selection released -> the deferred reflow finally runs.
+        mocks.mockTerminal.hasSelection.mockReturnValue(false)
+        vi.advanceTimersByTime(300)
+        expect(mockResizeTerminal).toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 
