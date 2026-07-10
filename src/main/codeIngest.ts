@@ -13,6 +13,7 @@ import { promises as fsp } from 'fs'
 import { execFile } from 'child_process'
 import { join } from 'path'
 import { matchSensitiveFile } from './sensitiveFileWatcher'
+import { safeGit } from './gitCommand'
 
 // Promise wrapper that references execFile only when CALLED (not at module
 // load), so test files that mock child_process can still import this module.
@@ -162,16 +163,24 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
 // are excluded). Absolute paths. Returns [] if not a git repo / git missing.
 export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   if (!repoRoot) return []
+  let stdout: string
   try {
-    const stdout = await execGit(['-C', repoRoot, 'ls-files'], { maxBuffer: 64 * 1024 * 1024 })
-    return stdout
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((rel) => join(repoRoot, rel))
+    stdout = await execGit(['-C', repoRoot, 'ls-files'], { maxBuffer: 64 * 1024 * 1024 })
   } catch {
-    return []
+    // A packaged app can inherit a PATH without git — retry via safeGit, which resolves the
+    // binary from common install locations. A REAL "not a repo" error still throws → []. This is
+    // what stops a transient git-off-PATH from silently wiping the code graph.
+    try {
+      stdout = safeGit(['-C', repoRoot, 'ls-files'], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 })
+    } catch {
+      return []
+    }
   }
+  return stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((rel) => join(repoRoot, rel))
 }
 
 export interface CodeIngestMemory {

@@ -125,7 +125,7 @@ import {
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -1199,7 +1199,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
     // graph hiccup never fails the semantic ingest that already succeeded.
     let codeGraph
     try {
-      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') })
+      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }, graphKeyForRoot(opts.repoRoot))
       // Keep the graph FRESH: watch the repo and re-index (debounced) on source-file changes, so
       // edits show up in seconds rather than waiting for the periodic re-sweep.
       ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root) => { void reindexRepoGraph(root) }))
@@ -1212,7 +1212,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
 ipcMain.handle('code-graph:build', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
-    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }))
+    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }, graphKeyForRoot(opts.repoRoot)))
   } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:anomalies', async (_, opts?: { limit?: number }) => { try { return ok({ anomalies: getAnomalies(opts?.limit ?? 100), total: anomalyCount() }) } catch (e: any) { return err(e.message) } })
