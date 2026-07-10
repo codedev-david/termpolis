@@ -118,6 +118,7 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
+  weaveCandidates, weaveNeighbours, backfillCodeRefs,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -130,6 +131,7 @@ import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
+import { runWeave } from './mnemeWeave'
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
@@ -2034,6 +2036,21 @@ if (!gotTheLock) {
             link: (from, to, relation) => { memoryLink({ from, to, relation }) },
             now: cnow,
           })
+        } catch { /* best effort */ }
+        // v1.23 C4 — The Weave: continuously draw cross-repo analogies + backfill bridge anchors
+        // AHEAD OF TIME so the agents reason faster (the connections are already there). Bounded,
+        // idempotent, best-effort; runs on this idle tick so it never touches a hot path.
+        try {
+          runWeave(
+            {
+              candidates: () => weaveCandidates(300),
+              neighbours: (id, k) => weaveNeighbours(id, k),
+              link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
+              resolveCode: (names, projectKey) => resolveCodeRefs(names, projectKey),
+              backfillCodeRefs: (id, refs) => backfillCodeRefs(id, refs),
+            },
+            { maxPerPass: 200 },
+          )
         } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },

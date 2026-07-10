@@ -22,6 +22,7 @@ import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
 import { projectKeyOf } from './projectKey'
 import type { CodeRef } from './codeGraph'
+import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -246,6 +247,7 @@ type ShardLineClass =
   | { t: 'clearIds'; ids: string[] }
   | { t: 'reinforce'; deltas: Array<{ id: string; used: number; ts: number }> }
   | { t: 'patch'; hash: string; project: string; projectKey?: string } // F30: persisted project backfill
+  | { t: 'codeRefsPatch'; id: string; codeRefs: CodeRef[] } // v1.23 C4: persisted bridge backfill by id
   | { t: 'locked' }   // encrypted line we couldn't decrypt (need passphrase)
   | { t: 'corrupt' }  // unparseable bytes (torn write / bit-rot / bad merge) — counted, not silent
   | { t: 'skip' }     // blank / valid-JSON-but-not-a-record
@@ -262,11 +264,18 @@ function classifyShardLine(line: string): ShardLineClass {
     if (dec === null) return { t: 'locked' } // no key / wrong key → can't read this entry
     plain = dec
   }
-  let obj: { id?: unknown; content?: unknown; deleted?: unknown; deletedHash?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown; patch?: unknown }
+  let obj: { id?: unknown; content?: unknown; deleted?: unknown; deletedHash?: unknown; clearedBefore?: unknown; clearedIds?: unknown; reinforce?: unknown; patch?: unknown; codeRefsPatch?: unknown }
   try { obj = JSON.parse(plain) } catch { return { t: 'corrupt' } } // F28: a genuine parse failure is corruption, not noise
   if (!obj || typeof obj !== 'object') return { t: 'skip' }
   if (typeof obj.deleted === 'string') return { t: 'delete', id: obj.deleted }
   if (typeof obj.deletedHash === 'string') return { t: 'deleteHash', hash: obj.deletedHash }
+  if (obj.codeRefsPatch && typeof obj.codeRefsPatch === 'object') {
+    const p = obj.codeRefsPatch as { id?: unknown; codeRefs?: unknown }
+    if (typeof p.id === 'string' && Array.isArray(p.codeRefs)) {
+      return { t: 'codeRefsPatch', id: p.id, codeRefs: p.codeRefs as CodeRef[] }
+    }
+    return { t: 'skip' }
+  }
   if (obj.patch && typeof obj.patch === 'object') {
     const p = obj.patch as { hash?: unknown; project?: unknown; projectKey?: unknown }
     if (typeof p.hash === 'string' && typeof p.project === 'string') {
@@ -309,6 +318,7 @@ function reloadFrom(paths: string[]): void {
   const skewCap = Date.now() + MAX_CLOCK_SKEW_MS
   const adds: MemoryEntry[] = []
   const patches: Array<{ hash: string; project: string; projectKey?: string }> = [] // F30
+  const codeRefsPatches: Array<{ id: string; codeRefs: CodeRef[] }> = [] // v1.23 C4 bridge backfill
   const ownAddIds = new Set<string>()      // adds that came from THIS device's own shard
   const ownVulnerable = new Set<string>()  // own adds appearing BEFORE an own clear line (pre-clear → epoch-droppable)
   const ownTombstoned = new Set<string>()  // ids the own shard already records (delete/clearIds) — re-emission dedup
@@ -345,6 +355,9 @@ function reloadFrom(paths: string[]): void {
           break
         case 'patch':
           patches.push({ hash: c.hash, project: c.project, projectKey: c.projectKey })
+          break
+        case 'codeRefsPatch':
+          codeRefsPatches.push({ id: c.id, codeRefs: c.codeRefs })
           break
         case 'locked':
           lockedShards = true
@@ -396,6 +409,16 @@ function reloadFrom(paths: string[]): void {
     for (const p of patches) {
       const e = byHash.get(p.hash)
       if (e) { if (!e.project) e.project = p.project; if (p.projectKey && !e.projectKey) e.projectKey = p.projectKey }
+    }
+  }
+  // v1.23 C4: replay bridge backfills so weave-stamped code anchors survive reload/sync. Applied
+  // last so a later backfill wins; a compaction bakes them into the add (the entry is mutated).
+  if (codeRefsPatches.length > 0) {
+    const byId = new Map<string, MemoryEntry>()
+    for (const e of entries) byId.set(e.id, e)
+    for (const p of codeRefsPatches) {
+      const e = byId.get(p.id)
+      if (e && (!e.codeRefs || e.codeRefs.length === 0)) e.codeRefs = p.codeRefs
     }
   }
   rebuildVectorIndex()
@@ -793,6 +816,54 @@ export function symbolHistory(query: string, projectKey?: string): MemoryEntry[]
     if (hit) out.push(e)
   }
   return out.sort((a, b) => b.ts - a.ts)
+}
+
+// ---- v1.23 C4: the weave (background connection-miner) reads these three seams ----
+
+/** Durably stamp resolved code anchors onto an existing memory that lacked them — the weave
+ *  bridge miner backfilling older memories that predate the C2 write-time stamping. Mutates the
+ *  hot-window entry AND appends a control line so it survives reload/sync; a later compaction
+ *  bakes it into the add via the mutated entry. No-op if the entry is gone or already anchored. */
+export function backfillCodeRefs(id: string, refs: CodeRef[]): void {
+  if (!id || !Array.isArray(refs) || refs.length === 0) return
+  const e = entries.find((x) => x.id === id)
+  if (!e || (e.codeRefs && e.codeRefs.length > 0)) return
+  e.codeRefs = refs
+  try { appendShardLine(JSON.stringify({ codeRefsPatch: { id, codeRefs: refs } }), 'codeRefsPatch') } catch { /* best effort */ }
+  bumpSearchGen()
+}
+
+/** A bounded, newest-first sample of high-signal embedded memories for the weave miner (raw
+ *  message chatter excluded). Entity nodes expose their name as `entities` so the bridge miner
+ *  can resolve them to code. */
+export function weaveCandidates(limit = 300): WeaveEntry[] {
+  const out: WeaveEntry[] = []
+  for (let i = entries.length - 1; i >= 0 && out.length < limit; i--) {
+    const e = entries[i]
+    if (e.kind === 'message') continue
+    out.push({
+      id: e.id,
+      kind: e.kind,
+      memoryType: e.memoryType,
+      source: e.source,
+      projectKey: e.projectKey,
+      entities: e.memoryType === 'entity' ? [e.content] : undefined,
+      hasCodeRefs: !!(e.codeRefs && e.codeRefs.length),
+    })
+  }
+  return out
+}
+
+/** Cross-store nearest neighbours of a memory (by its packed embedding), each tagged with its
+ *  repo key so the miner can gate on CROSS-repo. Empty when the memory has no packed vector. */
+export function weaveNeighbours(id: string, k = 6): WeaveNeighbour[] {
+  const self = entries.find((e) => e.id === id)
+  if (!self) return []
+  const row = entryRow.get(self)
+  const v = row !== undefined ? vectorStore.get(row) : null
+  if (!v) return []
+  const byId = new Map(entries.map((e) => [e.id, e]))
+  return nearestNeighbours(Array.from(v), k, id).map((n) => ({ id: n.id, score: n.score, projectKey: byId.get(n.id)?.projectKey }))
 }
 
 export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
