@@ -129,3 +129,50 @@ describe('mnemeGround — connections (entity nodes + typed edges)', () => {
     expect(res).toEqual({ written: ['mem-1'], lessons: 1 })
   })
 })
+
+// v1.23 C3 — the automatic causal layer. A procedural fix lesson emits a targetless
+// {relation:'solves'} (the distiller can't resolve the target); connectLesson now resolves
+// it to `solves` edges pointing at the PROBLEM's entities, so bug→fix is traversable.
+describe('mnemeGround — automatic causal (solves) edges (C3)', () => {
+  it('mints solves edges to the problem entities of a procedural fix lesson', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([
+      lesson({
+        content: 'Problem: crash with ENOENT in `loader.ts` → Fix: guard the path',
+        problem: 'crash with ENOENT in `loader.ts`',
+        entities: ['other.ts'],
+        links: [{ relation: 'solves' }], // targetless — the dead path we now resolve
+      }),
+    ])
+    const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
+    const link = vi.fn()
+    await groundEpisode(episode(), { distill, write, ensureEntity, link })
+
+    // refers-to for the lesson's own entities (unchanged)
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-other.ts', 'refers-to')
+    // solves to each entity naming the problem (the revived causal layer)
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-loader.ts', 'solves')
+    expect(link).toHaveBeenCalledWith('mem-1', 'ent-ENOENT', 'solves')
+  })
+
+  it('does not mint a solves edge when the lesson has no solves link', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([
+      lesson({ memoryType: 'semantic', kind: 'decision', problem: 'crash with ENOENT', links: [] }),
+    ])
+    const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
+    const link = vi.fn()
+    await groundEpisode(episode(), { distill, write, ensureEntity, link })
+    expect(link).not.toHaveBeenCalledWith('mem-1', expect.anything(), 'solves')
+  })
+
+  it('does not mint solves edges without an ensureEntity dep (needs the entity node)', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([
+      lesson({ problem: 'crash with ENOENT', links: [{ relation: 'solves' }] }),
+    ])
+    const link = vi.fn()
+    await groundEpisode(episode(), { distill, write, link }) // no ensureEntity
+    expect(link).not.toHaveBeenCalled()
+  })
+})

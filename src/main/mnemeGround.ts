@@ -10,7 +10,7 @@
 // design — a flaky distiller or a single failed write never aborts the batch,
 // because losing one lesson is far better than losing the whole reflection.
 
-import type { Episode, Lesson } from './mnemeReflect'
+import { extractEntities, type Episode, type Lesson } from './mnemeReflect'
 
 /** Minimal write contract — satisfied structurally by swarmMemory.memoryWrite. */
 export interface LessonWriteInput {
@@ -115,6 +115,22 @@ async function connectLesson(id: string, lesson: Lesson, episode: Episode, deps:
         const eid = await deps.ensureEntity(name, episode.project)
         if (eid) { try { link(id, eid, 'refers-to') } catch { /* best effort */ } }
       } catch { /* best effort */ }
+    }
+    // v1.23 C3 — revive the automatic CAUSAL layer. A procedural fix lesson carries a
+    // targetless {relation:'solves'} because the distiller can't resolve the target; we
+    // resolve it HERE by minting a `solves` edge from the lesson to each entity that
+    // names the PROBLEM it fixed (an error code / file / symbol). Traversing that error
+    // entity via the inverse `solved-by` then surfaces the fix automatically — bug→fix is
+    // finally traversable without an agent hand-calling memory_link. (The one automatic
+    // path the distiller intended shipped as dead code before this.)
+    const solvesSomething = (lesson.links || []).some((lk) => lk && lk.relation === 'solves')
+    if (solvesSomething && lesson.problem) {
+      for (const name of extractEntities(lesson.problem)) {
+        try {
+          const eid = await deps.ensureEntity(name, episode.project)
+          if (eid) { try { link(id, eid, 'solves') } catch { /* best effort */ } }
+        } catch { /* best effort */ }
+      }
     }
   }
 }
