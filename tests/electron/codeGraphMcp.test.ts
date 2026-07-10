@@ -11,7 +11,8 @@ describe('code_* MCP dispatch', () => {
     const codeCallees = vi.fn().mockReturnValue([])
     const codeImpactH = vi.fn().mockReturnValue([])
     const codeSearch = vi.fn().mockReturnValue([])
-    const handlers = { codeExplore: codeExploreH, codeCallers, codeCallees, codeImpact: codeImpactH, codeSearch } as unknown as McpToolHandlers
+    const codeLocate = vi.fn().mockReturnValue([])
+    const handlers = { codeExplore: codeExploreH, codeCallers, codeCallees, codeImpact: codeImpactH, codeSearch, codeLocate } as unknown as McpToolHandlers
 
     await executeTool('code_explore', { query: 'memoryWrite' }, handlers)
     expect(codeExploreH).toHaveBeenCalledWith({ query: 'memoryWrite' })
@@ -23,6 +24,8 @@ describe('code_* MCP dispatch', () => {
     expect(codeImpactH).toHaveBeenCalledWith({ name: 'beta' })
     await executeTool('code_search', { query: 'mem', limit: 10 }, handlers)
     expect(codeSearch).toHaveBeenCalledWith({ query: 'mem', limit: 10 })
+    await executeTool('code_locate', { issue: 'ENOENT in loader', limit: 5 }, handlers)
+    expect(codeLocate).toHaveBeenCalledWith({ issue: 'ENOENT in loader', limit: 5 })
   })
 })
 

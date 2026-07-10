@@ -118,7 +118,7 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
-  weaveCandidates, weaveNeighbours, backfillCodeRefs,
+  weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -126,7 +126,7 @@ import {
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -144,7 +144,8 @@ import { augmentPrimer } from './mnemePrimerAugment'
 import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons, toAgentLesson } from './mnemeSociety'
 import { detectConflictsNli } from './nliContradict'
-import { proactiveQuery } from './mnemeRetrieval'
+import { proactiveQuery, proactiveSignals } from './mnemeRetrieval'
+import { codeLocate, type LocatedSite } from './codeLocate'
 import { getAllEdges, graphStats } from './memoryGraph'
 import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
@@ -171,6 +172,29 @@ async function ensureEntityNode(name: string, project?: string): Promise<string 
     return e?.id ?? null
   } catch {
     return null
+  }
+}
+
+// v1.23 C5 — the issue->location predictor, wired to the real code graph + memory bridge.
+// Reused by the code_locate MCP tool, the code:locate IPC, and the proactive-on-error hook.
+function locateIssueSites(issue: string, projectKey?: string, limit?: number): LocatedSite[] {
+  try {
+    return codeLocate(
+      issue,
+      {
+        signals: (t) => proactiveSignals(t),
+        resolve: (token) => {
+          const r = resolveToken(token, projectKey)
+          return { symbols: r.symbols.map((s) => ({ id: s.id, name: s.name, file: s.file })), files: r.files }
+        },
+        history: (q) => symbolHistory(q, projectKey).map((e) => ({ id: e.id, content: e.content, importance: e.importance, ts: e.ts, memoryType: e.memoryType })),
+        impact: (name) => codeImpact(name, 6, projectKey).length,
+        now: Date.now(),
+      },
+      { limit },
+    )
+  } catch {
+    return []
   }
 }
 
@@ -1224,6 +1248,8 @@ ipcMain.handle('code-graph:explore', async (_, opts: { query: string }) => { try
 ipcMain.handle('code-graph:search', async (_, opts: { query?: string; limit?: number }) => { try { return ok(codeSymbols(opts?.query, opts?.limit ?? 50)) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:callers', async (_, opts: { name: string }) => { try { return ok(codeCallers(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try { return ok(codeImpact(opts?.name || '')) } catch (e: any) { return err(e.message) } })
+// v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
+ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
 
 // Brain export / import (portable .zip) — integrity-gated (zipArchive CRC + manifest SHA-256).
 ipcMain.handle('brain:export', async () => {
@@ -1974,6 +2000,7 @@ if (!gotTheLock) {
       codeCallees: (opts) => codeCallees(opts.name),
       codeImpact: (opts) => codeImpact(opts.name),
       codeSearch: (opts) => codeSymbols(opts.query, opts.limit ?? 50),
+      codeLocate: (opts) => locateIssueSites(opts.issue, undefined, opts.limit),
     }
 
     initAuditLog(app.getPath('userData'))

@@ -451,6 +451,18 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'code_locate',
+    description: 'PREDICT WHERE an issue lives / where to fix it. Give a problem description or an error message; get back a ranked list of {file, symbol, why:[past lessons]} — the code sites most likely responsible, each with the memories (fixes/decisions) that point there. This crosses the memory<->code bridge: it mines the issue for file/identifier/error tokens, resolves them to code-graph symbols, and ranks by blast-radius centrality × the utility of the lessons anchored there. Use it FIRST when you hit an error or start debugging, instead of grepping blindly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issue: { type: 'string', description: 'The problem description or error text' },
+        limit: { type: 'number', description: 'Max sites (default 8)' },
+      },
+      required: ['issue'],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -485,6 +497,7 @@ export interface McpToolHandlers {
   codeCallees: (opts: { name: string }) => any
   codeImpact: (opts: { name: string }) => any
   codeSearch: (opts: { query?: string; limit?: number }) => any
+  codeLocate: (opts: { issue: string; limit?: number }) => any
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -594,6 +607,8 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return handlers.codeImpact({ name: args.name })
     case 'code_search':
       return handlers.codeSearch({ query: args.query, limit: args.limit })
+    case 'code_locate':
+      return handlers.codeLocate({ issue: args.issue, limit: args.limit })
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

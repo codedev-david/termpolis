@@ -132,9 +132,9 @@ const STOPWORDS = new Set([
  * codes — then, only if none of those matched, a keyword fallback (meaningful words)
  * so prose tasks still recall. Deterministic; empty / too-short input → ''.
  */
-export function proactiveQuery(taskText: string): string {
+export function proactiveSignals(taskText: string): string[] {
   const text = (taskText || '').trim()
-  if (text.length < MIN_TASK_CHARS) return ''
+  if (text.length < MIN_TASK_CHARS) return []
 
   const signals: string[] = []
   const seen = new Set<string>()
@@ -162,7 +162,11 @@ export function proactiveQuery(taskText: string): string {
     for (const w of words) add(w)
   }
 
-  return signals.slice(0, MAX_SIGNALS).join(' ')
+  return signals.slice(0, MAX_SIGNALS)
+}
+
+export function proactiveQuery(taskText: string): string {
+  return proactiveSignals(taskText).join(' ')
 }
 
 /**
@@ -173,4 +177,18 @@ export function proactiveQuery(taskText: string): string {
 export function shouldPreSurface(sim: number, opts: { threshold?: number } = {}): boolean {
   const threshold = opts.threshold ?? 0.75
   return sim >= threshold
+}
+
+/**
+ * v1.23 C5 — the PROACTIVE trigger. True when the text carries a real error signal (a named
+ * error/exception class or a known error phrase), i.e. it's worth firing the issue->location
+ * predictor unprompted. Deliberately narrow (not any file/keyword) so normal output doesn't
+ * fire it. Resets the shared global regexes' lastIndex so repeated calls are stateless.
+ */
+export function hasErrorSignal(text: string): boolean {
+  const t = text || ''
+  if (t.length < MIN_TASK_CHARS) return false
+  ERROR_TOKEN_RE.lastIndex = 0
+  ERROR_PHRASE_RE.lastIndex = 0
+  return ERROR_TOKEN_RE.test(t) || ERROR_PHRASE_RE.test(t)
 }

@@ -3159,3 +3159,20 @@ describe('memory primer-limit handlers', () => {
     expect((await invokeHandler('memory:set-primer-limit', { value: 0 })).data.primerLimit).toBe(1)
   })
 })
+
+// v1.23 — the structural code-graph IPC handlers, incl. the C5 issue->location predictor.
+describe('code-graph IPC handlers', () => {
+  it('stats / search / explore / callers / callees / impact respond without throwing', async () => {
+    expect((await invokeHandler('code-graph:stats')).success).toBe(true)
+    expect((await invokeHandler('code-graph:search', { query: 'x', limit: 5 })).success).toBe(true)
+    expect((await invokeHandler('code-graph:explore', { query: 'nope' })).success).toBe(true)
+    expect((await invokeHandler('code-graph:callers', { name: 'nope' })).success).toBe(true)
+    expect((await invokeHandler('code-graph:impact', { name: 'nope' })).success).toBe(true)
+  })
+
+  it('code-graph:locate returns a (possibly empty) ranked site list for an issue', async () => {
+    const res = await invokeHandler('code-graph:locate', { issue: 'crash with ENOENT in `loader.ts`', limit: 5 })
+    expect(res.success).toBe(true)
+    expect(Array.isArray(res.data)).toBe(true)
+  })
+})

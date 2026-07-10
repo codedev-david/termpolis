@@ -244,7 +244,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Code Graph** — a native, **AST-precise** map of your repository built with **web-tree-sitter** (WebAssembly — native-free, nothing compiled, nothing leaves your machine): every function, class, method, and the calls between them. Agents query it over MCP with `code_explore` / `code_callers` / `code_callees` / `code_impact` (change blast-radius) / `code_search` instead of grepping the same files repeatedly. Deep support for TypeScript/JavaScript, Python, Go, Rust, Java, C#, Ruby, and Swift; Terraform and Bicep fall back to a regex heuristic for symbol discovery. Auto-indexed once per session and refreshed as you edit (opt-out in Settings), with an in-app **Code Graph browser** (`Ctrl+Shift+M`)
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 31 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search`)
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 32 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
@@ -384,7 +384,7 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 
 Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~/.claude/settings.json` so Claude Code sees it as an MCP server immediately. No manual configuration needed.
 
-### Available Tools (31)
+### Available Tools (32)
 
 **Terminal Management:**
 
@@ -436,6 +436,7 @@ Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~
 | `code_callees` | List the symbols a given symbol calls |
 | `code_impact` | Transitive blast radius of changing a symbol — what could break |
 | `code_search` | Locate any symbol by name across the codebase |
+| `code_locate` | Predict WHERE an issue lives: ranked `{file, symbol, why:[past lessons]}` from an error/problem — crosses the memory↔code bridge |
 
 ### CLI Tool
 
@@ -473,7 +474,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9315/mcp \
 
 ```bash
 curl http://localhost:9315/health
-# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":31,"auth":"required"}
+# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":32,"auth":"required"}
 ```
 
 ## Security
