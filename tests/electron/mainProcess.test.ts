@@ -3175,4 +3175,10 @@ describe('code-graph IPC handlers', () => {
     expect(res.success).toBe(true)
     expect(Array.isArray(res.data)).toBe(true)
   })
+
+  it('memory:deep-search returns a (possibly empty) array from the archive tier', async () => {
+    const res = await invokeHandler('memory:deep-search', { query: 'anything archived', limit: 5 })
+    expect(res.success).toBe(true)
+    expect(Array.isArray(res.data)).toBe(true)
+  })
 })

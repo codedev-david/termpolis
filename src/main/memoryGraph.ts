@@ -300,6 +300,18 @@ export function graphStats(): { edges: number; nodes: number } {
   return { edges: edgeCount, nodes: adjacency.size }
 }
 
+// v1.23 C7 — relation-quality breakdown: raw edge counts hide that the graph inflates with
+// damped `relates-to`/`follows` co-occurrence (redundant with the vector index + recency) while
+// the predictive causal/supersedes/entity edges are what actually help. Surfacing the split lets
+// the dashboard show — and lets us tune — the high-signal ratio you can't improve if you can't see.
+export function graphRelationStats(): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const list of adjacency.values()) {
+    for (const e of list) counts[e.relation] = (counts[e.relation] ?? 0) + 1
+  }
+  return counts
+}
+
 /** All forward edges as a flat list — for consumers that need the whole edge set
  *  (e.g. P3 supersession filtering). Reverse edges are these same edges, indexed by target. */
 export function getAllEdges(): MemoryEdge[] {

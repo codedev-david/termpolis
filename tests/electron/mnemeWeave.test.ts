@@ -142,4 +142,14 @@ describe('runWeave — background connection-miner (C4)', () => {
     runWeave(deps)
     expect(edges).toEqual([])
   })
+
+  it('classifies by the source end when the neighbour is not itself a candidate', () => {
+    // `e` is a decision (not code) and its neighbour is NOT in the candidate set → the
+    // neighbour-classification branch falls back to `e`, yielding a knowledge analogy.
+    const cands: WeaveEntry[] = [{ id: 'd1', kind: 'decision', memoryType: 'semantic', projectKey: 'repoA' }]
+    const { deps, edges } = harness(cands, { d1: [{ id: 'stranger', score: 0.9, projectKey: 'repoB' }] })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([{ from: 'd1', to: 'stranger', relation: WEAVE_REL_KNOWLEDGE, weight: 0.9 }])
+    expect(stats.knowledgeAnalogies).toBe(1)
+  })
 })

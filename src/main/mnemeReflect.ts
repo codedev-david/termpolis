@@ -57,6 +57,14 @@ export interface Lesson {
 /** Injected distiller seam — implemented headlessly in mnemeDistiller.ts. */
 export type LlmDistiller = (prompt: string) => Promise<string | null>
 
+/** v1.23 C7 — the value gate for OPTIONAL LLM enrichment. Only spend a headless model call on a
+ *  substantive, grounded, SUCCESSFUL episode; the zero-token deterministic extractor covers
+ *  everything else. Keeps the distiller net-positive on tokens and never enriches a failed or
+ *  thin episode into a confident-but-wrong lesson. */
+export function isHighValueEpisode(ep: Episode): boolean {
+  return !!ep && ep.outcome?.success === true && (ep.turns?.length ?? 0) >= 2
+}
+
 export interface DistillOptions {
   llm?: LlmDistiller
   maxLessons?: number

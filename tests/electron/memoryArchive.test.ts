@@ -66,6 +66,14 @@ describe('archive tier (C6) — recoverable, never silently lost', () => {
     expect(searchArchive('')).toEqual([])
     expect(searchArchive('completelyunrelatedxyz')).toEqual([])
   })
+
+  it('searchArchive returns [] when no archive file exists yet, and memoryArchive no-ops on unknown/empty ids', async () => {
+    expect(searchArchive('nothing archived yet')).toEqual([]) // archive file absent → []
+    memoryArchive('mem-does-not-exist') // unknown id → no-op, no throw
+    memoryArchive('') // empty id → no-op
+    const w = await memoryWrite({ agentId: 'a', kind: 'note', content: 'still fully searchable' })
+    expect((await memorySearch({ query: 'fully searchable' })).some((h) => h.id === w.id)).toBe(true)
+  })
 })
 
 describe('relevance-scoped cross-repo recall (C6) — one unified brain, opt-in', () => {

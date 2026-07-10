@@ -10,7 +10,7 @@ import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { mmrRerank } from './mmrRerank'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
+import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { learnedUtility } from './mnemeRetrieval'
 import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
@@ -776,6 +776,11 @@ export interface WriteInput {
 // flooded by transcript/code chunks); each links to its top-K nearest neighbours.
 const AUTO_LINK_KINDS = new Set<MemoryEntry['kind']>(['decision', 'fact', 'result'])
 const AUTO_LINK_K = 3
+// v1.23 C7 — a minimum-cosine floor on the auto-link so curated writes stop accreting weak
+// `relates-to` edges (the old `score > 0` gate minted an edge for ANY positive similarity, which
+// inflated the graph with low-signal links redundant with the vector index). Below densify's 0.6
+// but well above noise, so genuine relations still form.
+const AUTO_LINK_MIN_COSINE = 0.35
 // BB16: densify the bulk (message/note) too, but ONLY on a genuinely tight relation —
 // a single best neighbour at high cosine — so the graph grows without flooding.
 const DENSIFY_KINDS = new Set<MemoryEntry['kind']>(['message', 'note'])
@@ -800,6 +805,13 @@ export function contentHash(content: string): string {
  *  against each entry's codeRefs. Optionally repo-scoped. Newest first. This is what lets
  *  "what do we know about this function?" and the issue->location predictor cross from code to
  *  memory without traversing the disjoint id spaces. */
+/** v1.23 C7 — the knowledge graph's edge mix by relation (causal/supersedes/entity vs the damped
+ *  relates-to/follows co-occurrence). Surfaced so the memory dashboard can show the high-signal
+ *  ratio. Thin passthrough to the graph so callers don't import memoryGraph directly. */
+export function memoryGraphRelationStats(): Record<string, number> {
+  return graphRelationStats()
+}
+
 export function symbolHistory(query: string, projectKey?: string): MemoryEntry[] {
   const q = (query ?? '').trim()
   if (!q) return []
@@ -972,7 +984,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       // scan the packed store directly, so growing the graph never kicks an HNSW
       // (re)build or a disk-persist — those stay owned by memorySearch alone.
       for (const n of nearestNeighbours(entry.embedding, AUTO_LINK_K, entry.id)) {
-        if (n.score <= 0) continue
+        if (n.score < AUTO_LINK_MIN_COSINE) continue // C7: floor out weak, low-signal auto-links
         addMemoryEdge({ from: entry.id, to: n.id, relation: 'relates-to', weight: n.score, createdBy: 'auto', ts: entry.ts })
       }
     } catch { /* best effort — linking never blocks a write */ }
@@ -1574,9 +1586,12 @@ export async function memoryRelated(opts: RelatedOptions): Promise<Array<MemoryS
   if (!src) return []
   const vectorHits = (await memorySearch({ query: src.content, limit: limit + 1, project: opts.project }))
     .filter(r => r.id !== opts.id)
-  const edges = edgesFrom(opts.id)
-    .filter(e => e.to !== opts.id)
-    .map(e => ({ id: e.to, relation: e.relation, weight: e.weight }))
+  // C7: UNDIRECTED — a node reachable only by an INCOMING edge (e.g. a fix reachable via
+  // bug --solved-by--> fix) now surfaces, consistent with memory_graph's traversal. edgesFrom
+  // (forward-only) silently dropped those, so "follow the thread" from a fix to its bug failed.
+  const edges = neighboursOf(opts.id)
+    .filter(e => e.id !== opts.id)
+    .map(e => ({ id: e.id, relation: e.relation, weight: e.weight }))
   const merged = mergeRelated({ vectorHits: vectorHits.map(r => ({ id: r.id, score: r.score })), edges })
 
   // Resolve ids back to entries. An edge can point to an entry outside the vector

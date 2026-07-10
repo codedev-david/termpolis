@@ -146,6 +146,8 @@ import { poolLessons, toAgentLesson } from './mnemeSociety'
 import { detectConflictsNli } from './nliContradict'
 import { proactiveQuery, proactiveSignals } from './mnemeRetrieval'
 import { codeLocate, type LocatedSite } from './codeLocate'
+import { isHighValueEpisode } from './mnemeReflect'
+import { makeHeadlessDistiller } from './mnemeDistiller'
 import { getAllEdges, graphStats } from './memoryGraph'
 import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
@@ -198,6 +200,14 @@ function locateIssueSites(issue: string, projectKey?: string, limit?: number): L
   }
 }
 
+// v1.23 C7 — OPTIONAL headless LLM enrichment of reflection, OFF by default (a frontier feature,
+// like adaptEnabled / prfEnabled / graphFusionEnabled). When TERMPOLIS_MNEME_DISTILLER=1, a
+// high-value episode ALSO gets a cheap `claude -p --model haiku` lesson (net-positive on tokens:
+// the stored lesson prevents later re-derivation). The zero-token deterministic extractor always
+// runs regardless, and the distiller never throws — so reflection can't be broken by enabling it.
+const MNEME_DISTILLER_ENABLED = process.env.TERMPOLIS_MNEME_DISTILLER === '1'
+const headlessDistiller = makeHeadlessDistiller()
+
 /**
  * Mneme reflex: when a swarm task finishes, learn from it — ground the outcome
  * into self-competence and reflect the episode into distilled lessons.
@@ -221,7 +231,7 @@ async function reflectOnTask(
         source: 'swarm',
       },
       {
-        distill: (ep) => distillEpisode(ep),
+        distill: (ep) => distillEpisode(ep, MNEME_DISTILLER_ENABLED && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
         write: (input) => memoryWrite(input),
         recordOutcome,
         now: Date.now(),
@@ -1373,7 +1383,7 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
         setCursor: (id, c) => { sessionCursors.set(id, c) },
         reflect: (episode) =>
           onSessionEpisode(episode, {
-            distill: (ep) => distillEpisode(ep),
+            distill: (ep) => distillEpisode(ep, MNEME_DISTILLER_ENABLED && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
             write: (input) => memoryWrite(input),
             recordOutcome,
             now: Date.now(),
