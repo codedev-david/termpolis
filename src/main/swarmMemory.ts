@@ -20,6 +20,8 @@ import { weeklyGrowth, activityOp, type TimeBucket } from './memoryTimeline'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { readSecret, writeSecret } from './secureKeyStore'
+import { projectKeyOf } from './projectKey'
+import type { CodeRef } from './codeGraph'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -57,6 +59,10 @@ export interface MemoryEntry {
   // the whole note. Never persisted.
   truncated?: boolean
   originalChars?: number
+  // v1.23 C2 — the memory<->code BRIDGE join key. Structured code anchors for the files/symbols
+  // this memory is about, resolved through the code graph. Optional + additive (old records lack
+  // it; JSONL round-trips it). symbolHistory() maps a code symbol back to the memories that carry it.
+  codeRefs?: CodeRef[]
 }
 
 /** Normalize a cwd/path or bare name into a lowercase project slug (its basename). This is
@@ -67,16 +73,10 @@ export function normalizeProjectSlug(pathOrName: string): string {
   return base.trim().toLowerCase().slice(0, 128)
 }
 
-/** F19: a STABLE, UNIQUE key for a project derived from its FULL path — so `~/work/acme/api`
- *  and `~/work/globex/api` (same basename `api`) never share a scope. Returns undefined for a
- *  bare name (no path separator) since there's nothing to disambiguate on. */
-export function projectKeyOf(pathOrName: string): string | undefined {
-  if (typeof pathOrName !== 'string') return undefined
-  const t = pathOrName.trim().replace(/[\\/]+$/, '')
-  if (!t || !/[\\/]/.test(t)) return undefined // bare name — no full path to key on
-  const norm = t.replace(/\\/g, '/').toLowerCase()
-  return crypto.createHash('sha1').update(norm).digest('hex').slice(0, 16)
-}
+// F19: projectKeyOf is now shared with the code graph (src/main/projectKey.ts) so the SAME repo
+// resolves to the SAME key on both sides — the join the memory<->code bridge relies on. Imported
+// above and re-exported here for back-compat with existing importers of swarmMemory.projectKeyOf.
+export { projectKeyOf }
 
 export interface MemorySearchResult extends MemoryEntry {
   score: number                   // 0..1, higher is better
@@ -746,6 +746,7 @@ export interface WriteInput {
   importance?: number             // 0..1 base salience — clamped on write
   originEpisode?: string          // task/session id a distilled lesson was derived from
   ts?: number                     // optional backdate (ingestion / tests); defaults to Date.now()
+  codeRefs?: CodeRef[]            // v1.23 C2 — structured code anchors (the memory<->code bridge)
 }
 
 // Auto-link only high-signal kinds so the knowledge graph stays meaningful (not
@@ -769,6 +770,29 @@ export function contentHash(content: string): string {
   // different snippet and the second, genuinely-distinct write is silently dropped.
   const normalized = (content || '').normalize('NFC').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '')
   return crypto.createHash('sha256').update(normalized).digest('hex')
+}
+
+/** v1.23 C2 — the reverse side of the memory<->code bridge: every memory anchored to a code
+ *  symbol or file. Matches a symbol id, a symbol name, a full file path, or a bare filename
+ *  against each entry's codeRefs. Optionally repo-scoped. Newest first. This is what lets
+ *  "what do we know about this function?" and the issue->location predictor cross from code to
+ *  memory without traversing the disjoint id spaces. */
+export function symbolHistory(query: string, projectKey?: string): MemoryEntry[] {
+  const q = (query ?? '').trim()
+  if (!q) return []
+  const base = q.split(/[\\/]/).pop() || q
+  const out: MemoryEntry[] = []
+  for (const e of entries) {
+    const refs = e.codeRefs
+    if (!refs || refs.length === 0) continue
+    const hit = refs.some(
+      (r) =>
+        (!projectKey || r.projectKey === projectKey) &&
+        (r.symbolId === q || r.symbol === q || r.file === q || (!!r.file && (r.file.split(/[\\/]/).pop() || '') === base)),
+    )
+    if (hit) out.push(e)
+  }
+  return out.sort((a, b) => b.ts - a.ts)
 }
 
 export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
@@ -822,6 +846,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     ...(input.memoryType && { memoryType: input.memoryType }),
     ...(typeof input.importance === 'number' && { importance: Math.min(1, Math.max(0, input.importance)) }),
     ...(input.originEpisode && { originEpisode: input.originEpisode }),
+    ...(input.codeRefs && input.codeRefs.length > 0 && { codeRefs: input.codeRefs }),
     hash: effectiveHash,
   }
 

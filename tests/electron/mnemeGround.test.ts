@@ -175,4 +175,54 @@ describe('mnemeGround — automatic causal (solves) edges (C3)', () => {
     await groundEpisode(episode(), { distill, write, link }) // no ensureEntity
     expect(link).not.toHaveBeenCalled()
   })
+
+  it('skips the solves edge when the entity ensurer returns null (no crash)', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([lesson({ problem: 'ENOENT in `x.ts`', links: [{ relation: 'solves' }] })])
+    const ensureEntity = vi.fn().mockResolvedValue(null) // unresolved → no edge
+    const link = vi.fn()
+    const res = await groundEpisode(episode(), { distill, write, ensureEntity, link })
+    expect(res).toEqual({ written: ['mem-1'], lessons: 1 })
+    expect(link).not.toHaveBeenCalledWith('mem-1', expect.anything(), 'solves')
+  })
+
+  it('survives a throwing ensureEntity / link in the causal loop (best-effort)', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([
+      lesson({ problem: 'ENOENT in `x.ts`', entities: ['x.ts'], links: [{ relation: 'solves' }] }),
+    ])
+    const ensureEntity = vi.fn().mockRejectedValue(new Error('graph down'))
+    const link = vi.fn(() => { throw new Error('edge down') })
+    const res = await groundEpisode(episode(), { distill, write, ensureEntity, link })
+    expect(res).toEqual({ written: ['mem-1'], lessons: 1 })
+  })
+})
+
+// v1.23 C2 — grounding stamps the memory<->code bridge: a lesson's entities are resolved to
+// structured code anchors (via an injected resolver) and written onto the memory.
+describe('mnemeGround — code anchor stamping (C2 bridge)', () => {
+  it('stamps codeRefs resolved from the lesson entities onto the write input', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([lesson({ entities: ['reflowForMessage', 'exportTerminal.ts'] })])
+    const resolveCode = vi.fn().mockReturnValue([
+      { file: 'src/exportTerminal.ts', symbol: 'reflowForMessage', symbolId: 'src/exportTerminal.ts#reflowForMessage@1', projectKey: 'k1' },
+    ])
+    await groundEpisode(episode(), { distill, write, resolveCode })
+    expect(resolveCode).toHaveBeenCalledWith(['reflowForMessage', 'exportTerminal.ts'], 'termpolis')
+    expect(write.mock.calls[0][0].codeRefs).toEqual([
+      { file: 'src/exportTerminal.ts', symbol: 'reflowForMessage', symbolId: 'src/exportTerminal.ts#reflowForMessage@1', projectKey: 'k1' },
+    ])
+  })
+
+  it('omits codeRefs when the resolver finds nothing, and survives a resolver that throws', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const distill = vi.fn().mockResolvedValue([lesson({ entities: ['NoSuchThing'] })])
+    const empty = await groundEpisode(episode(), { distill, write, resolveCode: vi.fn().mockReturnValue([]) })
+    expect('codeRefs' in write.mock.calls[0][0]).toBe(false)
+    expect(empty).toEqual({ written: ['mem-1'], lessons: 1 })
+
+    write.mockClear()
+    const res = await groundEpisode(episode(), { distill, write, resolveCode: vi.fn(() => { throw new Error('graph down') }) })
+    expect(res).toEqual({ written: ['mem-1'], lessons: 1 }) // best-effort — lesson still stored
+  })
 })

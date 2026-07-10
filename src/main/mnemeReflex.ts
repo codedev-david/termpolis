@@ -16,6 +16,7 @@ import {
   type RawTurn,
 } from './mnemeEpisode'
 import { groundEpisode, type MemoryWriter, type LessonLinker, type EntityEnsurer } from './mnemeGround'
+import type { CodeRef } from './codeGraph'
 
 export interface CompletedTask {
   id: string
@@ -36,6 +37,8 @@ export interface ReflexDeps {
    *  (see mnemeGround.groundEpisode). Absent in pure tests that only check reflection. */
   link?: LessonLinker
   ensureEntity?: EntityEnsurer
+  /** v1.23 C2: resolve a lesson's entities to structured code anchors, stamped on the memory. */
+  resolveCode?: (names: string[], project?: string) => CodeRef[]
 }
 
 export interface ReflexResult {
@@ -78,7 +81,7 @@ export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Pro
   })
   if (!isReflectable(episode)) return { fired: true, lessons: 0, written: [] }
 
-  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity })
+  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity, resolveCode: deps.resolveCode })
   return { fired: true, lessons, written }
 }
 
@@ -102,6 +105,6 @@ export async function onSessionEpisode(episode: Episode, deps: ReflexDeps): Prom
     }
   }
 
-  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity })
+  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity, resolveCode: deps.resolveCode })
   return { fired: true, lessons, written }
 }

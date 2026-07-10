@@ -125,7 +125,7 @@ import {
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -201,6 +201,7 @@ async function reflectOnTask(
         now: Date.now(),
         link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
         ensureEntity: ensureEntityNode,
+        resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
       },
     )
     try { if (res.fired && res.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons }) } catch { /* best effort */ }
@@ -1348,6 +1349,7 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
             now: Date.now(),
             link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
             ensureEntity: ensureEntityNode,
+            resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
           }).then((r) => {
             try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons }) } catch { /* best effort */ }
             return { fired: r.fired, lessons: r.lessons }

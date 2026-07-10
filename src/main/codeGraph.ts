@@ -52,6 +52,15 @@ export interface ResolvedCode {
   symbols: SymbolHit[]
   files: string[]
 }
+/** A structured code anchor stamped onto a memory entry — the join key of the bridge (C2).
+ *  Structured (not free text) so recall crosses memory<->code without traversing disjoint id
+ *  spaces: a memory carries where it lives, and symbolHistory maps a symbol back to its memories. */
+export interface CodeRef {
+  file: string
+  symbol?: string
+  symbolId?: string
+  projectKey?: string
+}
 
 /** Query sentinel: union across every indexed repo (cross-repo miner + bridge). */
 export const ALL_REPOS = '*'
@@ -417,6 +426,27 @@ export function resolveToken(token: string, projectKey?: string): ResolvedCode {
     }
   }
   return { symbols, files: [...files] }
+}
+
+/** Resolve entity/token names (a lesson's referenced files/functions/errors) into structured
+ *  CodeRefs — the anchors C2 stamps on a memory so it knows where it lives. Deduped; a token that
+ *  resolves to nothing contributes nothing (an error code like ENOENT simply has no code anchor). */
+export function resolveCodeRefs(names: string[], projectKey?: string): CodeRef[] {
+  const refs: CodeRef[] = []
+  const seen = new Set<string>()
+  const key = projectKey === ALL_REPOS ? undefined : (projectKey ?? activeKey)
+  const add = (r: CodeRef): void => {
+    const dedup = `${r.file}\0${r.symbol ?? ''}\0${r.symbolId ?? ''}`
+    if (seen.has(dedup)) return
+    seen.add(dedup)
+    refs.push(r)
+  }
+  for (const name of names ?? []) {
+    const { symbols, files } = resolveToken(name, projectKey)
+    for (const s of symbols) add({ file: s.file, symbol: s.name, symbolId: s.id, projectKey: key })
+    for (const f of files) add({ file: f, projectKey: key })
+  }
+  return refs
 }
 
 export function codeGraphStats(projectKey?: string): CodeGraphStats {

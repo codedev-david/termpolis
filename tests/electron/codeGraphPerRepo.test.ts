@@ -10,6 +10,7 @@ import {
   codeExplore,
   codeGraphStats,
   resolveToken,
+  resolveCodeRefs,
   activeProjectKey,
   graphKeyForRoot,
   ALL_REPOS,
@@ -129,5 +130,14 @@ describe('code graph query surface (C1/C2 bridge)', () => {
     expect(resolveToken('', keyA)).toEqual({ symbols: [], files: [] })
     // union across repos: 'shared' exists in both
     expect(resolveToken('shared', ALL_REPOS).symbols).toHaveLength(2)
+  })
+
+  it('resolveCodeRefs maps entity names to structured, deduped code anchors', () => {
+    const refs = resolveCodeRefs(['alpha', 'exportThing.ts', 'ENOENT'], keyA)
+    // 'alpha' → a symbol anchor; 'exportThing.ts' → a file anchor; 'ENOENT' → nothing (no code)
+    expect(refs.some((r) => r.symbol === 'alpha' && r.symbolId && r.projectKey === keyA)).toBe(true)
+    expect(refs.some((r) => r.file === '/repos/alpha/exportThing.ts' && !r.symbol)).toBe(true)
+    expect(refs.every((r) => r.file)).toBe(true) // every ref names a file
+    expect(resolveCodeRefs([], keyA)).toEqual([]) // nothing to resolve
   })
 })

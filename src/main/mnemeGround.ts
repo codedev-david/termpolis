@@ -11,6 +11,7 @@
 // because losing one lesson is far better than losing the whole reflection.
 
 import { extractEntities, type Episode, type Lesson } from './mnemeReflect'
+import type { CodeRef } from './codeGraph'
 
 /** Minimal write contract — satisfied structurally by swarmMemory.memoryWrite. */
 export interface LessonWriteInput {
@@ -22,6 +23,7 @@ export interface LessonWriteInput {
   originEpisode: string
   project?: string
   source: string
+  codeRefs?: CodeRef[] // v1.23 C2 — code anchors, resolved from the lesson's entities
 }
 
 export type MemoryWriter = (input: LessonWriteInput) => Promise<{ id: string }>
@@ -64,6 +66,9 @@ export interface GroundDeps {
   /** Paired with `link`: upsert an `entity` node per referenced file/function/error
    *  and connect the lesson to it, so two lessons about the same thing share a node. */
   ensureEntity?: EntityEnsurer
+  /** v1.23 C2: resolve a lesson's entity names to structured code anchors (via the code graph),
+   *  stamped onto the written memory so recall can cross from a lesson to the code it's about. */
+  resolveCode?: (names: string[], project?: string) => CodeRef[]
 }
 
 /**
@@ -84,7 +89,16 @@ export async function groundEpisode(episode: Episode, deps: GroundDeps): Promise
   for (const lesson of lessons) {
     let id: string | undefined
     try {
-      const res = await deps.write(lessonToWriteInput(lesson, episode))
+      const input = lessonToWriteInput(lesson, episode)
+      // v1.23 C2: stamp the lesson with structured code anchors resolved from its entities,
+      // so the stored memory knows WHERE it lives (symbolHistory reads these back).
+      if (deps.resolveCode && lesson.entities && lesson.entities.length) {
+        try {
+          const refs = deps.resolveCode(lesson.entities, episode.project)
+          if (refs.length) input.codeRefs = refs
+        } catch { /* best effort — a resolver hiccup never costs the lesson */ }
+      }
+      const res = await deps.write(input)
       if (res && res.id) { id = res.id; written.push(res.id) }
     } catch {
       continue // best effort — skip this lesson, keep the rest
