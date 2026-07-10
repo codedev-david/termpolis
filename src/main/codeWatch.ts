@@ -18,8 +18,10 @@ export interface WatchHandle {
 export interface WatchDeps {
   /** Start an OS watch on `dir`, invoking the listener on each change. */
   watch: (dir: string, listener: (event: string, filename: string | null) => void) => WatchHandle
-  /** Re-index the repo (build the code graph). Called at most once per debounce window. */
-  reindex: (root: string) => void
+  /** Re-index the files that changed (update the code graph). Called at most once per debounce
+   *  window, with the set of source files that changed during it (empty only if the caller flushes
+   *  with nothing pending). */
+  reindex: (root: string, files: string[]) => void
   setTimer: (fn: () => void, ms: number) => unknown
   clearTimer: (t: unknown) => void
   debounceMs?: number
@@ -35,16 +37,20 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
   const debounceMs = deps.debounceMs ?? 2000
   let timer: unknown = null
   let handle: WatchHandle | null = null
+  const changed = new Set<string>() // source files touched during the current debounce window
   try {
     handle = deps.watch(root, (_event, filename) => {
       if (!filename) return
       const name = String(filename)
       if (IGNORE.test(name) || !SRC_EXT.test(name)) return // ignore noise + non-source churn
+      changed.add(name)
       if (timer) deps.clearTimer(timer)
       timer = deps.setTimer(() => {
         timer = null
+        const files = [...changed]
+        changed.clear()
         try {
-          deps.reindex(root)
+          deps.reindex(root, files) // incremental: re-index only the files that changed
         } catch {
           /* best effort — a failed re-index leaves the last good graph in place */
         }
@@ -59,6 +65,7 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
         deps.clearTimer(timer)
         timer = null
       }
+      changed.clear()
       try {
         handle?.close()
       } catch {
@@ -106,7 +113,7 @@ export interface FsWatchLike {
  *  corner of the entrypoint. `fsWatchFn` is Node's fs.watch; `reindex` rebuilds the code graph. */
 export function fsBackedWatchDeps(
   fsWatchFn: (dir: string, opts: { recursive: boolean }, listener: (event: string, filename: string | null) => void) => FsWatchLike,
-  reindex: (root: string) => void,
+  reindex: (root: string, files: string[]) => void,
 ): WatchDeps {
   return {
     watch: (dir, listener) => {

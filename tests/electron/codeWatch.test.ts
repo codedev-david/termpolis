@@ -38,7 +38,26 @@ describe('codeWatch', () => {
     h.fire('src/a.ts')
     expect(h.deps.reindex).not.toHaveBeenCalled() // still debouncing
     h.flush()
-    expect(h.deps.reindex).toHaveBeenCalledWith('/repo')
+    expect(h.deps.reindex).toHaveBeenCalledWith('/repo', ['src/a.ts'])
+  })
+
+  it('passes the specific changed files to the re-index (incremental)', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.fire('src/a.ts')
+    h.fire('src/b.py')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledWith('/repo', ['src/a.ts', 'src/b.py'])
+  })
+
+  it('dedupes repeated changes to the same file within a debounce window', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.fire('a.ts')
+    h.fire('a.ts')
+    h.fire('a.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledWith('/repo', ['a.ts'])
   })
 
   it('coalesces a burst of changes into a single re-index', () => {

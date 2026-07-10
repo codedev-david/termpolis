@@ -303,6 +303,63 @@ export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Prom
   return statsOf(st)
 }
 
+/** Incremental re-index of just the changed paths of one repo — the file-watch fast path. For each
+ *  path: drop its old symbols, then (if it still reads and is indexable) re-extract it AST-first
+ *  (web-tree-sitter, heuristic fallback) EXACTLY as buildCodeGraph does — so an edited file KEEPS its
+ *  AST precision instead of downgrading to the heuristic. A path that no longer reads (deleted or
+ *  renamed away) simply stays removed. Edges are rebuilt and the graph persisted once, at the end.
+ *  Far cheaper than a whole-repo re-sweep: only the changed files are re-parsed. No wipe-guard here
+ *  (unlike buildCodeGraph) — an explicit change set of deletes SHOULD be able to empty the graph. */
+export async function reindexPaths(
+  files: string[],
+  readFile: (file: string) => Promise<string>,
+  projectKey?: string,
+): Promise<number> {
+  const key = projectKey ?? activeKey
+  const st = stateFor(key)
+  let n = 0
+  for (const file of files) {
+    removeFile(st, file) // prune old symbols first — this alone handles a delete/rename
+    if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
+    let content: string
+    try {
+      content = await readFile(file)
+    } catch {
+      continue // gone / unreadable — leave it removed
+    }
+    const ex = (await extractFileTS(file, content)) ?? extractFile(file, content)
+    if (ex) n += indexExtract(st, ex, content)
+  }
+  rebuildEdges(key)
+  persistCodeGraph(key)
+  return n
+}
+
+/** The file-watch reindex action: incrementally re-index the paths that changed under `root` (given
+ *  relative to root, the way fs.watch reports them), falling back to a full repo re-sweep when the
+ *  change set is empty or the incremental pass throws — so a watch event never leaves the graph
+ *  stale. `readFile` is injected (index.ts wires real fs; tests inject their own). */
+export async function reindexWatchedChange(
+  root: string,
+  files: string[],
+  readFile: (file: string) => Promise<string>,
+): Promise<void> {
+  try {
+    if (files.length === 0) {
+      await reindexRepoGraph(root)
+      return
+    }
+    const abs = files.map((f) => path.join(root, f)) // graph file keys are absolute (discoverRepoFiles)
+    await reindexPaths(abs, readFile, graphKeyForRoot(root))
+  } catch {
+    try {
+      await reindexRepoGraph(root)
+    } catch {
+      /* keep the last good graph */
+    }
+  }
+}
+
 export function persistCodeGraph(projectKey?: string): void {
   if (!dir) return
   const key = projectKey ?? activeKey

@@ -126,7 +126,7 @@ import {
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexRepoGraph, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -1237,9 +1237,13 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
     let codeGraph
     try {
       codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }, graphKeyForRoot(opts.repoRoot))
-      // Keep the graph FRESH: watch the repo and re-index (debounced) on source-file changes, so
-      // edits show up in seconds rather than waiting for the periodic re-sweep.
-      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root) => { void reindexRepoGraph(root) }))
+      // Keep the graph FRESH: watch the repo and, on source-file changes (debounced), incrementally
+      // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
+      // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
+      // logic (and is unit-tested); this callback just wires the real fs reader.
+      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root, files) => {
+        void reindexWatchedChange(root, files, async (f) => readFileSync(f, 'utf8'))
+      }))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }

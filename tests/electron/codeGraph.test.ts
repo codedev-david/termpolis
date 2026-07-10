@@ -16,6 +16,9 @@ import {
   codeExplore,
   codeGraphStats,
   reindexRepoGraph,
+  reindexPaths,
+  reindexWatchedChange,
+  graphKeyForRoot,
   _resetCodeGraphForTests,
 } from '../../src/main/codeGraph'
 
@@ -177,6 +180,63 @@ describe('reindexRepoGraph (file-watch freshness path)', () => {
     const stats = await reindexRepoGraph(path.join(dir, 'not-a-repo'))
     expect(stats).toHaveProperty('symbols')
     expect(typeof stats.symbols).toBe('number')
+  })
+})
+
+describe('reindexPaths (incremental file-watch fast path)', () => {
+  it('re-indexes only the changed file and rebuilds cross-file edges (others untouched)', async () => {
+    indexFileContent(A, aSrc) // alpha, gamma
+    indexFileContent(B, bSrc) // beta
+    rebuildEdges()
+    expect(codeCallees('alpha').map((s) => s.name)).toContain('beta')
+
+    // B changes on disk: beta now calls a new helper. A is NOT in the change set.
+    const bSrc2 = 'export function beta() {\n  return delta()\n}\nexport function delta() {\n  return 3\n}'
+    const n = await reindexPaths([B], async (f) => (f === B ? bSrc2 : ''))
+
+    expect(n).toBe(2) // beta + delta re-extracted from B
+    expect(codeSymbols('delta')).toHaveLength(1) // new symbol picked up
+    expect(codeSymbols('alpha')).toHaveLength(1) // A left intact — not wiped
+    expect(codeCallees('beta').map((s) => s.name)).toContain('delta') // edges rebuilt
+    expect(codeCallees('alpha').map((s) => s.name)).toContain('beta') // cross-file edge still resolves
+  })
+
+  it("drops a deleted file's symbols and edges (readFile throws)", async () => {
+    indexFileContent(A, aSrc)
+    indexFileContent(B, bSrc)
+    rebuildEdges()
+    expect(codeCallers('beta').map((s) => s.name)).toContain('alpha')
+
+    const n = await reindexPaths([B], async () => { throw new Error('ENOENT') }) // B deleted
+
+    expect(n).toBe(0)
+    expect(codeSymbols('beta')).toHaveLength(0) // removed
+    expect(codeImpact('beta')).toEqual([]) // its edges gone
+    expect(codeSymbols('alpha')).toHaveLength(1) // A intact
+  })
+
+  it('prunes but does not index a non-indexable path in the change set', async () => {
+    indexFileContent(A, aSrc)
+    rebuildEdges()
+    const n = await reindexPaths(['/repo/.env'], async () => 'SECRET=aaaaaaaaaaaaaaaa')
+    expect(n).toBe(0) // .env is on the secret denylist → skipped before it's read
+    expect(codeSymbols('alpha')).toHaveLength(1) // unrelated symbols intact
+  })
+})
+
+describe('reindexWatchedChange (watch action: incremental + full-sweep fallback)', () => {
+  it('incrementally indexes the changed files, resolving relative paths against root', async () => {
+    const root = path.join(dir, 'repo')
+    const key = graphKeyForRoot(root)
+    await reindexWatchedChange(root, ['src/a.ts'], async () => aSrc)
+    expect(codeSymbols('alpha', 50, key).map((s) => s.file)).toContain(path.join(root, 'src/a.ts'))
+  })
+
+  it('falls back to a full repo re-sweep when the change set is empty (no throw on a non-repo)', async () => {
+    initCodeGraph(dir)
+    await expect(
+      reindexWatchedChange(path.join(dir, 'not-a-repo'), [], async () => ''),
+    ).resolves.toBeUndefined()
   })
 })
 
