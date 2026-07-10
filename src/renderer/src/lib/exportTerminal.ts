@@ -205,6 +205,84 @@ export function formatAsPlainTextFromTerm(term: TerminalLike): string {
 
 const MESSAGE_HTML_FONT = "Consolas,Menlo,Monaco,'Courier New',monospace"
 
+// A line that begins a new structural block (list item, ordered item, markdown
+// heading) always starts its own logical line — it is never a wrap-continuation
+// of the line above, even when that line ran to the wrap edge.
+function startsStructuralBlock(line: string): boolean {
+  return /^\s*([-*•‣◦·]|\d+[.)]|#{1,6}\s)/.test(line)
+}
+
+function firstWordLength(line: string): number {
+  const m = /^\s*(\S+)/.exec(line)
+  return m ? m[1].length : 0
+}
+
+// Un-wrap an agent's own word-wrapping so a copied selection pastes as flowing
+// text instead of hard returns mid-sentence.
+//
+// WHY THIS EXISTS: agent CLIs (Claude Code, Codex, Gemini, Qwen — all Ink-based
+// TUIs) wrap their output to the pane width THEMSELVES and commit each visual
+// line with a real newline. xterm therefore never sets `isWrapped` on the
+// continuation rows, so `extractSelectionWithLogicalNewlines` (which trusts
+// `isWrapped`) can't rejoin them — every wrap becomes a hard break on paste.
+// Ordinary shell output that FLOWS past the margin is soft-wrapped by the
+// terminal, gets `isWrapped=true`, and is already handled; this is only for the
+// agent-TUI case, which is what users actually copy.
+//
+// THE TEST (word-boundary, width-aware): row B is a wrap-continuation of row A
+// only if B's first word could NOT have fit on the end of A —
+// `len(A) + 1 + len(firstWord(B)) > cols`. If it WOULD have fit, A ended
+// deliberately short, so the break is real and kept. This self-corrects for the
+// ragged right edge of word wrap and, crucially, leaves genuinely short lines
+// alone: code, table rows, and short list items never reach the wrap width, so
+// they are never joined. Blank lines and new list/heading markers always break.
+export function reflowForMessage(lines: string[], cols: number): string[] {
+  const wrapWidth = cols && cols >= 20 ? cols : 80
+  const out: string[] = []
+  let cur = ''
+  let lastRowLen = 0 // display width of the last PHYSICAL row folded into `cur`
+  const flush = (): void => {
+    if (cur !== '') {
+      out.push(cur)
+      cur = ''
+    }
+  }
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '') // keep leading indent, drop trailing pad
+    if (line.trim() === '') {
+      flush()
+      out.push('')
+      continue
+    }
+    if (cur === '' || startsStructuralBlock(line)) {
+      flush()
+      cur = line
+      lastRowLen = line.length
+      continue
+    }
+    if (lastRowLen + 1 + firstWordLength(line) > wrapWidth) {
+      // The next word wouldn't have fit on the previous row → it was wrapped.
+      cur = cur + ' ' + line.replace(/^\s+/, '')
+      lastRowLen = line.length
+    } else {
+      // The previous row ended short → a real line break the user wants kept.
+      flush()
+      cur = line
+      lastRowLen = line.length
+    }
+  }
+  flush()
+  return out
+}
+
+// Message-form plain text: the buffer-aware logical-line extract, then reflowed
+// to undo the agent's word-wrapping (see reflowForMessage). Collapses 3+ blank
+// lines to a single paragraph gap.
+function messageTextFromTerm(term: TerminalLike): string {
+  const lines = cleanForExportFromTerm(term).split('\n')
+  return reflowForMessage(lines, term.cols).join('\n').replace(/\n{3,}/g, '\n\n')
+}
+
 // Encode significant whitespace on a single (already HTML-escaped) line: leading
 // spaces, and any run of 2+ interior spaces, become &nbsp; so the destination
 // chat client can't collapse them. Single interior spaces are left as ordinary
@@ -228,11 +306,19 @@ export function toMessageHtml(text: string): string {
   return `<span style="font-family:${MESSAGE_HTML_FONT}">${body}</span>`
 }
 
-// Buffer-aware message-form HTML for a live selection. Pair the returned HTML
-// with formatAsPlainTextFromTerm(term) as the text/plain half when writing the
-// clipboard, so Slack (plain) and Teams (html) each get the right thing.
+// Buffer-aware message-form plain text for a live selection — reflowed so an
+// agent's wrapped output pastes as flowing lines. Use this as the text/plain
+// half of the message copy (Slack reads it), paired with the HTML below.
+export function formatAsMessagePlainTextFromTerm(term: TerminalLike): string {
+  return messageTextFromTerm(term)
+}
+
+// Buffer-aware message-form HTML for a live selection. Reflows the agent's
+// word-wrapping (see reflowForMessage) so paragraphs paste as one <br>-free
+// flowing line each. Pair with formatAsMessagePlainTextFromTerm(term) as the
+// text/plain half so Slack (plain) and Teams (html) each get flowing text.
 export function formatAsMessageHtmlFromTerm(term: TerminalLike): string {
-  return toMessageHtml(cleanForExportFromTerm(term))
+  return toMessageHtml(messageTextFromTerm(term))
 }
 
 // Write a code block to the clipboard in BOTH text/html and text/plain so

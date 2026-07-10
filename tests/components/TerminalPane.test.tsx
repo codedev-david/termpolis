@@ -182,6 +182,7 @@ vi.mock('../../src/renderer/src/lib/exportTerminal', () => {
     formatAsCodeBlockHtmlFromTerm: vi.fn((term: any) => '<pre><code>' + sel(term) + '</code></pre>'),
     formatAsPlainTextFromTerm: vi.fn((term: any) => sel(term)),
     formatAsMessageHtmlFromTerm: vi.fn((term: any) => '<span style="font-family:monospace">' + sel(term) + '</span>'),
+    formatAsMessagePlainTextFromTerm: vi.fn((term: any) => sel(term)),
     writeCodeBlockToClipboardFromTerm: vi.fn((term: any) => {
       return navigator.clipboard.writeText('```text\n' + sel(term) + '\n```')
     }),

@@ -7,7 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
-import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm } from '../../lib/exportTerminal'
+import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
 import { requestsMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
@@ -86,6 +86,7 @@ type CopySnapshot = {
   codeBlockMd: string
   codeBlockHtml: string
   plainText: string
+  messagePlain: string
   messageHtml: string
 }
 
@@ -101,6 +102,7 @@ function buildCopySnapshot(term: Terminal | null): CopySnapshot | null {
     codeBlockMd: formatAsCodeBlockFromTerm(term),
     codeBlockHtml: formatAsCodeBlockHtmlFromTerm(term),
     plainText: formatAsPlainTextFromTerm(term),
+    messagePlain: formatAsMessagePlainTextFromTerm(term),
     messageHtml: formatAsMessageHtmlFromTerm(term),
   }
 }
@@ -1341,7 +1343,7 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               onClick={() => {
                 const snap = copySnapshotRef.current
                 if (snap) {
-                  window.termpolis.clipboardWriteRich(snap.plainText, snap.messageHtml).catch(() => {})
+                  window.termpolis.clipboardWriteRich(snap.messagePlain, snap.messageHtml).catch(() => {})
                 }
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}
