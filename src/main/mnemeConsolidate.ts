@@ -5,7 +5,9 @@
 // compress the brain: which stale episodic memories to forget, which near-duplicates
 // to merge, and which dense clusters deserve a rollup summary. It is a PLANNER only —
 // it decides, it never touches the store. The store integration reads these plans and
-// performs archival (never destructive) writes/edges.
+// performs the forget as an ARCHIVE (v1.23 C6: memoryArchive moves the entry to a
+// recoverable device-local archive — NOT the old permanent memoryDelete tombstone), so a
+// forgotten memory is out of the hot window but never silently lost.
 //
 // This module is PURE and injectable, matching memoryEconomy.ts / mnemeGraphLogic.ts:
 // no electron, no fs, no memory store, no module state, and the clock is ALWAYS the

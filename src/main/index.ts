@@ -118,7 +118,7 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
-  weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory,
+  weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
   type MemoryEntry,
@@ -1250,6 +1250,8 @@ ipcMain.handle('code-graph:callers', async (_, opts: { name: string }) => { try 
 ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try { return ok(codeImpact(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 // v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
 ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
+// v1.23 C6 — DEEP recall over the archive tier (cold/consolidated memories beyond the hot window).
+ipcMain.handle('memory:deep-search', async (_, opts: { query: string; limit?: number }) => { try { return ok(searchArchive(opts?.query || '', opts?.limit ?? 20)) } catch (e: any) { return err(e.message) } })
 
 // Brain export / import (portable .zip) — integrity-gated (zipArchive CRC + manifest SHA-256).
 ipcMain.handle('brain:export', async () => {
@@ -2052,7 +2054,10 @@ if (!gotTheLock) {
         // never touched. Decay-only on the scheduled pass; merge is on-demand.
         try {
           const cnow = Date.now()
-          runConsolidation({ candidates: () => consolidationCandidates(500), simOf: () => 0, forget: memoryDelete, now: cnow })
+          // v1.23 C6: ARCHIVE cold chatter (recoverable) instead of memoryDelete (permanent
+          // tombstone) — the "rock solid: never silently lose memory" fix. Archived entries leave
+          // the hot window but stay recoverable via searchArchive / the deep-search IPC.
+          runConsolidation({ candidates: () => consolidationCandidates(500), simOf: () => 0, forget: memoryArchive, now: cnow })
           // P2 (summaries): cluster near-duplicates in a bounded window and write a
           // higher-level `summary` node linking them (additive; a no-op when the
           // embedder is unavailable, since it needs real vectors).

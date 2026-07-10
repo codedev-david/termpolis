@@ -1251,7 +1251,7 @@ function passesFilter(e: MemoryEntry, opts: SearchOptions): boolean {
   if (opts.agentId && e.agentId !== opts.agentId) return false
   if (opts.kind && e.kind !== opts.kind) return false
   if (opts.taskId && e.taskId !== opts.taskId) return false
-  if (!matchesProject(e, opts)) return false
+  if (!opts.crossProject && !matchesProject(e, opts)) return false // C6: crossProject keeps all repos
   return true
 }
 
@@ -1267,7 +1267,14 @@ export interface SearchOptions {
   projectKey?: string             // F19: internal — the full-path key, derived from `project` in memorySearch
   diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
   fuseGraph?: boolean             // BB7: expand top hits one hop along graph edges (agent-facing recall)
+  crossProject?: boolean          // v1.23 C6: unified-brain recall — include OTHER repos' memories,
+                                  // ranked BELOW same-project (relevance-scoped) instead of excluded
 }
+
+// v1.23 C6: how much to damp an out-of-project hit under crossProject recall, so same-project
+// wins ties but a strong cross-repo lesson still surfaces (the "one unified brain, but scoped"
+// choice). Multiplicative on the 0..1 score, so a penalized hit can fall under the gate.
+const CROSS_PROJECT_PENALTY = 0.6
 
 // Search-result cache — identical repeated searches return instantly. Any write
 // (or a test embed-fn / availability swap) bumps `searchGen`, which is part of the
@@ -1323,7 +1330,7 @@ export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA)
   return out
 }
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${o.fuseGraph ? 'g' : ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
@@ -1347,7 +1354,9 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   if (opts.agentId) pool = pool.filter(e => e.agentId === opts.agentId)
   if (opts.kind) pool = pool.filter(e => e.kind === opts.kind)
   if (opts.taskId) pool = pool.filter(e => e.taskId === opts.taskId)
-  if (opts.project) pool = pool.filter(e => matchesProject(e, opts))
+  // C6: a project scope normally hard-filters to that repo; crossProject keeps every repo in the
+  // pool (they're damped below, not excluded) so a lesson learned elsewhere can still surface.
+  if (opts.project && !opts.crossProject) pool = pool.filter(e => matchesProject(e, opts))
   if (pool.length === 0) return []
 
   // Try vector search first
@@ -1449,6 +1458,14 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // then sort by the stored rank, keeping the original recency tie-break. The
   // score>0 gate is preserved because rank>0 ⇔ relevance>0 (positive multipliers).
   const now = Date.now()
+  // C6: relevance-scoped cross-repo — damp OTHER repos' hits so an equally-similar same-project
+  // memory ranks above them, while a strong cross-repo lesson still clears the gate. Only when
+  // crossProject recall is requested against a known target key; leaves same-project untouched.
+  if (opts.crossProject && opts.projectKey) {
+    for (const r of scored) {
+      if (r.projectKey && r.projectKey !== opts.projectKey) r.score *= CROSS_PROJECT_PENALTY
+    }
+  }
   // P4: learned utility — the existing recency+kind rank and capped usage nudge,
   // PLUS a capped boost from a typed memory's `importance` (reflection sets lessons
   // high). Byte-identical for memories with no importance field; the score>0 gate is
@@ -1858,6 +1875,58 @@ export function memoryDelete(id: string): void {
   bumpSearchGen() // deleted entries must not linger in cached search results
   hnswStaleAfterDelete()
   persistDeletesFloor() // F10: durable device-local floor so the delete survives shard loss
+}
+
+const ARCHIVE_FILE = 'swarm-memory.archive.jsonl'
+function archivePath(): string | null {
+  return userDataDir ? path.join(userDataDir, ARCHIVE_FILE) : null
+}
+
+/** v1.23 C6 — RECOVERABLE cold storage, the "rock solid: never silently lose memory" guarantee.
+ *  Unlike memoryDelete (which permanently tombstones the id AND the content hash), archive moves a
+ *  cold, low-value entry OUT of the searchable hot window but PRESERVES its full content in a
+ *  device-local archive so it stays recoverable + reachable via searchArchive. The ID is
+ *  tombstoned so the hot window skips it on reload; the CONTENT hash is deliberately NOT
+ *  tombstoned, so the same information may legitimately return later. */
+export function memoryArchive(id: string): void {
+  if (!id) return
+  const idx = entries.findIndex((e) => e.id === id)
+  if (idx === -1) return
+  const [removed] = entries.splice(idx, 1)
+  if (!removed) return
+  const ap = archivePath()
+  if (ap) { try { fs.appendFileSync(ap, JSON.stringify(removed) + '\n') } catch { /* best effort — worst case it stays in the shard */ } }
+  if (removed.hash) seenHashes.delete(removed.hash)
+  const r = entryRow.get(removed)
+  if (r !== undefined) rowToEntry.delete(r)
+  lexicalIndex.remove(id)
+  tombstones.add(id) // hot-window skip on reload (NOT a content-hash tombstone)
+  appendShardLine(JSON.stringify({ deleted: id }), 'archive', { fsync: true })
+  bumpSearchGen()
+  persistDeletesFloor()
+}
+
+/** v1.23 C6 — DEEP recall over the archive: keyword-scan cold/archived memories that have left the
+ *  hot window, so nothing is permanently unrecallable. A recovery tier, not the hot search path. */
+export function searchArchive(query: string, limit = 20): MemoryEntry[] {
+  const ap = archivePath()
+  if (!ap) return []
+  let raw: string
+  try { raw = fs.readFileSync(ap, 'utf8') } catch { return [] }
+  const terms = (query || '').toLowerCase().split(/\W+/).filter((w) => w.length > 2)
+  if (terms.length === 0) return []
+  const scored: Array<{ e: MemoryEntry; score: number }> = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    let e: MemoryEntry
+    try { e = JSON.parse(line) } catch { continue }
+    const text = (e.content || '').toLowerCase()
+    let score = 0
+    for (const w of terms) if (text.includes(w)) score++
+    if (score > 0) scored.push({ e, score })
+  }
+  scored.sort((a, b) => b.score - a.score || (b.e.ts || 0) - (a.e.ts || 0))
+  return scored.slice(0, Math.max(1, limit)).map((s) => s.e)
 }
 
 /** Wave2 (codeIngest-stale-chunks): remove all stored code chunks for a file path so a
