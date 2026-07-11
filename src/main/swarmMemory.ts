@@ -834,8 +834,27 @@ export function contentHash(content: string): string {
  *  scoped; the entity's CONTENT stays the bare name (recall and `entities:[content]` must stay
  *  clean). With no projectKey this is exactly contentHash(name), so unscoped/global entities are
  *  byte-for-byte unchanged. The space + 16-hex projectKey suffix won't realistically collide. */
+// Known code file extensions we canonicalize away so a file entity ("parser.ts") and its symbol
+// entity ("parser") resolve to one node. Applied ONLY to a single token (no internal whitespace),
+// so an extension is never stripped from the middle of a phrase.
+const CODE_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|cpp|cc|cxx|hpp|cs|swift|kt|kts|php|scala|lua|dart|h|c|m|mm)$/
+
+/** Tier-2 entity resolution: canonical form of an entity name for DEDUP only (the stored/displayed
+ *  content keeps the original name). CONSERVATIVE by design — it merges high-confidence aliases:
+ *    - Unicode/whitespace normalization + lowercasing ("Parser" == "parser")
+ *    - a leading article the/a/an ("the parser" == "parser")
+ *    - a trailing code file extension on a bare token ("parser.ts" == "parser", "src/x.py" == "src/x")
+ *  It deliberately does NOT fold plurals ("parser" != "parsers") or separator/case styles
+ *  ("parse_tree" != "parseTree"), which would risk collapsing genuinely distinct entities. */
+export function canonicalEntityName(name: string): string {
+  let n = (name || '').normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
+  n = n.replace(/^(the|a|an) /, '')
+  if (n.length > 0 && !/\s/.test(n)) n = n.replace(CODE_EXT_RE, '')
+  return n
+}
+
 export function entityDedupHash(name: string, projectKey?: string): string {
-  const n = (name || '').trim()
+  const n = canonicalEntityName(name)
   return projectKey ? contentHash(`${n} ${projectKey}`) : contentHash(n)
 }
 
