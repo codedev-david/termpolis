@@ -135,6 +135,8 @@ const entryRow = new WeakMap<MemoryEntry, number>()  // live entry → store row
 // brute-force scan until the graph is ready) and kept fresh incrementally on write.
 let hnsw: HnswIndex | null = null
 let hnswStale = false
+let hnswDeletedSinceBuild = 0                   // Tier-2: deletions excluded by the search-time `allow` filter but not yet rebuilt out of the graph
+const HNSW_REPAIR_RATIO = 0.15                  // rebuild the graph once >15% of indexed rows are dead (below that the allow-filter handles it cheaply)
 let hnswThreshold = 50_000
 let hnswBuilding = false                       // a background build is in flight
 let buildGen = 0                               // F34: bumped when the store is replaced (reload/rebuild) — an in-flight build aborts if this changed under it
@@ -537,6 +539,7 @@ export function _resetForTests(): void {
   rowToEntry.clear()
   hnsw = null
   hnswStale = false
+  hnswDeletedSinceBuild = 0
   hnswThreshold = 50_000
   hnswBuilding = false
   buildGen = 0
@@ -1188,7 +1191,7 @@ async function ensureHnsw(): Promise<void> {
   // Try the on-disk graph first — skips the O(n log n) rebuild when the store is
   // unchanged since it was saved (e.g. a fresh launch over a large store).
   const loaded = loadPersistedHnsw()
-  if (loaded) { hnsw = loaded; hnswStale = false; return }
+  if (loaded) { hnsw = loaded; hnswStale = false; hnswDeletedSinceBuild = 0; return }
   hnswBuilding = true
   const gen = buildGen // F34: capture the store generation; abort if a sync reload swaps the store under us
   hnswBuildDone = (async () => {
@@ -1206,6 +1209,7 @@ async function ensureHnsw(): Promise<void> {
       }
       if (buildGen !== gen) return // final guard before publishing the graph
       hnsw = idx
+      hnswDeletedSinceBuild = 0 // fresh graph — built from live rows only, no dead nodes yet
       // Only mark fresh + persist if the store didn't grow during the build; if it
       // did, the snapshot is incomplete → keep it usable but stale (a later search
       // rebuilds) and DON'T persist a graph whose fingerprint would over-claim.
@@ -1992,9 +1996,18 @@ export function memoryPruneCodePath(filePath: string): number {
 // index no longer matches — mark stale + drop the persisted graph so it can't reload against
 // the renumbered store and silently mis-rank recall.
 function hnswStaleAfterDelete(): void {
-  hnswStale = true
-  if (hnswBuilding) buildGen++ // Wave2 (hnsw-build-freshness-by-count): a delete during a build must abort it too
-  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  if (hnswBuilding) buildGen++ // a delete during a build must abort it too
+  if (!hnsw || hnswStale) return // nothing fresh to repair — the `allow` filter or a pending rebuild already excludes it
+  // Tier-2 delete-repair: a deleted row is dropped from results by the search-time `allow` filter
+  // immediately, so we no longer rebuild the WHOLE graph on every delete (the old behavior — a full
+  // rebuild per delete under churn). We rebuild only once enough of the graph is dead that traversal
+  // cost/quality would degrade.
+  hnswDeletedSinceBuild++
+  if (hnswDeletedSinceBuild > HNSW_REPAIR_RATIO * Math.max(1, vectorStore.size)) {
+    hnswStale = true
+    hnswDeletedSinceBuild = 0
+    try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  }
 }
 
 /**
