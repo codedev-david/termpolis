@@ -24,6 +24,8 @@ import {
   _resetForTests,
   _setEmbeddingsAvailable,
   _setAdaptForTests,
+  _setQuantizeForTests,
+  _isVectorStoreQuantizedForTests,
 } from '../../src/main/swarmMemory'
 import { _resetEmbedderForTests } from '../../src/main/localEmbedder'
 import { hasBundledModel } from './_modelFixture'
@@ -222,6 +224,43 @@ describe.skipIf(!hasBundledModel)('recall benchmark — GATE (real bge, producti
     expect(measured.recall_at_10).toBeGreaterThanOrEqual(baseline.recall_at_10 - EPSILON)
     expect(measured.ndcg_at_10).toBeGreaterThanOrEqual(baseline.ndcg_at_10 - EPSILON)
     expect(measured.mrr).toBeGreaterThanOrEqual(baseline.mrr - EPSILON)
+  })
+
+  // Tier-1 (BB8): int8 vector quantization is ~4x less vector RAM. It's only worth shipping if it
+  // keeps recall — this proves the two-stage int8 gather + float×int8 rescore holds parity with the
+  // FLOAT baseline on the real bge model (measured: recall@10/recall@5 identical, nDCG/MRR within 0.001).
+  it('int8 quantization holds recall parity with the float baseline', async () => {
+    const qtmp = fs.mkdtempSync(path.join(os.tmpdir(), 'benchq-'))
+    try {
+      _resetForTests()
+      _resetEmbedderForTests()
+      _setEmbeddingsAvailable(null) // probe the real embedder
+      _setQuantizeForTests(true)
+      initSwarmMemory(qtmp)
+      expect(_isVectorStoreQuantizedForTests()).toBe(true)
+      const tagId = new Map<string, string>()
+      for (const m of CORPUS) tagId.set(m.tag, (await memoryWrite({ agentId: 'a', kind: 'fact', content: m.text })).id)
+      for (const t of ['auth1', 'auth2', 'auth3', 'auth4', 'db1', 'db2', 'db3', 'db4']) memoryFeedback({ id: tagId.get(t)!, helpful: true })
+
+      _setAdaptForTests(false)
+      const rq: RankedQuery[] = []
+      for (const q of CORE_QUERIES) {
+        const hits = await memorySearch({ query: q.text, limit: 10, diversify: true })
+        rq.push({ rankedIds: hits.map((h) => h.id), relevant: new Set(q.answer.map((t) => tagId.get(t)!)) })
+      }
+      const summary = evaluate(rq, [1, 5, 10])
+      const measured = { recall_at_10: round(summary.recallAtK[10]), ndcg_at_10: round(summary.ndcgAtK[10]), mrr: round(summary.mrr) }
+      console.log('\nBENCH-GATE| int8 ' + JSON.stringify(measured))
+
+      const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'))
+      expect(measured.recall_at_10).toBeGreaterThanOrEqual(baseline.recall_at_10 - EPSILON)
+      expect(measured.ndcg_at_10).toBeGreaterThanOrEqual(baseline.ndcg_at_10 - EPSILON)
+      expect(measured.mrr).toBeGreaterThanOrEqual(baseline.mrr - EPSILON)
+    } finally {
+      _setQuantizeForTests(false)
+      _resetForTests()
+      try { fs.rmSync(qtmp, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
   })
 
   it('reports the recall delta of each dormant tier (WP-B decision input)', async () => {

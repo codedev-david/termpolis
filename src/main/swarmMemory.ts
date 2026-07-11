@@ -124,7 +124,15 @@ let fsyncCount = 0                    // F26: observable count of durable (fsync
 // instead of per-entry number[] (the memory win), with bidirectional maps to the
 // owning entry. Non-EMBED_DIM vectors (tests/legacy) stay as number[] on the
 // entry and use the exact per-object path, so behaviour there is unchanged.
-let vectorStore = new VectorStore(EMBED_DIM)
+// Tier-1 (BB8): int8 vector quantization — a pure IN-RAM representation (~4x less vector RAM).
+// Disk keeps exact floats and re-packs on load, so this is safe to toggle. OFF by default; enable
+// with TERMPOLIS_MEM_QUANTIZE=1. Every (re)build of the store goes through newVectorStore() so the
+// setting survives reload / rebuild / compaction.
+let quantizeVectors = false
+function newVectorStore(): VectorStore { return new VectorStore(EMBED_DIM, 1024, { quantize: quantizeVectors }) }
+/** @internal test-only */ export function _setQuantizeForTests(v: boolean): void { quantizeVectors = v }
+/** @internal test-only */ export function _isVectorStoreQuantizedForTests(): boolean { return vectorStore.quantized }
+let vectorStore = newVectorStore()
 const rowToEntry = new Map<number, MemoryEntry>()    // store row → live entry
 const entryRow = new WeakMap<MemoryEntry, number>()  // live entry → store row
 // HNSW graph for sub-linear search once the store is large. Below the threshold,
@@ -472,6 +480,11 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   encKey = null
   seq = 0
   embeddingsAvailable = null
+  // Tier-1: honor the quantization gate (env, or a prior in-process setting) and (re)build the packed
+  // store in the chosen mode BEFORE any vectors are loaded/added, so a fresh dir gets it too.
+  quantizeVectors = quantizeVectors || process.env.TERMPOLIS_MEM_QUANTIZE === '1'
+  vectorStore = newVectorStore()
+  rowToEntry.clear()
 
   try {
     if (syncDir) {
@@ -535,7 +548,8 @@ export function _resetForTests(): void {
   clearEpoch = 0
   encKey = null
   lockedShards = false
-  vectorStore = new VectorStore(EMBED_DIM)
+  quantizeVectors = false
+  vectorStore = newVectorStore()
   rowToEntry.clear()
   hnsw = null
   hnswStale = false
@@ -1144,7 +1158,7 @@ export async function memoryBackfillVectors(max = 200): Promise<number> {
 // Rebuild the packed store from the current hot window (after reload/trim/clear).
 function rebuildVectorIndex(): void {
   buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
-  vectorStore = new VectorStore(EMBED_DIM)
+  vectorStore = newVectorStore()
   rowToEntry.clear()
   hnsw = null
   lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
@@ -1802,7 +1816,7 @@ export function memoryClear(): void {
   for (const h of liveHashes) rememberForgot(h)
   persistForgotSet()
   usageMap.clear()
-  vectorStore = new VectorStore(EMBED_DIM)
+  vectorStore = newVectorStore()
   rowToEntry.clear()
   lexicalIndex.clear()
   hnsw = null
