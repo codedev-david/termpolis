@@ -804,6 +804,17 @@ export function contentHash(content: string): string {
   return crypto.createHash('sha256').update(normalized).digest('hex')
 }
 
+/** WP-D: dedup key for an ENTITY node, SCOPED by projectKey so a same-named entity in two different
+ *  repos (e.g. `parse` in repoA vs repoB) becomes a DISTINCT node instead of collapsing into one
+ *  shared node — which used to manufacture false cross-repo connections. Only the dedup HASH is
+ *  scoped; the entity's CONTENT stays the bare name (recall and `entities:[content]` must stay
+ *  clean). With no projectKey this is exactly contentHash(name), so unscoped/global entities are
+ *  byte-for-byte unchanged. The space + 16-hex projectKey suffix won't realistically collide. */
+export function entityDedupHash(name: string, projectKey?: string): string {
+  const n = (name || '').trim()
+  return projectKey ? contentHash(`${n} ${projectKey}`) : contentHash(n)
+}
+
 /** v1.23 C2 — the reverse side of the memory<->code bridge: every memory anchored to a code
  *  symbol or file. Matches a symbol id, a symbol name, a full file path, or a bare filename
  *  against each entry's codeRefs. Optionally repo-scoped. Newest first. This is what lets

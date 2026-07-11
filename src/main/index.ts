@@ -121,6 +121,7 @@ import {
   weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   persistMemoryIndex,
+  entityDedupHash, projectKeyOf,
   type MemoryEntry,
 } from './swarmMemory'
 import { setSafeStorage } from './secureKeyStore'
@@ -170,6 +171,9 @@ async function ensureEntityNode(name: string, project?: string): Promise<string 
       source: 'mneme',
       importance: 0.3,
       ...(project ? { project } : {}),
+      // WP-D: scope the DEDUP hash by projectKey so `parse` in repoA and repoB are DISTINCT entity
+      // nodes (no false cross-repo conflation). Content stays the bare name (entities:[content] clean).
+      hash: entityDedupHash(n, project ? projectKeyOf(project) : undefined),
     })
     return e?.id ?? null
   } catch {
