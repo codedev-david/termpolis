@@ -166,6 +166,8 @@ const api: TermpolisAPI = {
   memoryChooseSyncDir: () => ipcRenderer.invoke('memory:choose-sync-dir'),
   memorySetSyncPassphrase: (passphrase: string) => ipcRenderer.invoke('memory:set-sync-passphrase', { passphrase }),
   memoryDisableSyncEncryption: () => ipcRenderer.invoke('memory:disable-sync-encryption'),
+  memoryEnableLocalEncryption: () => ipcRenderer.invoke('memory:enable-local-encryption'), // WP-F
+  memoryDisableEncryption: () => ipcRenderer.invoke('memory:disable-encryption'), // WP-F
 
   // Test-only (inert in production — handlers registered only under NODE_ENV=test):
   // feed synthetic terminal output and read back raw terminal writes, so e2e can

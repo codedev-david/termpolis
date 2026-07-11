@@ -21,7 +21,7 @@ import { sampleGraph, graphNodeLabel, type GraphSample } from './memoryGraphSamp
 import { weeklyGrowth, activityOp, type TimeBucket } from './memoryTimeline'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
-import { readSecret, writeSecret } from './secureKeyStore'
+import { readSecret, writeSecret, isOsEncryptionAvailable } from './secureKeyStore'
 import { projectKeyOf } from './projectKey'
 import type { CodeRef } from './codeGraph'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
@@ -168,6 +168,7 @@ const SYNC_CONFIG_FILE = 'memory-sync.json'
 const DEVICE_ID_FILE = 'device-id'
 const SALT_FILE = '.termpolis-salt'      // lives in the SYNC folder — shared across devices, not secret
 const KEY_CACHE_FILE = 'memory-sync.key' // lives in userData — LOCAL to this device, never synced
+const ENCRYPTION_OPTOUT_FILE = 'memory-encryption.optout' // WP-F: presence = user turned default-on encryption OFF
 const DELETES_FILE = 'memory-deletes.json' // userData — device-local DURABLE floor of clearEpoch + tombstones
 // F1: reject a clear epoch further than this into the future — a mis-clocked (dead-CMOS/
 // drifted-VM) or corrupt peer must never be able to poison the global epoch and wipe the brain.
@@ -509,6 +510,9 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
       reloadFrom(shardFiles())
     } else {
       memPath = legacyPath
+      // WP-F: load a device key created on a prior launch BEFORE reading, so local ciphertext
+      // decrypts (otherwise encrypted lines would be skipped and the store would look empty).
+      encKey = loadCachedKey()
       if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
       else fs.writeFileSync(memPath, '')
     }
@@ -522,6 +526,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
     recordAnomaly('degraded-init', 'memory init failed — degraded to the local fallback store')
     try {
       memPath = legacyPath
+      if (!encKey) encKey = loadCachedKey() // WP-F: decrypt local ciphertext on the fallback path too
       if (memPath) {
         if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
         else fs.writeFileSync(memPath, '')
@@ -532,6 +537,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
     }
   }
   loadForgotSet() // BB15: device-local forgot-set (anti-thrash for the 30-min re-ingest)
+  maybeAutoEncrypt() // WP-F: default-ON transparent at-rest encryption for a local store
 }
 
 export function _resetForTests(): void {
@@ -2225,6 +2231,58 @@ export function getSyncStatus(): SyncStatus {
 
 function keyCachePath(): string | null { return userDataDir ? path.join(userDataDir, KEY_CACHE_FILE) : null }
 function saltPath(): string | null { return syncDir ? path.join(syncDir, SALT_FILE) : null }
+function optoutPath(): string | null { return userDataDir ? path.join(userDataDir, ENCRYPTION_OPTOUT_FILE) : null }
+function encryptionOptedOut(): boolean { const p = optoutPath(); return !!p && fs.existsSync(p) }
+
+// WP-F: default-ON, transparent at-rest encryption for a LOCAL-ONLY store. A random per-device key is
+// stored in the OS keychain (safeStorage: DPAPI / Keychain / libsecret), so the on-disk store is
+// AES-256-GCM ciphertext under a key that is NOT sitting in plaintext beside it. Synced stores are
+// deliberately NOT auto-keyed here — a per-device key can't be shared across peers, so those use the
+// passphrase model (setSyncPassphrase). Honest: if the OS keychain is unavailable we stay plaintext
+// (never write a plaintext key) and getSyncStatus reports encrypted:false. Idempotent + migration-safe:
+// enabling rewrites this device's shard atomically and plaintext/ciphertext lines coexist.
+function maybeAutoEncrypt(): void {
+  if (syncDir || encKey) return          // synced (passphrase-driven) or already encrypted
+  if (encryptionOptedOut()) return       // the user turned it off
+  if (!isOsEncryptionAvailable()) return // no keychain → honest plaintext, encrypted:false
+  const p = keyCachePath()
+  if (!p || !memPath) return
+  try {
+    const key = crypto.randomBytes(32)
+    writeSecret(p, key.toString('base64')) // OS-encrypted at rest
+    encKey = key
+    rewriteSelfShard((plain) => encryptLine(key, plain)) // ciphertext-ify any existing plaintext
+    reloadFrom(shardFiles())
+  } catch (err) {
+    encKey = null
+    recordSwarmError('swarmMemory.autoEncrypt.failed', err, {})
+  }
+}
+
+/** WP-F: explicitly turn ON transparent at-rest encryption for a local store (also clears an opt-out).
+ *  Reports honestly (encrypted:false) and is a no-op when the OS keychain is unavailable. */
+export function enableLocalEncryption(): SyncStatus {
+  if (!userDataDir) throw new Error('enableLocalEncryption: memory not initialised')
+  const op = optoutPath()
+  if (op) { try { fs.rmSync(op, { force: true }) } catch { /* ignore */ } } // clear the opt-out so it stays on
+  maybeAutoEncrypt()
+  return getSyncStatus()
+}
+
+/** WP-F: turn OFF at-rest encryption for a local store — decrypt this device's shard back to plaintext,
+ *  drop the device key, and REMEMBER the opt-out so default-on won't re-enable on the next launch.
+ *  (For a cross-machine synced store, use disableSyncEncryption.) */
+export function disableEncryption(): SyncStatus {
+  if (!userDataDir) throw new Error('disableEncryption: memory not initialised')
+  if (encKey) rewriteSelfShard((plain) => plain) // decrypt on read, write plaintext (must run WHILE encKey is set)
+  encKey = null
+  const p = keyCachePath()
+  if (p) { try { fs.rmSync(p, { force: true }) } catch { /* ignore */ } }
+  const op = optoutPath()
+  if (op) { try { fs.writeFileSync(op, '1') } catch { /* ignore */ } } // remember the choice across launches
+  reloadFrom(shardFiles())
+  return getSyncStatus()
+}
 
 function loadCachedKey(): Buffer | null {
   const p = keyCachePath()

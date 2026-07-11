@@ -119,7 +119,7 @@ import {
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
-  getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
+  getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
@@ -1448,6 +1448,15 @@ ipcMain.handle('memory:set-sync-passphrase', async (_, opts: { passphrase: strin
 
 ipcMain.handle('memory:disable-sync-encryption', async () => {
   try { return ok(disableSyncEncryption()) } catch (e: any) { return err(e.message) }
+})
+
+// WP-F: local at-rest encryption (no cross-machine sync required). Default-ON when the OS keychain is
+// available; these let the user re-enable after an opt-out, or turn it off (decrypts + remembers).
+ipcMain.handle('memory:enable-local-encryption', async () => {
+  try { return ok(enableLocalEncryption()) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:disable-encryption', async () => {
+  try { return ok(disableEncryption()) } catch (e: any) { return err(e.message) }
 })
 
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
