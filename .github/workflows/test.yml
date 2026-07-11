@@ -120,6 +120,11 @@ jobs:
       # real-embedding cross-agent recall — the plain unit jobs lack the model.
       - name: Real-embedding semantic recall (model present)
         run: npx vitest run tests/electron/localEmbedder.test.ts tests/electron/bertTokenizer.test.ts tests/electron/memorySemanticRecall.test.ts --reporter=verbose
+      # Retrieval-quality GATE: with the real bge model present, the recall benchmark asserts
+      # nDCG@10/recall@10/MRR absolute floors AND non-regression vs the committed baseline
+      # (tests/electron/fixtures/recall-baseline.json). A change that degrades recall fails CI.
+      - name: Recall benchmark GATE (real bge — floors + non-regression baseline)
+        run: npm run bench:recall
       - name: Build app
         run: npx electron-vite build
       - name: Package (unpacked, no installer, no signing)

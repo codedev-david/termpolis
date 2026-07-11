@@ -1,0 +1,8 @@
+{
+  "recall_at_10": 0.971,
+  "ndcg_at_10": 0.795,
+  "mrr": 0.739,
+  "recall_at_5": 0.912,
+  "queries": 34,
+  "docs": 50
+}
