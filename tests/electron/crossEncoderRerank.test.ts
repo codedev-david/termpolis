@@ -53,6 +53,14 @@ describe('cross-encoder reranker (Tier-1)', () => {
     try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
+  it('setRerankScorer(null) clears an injected scorer and resets the lazy loader', async () => {
+    setRerankScorer(async () => 1)
+    expect(await getRerankScorer()).not.toBeNull() // injected scorer returned
+    setRerankScorer(null) // clears cached + loadAttempted
+    _setRerankModelPresentForTests(false)
+    expect(await getRerankScorer()).toBeNull() // no injected, no model → null
+  })
+
   it('rerankByScorer orders candidates by the scorer, descending', async () => {
     const cands = [{ id: 'a', content: 'alpha' }, { id: 'b', content: 'bravo' }, { id: 'c', content: 'charlie' }]
     const scorer: RerankScorer = async (_q, doc) => (({ alpha: 0.2, bravo: 0.9, charlie: 0.5 }) as Record<string, number>)[doc] ?? 0
