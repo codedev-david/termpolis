@@ -96,6 +96,7 @@ export interface MemorySearchResult extends MemoryEntry {
 // brains are far below the cap. Configurable for tests.
 const DEFAULT_MAX_ENTRIES = 500_000
 let maxEntries = DEFAULT_MAX_ENTRIES
+let evictedAny = false  // Tier-2: true once any entry was evicted beyond the hot window; blocks LOCAL-shard compaction that would otherwise drop on-disk overflow
 const MAX_CONTENT = 16 * 1024      // cap per-entry content size
 const MAX_EMBEDDING_DIM = 1024
 
@@ -398,6 +399,7 @@ function reloadFrom(paths: string[]): void {
   }
   while (entries.length > maxEntries) {
     const dropped = entries.shift()
+    evictedAny = true // Tier-2: hot-window overflow — disk may hold entries outside RAM
     if (dropped?.hash) { seenHashes.delete(dropped.hash); rememberForgot(dropped.hash) } // Wave2: evicted content must not re-ingest
   }
   // F30: apply persisted project backfills so legacy conversation chunks (written before
@@ -521,6 +523,7 @@ export function _resetForTests(): void {
   deviceId = ''
   syncDir = null
   entries.length = 0
+  evictedAny = false
   seenHashes.clear()
   forgotSet.clear()
   usageMap.clear()
@@ -976,6 +979,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (durable && stored.hash) seenHashes.add(stored.hash)
   if (entries.length > maxEntries) {
     const dropped = entries.shift()
+    evictedAny = true // Tier-2: hot-window overflow — disk may hold entries outside RAM
     if (dropped) {
       if (dropped.hash) { seenHashes.delete(dropped.hash); rememberForgot(dropped.hash) } // Wave2: evicted content must not re-ingest
       lexicalIndex.remove(dropped.id)
@@ -1782,6 +1786,7 @@ export function memoryClear(): void {
   const liveIds = entries.map(e => e.id) // F23: capture the concrete live set BEFORE wiping
   const liveHashes = entries.map(e => e.hash).filter((h): h is string => typeof h === 'string')
   entries.length = 0
+  evictedAny = false // a cleared store has no on-disk overflow
   seenHashes.clear()
   forgotSet.clear()
   // Wave2 (memory-clear-undone-by-reingest): remember the cleared content hashes so the
@@ -2219,7 +2224,10 @@ const COMPACT_DEAD_RATIO = 0.5
  * drop data it couldn't account for. Gated on size + dead-ratio unless forced.
  */
 export function compactSelfShard(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {
-  if (!memPath || !syncDir) return { compacted: false, before: 0, after: 0 }
+  if (!memPath) return { compacted: false, before: 0, after: 0 }
+  // Tier-2: a LOCAL-only store (no syncDir) is now compactable too — but ONLY when nothing has been
+  // evicted, else on-disk entries outside the 500k hot window would be dropped. Sync shards: as before.
+  if (!syncDir && evictedAny) return { compacted: false, before: 0, after: 0 }
   let raw: string
   try { raw = fs.readFileSync(memPath, 'utf8') } catch { return { compacted: false, before: 0, after: 0 } }
   const rawLines = raw.split('\n').filter((l) => l.trim())
