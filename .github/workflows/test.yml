@@ -125,6 +125,11 @@ jobs:
       # (tests/electron/fixtures/recall-baseline.json). A change that degrades recall fails CI.
       - name: Recall benchmark GATE (real bge — floors + non-regression baseline)
         run: npm run bench:recall
+      # PROOF GATE: the numbers published on the website (lookup latency, token leverage, learning
+      # from feedback, typed bug->fix relationship) are asserted here against the real model, so the
+      # marketing claims can never drift ahead of measured reality.
+      - name: Proof benchmark GATE (real bge — fast lookups / token leverage / learning / relationships)
+        run: npm run bench:proof
       - name: Build app
         run: npx electron-vite build
       - name: Package (unpacked, no installer, no signing)

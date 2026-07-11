@@ -812,7 +812,7 @@ export function contentHash(content: string): string {
  *  byte-for-byte unchanged. The space + 16-hex projectKey suffix won't realistically collide. */
 export function entityDedupHash(name: string, projectKey?: string): string {
   const n = (name || '').trim()
-  return projectKey ? contentHash(`${n} ${projectKey}`) : contentHash(n)
+  return projectKey ? contentHash(`${n} ${projectKey}`) : contentHash(n)
 }
 
 /** v1.23 C2 — the reverse side of the memory<->code bridge: every memory anchored to a code
@@ -2039,7 +2039,9 @@ export function memoryForget(opts: { now?: number; max?: number } = {}): number 
  * memory in ranking (capped, never overrides relevance); a net-negative count DEMOTES it via
  * learnedUtility, and once it reaches SUPPRESS_THRESHOLD the memory is filtered out of recall
  * entirely (recoverable — later positive feedback lifts it back). This closes the previously
- * positive-only loop. Deliberately does NOT bump searchGen (feedback shouldn't invalidate caches).
+ * positive-only loop. POSITIVE feedback does NOT bump searchGen (a small rank nudge shouldn't
+ * invalidate every cached search); NEGATIVE feedback DOES, so a demotion/suppression takes effect
+ * on the very next search instead of lingering until the cache turns over.
  */
 export function memoryFeedback(input: { id: string; helpful?: boolean; query?: string }): { id: string; used: number } {
   const id = input?.id
@@ -2053,6 +2055,7 @@ export function memoryFeedback(input: { id: string; helpful?: boolean; query?: s
     usageMap.delete(oldest)
   }
   appendShardLine(JSON.stringify({ reinforce: [{ id, used: delta, ts: Date.now() }] }), 'reinforce') // ±1 DELTA, not cumulative
+  if (delta < 0) bumpSearchGen() // WP-C: negative feedback changes suppression/rank — invalidate cached searches so it applies to the NEXT search
   return { id, used }
 }
 

@@ -66,6 +66,11 @@ describe('memoryFeedback — negative signal (WP-C)', () => {
     const good = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'alpha bravo charlie delta echo' })
     const mild = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'alpha bravo charlie delta golf' })
     const bad = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'alpha bravo charlie delta foxtrot' })
+    // Prime the search cache BEFORE any feedback — regression guard: negative feedback must
+    // invalidate it, or suppression would linger until the cache turned over on its own.
+    const primed = (await memorySearch({ query: 'alpha bravo charlie delta', limit: 10 })).map((h) => h.id)
+    expect(primed).toContain(bad.id)
+
     memoryFeedback({ id: mild.id, helpful: false }) // -1: still recallable
     for (let i = 0; i < 5; i++) memoryFeedback({ id: bad.id, helpful: false }) // -5: suppressed
 
