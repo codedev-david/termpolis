@@ -540,6 +540,9 @@ export function _resetForTests(): void {
   hnsw = null
   hnswStale = false
   hnswDeletedSinceBuild = 0
+  archiveCache = null
+  archiveCacheKey = ''
+  archiveReadCount = 0
   hnswThreshold = 50_000
   hnswBuilding = false
   buildGen = 0
@@ -1921,6 +1924,14 @@ const ARCHIVE_FILE = 'swarm-memory.archive.jsonl'
 function archivePath(): string | null {
   return userDataDir ? path.join(userDataDir, ARCHIVE_FILE) : null
 }
+// Tier-2: parsed-archive cache, keyed by the file's size+mtime, so repeated deep-recall queries
+// don't re-read + re-parse the whole archive JSONL each time. Self-invalidates when the file changes
+// (a new archive append, a different data dir), so it can never serve stale results.
+let archiveCache: MemoryEntry[] | null = null
+let archiveCacheKey = ''
+let archiveReadCount = 0 // test-only: counts actual archive file reads (cache misses)
+/** @internal test-only — how many times searchArchive re-read+parsed the archive from disk. */
+export function _archiveReadCountForTests(): number { return archiveReadCount }
 
 /** v1.23 C6 — RECOVERABLE cold storage, the "rock solid: never silently lose memory" guarantee.
  *  Unlike memoryDelete (which permanently tombstones the id AND the content hash), archive moves a
@@ -1951,15 +1962,27 @@ export function memoryArchive(id: string): void {
 export function searchArchive(query: string, limit = 20): MemoryEntry[] {
   const ap = archivePath()
   if (!ap) return []
-  let raw: string
-  try { raw = fs.readFileSync(ap, 'utf8') } catch { return [] }
   const terms = (query || '').toLowerCase().split(/\W+/).filter((w) => w.length > 2)
   if (terms.length === 0) return []
+  // Tier-2: parse the archive ONCE and reuse it across queries, re-reading only when the file
+  // actually changed (size+mtime key) — instead of re-reading+re-parsing the whole JSONL per query.
+  let stat: import('fs').Stats
+  try { stat = fs.statSync(ap) } catch { archiveCache = null; archiveCacheKey = ''; return [] }
+  const key = `${stat.size}:${stat.mtimeMs}`
+  if (!archiveCache || archiveCacheKey !== key) {
+    archiveReadCount++
+    const parsed: MemoryEntry[] = []
+    try {
+      for (const line of fs.readFileSync(ap, 'utf8').split('\n')) {
+        if (!line.trim()) continue
+        try { parsed.push(JSON.parse(line) as MemoryEntry) } catch { /* skip corrupt line */ }
+      }
+    } catch { return [] }
+    archiveCache = parsed
+    archiveCacheKey = key
+  }
   const scored: Array<{ e: MemoryEntry; score: number }> = []
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    let e: MemoryEntry
-    try { e = JSON.parse(line) } catch { continue }
+  for (const e of archiveCache) {
     const text = (e.content || '').toLowerCase()
     let score = 0
     for (const w of terms) if (text.includes(w)) score++

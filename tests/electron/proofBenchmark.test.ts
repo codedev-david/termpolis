@@ -61,7 +61,6 @@ describe.skipIf(!hasBundledModel)('PROOF BENCHMARK — fast lookups, token savin
 
   it('measures lookup latency, tokens-per-recall, the learning lift, and relationship reachability', async () => {
     // ---- Build a realistic store: 12 topics × 15 paraphrase variations = 180 memories ----
-    let contextTokensTotal = 0
     for (let v = 0; v < 15; v++) {
       for (let t = 0; t < TOPICS.length; t++) {
         const content = `Note ${v}: ${TOPICS[t]} (variant ${v}, detail about implementation choice ${t}-${v}).`
