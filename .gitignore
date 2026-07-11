@@ -51,3 +51,7 @@ resources/voice-runtime/
 
 # tree-sitter grammar WASMs — regenerated from the tree-sitter-wasms devDep by scripts/copy-grammars.cjs
 resources/grammars/
+
+# internal audit/planning scratch (kept out of the product repo)
+MEMORY-HARDENING-PLAN.md
+memory-audit-confirmed.json
