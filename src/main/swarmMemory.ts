@@ -1666,7 +1666,7 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
 }
 
 // Record a typed connection between two memories (agent-facing memory_link).
-export function memoryLink(input: { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number }): MemoryEdge | null {
+export function memoryLink(input: { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number; validFrom?: number; validTo?: number }): MemoryEdge | null {
   const edge = addMemoryEdge(input)
   // BB7: an explicit edge changes graph-fused results — invalidate the search cache
   // so the new connection is reflected (auto-link writes already bump via memoryWrite).

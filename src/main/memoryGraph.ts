@@ -9,6 +9,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { isTemporallyValid } from './mnemeGraphLogic'
 
 export interface MemoryEdge {
   from: string
@@ -17,6 +18,8 @@ export interface MemoryEdge {
   weight: number
   ts: number
   createdBy?: string
+  validFrom?: number // WP-D: edge not in force before this instant (open-ended when unset)
+  validTo?: number   // WP-D: edge not in force after this instant (open-ended when unset)
 }
 
 export interface GraphHit {
@@ -105,7 +108,7 @@ export function upsertEdge(list: MemoryEdge[], edge: MemoryEdge): MemoryEdge[] {
 export function bfsTraverse(
   adjacency: Map<string, MemoryEdge[]>,
   start: string,
-  opts: { relation?: string; depth?: number; limit?: number; directed?: boolean; reverse?: Map<string, MemoryEdge[]> } = {},
+  opts: { relation?: string; depth?: number; limit?: number; directed?: boolean; reverse?: Map<string, MemoryEdge[]>; now?: number } = {},
 ): GraphHit[] {
   const depth = Math.max(1, opts.depth ?? 2)
   const limit = Math.max(1, opts.limit ?? 20)
@@ -123,6 +126,7 @@ export function bfsTraverse(
     for (const { id: node, pw } of frontier) {
       // Outgoing edges (forward) — relation as stored.
       for (const e of adjacency.get(node) || []) {
+        if (opts.now !== undefined && !isTemporallyValid(e, opts.now)) continue // WP-D: skip out-of-force edges
         if (relation && e.relation !== relation) continue
         if (visited.has(e.to)) continue
         visited.add(e.to)
@@ -135,6 +139,7 @@ export function bfsTraverse(
       // Incoming edges (reverse), relation inverted — only when undirected.
       if (!directed && reverse) {
         for (const e of reverse.get(node) || []) {
+          if (opts.now !== undefined && !isTemporallyValid(e, opts.now)) continue // WP-D: skip out-of-force edges
           const rel = invertRelation(e.relation)
           if (relation && rel !== relation) continue
           if (visited.has(e.from)) continue
@@ -198,7 +203,7 @@ function indexEdge(e: MemoryEdge): void {
   reverseAdjacency.set(e.to, rlist)
 }
 
-export interface AddEdgeInput { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number }
+export interface AddEdgeInput { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number; validFrom?: number; validTo?: number }
 
 /** Record a typed edge (in memory + appended to the JSONL log). Returns it, or null
  *  for a self-loop / missing endpoint. */
@@ -213,6 +218,8 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
     // memory's edges don't look freshly created (which would skew BB5 time-decay).
     ts: typeof input.ts === 'number' ? input.ts : Date.now(),
     ...(input.createdBy && { createdBy: input.createdBy }),
+    ...(typeof input.validFrom === 'number' && { validFrom: input.validFrom }),
+    ...(typeof input.validTo === 'number' && { validTo: input.validTo }),
   }
   indexEdge(edge)
   if (graphPath) {
@@ -269,9 +276,11 @@ export function clearMemoryGraph(): void {
 // for the legacy forward-only walk.
 export function traverseGraph(
   start: string,
-  opts: { relation?: string; depth?: number; limit?: number; directed?: boolean } = {},
+  opts: { relation?: string; depth?: number; limit?: number; directed?: boolean; now?: number } = {},
 ): GraphHit[] {
-  return bfsTraverse(adjacency, start, { ...opts, directed: opts.directed ?? false, reverse: reverseAdjacency })
+  // WP-D: default `now` to the wall clock so expired / not-yet-in-force edges are excluded in
+  // production (windowless edges are always valid, so this is backward-compatible); tests inject `now`.
+  return bfsTraverse(adjacency, start, { ...opts, now: opts.now ?? Date.now(), directed: opts.directed ?? false, reverse: reverseAdjacency })
 }
 
 export function edgesFrom(id: string): MemoryEdge[] {
