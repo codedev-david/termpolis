@@ -593,6 +593,10 @@ const FORGOT_CAP = 50_000
 // in the shard and replayed on reload (pendingReinforce holds the parsed deltas until
 // the full entry/tombstone/clear state is known). Bounded by USAGE_MAP_CAP.
 const usageMap = new Map<string, number>()
+// WP-C: a memory whose NET feedback falls to this or below is filtered out of recall entirely
+// (a strong "this was wrong, stop surfacing it" signal). Recoverable — positive feedback lifts it
+// back above the threshold; the entry is NEVER deleted, only excluded from results while suppressed.
+const SUPPRESS_THRESHOLD = -3
 const USAGE_MAP_CAP = 50_000
 let pendingReinforce: Array<{ id: string; used: number; ts: number }> = []
 function forgotFile(): string | null { return userDataDir ? path.join(userDataDir, 'memory-forgot.json') : null }
@@ -1485,7 +1489,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const ranked = scored.map(r => ({ r, k: learnedUtility({ id: r.id, relevance: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }), importance: r.importance, useCount: usageMap.get(r.id) ?? 0 }, now) }))
   if (adaptEnabled) applyTasteBoost(ranked) // frontier: default-off interest-centroid nudge
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
-  const survivors = ranked.map(x => x.r).filter(r => r.score > 0)
+  const survivors = ranked.map(x => x.r).filter(r => r.score > 0 && (usageMap.get(r.id) ?? 0) > SUPPRESS_THRESHOLD) // WP-C: drop strongly-downvoted memories
   let result: MemorySearchResult[]
   if (opts.diversify) {
     // BB2: gate to the relevant pool (with a floor), then MMR-rerank to `limit` using
@@ -1519,7 +1523,8 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
       (id) => neighboursOf(id),
       (id, score) => {
         const e = entriesById.get(id)
-        return e && passesFilter(e, opts) ? { ...e, score } : null
+        // WP-C: never let a suppressed (strongly-downvoted) memory re-enter via graph fusion.
+        return e && passesFilter(e, opts) && (usageMap.get(id) ?? 0) > SUPPRESS_THRESHOLD ? { ...e, score } : null
       },
       { seeds: 5, tau: 0.1, lambda: 0.5, cap: limit },
     ).slice(0, limit)
@@ -2017,25 +2022,26 @@ export function memoryForget(opts: { now?: number; max?: number } = {}): number 
 }
 
 /**
- * BB14: record agent feedback that a memory was helpful. `helpful=true` bumps an
- * additive, CRDT-safe usage counter — persisted as a `{reinforce}` DELTA control line
- * and replayed on reload — which gently lifts repeatedly-useful memories in ranking
- * (BB13's fuseImportance, capped so it never overrides relevance). `helpful=false` is a
- * no-op for now (no suppression until a forgetting curve can consume it). Deliberately
- * does NOT bump searchGen (reinforcement shouldn't invalidate every cached search).
+ * BB14 / WP-C: record agent feedback on a memory. `helpful=true` bumps an additive, CRDT-safe
+ * usage counter (+1); `helpful=false` DECREMENTS it (-1) — both persisted as `{reinforce}` DELTA
+ * control lines and replayed on reload. A net-positive count gently lifts a repeatedly-useful
+ * memory in ranking (capped, never overrides relevance); a net-negative count DEMOTES it via
+ * learnedUtility, and once it reaches SUPPRESS_THRESHOLD the memory is filtered out of recall
+ * entirely (recoverable — later positive feedback lifts it back). This closes the previously
+ * positive-only loop. Deliberately does NOT bump searchGen (feedback shouldn't invalidate caches).
  */
 export function memoryFeedback(input: { id: string; helpful?: boolean; query?: string }): { id: string; used: number } {
   const id = input?.id
   if (!id || typeof id !== 'string') return { id: '', used: 0 }
-  if (input.helpful === false) return { id, used: usageMap.get(id) ?? 0 }
-  const used = (usageMap.get(id) ?? 0) + 1
+  const delta = input.helpful === false ? -1 : 1 // WP-C: negative feedback is a real signal now
+  const used = (usageMap.get(id) ?? 0) + delta
   usageMap.set(id, used)
   while (usageMap.size > USAGE_MAP_CAP) { // bound the map (evict oldest)
     const oldest = usageMap.keys().next().value
     if (oldest === undefined) break
     usageMap.delete(oldest)
   }
-  appendShardLine(JSON.stringify({ reinforce: [{ id, used: 1, ts: Date.now() }] }), 'reinforce') // DELTA, not cumulative
+  appendShardLine(JSON.stringify({ reinforce: [{ id, used: delta, ts: Date.now() }] }), 'reinforce') // ±1 DELTA, not cumulative
   return { id, used }
 }
 
@@ -2242,7 +2248,7 @@ export function compactSelfShard(opts?: { force?: boolean }): { compacted: boole
   if (shardClearEpoch > 0) out.push(emit(JSON.stringify({ clearedBefore: shardClearEpoch })))
   if (shardClearedIds.size > 0) out.push(emit(JSON.stringify({ clearedIds: [...shardClearedIds] })))
   for (const e of liveOwn) out.push(emit(serializeEntry(e)))
-  const reinforce = [...shardReinforce.entries()].filter(([id, u]) => u > 0 && liveById.has(id)).map(([id, used]) => ({ id, used, ts: Date.now() }))
+  const reinforce = [...shardReinforce.entries()].filter(([id, u]) => u !== 0 && liveById.has(id)).map(([id, used]) => ({ id, used, ts: Date.now() }))
   if (reinforce.length > 0) out.push(emit(JSON.stringify({ reinforce })))
   for (const id of shardTombstones) out.push(emit(JSON.stringify({ deleted: id })))
   for (const hash of shardDeletedHashes) out.push(emit(JSON.stringify({ deletedHash: hash })))
@@ -2270,7 +2276,7 @@ export function compactSelfShard(opts?: { force?: boolean }): { compacted: boole
  *  brain never DELETES anything there — it only contributes memories. */
 export function exportMemorySnapshot(): string {
   const lines: string[] = entries.map(serializeEntry)
-  const reinforce = [...usageMap.entries()].filter(([, u]) => u > 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
+  const reinforce = [...usageMap.entries()].filter(([, u]) => u !== 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
   if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
   return lines.length ? lines.join('\n') + '\n' : ''
 }
@@ -2341,7 +2347,7 @@ export function setSyncDir(dir: string | null): SyncStatus {
   // wrongly mark these post-clear survivors epoch-vulnerable on the next reload.)
   if (!clean && syncDir && legacyPath) {
     const lines: string[] = entries.map(serializeEntry)
-    const reinforce = [...usageMap.entries()].filter(([, u]) => u > 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
+    const reinforce = [...usageMap.entries()].filter(([, u]) => u !== 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
     if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
     for (const id of tombstones) lines.push(JSON.stringify({ deleted: id }))
     try {

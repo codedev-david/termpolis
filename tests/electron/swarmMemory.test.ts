@@ -325,8 +325,8 @@ describe('usage reinforcement (BB13/BB14)', () => {
     expect((await memorySearch({ query: 'alpha topic' }))[0].id).toBe(a.id)
   })
 
-  it('helpful:false is a no-op (no suppression yet) and an empty id is ignored', () => {
-    expect(memoryFeedback({ id: 'x', helpful: false })).toEqual({ id: 'x', used: 0 })
+  it('helpful:false records a negative demotion delta (WP-C) and an empty id is ignored', () => {
+    expect(memoryFeedback({ id: 'x', helpful: false })).toEqual({ id: 'x', used: -1 })
     expect(memoryFeedback({ id: '' })).toEqual({ id: '', used: 0 })
   })
 })

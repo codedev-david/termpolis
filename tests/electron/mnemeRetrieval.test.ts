@@ -72,8 +72,14 @@ describe('mnemeRetrieval', () => {
       expect(learnedUtility(s, 0)).toBeCloseTo(learnedUtility(s, 9_000_000_000), 12)
     })
 
-    it('clamps negative importance/usage to zero (never demotes below relevance)', () => {
-      expect(learnedUtility({ id: 'a', relevance: 0.8, importance: -5, useCount: -9 }, 0)).toBeCloseTo(0.8, 10)
+    it('clamps negative importance to zero, but negative usage DEMOTES below relevance (WP-C)', () => {
+      // Negative importance is still clamped (no effect): with no usage signal, utility == relevance.
+      expect(learnedUtility({ id: 'a', relevance: 0.8, importance: -5, useCount: 0 }, 0)).toBeCloseTo(0.8, 10)
+      // But negative usage (helpful=false feedback) now demotes below the relevance base — capped,
+      // so it stays strictly positive (never zeroed by the penalty; the relevance gate still owns 0).
+      const demoted = learnedUtility({ id: 'a', relevance: 0.8, importance: -5, useCount: -9 }, 0)
+      expect(demoted).toBeLessThan(0.8)
+      expect(demoted).toBeGreaterThan(0)
     })
   })
 

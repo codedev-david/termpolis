@@ -43,8 +43,9 @@ describe('F3: sync-off preserves the reinforcement learning layer', () => {
     setSyncDir(null) // snapshot to local, re-init local-only
     expect(getSyncStatus().syncing).toBe(false)
     expect(memoryList().some((e) => e.content === 'repeatedly-helpful fact')).toBe(true)
-    // helpful:false is a read-only probe of the current usage count — must still be 2.
-    expect(memoryFeedback({ id: w.id, helpful: false }).used).toBe(2)
+    // WP-C: helpful=false now DECREMENTS, so probe with a +1 instead — the two reinforcements
+    // survived the snapshot iff a positive feedback now reads 3.
+    expect(memoryFeedback({ id: w.id, helpful: true }).used).toBe(3)
   })
 })
 

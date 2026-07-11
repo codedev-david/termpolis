@@ -35,6 +35,8 @@ export interface LearnedUtilityOpts {
   usageCap?: number // hard ceiling on the usage nudge (so it can't override relevance)
   importanceWeight?: number // magnitude of the importance nudge
   importanceCap?: number // hard ceiling on the importance nudge
+  downWeight?: number // WP-C: magnitude of the net-negative-feedback DEMOTION
+  downCap?: number // WP-C: hard floor on the demotion (so it never zeroes a hit)
 }
 
 // Defaults mirror fuseImportance (weight 0.05 / cap 0.2 for the log-usage term). The
@@ -46,6 +48,11 @@ export const LEARNED_UTILITY_DEFAULTS = {
   usageCap: 0.2,
   importanceWeight: 0.15,
   importanceCap: 0.15,
+  // WP-C: net-negative feedback DEMOTES (log-damped, capped). At useCount -5 this is ~-18%; the
+  // 0.4 cap means even a heavily-downvoted memory keeps 60% of its relevance base — demoted, not
+  // erased (erasure is the SUPPRESS_THRESHOLD filter in swarmMemory, and it's recoverable).
+  downWeight: 0.1,
+  downCap: 0.4,
 } as const
 
 /**
@@ -67,15 +74,21 @@ export function learnedUtility(s: Scored, now: number, opts: LearnedUtilityOpts 
   const usageCap = opts.usageCap ?? LEARNED_UTILITY_DEFAULTS.usageCap
   const importanceWeight = opts.importanceWeight ?? LEARNED_UTILITY_DEFAULTS.importanceWeight
   const importanceCap = opts.importanceCap ?? LEARNED_UTILITY_DEFAULTS.importanceCap
+  const downWeight = opts.downWeight ?? LEARNED_UTILITY_DEFAULTS.downWeight
+  const downCap = opts.downCap ?? LEARNED_UTILITY_DEFAULTS.downCap
 
   const importance = Math.max(0, s.importance ?? 0)
-  const useCount = Math.max(0, s.useCount ?? 0)
+  const useCount = s.useCount ?? 0 // WP-C: may be net-NEGATIVE now (helpful=false deltas)
 
   const importanceNudge = Math.min(importanceCap, importanceWeight * importance)
-  const usageNudge = Math.min(usageCap, usageWeight * Math.log(1 + useCount))
+  // WP-C: net-positive usage LIFTS (capped); net-negative usage DEMOTES (capped). Still fully
+  // multiplicative around relevance and every factor stays > 0, so a zero-relevance hit is still
+  // exactly 0 (the relevance-gate contract) and a downvoted hit is demoted, never zeroed/negated.
+  const usageFactor = useCount >= 0
+    ? 1 + Math.min(usageCap, usageWeight * Math.log(1 + useCount))
+    : 1 - Math.min(downCap, downWeight * Math.log(1 + -useCount))
 
-  // Multiplicative around relevance: relevance 0 ⇒ utility 0, no matter the nudges.
-  return s.relevance * (1 + importanceNudge) * (1 + usageNudge)
+  return s.relevance * (1 + importanceNudge) * usageFactor
 }
 
 /**
