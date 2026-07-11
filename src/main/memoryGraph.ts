@@ -217,7 +217,7 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
     // P0 sibling: honor an explicit conversation ts so a backdated (re-ingested)
     // memory's edges don't look freshly created (which would skew BB5 time-decay).
     ts: typeof input.ts === 'number' ? input.ts : Date.now(),
-    ...(input.createdBy && { createdBy: input.createdBy }),
+    createdBy: input.createdBy || 'system', // provenance: every edge is attributable by origin
     ...(typeof input.validFrom === 'number' && { validFrom: input.validFrom }),
     ...(typeof input.validTo === 'number' && { validTo: input.validTo }),
   }

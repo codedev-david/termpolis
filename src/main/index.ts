@@ -239,7 +239,7 @@ async function reflectOnTask(
         write: (input) => memoryWrite(input),
         recordOutcome,
         now: Date.now(),
-        link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
+        link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight, createdBy: 'reflect' }) },
         ensureEntity: ensureEntityNode,
         resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
       },
@@ -1224,7 +1224,7 @@ ipcMain.handle('memory:graph-sample', (_e, opts: { limit?: number } = {}) => {
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
-    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts }) })
+    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }) })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -1965,7 +1965,7 @@ if (!gotTheLock) {
         query: opts.query,
         limit: opts.limit,
       }),
-      memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation }),
+      memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation, createdBy: 'agent' }),
       memoryGraph: (opts) => memoryGraphQuery({
         id: opts.id,
         query: opts.query,
@@ -2061,7 +2061,7 @@ if (!gotTheLock) {
         // when cross-machine sync is off).
         try { reloadMemoryFromSync() } catch { /* best effort */ }
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts }) }, // F30: backfill legacy project tags each pass (now persisted)
+          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }) }, // F30: backfill legacy project tags each pass (now persisted)
           { maxChunks: 250 },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
@@ -2083,7 +2083,7 @@ if (!gotTheLock) {
             candidates: () => consolidationCandidates(200),
             simOf: consolidationSimOf(),
             write: (i) => memoryWrite(i),
-            link: (from, to, relation) => { memoryLink({ from, to, relation }) },
+            link: (from, to, relation) => { memoryLink({ from, to, relation, createdBy: 'consolidate' }) },
             now: cnow,
           })
         } catch { /* best effort */ }
@@ -2095,7 +2095,7 @@ if (!gotTheLock) {
             {
               candidates: () => weaveCandidates(300),
               neighbours: (id, k) => weaveNeighbours(id, k),
-              link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
+              link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight, createdBy: 'weave' }) },
               resolveCode: (names, projectKey) => resolveCodeRefs(names, projectKey),
               backfillCodeRefs: (id, refs) => backfillCodeRefs(id, refs),
             },
@@ -2112,7 +2112,7 @@ if (!gotTheLock) {
       fastIntervalMs: 90_000,
       fastRun: async () => {
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts }) }, // F30: backfill legacy project tags each pass (now persisted)
+          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }) }, // F30: backfill legacy project tags each pass (now persisted)
           // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
           // growing trailing partial doesn't deposit a superset duplicate every 90s.
           { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true } },
