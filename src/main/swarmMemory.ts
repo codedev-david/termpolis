@@ -10,6 +10,7 @@ import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
+import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
 import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
@@ -468,6 +469,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   userDataDir = resolved
   legacyPath = path.join(resolved, 'swarm-memory.jsonl')
   initMemoryGraph(resolved)
+  initMemoryAudit(resolved) // WP-E: local, on-by-default memory/learning audit rooted at the data dir
   deviceId = loadOrCreateDeviceId(resolved)
   // explicit opt wins; otherwise the persisted choice; otherwise local-only
   syncDir = opts.syncDir !== undefined ? (opts.syncDir || null) : readSyncConfig(resolved)
@@ -1033,6 +1035,8 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (orphans > 0 && orphans / vectorStore.size > 0.45 && !hnswBuilding) compactVectorStore()
 
   bumpSearchGen() // a new entry invalidates cached searches
+  // WP-E: audit what the brain stored (secret-redacted preview; full content stays only in the store).
+  if (durable) auditMemory({ event: 'write', id: stored.id, kind: stored.kind, agentId: stored.agentId, preview: redactPreview(stored.content) })
 
   // Knowledge graph: auto-link a curated memory to its nearest neighbours so the
   // graph grows passively as you work. High-value kinds only (transcript/code
@@ -2142,6 +2146,7 @@ export function memoryFeedback(input: { id: string; helpful?: boolean; query?: s
   }
   appendShardLine(JSON.stringify({ reinforce: [{ id, used: delta, ts: Date.now() }] }), 'reinforce') // ±1 DELTA, not cumulative
   if (delta < 0) bumpSearchGen() // WP-C: negative feedback changes suppression/rank — invalidate cached searches so it applies to the NEXT search
+  auditMemory({ event: 'learn', kind: 'feedback', detail: `${id} ${delta < 0 ? 'not-helpful' : 'helpful'} (net ${used})` }) // WP-E
   return { id, used }
 }
 

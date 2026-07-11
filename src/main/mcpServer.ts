@@ -2,6 +2,7 @@ import * as http from 'http'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
+import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -332,6 +333,17 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'memory_audit',
+    description: 'Inspect the LOCAL memory/learning audit trail — an on-by-default, secret-redacted record of what the shared brain actually did: what it stored (write), recalled (recall), learned (learn: feedback / reflection / consolidation), and injected into an agent context (inject). Returns the most recent events (newest first) plus a count summary by type. Local-only; the trail never leaves the machine. Use it to see exactly how memory is being used.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max recent events to return (default 50, cap 1000)' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'memory_link',
     description: 'Record a TYPED connection between two stored memories — build the knowledge graph as you work, so the brain stores not just facts but how they relate. Use it the moment you discover a relationship: a fix that solved a bug, a decision that supersedes an older one, an error caused by a config change, a file that is part of a feature. Pass the two memory ids (from search results) plus a relation. Suggested relations: solves, solved-by, supersedes, superseded-by, caused-by, causes, part-of, follows, duplicates, relates-to (free-form allowed).',
     inputSchema: {
@@ -544,11 +556,11 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         taskId: args.taskId,
         project: args.project,
       })
-    case 'memory_search':
+    case 'memory_search': {
       // Agent-facing recall is de-noised by default: diversify applies the relevance
       // gate (drop < MIN_RELEVANCE, keep a floor) + MMR so near-duplicates don't crowd
       // the top-k. Agents can opt out with diversify:false for a raw ranked list.
-      return await handlers.memorySearch({
+      const res = await handlers.memorySearch({
         query: args.query,
         limit: args.limit,
         agentId: args.agentId,
@@ -558,6 +570,10 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         diversify: args.diversify !== false,
         fuseGraph: args.fuseGraph === true, // BB7: OPT-IN — the recall benchmark showed on-by-default gives no recall gain and a small top-5 cost (diversify's over-fetch already recovers distant items)
       })
+      // WP-E: audit agent-facing recall (query redacted; only ids + count recorded).
+      auditMemory({ event: 'recall', agentId: args.agentId, query: redactPreview(String(args.query ?? '')), results: Array.isArray(res) ? res.length : 0, topIds: Array.isArray(res) ? res.slice(0, 5).map((r: { id: string }) => r.id) : [] })
+      return res
+    }
     case 'memory_list':
       return handlers.memoryList({
         limit: args.limit,
@@ -565,18 +581,30 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         kind: args.kind,
         since: args.since,
       })
-    case 'memory_primer':
-      return await handlers.memoryPrimer({
+    case 'memory_primer': {
+      const res = await handlers.memoryPrimer({
         cwd: args.cwd,
         query: args.query,
         limit: args.limit,
       })
-    case 'memory_related':
-      return await handlers.memoryRelated({
+      // WP-E: audit what context was injected into an agent (the primer). Size only, no content.
+      const primerText = res?.primer ?? ''
+      auditMemory({ event: 'inject', target: 'primer', memoryIds: [], approxTokens: Math.ceil(primerText.length / 4) })
+      return res
+    }
+    case 'memory_related': {
+      const res = await handlers.memoryRelated({
         id: args.id,
         query: args.query,
         limit: args.limit,
       })
+      auditMemory({ event: 'recall', agentId: undefined, query: redactPreview(String(args.query ?? args.id ?? '')), results: Array.isArray(res) ? res.length : 0, topIds: Array.isArray(res) ? res.slice(0, 5).map((r: { id: string }) => r.id) : [] }) // WP-E
+      return res
+    }
+    case 'memory_audit': {
+      const limit = Math.min(Math.max(Number(args.limit ?? 50) || 50, 1), 1000)
+      return { events: readMemoryAudit(limit), summary: memoryAuditSummary() } // WP-E: inspectable, local
+    }
     case 'memory_link':
       return handlers.memoryLink({ from: args.from, to: args.to, relation: args.relation })
     case 'memory_graph':

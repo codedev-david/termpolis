@@ -201,7 +201,7 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.status).toBe('ok')
     expect(body.name).toBe('termpolis-mcp')
-    expect(body.tools).toBe(32)
+    expect(body.tools).toBe(33)
   })
 
   it('OPTIONS returns 204 with CORS headers', async () => {
@@ -273,7 +273,7 @@ describe('MCP HTTP server', () => {
     })
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
-    expect(body.result.tools).toHaveLength(32)
+    expect(body.result.tools).toHaveLength(33)
     const names = body.result.tools.map((t: any) => t.name)
     expect(names).toContain('list_terminals')
     expect(names).toContain('run_command')

@@ -133,6 +133,7 @@ import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
 import { runWeave } from './mnemeWeave'
+import { auditMemory } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
@@ -244,7 +245,12 @@ async function reflectOnTask(
         resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
       },
     )
-    try { if (res.fired && res.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons }) } catch { /* best effort */ }
+    try {
+      if (res.fired && res.lessons > 0) {
+        recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons })
+        auditMemory({ event: 'learn', kind: 'reflect', detail: `${res.lessons} lesson(s) distilled from a task` }) // WP-E
+      }
+    } catch { /* best effort */ }
   } catch {
     /* best effort — reflection never breaks task completion */
   }
@@ -2086,6 +2092,7 @@ if (!gotTheLock) {
             link: (from, to, relation) => { memoryLink({ from, to, relation, createdBy: 'consolidate' }) },
             now: cnow,
           })
+          auditMemory({ event: 'learn', kind: 'consolidate', detail: 'idle consolidation + summarization pass' }) // WP-E
         } catch { /* best effort */ }
         // v1.23 C4 — The Weave: continuously draw cross-repo analogies + backfill bridge anchors
         // AHEAD OF TIME so the agents reason faster (the connections are already there). Bounded,
