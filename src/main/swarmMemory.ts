@@ -9,6 +9,7 @@ import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from '.
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
+import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
 import { mmrRerank } from './mmrRerank'
 import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
@@ -1318,6 +1319,7 @@ export interface SearchOptions {
   project?: string                // path or slug — normalized on entry
   projectKey?: string             // F19: internal — the full-path key, derived from `project` in memorySearch
   diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
+  rerank?: boolean                // Tier-1: opt-in cross-encoder relevance rerank of the candidate pool
   fuseGraph?: boolean             // BB7: expand top hits one hop along graph edges (agent-facing recall)
   crossProject?: boolean          // v1.23 C6: unified-brain recall — include OTHER repos' memories,
                                   // ranked BELOW same-project (relevance-scoped) instead of excluded
@@ -1382,7 +1384,7 @@ export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA)
   return out
 }
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${o.rerank ? 'r' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
@@ -1527,7 +1529,17 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
   const survivors = ranked.map(x => x.r).filter(r => r.score > 0 && (usageMap.get(r.id) ?? 0) > SUPPRESS_THRESHOLD) // WP-C: drop strongly-downvoted memories
   let result: MemorySearchResult[]
-  if (opts.diversify) {
+  // Tier-1: opt-in cross-encoder rerank. Best-effort — only engages when a relevance scorer is
+  // actually available (a local model or an injected one); otherwise falls through to MMR/gate
+  // BYTE-IDENTICALLY, so the default (no bundled reranker) path is unchanged.
+  const rerankScorer = (opts.rerank || rerankEnabled()) ? await getRerankScorer() : null
+  if (rerankScorer) {
+    // Widen the candidate pool past `limit` (the whole point of reranking is to reconsider more than
+    // the top-`limit` first-stage hits), rescore each (query, doc) jointly, then take the top-`limit`.
+    const poolCap = Math.max(limit * 5, 20)
+    const pool = gateByScore(survivors, { minScore: 0, floor: Math.min(poolCap, survivors.length), cap: poolCap })
+    result = (await rerankByScorer(opts.query, pool, rerankScorer)).slice(0, limit)
+  } else if (opts.diversify) {
     // BB2: gate to the relevant pool (with a floor), then MMR-rerank to `limit` using
     // cosine over the packed vectors (token-Jaccard fallback when vectors are absent),
     // so a cluster of near-identical hits doesn't crowd out diverse context.
