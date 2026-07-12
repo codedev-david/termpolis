@@ -26,6 +26,22 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-5 text-sm text-[#d4d4d4]">
 
+          {/* What's New */}
+          <section>
+            <h3 className="font-semibold text-[#D97706] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-star text-xs"></i> What&apos;s New{appVersion ? ` in v${appVersion}` : ''}
+            </h3>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>Commit Shield</strong> — blocks a <code className="bg-[#3c3c3c] px-1 rounded">git commit</code> / <code className="bg-[#3c3c3c] px-1 rounded">git push</code> that would leak a secret (<strong>Settings → AI Security</strong>)</li>
+              <li><strong>Safe Import</strong> — scan a third-party skill, plugin, or MCP server before it is installed (<strong>Settings → General</strong>)</li>
+              <li><strong>Egress Guard</strong> — flags agent traffic to hosts outside the AI-provider allowlist (<strong>Settings → AI Security</strong>)</li>
+              <li><strong>Memory scrub</strong> — strips secrets out of a memory before it is stored (<strong>Settings → AI Security</strong>)</li>
+              <li><strong>Audit log is on by default</strong> — <code className="bg-[#3c3c3c] px-1 rounded">ai-security-audit.jsonl</code> in your Termpolis user-data folder</li>
+              <li><strong>Code connections</strong> — the code graph now sits beside the memory graph in the dashboard (<strong>Settings → Memory &amp; Learning</strong>)</li>
+              <li><strong>Self-competence learns from real work</strong> — landed commits and passing/failing test runs now feed it</li>
+            </ul>
+          </section>
+
           {/* Sidebar Icons */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
@@ -211,7 +227,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li>Termpolis runs an MCP server on <strong>localhost:9315</strong> (shown in the bottom bar)</li>
               <li>AI agents can create terminals, run commands, read output, and manage your workspace</li>
               <li><strong>Auto-registers with Claude Code</strong> — on launch, Termpolis adds itself to your Claude Code settings automatically. No manual config needed.</li>
-              <li>21 tools: terminal management, file tree, git status, swarm coordination, and shared memory (search, related-entry traversal, knowledge-graph link + walk, write, list, and the background primer)</li>
+              <li>33 tools: terminal management, file tree, git status, swarm coordination, shared memory (search, related-entry traversal, knowledge-graph link + walk, write, list, audit, and the background primer), and the code graph (search, locate, callers, callees, explore, impact)</li>
               <li>Secured with a 256-bit auth token (rotates every launch, localhost only)</li>
               <li>CLI tool available: <code>termpolis-cli list</code>, <code>termpolis-cli create "Dev"</code>, etc.</li>
             </ul>
@@ -222,14 +238,33 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
               <i className="fa-solid fa-shield-halved text-xs"></i> AI Security Center
             </h3>
-            <p className="text-[#bbb] text-xs mb-1.5">Open <strong>Settings → Security</strong>. Layered defenses for hosted-model use — everything runs locally on your machine.</p>
+            <p className="text-[#bbb] text-xs mb-1.5">Open <strong>Settings → AI Security</strong>. Layered defenses for hosted-model use — everything runs locally on your machine.</p>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li><strong>Secret scanner</strong> — every prompt you send to an AI terminal is auto-scanned against 70+ patterns (AWS keys, GitHub tokens, OpenAI keys, JWTs, private keys, …) before it leaves the app. A red banner pops up if a hit is found and lets you redact-and-resend.</li>
+              <li><strong>Commit Shield</strong> <em>(on by default)</em> — the same engine at the <strong>git boundary</strong>: a <code className="bg-[#3c3c3c] px-1 rounded">git commit</code> is blocked when the <strong>staged diff</strong> carries a secret, and a <code className="bg-[#3c3c3c] px-1 rounded">git push</code> is blocked when any <strong>unpushed commit</strong> does — so a key an agent wrote to disk never lands in your history.</li>
+              <li><strong>Memory scrub</strong> <em>(on by default)</em> — secrets are redacted out of a memory <em>before</em> it is hashed, embedded, or written to disk, so nothing sensitive reaches the brain in the first place.</li>
               <li><strong>Sensitive-file watcher</strong> — alerts when an agent reads <code>.env</code>, PEM, cloud-credential, or SSH-directory files. ~17 conservative rules tuned to avoid false positives on normal source code.</li>
-              <li><strong>Per-agent egress audit</strong> — every outbound network connection an agent makes is logged with host + count, viewable in <strong>Settings → Security → Egress Audit</strong>. JSONL log on disk for forensics.</li>
+              <li><strong>Egress Guard</strong> <em>(on by default)</em> — flags agent network traffic to any host <strong>outside the known AI-provider allowlist</strong>, so a call to an unexpected endpoint surfaces instead of passing quietly.</li>
+              <li><strong>Per-agent egress audit</strong> — every outbound network connection an agent makes is logged with host + count, viewable in <strong>Settings → AI Security → Egress Audit</strong>. JSONL log on disk for forensics.</li>
+              <li><strong>Audit log</strong> <em>(on by default)</em> — security events are appended to <code className="bg-[#3c3c3c] px-1 rounded">ai-security-audit.jsonl</code> in the Termpolis user-data folder. Append-only, rotated, and wipeable from Settings.</li>
               <li><strong>ToS drift watcher</strong> — flags Anthropic / OpenAI / Google / Alibaba ToS changes that affect how your prompts are stored or used for training.</li>
               <li><strong>Strict Mode (Gemini)</strong> — auto-detects when Gemini drops to the free OAuth tier (which trains on your prompts) and blocks calls until you switch to a paid API key.</li>
               <li><strong>Code-chunk + env-dump detection</strong> — extra heuristics that catch obfuscated secrets and wholesale environment dumps the regex scanner alone might miss.</li>
+            </ul>
+          </section>
+
+          {/* Safe Import */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-file-import text-xs"></i> Safe Import
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Open <strong>Settings → General</strong>. Import a third-party <strong>skill, plugin, or MCP server</strong> — a few files nobody diffs, which your agent then trusts like your own words. Safe Import reads them first.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>Scanned before anything is installed</strong> — 41 rules over every file: outbound network calls, shell/<code className="bg-[#3c3c3c] px-1 rounded">eval</code> execution, credential and <code className="bg-[#3c3c3c] px-1 rounded">~/.ssh</code> access, obfuscated payloads, and <strong>prompt-injection hidden in the instructions</strong> (a poisoned <code className="bg-[#3c3c3c] px-1 rounded">SKILL.md</code> needs no dangerous API call — the prose <em>is</em> the exploit).</li>
+              <li><strong>Red / yellow / green report</strong> — you see the exact file, line, and reason for every finding, then decide. <strong>Red can never be installed</strong>: if it can exfiltrate data or execute code, the button is gone, not just discouraged.</li>
+              <li><strong>Approvals are hash-pinned</strong> — trust is keyed to the artifact's contents, so an update that quietly swaps in a credential stealer re-prompts you instead of inheriting the old yes.</li>
+              <li><strong>On approval it is wired in for you</strong> — into Claude, Codex, Gemini, and/or Qwen, whichever you pick.</li>
+              <li><strong>It is a static review aid, not a sandbox</strong> — Termpolis reads the artifact, it never runs it to find out what it does. A determined attacker can obfuscate past any static check, so treat a green report as "nothing obvious found", not as proof of safety.</li>
             </ul>
           </section>
 
@@ -261,6 +296,18 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>Inject primer</strong> — the token-saver: type a topic and click it to paste the most relevant memories straight into the <em>active agent's</em> terminal, so it starts already knowing the context and you don't re-explain it.</li>
               <li><strong>Index this repo's code</strong> — pull the current project's git-tracked files into memory on demand (<code className="bg-[#3c3c3c] px-1 rounded">.env</code>/keys are always skipped). Conversations index themselves automatically; code is opt-in per repo.</li>
               <li><strong>Cross-machine sync</strong> — point it at a folder you already sync (<strong>OneDrive, Google Drive, Dropbox, iCloud, Syncthing…</strong>) and the same brain follows you to every machine, with <strong>no Termpolis server</strong>. Turn on a passphrase to encrypt it at rest so the cloud provider only ever sees ciphertext — use the <em>same passphrase on every device</em>.</li>
+            </ul>
+          </section>
+
+          {/* Memory & Learning dashboard */}
+          <section>
+            <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
+              <i className="fa-solid fa-chart-line text-xs"></i> Memory &amp; Learning Dashboard
+            </h3>
+            <p className="text-[#bbb] text-xs mb-1.5">Open <strong>Settings → Memory &amp; Learning</strong>. Receipts for what the brain has actually learned — not a promise that it did.</p>
+            <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
+              <li><strong>Code connections</strong> — the <strong>structural</strong> code graph (symbols, plus caller/callee edges) now sits alongside the <strong>semantic</strong> memory graph, so you can see both how your code is wired and how your memories relate.</li>
+              <li><strong>Self-competence learns from real work</strong> — a <strong>landed commit</strong> or a <strong>passing/failing test run</strong> feeds the per-domain calibration, so the track record comes from outcomes rather than from the agent's own say-so.</li>
             </ul>
           </section>
 

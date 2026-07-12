@@ -52,7 +52,7 @@ Every AI session normally starts cold — you re-explain the task and burn 20–
 - **100% local & private.** Embeddings run in-process (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry, nothing leaves your machine. Optional at-rest encryption (AES-256-GCM) and conflict-free sync across machines via a folder you already sync.
 - **Built to trust.** Content-addressed dedup (never stores the same thing twice), millisecond HNSW retrieval at scale, staleness-guarded recall, and an observable `🧠 Loaded N memories` banner so you always know it fired.
 
-> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **4,500+ tests at ~92% coverage**.
+> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **5,500+ tests** (91% statements / 93% lines).
 
 **The result: stop re-explaining context every session — and stop paying to reload it.**
 
@@ -83,12 +83,17 @@ What Termpolis **can** do is make the hosted path *substantially* safer than typ
 | Risk | What Termpolis does | Limit |
 | --- | --- | --- |
 | Pasted secret leaves the machine | Auto-scan: every Enter / paste in an AI terminal is matched against **70+ regex rules** (AWS, GitHub PATs, Stripe, GCP service accounts, JWTs, PEM keys, `.env`-style URLs…) before it reaches the PTY. Hits are redacted, banner shown. | Regex-shaped secrets only — a custom-format token nobody publishes a pattern for can still slip through. |
+| Secret gets **committed**, then **pushed to a remote** | **Commit/Push Secret Shield (v1.25)** — the same ~70-rule engine now also runs at the **git boundary**. Commit through Termpolis (the built-in Git panel, or Swarm Review's commit) and it scans the **staged diff** — exactly what `git commit` is about to capture. Push through Termpolis and it scans the **full patch of every commit not yet on any remote** — exactly what `git push` is about to send. A hit **blocks the operation** and names the rule that fired. The outbound scanner only ever saw text typed *at* an agent; it structurally never saw git, so a leaked key could still land in history and reach a remote. On by default. | Gates the git operations you run **through Termpolis** — no `pre-commit` hook is installed, so a `git commit` typed straight into a raw terminal isn't intercepted. Pushing that commit through Termpolis still trips the push gate, which is deliberately scoped to *every* unpushed commit so it catches one made elsewhere; push from a raw shell as well and neither gate fires. **Fails open** on a git error, so it can never wedge a commit for a non-secret reason. Regex-shaped secrets only, as above. |
+| Secret gets *remembered* — persisted into the shared brain | **Memory-at-rest scrub (v1.25)** — secrets are redacted **before** a memory is hashed, embedded, or written to disk, so a key sitting in a transcript or an indexed source file never lands in the brain and can never be recalled back into an agent's context later. On by default. | Applies at **write time** — it redacts what's being stored now, not what a pre-v1.25 store already holds. Regex-shaped secrets only. |
 | Whole `.env` or source file pasted | **Code-chunk + env-dump detectors (v1.11.52)** flag prompts >2 KB that look like code (indentation + braces + keywords) or contain 5+ `KEY=value` lines. The renderer surfaces a notice + audit entry. | Heuristic — false negatives possible on minified or unusual code shapes. The prompt is not blocked; you decide. |
 | Free-tier Gemini sending prompts to Google for product improvement | **Gemini account-mode auto-detection** reads `GEMINI_API_KEY` / `GOOGLE_GENAI_USE_GCA` / `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to classify the active session. **Strict Mode** intercepts `gemini` launches that look free-tier and refuses to forward them. Blocked launches are audited. | Detection is env-var based; if you ship credentials some other way the heuristic can't see, it can't classify them. |
 | Provider quietly changes their ToS / data-controls page | **Weekly ToS drift watcher (v1.11.52)** GitHub Action fetches the four provider pages we cite (Anthropic, OpenAI, Google, Alibaba), normalizes the HTML, hashes it, and opens a tracking issue when the hash changes — so the docs in *this* repo stay aligned with what the providers actually publish. | Detects rendered-text changes, not legal intent. A human still reads the diff. |
-| Agent silently talking to an unexpected endpoint | **Egress audit (v1.11.52)** polls `netstat` (Windows) / `ss` (Linux) / `lsof` (macOS) once a minute for the AI agent's PID and records each unique remote `host:port` to the audit log + Security panel. So you can answer "did Claude talk to anything other than `api.anthropic.com` today?". | Polling, not packet capture — sub-minute bursts can be missed. No DNS reverse-lookup, no payload inspection. |
+| Agent silently talking to an unexpected endpoint | **Egress audit (v1.11.52)** polls `netstat` (Windows) / `ss` (Linux) / `lsof` (macOS) once a minute for the AI agent's PID and records each unique remote `host:port` to the audit log + Security panel. **As of v1.25 that record is a *policy*: Egress Guard** judges every observed endpoint against a published allowlist of AI-provider domains and raises anything else as a **violation** in the audit trail. Suffix matching is **dot-anchored** (an exact host, or a true dot-delimited subdomain of one), so `evil-anthropic.com` and `anthropic.com.evil.net` do **not** pass as Anthropic. Loopback and LAN addresses are never violations — a local model server is not exfiltration. On by default. | Polling, not packet capture — sub-minute bursts can be missed. No payload inspection. **It flags; it never kills a connection.** The poller only yields IP literals, so the allowlist is forward-resolved — when DNS is unavailable the guard stays silent rather than reporting every provider IP as exfiltration. |
+| A third-party **skill / plugin / MCP server** you import | **Safe Import (v1.25)** — a skill, plugin, slash-command, subagent, or MCP server is not data: it's *code* plus *instruction text* handed to an agent that already holds your credentials, your repo, and a live PTY. Termpolis statically scans it **before it touches your machine** — **41 rules** across outbound network calls, shell / `eval` execution, credential + `~/.ssh` access, obfuscated payloads, and **prompt injection hidden in the artifact's own instructions** (tool poisoning — no dangerous API call appears anywhere; the *agent* is the exploit), plus context-sensitive checks that judge a construct by what surrounds it: a base64 decode feeding an execution sink is red, a decode on its own is yellow. You get a red / yellow / green report with `file:line` and the offending line. **Red can never be installed** — the refusal is enforced in the main process, not the UI. Approvals are **hash-pinned**, so editing an approved artifact re-prompts (no trust-on-first-use-then-swap). Zip-slip and TOML injection are refused by the installer. | **A static review aid, not a sandbox** — nothing is executed, in a jail or otherwise. It is line-based, and a determined attacker can obfuscate past any of it. Its job is to put the three lines that matter in front of you *before* you click Import — not to prove the artifact is safe. |
 | Tampering surface beyond the terminal itself | No browser extension, no IDE plug-in, no ad-hoc cloud sync. The MCP server is bound to `127.0.0.1` with a token that rotates on every restart. No Termpolis telemetry, no Termpolis cloud accounts. | Termpolis is itself an Electron app — same caveats apply as any local desktop process running with your privileges. |
-| Forensic record of what was typed at agents | **Local JSONL audit log**: every AI terminal open/close, every redaction hit, every code-chunk / env-dump detection, every Strict-Mode block. 10 MB rotated, append-only, on disk only, wipeable. | Local. We don't ship it anywhere. If your machine is compromised, so is the log. |
+| Forensic record of what was typed at agents | **Local JSONL audit log**: every AI terminal open/close, every redaction hit, every code-chunk / env-dump detection, every Strict-Mode block — plus, as of v1.25, every blocked commit/push, every import scan and refusal, and every egress violation. 10 MB rotated, append-only, on disk only, wipeable. **On by default as of v1.25** (it previously defaulted to off, so for most installs it never existed). | Local. We don't ship it anywhere. If your machine is compromised, so is the log. |
+
+**v1.25 moved the perimeter to the boundaries that actually leak.** The secret engine used to watch exactly one of them — the keystrokes you send to an agent. It now also gates what a commit made through Termpolis captures, what a push made through Termpolis sends, and what gets written into the shared brain; an imported skill or MCP server is scanned before it is wired into an agent; and agent egress is *judged* against an allowlist rather than merely logged. Those gates — and the audit log — **default to on**, and an absent setting key keeps the secure default, so an existing install is protected on upgrade without touching Settings. Each can be turned off individually in **Settings → AI Security**; **Safe Import** lives in **Settings → General**.
 
 **What this is and isn't:** Termpolis is *defense in depth* for the hosted-model path — it raises the cost of accidental disclosure and gives you a record to audit. It is **not** a guarantee that source code cannot reach a provider — only not running the agent at all gives you that. The honest answer to *"can a hosted model leak my code?"* is "yes, if you send it; the question is whether the controls catch the obvious accidents and whether you trust the provider's terms for the rest." Termpolis is built for the engineers who've decided that trade-off is acceptable for the productivity hosted models give them.
 
@@ -126,12 +131,13 @@ The result: stop re-explaining context every session, and stop paying to reload 
 **v1.23 "The Weave"** turns the shared brain and the code graph into a single, self-weaving fabric. Recall no longer stops at *text* — it points at the *code* a lesson is about — and the non-obvious connections across your whole workspace are drawn **ahead of time**, so agents reason faster.
 
 - **Memory ↔ code bridge.** Stored lessons and decisions now carry structured **code anchors** (file + symbol), so recall can cross straight from *"this is how we fixed the auth bug"* to the exact function it lives in — and, in reverse, from a function to everything the brain knows about it. The two stores used to be islands; now they're joined by a shared key.
-- **Predict *where* to fix it — `code_locate`.** Give it an error or a problem description and it returns a ranked list of `{file, symbol, why: [past lessons]}` — the code sites most likely responsible, each with the fixes and decisions that point there. It's the **32nd MCP tool**, so any agent can reach for it *first* when debugging instead of grepping blindly. (The bridge fills in over time: `why` gets richer as new lessons are anchored and the background weaver backfills older ones.)
+- **Predict *where* to fix it — `code_locate`.** Give it an error or a problem description and it returns a ranked list of `{file, symbol, why: [past lessons]}` — the code sites most likely responsible, each with the fixes and decisions that point there. It's exposed as an **MCP tool**, so any agent can reach for it *first* when debugging instead of grepping blindly. (The bridge fills in over time: `why` gets richer as new lessons are anchored and the background weaver backfills older ones.)
 - **The Weave — an always-on background connection-miner (flagship).** While you're idle, a weaver continuously draws connections across the *entire* unified brain: **cross-repo code-structure analogies** (a pattern in one repo that echoes one in another), **cross-repo answer/decision analogies**, and the memory↔code bridge edges above — materialized ahead of time with provenance and a weight floor so the graph stays high-signal. The connections are already there when an agent needs them.
 - **Per-repo, durable code graph.** The code graph is now keyed **per repository** — a second repo no longer clobbers the first, and each repo's graph is a durable on-disk store, so a transient non-git directory (or git off the PATH) won't wipe one you've already built.
 - **Automatic bug → fix edges.** When a task with a problem finishes, Mneme now mints the causal **`solves`** edge automatically, so *"this error → that fix"* is traversable later without anyone hand-linking it.
 - **Rock-solid, never-delete memory.** Idle consolidation moves aged memories to a **cold-archive tier** instead of deleting them — nothing curated is ever lost — and **deep recall** can still reach archived entries and history beyond the hot search window. Cross-repo transfer is **relevance-scoped**, so one unified brain gives cross-project reuse without the noise.
 - **Sharper learning.** An **opt-in LLM distiller** (`TERMPOLIS_MNEME_DISTILLER=1`) writes richer, more precise lessons; `memory_related` is now **undirected**, so a connection surfaces from either end.
+- **The `explains` edge — the code ↔ purpose bridge (v1.25).** A semantic memory now links directly to the **code chunk it explains**, so the prose that says *why* a thing works the way it does hangs off the code itself. The edge is gated on **both** embedding similarity **and** a shared file/symbol anchor — a merely chatty neighbour can never claim to explain code it has no anchor into. In the same pass the weaver was fixed to actually mint what it mined: **intra-repo analogies are now allowed** (it was cross-repo only, so the most useful connections — the ones inside the repo you're in — were being discarded), and the similarity floor drops **0.82 → 0.72**.
 
 ---
 
@@ -143,8 +149,9 @@ Termpolis doesn't replace Claude Code, Codex, Gemini CLI, or Qwen Code — **it 
 | --- | --- | --- |
 | **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **all four agents share**, surviving restarts and (optionally) syncing across machines; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
 | **More than one model** | Locked to one vendor's family | Claude + Codex + Gemini + Qwen run **as a team** under a local conductor that routes each subtask to the best-suited model |
-| **Secrets / code leaving the machine** | Whatever you type is sent as-is | Every prompt is scanned against **70+ secret patterns** and redacted before it reaches the provider, with a local audit entry |
-| **Knowing what the agent contacted** | Opaque — you can't tell who it talked to | **Per-agent egress audit** (netstat / ss / lsof) records every remote host the agent reached |
+| **Secrets / code leaving the machine** | Whatever you type is sent as-is | Every prompt is scanned against **70+ secret patterns** and redacted before it reaches the provider, with a local audit entry — and since v1.25 the same engine **blocks a `git commit` or `git push`** that would carry a secret into history or to a remote |
+| **Importing a third-party skill / plugin / MCP server** | Wired straight into the agent's config — a zip nobody diffs, whose *instruction text* the agent reads as if you'd typed it | **Safe Import** statically scans it first (**41 rules**, including prompt injection hidden in the artifact's own prose). **Red is never installable**, and approvals are **hash-pinned** so an edited artifact re-prompts |
+| **Knowing what the agent contacted** | Opaque — you can't tell who it talked to | **Per-agent egress audit** (netstat / ss / lsof) records every remote host the agent reached — and **Egress Guard** judges each one against a provider allowlist, raising anything else as a violation |
 | **Telemetry on you** | Often product analytics or cloud-stored chat history | **None by default** — memory, history, and the audit log stay in local JSONL on your disk |
 | **Lock-in** | Vendor account, cloud backend, or a specific IDE | **Apache-2.0, local-first, no Termpolis account, no Termpolis server** |
 | **Coordinating parallel agents** | You juggle terminals by hand | Real-time **observability** — activity feed, redundancy detector, efficiency panel, and a swarm dashboard |
@@ -176,6 +183,8 @@ A **Memory & Learning** tab in Settings turns the brain from a black box into an
 
 - **What's stored** — memories by cognitive type (episodic · semantic · procedural · entity · summary) and by which agent authored them.
 - **Live knowledge graph** — a force-directed view of the real typed edges recall walks (bug → fix → what superseded it), colored by type.
+- **Code connections (v1.25)** — the structural code graph (symbols, and the caller/callee edges between them) now has a tile of its own. Indexing a repo was already minting thousands of these edges into a store the dashboard simply never read — so "connections" looked empty while the graph underneath was full.
+- **Competence, calibrated from real work (v1.25)** — per-domain self-competence now learns from what actually happened: a **landed commit** and a **passing *or* failing test run** both feed the calibration. It previously only fired on a completed swarm task, so for most people every domain sat at zero attempts and the panel stayed blank forever. A failing suite is what finally calibrates confidence **down**.
 - **Learning over time** — cumulative growth of the store and the distilled lessons within it.
 - **Reliability SLIs** — recall-fired rate, embedder availability, write durability, and typical (median) recall latency.
 - **Model portability & cross-agent learning** — which agents authored what, and where a lesson one agent learned was later reused by another.
@@ -256,9 +265,10 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Knowledge Graph** — the shared memory stores **typed connections** between entries (`bug → solved-by → fix`, `decision → supersedes → …`), built explicitly via `memory_link` and **automatically** as curated memories are written. Agents follow the chain with `memory_graph` to reuse prior solutions fast instead of re-deriving them — the graph gets denser, and the agents get smarter, the more you use it
 - **No duplicate data** — every write is content-addressed (SHA-256 over normalized text); storing the same information twice is a no-op, so the vector store and the on-disk log never accumulate duplicates and never re-embed what they already hold
 - **Code Graph** — a native, **AST-precise** map of your repository built with **web-tree-sitter** (WebAssembly — native-free, nothing compiled, nothing leaves your machine): every function, class, method, and the calls between them. Agents query it over MCP with `code_explore` / `code_callers` / `code_callees` / `code_impact` (change blast-radius) / `code_search` / `code_locate` (predict *where* an issue lives) instead of grepping the same files repeatedly. Deep support for TypeScript/JavaScript, Python, Go, Rust, Java, C#, Ruby, and Swift; Terraform and Bicep fall back to a regex heuristic for symbol discovery. **As of v1.23 the graph is keyed per repository** — opening a second repo no longer clobbers the first, and because each repo's graph is a durable on-disk store, a transient non-git directory (or git off the PATH) won't wipe one you've already built. **As of v1.23.1**, an edit re-indexes **just the changed file** (debounced, AST-first) rather than re-sweeping the whole tree, backstopped by a periodic full re-index. Auto-indexed (opt-out in Settings), with an in-app **Code Graph browser** (`Ctrl+Shift+M`)
+- **Safe Import** — import a third-party **skill, plugin, slash-command, subagent, or MCP server** and Termpolis **statically scans it before it touches your machine**: 41 rules across outbound network calls, shell / `eval` execution, credential + `~/.ssh` access, obfuscated payloads, and **prompt injection hidden in the artifact's own instructions**, plus context-sensitive checks that judge a construct by its surroundings. You get a red / yellow / green report with `file:line`; **red can never be installed**, and approvals are **hash-pinned**, so editing an approved artifact re-prompts. On approval it wires the artifact into the agents that support its kind — an MCP server into all four (Claude Code, Codex, Gemini CLI, Qwen Code), custom commands into Claude / Gemini / Qwen, and skills, subagents, and plugins into Claude Code. **Settings → General.** It is a static review aid, not a sandbox — nothing is executed
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 32 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`)
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 33 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, the `memory_audit` self-inspection tool, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
@@ -324,6 +334,7 @@ When you're running multiple AI agents concurrently (or a whole swarm), you need
 
 ### Git Panel
 - **Built-in git panel** — accessible from the sidebar git icon. Shows current branch, staged and unstaged file lists with status indicators (M/A/D/R/U), stage or unstage individual files or all at once, commit with message, and pull/push buttons. Includes an inline diff viewer with syntax highlighting. Auto-detects git repos or lets you pick a folder (VS Code-style). Collapsible sections, auto-refreshes every 3 seconds.
+- **Commit/Push Secret Shield** — commit and push from this panel are gated by the same ~70-rule secret engine that scans AI prompts. Commit scans the **staged diff**; push scans **every commit not yet on a remote**. A hit **blocks the operation** and names the rule, so a leaked key can't land in history or reach a remote. Fails open on a git error; on by default, toggle in **Settings → AI Security**.
 
 ### Customization
 - **7 terminal themes** — Dark, Light, Solarized Dark, Solarized Light, Monokai, Dracula, Nord
@@ -355,7 +366,7 @@ When you're running multiple AI agents concurrently (or a whole swarm), you need
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
 - **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
 - **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
-- **3,800+ automated tests** — 3,800+ unit & component tests (Vitest, 177 test files, 90%+ line / 85%+ branch coverage) plus a Playwright end-to-end suite that launches the real Electron app. Coverage is enforced as a hard CI gate — no commits allowed below threshold.
+- **5,500+ automated tests** — 5,522 unit & component tests (Vitest, 312 test files) at **91.29% statements / 85.29% branches / 90.14% functions / 93.64% lines**, plus a Playwright end-to-end suite that launches the real Electron app. Coverage is enforced as a hard CI gate — no commits allowed below threshold.
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -398,7 +409,7 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 
 Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~/.claude/settings.json` so Claude Code sees it as an MCP server immediately. No manual configuration needed.
 
-### Available Tools (32)
+### Available Tools (33)
 
 **Terminal Management:**
 
@@ -440,6 +451,7 @@ Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~
 | `memory_selfcheck` | Report the brain's calibrated self-competence in a domain |
 | `memory_feedback` | Mark a recalled memory as helpful so the useful ones rank higher |
 | `memory_conflicts` | Surface pairs of lessons different agents learned that assert opposite things about the same subject |
+| `memory_audit` | Inspect the brain's own behaviour — what it stored, recalled, and learned, computed from the local store |
 
 **Code Graph** (AST-precise via web-tree-sitter, native-free):
 
@@ -488,7 +500,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9315/mcp \
 
 ```bash
 curl http://localhost:9315/health
-# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":32,"auth":"required"}
+# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":33,"auth":"required"}
 ```
 
 ## Security
@@ -512,11 +524,14 @@ Termpolis takes security seriously, especially with AI agent integration.
 - Third-party plugins are a major attack surface — they run with full app permissions, can access terminals, read output, and execute commands
 - Every feature in Termpolis is built-in, auditable, and ships with the app
 - If you need custom behavior, fork the repo — the codebase is open source and well-documented
+- **Safe Import does not change this.** It never loads third-party code *into Termpolis* — nothing imported executes inside the app, in a sandbox or otherwise. It is a gate on artifacts you were going to hand to **your agents** anyway: it scans the skill / plugin / command / subagent / MCP server, refuses to install a red one, and — only on your approval — writes it into the agents' own config directories (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.qwen`), which is exactly where you'd have put it by hand. Termpolis's own attack surface is unchanged.
 
 ### What Users Should Know
 - Terminal sessions run with your user permissions — same as any terminal application
 - AI agents launched through profiles (Claude Code, Codex, etc.) have the same access as if you ran them manually
 - The MCP token rotates on every app restart — a compromised token becomes invalid when you close the app
+- **As of v1.25 the security gates ship on by default** — the audit log (previously off, so for most installs it never existed), the commit/push secret shield, the egress guard, and the memory-at-rest scrub. An absent setting keeps the secure default, so upgrading an existing install turns them on without you touching Settings. Each can be disabled individually in **Settings → AI Security** — notably, if the commit shield ever blocks a commit you know is clean, that's the switch
+- The commit shield **fails open**: if git errors out, the commit proceeds. It is a guard against accidents, not a guarantee that no secret can ever reach a remote
 - No Termpolis telemetry, no analytics, no Termpolis cloud accounts — Termpolis stores everything (sessions, history, pins, audit log, settings) locally. (AI agents you launch still talk to their own providers per those providers' privacy policies; see [`PRIVACY.md`](PRIVACY.md) for the full data-flow spec.)
 
 ## Quick Start
@@ -543,8 +558,8 @@ npm run dev
 npm test
 ```
 
-650+ total tests:
-- `npm test` — 3,800+ unit & component tests (Vitest, 177 test files, 90%+ coverage)
+5,500+ total tests:
+- `npm test` — 5,522 unit & component tests (Vitest, 312 test files, 90%+ coverage)
 - `npm run test:coverage` — unit tests with v8 coverage report
 - `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
 - E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
@@ -664,7 +679,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (3,800+ tests, 177 files, 90%+ coverage)
+├── tests/                           # Vitest test suites (5,500+ tests, 312 files, 90%+ coverage)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)
