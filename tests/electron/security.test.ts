@@ -465,6 +465,68 @@ describe('IPC handler security — git read handlers pass argv safely', () => {
   })
 })
 
+// The in-app shield only ever covered the git ops Termpolis ITSELF runs. These pin the hook
+// layer — the thing that makes it cover `git commit` typed into a terminal, which is how most
+// people actually commit.
+describe('IPC handler security — Commit Shield git hooks', () => {
+  beforeEach(() => {
+    mockExecFileSync.mockClear()
+    mockExecFileSync.mockImplementation(() => Buffer.from('.git/hooks\n'))
+  })
+
+  it('lists protected repos (none before any are installed)', async () => {
+    const r = await invoke('gitHooks:list', {})
+    expect(r.success).toBe(true)
+    expect(Array.isArray(r.data)).toBe(true)
+  })
+
+  it('asks git for the REAL hooks dir rather than assuming .git/hooks', async () => {
+    // Worktrees and core.hooksPath both move it. Guessing would install a hook that git
+    // never runs — protection that silently does nothing.
+    const r = await invoke('gitHooks:status', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data.status['pre-commit']).toBe('absent')
+    expect(mockExecFileSync.mock.calls.some((c) => (c[1] as string[]).includes('--git-path'))).toBe(true)
+  })
+
+  it('installs both the pre-commit and pre-push hooks', async () => {
+    const r = await invoke('gitHooks:install', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data.written).toEqual(['pre-commit', 'pre-push'])
+  })
+
+  it('uninstalls the hooks again', async () => {
+    const r = await invoke('gitHooks:uninstall', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+  })
+
+  it('refuses a folder that is not a git repository', async () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error('fatal: not a git repository') })
+    const r = await invoke('gitHooks:status', { cwd: '/not-a-repo' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('Not a git repository')
+    mockExecFileSync.mockImplementation(() => Buffer.from(''))
+  })
+
+  it('opens a folder picker when no repo is given, and does nothing when cancelled', async () => {
+    // The folder picker lives in MAIN, never the renderer — a renderer-supplied path would
+    // let a compromised window install hooks into an arbitrary directory.
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const r = await invoke('gitHooks:install', {})
+    expect(r.success).toBe(true)
+    expect(r.data.canceled).toBe(true)
+  })
+
+  it('installs into the folder the user picks', async () => {
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/picked-repo'] })
+    mockExecFileSync.mockImplementation(() => Buffer.from('.git/hooks\n'))
+    const r = await invoke('gitHooks:install', {})
+    expect(r.success).toBe(true)
+    expect(r.data.repo).toBe('/picked-repo')
+    expect(r.data.written).toEqual(['pre-commit', 'pre-push'])
+  })
+})
+
 // The v1.25 gates default ON. Turning one OFF must be an explicit, persisted act — the
 // secure default is what protects an existing install that never opens this panel.
 describe('IPC handler security — v1.25 gates are explicit toggles', () => {

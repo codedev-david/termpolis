@@ -64,7 +64,11 @@ interface RedactionRule {
 // erode user trust. Real secret scanners on top of our pipeline (Gitleaks,
 // truffleHog) can be added later, but for in-the-loop terminal use, the
 // catch-rate of the rules below covers the highest-risk patterns.
-const RULES: RedactionRule[] = [
+// Exported ONLY so tests/electron/secretRulesSync.test.ts can prove that the standalone
+// git-hook rule table (src/mcp-adapter/secretRules.cjs) has not drifted from this one.
+// The hook scans in a plain node process with Termpolis possibly closed, so it cannot
+// import this module — it carries its own copy, and that test is what keeps them identical.
+export const RULES: RedactionRule[] = [
   // === AWS ===
   { id: 'aws_access_key', label: 'AWS Access Key ID', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
   { id: 'aws_secret', label: 'AWS Secret-shaped 40-char base64', pattern: /\b(?:aws_secret|secret_access_key|aws_secret_access_key)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi },

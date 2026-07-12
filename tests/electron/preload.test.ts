@@ -882,3 +882,25 @@ describe('preload: aiSecurity v1.25 gates', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-memory-scrub', { value: true })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Commit Shield git hooks — the bridge that lets the Security panel install the
+// pre-commit/pre-push hooks that make the shield cover terminal-typed git.
+// ---------------------------------------------------------------------------
+describe('preload: commit shield git-hook bridge', () => {
+  it('routes list / install / uninstall to their IPC channels', async () => {
+    await exposed.aiSecurity.gitHooksList()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('gitHooks:list')
+
+    await exposed.aiSecurity.gitHooksInstall('/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('gitHooks:install', { cwd: '/repo' })
+
+    await exposed.aiSecurity.gitHooksUninstall('/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('gitHooks:uninstall', { cwd: '/repo' })
+  })
+
+  it('install with no argument lets MAIN own the folder picker (never the renderer)', async () => {
+    await exposed.aiSecurity.gitHooksInstall()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('gitHooks:install', { cwd: undefined })
+  })
+})

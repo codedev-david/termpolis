@@ -101,8 +101,11 @@ import {
   type ArtifactKind, type ArtifactFile, type AgentTarget,
 } from './artifactInstaller'
 import { readZip } from './zipArchive'
-import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead } from 'node:fs'
-import { join as ipJoin } from 'node:path'
+import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists } from 'node:fs'
+import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
+// Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
+// (resolveNodeCommand is already imported above for the MCP registration.)
+import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
@@ -1125,6 +1128,106 @@ ipcMain.handle('git:commit', async (_, { cwd, message }: { cwd: string; message:
     safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
     recordWorkOutcome({ kind: 'git-commit', project: normalizeProjectSlug(cwd), ok: true })
     return ok()
+  } catch (e: any) { return err(e.message) }
+})
+
+// ---- Commit Shield: git hooks (terminal + external-git coverage) -------------------
+//
+// WHY THIS EXISTS. `gitShieldGate` above only ever covered the git operations Termpolis
+// ITSELF runs — the Git panel and Swarm Review. A `git commit` typed into a terminal pane,
+// which is how most people actually commit, went straight past it. The shield was far
+// narrower than its name implied.
+//
+// A real pre-commit/pre-push hook closes that. The hook shells out to a STANDALONE scanner
+// (resources/mcp-adapter/termpolis-githook.cjs) that carries its own copy of the rule table,
+// so it still protects you with Termpolis CLOSED — a hook that only works while the app is
+// running would silently stop protecting you the moment you quit, which is worse than no
+// hook at all. It fails OPEN on every error: a hook left behind by an uninstalled Termpolis
+// must never wedge someone's git.
+const SHIELD_REPOS_FILE = 'commit-shield-repos.json'
+
+function shieldReposPath(): string { return join(app.getPath('userData'), SHIELD_REPOS_FILE) }
+
+function readShieldRepos(): string[] {
+  try {
+    const arr = JSON.parse(ipRead(shieldReposPath(), 'utf8'))
+    return Array.isArray(arr) ? arr.filter((x: unknown): x is string => typeof x === 'string') : []
+  } catch { return [] }
+}
+
+function writeShieldRepos(list: string[]): void {
+  try { writeFileSync(shieldReposPath(), JSON.stringify([...new Set(list)], null, 2)) } catch { /* best effort */ }
+}
+
+const realHookDeps: HookDeps = {
+  readFile: (p) => { try { return ipRead(p, 'utf8') } catch { return null } },
+  writeFile: (p, d) => { mkdirSync(ghDirname(p), { recursive: true }); writeFileSync(p, d, 'utf8') },
+  exists: (p) => ghExists(p),
+  chmod: (p, m) => { try { ghChmod(p, m) } catch { /* windows has no exec bit */ } },
+  remove: (p) => { try { unlinkSync(p) } catch { /* already gone */ } },
+}
+
+/** Resolve the repo's REAL hooks dir (honours worktrees / core.hooksPath), plus an absolute
+ *  node and the shipped scanner. Null when `cwd` is not a git repository. */
+function hookPathsFor(cwd: string): HookPaths | null {
+  try {
+    const rel = safeGit(['rev-parse', '--git-path', 'hooks'], { cwd, timeout: 5000 }).trim()
+    if (!rel) return null
+    return {
+      hooksDir: ghResolve(cwd, rel),
+      nodePath: resolveNodeCommand(),
+      scriptPath: app.isPackaged
+        ? join(process.resourcesPath, 'mcp-adapter', 'termpolis-githook.cjs')
+        : join(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs'),
+    }
+  } catch { return null }
+}
+
+ipcMain.handle('gitHooks:status', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const paths = hookPathsFor(cwd)
+    if (!paths) return err('Not a git repository')
+    return ok({ status: hookStatus(paths, realHookDeps) })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
+  try {
+    let repo = opts?.cwd
+    if (!repo) {
+      const picked = await dialog.showOpenDialog(mainWindow!, {
+        title: 'Protect a repository with the Commit Shield',
+        properties: ['openDirectory'],
+      })
+      if (picked.canceled || !picked.filePaths[0]) return ok({ canceled: true })
+      repo = picked.filePaths[0]
+    }
+    const paths = hookPathsFor(repo)
+    if (!paths) return err('Not a git repository — pick the folder that contains .git')
+    mkdirSync(paths.hooksDir, { recursive: true })
+    const written = installHooks(paths, realHookDeps)
+    writeShieldRepos([...readShieldRepos(), repo])
+    aiSecurityAppend({ agent: 'git', event: 'commit_scan', notes: `commit shield hooks installed: ${repo}` }).catch(() => {})
+    return ok({ canceled: false, repo, written })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const paths = hookPathsFor(cwd)
+    if (!paths) return err('Not a git repository')
+    const removed = uninstallHooks(paths, realHookDeps)
+    writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
+    return ok({ removed })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('gitHooks:list', () => {
+  try {
+    return ok(readShieldRepos().map((repo) => {
+      const paths = hookPathsFor(repo)
+      return { repo, status: paths ? hookStatus(paths, realHookDeps) : null }
+    }))
   } catch (e: any) { return err(e.message) }
 })
 

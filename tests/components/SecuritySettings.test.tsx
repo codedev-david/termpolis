@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const baseFacts = [
@@ -47,6 +47,12 @@ beforeEach(() => {
     scan: vi.fn().mockResolvedValue({ success: true, data: { hitCount: 0, hits: [], redacted: '' } }),
     recentAudit: vi.fn().mockResolvedValue({ success: true, data: [] }),
     clearAudit: vi.fn().mockResolvedValue({ success: true }),
+    gitHooksList: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    gitHooksInstall: vi.fn().mockResolvedValue({
+      success: true,
+      data: { canceled: false, repo: 'C:\\repos\\demo', written: ['pre-commit', 'pre-push'] },
+    }),
+    gitHooksUninstall: vi.fn().mockResolvedValue({ success: true }),
   }
 })
 
@@ -509,5 +515,72 @@ describe('SecuritySettings', () => {
       expect(card.textContent).toMatch(/claude/)
       expect(card.textContent).toMatch(/\.env\.production/)
     })
+  })
+})
+
+// The Commit Shield toggle alone only ever covered the git ops Termpolis itself runs. The
+// hook panel is what extends it to `git commit` typed into a terminal — so the panel has to
+// SAY that, or the user walks away believing they have protection they don't have.
+describe('SecuritySettings — Commit Shield git hooks', () => {
+  it('is honest about what the hooks do and do not guarantee', async () => {
+    render(<SecuritySettings />)
+    await waitFor(() => expect(screen.getByTestId('security-git-hooks')).toBeInTheDocument())
+    const text = screen.getByTestId('security-git-hooks').textContent || ''
+    expect(text).toMatch(/fails open/i)                 // never wedges git
+    expect(text).toMatch(/chained, never overwritten/i) // husky survives
+    expect(text).toMatch(/--no-verify/)                 // it is a net, not a cage
+    expect(text).toMatch(/even with Termpolis closed/i) // the standalone scanner
+  })
+
+  it('protects a repository and reports where the hooks landed', async () => {
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-protect-repo'))
+
+    fireEvent.click(screen.getByTestId('security-protect-repo'))
+
+    await waitFor(() => expect((window as any).aiSecurity.gitHooksInstall).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('security-hook-msg').textContent).toMatch(/demo/))
+  })
+
+  it('lists an armed repository and can remove it', async () => {
+    ;(window as any).aiSecurity.gitHooksList = vi.fn().mockResolvedValue({
+      success: true,
+      data: [{ repo: 'C:\repos\demo', status: { 'pre-commit': 'installed', 'pre-push': 'installed' } }],
+    })
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-hook-list'))
+
+    const list = screen.getByTestId('security-hook-list')
+    expect(list.textContent).toContain('armed')
+
+    fireEvent.click(within(list).getByText('Remove'))
+    await waitFor(() =>
+      expect((window as any).aiSecurity.gitHooksUninstall).toHaveBeenCalledWith('C:\repos\demo'),
+    )
+  })
+
+  it('shows a repo whose hooks have gone missing as NOT armed', async () => {
+    // Someone re-cloned, or ran `git init` fresh. Reporting it as protected would be a lie.
+    ;(window as any).aiSecurity.gitHooksList = vi.fn().mockResolvedValue({
+      success: true,
+      data: [{ repo: 'C:\repos\stale', status: { 'pre-commit': 'absent', 'pre-push': 'absent' } }],
+    })
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-hook-list'))
+    expect(screen.getByTestId('security-hook-list').textContent).toContain('not installed')
+  })
+
+  it('surfaces an install failure instead of pretending it worked', async () => {
+    ;(window as any).aiSecurity.gitHooksInstall = vi.fn().mockResolvedValue({
+      success: false,
+      error: 'Not a git repository — pick the folder that contains .git',
+    })
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-protect-repo'))
+
+    fireEvent.click(screen.getByTestId('security-protect-repo'))
+    await waitFor(() =>
+      expect(screen.getByTestId('security-hook-msg').textContent).toMatch(/Not a git repository/),
+    )
   })
 })

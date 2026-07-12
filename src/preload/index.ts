@@ -318,6 +318,11 @@ contextBridge.exposeInMainWorld('aiSecurity', {
   setAudit: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-audit', { value }),
   setStrictGemini: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-strict-gemini', { value }),
   setCommitShield: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-commit-shield', { value }),
+  // Commit Shield git hooks — what makes the shield cover git typed into a terminal, not
+  // just the git ops Termpolis runs itself.
+  gitHooksList: () => ipcRenderer.invoke('gitHooks:list'),
+  gitHooksInstall: (cwd?: string) => ipcRenderer.invoke('gitHooks:install', { cwd }),
+  gitHooksUninstall: (cwd: string) => ipcRenderer.invoke('gitHooks:uninstall', { cwd }),
   setEgressGuard: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-egress-guard', { value }),
   setMemoryScrub: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-memory-scrub', { value }),
   scan: (text: string) => ipcRenderer.invoke('aiSecurity:scan', { text }),

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { copyText, readClipboardText } from '../../lib/clipboard'
 
 interface AgentDataFact {
@@ -34,12 +34,22 @@ interface GeminiAccountStatus {
   recommendation: string
 }
 
+/** A repo the Commit Shield git hooks have been installed into. `foreign` = a hook exists
+ *  there that isn't ours (someone's husky/lint-staged) — we chain to it rather than clobber it. */
+interface ShieldRepo {
+  repo: string
+  status: Record<string, 'installed' | 'absent' | 'foreign'> | null
+}
+
 interface AiSecurityAPI {
   getStatus: () => Promise<{ success: boolean; data?: { settings: { redactionEnabled: boolean; auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus } }>
   setRedaction: (value: boolean) => Promise<{ success: boolean; data?: { redactionEnabled: boolean; auditEnabled: boolean } }>
   setAudit: (value: boolean) => Promise<{ success: boolean; data?: { redactionEnabled: boolean; auditEnabled: boolean } }>
   setStrictGemini?: (value: boolean) => Promise<{ success: boolean; data?: { strictGeminiPaidOnly: boolean } }>
   setCommitShield?: (value: boolean) => Promise<{ success: boolean }>
+  gitHooksList?: () => Promise<{ success: boolean; data?: ShieldRepo[] }>
+  gitHooksInstall?: (cwd?: string) => Promise<{ success: boolean; error?: string; data?: { canceled?: boolean; repo?: string } }>
+  gitHooksUninstall?: (cwd: string) => Promise<{ success: boolean }>
   setEgressGuard?: (value: boolean) => Promise<{ success: boolean }>
   setMemoryScrub?: (value: boolean) => Promise<{ success: boolean }>
   scan: (text: string) => Promise<{ success: boolean; data?: ScanResult }>
@@ -75,6 +85,9 @@ export function SecuritySettings() {
   const [commitShield, setCommitShield] = useState(true)
   const [egressGuard, setEgressGuard] = useState(true)
   const [memoryScrub, setMemoryScrub] = useState(true)
+  const [shieldRepos, setShieldRepos] = useState<ShieldRepo[]>([])
+  const [hookBusy, setHookBusy] = useState(false)
+  const [hookMsg, setHookMsg] = useState('')
   const [facts, setFacts] = useState<AgentDataFact[]>([])
   const [auditPath, setAuditPath] = useState('')
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([])
@@ -129,6 +142,36 @@ export function SecuritySettings() {
     const next = !strictGemini
     setStrictGemini(next)
     await api.setStrictGemini(next)
+  }
+
+  const refreshHooks = useCallback(async () => {
+    if (!api?.gitHooksList) return
+    const res = await api.gitHooksList()
+    if (res.success && res.data) setShieldRepos(res.data)
+  }, [api])
+
+  useEffect(() => { void refreshHooks() }, [refreshHooks])
+
+  const protectRepo = async () => {
+    if (!api?.gitHooksInstall) return
+    setHookBusy(true)
+    setHookMsg('')
+    try {
+      const res = await api.gitHooksInstall()
+      if (!res.success) { setHookMsg(res.error || 'Could not install the hooks'); return }
+      if (res.data?.canceled) return
+      setHookMsg(`Protected ${res.data?.repo || 'repository'} — git commit and git push are now scanned, from any terminal.`)
+      await refreshHooks()
+    } finally {
+      setHookBusy(false)
+    }
+  }
+
+  const unprotectRepo = async (repo: string) => {
+    if (!api?.gitHooksUninstall) return
+    await api.gitHooksUninstall(repo)
+    setHookMsg('')
+    await refreshHooks()
   }
 
   const toggleCommitShield = async () => {
@@ -342,9 +385,56 @@ export function SecuritySettings() {
             Commit Shield &mdash; block commits &amp; pushes that carry a secret
           </span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
-            Runs the same ~70-rule engine on what <code>git commit</code> will capture (the staged diff) and what <code>git push</code> will send (every unpushed patch), and <strong>blocks the operation</strong> when a secret is found. This closes the gap the outbound scanner structurally cannot see &mdash; it never watches git.
+            Runs the same 91-rule engine on what <code>git commit</code> will capture (the staged diff) and what <code>git push</code> will send (every unpushed patch), and <strong>blocks the operation</strong> when a secret is found. This closes the gap the outbound scanner structurally cannot see &mdash; it never watches git.
+            <br />
+            On its own, this toggle only covers the git operations <strong>Termpolis itself runs</strong> (the Git panel, Swarm Review). To cover <code>git commit</code> typed into a terminal &mdash; or run from VS Code, or any other tool &mdash; install the hooks below.
           </span>
         </div>
+      </div>
+
+      {/* Git hooks — what makes the shield cover the way people ACTUALLY commit */}
+      <div className="flex flex-col gap-2 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="security-git-hooks">
+        <div className="flex items-center gap-2">
+          <i className="fa-solid fa-code-branch text-[#2dd4bf]"></i>
+          <span className="text-sm font-medium">Protect a repository&rsquo;s git hooks</span>
+        </div>
+        <span className="text-xs text-[#9ca3af] leading-relaxed">
+          Installs a <code>pre-commit</code> and <code>pre-push</code> hook that scan the diff before git accepts it, so a secret is
+          caught <strong>however you commit</strong> &mdash; terminal, IDE, or script. The hook runs a standalone scanner, so it keeps
+          working <strong>even with Termpolis closed</strong>. It <strong>fails open</strong>: if the scanner or Node is missing, git is
+          never blocked. An existing hook (husky, lint-staged) is <strong>chained, never overwritten</strong>.
+          Note that <code>--no-verify</code> bypasses any git hook &mdash; this is a strong net, not a cage.
+        </span>
+
+        <button
+          onClick={protectRepo}
+          disabled={hookBusy}
+          data-testid="security-protect-repo"
+          className="self-start text-xs px-3 py-1.5 rounded bg-[#0d9488] hover:bg-[#0f766e] disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+        >
+          {hookBusy ? 'Installing…' : 'Protect a repository…'}
+        </button>
+
+        {hookMsg && <span className="text-xs text-[#7ee2a3]" data-testid="security-hook-msg">{hookMsg}</span>}
+
+        {shieldRepos.length > 0 && (
+          <div className="flex flex-col gap-1 mt-1" data-testid="security-hook-list">
+            {shieldRepos.map((r) => {
+              const armed = r.status?.['pre-commit'] === 'installed'
+              return (
+                <div key={r.repo} className="flex items-center gap-2 text-xs p-2 rounded bg-[#1e1e1e]">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${armed ? 'bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a]' : 'bg-[#3a2a0d] text-[#FFB74D] border-[#6e4d1f]'}`}>
+                    {armed ? 'armed' : 'not installed'}
+                  </span>
+                  <span className="font-mono text-[11px] truncate" title={r.repo}>{r.repo}</span>
+                  <button onClick={() => unprotectRepo(r.repo)} className="ml-auto text-[10px] text-[#FFB4B4] hover:underline">
+                    Remove
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Egress Guard — allowlist enforcement on agent network traffic */}
