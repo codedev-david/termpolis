@@ -23,12 +23,30 @@ export interface AiSecuritySettings {
   redactionEnabled: boolean
   auditEnabled: boolean
   strictGeminiPaidOnly: boolean
+  /** Block `git commit` / `git push` when the staged diff or unpushed patch carries a secret. */
+  commitShield: boolean
+  /** Flag agent network traffic to hosts outside the known AI-provider allowlist. */
+  egressGuard: boolean
+  /** Redact secrets out of a memory BEFORE it is persisted to the brain. */
+  memoryScrub: boolean
 }
 
 export interface AuditEntry {
   ts: string
   agent: string
-  event: 'terminal_open' | 'terminal_close' | 'redaction_hit' | 'manual_scan' | 'sensitive_file_read'
+  event:
+    | 'terminal_open'
+    | 'terminal_close'
+    | 'redaction_hit'
+    | 'manual_scan'
+    | 'sensitive_file_read'
+    | 'commit_scan'
+    | 'commit_blocked'
+    | 'push_blocked'
+    | 'egress_violation'
+    | 'import_scan'
+    | 'import_blocked'
+    | 'memory_scrub'
   terminalId?: string
   byteCount?: number
   hitCount?: number
@@ -164,7 +182,14 @@ const RULES: RedactionRule[] = [
 ]
 
 let userDataDir = ''
-let settings: AiSecuritySettings = { redactionEnabled: false, auditEnabled: false, strictGeminiPaidOnly: false }
+let settings: AiSecuritySettings = {
+  redactionEnabled: false,
+  auditEnabled: true,
+  strictGeminiPaidOnly: false,
+  commitShield: true,
+  egressGuard: true,
+  memoryScrub: true,
+}
 let initialized = false
 
 function settingsPath(): string { return join(userDataDir, SETTINGS_FILE) }
@@ -184,8 +209,14 @@ export function initAiSecurity(): void {
       if (parsed && typeof parsed === 'object') {
         settings = {
           redactionEnabled: parsed.redactionEnabled === true,
-          auditEnabled: parsed.auditEnabled === true,
           strictGeminiPaidOnly: parsed.strictGeminiPaidOnly === true,
+          // Default-ON gates. An ABSENT key means "never configured", so it keeps the
+          // secure default — existing installs get the protection on upgrade. Only an
+          // explicit `false` (the user turned it off) opts out.
+          auditEnabled: parsed.auditEnabled !== false,
+          commitShield: parsed.commitShield !== false,
+          egressGuard: parsed.egressGuard !== false,
+          memoryScrub: parsed.memoryScrub !== false,
         }
       }
     }
@@ -219,6 +250,27 @@ export function setAuditEnabled(value: boolean): AiSecuritySettings {
 export function setStrictGeminiPaidOnly(value: boolean): AiSecuritySettings {
   if (!initialized) initAiSecurity()
   settings.strictGeminiPaidOnly = value === true
+  persist()
+  return getSettings()
+}
+
+export function setCommitShield(value: boolean): AiSecuritySettings {
+  if (!initialized) initAiSecurity()
+  settings.commitShield = value === true
+  persist()
+  return getSettings()
+}
+
+export function setEgressGuard(value: boolean): AiSecuritySettings {
+  if (!initialized) initAiSecurity()
+  settings.egressGuard = value === true
+  persist()
+  return getSettings()
+}
+
+export function setMemoryScrub(value: boolean): AiSecuritySettings {
+  if (!initialized) initAiSecurity()
+  settings.memoryScrub = value === true
   persist()
   return getSettings()
 }

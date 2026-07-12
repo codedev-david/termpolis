@@ -10,6 +10,7 @@ import {
   isBrainEmpty,
   svgLine,
   portabilityRows,
+  codeGraphReceipt,
 } from '../../src/renderer/src/lib/memoryDashboard'
 import type { MemoryMetrics } from '../../src/renderer/src/types'
 
@@ -29,6 +30,7 @@ function mm(over: Partial<MemoryMetrics> = {}): MemoryMetrics {
     graph: { nodes: 0, edges: 0, byRelation: {}, ...(over.graph || {}) },
     competence: over.competence || [],
     recentActivity: over.recentActivity || [],
+    codeGraph: over.codeGraph,
   }
 }
 
@@ -63,6 +65,20 @@ describe('memoryDashboard — transforms', () => {
     expect(r[1].value).toBe('2.9k')  // lessons
     expect(r[2].value).toBe('18.4k') // connections (edges)
     expect(r[3].value).toBe('3.1k')  // tokens injected
+  })
+
+  it('codeGraphReceipt surfaces the indexed code graph as real connections', () => {
+    const r = codeGraphReceipt(mm({ codeGraph: { files: 120, symbols: 2440, edges: 12260 } }))
+    expect(r).not.toBeNull()
+    expect(r!.label).toBe('Code connections')
+    expect(r!.value).toBe('12.3k') // call/reference edges — the structural graph
+    expect(r!.sub).toContain('2.4k') // symbols
+    expect(r!.sub).toContain('120') // files
+  })
+
+  it('codeGraphReceipt is null until a repo is indexed (never a fake 0)', () => {
+    expect(codeGraphReceipt(mm())).toBeNull()
+    expect(codeGraphReceipt(mm({ codeGraph: { files: 0, symbols: 0, edges: 0 } }))).toBeNull()
   })
 
   it('compositionRows sorts by count and computes fractions', () => {

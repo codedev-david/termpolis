@@ -1,11 +1,17 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import {
   runWeave,
+  weaveAnchors,
   WEAVE_REL_CODE,
   WEAVE_REL_KNOWLEDGE,
+  WEAVE_REL_EXPLAINS,
+  WEAVE_COSINE_FLOOR,
+  WEAVE_MAX_PER_PASS,
+  WEAVE_MAX_EXPLAINS_PER_PASS,
   type WeaveEntry,
   type WeaveNeighbour,
   type WeaveDeps,
+  type WeaveStats,
 } from '../../src/main/mnemeWeave'
 
 type Edge = { from: string; to: string; relation: string; weight: number }
@@ -23,6 +29,22 @@ function harness(
     ...extra,
   }
   return { deps, edges }
+}
+
+/** The explains-miner fixture: one indexed code chunk + one decision that talks about the file. */
+const CODE_CHUNK: WeaveEntry = {
+  id: 'code1',
+  kind: 'note',
+  source: 'code',
+  projectKey: 'repoA',
+  filePath: 'C:/repos/termpolis/src/main/loader.ts',
+}
+const DECISION: WeaveEntry = {
+  id: 'dec1',
+  kind: 'decision',
+  memoryType: 'semantic',
+  projectKey: 'repoA',
+  codeRefs: [{ file: 'src/main/loader.ts', symbol: 'load', symbolId: 'src/main/loader.ts#load@1', projectKey: 'repoA' }],
 }
 
 describe('runWeave — background connection-miner (C4)', () => {
@@ -49,18 +71,12 @@ describe('runWeave — background connection-miner (C4)', () => {
     expect(stats.knowledgeAnalogies).toBe(1)
   })
 
-  it('does NOT mint within the same repo, or below the cosine floor', () => {
+  it('does NOT mint below the cosine floor', () => {
     const cands: WeaveEntry[] = [
       { id: 'a', source: 'code', projectKey: 'repoA' },
-      { id: 'b', source: 'code', projectKey: 'repoA' }, // same repo
       { id: 'c', source: 'code', projectKey: 'repoB' },
     ]
-    const { deps, edges } = harness(cands, {
-      a: [
-        { id: 'b', score: 0.95, projectKey: 'repoA' }, // same repo → skip
-        { id: 'c', score: 0.5, projectKey: 'repoB' }, // below floor → skip
-      ],
-    })
+    const { deps, edges } = harness(cands, { a: [{ id: 'c', score: 0.5, projectKey: 'repoB' }] })
     const stats = runWeave(deps, { cosineFloor: 0.82 })
     expect(edges).toEqual([])
     expect(stats.minted).toBe(0)
@@ -121,7 +137,7 @@ describe('runWeave — background connection-miner (C4)', () => {
     expect(backfilled).toEqual([])
   })
 
-  it('is best-effort — throwing neighbours / link / resolveCode / backfill never break the pass', () => {
+  it('is best-effort — throwing neighbours / link / resolveCode / backfill / anchorsOf never break the pass', () => {
     const cands: WeaveEntry[] = [
       { id: 'a', source: 'code', projectKey: 'repoA', entities: ['x.ts'] },
       { id: 'b', source: 'code', projectKey: 'repoB' },
@@ -132,8 +148,26 @@ describe('runWeave — background connection-miner (C4)', () => {
       link: () => { throw new Error('edge down') },
       resolveCode: () => { throw new Error('graph down') },
       backfillCodeRefs: () => { throw new Error('write down') },
+      anchorsOf: () => { throw new Error('anchors down') },
     }
     expect(() => runWeave(deps)).not.toThrow()
+  })
+
+  it('best-effort, ON A REAL PAIR — a throwing link / anchorsOf drops the EDGE, not the pass', () => {
+    // The throwing-neighbours case above never reaches the link/anchor code at all. This one
+    // walks an actual above-floor pair, so the graph write and the anchor resolver really do
+    // blow up mid-pass: the pass must survive and count nothing it failed to draw.
+    const deps: WeaveDeps = {
+      candidates: () => [CODE_CHUNK, DECISION],
+      neighbours: (id) => (id === 'code1' ? [{ id: 'dec1', score: 0.9, projectKey: 'repoA' }] : []),
+      link: () => { throw new Error('edge down') },
+      anchorsOf: (e) => { if (e.id === 'dec1') throw new Error('anchors down'); return weaveAnchors(e) },
+    }
+    let stats: WeaveStats | undefined
+    expect(() => { stats = runWeave(deps) }).not.toThrow()
+    expect(stats?.minted).toBe(0) // link threw → the analogy is never counted
+    expect(stats?.codeAnalogies).toBe(0)
+    expect(stats?.explains).toBe(0) // anchorsOf threw → no anchors → no overlap → no explains
   })
 
   it('ignores an unscoped memory (no projectKey) for analogies', () => {
@@ -151,5 +185,280 @@ describe('runWeave — background connection-miner (C4)', () => {
     const stats = runWeave(deps)
     expect(edges).toEqual([{ from: 'd1', to: 'stranger', relation: WEAVE_REL_KNOWLEDGE, weight: 0.9 }])
     expect(stats.knowledgeAnalogies).toBe(1)
+  })
+})
+
+describe('runWeave — the v1.24 RELAXATION (the weave was dormant: 3 edges in a real brain)', () => {
+  it('NOW mints an INTRA-repo code analogy (previously skipped by the cross-repo-only guard)', () => {
+    const cands: WeaveEntry[] = [
+      { id: 'a', source: 'code', projectKey: 'repoA' },
+      { id: 'b', source: 'code', projectKey: 'repoA' }, // SAME repo — used to be skipped
+    ]
+    const { deps, edges } = harness(cands, { a: [{ id: 'b', score: 0.95, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([{ from: 'a', to: 'b', relation: WEAVE_REL_CODE, weight: 0.95 }])
+    expect(stats.codeAnalogies).toBe(1)
+  })
+
+  it('NOW mints an INTRA-repo knowledge analogy', () => {
+    const cands: WeaveEntry[] = [
+      { id: 'd1', kind: 'decision', memoryType: 'semantic', projectKey: 'repoA' },
+      { id: 'd2', kind: 'lesson', memoryType: 'semantic', projectKey: 'repoA' },
+    ]
+    const { deps, edges } = harness(cands, { d1: [{ id: 'd2', score: 0.8, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([{ from: 'd1', to: 'd2', relation: WEAVE_REL_KNOWLEDGE, weight: 0.8 }])
+    expect(stats.knowledgeAnalogies).toBe(1)
+  })
+
+  it('defaults the floor to WEAVE_COSINE_FLOOR (0.72) — a 0.75 pair that the old 0.82 floor rejected now links', () => {
+    expect(WEAVE_COSINE_FLOOR).toBe(0.72)
+    const cands: WeaveEntry[] = [
+      { id: 'a', source: 'code', projectKey: 'repoA' },
+      { id: 'b', source: 'code', projectKey: 'repoA' },
+    ]
+    const { deps, edges } = harness(cands, { a: [{ id: 'b', score: 0.75, projectKey: 'repoA' }] })
+    runWeave(deps) // default floor
+    expect(edges).toHaveLength(1)
+  })
+
+  it('still respects the floor — a pair just BELOW WEAVE_COSINE_FLOOR is not linked', () => {
+    const cands: WeaveEntry[] = [
+      { id: 'a', source: 'code', projectKey: 'repoA' },
+      { id: 'b', source: 'code', projectKey: 'repoA' },
+    ]
+    const { deps, edges } = harness(cands, { a: [{ id: 'b', score: 0.71, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([])
+    expect(stats.minted).toBe(0)
+  })
+
+  it('the floor stays overridable per pass', () => {
+    const cands: WeaveEntry[] = [
+      { id: 'a', source: 'code', projectKey: 'repoA' },
+      { id: 'b', source: 'code', projectKey: 'repoA' },
+    ]
+    const { deps, edges } = harness(cands, { a: [{ id: 'b', score: 0.75, projectKey: 'repoA' }] })
+    runWeave(deps, { cosineFloor: 0.9 }) // stricter than the default → nothing
+    expect(edges).toEqual([])
+  })
+
+  it('NEVER self-links, even when the neighbour source hands back the memory itself', () => {
+    const cands: WeaveEntry[] = [{ id: 'a', source: 'code', projectKey: 'repoA' }]
+    // A same-repo self-neighbour is exactly what the old cross-repo guard used to absorb.
+    const { deps, edges } = harness(cands, { a: [{ id: 'a', score: 1, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([])
+    expect(stats.minted).toBe(0)
+  })
+
+  it('never links the SAME pair twice in one pass (duplicate neighbour rows + both directions)', () => {
+    const cands: WeaveEntry[] = [
+      { id: 'a', source: 'code', projectKey: 'repoA' },
+      { id: 'b', source: 'code', projectKey: 'repoA' },
+    ]
+    const { deps, edges } = harness(cands, {
+      a: [
+        { id: 'b', score: 0.9, projectKey: 'repoA' },
+        { id: 'b', score: 0.9, projectKey: 'repoA' }, // duplicate row
+      ],
+      b: [{ id: 'a', score: 0.9, projectKey: 'repoA' }], // reverse direction
+    })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([{ from: 'a', to: 'b', relation: WEAVE_REL_CODE, weight: 0.9 }])
+    expect(stats.minted).toBe(1)
+  })
+
+  it('exports WEAVE_MAX_PER_PASS and uses it as the default analogy bound', () => {
+    expect(WEAVE_MAX_PER_PASS).toBe(200)
+    // 21 same-repo code chunks all mutually near → 210 canonical pairs, bounded to 200.
+    const cands: WeaveEntry[] = Array.from({ length: 21 }, (_, i) => ({ id: `s${i}`, source: 'code', projectKey: 'repoA' }))
+    const nmap: Record<string, WeaveNeighbour[]> = {}
+    for (const c of cands) nmap[c.id] = cands.filter((o) => o.id !== c.id).map((o) => ({ id: o.id, score: 0.9, projectKey: 'repoA' }))
+    const { deps, edges } = harness(cands, nmap, { neighbours: (id) => nmap[id] ?? [] })
+    const stats = runWeave(deps, { neighbourK: 20 }) // default maxPerPass
+    expect(stats.minted).toBe(WEAVE_MAX_PER_PASS)
+    expect(edges).toHaveLength(WEAVE_MAX_PER_PASS)
+  })
+})
+
+describe('runWeave — the `explains` miner ("what is this code FOR?")', () => {
+  it('mints semantic --explains--> code when they share a FILE and clear the floor', () => {
+    const cands = [CODE_CHUNK, DECISION]
+    const { deps, edges } = harness(cands, {
+      code1: [{ id: 'dec1', score: 0.8, projectKey: 'repoA' }],
+    })
+    const stats = runWeave(deps)
+    const explains = edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)
+    expect(explains).toEqual([{ from: 'dec1', to: 'code1', relation: WEAVE_REL_EXPLAINS, weight: 0.8 }])
+    expect(stats.explains).toBe(1)
+  })
+
+  it('points the edge SEMANTIC -> CODE regardless of which end the pass walks from', () => {
+    const cands = [CODE_CHUNK, DECISION]
+    // Walk from the DECISION side this time — direction must still be dec1 -> code1.
+    const { deps, edges } = harness(cands, {
+      dec1: [{ id: 'code1', score: 0.9, projectKey: 'repoA' }],
+    })
+    runWeave(deps)
+    const explains = edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)
+    expect(explains).toEqual([{ from: 'dec1', to: 'code1', relation: WEAVE_REL_EXPLAINS, weight: 0.9 }])
+  })
+
+  it('mints on a SYMBOL overlap too (entity names / codeRefs symbols, not just files)', () => {
+    const code: WeaveEntry = {
+      id: 'code2',
+      source: 'code',
+      projectKey: 'repoA',
+      codeRefs: [{ file: 'src/main/other.ts', symbol: 'parseTree', symbolId: 'src/main/other.ts#parseTree@9', projectKey: 'repoA' }],
+    }
+    const lesson: WeaveEntry = { id: 'lesson1', kind: 'note', memoryType: 'semantic', projectKey: 'repoA', entities: ['parseTree'] }
+    const { deps, edges } = harness([code, lesson], { code2: [{ id: 'lesson1', score: 0.78, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([
+      { from: 'lesson1', to: 'code2', relation: WEAVE_REL_EXPLAINS, weight: 0.78 },
+    ])
+    expect(stats.explains).toBe(1)
+  })
+
+  it('does NOT mint without a symbol/file overlap, however near the pair is', () => {
+    const stranger: WeaveEntry = {
+      id: 'dec2',
+      kind: 'decision',
+      memoryType: 'semantic',
+      projectKey: 'repoA',
+      codeRefs: [{ file: 'src/main/unrelated.ts', projectKey: 'repoA' }],
+    }
+    const { deps, edges } = harness([CODE_CHUNK, stranger], { code1: [{ id: 'dec2', score: 0.99, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([])
+    expect(stats.explains).toBe(0)
+  })
+
+  it('does NOT mint below the floor even with a perfect anchor overlap', () => {
+    const { deps, edges } = harness([CODE_CHUNK, DECISION], {
+      code1: [{ id: 'dec1', score: 0.71, projectKey: 'repoA' }], // just under 0.72
+    })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([])
+    expect(stats.explains).toBe(0)
+  })
+
+  it('needs exactly ONE code end — code~code and semantic~semantic never explain', () => {
+    const code2: WeaveEntry = { id: 'code2', source: 'code', projectKey: 'repoA', filePath: 'src/main/loader.ts' }
+    const dec2: WeaveEntry = { ...DECISION, id: 'dec2' }
+    const { deps, edges } = harness([CODE_CHUNK, code2, DECISION, dec2], {
+      code1: [{ id: 'code2', score: 0.95, projectKey: 'repoA' }], // code ~ code
+      dec1: [{ id: 'dec2', score: 0.95, projectKey: 'repoA' }], // semantic ~ semantic
+    })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([])
+    expect(stats.explains).toBe(0)
+  })
+
+  it('does NOT let a bare ENTITY node claim to explain code (a name is not an explanation)', () => {
+    const entity: WeaveEntry = {
+      id: 'ent1',
+      memoryType: 'entity',
+      projectKey: 'repoA',
+      entities: ['loader.ts'], // overlaps the chunk's file
+    }
+    const { deps, edges } = harness([CODE_CHUNK, entity], { code1: [{ id: 'ent1', score: 0.95, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([])
+    expect(stats.explains).toBe(0)
+  })
+
+  it('skips a neighbour that is not itself a candidate (its kind + anchors are unknowable)', () => {
+    const { deps, edges } = harness([CODE_CHUNK], { code1: [{ id: 'stranger', score: 0.95, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([])
+    expect(stats.explains).toBe(0)
+  })
+
+  it('mints for an UNSCOPED semantic memory (the analogy repo guard must not gate the bridge)', () => {
+    const unscoped: WeaveEntry = { ...DECISION, id: 'dec3', projectKey: undefined }
+    const { deps, edges } = harness([CODE_CHUNK, unscoped], { dec3: [{ id: 'code1', score: 0.9, projectKey: 'repoA' }] })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([
+      { from: 'dec3', to: 'code1', relation: WEAVE_REL_EXPLAINS, weight: 0.9 },
+    ])
+    expect(stats.explains).toBe(1)
+  })
+
+  it('never mints the same explains edge twice (both directions in one pass)', () => {
+    const { deps, edges } = harness([CODE_CHUNK, DECISION], {
+      code1: [{ id: 'dec1', score: 0.9, projectKey: 'repoA' }],
+      dec1: [{ id: 'code1', score: 0.9, projectKey: 'repoA' }],
+    })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toHaveLength(1)
+    expect(stats.explains).toBe(1)
+  })
+
+  it('is bounded per pass by maxExplainsPerPass (default WEAVE_MAX_EXPLAINS_PER_PASS)', () => {
+    expect(WEAVE_MAX_EXPLAINS_PER_PASS).toBe(100)
+    const cands: WeaveEntry[] = [CODE_CHUNK]
+    const nmap: Record<string, WeaveNeighbour[]> = { code1: [] }
+    for (let i = 0; i < 10; i++) {
+      cands.push({ ...DECISION, id: `d${i}` })
+      nmap.code1.push({ id: `d${i}`, score: 0.9, projectKey: 'repoA' })
+    }
+    const { deps, edges } = harness(cands, nmap, { neighbours: (id) => nmap[id] ?? [] })
+    const stats = runWeave(deps, { neighbourK: 10, maxExplainsPerPass: 4 })
+    expect(stats.explains).toBe(4)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toHaveLength(4)
+  })
+
+  it('has its OWN budget — a saturated analogy bound must not starve the explains bridge', () => {
+    const cands = [CODE_CHUNK, DECISION, { id: 'x', source: 'code', projectKey: 'repoB' } as WeaveEntry]
+    const { deps, edges } = harness(cands, {
+      code1: [
+        { id: 'x', score: 0.99, projectKey: 'repoB' }, // an analogy that eats the whole bound
+        { id: 'dec1', score: 0.9, projectKey: 'repoA' }, // the explains pair
+      ],
+    })
+    const stats = runWeave(deps, { maxPerPass: 1 })
+    expect(stats.codeAnalogies).toBe(1)
+    expect(stats.explains).toBe(1) // still drawn
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toHaveLength(1)
+    expect(stats.minted).toBe(2) // minted totals BOTH miners
+  })
+
+  it('uses an injected anchorsOf when supplied (the code graph can answer instead of the projection)', () => {
+    // Neither memory carries anchors in its projection — only the injected resolver knows.
+    const code: WeaveEntry = { id: 'c9', source: 'code', projectKey: 'repoA' }
+    const dec: WeaveEntry = { id: 'k9', kind: 'decision', memoryType: 'semantic', projectKey: 'repoA' }
+    const { deps, edges } = harness([code, dec], { c9: [{ id: 'k9', score: 0.9, projectKey: 'repoA' }] }, {
+      anchorsOf: (e) => (e.id === 'c9' || e.id === 'k9' ? ['src/main/thing.ts'] : []),
+    })
+    const stats = runWeave(deps)
+    expect(edges.filter((e) => e.relation === WEAVE_REL_EXPLAINS)).toEqual([
+      { from: 'k9', to: 'c9', relation: WEAVE_REL_EXPLAINS, weight: 0.9 },
+    ])
+    expect(stats.explains).toBe(1)
+  })
+})
+
+describe('weaveAnchors — the file/symbol overlap signal', () => {
+  it('normalizes codeRefs, filePath and entities to lowercase tokens + bare basenames', () => {
+    const a = weaveAnchors({ id: 'x', filePath: 'C:/Repos/Termpolis/src/main/Loader.ts' })
+    expect(a).toContain('loader.ts') // basename, so a chunk path matches a repo-relative codeRef
+    expect(a).toContain('c:/repos/termpolis/src/main/loader.ts')
+
+    const b = weaveAnchors({
+      id: 'y',
+      codeRefs: [{ file: 'src\\main\\Loader.ts', symbol: 'Load', symbolId: 'src/main/loader.ts#load@1' }],
+      entities: ['ParseTree'],
+    })
+    expect(b).toContain('loader.ts') // backslash paths normalize the same way
+    expect(b).toContain('load')
+    expect(b).toContain('parsetree')
+    expect(b).toContain('src/main/loader.ts#load@1')
+  })
+
+  it('is empty for a memory with no anchors at all', () => {
+    expect(weaveAnchors({ id: 'z' })).toEqual([])
+    expect(weaveAnchors({ id: 'z', entities: ['', '   '] })).toEqual([])
   })
 })

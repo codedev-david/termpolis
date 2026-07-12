@@ -72,6 +72,10 @@ const RELATION_INVERSE: Record<string, string> = {
   'part-of': 'has-part', 'has-part': 'part-of',
   'follows': 'precedes', 'precedes': 'follows',
   'refers-to': 'referred-by', 'referred-by': 'refers-to',
+  // v1.25 — the Weave's code<->purpose bridge. Without an inverse, an UNDIRECTED traversal
+  // walking this edge backwards would relabel it 'explains', making the code chunk appear to
+  // explain the decision rather than the other way round.
+  'explains': 'explained-by', 'explained-by': 'explains',
 }
 
 /** The inverse of a relation for backward traversal; unchanged if symmetric/unknown. Pure. */

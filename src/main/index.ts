@@ -64,7 +64,8 @@ import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid, computeWindowsPty } from './terminalManager'
-import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress } from './egressAudit'
+import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
+import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
   subscribeSensitiveReads,
   getReadCount as getSensitiveReadCount,
@@ -86,7 +87,22 @@ import {
   AGENT_FACTS,
   detectGeminiAccount,
   setStrictGeminiPaidOnly,
+  setCommitShield,
+  setEgressGuard,
+  setMemoryScrub,
 } from './aiSecurity'
+import { scanStagedDiff, scanPushRange, blockMessage } from './commitScan'
+import { deriveOutcome, type WorkEvent } from './outcomeSignals'
+// Safe Import — static scan -> hash-pinned approval -> install into the agent configs.
+import { scanImportArtifact, type Finding as ImportFinding, type RiskLevel as ImportRiskLevel } from './importScanner'
+import { initImportTrust, artifactHash, isApproved, approveArtifact, revokeArtifact, listImported } from './importTrust'
+import {
+  classifyArtifact, supportedTargets, installArtifact, defaultInstallerDeps,
+  type ArtifactKind, type ArtifactFile, type AgentTarget,
+} from './artifactInstaller'
+import { readZip } from './zipArchive'
+import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead } from 'node:fs'
+import { join as ipJoin } from 'node:path'
 import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
@@ -118,6 +134,7 @@ import {
   initSwarmMemory,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
+  setMemoryScrubber,
   weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
   persistMemoryIndex,
@@ -127,7 +144,7 @@ import {
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -489,6 +506,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     aiTerminalFlag.delete(id)
     aiInputStaging.delete(id)
     try { clearEgress(id) } catch {}
+    try { reportedEgressViolations.delete(id) } catch {}
     try { clearSensitiveReadCount(id) } catch {}
     return ok()
   } catch (e: any) { return err(e.message) }
@@ -502,12 +520,58 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
 // false-positive against v1.11.55. Cost of moving to on-demand is one extra
 // shell-out the first time the user opens the Security panel; benefit is no
 // continuous behavioral signature.
+// Egress Guard — turn the egress RECORD into a POLICY.
+//
+// The poller only ever hands us IP literals (netstat/ss/lsof do not reverse-DNS), while the
+// allowlist is expressed in hostnames. egressAttribute closes that gap by FORWARD-resolving
+// the known AI-provider hosts to their current IPs and judging what we observed against
+// that set — the agent resolved the same names from this same machine, so its connected IP
+// is overwhelmingly likely to be in it. Anything left over is the signal that actually
+// matters: an agent talking to a host nobody expects.
+//
+// We FLAG (audit + surface), we do not kill the process: a false positive must never take
+// down the user's agent mid-task.
+// Per-terminal memo of already-reported violations, so re-opening the Security panel does
+// not re-log the same IP on every poll.
+const reportedEgressViolations = new Map<string, Set<string>>()
+function alreadyReportedEgress(terminalId: string, ip: string): boolean {
+  let seen = reportedEgressViolations.get(terminalId)
+  if (!seen) { seen = new Set(); reportedEgressViolations.set(terminalId, seen) }
+  if (seen.has(ip)) return true
+  seen.add(ip)
+  return false
+}
+
+async function judgeEgressForTerminal(terminalId: string, endpoints: EgressEndpoint[]): Promise<void> {
+  try {
+    if (!getAiSecuritySettings().egressGuard) return
+    const allowed = await refreshAllowedIps()
+    // LOAD-BEARING. An empty allowlist means DNS failed or the machine is offline — judging
+    // against it would report every legitimate provider IP as exfiltration. Say nothing
+    // rather than cry wolf; a guard that fires constantly is a guard nobody reads.
+    if (allowed.size === 0) return
+    const report = attributeEgress(endpoints.map((e) => e.remoteHost).filter(Boolean), allowed)
+    const fresh = report.violations.filter((v) => !alreadyReportedEgress(terminalId, v.ip))
+    if (fresh.length === 0) return
+    await aiSecurityAppend({
+      agent: 'egress',
+      event: 'egress_violation',
+      terminalId,
+      hitCount: fresh.length,
+      notes: report.summary,
+    })
+  } catch { /* best effort — the guard must never break the egress panel */ }
+}
+
 ipcMain.handle('ai-security:egress', async (_, { terminalId }: { terminalId: string }) => {
   try {
     const pid = getTerminalPid(terminalId)
     if (pid && pid > 0) {
       const endpoints = await pollAgentEgress(pid)
-      if (endpoints.length) recordEgress(terminalId, endpoints)
+      if (endpoints.length) {
+        recordEgress(terminalId, endpoints)
+        await judgeEgressForTerminal(terminalId, endpoints)
+      }
     }
     return ok({ endpoints: getRecentEgress(terminalId) })
   } catch (e: any) { return err(e.message) }
@@ -887,6 +951,15 @@ ipcMain.handle('aiSecurity:set-audit', (_, { value }: { value: boolean }) => {
     return ok(updated)
   } catch (e: any) { return err(e.message) }
 })
+ipcMain.handle('aiSecurity:set-commit-shield', (_, { value }: { value: boolean }) => {
+  try { return ok(setCommitShield(value === true)) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:set-egress-guard', (_, { value }: { value: boolean }) => {
+  try { return ok(setEgressGuard(value === true)) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('aiSecurity:set-memory-scrub', (_, { value }: { value: boolean }) => {
+  try { return ok(setMemoryScrub(value === true)) } catch (e: any) { return err(e.message) }
+})
 ipcMain.handle('aiSecurity:scan', (_, { text }: { text: string }) => {
   try { return ok(aiSecurityScan(typeof text === 'string' ? text : '')) } catch (e: any) { return err(e.message) }
 })
@@ -1007,10 +1080,50 @@ ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: st
   } catch (e: any) { return err(e.message) }
 })
 
+// Commit/Push Secret Shield — run the SAME ~70-rule engine the outbound scanner uses,
+// but at the GIT boundary: on what a commit will capture (the staged diff) and what a
+// push will send (every unpushed patch). Returns a block reason, or null to allow.
+//
+// Fails OPEN by design: a git or scanner error must never wedge the user's commit for a
+// reason unrelated to secrets. The gate only ever blocks on a POSITIVE secret match.
+function gitShieldGate(cwd: string, op: 'commit' | 'push'): string | null {
+  try {
+    if (!getAiSecuritySettings().commitShield) return null
+    const deps = { git: (args: string[]) => safeGit(args, { cwd, timeout: 20000, maxBuffer: 32 * 1024 * 1024 }) }
+    const res = op === 'commit' ? scanStagedDiff(deps) : scanPushRange(deps)
+    const reason = res.clean ? null : blockMessage(res, op)
+    aiSecurityAppend({
+      agent: 'git',
+      event: res.clean ? 'commit_scan' : op === 'commit' ? 'commit_blocked' : 'push_blocked',
+      byteCount: res.scannedBytes,
+      hitCount: res.hitCount,
+      notes: reason ?? `${op} scan clean`,
+    }).catch(() => {})
+    return reason
+  } catch {
+    return null
+  }
+}
+
+// Feed REAL work outcomes into the competence layer, so "self-competence by domain"
+// populates from ORDINARY use (a commit that landed, a test run that passed or failed)
+// instead of only from swarm tasks and end-of-session magic phrases — which is why it
+// sat empty at attempts:0 forever. Best-effort: a competence write must never break
+// the user's git or test path.
+function recordWorkOutcome(e: WorkEvent): void {
+  try {
+    const o = deriveOutcome(e)
+    if (o) recordOutcome(o.domain, o.success, Date.now())
+  } catch { /* best effort */ }
+}
+
 ipcMain.handle('git:commit', async (_, { cwd, message }: { cwd: string; message: string }) => {
   try {
     if (!message.trim()) return err('Commit message cannot be empty')
+    const blocked = gitShieldGate(cwd, 'commit')
+    if (blocked) return err(blocked)
     safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
+    recordWorkOutcome({ kind: 'git-commit', project: normalizeProjectSlug(cwd), ok: true })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -1024,6 +1137,8 @@ ipcMain.handle('git:pull', async (_, { cwd }: { cwd: string }) => {
 
 ipcMain.handle('git:push', async (_, { cwd }: { cwd: string }) => {
   try {
+    const blocked = gitShieldGate(cwd, 'push')
+    if (blocked) return err(blocked)
     const output = safeGit(['push'], { cwd, timeout: 60000 }).trim()
     return ok(output)
   } catch (e: any) { return err(e.message) }
@@ -1134,7 +1249,11 @@ ipcMain.handle('git:commit-all', async (_, { cwd, message }: { cwd: string; mess
   try {
     if (!message.trim()) return err('Commit message cannot be empty')
     safeGit(['add', '-A'], { cwd, timeout: 15000 })
+    // Gate AFTER `add -A` so the staged diff the shield scans is the complete set.
+    const blocked = gitShieldGate(cwd, 'commit')
+    if (blocked) return err(blocked)
     safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
+    recordWorkOutcome({ kind: 'git-commit', project: normalizeProjectSlug(cwd), ok: true })
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -1210,6 +1329,10 @@ ipcMain.handle('memory:metrics', () => {
       ledger: metricsSummary(Date.now()),
       store: memoryDashboardStats(),
       graph: { nodes: gs.nodes, edges: gs.edges, byRelation },
+      // The STRUCTURAL code graph is a SEPARATE store from the semantic memory graph:
+      // indexing a repo mints code symbols + caller->callee edges that never land in `graph`.
+      // Surfacing it here is what makes "index a repo -> see connections" actually true.
+      codeGraph: codeGraphStats(ALL_REPOS),
       competence,
       recentActivity: memoryRecentActivity(14),
     })
@@ -1276,6 +1399,145 @@ ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try {
 ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
 // v1.23 C6 — DEEP recall over the archive tier (cold/consolidated memories beyond the hot window).
 ipcMain.handle('memory:deep-search', async (_, opts: { query: string; limit?: number }) => { try { return ok(searchArchive(opts?.query || '', opts?.limit ?? 20)) } catch (e: any) { return err(e.message) } })
+
+// ---- Safe Import ----------------------------------------------------------------
+// Bring in a third-party skill / plugin / command / subagent / MCP server, PROVE it is
+// safe and LOCAL-ONLY, then wire it into the agents.
+//
+// WHY: skill and MCP marketplaces are a live supply-chain vector — a skill is just files
+// an agent will happily execute. The artifact is staged in memory and statically scanned
+// BEFORE a single byte lands in ~/.claude. Nothing installs until the user approves the
+// report, and a RED artifact (it can exfiltrate data or execute code) can NEVER install.
+interface PendingImport {
+  name: string
+  kind: ArtifactKind
+  hash: string
+  files: ArtifactFile[]
+  level: ImportRiskLevel
+  targets: AgentTarget[]
+}
+let pendingImport: PendingImport | null = null
+let importTrustReady = false
+
+function ensureImportTrust(): void {
+  if (importTrustReady) return
+  initImportTrust(app.getPath('userData'))
+  importTrustReady = true
+}
+
+function emitImportProgress(pct: number, stage: string): void {
+  try { mainWindow?.webContents.send('safeImport:progress', { pct, stage }) } catch { /* window gone */ }
+}
+
+const MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024
+
+/** Read a .zip or a directory into a flat, text-only file list (the quarantine copy). */
+function readArtifactFiles(src: string): ArtifactFile[] {
+  const out: ArtifactFile[] = []
+  if (ipStat(src).isDirectory()) {
+    const walk = (dir: string, rel: string): void => {
+      for (const e of ipReaddir(dir, { withFileTypes: true })) {
+        if (e.name === '.git' || e.name === 'node_modules') continue
+        const abs = ipJoin(dir, e.name)
+        const r = rel ? `${rel}/${e.name}` : e.name
+        if (e.isDirectory()) walk(abs, r)
+        else if (ipStat(abs).size <= MAX_IMPORT_FILE_BYTES) out.push({ path: r, content: ipRead(abs, 'utf8') })
+      }
+    }
+    walk(src, '')
+  } else {
+    for (const e of readZip(ipRead(src))) {
+      if (e.data.length <= MAX_IMPORT_FILE_BYTES) out.push({ path: e.name, content: e.data.toString('utf8') })
+    }
+  }
+  return out
+}
+
+ipcMain.handle('safeImport:scan', async () => {
+  try {
+    ensureImportTrust()
+    const picked = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Import a Skill or Plugin',
+      properties: ['openFile', 'openDirectory'],
+      filters: [{ name: 'Skill / Plugin', extensions: ['zip'] }],
+    })
+    if (picked.canceled || !picked.filePaths[0]) return ok({ canceled: true })
+
+    emitImportProgress(5, 'Reading artifact')
+    const files = readArtifactFiles(picked.filePaths[0])
+    if (files.length === 0) return err('Nothing to import — the artifact is empty')
+
+    emitImportProgress(15, 'Classifying')
+    const cls = classifyArtifact(files)
+    if (!cls) return err('Unrecognised artifact — expected a skill (SKILL.md), plugin, slash-command, subagent, or MCP server')
+
+    // Scan file-by-file so the progress bar reflects REAL work, yielding to the event
+    // loop between files so the renderer actually paints each step.
+    const findings: ImportFinding[] = []
+    for (let i = 0; i < files.length; i++) {
+      findings.push(...scanImportArtifact([files[i]]).findings)
+      emitImportProgress(15 + Math.round(((i + 1) / files.length) * 70), `Scanning ${files[i].path}`)
+      await new Promise((r) => setImmediate(r))
+    }
+
+    emitImportProgress(90, 'Assessing risk')
+    const reds = findings.filter((f) => f.severity === 'red').length
+    const yellows = findings.length - reds
+    const level: ImportRiskLevel = reds > 0 ? 'red' : yellows > 0 ? 'yellow' : 'green'
+    const summary = findings.length === 0 ? 'no dangerous constructs found' : `${reds} red, ${yellows} yellow`
+    const hash = artifactHash(files)
+    pendingImport = { name: cls.name, kind: cls.kind, hash, files, level, targets: supportedTargets(cls.kind) }
+
+    aiSecurityAppend({
+      agent: 'import',
+      event: level === 'red' ? 'import_blocked' : 'import_scan',
+      hitCount: findings.length,
+      notes: `${cls.kind} "${cls.name}" — ${summary}`,
+    }).catch(() => {})
+
+    emitImportProgress(100, 'Done')
+    return ok({
+      canceled: false,
+      name: cls.name, kind: cls.kind, hash, level, findings,
+      filesScanned: files.length, summary,
+      targets: pendingImport.targets,
+      alreadyApproved: isApproved(hash),
+    })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('safeImport:approve-install', async (_, { targets }: { targets: string[] }) => {
+  try {
+    ensureImportTrust()
+    const staged = pendingImport
+    if (!staged) return err('Nothing staged to import — scan an artifact first')
+    // The hard invariant: a red artifact is never installable, no matter what the UI sends.
+    if (staged.level === 'red') {
+      return err('Refusing to install: this artifact can exfiltrate data or execute code on your machine.')
+    }
+    const chosen = (targets || []).filter((t): t is AgentTarget => staged.targets.includes(t as AgentTarget))
+    if (chosen.length === 0) return err('Pick at least one agent to wire it into')
+
+    approveArtifact({
+      id: staged.name, name: staged.name, kind: staged.kind,
+      hash: staged.hash, riskLevel: staged.level, targets: chosen,
+    })
+    const installed = installArtifact(
+      { name: staged.name, kind: staged.kind, files: staged.files },
+      chosen, defaultInstallerDeps(),
+    )
+    aiSecurityAppend({ agent: 'import', event: 'import_scan', notes: `installed "${staged.name}" -> ${chosen.join(', ')}` }).catch(() => {})
+    pendingImport = null
+    return ok({ installed })
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle('safeImport:list', () => {
+  try { ensureImportTrust(); return ok(listImported()) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('safeImport:revoke', (_, { id }: { id: string }) => {
+  try { ensureImportTrust(); return ok(revokeArtifact(id)) } catch (e: any) { return err(e.message) }
+})
 
 // Brain export / import (portable .zip) — integrity-gated (zipArchive CRC + manifest SHA-256).
 ipcMain.handle('brain:export', async () => {
@@ -1492,6 +1754,10 @@ ipcMain.handle('swarm:run-command', async (_, { cwd, command }: { cwd: string; c
   })
   if (!trusted) return err('Workspace not trusted — command cancelled')
   const result = runSafeCommand(parsed, { cwd, timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
+  // Ground truth, in BOTH directions: a passing suite raises competence for this
+  // project, a failing one lowers it. This is the signal that makes the calibration
+  // honest instead of a ratchet that only ever goes up.
+  recordWorkOutcome({ kind: 'test-run', project: normalizeProjectSlug(cwd), exitCode: result.exitCode })
   return ok(result)
 })
 
@@ -2047,6 +2313,24 @@ if (!gotTheLock) {
     setSafeStorage(safeStorage)
     initAnomalyLog(app.getPath('userData')) // burn-in: capture surprising memory events (incl. this init's)
     initSwarmMemory(app.getPath('userData'))
+    // Memory-at-rest secret scrub. Redact secrets BEFORE a memory is hashed, embedded, or
+    // written to disk, so a key sitting in a transcript or an indexed source file never
+    // lands in the brain — and can therefore never be recalled back into an agent's context
+    // later. Installing this scrubber IS the security boundary: with none installed the
+    // store keeps content verbatim, so this call is not optional.
+    setMemoryScrubber((content) => {
+      if (!getAiSecuritySettings().memoryScrub) return { redacted: content, hitCount: 0 }
+      const scan = aiSecurityScan(content)
+      if (scan.hitCount > 0) {
+        aiSecurityAppend({
+          agent: 'memory',
+          event: 'memory_scrub',
+          hitCount: scan.hitCount,
+          notes: scan.hits.map((h) => h.rule).join(','),
+        }).catch(() => {})
+      }
+      return scan
+    })
     initCodeGraph(app.getPath('userData')) // native code graph: load any persisted structural graph
     // Warm the embedder OFF the main thread ~20s after startup so the dashboard's status reflects
     // reality (ready/unavailable, not a misleading pre-probe "healthy") without a startup model load

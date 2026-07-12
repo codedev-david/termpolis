@@ -62,6 +62,11 @@ export interface MemoryEntry {
   // the whole note. Never persisted.
   truncated?: boolean
   originalChars?: number
+  // WP-G: TRANSIENT — how many secrets the memory-at-rest scrub redacted out of this write's
+  // content before it was hashed/embedded/persisted. Present only on the value RETURNED by
+  // memoryWrite (never on a stored entry, never on disk) so the caller can write an audit
+  // entry. Absent ⇒ nothing was scrubbed.
+  scrubbed?: number
   // v1.23 C2 — the memory<->code BRIDGE join key. Structured code anchors for the files/symbols
   // this memory is about, resolved through the code graph. Optional + additive (old records lack
   // it; JSONL round-trips it). symbolHistory() maps a code symbol back to the memories that carry it.
@@ -116,6 +121,9 @@ let clearEpoch = 0                    // epoch tombstone: entries with ts <= thi
 let seq = 0
 let embeddingsAvailable: boolean | null = null  // cached probe result
 let embedOverride: ((text: string) => Promise<number[] | null>) | null = null
+let scrubFn: MemoryScrubber | null = null   // WP-G: injected secret scrubber (null = store verbatim)
+let scrubbedWrites = 0                      // WP-G: writes whose content was redacted before storage
+let secretsRedacted = 0                     // WP-G: total secrets redacted out of those writes
 let encKey: Buffer | null = null      // AES key for at-rest shard encryption (null = plaintext)
 let lockedShards = false              // encrypted shards present that we couldn't read (need passphrase)
 let initDegraded = false              // F5: init failed and fell back to a local writable store (writes still persist)
@@ -575,6 +583,9 @@ export function _resetForTests(): void {
   maxEntries = DEFAULT_MAX_ENTRIES
   embeddingsAvailable = null
   embedOverride = null
+  scrubFn = null
+  scrubbedWrites = 0
+  secretsRedacted = 0
   initDegraded = false
   corruptLinesSkipped = 0
   lockedLinesSkipped = 0
@@ -911,6 +922,16 @@ export function backfillCodeRefs(id: string, refs: CodeRef[]): void {
   bumpSearchGen()
 }
 
+/** A code chunk's content is `${filePath}:${start}-${end}\n${body}` (chunkCode) — the same
+ *  convention memoryPruneCodePath keys off. Recover the file so the weave's `explains` miner
+ *  has an anchor on the CODE side of the bridge. */
+function codeChunkFile(e: MemoryEntry): string | undefined {
+  if (e.source !== 'code' || typeof e.content !== 'string') return undefined
+  const nl = e.content.indexOf('\n')
+  const m = /^(.*):\d+-\d+$/.exec(nl === -1 ? e.content : e.content.slice(0, nl))
+  return m ? m[1] : undefined
+}
+
 /** A bounded, newest-first sample of high-signal embedded memories for the weave miner (raw
  *  message chatter excluded). Entity nodes expose their name as `entities` so the bridge miner
  *  can resolve them to code. */
@@ -927,6 +948,11 @@ export function weaveCandidates(limit = 300): WeaveEntry[] {
       projectKey: e.projectKey,
       entities: e.memoryType === 'entity' ? [e.content] : undefined,
       hasCodeRefs: !!(e.codeRefs && e.codeRefs.length),
+      // v1.25 — anchors for the Weave's `explains` miner (the code<->purpose bridge). The
+      // miner gates on BOTH cosine similarity and a shared file/symbol anchor, so without
+      // these two fields projected it runs but can never anchor, and mints zero edges.
+      codeRefs: e.codeRefs, // the SEMANTIC side's anchor (stamped at write time by mnemeGround)
+      filePath: codeChunkFile(e), // the CODE side's anchor
     })
   }
   return out
@@ -951,8 +977,14 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
   const projectKey = input.project ? projectKeyOf(input.project) : undefined // F19
-  const truncated = input.content.length > MAX_CONTENT
-  const content = truncated ? input.content.slice(0, MAX_CONTENT) : input.content
+  // WP-G: scrub secrets out FIRST — ahead of the hash, the embed and the persist — so the
+  // JSONL, the content hash and the vector all carry the REDACTED text. A secret that reaches
+  // the brain isn't merely at rest on disk: recall would later re-inject it into another
+  // agent's context. With no scrubber installed (or the setting off) this is a byte-for-byte
+  // no-op and the content is stored exactly as written.
+  const scrub = scrubContent(input.content)
+  const truncated = scrub.content.length > MAX_CONTENT
+  const content = truncated ? scrub.content.slice(0, MAX_CONTENT) : scrub.content
 
   // De-duplicate by content so the same information never lands twice — not in
   // the packed vector store, not in the JSONL on disk. Ingestion supplies its
@@ -960,8 +992,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   // writes get a content hash. A hit returns the already-stored entry and skips
   // the embed + persist + index work entirely (the Memex content-addressed win).
   // F14: hash over the ORIGINAL (untruncated) content so a corrected/identical long
-  // note dedups to one entry instead of proliferating truncated fragments.
-  const effectiveHash = input.hash || contentHash(input.content)
+  // note dedups to one entry instead of proliferating truncated fragments. WP-G: over the
+  // SCRUBBED text, so re-pasting the same note with a rotated key dedups to one redacted entry.
+  const effectiveHash = input.hash || contentHash(scrub.content)
   if (seenHashes.has(effectiveHash)) {
     const existing = entries.find(e => e.hash === effectiveHash)
     if (existing) {
@@ -1070,6 +1103,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   }
   if (!durable) entry.durable = false // F6: surface a non-durable write so the API doesn't lie
   if (truncated) { entry.truncated = true; entry.originalChars = input.content.length } // F14
+  // WP-G: report the scrub on the RETURNED entry only (set after `stored` was copied and after
+  // persist(), so it never reaches the hot window or the disk) — the caller writes the audit.
+  if (scrub.hits > 0) entry.scrubbed = scrub.hits
   return entry
 }
 
@@ -2526,6 +2562,70 @@ export function setSyncDir(dir: string | null): SyncStatus {
   writeSyncConfig(userDataDir, clean)
   initSwarmMemory(userDataDir, { syncDir: clean })
   return getSyncStatus()
+}
+
+// ---- WP-G: memory-at-rest secret scrub ----
+//
+// Secrets must be redacted OUT of a memory BEFORE the brain stores it. A key that reaches the
+// store isn't just at rest on disk — it's embedded into a vector and later RECALLED and
+// re-injected into another agent's context, which is exactly the leak the AI Security Center
+// exists to close. So the scrub runs on the WRITE path, ahead of the hash/embed/persist.
+//
+// The ~70-rule scanner lives in aiSecurity.ts, which imports `electron` at module scope —
+// importing it here would drag electron into swarmMemory's electron-free unit suite. So the
+// scrubber is INJECTED, exactly like the embedder (embedOverride/_setEmbedFnForTests): main
+// installs the real one at startup, tests inject a fake, and with nothing installed the write
+// path is a byte-for-byte no-op. aiSecurity's ScanResult is a superset of MemoryScrubResult,
+// so `scanText` satisfies this contract directly.
+
+/** What swarmMemory needs back from a secret scanner: the redacted text + how many it found. */
+export interface MemoryScrubResult {
+  redacted: string
+  hitCount: number
+}
+
+export type MemoryScrubber = (content: string) => MemoryScrubResult
+
+/** Install the secret scrubber used on the write path (src/main/index.ts wires aiSecurity's
+ *  scanText, gated on the `memoryScrub` setting). `null` uninstalls it — content is then
+ *  stored verbatim, which is also the default when main never wires one up. */
+export function setMemoryScrubber(fn: MemoryScrubber | null): void {
+  scrubFn = fn
+}
+
+/** @internal test-only — the same seam under the file's test-seam naming. */
+export function _setScrubFnForTests(fn: MemoryScrubber | null): void {
+  scrubFn = fn
+}
+
+/** Observable proof the scrub is doing work: how many writes were redacted this session and
+ *  how many secrets that removed. Feeds the security panel / dashboard; per-write reporting
+ *  rides on the TRANSIENT `scrubbed` count of the entry memoryWrite returns. */
+export function memoryScrubStats(): { scrubbedWrites: number; secretsRedacted: number } {
+  return { scrubbedWrites, secretsRedacted }
+}
+
+// Run the installed scrubber over a memory's content. Returns the text to store and how many
+// secrets were redacted out of it.
+function scrubContent(raw: string): { content: string; hits: number } {
+  if (!scrubFn) return { content: raw, hits: 0 }
+  try {
+    const r = scrubFn(raw)
+    // Swap the text in ONLY when a secret was actually found (and the scrubber handed back a
+    // usable string): secret-free content must land byte-for-byte as the agent wrote it — no
+    // silent normalization via a scanner round-trip.
+    if (!r || typeof r.redacted !== 'string' || !(r.hitCount > 0)) return { content: raw, hits: 0 }
+    scrubbedWrites++
+    secretsRedacted += r.hitCount
+    return { content: r.redacted, hits: r.hitCount }
+  } catch (err) {
+    // Fail OPEN, loudly. The scanner is pure regex and shouldn't throw; if it does, dropping the
+    // agent's memory would be the bigger harm — so store it and surface the failure rather than
+    // letting a broken scrubber silently disable the protection.
+    recordSwarmError('swarmMemory.scrub.failed', err, { kind: 'memory-scrub' })
+    recordAnomaly('scrub-failed', 'secret scrubber threw — content was stored unscrubbed')
+    return { content: raw, hits: 0 }
+  }
 }
 
 // ---- Embedding helper ----

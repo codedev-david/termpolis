@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MemoryMetrics, GraphSample } from '../../types'
 import {
   dashboardReceipts,
+  codeGraphReceipt,
   compositionRows,
   reliabilityTiles,
   teachingRows,
@@ -142,9 +143,12 @@ export function MemoryLearningSettings() {
 
       {m && !isBrainEmpty(m) && (
         <>
-          {/* headline receipt strip with real growth sparklines */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3" data-testid="ml-receipts">
-            {dashboardReceipts(m).map((r) => (
+          {/* Headline receipt strip with real growth sparklines. The "Code connections" tile
+              only appears once a repo is indexed: structural code edges (caller->callee) live
+              in a SEPARATE store from the semantic memory graph, so they get their own number
+              rather than being conflated with "Connections mapped". */}
+          <div className={`grid grid-cols-2 ${codeGraphReceipt(m) ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-3`} data-testid="ml-receipts">
+            {[...dashboardReceipts(m), ...(codeGraphReceipt(m) ? [codeGraphReceipt(m)!] : [])].map((r) => (
               <div key={r.label} className="p-3 border border-[#3c3c3c] rounded bg-[#252526] flex flex-col gap-0.5 relative overflow-hidden">
                 <span className="text-[10px] uppercase tracking-wide text-[#6b7280] font-mono">{r.label}</span>
                 <div className="flex items-end justify-between gap-1">

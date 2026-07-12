@@ -171,7 +171,7 @@ vi.mock('electron', () => ({
   BrowserWindow: MockBrowserWindow,
   dialog: {
     showSaveDialog: vi.fn(),
-    showOpenDialog: vi.fn(),
+    showOpenDialog: mockShowOpenDialog,
     showMessageBox: vi.fn(async () => ({ response: 0, checkboxChecked: false })),
   },
   Menu: { setApplicationMenu: vi.fn() },
@@ -223,15 +223,21 @@ vi.mock('../../src/main/swarmMemory', () => ({
   initSwarmMemory: vi.fn(),
   memoryWrite: vi.fn(), memorySearch: vi.fn(() => []),
   memoryList: vi.fn(() => []), memoryCount: vi.fn(() => 0), memoryClear: vi.fn(),
+  // v1.25: the git/test handlers now derive a competence domain from the cwd, and the
+  // brain installs a secret scrubber on the write path. This stub is partial, so both
+  // have to be declared or the handlers throw on an undefined import.
+  normalizeProjectSlug: vi.fn((p: string) => (p || '').split(/[\\/]/).filter(Boolean).pop() || ''),
+  setMemoryScrubber: vi.fn(),
 }))
 vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: vi.fn() }))
 vi.mock('../../src/main/agentCommandSanitizer', () => ({
   sanitizeAgentCommand: vi.fn((cmd: string) => cmd),
 }))
 
-const { mockExecSync, mockExecFileSync } = vi.hoisted(() => ({
+const { mockExecSync, mockExecFileSync, mockShowOpenDialog } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
   mockExecFileSync: vi.fn(),
+  mockShowOpenDialog: vi.fn(),
 }))
 vi.mock('child_process', () => ({
   default: { execSync: mockExecSync, execFileSync: mockExecFileSync },
@@ -375,11 +381,136 @@ describe('IPC handler security — git:commit message injection', () => {
     const evil = 'subject"; rm -rf ~; echo "owned'
     const r = await invoke('git:commit', { cwd: '/r', message: evil })
     expect(r.success).toBe(true)
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1)
-    const [bin, argv, opts] = mockExecFileSync.mock.calls[0]
+    // v1.25: the Commit Shield scans the staged diff BEFORE committing, so git is now
+    // invoked twice (scan, then commit) rather than once. The argv-safety contract — an
+    // evil commit message stays ONE argv entry and never reaches a shell — is what this
+    // test actually guards, so assert that on the commit call itself.
+    const commitCall = mockExecFileSync.mock.calls.find((c) => (c[1] as string[])[0] === 'commit')
+    expect(commitCall).toBeDefined()
+    const [bin, argv, opts] = commitCall as [string, string[], { shell: boolean }]
     expect(bin).toBe('git')
     expect(argv).toEqual(['commit', '-m', evil])
     expect(opts.shell).toBe(false)
+    // …and the shield genuinely scanned the staged diff first.
+    expect(mockExecFileSync.mock.calls.some((c) => (c[1] as string[]).includes('--cached'))).toBe(true)
+  })
+
+  it('BLOCKS the commit when the staged diff carries a secret (Commit Shield)', async () => {
+    mockExecFileSync.mockClear()
+    // Repeated chars: satisfies the AWS rule regex while failing entropy heuristics, so
+    // GitHub push protection will not block this test file.
+    const awsKey = 'AKIA' + 'A'.repeat(16)
+    mockExecFileSync.mockImplementation((_bin: string, argv: string[]) =>
+      Buffer.from(argv.includes('--cached') ? `+AWS_ACCESS_KEY_ID=${awsKey}\n` : ''),
+    )
+
+    const r = await invoke('git:commit', { cwd: '/r', message: 'add config' })
+
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('Blocked commit')
+    expect(r.error).toContain('AWS Access Key ID')
+    // The whole point: the commit must never have run.
+    expect(mockExecFileSync.mock.calls.some((c) => (c[1] as string[])[0] === 'commit')).toBe(false)
+
+    mockExecFileSync.mockImplementation(() => Buffer.from(''))
+  })
+
+  it('BLOCKS the push when an unpushed commit carries a secret (Commit Shield)', async () => {
+    mockExecFileSync.mockClear()
+    const openaiKey = 'sk-' + 'a'.repeat(24)
+    mockExecFileSync.mockImplementation((_bin: string, argv: string[]) =>
+      Buffer.from(argv[0] === 'log' ? `commit abc\n+key = "${openaiKey}"\n` : ''),
+    )
+
+    const r = await invoke('git:push', { cwd: '/r' })
+
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('Blocked push')
+    expect(mockExecFileSync.mock.calls.some((c) => (c[1] as string[])[0] === 'push')).toBe(false)
+
+    mockExecFileSync.mockImplementation(() => Buffer.from(''))
+  })
+})
+
+// The remaining git read handlers, held to the same argv-safety contract as the write
+// ones above: every one shells out through safeGit with shell:false, so a hostile cwd,
+// ref or filename can never be interpreted.
+describe('IPC handler security — git read handlers pass argv safely', () => {
+  beforeEach(() => {
+    mockExecFileSync.mockClear()
+    mockExecFileSync.mockImplementation(() => Buffer.from(''))
+  })
+
+  it.each([
+    ['git:find-root', { cwd: '/r' }, ['rev-parse', '--show-toplevel']],
+    ['git:rev-parse-head', { cwd: '/r' }, ['rev-parse', 'HEAD']],
+    ['git:file-diff', { cwd: '/r', file: 'a b.ts' }, ['diff', '--', 'a b.ts']],
+    ['git:pull', { cwd: '/r' }, ['pull']],
+  ])('%s runs git with a literal argv and no shell', async (channel, args, expectedArgv) => {
+    const r = await invoke(channel as string, args)
+    expect(r.success).toBe(true)
+    const [bin, argv, opts] = mockExecFileSync.mock.calls[0]
+    expect(bin).toBe('git')
+    expect(argv).toEqual(expectedArgv)
+    expect(opts.shell).toBe(false)
+  })
+
+  it('git:unstage passes a hostile filename as one argv entry', async () => {
+    const evil = 'a; rm -rf ~.ts'
+    const r = await invoke('git:unstage', { cwd: '/r', files: [evil] })
+    expect(r.success).toBe(true)
+    const [, argv, opts] = mockExecFileSync.mock.calls[0]
+    expect(argv).toEqual(['reset', 'HEAD', '--', evil])
+    expect(opts.shell).toBe(false)
+  })
+})
+
+// The v1.25 gates default ON. Turning one OFF must be an explicit, persisted act — the
+// secure default is what protects an existing install that never opens this panel.
+describe('IPC handler security — v1.25 gates are explicit toggles', () => {
+  it('commit shield, egress guard and memory scrub toggle off and back on', async () => {
+    expect((await invoke('aiSecurity:set-commit-shield', { value: false })).data.commitShield).toBe(false)
+    expect((await invoke('aiSecurity:set-egress-guard', { value: false })).data.egressGuard).toBe(false)
+    expect((await invoke('aiSecurity:set-memory-scrub', { value: false })).data.memoryScrub).toBe(false)
+
+    // Restore — later tests in this file rely on the shield being armed.
+    expect((await invoke('aiSecurity:set-commit-shield', { value: true })).data.commitShield).toBe(true)
+    expect((await invoke('aiSecurity:set-egress-guard', { value: true })).data.egressGuard).toBe(true)
+    expect((await invoke('aiSecurity:set-memory-scrub', { value: true })).data.memoryScrub).toBe(true)
+  })
+})
+
+// Safe Import — a third-party skill/plugin must be scanned and approved before a single
+// byte reaches ~/.claude. These pin the IPC gate itself (the panel is tested separately).
+describe('IPC handler security — Safe Import gate', () => {
+  it('lists nothing before anything has been imported', async () => {
+    const r = await invoke('safeImport:list', {})
+    expect(r.success).toBe(true)
+    expect(Array.isArray(r.data)).toBe(true)
+  })
+
+  it('revoking an unknown artifact is a no-op, not a crash', async () => {
+    const r = await invoke('safeImport:revoke', { id: 'never-imported' })
+    expect(r.success).toBe(true)
+  })
+
+  it('REFUSES to install when nothing has been scanned — no install without a scan', async () => {
+    const r = await invoke('safeImport:approve-install', { targets: ['claude'] })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('Nothing staged')
+  })
+
+  it('returns canceled when the user dismisses the picker', async () => {
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const r = await invoke('safeImport:scan', {})
+    expect(r.success).toBe(true)
+    expect(r.data.canceled).toBe(true)
+  })
+
+  it('fails closed on an unreadable artifact — never a silent pass', async () => {
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/nope/not-real.zip'] })
+    const r = await invoke('safeImport:scan', {})
+    expect(r.success).toBe(false)
   })
 })
 

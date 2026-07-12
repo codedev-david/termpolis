@@ -35,10 +35,13 @@ interface GeminiAccountStatus {
 }
 
 interface AiSecurityAPI {
-  getStatus: () => Promise<{ success: boolean; data?: { settings: { redactionEnabled: boolean; auditEnabled: boolean; strictGeminiPaidOnly?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus } }>
+  getStatus: () => Promise<{ success: boolean; data?: { settings: { redactionEnabled: boolean; auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus } }>
   setRedaction: (value: boolean) => Promise<{ success: boolean; data?: { redactionEnabled: boolean; auditEnabled: boolean } }>
   setAudit: (value: boolean) => Promise<{ success: boolean; data?: { redactionEnabled: boolean; auditEnabled: boolean } }>
   setStrictGemini?: (value: boolean) => Promise<{ success: boolean; data?: { strictGeminiPaidOnly: boolean } }>
+  setCommitShield?: (value: boolean) => Promise<{ success: boolean }>
+  setEgressGuard?: (value: boolean) => Promise<{ success: boolean }>
+  setMemoryScrub?: (value: boolean) => Promise<{ success: boolean }>
   scan: (text: string) => Promise<{ success: boolean; data?: ScanResult }>
   recentAudit: (limit?: number) => Promise<{ success: boolean; data?: AuditEntry[] }>
   clearAudit: () => Promise<{ success: boolean }>
@@ -67,6 +70,11 @@ export function SecuritySettings() {
   const [redactionEnabled, setRedactionEnabled] = useState(false)
   const [auditEnabled, setAuditEnabled] = useState(false)
   const [strictGemini, setStrictGemini] = useState(false)
+  // Default-ON gates (see aiSecurity.ts): an absent key means "never configured",
+  // so the secure default holds and existing installs get the protection on upgrade.
+  const [commitShield, setCommitShield] = useState(true)
+  const [egressGuard, setEgressGuard] = useState(true)
+  const [memoryScrub, setMemoryScrub] = useState(true)
   const [facts, setFacts] = useState<AgentDataFact[]>([])
   const [auditPath, setAuditPath] = useState('')
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([])
@@ -82,6 +90,9 @@ export function SecuritySettings() {
         setRedactionEnabled(res.data.settings.redactionEnabled)
         setAuditEnabled(res.data.settings.auditEnabled)
         setStrictGemini(res.data.settings.strictGeminiPaidOnly === true)
+        setCommitShield(res.data.settings.commitShield !== false)
+        setEgressGuard(res.data.settings.egressGuard !== false)
+        setMemoryScrub(res.data.settings.memoryScrub !== false)
         setFacts(res.data.facts)
         setAuditPath(res.data.auditPath)
         if (res.data.geminiAccount) setGeminiAccount(res.data.geminiAccount)
@@ -118,6 +129,27 @@ export function SecuritySettings() {
     const next = !strictGemini
     setStrictGemini(next)
     await api.setStrictGemini(next)
+  }
+
+  const toggleCommitShield = async () => {
+    if (!api?.setCommitShield) return
+    const next = !commitShield
+    setCommitShield(next)
+    await api.setCommitShield(next)
+  }
+
+  const toggleEgressGuard = async () => {
+    if (!api?.setEgressGuard) return
+    const next = !egressGuard
+    setEgressGuard(next)
+    await api.setEgressGuard(next)
+  }
+
+  const toggleMemoryScrub = async () => {
+    if (!api?.setMemoryScrub) return
+    const next = !memoryScrub
+    setMemoryScrub(next)
+    await api.setMemoryScrub(next)
   }
 
   const runScan = async () => {
@@ -290,6 +322,69 @@ export function SecuritySettings() {
           <span className="text-sm font-medium">Outbound prompt redaction (preview)</span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Scans copied / pasted text for AWS keys, GitHub PATs, OpenAI / Anthropic / Google keys, JWTs, and .env-style assignments. Use the scanner below before pasting into an AI agent.
+          </span>
+        </div>
+      </div>
+
+      {/* Commit/Push Secret Shield — the git-boundary gate */}
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+        <button
+          onClick={toggleCommitShield}
+          aria-label="Toggle commit and push secret shield"
+          data-testid="security-commit-shield-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${commitShield ? 'bg-[#0d9488]' : 'bg-[#555]'}`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${commitShield ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+        </button>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium flex items-center gap-2">
+            <i className="fa-solid fa-shield-halved text-[#2dd4bf]"></i>
+            Commit Shield &mdash; block commits &amp; pushes that carry a secret
+          </span>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            Runs the same ~70-rule engine on what <code>git commit</code> will capture (the staged diff) and what <code>git push</code> will send (every unpushed patch), and <strong>blocks the operation</strong> when a secret is found. This closes the gap the outbound scanner structurally cannot see &mdash; it never watches git.
+          </span>
+        </div>
+      </div>
+
+      {/* Egress Guard — allowlist enforcement on agent network traffic */}
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+        <button
+          onClick={toggleEgressGuard}
+          aria-label="Toggle egress guard"
+          data-testid="security-egress-guard-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${egressGuard ? 'bg-[#0d9488]' : 'bg-[#555]'}`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${egressGuard ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+        </button>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium flex items-center gap-2">
+            <i className="fa-solid fa-tower-broadcast text-[#2dd4bf]"></i>
+            Egress Guard &mdash; flag agent traffic to unexpected hosts
+          </span>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            The egress log already <em>recorded</em> where each agent connects. This turns that record into a policy: any host outside the known AI-provider allowlist is raised as a violation &mdash; which is the signal that actually matters for exfiltration.
+          </span>
+        </div>
+      </div>
+
+      {/* Memory scrub — secrets never reach the brain on disk */}
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+        <button
+          onClick={toggleMemoryScrub}
+          aria-label="Toggle memory secret scrub"
+          data-testid="security-memory-scrub-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${memoryScrub ? 'bg-[#0d9488]' : 'bg-[#555]'}`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${memoryScrub ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+        </button>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium flex items-center gap-2">
+            <i className="fa-solid fa-brain text-[#2dd4bf]"></i>
+            Memory scrub &mdash; redact secrets before they are stored
+          </span>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            Secrets are stripped out of a memory <strong>before</strong> it is hashed, embedded, or written to the brain &mdash; so a key sitting in a transcript or an indexed file never lands on disk, and can never be recalled back into an agent&apos;s context later.
           </span>
         </div>
       </div>

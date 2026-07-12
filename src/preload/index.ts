@@ -296,12 +296,30 @@ contextBridge.exposeInMainWorld('updater', {
   },
 })
 
+// Safe Import — bring in a third-party skill/plugin, PROVE it is safe and local-only
+// (static scan for exfiltration / code-exec / injection), then wire it into the agents.
+// The scan streams progress so the UI can show a real percentage, not a fake spinner.
+contextBridge.exposeInMainWorld('safeImport', {
+  scan: () => ipcRenderer.invoke('safeImport:scan'),
+  approveInstall: (targets: string[]) => ipcRenderer.invoke('safeImport:approve-install', { targets }),
+  list: () => ipcRenderer.invoke('safeImport:list'),
+  revoke: (id: string) => ipcRenderer.invoke('safeImport:revoke', { id }),
+  onProgress: (cb: (p: { pct: number; stage: string }) => void) => {
+    const handler = (_e: unknown, p: { pct: number; stage: string }): void => cb(p)
+    ipcRenderer.on('safeImport:progress', handler)
+    return () => ipcRenderer.removeListener('safeImport:progress', handler)
+  },
+})
+
 // AI Security Center — outbound-data controls (redaction, audit, agent facts).
 contextBridge.exposeInMainWorld('aiSecurity', {
   getStatus: () => ipcRenderer.invoke('aiSecurity:get-status'),
   setRedaction: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-redaction', { value }),
   setAudit: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-audit', { value }),
   setStrictGemini: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-strict-gemini', { value }),
+  setCommitShield: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-commit-shield', { value }),
+  setEgressGuard: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-egress-guard', { value }),
+  setMemoryScrub: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-memory-scrub', { value }),
   scan: (text: string) => ipcRenderer.invoke('aiSecurity:scan', { text }),
   recentAudit: (limit?: number) => ipcRenderer.invoke('aiSecurity:recent-audit', { limit }),
   clearAudit: () => ipcRenderer.invoke('aiSecurity:clear-audit'),

@@ -33,6 +33,21 @@ export function dashboardReceipts(m: MemoryMetrics): Receipt[] {
   ]
 }
 
+/** The indexed CODE graph as its own receipt — the STRUCTURAL connections (caller->callee
+ *  and reference edges) that code_callers / code_callees / code_impact ride on. These live
+ *  in a separate store from the semantic memory graph, so they get their own tile rather
+ *  than being folded into "Connections mapped" (which would conflate 12k structural edges
+ *  with the semantic ones). Null until a repo is actually indexed — never a fake 0. */
+export function codeGraphReceipt(m: MemoryMetrics): Receipt | null {
+  const cg = m.codeGraph
+  if (!cg || cg.edges <= 0) return null
+  return {
+    label: 'Code connections',
+    value: compactNumber(cg.edges),
+    sub: `${compactNumber(cg.symbols)} symbols · ${compactNumber(cg.files)} files indexed`,
+  }
+}
+
 export interface CompRow { key: string; count: number; pct: number }
 
 /** Sort a {name: count} map into descending rows with each row's fraction of the total. */

@@ -7,6 +7,7 @@ import { KeybindingsSettings } from './KeybindingsSettings'
 import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { MemoryLearningSettings } from './MemoryLearningSettings'
+import { SafeImportPanel } from './SafeImportPanel'
 import { VoiceSettings } from './VoiceSettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
@@ -254,6 +255,9 @@ export function SettingsPane() {
 
       {activeTab === 'general' && (
         <>
+          {/* Safe Import — scan a third-party skill/plugin, then wire it into the agents. */}
+          <SafeImportPanel />
+
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">Default Shell</label>
             <select

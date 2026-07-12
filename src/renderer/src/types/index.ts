@@ -405,6 +405,10 @@ export interface MemoryMetrics {
   graph: { nodes: number; edges: number; byRelation: Record<string, number> }
   competence: Array<{ domain: string; attempts: number; confidence: number }>
   recentActivity: Array<{ ts: number; op: string; type: string; detail: string }>
+  /** Native structural code-graph totals across ALL indexed repos (symbols + call/reference
+   *  edges). Optional: absent until a repo is indexed, so the dashboard shows nothing rather
+   *  than a fake 0 — surfacing this is what makes "index a repo -> see connections" true. */
+  codeGraph?: { files: number; symbols: number; edges: number }
 }
 
 /** A sampled, legible slice of the live knowledge graph for the connections view. */

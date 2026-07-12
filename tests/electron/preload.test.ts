@@ -831,3 +831,54 @@ describe('preload: updater API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('code-graph:build', { repoRoot: '/repo' })
   })
 })
+
+// ---------------------------------------------------------------------------
+// v1.25 — Safe Import bridge + the three new AI-Security gates
+// ---------------------------------------------------------------------------
+describe('preload: safeImport bridge', () => {
+  it('exposes the safe-import surface', () => {
+    expect(exposed.safeImport).toBeDefined()
+  })
+
+  it('routes scan / approveInstall / list / revoke to their IPC channels', async () => {
+    await exposed.safeImport.scan()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('safeImport:scan')
+
+    await exposed.safeImport.approveInstall(['claude', 'codex'])
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('safeImport:approve-install', { targets: ['claude', 'codex'] })
+
+    await exposed.safeImport.list()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('safeImport:list')
+
+    await exposed.safeImport.revoke('pdf-tools')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('safeImport:revoke', { id: 'pdf-tools' })
+  })
+
+  it('onProgress subscribes, forwards the payload, and returns a working unsubscribe', () => {
+    const seen: { pct: number; stage: string }[] = []
+    const off = exposed.safeImport.onProgress((p: { pct: number; stage: string }) => seen.push(p))
+    expect(mockIpcRenderer.on).toHaveBeenCalledWith('safeImport:progress', expect.any(Function))
+
+    // Drive the registered listener exactly as the main process would.
+    const call = mockIpcRenderer.on.mock.calls.find((c: any[]) => c[0] === 'safeImport:progress')
+    const handler = call![1] as (e: unknown, p: { pct: number; stage: string }) => void
+    handler({}, { pct: 40, stage: 'Scanning skill.js' })
+    expect(seen).toEqual([{ pct: 40, stage: 'Scanning skill.js' }])
+
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('safeImport:progress', expect.any(Function))
+  })
+})
+
+describe('preload: aiSecurity v1.25 gates', () => {
+  it('routes the commit shield, egress guard, and memory scrub toggles', async () => {
+    await exposed.aiSecurity.setCommitShield(true)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-commit-shield', { value: true })
+
+    await exposed.aiSecurity.setEgressGuard(false)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-egress-guard', { value: false })
+
+    await exposed.aiSecurity.setMemoryScrub(true)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-memory-scrub', { value: true })
+  })
+})
