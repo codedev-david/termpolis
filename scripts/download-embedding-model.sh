@@ -35,10 +35,23 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
-echo "Downloading $REPO into $DIR ..."
-"$PY" -m pip install --quiet --disable-pip-version-check --upgrade "huggingface_hub[hf_xet]"
+# Install into a VENV, not the system interpreter. The macOS runner's Python is Homebrew-managed, so
+# a bare `pip install` dies with PEP 668 `externally-managed-environment` — which is exactly how the
+# first attempt at this fix failed macOS while Linux and Windows sailed through. A venv sidesteps the
+# protection honestly (rather than forcing it with --break-system-packages) and behaves identically on
+# all three runners. Note the interpreter lives in Scripts/ on Windows and bin/ everywhere else.
+VENV="$(mktemp -d)/hfvenv"
+"$PY" -m venv "$VENV"
+if [ -x "$VENV/bin/python" ]; then
+  VPY="$VENV/bin/python"
+else
+  VPY="$VENV/Scripts/python.exe"
+fi
 
-"$PY" - "$REPO" "$DIR" "${FILES[@]}" <<'PY'
+echo "Downloading $REPO into $DIR ..."
+"$VPY" -m pip install --quiet --disable-pip-version-check --upgrade "huggingface_hub[hf_xet]"
+
+"$VPY" - "$REPO" "$DIR" "${FILES[@]}" <<'PY'
 import sys, os
 from huggingface_hub import hf_hub_download
 
