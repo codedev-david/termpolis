@@ -138,6 +138,17 @@ let fsyncCount = 0                    // F26: observable count of durable (fsync
 // Disk keeps exact floats and re-packs on load, so this is safe to toggle. OFF by default; enable
 // with TERMPOLIS_MEM_QUANTIZE=1. Every (re)build of the store goes through newVectorStore() so the
 // setting survives reload / rebuild / compaction.
+// How many lines OUR OWN shard has on disk, and which entry ids we contributed. Both are known
+// without reading anything: we counted them at load, and we increment on every append.
+//
+// They exist so compactSelfShard can answer "is this even worth doing?" from MEMORY. The exact
+// answer needs the whole shard read, every line AES-DECRYPTED and parsed, and every output line
+// AES-RE-ENCRYPTED -- and the "not enough dead weight to bother" gate used to run AFTER all of
+// that. Measured on a real 450 MB / 107k-line encrypted shard: 4.4 SECONDS of synchronous
+// main-thread work, every 30 minutes, then thrown away. That was the app going "(Not Responding)".
+let ownShardLines = 0
+const ownShardAddIds = new Set<string>()
+
 let quantizeVectors = false
 /** An explicit user/app choice (Settings toggle). `null` = never chosen, fall back to env. */
 let quantizeExplicit: boolean | null = null
@@ -326,6 +337,10 @@ function classifyShardLine(line: string): ShardLineClass {
 function reloadFrom(paths: string[]): void {
   entries.length = 0
   seenHashes.clear()
+  // reloadFrom() only runs when the shard file EXISTS, so on a fresh store these would keep the
+  // previous store's values and the compaction gate would be answered from stale facts.
+  ownShardLines = 0
+  ownShardAddIds.clear()
   // F1/F10: seed from the device-local durable floor rather than from ∅, so a clear/delete
   // survives the loss of whatever shard first carried it, and a bogus future epoch is
   // refused (loadDeletesFloor already clamps it) instead of poisoning the store.
@@ -344,6 +359,7 @@ function reloadFrom(paths: string[]): void {
   const patches: Array<{ hash: string; project: string; projectKey?: string }> = [] // F30
   const codeRefsPatches: Array<{ id: string; codeRefs: CodeRef[] }> = [] // v1.23 C4 bridge backfill
   const ownAddIds = new Set<string>()      // adds that came from THIS device's own shard
+  let ownLineCount = 0 // lines physically in OUR shard, counted as we already walk them
   const ownVulnerable = new Set<string>()  // own adds appearing BEFORE an own clear line (pre-clear → epoch-droppable)
   const ownTombstoned = new Set<string>()  // ids the own shard already records (delete/clearIds) — re-emission dedup
   for (const p of paths) {
@@ -352,6 +368,7 @@ function reloadFrom(paths: string[]): void {
     const isOwn = !!memPath && path.resolve(p) === path.resolve(memPath)
     const shardAdds: string[] = [] // own-shard add ids seen so far — marked vulnerable when a clear line follows
     for (const line of raw.split('\n')) {
+      if (isOwn && line.trim()) ownLineCount++
       const c = classifyShardLine(line)
       switch (c.t) {
         case 'add':
@@ -395,6 +412,12 @@ function reloadFrom(paths: string[]): void {
       }
     }
   }
+  // Publish what we learned about our own shard, so compaction can be gated from memory
+  // instead of by re-reading and re-decrypting the entire thing.
+  ownShardLines = ownLineCount
+  ownShardAddIds.clear()
+  for (const id of ownAddIds) ownShardAddIds.add(id)
+
   // F28: partial corruption used to shrink the brain invisibly. Surface it so the UI can
   // warn and the raw bytes can be recovered before the next rewrite overwrites them.
   if (corruptLinesSkipped > 0) {
@@ -486,6 +509,10 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   syncDir = opts.syncDir !== undefined ? (opts.syncDir || null) : readSyncConfig(resolved)
 
   entries.length = 0
+  // reloadFrom() only runs when the shard file EXISTS, so a brand-new store would otherwise
+  // inherit the previous store's counters and gate compaction on stale facts.
+  ownShardLines = 0
+  ownShardAddIds.clear()
   seenHashes.clear()
   tombstones.clear()
   clearEpoch = 0
@@ -576,6 +603,8 @@ export function _resetForTests(): void {
   clearEpoch = 0
   encKey = null
   lockedShards = false
+  ownShardLines = 0
+  ownShardAddIds.clear()
   quantizeVectors = false
   quantizeExplicit = null // a reset must clear the explicit choice too, or it leaks across tests
   vectorStore = newVectorStore()
@@ -1194,6 +1223,7 @@ function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {
     } else {
       fs.appendFileSync(memPath, line)
     }
+    ownShardLines++ // keep the compaction gate answerable without reading the file back
     return true
   } catch (err) {
     // Append failure means this swarm fact never reaches disk — agents would lose
@@ -1208,7 +1238,12 @@ function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {
 const FSYNC_KINDS = new Set<MemoryEntry['kind']>(['decision', 'fact', 'result'])
 
 function persist(entry: MemoryEntry): boolean {
-  return appendShardLine(JSON.stringify(entry), entry.id, { fsync: FSYNC_KINDS.has(entry.kind) })
+  const ok = appendShardLine(JSON.stringify(entry), entry.id, { fsync: FSYNC_KINDS.has(entry.kind) })
+  // Record that THIS device contributed this id. The compaction gate needs it to work out how
+  // much of our own shard is still live -- without which it has to re-read and re-decrypt the
+  // whole file just to find out, which is the 4.4-second freeze this all exists to kill.
+  if (ok) ownShardAddIds.add(entry.id)
+  return ok
 }
 
 // Atomic whole-file write: temp + fsync + rename, so a crash or a concurrent cloud-sync
@@ -2474,11 +2509,59 @@ const COMPACT_DEAD_RATIO = 0.5
  * state. It is ATOMIC (temp+rename) and ABORTS if any line is locked/corrupt, so it can never
  * drop data it couldn't account for. Gated on size + dead-ratio unless forced.
  */
+/**
+ * Would compaction actually rewrite anything? Answered from MEMORY, without touching the disk.
+ *
+ * This exists because the real answer is ruinously expensive: read the entire shard, AES-decrypt
+ * every line, JSON.parse it, rebuild, then AES-RE-ENCRYPT every output line -- and only THEN ask
+ * "was there enough dead weight to bother?". Measured on a real 450 MB / 107k-line encrypted shard:
+ *
+ *     readFileSync                   792 ms
+ *     split                           56 ms
+ *     decrypt + parse x 107,288     1592 ms
+ *     re-encrypt x 107,288          1835 ms
+ *     join                           120 ms
+ *     ------------------------------------
+ *     4.4 SECONDS of synchronous main-thread work, every 30 minutes -- and then DISCARDED,
+ *     because a healthy store is never 50% dead. That was the app going "(Not Responding)".
+ *
+ * The gate only ever needed an ESTIMATE, and an estimate is free: we know how many lines our own
+ * shard has (we wrote them) and which of our entries are still live (they are in memory).
+ *
+ * Deliberately biased toward saying YES. The estimate omits patch/reinforce/clear lines, so it can
+ * only ever OVER-state dead weight -- meaning it may send us off to do work that turns out to be
+ * unnecessary, but it can never skip a compaction that was genuinely needed. A wrong guess costs
+ * time; it cannot cost correctness.
+ */
+function compactionMayBeWorthwhile(): boolean {
+  if (ownShardLines < COMPACT_MIN_LINES) return false
+  if (ownShardAddIds.size === 0) return true // we know nothing about our shard -> go and look properly
+  const liveIds = new Set<string>(entries.map((e) => e.id))
+  let liveOwn = 0
+  for (const id of ownShardAddIds) if (liveIds.has(id)) liveOwn++
+  // Under-counts the real `after` (ignores patch/reinforce/clear lines) -> OVER-states dead weight.
+  const estimatedAfter = liveOwn + tombstones.size + tombstonedHashes.size
+  const estimatedDeadRatio = (ownShardLines - estimatedAfter) / ownShardLines
+  return estimatedDeadRatio >= COMPACT_DEAD_RATIO
+}
+
+/** @internal test-only */
+export function _compactionMayBeWorthwhileForTests(): boolean { return compactionMayBeWorthwhile() }
+/** @internal test-only */
+export function _ownShardStateForTests(): { lines: number; addIds: number } {
+  return { lines: ownShardLines, addIds: ownShardAddIds.size }
+}
+
 export function compactSelfShard(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {
   if (!memPath) return { compacted: false, before: 0, after: 0 }
   // Tier-2: a LOCAL-only store (no syncDir) is now compactable too — but ONLY when nothing has been
   // evicted, else on-disk entries outside the 500k hot window would be dropped. Sync shards: as before.
   if (!syncDir && evictedAny) return { compacted: false, before: 0, after: 0 }
+  // THE GATE, MOVED IN FRONT OF THE WORK. Everything below -- the 450 MB read, the 107k
+  // decrypts, the 107k re-encrypts -- used to run BEFORE we asked whether it was worth doing.
+  if (!opts?.force && !compactionMayBeWorthwhile()) {
+    return { compacted: false, before: ownShardLines, after: ownShardLines }
+  }
   let raw: string
   try { raw = fs.readFileSync(memPath, 'utf8') } catch { return { compacted: false, before: 0, after: 0 } }
   const rawLines = raw.split('\n').filter((l) => l.trim())
@@ -2566,7 +2649,10 @@ export function importMemorySnapshot(jsonl: string): { imported: number } {
     if (!s) continue
     const c = classifyShardLine(s)
     if (c.t !== 'add' && c.t !== 'reinforce') continue // only additive content is imported
-    if (appendShardLine(s, 'brain-import', { fsync: false }) && c.t === 'add') imported++
+    if (appendShardLine(s, 'brain-import', { fsync: false }) && c.t === 'add') {
+      ownShardAddIds.add(c.entry.id) // imported adds are ours too, for the compaction gate
+      imported++
+    }
   }
   reloadFrom(shardFiles())
   return { imported }
