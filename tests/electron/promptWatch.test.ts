@@ -14,7 +14,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { processOutboundChunk, scanText } from '../../src/main/aiSecurity'
+import { processOutboundChunk, scanText, RULES } from '../../src/main/aiSecurity'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
@@ -204,5 +204,37 @@ describe('source guard: no secret value can reach the audit log or the renderer'
     expect(send![0]).not.toMatch(/hits:\s*r\.hits\s*,/) // the raw pass-through that used to be here
     expect(send![0]).toMatch(/\.map\(/)
     expect(send![0]).not.toMatch(/sample/)
+  })
+})
+
+// A rule count typed into copy is a fact with no owner. It goes stale the moment someone adds a
+// rule, and NOTHING fails — which is exactly what happened: the Settings UI shipped "91-rule
+// engine", the README said "~70-rule", and the table held 97. Three numbers, none of them right,
+// in security copy people are meant to trust. So the number is derived at runtime, and these
+// guards make a hardcoded one fail loudly.
+describe('the secret-rule count is derived, never written down', () => {
+  const RULE_COUNT = RULES.length
+  const read = (rel: string) => readFileSync(resolve(__dirname, '../../', rel), 'utf8')
+
+  it('main ships the live count over aiSecurity:get-status', () => {
+    const src = read('src/main/index.ts')
+    expect(src).toMatch(/ruleCount:\s*SECRET_RULES\.length/)
+  })
+
+  it('the Settings UI renders the live count, not a literal', () => {
+    const ui = read('src/renderer/src/components/SettingsPane/SecuritySettings.tsx')
+    // A bare "91-rule"/"70-rule" literal in the JSX is the bug. `{ruleCount ?? 97}` is fine.
+    const literals = ui.match(/(?<!\{ruleCount \?\? )\d{2,3}-rule/g) ?? []
+    expect(literals).toEqual([])
+    expect(ui).toMatch(/\{ruleCount \?\? \d+\}-rule/)
+  })
+
+  it('the README cites the real secret-rule count, and no stale one', () => {
+    // Careful: the README ALSO cites Safe Import's 41-rule scanner — a DIFFERENT table with its
+    // own count. A guard asserting "every number here equals 97" would happily "correct" the 41s
+    // and be confidently wrong. Pin the secret engine's number; name the stale ones directly.
+    const md = read('README.md')
+    expect(md).toContain(`${RULE_COUNT}-rule`)
+    for (const stale of ['~70-rule', '91-rule', '70+ rule']) expect(md).not.toContain(stale)
   })
 })

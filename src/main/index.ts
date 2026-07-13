@@ -89,6 +89,7 @@ import {
   setCommitShield,
   setEgressGuard,
   setMemoryScrub,
+  RULES as SECRET_RULES,
 } from './aiSecurity'
 import { scanStagedDiff, scanPushRange, blockMessage } from './commitScan'
 import { deriveOutcome, type WorkEvent } from './outcomeSignals'
@@ -933,6 +934,11 @@ ipcMain.handle('aiSecurity:get-status', () => {
       facts: AGENT_FACTS,
       auditPath: aiSecurityAuditPath(),
       geminiAccount: detectGeminiAccount(),
+      // Derived, never hardcoded. The UI used to render a literal "91-rule engine" while the
+      // table held 97, and the README said "~70" — three numbers, none of them right. A count
+      // typed into copy is a fact with no owner: it goes stale the moment a rule is added and
+      // nothing fails. Ship the real length and the number cannot drift again.
+      ruleCount: SECRET_RULES.length,
     })
   } catch (e: any) { return err(e.message) }
 })

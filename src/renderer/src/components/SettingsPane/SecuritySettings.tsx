@@ -42,7 +42,7 @@ interface ShieldRepo {
 // What replaced it is WATCH, which is not a setting: it is always on and forwards every byte
 // untouched. Nothing in this bridge can turn it off, which is exactly the point.
 interface AiSecurityAPI {
-  getStatus: () => Promise<{ success: boolean; data?: { settings: { auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus } }>
+  getStatus: () => Promise<{ success: boolean; data?: { settings: { auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus; ruleCount?: number } }>
   setAudit: (value: boolean) => Promise<{ success: boolean; data?: { auditEnabled: boolean } }>
   setStrictGemini?: (value: boolean) => Promise<{ success: boolean; data?: { strictGeminiPaidOnly: boolean } }>
   setCommitShield?: (value: boolean) => Promise<{ success: boolean }>
@@ -102,6 +102,8 @@ export function SecuritySettings() {
   const [scanInput, setScanInput] = useState('')
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [geminiAccount, setGeminiAccount] = useState<GeminiAccountStatus | null>(null)
+  // Live from the rule table in main — never a literal. See aiSecurity:get-status.
+  const [ruleCount, setRuleCount] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -116,6 +118,7 @@ export function SecuritySettings() {
         setFacts(res.data.facts)
         setAuditPath(res.data.auditPath)
         if (res.data.geminiAccount) setGeminiAccount(res.data.geminiAccount)
+        if (typeof res.data.ruleCount === 'number') setRuleCount(res.data.ruleCount)
       }
       setLoading(false)
     }).catch(() => setLoading(false))
@@ -381,7 +384,7 @@ export function SecuritySettings() {
         </div>
         <span className="text-xs text-[#cfead8] leading-relaxed">
           Every prompt you submit to an AI agent &mdash; and every paste &mdash; is scanned for well-shaped secrets against the
-          same 91-rule engine used at the git boundary. <strong>Your text is never modified, delayed, or withheld:</strong> every
+          same {ruleCount ?? 97}-rule engine used at the git boundary. <strong>Your text is never modified, delayed, or withheld:</strong> every
           byte reaches the agent exactly as you typed it, and the scan runs on a copy. This is a <strong>recorder, not a filter</strong>.
           A hit means the value has already gone to the provider, so Termpolis tells you <em>which identifier</em> leaked
           instead of pretending it can un-send it &mdash; rotate what it names.
@@ -444,7 +447,7 @@ export function SecuritySettings() {
             Commit Shield &mdash; block commits &amp; pushes that carry a secret
           </span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
-            Runs the same 91-rule engine on what <code>git commit</code> will capture (the staged diff) and what <code>git push</code> will send (every unpushed patch), and <strong>blocks the operation</strong> when a secret is found. This closes the gap the outbound scanner structurally cannot see &mdash; it never watches git.
+            Runs the same {ruleCount ?? 97}-rule engine on what <code>git commit</code> will capture (the staged diff) and what <code>git push</code> will send (every unpushed patch), and <strong>blocks the operation</strong> when a secret is found. This closes the gap the outbound scanner structurally cannot see &mdash; it never watches git.
             <br />
             On its own, this toggle only covers the git operations <strong>Termpolis itself runs</strong> (the Git panel, Swarm Review). To cover <code>git commit</code> typed into a terminal &mdash; or run from VS Code, or any other tool &mdash; install the hooks below.
           </span>
