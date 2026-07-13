@@ -1263,6 +1263,45 @@ function atomicWriteFile(target: string, data: string): void {
   }
 }
 
+/**
+ * Atomic whole-file write from LINES -- without ever building one giant string.
+ *
+ * compactSelfShard used to finish with `atomicWriteFile(memPath, out.join('\n') + '\n')`, which
+ * materialises the ENTIRE shard as a single JS string. V8 caps a string at MAX_STRING_LENGTH --
+ * 536,870,888 chars (512 MB) on 64-bit -- and a real store here is already 450 MB. That is 12%
+ * of headroom.
+ *
+ * Cross it and `join()` throws RangeError. The 30-minute compaction timer catches and swallows
+ * it, so compaction would SILENTLY never run again -- forever -- while the shard grew without
+ * bound. A failure with no error message anywhere is the worst kind there is, and this one
+ * strands the whole store.
+ *
+ * Writing incrementally has no cap and costs nothing. Same bytes, same atomicity (temp + fsync +
+ * rename), same durability -- it simply never asks V8 for a half-gigabyte string.
+ */
+function atomicWriteLines(target: string, lines: string[]): void {
+  const tmp = target + '.tmp'
+  const fd = fs.openSync(tmp, 'w')
+  try {
+    // Batch so we are not doing a syscall per line, while never holding more than a few MB.
+    const CHUNK = 4 * 1024 * 1024
+    let buf = ''
+    for (const line of lines) {
+      buf += line + '\n'
+      if (buf.length >= CHUNK) { fs.writeFileSync(fd, buf); buf = '' }
+    }
+    if (buf) fs.writeFileSync(fd, buf)
+    fs.fsyncSync(fd)
+  } finally { fs.closeSync(fd) }
+  try {
+    fs.renameSync(tmp, target)
+  } catch (err) {
+    // Windows can reject a rename over an existing/locked target -- unlink then rename.
+    try { fs.rmSync(target, { force: true }); fs.renameSync(tmp, target) }
+    catch (err2) { try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ } throw err2 }
+  }
+}
+
 // F27: guarantee JSONL frame integrity. A crash mid-append can leave the shard ending
 // in a truncated, newline-less line; the NEXT append would then land on that same
 // physical line and corrupt an otherwise-good record. If the file doesn't end in '\n',
@@ -2487,7 +2526,7 @@ function rewriteSelfShard(xform: (plain: string) => string): void {
     out.push(plain === null ? s : xform(plain))
   }
   try {
-    atomicWriteFile(memPath, out.length ? out.join('\n') + '\n' : '') // F7/F33: never truncate mid-rewrite
+    atomicWriteLines(memPath, out) // F7/F33: never truncate mid-rewrite
   } catch (err) {
     // The atomic write kept the ORIGINAL shard intact — surface the failure instead of
     // silently leaving a truncated/half-rewritten store.
@@ -2615,7 +2654,7 @@ export function compactSelfShard(opts?: { force?: boolean }): { compacted: boole
     return { compacted: false, before, after: before } // not enough dead weight to bother
   }
   try {
-    atomicWriteFile(memPath, out.length ? out.join('\n') + '\n' : '')
+    atomicWriteLines(memPath, out)
   } catch (err) {
     recordSwarmError('swarmMemory.compact.failed', err, { memPath })
     return { compacted: false, before, after: before }
