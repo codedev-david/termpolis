@@ -46,6 +46,8 @@ const {
     chmodSync: vi.fn(),
     rmSync: vi.fn(),
     watch: vi.fn(() => ({ close: vi.fn() })),
+    // The code-graph sweep MUST read through this, not readFileSync — see the reader tests below.
+    promises: { readFile: vi.fn(async () => '{}') },
   }
   return {
     mockShowOpenDialog: vi.fn(),
@@ -727,7 +729,13 @@ describe('memory:ingest-code', () => {
     expect(graphDeps.listFiles()).toEqual(['a.ts'])
     expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/x')
     await expect(graphDeps.readFile('a.ts')).resolves.toBe('{}')
-    expect(fsMock.readFileSync).toHaveBeenCalledWith('a.ts', 'utf8')
+    // It must be a REAL async read. The sweep awaits this once per file, and an `await` on the
+    // already-resolved promise that an async-wrapped readFileSync returns yields only a microtask —
+    // which Node drains WITHOUT running the event loop. That made the whole sweep one unbroken 2.8s
+    // block: no PTY, no IPC, "(Not Responding)". This test previously asserted readFileSync, which is
+    // how the freeze shipped, so pin the property that actually matters in BOTH directions.
+    expect(fsMock.promises.readFile).toHaveBeenCalledWith('a.ts', 'utf8')
+    expect(fsMock.readFileSync).not.toHaveBeenCalledWith('a.ts', 'utf8')
   })
 
   it('keeps the graph FRESH: a watched source change re-indexes just those files', async () => {
@@ -741,7 +749,9 @@ describe('memory:ingest-code', () => {
     expect(cg.reindexWatchedChange).toHaveBeenCalledWith('/repos/x', ['a.ts', 'b.ts'], expect.any(Function))
     const readFile = cg.reindexWatchedChange.mock.calls[0][2] as (f: string) => Promise<string>
     await expect(readFile('a.ts')).resolves.toBe('{}')
-    expect(fsMock.readFileSync).toHaveBeenCalledWith('a.ts', 'utf8')
+    // Async read, not readFileSync — the watch path starves the loop exactly like the full sweep.
+    expect(fsMock.promises.readFile).toHaveBeenCalledWith('a.ts', 'utf8')
+    expect(fsMock.readFileSync).not.toHaveBeenCalledWith('a.ts', 'utf8')
   })
 
   it('still succeeds when the code graph blows up — a graph hiccup never fails a good ingest', async () => {
@@ -779,7 +789,8 @@ describe('code-graph:build', () => {
     expect(deps.listFiles()).toEqual(['a.ts'])
     expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y')
     await expect(deps.readFile('a.ts')).resolves.toBe('{}')
-    expect(fsMock.readFileSync).toHaveBeenCalledWith('a.ts', 'utf8')
+    expect(fsMock.promises.readFile).toHaveBeenCalledWith('a.ts', 'utf8')
+    expect(fsMock.readFileSync).not.toHaveBeenCalledWith('a.ts', 'utf8')
   })
 
   it('degrades to {success:false,error} when the build throws', async () => {

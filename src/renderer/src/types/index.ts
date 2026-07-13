@@ -395,6 +395,11 @@ export interface MemoryMetrics {
     avgTopScore: number
     avgLatencyMs: number
     byPath: { vector: number; keyword: number; cache: number }
+    // Status vs history — see embeddingTile(). embedUp answers "is semantic recall working now";
+    // embedAvailability is the lifetime rate and must never be graded as if it were the status.
+    embedUp: boolean | null
+    embedRecentUp: number
+    embedRecentTotal: number
     embedAvailability: number
     writes: number
     writeDurability: number

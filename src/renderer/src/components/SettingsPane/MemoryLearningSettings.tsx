@@ -236,7 +236,7 @@ export function MemoryLearningSettings() {
               hint="service-level indicators"
               testId="ml-reliability"
               infoAlign="right"
-              info={<><b className="text-[#e0e0e0]">Recall fired</b> — % of recalls that returned ≥1 hit (recall isn&rsquo;t silently failing). <b>Embedding model</b> — whether the local semantic model is up; if it drops, keyword search still runs. <b>Write durability</b> — % of writes confirmed persisted (append-only). <b>Recall latency</b> — typical (median) time to return a recall, so a first-search cold model-load doesn&rsquo;t skew it.</>}
+              info={<><b className="text-[#e0e0e0]">Recall fired</b> — % of recalls that returned ≥1 hit (recall isn&rsquo;t silently failing). <b>Embedding model</b> — whether the local semantic model is up <i>right now</i>; if it drops, keyword search still runs. The grey line beneath is <i>history</i> — how many of your recent recalls ran semantic — and is never graded, so an outage you already fixed can&rsquo;t keep the tile red forever. <b>Write durability</b> — % of writes confirmed persisted (append-only). <b>Recall latency</b> — typical (median) time to return a recall, so a first-search cold model-load doesn&rsquo;t skew it.</>}
             >
               <div className="grid grid-cols-2 gap-2">
                 {reliabilityTiles(m).map((t) => {
@@ -251,6 +251,9 @@ export function MemoryLearningSettings() {
                           <span className="block h-full rounded-full" style={{ width: `${Math.round(frac * 100)}%`, background: STATUS_COLOR[t.status] }} />
                         </span>
                       )}
+                      {/* History, not status: deliberately grey and un-graded, so a past outage can
+                          inform without masquerading as a live alarm. */}
+                      {t.sub && <span className="text-[10px] text-[#6b7280] font-mono">{t.sub}</span>}
                     </div>
                   )
                 })}

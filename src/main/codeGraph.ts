@@ -18,6 +18,7 @@ import { extractFile, extractReferences, languageForFile, type CodeSymbol, type 
 import { extractFileTS } from './codeGraphTreeSitter'
 import { isIndexableCodeFile, discoverRepoFiles } from './codeIngest'
 import { projectKeyOf } from './projectKey'
+import { tracked, trackedAsync } from './processHealth'
 
 export interface CodeGraphEdge {
   from: string // caller symbol id
@@ -257,6 +258,26 @@ export interface CodeGraphDeps {
   readFile: (file: string) => Promise<string>
 }
 
+/**
+ * Hand the event loop back mid-sweep.
+ *
+ * This is NOT belt-and-braces — it is the whole reason the sweep is survivable. `await` on an
+ * ALREADY-RESOLVED promise queues a MICROTASK, and Node drains the microtask queue to completion
+ * before the event loop advances. So a loop of `await`s over synchronous work never yields at all:
+ * the PTY is not pumped, IPC is not served, and Windows paints "(Not Responding)".
+ *
+ * Both awaits in the sweep resolve synchronously in production — the reader (fs.promises.readFile is
+ * genuinely async, but a sync reader has been injected here before and would silently re-freeze the
+ * app) and extractFileTS, whose async signature hides a synchronous WASM parse. setImmediate is a
+ * MACROTASK, so it actually returns control to the loop. Measured on this repo: 645 files went from
+ * 2,777 ms of unbroken starvation to a 68 ms worst-case stall, for the same total work.
+ */
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve) })
+
+/** Files handled between yields. Low enough that the worst stall stays far under the 400 ms that
+ *  reads as a freeze; high enough that the yield overhead is noise. */
+const YIELD_EVERY = 16
+
 /** Re-index a repo's code graph from disk — used by the file-watch freshness path (codeWatch). */
 export async function reindexRepoGraph(root: string): Promise<CodeGraphStats> {
   return buildCodeGraph(
@@ -272,6 +293,12 @@ export async function reindexRepoGraph(root: string): Promise<CodeGraphStats> {
  *  Wipe guard: if discovery yields NO files but this repo already has a non-empty graph, the old
  *  graph is preserved — a transient git-off-PATH / non-git cwd can no longer erase a good index. */
 export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Promise<CodeGraphStats> {
+  // Name the work, so a stall during a repo sweep is reported as `code-graph:sweep` rather than as an
+  // anonymous `sync-work` the user has to guess at. (Guessing is precisely what this cost us.)
+  return trackedAsync('code-graph:sweep', () => buildCodeGraphImpl(deps, projectKey))
+}
+
+async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Promise<CodeGraphStats> {
   activeKey = projectKey
   const st = stateFor(projectKey)
   let files: string[]
@@ -284,7 +311,14 @@ export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Prom
     return statsOf(st) // preserve the last good graph — don't wipe on empty discovery
   }
   clearState(st)
+  let sinceYield = 0
   for (const file of files) {
+    // Give the main thread back regularly — see yieldToEventLoop. Counted over EVERY file, skips
+    // included, so a repo full of unindexable paths cannot starve the loop either.
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0
+      await yieldToEventLoop()
+    }
     if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
     let content: string
     try {
@@ -315,10 +349,23 @@ export async function reindexPaths(
   readFile: (file: string) => Promise<string>,
   projectKey?: string,
 ): Promise<number> {
+  return trackedAsync('code-graph:reindex', () => reindexPathsImpl(files, readFile, projectKey))
+}
+
+async function reindexPathsImpl(
+  files: string[],
+  readFile: (file: string) => Promise<string>,
+  projectKey?: string,
+): Promise<number> {
   const key = projectKey ?? activeKey
   const st = stateFor(key)
   let n = 0
+  let sinceYield = 0
   for (const file of files) {
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0
+      await yieldToEventLoop() // same starvation trap as buildCodeGraph — see yieldToEventLoop
+    }
     removeFile(st, file) // prune old symbols first — this alone handles a delete/rename
     if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
     let content: string
@@ -364,15 +411,19 @@ export function persistCodeGraph(projectKey?: string): void {
   if (!dir) return
   const key = projectKey ?? activeKey
   const st = stateFor(key)
-  try {
-    const data = { symbols: [...st.symbolsById.values()], imports: [...st.fileImports.entries()] }
-    const target = path.join(dir, graphFileFor(key))
-    const tmp = `${target}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(data))
-    fs.renameSync(tmp, target) // atomic replace
-  } catch {
-    /* best effort — the graph rebuilds from source on next full index */
-  }
+  // Serialising + writing the whole graph is synchronous and unavoidable (it must be atomic), so if
+  // it ever grows big enough to stall the thread, the stall should say so by name.
+  tracked('code-graph:persist', () => {
+    try {
+      const data = { symbols: [...st.symbolsById.values()], imports: [...st.fileImports.entries()] }
+      const target = path.join(dir!, graphFileFor(key))
+      const tmp = `${target}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(data))
+      fs.renameSync(tmp, target) // atomic replace
+    } catch {
+      /* best effort — the graph rebuilds from source on next full index */
+    }
+  })
 }
 
 // ---- Queries ---------------------------------------------------------------

@@ -25,6 +25,7 @@ import { readSecret, writeSecret, isOsEncryptionAvailable } from './secureKeySto
 import { projectKeyOf } from './projectKey'
 import type { CodeRef } from './codeGraph'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
+import { tracked, markBusy, clearBusy } from './processHealth'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -335,6 +336,15 @@ function classifyShardLine(line: string): ShardLineClass {
 // tombstones (deleted ids + clear epoch), deduped by id and content-hash,
 // newest-maxEntries kept. Order-independent → safe to merge any device set.
 function reloadFrom(paths: string[]): void {
+  markBusy('memory:load-shard') // 464 MB read + 108k decrypts, all synchronous — name it if it stalls
+  try {
+    reloadFromImpl(paths)
+  } finally {
+    clearBusy('memory:load-shard')
+  }
+}
+
+function reloadFromImpl(paths: string[]): void {
   entries.length = 0
   seenHashes.clear()
   // reloadFrom() only runs when the shard file EXISTS, so on a fresh store these would keep the
@@ -2592,6 +2602,13 @@ export function _ownShardStateForTests(): { lines: number; addIds: number } {
 }
 
 export function compactSelfShard(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {
+  // The measured worst offender in this file (see the cost table above): when the gate says yes, this
+  // reads the whole shard, decrypts every line and re-encrypts every line — synchronously, on the
+  // thread that pumps the PTY. If it stalls, the stall must say `memory:compact`, not `sync-work`.
+  return tracked('memory:compact', () => compactSelfShardImpl(opts))
+}
+
+function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {
   if (!memPath) return { compacted: false, before: 0, after: 0 }
   // Tier-2: a LOCAL-only store (no syncDir) is now compactable too — but ONLY when nothing has been
   // evicted, else on-disk entries outside the 500k hot window would be dropped. Sync shards: as before.

@@ -47,7 +47,18 @@ export interface MetricsSummary {
   avgLatencyMs: number
   byPath: { vector: number; keyword: number; cache: number }
   // reliability
-  embedAvailability: number // fraction of embed observations that were available (1 when none observed)
+  //
+  // THREE different questions, which one number used to answer badly. `embedAvailability` is a
+  // LIFETIME average with no window and no decay, but the tile that showed it was labelled "whether
+  // the local semantic model is up" — a present-tense STATUS. So a single nine-minute outage (49
+  // failed recalls in one evening) pinned a healthy install at 44% indefinitely and painted the tile
+  // red, while semantic recall was in fact working perfectly. A proof dashboard that cries wolf about
+  // itself is worse than no dashboard. So: report the status and the history separately, and grade
+  // only the status.
+  embedUp: boolean | null // is the embedder up RIGHT NOW? (the last observation; null = never observed)
+  embedRecentUp: number // semantic recalls within the recent window
+  embedRecentTotal: number // size of that window (<= EMBED_RECENT_WINDOW)
+  embedAvailability: number // LIFETIME fraction available — history, not status. Never graded.
   writes: number
   writeDurability: number // fraction of writes confirmed persisted (1 when none observed)
   // economics
@@ -65,12 +76,17 @@ export interface MetricsSummary {
   teachingMatrix: Record<string, Record<string, number>> // author -> reader -> count
 }
 
+/** How many recent embed observations the "recently" figure covers. Small enough that a fixed outage
+ *  ages out instead of haunting the tile forever; big enough to be more than one data point. */
+export const EMBED_RECENT_WINDOW = 20
+
 /** Aggregate a list of metric events into the dashboard summary. Pure. */
 export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSummary {
   let recalls = 0, recallFired = 0, hitsSum = 0, topSum = 0
   const latencies: number[] = [] // per-recall ms — reported as a median, not a mean
   const byPath = { vector: 0, keyword: 0, cache: 0 }
   let embedTotal = 0, embedUp = 0
+  const embedRecent: boolean[] = [] // trailing window, so a long-fixed outage decays out of the tile
   let writes = 0, writesOk = 0
   let injects = 0, tokensInjected = 0
   let feedbackCount = 0, feedbackHelpful = 0
@@ -91,6 +107,8 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
       case 'embed':
         embedTotal++
         if (e.available) embedUp++
+        embedRecent.push(!!e.available)
+        if (embedRecent.length > EMBED_RECENT_WINDOW) embedRecent.shift()
         break
       case 'write':
         writes++
@@ -135,6 +153,11 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
     avgTopScore: recalls > 0 ? topSum / recalls : 0,
     avgLatencyMs: medianLatencyMs,
     byPath,
+    // Status: the MOST RECENT observation. That, and only that, answers "is semantic recall working".
+    embedUp: embedRecent.length > 0 ? embedRecent[embedRecent.length - 1] : null,
+    embedRecentUp: embedRecent.filter(Boolean).length,
+    embedRecentTotal: embedRecent.length,
+    // History: kept, reported, never graded.
     embedAvailability: embedTotal > 0 ? embedUp / embedTotal : 1,
     writes,
     writeDurability: writes > 0 ? writesOk / writes : 1,

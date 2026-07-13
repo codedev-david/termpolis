@@ -151,7 +151,7 @@ import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
-import { watch as fsWatch } from 'fs'
+import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
 import { runWeave } from './mnemeWeave'
@@ -285,7 +285,7 @@ async function reflectOnTask(
 const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
-import { startProcessHealth, processHealth, quantizationAdvice, recentStalls, markBusy, clearBusy } from './processHealth'
+import { startProcessHealth, processHealth, quantizationAdvice, recentStalls, persistedStalls, initStallLog } from './processHealth'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1569,13 +1569,18 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
     // graph hiccup never fails the semantic ingest that already succeeded.
     let codeGraph
     try {
-      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }, graphKeyForRoot(opts.repoRoot))
+      // fsPromises.readFile, NOT readFileSync. The sweep `await`s this once per file, and an `await`
+      // on an already-resolved promise (which is all an async-wrapped readFileSync returns) yields
+      // only a microtask — Node drains those to completion WITHOUT running the event loop. That made
+      // the whole repo sweep one unbroken 2.8s block: no PTY, no IPC, "(Not Responding)". A real
+      // async read hits the threadpool and gives the main thread back between files.
+      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8') }, graphKeyForRoot(opts.repoRoot))
       // Keep the graph FRESH: watch the repo and, on source-file changes (debounced), incrementally
       // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
       // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
       // logic (and is unit-tested); this callback just wires the real fs reader.
       ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root, files) => {
-        void reindexWatchedChange(root, files, async (f) => readFileSync(f, 'utf8'))
+        void reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
       }))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
@@ -1586,7 +1591,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
 ipcMain.handle('code-graph:build', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
-    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: async (f) => readFileSync(f, 'utf8') }, graphKeyForRoot(opts.repoRoot)))
+    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8') }, graphKeyForRoot(opts.repoRoot)))
   } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:anomalies', async (_, opts?: { limit?: number }) => { try { return ok({ anomalies: getAnomalies(opts?.limit ?? 100), total: anomalyCount() }) } catch (e: any) { return err(e.message) } })
@@ -1812,7 +1817,13 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
 // So they are recorded as discrete EVENTS, with what the heap looked like and what was in flight,
 // which is the difference between "the app feels slow sometimes" and "GC, 2.4 s, heap 1.1 GB".
 ipcMain.handle('memory:get-stalls', async () => {
-  try { return ok(recentStalls()) } catch (e: any) { return err(e.message) }
+  try {
+    // Prefer the on-disk log: a freeze bad enough to be worth reading about is often one the user
+    // restarted the app to escape, which used to erase the only record of it. Fall back to the live
+    // ring if the log can't be read.
+    const saved = persistedStalls()
+    return ok(saved.length > 0 ? saved : recentStalls())
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('memory:get-vector-ram', async () => {
@@ -2561,6 +2572,7 @@ if (!gotTheLock) {
     // Sample main-thread health for the whole session. The PTY is pumped on this thread, so its
     // stalls ARE the typing lag — and that is the only evidence that can honestly justify trading
     // vector exactness for RAM.
+    initStallLog(app.getPath('userData')) // freezes outlive the process that had them — before start
     startProcessHealth()
     // Apply the persisted vector-quantization choice BEFORE the store is built — the packed array
     // is allocated inside initSwarmMemory, so the mode has to be known by then. Default is exact

@@ -7,6 +7,7 @@ import {
   recordMetric,
   metricsSummary,
   summarizeMetrics,
+  EMBED_RECENT_WINDOW,
   _resetMetricsForTests,
   type MetricEvent,
 } from '../../src/main/metricsLedger'
@@ -168,5 +169,40 @@ describe('metricsLedger — persistence (device-local JSONL)', () => {
     _resetMetricsForTests()
     recordMetric({ t: 'reflect', ts: 1, lessons: 7 })
     expect(metricsSummary(100).lessonsLearned).toBe(7)
+  })
+})
+
+// Embedder STATUS and embedder HISTORY are different questions, and one number used to answer both —
+// badly. Found on a real install: 44 of 99 lifetime recalls ran semantic, but 49 of the 55 failures
+// came from ONE nine-minute outage weeks earlier. The tile, labelled "whether the local semantic model
+// is up", read 44% — under the 50% "bad" cut, so it glowed red while semantic recall worked perfectly.
+// A lifetime average has no decay: it would have stayed red forever.
+describe('embedder: status now, history separately', () => {
+  const embeds = (...available: boolean[]): MetricEvent[] =>
+    available.map((a, i) => ({ t: 'embed', ts: i + 1, available: a }))
+
+  it('reports the CURRENT state from the most recent observation, not the lifetime average', () => {
+    // Exactly the shape of the real ledger: a long-past outage, healthy ever since.
+    const s = summarizeMetrics([...embeds(...Array(49).fill(false)), ...embeds(...Array(8).fill(true))], 100)
+    expect(s.embedUp).toBe(true) // it is working NOW — the only question the tile claimed to answer
+    expect(s.embedAvailability).toBeCloseTo(8 / 57, 3) // history is kept, honestly, and reported apart
+  })
+
+  it('a live outage is visible even when the lifetime average is excellent', () => {
+    const s = summarizeMetrics([...embeds(...Array(99).fill(true)), ...embeds(false)], 100)
+    expect(s.embedUp).toBe(false) // the mirror image: a great average must not hide a real outage
+    expect(s.embedAvailability).toBeCloseTo(0.99, 2)
+  })
+
+  it('the recent window is bounded, so a fixed outage ages out instead of haunting the tile', () => {
+    const s = summarizeMetrics(embeds(...Array(EMBED_RECENT_WINDOW + 30).fill(false), ...Array(EMBED_RECENT_WINDOW).fill(true)), 100)
+    expect(s.embedRecentTotal).toBe(EMBED_RECENT_WINDOW)
+    expect(s.embedRecentUp).toBe(EMBED_RECENT_WINDOW) // the old failures have fallen out of the window
+  })
+
+  it('a brain that has never searched reports null, not a fabricated verdict', () => {
+    const s = summarizeMetrics([], 100)
+    expect(s.embedUp).toBeNull()
+    expect(s.embedRecentTotal).toBe(0)
   })
 })

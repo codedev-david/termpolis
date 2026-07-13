@@ -304,12 +304,12 @@ describe('memoryDashboard — uncovered branches', () => {
         ledger: {
           ...mm().ledger,
           recalls: 100, recallFiredRate: 0.75,   // >=0.6, <0.9  -> warn
-          embedAvailability: 0.6,                // >=0.5, <0.99 -> warn
+          embedUp: true, embedRecentUp: 20, embedRecentTotal: 20, // model is UP -> good (a status, not a rate)
           writes: 50, writeDurability: 0.97,     // >=0.95, <0.999 -> warn
           avgLatencyMs: 120,                     // >=50, <200 -> warn
         },
       }))
-      expect(tiles.map((t) => t.status)).toEqual(['warn', 'warn', 'warn', 'warn'])
+      expect(tiles.map((t) => t.status)).toEqual(['warn', 'good', 'warn', 'warn'])
       expect(tiles[0].value).toBe('75%')
       expect(tiles[3].value).toBe('120ms')
     })
@@ -319,13 +319,45 @@ describe('memoryDashboard — uncovered branches', () => {
         ledger: {
           ...mm().ledger,
           recalls: 100, recallFiredRate: 0.3,
-          embedAvailability: 0.2,
+          embedUp: false, embedRecentUp: 0, embedRecentTotal: 20, // actually down NOW -> bad
           writes: 50, writeDurability: 0.5,
           avgLatencyMs: 500,
         },
       }))
       expect(tiles.map((t) => t.status)).toEqual(['bad', 'bad', 'bad', 'bad'])
       expect(tiles[3].value).toBe('500ms')
+    })
+
+    // The bug this file now guards, found on a real install: the embedding tile showed the LIFETIME
+    // fraction of semantic recalls under a label promising the model's CURRENT state. One nine-minute
+    // outage (49 failed recalls in an evening) pinned a perfectly healthy brain at 44% — below the 50%
+    // "bad" cut — so the tile sat there RED while semantic recall worked flawlessly. And with no decay
+    // in a lifetime average, it would never have gone green again.
+    it('a healthy model is GREEN even when its lifetime rate is terrible', () => {
+      const tiles = reliabilityTiles(mm({
+        ledger: {
+          ...mm().ledger,
+          recalls: 99,
+          embedUp: true,               // working right now — that is the question the tile asks
+          embedRecentUp: 8, embedRecentTotal: 8,
+          embedAvailability: 0.444,    // ...and this is history. It must not colour the tile.
+        },
+      }))
+      const embed = tiles.find((t) => t.label === 'Embedding model')!
+      expect(embed.status).toBe('good')
+      expect(embed.value).toBe('up')
+      expect(embed.sub).toBe('8 of last 8 recalls semantic') // history, reported but never graded
+    })
+
+    it('a model that is actually down says so, and names the fallback', () => {
+      const tiles = reliabilityTiles(mm({
+        ledger: { ...mm().ledger, recalls: 50, embedUp: false, embedRecentUp: 0, embedRecentTotal: 20, embedAvailability: 0.99 },
+      }))
+      const embed = tiles.find((t) => t.label === 'Embedding model')!
+      expect(embed.status).toBe('bad')
+      expect(embed.value).toContain('down')
+      // A great lifetime average must NOT hide a live outage — the mirror image of the bug above.
+      expect(embed.value).toContain('keyword')
     })
 
     it('a metric with no events reads "no data", never a flattering 100%', () => {

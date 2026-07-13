@@ -16,6 +16,8 @@
 // "your stalls are not coming from vector RAM — quantizing will not help you."
 
 import { monitorEventLoopDelay, PerformanceObserver, constants, type EventLoopDelayMonitor } from 'perf_hooks'
+import * as nodeFs from 'node:fs'
+import * as nodePath from 'node:path'
 
 export interface ProcessHealth {
   /** Resident set size — everything this process holds in RAM. */
@@ -109,6 +111,8 @@ export function _resetProcessHealthForTests(): void {
   ticker = null
   stalls = []
   breadcrumb = null
+  busyStack.length = 0
+  stallLogPath = null
   lastTick = 0
   gcPauseAtLastTick = 0
   gcMajorCount = 0
@@ -179,9 +183,33 @@ let breadcrumb: string | null = null
  * Mark what the main thread is busy with, so a freeze can name its cause instead of just its size.
  * A GC pause is attributed by the GC observer; everything else is synchronous work, and THIS is how
  * we find out which synchronous work.
+ *
+ * These shipped for two releases with ZERO call sites, so every recorded stall said
+ * `sync-work, breadcrumb: null` — the panel could tell you the app froze for 2.8s but never what
+ * did it, which is exactly the question worth answering. The marks below are the witnesses.
+ *
+ * A STACK, not a single slot: heavy work nests (a sweep persists the graph inside itself) and runs
+ * concurrently, and a bare assignment would let an inner op's `clearBusy()` erase the outer op's
+ * label — attributing the freeze to nothing. The innermost still-active label wins, which is the
+ * most specific true answer.
  */
-export function markBusy(label: string): void { breadcrumb = label }
-export function clearBusy(): void { breadcrumb = null }
+const busyStack: string[] = []
+
+export function markBusy(label: string): void {
+  busyStack.push(label)
+  breadcrumb = label
+}
+
+/** Clear one label (the matching mark), or — with no argument — every mark. */
+export function clearBusy(label?: string): void {
+  if (label === undefined) {
+    busyStack.length = 0
+  } else {
+    const i = busyStack.lastIndexOf(label)
+    if (i >= 0) busyStack.splice(i, 1)
+  }
+  breadcrumb = busyStack.length > 0 ? busyStack[busyStack.length - 1] : null
+}
 
 /** Run `fn` with a breadcrumb attached. Any freeze during it is attributed to `label`. */
 export function tracked<T>(label: string, fn: () => T): T {
@@ -189,8 +217,23 @@ export function tracked<T>(label: string, fn: () => T): T {
   try {
     return fn()
   } finally {
-    clearBusy()
+    clearBusy(label)
   }
+}
+
+/** Async twin of `tracked` — for work that spans awaits (a repo sweep, a shard reload). */
+export async function trackedAsync<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  markBusy(label)
+  try {
+    return await fn()
+  } finally {
+    clearBusy(label)
+  }
+}
+
+/** What the main thread says it is doing right now — the innermost active mark, or null if idle. */
+export function currentBreadcrumb(): string | null {
+  return breadcrumb
 }
 
 export function recentStalls(): Stall[] {
@@ -220,7 +263,7 @@ function onTick(now: () => number): void {
   const gcInStall = Math.max(0, gcTotalPauseMs - gcPauseAtLastTick)
   gcPauseAtLastTick = gcTotalPauseMs
   const mem = process.memoryUsage()
-  stalls.push({
+  const stall: Stall = {
     ts: t,
     durationMs: Math.round(drift),
     // If GC accounts for most of the freeze, GC IS the freeze. Otherwise something ran synchronously
@@ -230,8 +273,57 @@ function onTick(now: () => number): void {
     heapUsedMB: Math.round(mem.heapUsed / 1048576),
     rssMB: Math.round(mem.rss / 1048576),
     breadcrumb,
-  })
+  }
+  stalls.push(stall)
   if (stalls.length > MAX_STALLS) stalls = stalls.slice(-MAX_STALLS)
+  appendStall(stall)
+}
+
+// --- persistence -------------------------------------------------------------------------------
+//
+// A freeze you can no longer see is a freeze you cannot fix. Held only in memory, the stall history
+// died with the process — so the one artifact worth having (what froze, how long, how big the heap
+// was) was gone by the time anyone came to look. Append each stall to a device-local JSONL instead:
+// small, bounded, and readable straight off disk after the fact.
+
+let stallLogPath: string | null = null
+
+/** Point the stall recorder at `dir` (userData). Best-effort: a log failure never affects the app. */
+export function initStallLog(dir: string): void {
+  try {
+    stallLogPath = nodePath.join(dir, 'stalls.jsonl')
+  } catch {
+    stallLogPath = null
+  }
+}
+
+function appendStall(s: Stall): void {
+  if (!stallLogPath) return
+  try {
+    nodeFs.appendFileSync(stallLogPath, JSON.stringify(s) + '\n')
+  } catch {
+    /* best effort — the in-memory stall is still recorded */
+  }
+}
+
+/** Stalls recorded on previous runs too — the file, newest last. Used by the dashboard. */
+export function persistedStalls(limit = MAX_STALLS): Stall[] {
+  if (!stallLogPath) return []
+  try {
+    const out: Stall[] = []
+    for (const line of nodeFs.readFileSync(stallLogPath, 'utf8').split('\n')) {
+      const t = line.trim()
+      if (!t) continue
+      try {
+        out.push(JSON.parse(t) as Stall)
+      } catch {
+        /* skip a torn line */
+      }
+    }
+    return out.slice(-limit)
+  } catch {
+    return []
+  }
 }
 
 export type QuantVerdict =

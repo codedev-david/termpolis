@@ -216,11 +216,18 @@ import {
   markBusy,
   clearBusy,
   tracked,
+  trackedAsync,
+  currentBreadcrumb,
+  initStallLog,
+  persistedStalls,
   _pushStallForTests,
   _clearStallsForTests,
   STALL_RECORD_MS,
   type Stall,
 } from '../../src/main/processHealth'
+import * as nfs from 'node:fs'
+import * as nos from 'node:os'
+import * as npath from 'node:path'
 
 const stall = (o: Partial<Stall> = {}): Stall => ({
   ts: 1000,
@@ -294,5 +301,83 @@ describe('breadcrumbs', () => {
 
   it('markBusy / clearBusy are a matched pair', () => {
     expect(() => { markBusy('a'); clearBusy() }).not.toThrow()
+  })
+})
+
+// The breadcrumb is the whole point of recording a stall: "sync-work, 2.8s" tells you the app froze,
+// but not what froze it, which is the only question worth answering. These marks shipped with ZERO
+// call sites for two releases, so every stall ever recorded said `breadcrumb: null` — and the freeze
+// had to be diagnosed by hand instead of by the panel built to name it.
+describe('breadcrumbs name the work that froze the thread', () => {
+  beforeEach(() => { _clearStallsForTests(); clearBusy() })
+  afterEach(() => { _clearStallsForTests(); clearBusy() })
+
+  it('trackedAsync attaches the label across awaits and returns the value', async () => {
+    let seen: string | null = 'not-run'
+    const v = await trackedAsync('code-graph:sweep', async () => {
+      await new Promise((r) => setImmediate(r)) // a real macrotask boundary, as the sweep has
+      seen = currentBreadcrumb()
+      return 42
+    })
+    expect(v).toBe(42)
+    expect(seen).toBe('code-graph:sweep')
+    expect(currentBreadcrumb()).toBeNull() // and it lets go afterwards
+  })
+
+  it('trackedAsync clears the breadcrumb even when the work rejects', async () => {
+    await expect(trackedAsync('memory:compact', async () => { throw new Error('boom') })).rejects.toThrow('boom')
+    expect(currentBreadcrumb()).toBeNull()
+  })
+
+  it('nested work reports the INNERMOST label, and finishing it restores the outer one', () => {
+    // A sweep persists the graph inside itself. With a single breadcrumb slot the inner clear() would
+    // erase the outer label and a later freeze would be attributed to nothing at all.
+    const inner = tracked('code-graph:sweep', () => {
+      const deepest = tracked('code-graph:persist', () => currentBreadcrumb())
+      return { deepest, afterInner: currentBreadcrumb() }
+    })
+    expect(inner.deepest).toBe('code-graph:persist') // most specific true answer wins
+    expect(inner.afterInner).toBe('code-graph:sweep') // outer label survived the inner clear
+    expect(currentBreadcrumb()).toBeNull()
+  })
+})
+
+// A freeze you can no longer see is a freeze you cannot fix. Stalls used to live only in memory, so
+// they died with the process — and a freeze bad enough to care about is usually one the user
+// restarted the app to escape, which erased the only record of it.
+describe('stalls survive the process that had them', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = nfs.mkdtempSync(npath.join(nos.tmpdir(), 'stalllog-'))
+    _clearStallsForTests()
+  })
+  afterEach(() => {
+    _resetProcessHealthForTests()
+    try { nfs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  it('reads back stalls appended on a previous run', () => {
+    initStallLog(dir)
+    const a = stall({ ts: 1, durationMs: 2777, cause: 'sync-work', breadcrumb: 'code-graph:sweep' })
+    const b = stall({ ts: 2, durationMs: 900, cause: 'gc', breadcrumb: null })
+    nfs.appendFileSync(npath.join(dir, 'stalls.jsonl'), JSON.stringify(a) + '\n' + JSON.stringify(b) + '\n')
+
+    const got = persistedStalls()
+    expect(got).toHaveLength(2)
+    expect(got[0].breadcrumb).toBe('code-graph:sweep') // the answer, straight off disk
+    expect(got[0].durationMs).toBe(2777)
+    expect(got[1].cause).toBe('gc')
+  })
+
+  it('skips a torn line rather than losing the whole history', () => {
+    initStallLog(dir)
+    const good = JSON.stringify(stall({ durationMs: 500 }))
+    nfs.appendFileSync(npath.join(dir, 'stalls.jsonl'), `${good}\n{"half-written`)
+    expect(persistedStalls()).toHaveLength(1)
+  })
+
+  it('returns nothing (never throws) when no log has been initialised', () => {
+    _resetProcessHealthForTests()
+    expect(persistedStalls()).toEqual([])
   })
 })

@@ -59,10 +59,42 @@ export function compositionRows(rec: Record<string, number>): CompRow[] {
 }
 
 export type SliStatus = 'good' | 'warn' | 'bad' | 'idle'
-export interface Sli { label: string; value: string; status: SliStatus }
+export interface Sli {
+  label: string
+  value: string
+  status: SliStatus
+  /** Context under the headline. Informational — never graded, never coloured, never a bar. */
+  sub?: string
+}
 
 function gradeRate(r: number, hi: number, mid: number): SliStatus {
   return r >= hi ? 'good' : r >= mid ? 'warn' : 'bad'
+}
+
+/**
+ * The embedding-model tile: STATUS on top, history underneath.
+ *
+ * It used to show one number — the lifetime fraction of recalls that ran semantic — under a label
+ * promising "whether the local semantic model is up". Those are different questions, and it answered
+ * the wrong one. A single nine-minute outage (49 consecutive failed recalls one evening) left a
+ * perfectly healthy install reading 44% — under the 50% "bad" threshold, so the tile sat there RED
+ * while semantic recall worked flawlessly. Worse, the lifetime average has no decay: it would never
+ * have recovered.
+ *
+ * So the headline is now the last observation — up or down, right now, which is the question a user
+ * is actually asking — and the historical rate rides underneath as ungraded context.
+ */
+export function embeddingTile(l: MemoryMetrics['ledger']): Sli {
+  if (l.recalls === 0 || l.embedUp === null || l.embedUp === undefined) {
+    return { label: 'Embedding model', value: 'no data', status: 'idle' }
+  }
+  const recent = l.embedRecentTotal > 0
+    ? `${l.embedRecentUp} of last ${l.embedRecentTotal} recalls semantic`
+    : undefined
+  return l.embedUp
+    ? { label: 'Embedding model', value: 'up', status: 'good', sub: recent }
+    // Down is worth shouting about — but only when it is actually down NOW.
+    : { label: 'Embedding model', value: 'down — keyword fallback', status: 'bad', sub: recent }
 }
 
 /** Reliability service-level indicators. Reads "no data / idle" until the relevant
@@ -71,7 +103,7 @@ export function reliabilityTiles(m: MemoryMetrics): Sli[] {
   const l = m.ledger
   return [
     { label: 'Recall fired', value: l.recalls > 0 ? pct(l.recallFiredRate) : 'no data', status: l.recalls > 0 ? gradeRate(l.recallFiredRate, 0.9, 0.6) : 'idle' },
-    { label: 'Embedding model', value: l.recalls > 0 ? pct(l.embedAvailability) : 'no data', status: l.recalls > 0 ? gradeRate(l.embedAvailability, 0.99, 0.5) : 'idle' },
+    embeddingTile(l),
     { label: 'Write durability', value: l.writes > 0 ? pct(l.writeDurability) : 'no data', status: l.writes > 0 ? gradeRate(l.writeDurability, 0.999, 0.95) : 'idle' },
     { label: 'Recall latency', value: l.recalls > 0 ? `${Math.round(l.avgLatencyMs)}ms` : 'no data', status: l.recalls > 0 ? (l.avgLatencyMs < 50 ? 'good' : l.avgLatencyMs < 200 ? 'warn' : 'bad') : 'idle' },
   ]
