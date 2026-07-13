@@ -143,6 +143,8 @@ import {
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
+  vectorRamStats,
+  setVectorQuantization,
 } from './swarmMemory'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
@@ -282,7 +284,8 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
+import { startProcessHealth, processHealth, quantizationAdvice } from './processHealth'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1720,6 +1723,30 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
   try { return ok(setPrimerLimit(opts?.value)) } catch (e: any) { return err(e.message) }
 })
 
+// Vector quantization — the RAM/exactness dial for the packed vector store.
+//
+// Exposed so the Memory panel can be a DECISION AID rather than a mystery switch: it reads the live
+// vector RAM, shows what the other mode would cost, and states the MEASURED recall impact. Off by
+// default; losslessly reversible (disk always keeps exact floats), so it can be tried and reverted.
+ipcMain.handle('memory:get-vector-ram', async () => {
+  try {
+    const vectors = vectorRamStats()
+    const health = processHealth()
+    // The advice is computed HERE, from this machine's live numbers, so the panel never has to
+    // guess at a threshold — and can tell the user the toggle would NOT help them.
+    return ok({ ...vectors, persisted: getVectorQuantize(), health, advice: quantizationAdvice(vectors, health) })
+  } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean }) => {
+  try {
+    const on = opts?.value === true
+    setVectorQuantize(on)                    // persist the choice...
+    const stats = setVectorQuantization(on)  // ...and rebuild the packed store in the new mode
+    const health = processHealth()
+    return ok({ ...stats, persisted: on, health, advice: quantizationAdvice(stats, health) })
+  } catch (e: any) { return err(e.message) }
+})
+
 // Claude launch primer: when relevant memory exists, write the memory-recall
 // instruction to a temp file so Claude Code can be launched with
 // `--append-system-prompt-file <path>` — seeding the session invisibly (nothing
@@ -2444,6 +2471,14 @@ if (!gotTheLock) {
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
     initAnomalyLog(app.getPath('userData')) // burn-in: capture surprising memory events (incl. this init's)
+    // Sample main-thread health for the whole session. The PTY is pumped on this thread, so its
+    // stalls ARE the typing lag — and that is the only evidence that can honestly justify trading
+    // vector exactness for RAM.
+    startProcessHealth()
+    // Apply the persisted vector-quantization choice BEFORE the store is built — the packed array
+    // is allocated inside initSwarmMemory, so the mode has to be known by then. Default is exact
+    // float32; int8 is opt-in from Settings -> Memory & Learning.
+    try { setVectorQuantization(getVectorQuantize()) } catch { /* fall back to exact floats */ }
     initSwarmMemory(app.getPath('userData'))
     // Memory-at-rest secret scrub. Redact secrets BEFORE a memory is hashed, embedded, or
     // written to disk, so a key sitting in a transcript or an indexed source file never

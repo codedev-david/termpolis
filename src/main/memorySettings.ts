@@ -15,6 +15,16 @@ import { DEFAULT_PRIMER_LIMIT } from './contextPrimer'
 export interface MemorySettings {
   /** Memories injected per primer (banner + MCP memory_primer load). */
   primerLimit: number
+  /**
+   * int8 vector quantization — 4x less vector RAM, at the cost of storing an approximation.
+   *
+   * OFF by default, and that is the correct default: the saving only matters once the corpus is
+   * large, and until then you would be trading exactness for headroom nobody needs. It is a pure
+   * IN-RAM representation — the JSONL on disk always keeps exact floats and re-packs on load — so
+   * this is losslessly reversible, which is exactly why it can be a runtime toggle instead of a
+   * migration.
+   */
+  vectorQuantize: boolean
 }
 
 // UI/UX bounds. The pure builder still hard-caps at 100; this keeps the panel
@@ -28,7 +38,7 @@ function clampPrimerLimit(value: unknown): number {
   return Math.min(PRIMER_LIMIT_MAX, Math.max(PRIMER_LIMIT_MIN, n))
 }
 
-let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT }
+let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false }
 let initialized = false
 
 function settingsPath(): string {
@@ -41,7 +51,11 @@ function init(): void {
     if (existsSync(settingsPath())) {
       const parsed = JSON.parse(readFileSync(settingsPath(), 'utf8'))
       if (parsed && typeof parsed === 'object') {
-        settings = { primerLimit: clampPrimerLimit(parsed.primerLimit) }
+        settings = {
+          primerLimit: clampPrimerLimit(parsed.primerLimit),
+          // Absent key => false. A memory system defaults to EXACT; you opt in to the approximation.
+          vectorQuantize: parsed.vectorQuantize === true,
+        }
       }
     }
   } catch {
@@ -73,6 +87,20 @@ export function getPrimerLimit(): number {
 export function setPrimerLimit(value: unknown): MemorySettings {
   if (!initialized) init()
   settings.primerLimit = clampPrimerLimit(value)
+  persist()
+  return getMemorySettings()
+}
+
+export function getVectorQuantize(): boolean {
+  if (!initialized) init()
+  return settings.vectorQuantize
+}
+
+/** Persist the choice. Applying it (rebuilding the packed store) is swarmMemory's job — this
+ *  module only remembers what the user picked, so the choice survives a restart. */
+export function setVectorQuantize(value: unknown): MemorySettings {
+  if (!initialized) init()
+  settings.vectorQuantize = value === true
   persist()
   return getMemorySettings()
 }

@@ -139,6 +139,8 @@ let fsyncCount = 0                    // F26: observable count of durable (fsync
 // with TERMPOLIS_MEM_QUANTIZE=1. Every (re)build of the store goes through newVectorStore() so the
 // setting survives reload / rebuild / compaction.
 let quantizeVectors = false
+/** An explicit user/app choice (Settings toggle). `null` = never chosen, fall back to env. */
+let quantizeExplicit: boolean | null = null
 function newVectorStore(): VectorStore { return new VectorStore(EMBED_DIM, 1024, { quantize: quantizeVectors }) }
 /** @internal test-only */ export function _setQuantizeForTests(v: boolean): void { quantizeVectors = v }
 /** @internal test-only */ export function _isVectorStoreQuantizedForTests(): boolean { return vectorStore.quantized }
@@ -492,9 +494,18 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
   encKey = null
   seq = 0
   embeddingsAvailable = null
-  // Tier-1: honor the quantization gate (env, or a prior in-process setting) and (re)build the packed
-  // store in the chosen mode BEFORE any vectors are loaded/added, so a fresh dir gets it too.
-  quantizeVectors = quantizeVectors || process.env.TERMPOLIS_MEM_QUANTIZE === '1'
+  // Tier-1: honor the quantization gate and (re)build the packed store in the chosen mode BEFORE any
+  // vectors are loaded/added, so a fresh dir gets it too.
+  //
+  // Precedence: an EXPLICIT choice (the Settings toggle, via setVectorQuantization) beats everything.
+  // It has to: the previous line was `quantizeVectors = quantizeVectors || env`, a one-way latch that
+  // could turn the flag ON but never OFF — so a user un-ticking the box in the UI would have been
+  // silently ignored. Absent an explicit choice we fall back to the env var (the dev/bench escape
+  // hatch) or whatever was already set in-process.
+  quantizeVectors =
+    quantizeExplicit !== null
+      ? quantizeExplicit
+      : quantizeVectors || process.env.TERMPOLIS_MEM_QUANTIZE === '1'
   vectorStore = newVectorStore()
   rowToEntry.clear()
 
@@ -566,6 +577,7 @@ export function _resetForTests(): void {
   encKey = null
   lockedShards = false
   quantizeVectors = false
+  quantizeExplicit = null // a reset must clear the explicit choice too, or it leaks across tests
   vectorStore = newVectorStore()
   rowToEntry.clear()
   hnsw = null
@@ -726,6 +738,65 @@ export function memoryPatchProjects(patches: Array<{ hash: string; project: stri
  *  longer indistinguishable from "nothing was there"). */
 export function memoryStats(): { count: number; capacity: number; corruptLinesSkipped: number } {
   return { count: entries.length, capacity: maxEntries, corruptLinesSkipped }
+}
+
+/** What the packed vector store is actually costing, and what the other mode would cost. */
+export interface VectorRamStats {
+  vectors: number
+  dim: number
+  quantized: boolean
+  /** Vector RAM in the CURRENT mode. */
+  ramBytes: number
+  /** What the same vectors cost as exact float32 (4 B/component) … */
+  ramBytesFloat: number
+  /** … and as int8 (1 B/component). */
+  ramBytesInt8: number
+}
+
+/**
+ * Live vector-RAM figures for the Memory dashboard.
+ *
+ * This exists so the quantization toggle can be a DECISION AID rather than a mystery switch:
+ * nobody can answer "should I enable int8 quantization?" in the abstract, but anyone can answer
+ * "do I want to trade an approximation for 120 MB?" once they can see the 120 MB.
+ *
+ * These vectors live in the MAIN process — the same thread that pumps the PTY — so the number
+ * that matters is not disk, it is resident heap on the thread whose stalls surface as typing lag.
+ */
+export function vectorRamStats(): VectorRamStats {
+  const vectors = vectorStore.size
+  const dim = vectorStore.dimension
+  return {
+    vectors,
+    dim,
+    quantized: vectorStore.quantized,
+    ramBytes: vectors * dim * (vectorStore.quantized ? 1 : 4),
+    ramBytesFloat: vectors * dim * 4,
+    ramBytesInt8: vectors * dim * 1,
+  }
+}
+
+/**
+ * Turn int8 quantization on or off and REBUILD the packed store in the new mode.
+ *
+ * Safe and lossless in both directions, which is the whole reason this can be a runtime toggle
+ * instead of a migration: the JSONL on disk always holds EXACT floats, so a rebuild simply re-packs
+ * from the source of truth. Turning it off restores full precision; nothing was ever destroyed.
+ *
+ * The rebuild is just `initSwarmMemory` — the same path taken at every launch — so it is well
+ * trodden rather than a bespoke mutation of live state.
+ *
+ * Note the persisted HNSW graph survives this untouched: it stores only ADJACENCY (row -> neighbour
+ * rows) plus a vector accessor, and it is validated against an *entries* fingerprint that does not
+ * change here. So the graph reloads and simply reads from the new store. A graph whose links were
+ * chosen with exact float distances is, if anything, better than one built from int8 — which is why
+ * enabling this LATER costs nothing and is mildly preferable to having shipped it on.
+ */
+export function setVectorQuantization(on: boolean): VectorRamStats {
+  quantizeExplicit = on === true
+  quantizeVectors = quantizeExplicit
+  if (userDataDir) initSwarmMemory(userDataDir, { syncDir })
+  return vectorRamStats()
 }
 
 export interface MemoryDashboardStats {

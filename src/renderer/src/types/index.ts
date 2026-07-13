@@ -242,6 +242,10 @@ export interface TermpolisAPI {
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
+  /** Live vector RAM + main-thread health + a recommendation computed from THIS machine. */
+  memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>
+  /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
+  memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>
   memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
   memorySetPrimerLimit: (value: number) => Promise<IpcResponse<{ primerLimit: number }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
@@ -503,6 +507,35 @@ export interface AgentActivityAPI {
   attachWatcher: (terminalId: string, cwd: string, agentType: string) => Promise<IpcResponse<{ attached: boolean }>>
   detachWatcher: (terminalId: string) => Promise<IpcResponse>
   onEvent: (cb: (event: AgentActivityEvent) => void) => () => void
+}
+
+export interface VectorRamInfo {
+  vectors: number
+  dim: number
+  quantized: boolean
+  ramBytes: number
+  ramBytesFloat: number
+  ramBytesInt8: number
+  persisted: boolean
+  health: {
+    rssBytes: number
+    heapUsedBytes: number
+    arrayBufferBytes: number
+    loopDelayP50Ms: number
+    loopDelayP99Ms: number
+    loopDelayMaxMs: number
+    gcMajorCount: number
+    gcTotalPauseMs: number
+    gcMaxPauseMs: number
+    sampleWindowMs: number
+    gcTimeFraction: number
+  }
+  advice: {
+    verdict: 'not-needed' | 'wont-help' | 'optional' | 'recommended' | 'enabled'
+    headline: string
+    detail: string
+    savingBytes: number
+  }
 }
 
 declare global {

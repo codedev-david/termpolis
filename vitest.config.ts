@@ -65,14 +65,23 @@ export default defineConfig({
         // platform that hits every branch, so these are the real ceilings
         // the project enforces.
         //
-        // Hard floors set by David: lines/functions/statements must be at
-        // least 90, branches at least 85. Anything below means we stopped
-        // writing tests, not that the codebase got harder. Backfill tests
-        // on the offending file(s) — never lower the gate.
-        lines: 90,
-        functions: 90,
-        branches: 85,
-        statements: 90,
+        // Hard floors. Anything below means we stopped writing tests, not that the codebase got
+        // harder. Backfill tests on the offending file(s) — NEVER lower the gate.
+        //
+        // RAISED in v1.25.5. The old floors (90/90/85/90) had stopped doing their job: actual
+        // coverage was 91.39 / 85.41 / 90.08 / 93.78 — i.e. FUNCTIONS cleared its gate by 0.08 and
+        // branches by 0.41. A gate you clear by a rounding error is not a gate; it is a tripwire
+        // that goes off on the next commit, and the cheapest way to make it green is to delete a
+        // test. So ~1,000 real tests went in (the worst offender by far was src/main/index.ts: 162
+        // uncovered functions, 43.7% branch coverage — ~100 IPC handlers that nothing invoked),
+        // taking coverage to 96.63 / 93.27 / 96.02 / 97.78.
+        //
+        // These floors sit ~1-2 points under that: high enough that a regression is caught, with
+        // enough slack that normal drift does not flap the build.
+        lines: 96,
+        functions: 95,
+        branches: 92,
+        statements: 95,
       },
     },
   },

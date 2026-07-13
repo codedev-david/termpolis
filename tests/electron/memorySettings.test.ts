@@ -32,14 +32,14 @@ describe('memorySettings — primer limit', () => {
   it('defaults to 10 when nothing is persisted', async () => {
     const m = await freshModule()
     expect(m.getPrimerLimit()).toBe(10)
-    expect(m.getMemorySettings()).toEqual({ primerLimit: 10 })
+    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false })
     expect(m.PRIMER_LIMIT_MIN).toBe(1)
     expect(m.PRIMER_LIMIT_MAX).toBe(50)
   })
 
   it('persists a set value to disk and returns it', async () => {
     const m = await freshModule()
-    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20 })
+    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false })
     expect(m.getPrimerLimit()).toBe(20)
     expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).primerLimit).toBe(20)
   })
@@ -88,5 +88,61 @@ describe('memorySettings — primer limit', () => {
     const m = await freshModule()
     expect(m.setPrimerLimit(22).primerLimit).toBe(22)
     expect(existsSync(settingsFile())).toBe(true)
+  })
+})
+
+// --------------------------------------------------------------------------------------------
+// vectorQuantize — the persisted half of the int8 toggle.
+//
+// This module only REMEMBERS the choice; applying it (rebuilding the packed store) is
+// swarmMemory's job. The thing that matters here is the DEFAULT: a memory system defaults to
+// exact, and you opt in to the approximation. An absent key must never be read as "on".
+// --------------------------------------------------------------------------------------------
+describe('vectorQuantize', () => {
+  it('defaults to OFF — exactness is the default, approximation is opt-in', async () => {
+    const m = await freshModule()
+    expect(m.getVectorQuantize()).toBe(false)
+    expect(m.getMemorySettings().vectorQuantize).toBe(false)
+  })
+
+  it('persists ON, and survives a reload', async () => {
+    const m = await freshModule()
+    expect(m.setVectorQuantize(true).vectorQuantize).toBe(true)
+    expect(existsSync(settingsFile())).toBe(true)
+    const reloaded = await freshModule()
+    expect(reloaded.getVectorQuantize()).toBe(true)
+  })
+
+  it('persists OFF again — the user can revert and it sticks', async () => {
+    let m = await freshModule()
+    m.setVectorQuantize(true)
+    m = await freshModule()
+    expect(m.getVectorQuantize()).toBe(true)
+    m.setVectorQuantize(false)
+    const reloaded = await freshModule()
+    expect(reloaded.getVectorQuantize()).toBe(false)
+  })
+
+  it('an absent key in an existing settings file reads as OFF, never as ON', async () => {
+    // The upgrade path: everyone already has a memory-settings.json with only primerLimit in it.
+    // If a missing key defaulted to `true`, upgrading would silently degrade every user's recall.
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 12 }))
+    const m = await freshModule()
+    expect(m.getVectorQuantize()).toBe(false)
+    expect(m.getPrimerLimit()).toBe(12) // and the existing setting is preserved
+  })
+
+  it('only a literal true enables it — a truthy string does not', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ vectorQuantize: 'yes' }))
+    const m = await freshModule()
+    expect(m.getVectorQuantize()).toBe(false)
+  })
+
+  it('setting it does not clobber the primer limit', async () => {
+    const m = await freshModule()
+    m.setPrimerLimit(19)
+    const s = m.setVectorQuantize(true)
+    expect(s.primerLimit).toBe(19)
+    expect(s.vectorQuantize).toBe(true)
   })
 })

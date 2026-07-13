@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { VectorRamPanel } from './VectorRamPanel'
 import type { MemoryMetrics, GraphSample } from '../../types'
 import {
   dashboardReceipts,
@@ -119,6 +120,10 @@ export function MemoryLearningSettings() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="memory-learning-settings">
+      {/* Vector RAM + main-thread health. Lives at the TOP because it is the one panel here that
+          can tell you to change something — and the one that can honestly tell you not to. */}
+      <VectorRamPanel />
+
       <div className="flex items-start gap-3">
         <i className="fa-solid fa-brain text-[#22D3EE] text-lg mt-0.5" />
         <div className="flex flex-col gap-0.5 flex-1">
