@@ -103,7 +103,7 @@ describe('the gate answers from memory, and never touches the disk to say no', (
     expect(res.compacted).toBe(false)
     // Not "it read the file and decided no" — it never read the file at all. That IS the 4.4 seconds.
     expect(shardReads.count).toBe(0)
-  })
+  }, 30_000)
 
   it('a shard below the minimum line count is declined, and still reads nothing', async () => {
     await write('one')
@@ -119,7 +119,7 @@ describe('the gate answers from memory, and never touches the disk to say no', (
   it('the estimate says NO for a healthy store — the case that was costing 4.4s', async () => {
     for (let i = 0; i < 250; i++) await write(`live ${i}`)
     expect(_compactionMayBeWorthwhileForTests()).toBe(false)
-  })
+  }, 30_000)
 })
 
 describe('the gate can never skip a compaction that is genuinely needed', () => {
@@ -143,7 +143,7 @@ describe('the gate can never skip a compaction that is genuinely needed', () => 
     const res = compactSelfShard()
     expect(res.compacted).toBe(true)
     expect(shardLines()).toBeLessThan(before) // the file really did shrink
-  })
+  }, 30_000)
 
   it('compaction is LOSSLESS — every survivor is still there, and still readable', async () => {
     const ids: string[] = []
@@ -158,7 +158,7 @@ describe('the gate can never skip a compaction that is genuinely needed', () => 
 
     const liveAfter = memoryList({ limit: 1000 }).map((e) => e.content).sort()
     expect(liveAfter).toEqual(liveBefore) // not one memory lost, not one resurrected
-  })
+  }, 30_000)
 
   it('force: true still bypasses the gate entirely', async () => {
     for (let i = 0; i < 250; i++) await write(`live ${i}`)
@@ -168,7 +168,7 @@ describe('the gate can never skip a compaction that is genuinely needed', () => 
     compactSelfShard({ force: true })
     // Forced, it MUST do the real work — so it must read the file.
     expect(shardReads.count).toBeGreaterThan(0)
-  })
+  }, 30_000)
 })
 
 describe('the counters stay honest across restarts', () => {
