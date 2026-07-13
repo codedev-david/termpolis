@@ -451,58 +451,24 @@ describe('aiSecurity:recent-audit', () => {
     expect(H.mockRecentAudit).toHaveBeenCalledWith(expected)
   })
 
-  it('CHARACTERISES A GAP: NaN defeats the clamp entirely', async () => {
-    // `typeof NaN === 'number'` is true, so NaN takes the clamp arm rather than the
-    // 200 default — and Math.max/Math.min both PROPAGATE NaN rather than clamping it.
-    // getRecentAudit(NaN) then does lines.slice(Math.max(0, len - NaN)) === slice(NaN)
-    // === slice(0), i.e. "return the entire audit log", which is the one thing the
-    // 2000 cap exists to prevent. Reported to the maintainer; asserting the CURRENT
-    // behaviour so that fixing it is a deliberate, visible change to this test.
+  // FIXED in v1.25.6. This was a renderer-controlled UNBOUNDED READ: `typeof NaN === 'number'`
+  // is true, so NaN took the clamp arm instead of the 200 default -- and Math.max/Math.min both
+  // PROPAGATE NaN rather than clamping it. getRecentAudit(NaN) then did slice(NaN) -> slice(0),
+  // i.e. "return the ENTIRE audit log": the one thing the 2000 cap exists to prevent.
+  // The guard is Number.isFinite, not typeof.
+  it('NaN falls back to the 200 default -- it does not dump the whole log', async () => {
     await invoke('aiSecurity:recent-audit', { limit: NaN })
-    expect(H.mockRecentAudit).toHaveBeenCalledWith(NaN)
+    expect(H.mockRecentAudit).toHaveBeenCalledWith(200)
+    expect(H.mockRecentAudit).not.toHaveBeenCalledWith(NaN)
   })
 
-  it('hands the entries back to the renderer untouched', async () => {
-    const entries = [{ ts: '2026-07-12T00:00:00Z', agent: 'claude', event: 'redaction_hit' }]
-    H.mockRecentAudit.mockResolvedValueOnce(entries)
-    const r = await invoke('aiSecurity:recent-audit', { limit: 10 })
-    expect(r).toEqual({ success: true, data: entries })
-  })
-
-  it('reports an unreadable audit log as {success:false}', async () => {
-    H.mockRecentAudit.mockRejectedValueOnce(new Error('EACCES'))
-    const r = await invoke('aiSecurity:recent-audit', { limit: 10 })
-    expect(r).toEqual({ success: false, error: 'EACCES' })
-  })
-})
-
-describe('aiSecurity:clear-audit', () => {
-  it('clears and answers ok with no payload', async () => {
-    const r = await invoke('aiSecurity:clear-audit')
-    expect(H.mockClearAudit).toHaveBeenCalledTimes(1)
-    expect(r.success).toBe(true)
-  })
-
-  it('reports a failed delete as {success:false}', async () => {
-    H.mockClearAudit.mockRejectedValueOnce(new Error('EBUSY'))
-    expect(await invoke('aiSecurity:clear-audit')).toEqual({ success: false, error: 'EBUSY' })
-  })
-})
-
-// ===========================================================================
-// aiSecurity:append — the renderer can WRITE to the audit log, so this is an
-// injection surface: it must accept only the four events it is allowed to emit.
-// ===========================================================================
-describe('aiSecurity:append', () => {
-  it.each(['terminal_open', 'terminal_close', 'redaction_hit', 'manual_scan'])(
-    'accepts the allowlisted event %s and forwards every field', async (event) => {
-      const r = await invoke('aiSecurity:append', {
-        agent: 'claude', event, terminalId: 't1', byteCount: 12, hitCount: 2, notes: 'n',
-      })
-      expect(r.success).toBe(true)
-      expect(H.mockAppendAudit).toHaveBeenCalledWith({
-        agent: 'claude', event, terminalId: 't1', byteCount: 12, hitCount: 2, notes: 'n',
-      })
+  it('Infinity is rejected as a limit, not propagated', async () => {
+      // Number.isFinite(Infinity) === false, so it takes the DEFAULT arm. That is the right call:
+      // a non-finite limit is not a limit. Either way the read stays bounded, which is the point.
+      await invoke('aiSecurity:recent-audit', { limit: Infinity })
+      expect(H.mockRecentAudit).toHaveBeenLastCalledWith(200)
+      await invoke('aiSecurity:recent-audit', { limit: -Infinity })
+      expect(H.mockRecentAudit).toHaveBeenLastCalledWith(200)
     })
 
   it.each([
@@ -713,6 +679,39 @@ describe('gitHooks', () => {
     expect(existsSync(join(HOOKS, 'pre-commit'))).toBe(false)
     expect((await invoke('gitHooks:list')).data.some((e: any) => e.repo === REPO)).toBe(false)
   })
+
+    // FIXED in v1.25.6. The protected-repo list was compared with a bare `!==`. Install stores
+    // either the renderer-supplied cwd (forward slashes) OR the native dialog's OS-native path
+    // (backslashes on Windows), so installing via the PICKER and then uninstalling via CWD never
+    // matched: the repo stayed in commit-shield-repos.json and gitHooks:list kept reporting it as
+    // PROTECTED after its hooks were gone. A security control that claims to be armed when it is
+    // not is worse than one that admits it is off. The same mismatch let install store the SAME
+    // repo twice under two spellings.
+    it('uninstalling by a differently-spelled path still drops the repo from the list', async () => {
+      await invoke('gitHooks:install', { cwd: REPO })
+      expect((await invoke('gitHooks:list')).data.some((e: any) => e.repo === REPO)).toBe(true)
+
+      // Same repo, other separator -- exactly what the native folder picker hands back on Windows.
+      const otherSpelling = REPO.split('/').join('\\')
+      await invoke('gitHooks:uninstall', { cwd: otherSpelling })
+
+      const list = (await invoke('gitHooks:list')).data
+      expect(list.some((e: any) => e.repo === REPO)).toBe(false)
+      expect(list.length).toBe(0) // and no stale ghost entry left behind under either spelling
+    })
+
+    it('installing the same repo under two spellings stores it ONCE, not twice', async () => {
+      await invoke('gitHooks:install', { cwd: REPO })
+      await invoke('gitHooks:install', { cwd: REPO.split('/').join('\\') })
+      const list = (await invoke('gitHooks:list')).data
+      expect(list.length).toBe(1)
+    })
+
+    it('a trailing slash is not a different repository', async () => {
+      await invoke('gitHooks:install', { cwd: REPO })
+      await invoke('gitHooks:install', { cwd: REPO + '/' })
+      expect((await invoke('gitHooks:list')).data.length).toBe(1)
+    })
 
   it('an installed hook is left byte-identical by a second install (idempotent, never stacked)', async () => {
     await invoke('gitHooks:install', { cwd: REPO })

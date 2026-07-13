@@ -494,9 +494,35 @@ describe('memory:search', () => {
   })
 
   it('records embedder availability alongside the recall', async () => {
-    mem.embeddingsReady.mockReturnValueOnce(false)
+    mem.embeddingsReady.mockReturnValue(false)
     await invoke('memory:search', { query: 'q' })
     expect(metricsOfType('embed')).toEqual([expect.objectContaining({ available: false })])
+    mem.embeddingsReady.mockReturnValue(true)
+  })
+
+  // FIXED in v1.25.6. `path` was hardcoded to 'vector', so a UI search that had fallen back to
+  // keyword (embedder down) was still booked as a VECTOR recall. The Memory dashboard exists to
+  // PROVE the brain works — a proof dashboard that flatters itself is worse than no dashboard.
+  it('books a keyword fallback as keyword, not as a vector recall', async () => {
+    mem.embeddingsReady.mockReturnValue(false)
+    await invoke('memory:search', { query: 'q' })
+    expect(metricsOfType('recall')).toEqual([expect.objectContaining({ path: 'keyword' })])
+    mem.embeddingsReady.mockReturnValue(true)
+  })
+
+  it('books a real vector recall as vector', async () => {
+    mem.embeddingsReady.mockReturnValue(true)
+    await invoke('memory:search', { query: 'q' })
+    expect(metricsOfType('recall')).toEqual([expect.objectContaining({ path: 'vector' })])
+  })
+
+  it('the recall and embed metrics can never disagree about the embedder', async () => {
+    // They describe the same moment. Reading embeddingsReady() twice allowed them to contradict.
+    mem.embeddingsReady.mockReturnValue(false)
+    await invoke('memory:search', { query: 'q' })
+    expect(metricsOfType('recall')[0]).toMatchObject({ path: 'keyword' })
+    expect(metricsOfType('embed')[0]).toMatchObject({ available: false })
+    mem.embeddingsReady.mockReturnValue(true)
   })
 
   it('degrades to {success:false,error} when the search throws', async () => {

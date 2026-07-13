@@ -448,7 +448,11 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) 
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
     if (!shell) return err('No shell available')
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('timeout')), 5000)
+      // NOTE: a `setTimeout(() => reject('timeout'), 5000)` "hang guard" used to sit here. It was
+      // DEAD CODE: the executor body below is fully SYNCHRONOUS, so clearTimeout always won the
+      // race and the timer could never fire. It could never have worked anyway — a blocking
+      // synchronous spawn blocks the event loop, so the timer still could not fire. It read like
+      // a hang guard and provided none, which is worse than no guard at all.
       try {
         const agentPaths = getAgentExtraPaths()
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
@@ -459,10 +463,8 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) 
           const updated = existing + data
           terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
         }, allExtraPaths)
-        clearTimeout(timeout)
         resolve()
       } catch (e) {
-        clearTimeout(timeout)
         reject(e)
       }
     })
@@ -617,13 +619,15 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
             '\x1b[33mDetected account mode: ' + acct.mode + ' (unsafe — prompts may be used for training).\x1b[0m\r\n' +
             'To proceed, set one of: GEMINI_API_KEY, GOOGLE_GENAI_USE_GCA=true, or GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT.\r\n' +
             'Or disable Strict Mode in Settings → Security.\r\n\r\n'
-          // Emit the refusal banner via the same channel the renderer reads
-          // (we cheat a bit and write into the PTY by way of an echo that the
-          // shell renders verbatim — using printf ensures the message shows
-          // exactly once and respects ANSI). Since we already sent Ctrl+C,
-          // the shell is at a fresh prompt; we just print to its TTY.
-          const safe = banner.replace(/'/g, "'\\''")
-          writeToTerminal(id, `printf '${safe}'\r`)
+          // Render the banner by sending it STRAIGHT TO THE RENDERER, on the same channel the PTY's own
+          // output uses. It used to be wrapped in `printf '<banner>'` and written to the PTY as a TYPED
+          // SHELL COMMAND — which only works on a shell that HAS printf. On Windows (cmd.exe /
+          // PowerShell: the default, and Termpolis's primary platform) the user got
+          // `'printf' is not recognized` INSTEAD of the explanation — at the exact moment they most
+          // needed to know why the launch was refused. The BLOCK always worked; it was the MESSAGE that
+          // failed. xterm renders bytes; it does not need a shell to print for us, and going direct also
+          // means the shell never sees the text at all.
+          mainWindow?.webContents.send('terminal:data', id, banner)
           aiSecurityAppend({
             agent: 'gemini',
             event: 'terminal_open',
@@ -986,7 +990,14 @@ ipcMain.handle('aiSecurity:input-pending', (_, { id }: { id: string }) => {
   try { return ok((aiInputStaging.get(id) ?? '').length > 0) } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('aiSecurity:recent-audit', async (_, { limit }: { limit?: number }) => {
-  try { return ok(await aiSecurityRecent(typeof limit === 'number' ? Math.max(1, Math.min(2000, limit)) : 200)) } catch (e: any) { return err(e.message) }
+  // Number.isFinite, NOT `typeof === 'number'`: typeof NaN is 'number', so NaN took the clamp arm —
+  // and Math.min/Math.max PROPAGATE NaN rather than clamping it. getRecentAudit(NaN) then does
+  // lines.slice(Math.max(0, len - NaN)) -> slice(NaN) -> slice(0), returning the ENTIRE audit log:
+  // exactly what the 2000 cap exists to prevent, and reachable straight from the renderer.
+  try {
+    const n = Number.isFinite(limit) ? Math.max(1, Math.min(2000, limit as number)) : 200
+    return ok(await aiSecurityRecent(n))
+  } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('aiSecurity:clear-audit', async () => {
   try { await aiSecurityClear(); return ok() } catch (e: any) { return err(e.message) }
@@ -1167,6 +1178,22 @@ const SHIELD_REPOS_FILE = 'commit-shield-repos.json'
 
 function shieldReposPath(): string { return join(app.getPath('userData'), SHIELD_REPOS_FILE) }
 
+/** Canonical key for the protected-repo list.
+ *
+ *  The list used to be compared with a bare `!==`. Install stores either `opts.cwd` (renderer-
+ *  supplied, e.g. `C:/repo`) or `picked.filePaths[0]` from the native dialog (OS-native, `C:
+epo`),
+ *  so installing via the picker and then uninstalling via cwd never matched: the repo stayed in
+ *  commit-shield-repos.json and `gitHooks:list` kept reporting it as PROTECTED after its hooks were
+ *  gone — a security control claiming to be armed when it is not. The same mismatch let install add
+ *  both spellings as two separate entries. Resolve, unify separators, and case-fold on Windows
+ *  (NTFS is case-insensitive; POSIX is not, so only fold where it is correct to). */
+function shieldKey(p: string): string {
+  // ghResolve: `resolve` is imported under an alias in this file.
+  const r = ghResolve(p).replace(/\\/g, '/').replace(/\/+$/, '')
+  return process.platform === 'win32' ? r.toLowerCase() : r
+}
+
 function readShieldRepos(): string[] {
   try {
     const arr = JSON.parse(ipRead(shieldReposPath(), 'utf8'))
@@ -1175,7 +1202,14 @@ function readShieldRepos(): string[] {
 }
 
 function writeShieldRepos(list: string[]): void {
-  try { writeFileSync(shieldReposPath(), JSON.stringify([...new Set(list)], null, 2)) } catch { /* best effort */ }
+  // Dedupe on the CANONICAL key so the same repo cannot be stored twice under two different
+    // spellings (forward-slash vs backslash, or differing case on Windows), while still
+    // persisting each path in its original spelling for display.
+  try {
+    const seen = new Set<string>()
+    const uniq = list.filter((r) => { const k = shieldKey(r); if (seen.has(k)) return false; seen.add(k); return true })
+    writeFileSync(shieldReposPath(), JSON.stringify(uniq, null, 2))
+  } catch { /* best effort */ }
 }
 
 const realHookDeps: HookDeps = {
@@ -1412,8 +1446,13 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
     // Reliability/receipt SLIs: a UI recall is a real recall — record it so the
     // dashboard reflects actual usage, not just agent-side MCP tool calls.
     try {
-      recordMetric({ t: 'recall', ts: Date.now(), hits: results.length, topScore: results[0]?.score ?? 0, path: 'vector', ms: Date.now() - started })
-      recordMetric({ t: 'embed', ts: Date.now(), available: embeddingsReady() })
+      // `path` must reflect what ACTUALLY ran. This booked every UI-driven search as a vector
+      // recall even when the embedder was down and the store had fallen back to keyword, so the
+      // Memory dashboard over-counted vector recalls — a proof dashboard that flatters itself is
+      // worse than none. The MCP twin below already did this correctly.
+      const ready = embeddingsReady()
+      recordMetric({ t: 'recall', ts: Date.now(), hits: results.length, topScore: results[0]?.score ?? 0, path: ready ? 'vector' : 'keyword' })
+      recordMetric({ t: 'embed', ts: Date.now(), available: ready })
     } catch { /* best effort */ }
     return ok(results)
   } catch (e: any) { return err(e.message) }

@@ -236,8 +236,12 @@ export const RULES: RuleDef[] = [
     label: 'GnuPG private key store',
     match: (base, full) => {
       const b = base.toLowerCase()
-      if (b === 'secring.gpg' || b === 'pubring.kbx') return false
-      if (b === 'pubring.gpg') return false
+      // ONLY the PUBLIC keyrings are excluded. `secring.gpg` used to be listed here too, which
+      // made this rule DEAD for the one file it exists to catch: the exclusion returned false
+      // before the match below could ever return true, so an agent reading your PRIVATE GnuPG
+      // keyring was never flagged. It had been grouped in with the pubring.* entries by mistake,
+      // and the failure mode was SILENCE — the worst possible failure mode for a watcher.
+      if (b === 'pubring.kbx' || b === 'pubring.gpg') return false
       if (/\.gnupg\//i.test(full) && (b === 'secring.gpg' || b.endsWith('.key'))) return true
       return false
     },

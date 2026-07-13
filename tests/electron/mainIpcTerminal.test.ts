@@ -708,12 +708,26 @@ describe('terminal:write — strict-mode Gemini is the ONE interception', () => 
 
     // The whole point: the unsafe `gemini` token is never forwarded.
     expect(mockWriteToTerminal).not.toHaveBeenCalledWith(id, 'gemini\r')
-    // Ctrl+C first, so the shell drops back to a clean prompt…
+    // Ctrl+C first, so the shell drops back to a clean prompt.
     expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, id, '\u0003')
-    // …then the refusal banner.
-    const banner = mockWriteToTerminal.mock.calls[1][1] as string
-    expect(banner).toContain('BLOCKED')
+
+    // FIXED in v1.25.6 -- the banner now goes STRAIGHT TO THE RENDERER, not through the shell.
+    // It used to be wrapped in `printf '<banner>'` and written to the PTY as a typed command, which
+    // only renders on a shell that HAS printf. On Windows (cmd.exe / PowerShell -- the default, and
+    // Termpolis's primary platform) the user got `'printf' is not recognized` INSTEAD of the
+    // explanation, at the exact moment they most needed to know why the launch was refused. The
+    // BLOCK always worked; the MESSAGE was what failed.
+    const dataEvents = mockWebContents.send.mock.calls.filter((c: any[]) => c[0] === 'terminal:data')
+    const banner = dataEvents.map((c: any[]) => c[2] as string).find((t) => typeof t === 'string' && t.includes('BLOCKED'))
+    expect(banner).toBeDefined()
     expect(banner).toContain('Strict Mode')
+    expect(dataEvents.some((c: any[]) => c[1] === id)).toBe(true)
+
+    // …and NOTHING shell-shaped is typed into the PTY. `printf` must never appear again: on the
+    // primary platform it turns an explanation into an error message.
+    for (const call of mockWriteToTerminal.mock.calls) {
+      expect(String(call[1])).not.toContain('printf')
+    }
 
     expect(auditEvents()).toContainEqual(expect.objectContaining({
       agent: 'gemini',
