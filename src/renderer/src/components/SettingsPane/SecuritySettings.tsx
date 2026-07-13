@@ -54,6 +54,10 @@ interface AiSecurityAPI {
   scan: (text: string) => Promise<{ success: boolean; data?: ScanResult }>
   recentAudit: (limit?: number) => Promise<{ success: boolean; data?: AuditEntry[] }>
   clearAudit: () => Promise<{ success: boolean }>
+  /** True when the user has an un-submitted draft in this terminal's input line. Anything that
+   *  writes to a terminal unprompted must check this first — a write appends at the cursor, and
+   *  the line buffer belongs to the agent's TUI, so an unprompted write lands on their draft. */
+  inputPending?: (id: string) => Promise<{ success: boolean; data?: boolean }>
 }
 
 declare global {

@@ -7,6 +7,7 @@ import {
   setAutoPrimerEnabled,
   injectAutoPrimer,
   buildPrimerPointer,
+  reprimeAfterCompaction,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -343,5 +344,103 @@ describe('memories-loaded banner (Codex / Gemini / Qwen typed-pointer path)', ()
     await vi.advanceTimersByTimeAsync(4000)
     expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
     expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// reprimeAfterCompaction — the "do it behind the scenes, and never on top of a draft" contract.
+//
+// This exists because of a real complaint: the primer text kept appearing IN Claude's prompt box
+// mid-session. It was the compaction re-primer pasting into the input. Two things were wrong:
+// Claude never needed the paste (its system-prompt seed survives compaction and tells it to
+// re-prime itself), and a paste can land on top of whatever the user is mid-way through typing,
+// because writeToTerminal appends at the cursor and the line buffer belongs to the agent's TUI.
+// ---------------------------------------------------------------------------------------------
+describe('reprimeAfterCompaction', () => {
+  const deps = (over: Record<string, unknown> = {}) => ({
+    isLaunchPrimed: () => false,
+    pending: vi.fn(async () => false),
+    inject: vi.fn(async () => true),
+    sleep: vi.fn(async () => {}),
+    pollMs: 10,
+    maxWaitMs: 100,
+    ...over,
+  })
+
+  it('NEVER writes to a launch-primed (Claude) terminal — it re-primes itself', async () => {
+    // The whole point. Claude is seeded via --append-system-prompt-file; a system prompt is
+    // re-sent every request, so compaction cannot remove it. Pasting is redundant noise, and it
+    // is the text the user actually sees appear out of nowhere.
+    const d = deps({ isLaunchPrimed: () => true })
+    const injected = await reprimeAfterCompaction('t1', '/repo', d)
+    expect(injected).toBe(false)
+    expect(d.inject).not.toHaveBeenCalled()
+    expect(d.pending).not.toHaveBeenCalled() // doesn't even need to look
+  })
+
+  it('pastes for a non-launch-primed agent when the input line is idle', async () => {
+    // Codex/Gemini/Qwen have no system-prompt file to append to, so the paste is the only channel.
+    const d = deps()
+    const injected = await reprimeAfterCompaction('t1', '/repo', d)
+    expect(injected).toBe(true)
+    expect(d.inject).toHaveBeenCalledWith('t1', '/repo')
+  })
+
+  it('WAITS while the user has an un-submitted draft, then pastes into the empty line', async () => {
+    // Staging resets on Enter, so "pending" goes false the moment they submit.
+    let calls = 0
+    const d = deps({ pending: vi.fn(async () => ++calls <= 3) })
+    const injected = await reprimeAfterCompaction('t1', '/repo', d)
+    expect(injected).toBe(true)
+    expect(d.sleep).toHaveBeenCalledTimes(3) // waited out the draft
+    expect(d.inject).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the real aiSecurity.inputPending bridge when no override is given', async () => {
+    // Covers the default path: the injected `pending` in the other tests bypasses it.
+    ;(window as any).aiSecurity = { inputPending: vi.fn(async () => ({ success: true, data: false })) }
+    const inject = vi.fn(async () => true)
+    const ok = await reprimeAfterCompaction('t1', '/repo', { isLaunchPrimed: () => false, inject, sleep: async () => {}, pollMs: 1, maxWaitMs: 10 })
+    expect((window as any).aiSecurity.inputPending).toHaveBeenCalledWith('t1')
+    expect(ok).toBe(true)
+    delete (window as any).aiSecurity
+  })
+
+  it('treats a missing aiSecurity bridge as "not pending" rather than blocking recall', async () => {
+    delete (window as any).aiSecurity
+    const inject = vi.fn(async () => true)
+    const ok = await reprimeAfterCompaction('t1', '/repo', { isLaunchPrimed: () => false, inject, sleep: async () => {}, pollMs: 1, maxWaitMs: 10 })
+    expect(ok).toBe(true)
+  })
+
+  it('gives up rather than clobber a draft the user never submits', async () => {
+    // Losing a re-prime is a nuisance. Concatenating our text onto their half-typed prompt is a
+    // bug — so when in doubt, do nothing.
+    const d = deps({ pending: vi.fn(async () => true) }) // never idle
+    const injected = await reprimeAfterCompaction('t1', '/repo', d)
+    expect(injected).toBe(false)
+    expect(d.inject).not.toHaveBeenCalled()
+  })
+
+  it('does not block the re-prime when the pending bridge is unavailable', async () => {
+    // A missing/broken IPC must not silently disable memory recovery.
+    const d = deps({ pending: vi.fn(async () => false) })
+    const injected = await reprimeAfterCompaction('t1', '/repo', d)
+    expect(injected).toBe(true)
+  })
+})
+
+describe('the compaction re-primer is wired to reprimeAfterCompaction, not a raw paste', () => {
+  it('a compaction in a launch-primed terminal types NOTHING into the terminal', async () => {
+    vi.useFakeTimers()
+    mockApi()
+    useTerminalStore.setState({
+      terminals: [{ id: 't1', launchPrimed: true } as any],
+    })
+    const { result } = renderHook(() => useCompactionReprimer('t1', agent, '/repo'))
+    result.current('Compacting conversation...')
+    await vi.advanceTimersByTimeAsync(5000)
+    // The regression, pinned: this used to paste the primer pointer into Claude's input box.
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
   })
 })

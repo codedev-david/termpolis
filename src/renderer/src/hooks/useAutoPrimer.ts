@@ -4,13 +4,28 @@ import { createReprimeController, type ReprimeController } from '../lib/compacti
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
 
-// Auto context-primer: when an AI agent is first detected in a terminal, paste a
-// ONE-LINE pointer into its input telling it to load this project's memory digest
-// via the memory_primer MCP tool — so "every invocation" starts already knowing
-// prior decisions and context, across agents and past sessions, WITHOUT a giant
-// content dump on screen and WITHOUT the agent treating the memory as a task to
-// resume. The pointer is only injected when relevant memory actually exists
-// (we build the digest first as the relevance check). Opt-out in Settings.
+// Auto context-primer: point a freshly-launched agent at this project's memory digest via the
+// memory_primer MCP tool, so every invocation starts already knowing prior decisions and context
+// — WITHOUT a wall of text on screen and WITHOUT the agent treating the memory as a task to
+// resume. Only primed when relevant memory actually exists (we build the digest first, as the
+// relevance check). Opt-out in Settings.
+//
+// TWO DELIVERY CHANNELS, and the difference matters:
+//
+//   Claude  → the instruction is seeded INVISIBLY into the system prompt at launch, via
+//             `--append-system-prompt-file` (see aiProfiles.ts). Nothing is typed. And because a
+//             system prompt is re-sent on every request, it SURVIVES compaction — so the seed
+//             also tells Claude to re-call memory_primer itself if its context gets compacted.
+//             It re-primes behind the scenes. We never write to its input. Not once.
+//
+//   Others  → Codex/Gemini/Qwen have no system-prompt file to append to, so the one-line pointer
+//             is pasted into their input at launch, while the line is still empty.
+//
+// The hard rule for anything that writes to a terminal the user did not ask for: writeToTerminal
+// APPENDS AT THE CURSOR, and the line buffer belongs to the agent's TUI, not to us. A write that
+// lands while the user is mid-sentence is concatenated onto their draft. (Exactly the fact that
+// made pre-send prompt redaction impossible in v1.25.2.) So an unprompted write must first check
+// that the input is idle — see reprimeAfterCompaction.
 
 const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
@@ -99,6 +114,67 @@ export async function injectAutoPrimer(terminalId: string, cwd: string, selfReco
   }
 }
 
+/** How long we'll wait for the input line to go idle before giving up on a re-prime. */
+export const REPRIME_IDLE_POLL_MS = 1500
+export const REPRIME_IDLE_MAX_WAIT_MS = 120_000
+
+/** True when the user has an un-submitted draft in this terminal's input line. */
+async function inputPending(terminalId: string): Promise<boolean> {
+  try {
+    const res = await window.aiSecurity?.inputPending?.(terminalId)
+    return res?.success === true && res.data === true
+  } catch {
+    return false // can't tell → don't block the re-prime on a broken bridge
+  }
+}
+
+/**
+ * Re-prime a terminal after its agent compacted away the memory digest.
+ *
+ * Two rules, both learned the hard way:
+ *
+ * 1. If the terminal was seeded at launch via --append-system-prompt-file (Claude), DO NOTHING.
+ *    A system prompt is re-sent on every request, so compaction — which summarizes the
+ *    *conversation* — cannot remove it. The seed already tells the agent to re-call
+ *    memory_primer itself when its context is compacted, so it re-primes behind the scenes.
+ *    Pasting on top of that is pure noise: it is the text users actually see appear in their
+ *    prompt box out of nowhere, and it is redundant.
+ *
+ * 2. Otherwise the paste is the only channel we have (a manually-typed `codex`/`claude` has no
+ *    system prompt we can append to). But NEVER paste over a draft. writeToTerminal appends at
+ *    the cursor and the line buffer belongs to the agent's TUI, not to us — so a paste that
+ *    lands mid-sentence is concatenated onto whatever the user was typing. Wait for the input
+ *    to go idle (it resets on Enter) and paste into an empty line. If they never submit, skip
+ *    the re-prime entirely: losing a re-prime is a nuisance, corrupting a prompt is a bug.
+ */
+export async function reprimeAfterCompaction(
+  terminalId: string,
+  cwd: string,
+  opts: {
+    isLaunchPrimed: () => boolean
+    pending?: (id: string) => Promise<boolean>
+    inject?: (id: string, cwd: string) => Promise<boolean>
+    sleep?: (ms: number) => Promise<void>
+    pollMs?: number
+    maxWaitMs?: number
+  },
+): Promise<boolean> {
+  if (opts.isLaunchPrimed()) return false // rule 1 — it re-primes itself, silently
+  const pending = opts.pending ?? inputPending
+  const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c))
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  const pollMs = opts.pollMs ?? REPRIME_IDLE_POLL_MS
+  const maxWaitMs = opts.maxWaitMs ?? REPRIME_IDLE_MAX_WAIT_MS
+
+  let waited = 0
+  while (await pending(terminalId)) {
+    if (waited >= maxWaitMs) return false // rule 2 — skip rather than clobber a draft
+    await sleep(pollMs)
+    waited += pollMs
+  }
+  return inject(terminalId, cwd)
+}
+
 // Fire injectAutoPrimer once, shortly after an AI agent is first detected in
 // this terminal. One TerminalPane mounts this per terminal, so the ref scopes
 // the "prime once" guard to that terminal's lifetime.
@@ -148,7 +224,12 @@ export function useCompactionReprimer(
     controllerRef.current = createReprimeController({
       hasAgent: () => agentRef.current != null,
       reprime: () => {
-        void injectAutoPrimer(terminalId, cwdRef.current)
+        void reprimeAfterCompaction(terminalId, cwdRef.current, {
+          // Read at FIRE time, not mount time: the flag is set when the agent profile launches,
+          // which can land after this controller is constructed.
+          isLaunchPrimed: () =>
+            useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.launchPrimed === true,
+        })
       },
     })
   }

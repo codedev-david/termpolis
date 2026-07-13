@@ -754,6 +754,13 @@ describe('preload: aiSecurity API', () => {
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:secret-observed', expect.any(Function))
   })
 
+  it('inputPending asks main whether the user has an un-submitted draft', async () => {
+    // Gates the compaction re-prime: an unprompted write appends at the cursor, so it must not
+    // fire while the user is mid-sentence.
+    await exposed.aiSecurity.inputPending('t1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:input-pending', { id: 't1' })
+  })
+
   it('does not expose the deleted onSecretsRedacted bridge', () => {
     // Negative pin: the redaction API is gone, not renamed-and-aliased.
     expect((exposed.aiSecurity as Record<string, unknown>).onSecretsRedacted).toBeUndefined()

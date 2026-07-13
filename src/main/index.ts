@@ -962,6 +962,20 @@ ipcMain.handle('aiSecurity:set-memory-scrub', (_, { value }: { value: boolean })
 ipcMain.handle('aiSecurity:scan', (_, { text }: { text: string }) => {
   try { return ok(aiSecurityScan(typeof text === 'string' ? text : '')) } catch (e: any) { return err(e.message) }
 })
+// Does this terminal have an un-submitted draft in the agent's input line?
+//
+// `aiInputStaging` is the shadow copy of what the user has typed since their last Enter —
+// it accumulates keystrokes and resets to '' on submit. It was built for the prompt watch,
+// but it is also the only signal we have for "the user is mid-sentence", because the line
+// buffer itself lives inside the agent's TUI, not here.
+//
+// Anything that WRITES to a terminal unprompted (the compaction re-prime) must check this
+// first: writeToTerminal appends at the cursor, so an unprompted write while the user is
+// typing is appended onto their draft. Over-approximates (a typed-then-erased line still
+// reads as pending), which is the safe direction — it defers rather than clobbers.
+ipcMain.handle('aiSecurity:input-pending', (_, { id }: { id: string }) => {
+  try { return ok((aiInputStaging.get(id) ?? '').length > 0) } catch (e: any) { return err(e.message) }
+})
 ipcMain.handle('aiSecurity:recent-audit', async (_, { limit }: { limit?: number }) => {
   try { return ok(await aiSecurityRecent(typeof limit === 'number' ? Math.max(1, Math.min(2000, limit)) : 200)) } catch (e: any) { return err(e.message) }
 })
@@ -1729,6 +1743,19 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
       'Termpolis project memory: saved background context exists for this project.',
       `When you begin working, call the termpolis MCP tool memory_primer${cwdArg} and read it as background reference only — do NOT resume past work from it or summarize it unprompted; just hold it as context.`,
       'Before re-deriving any fix or solution that may already be stored, call the termpolis memory_search tool first.',
+      // Compaction self-reprime. THIS is what lets the re-prime happen behind the scenes.
+      //
+      // A system prompt is re-sent on every request — compaction summarizes the CONVERSATION,
+      // not the system prompt — so this line survives a compaction while the digest you loaded
+      // (which lived in the conversation) does not. Telling the agent to re-fetch it itself is
+      // the only way to restore that context without typing into its input box.
+      //
+      // The alternative, which this replaces, was to paste "call memory_primer" into the input
+      // after each compaction. That is visible, unexplained, and worse: writeToTerminal appends
+      // at the CURSOR, and the agent owns its own line buffer — so a re-prime that lands while
+      // the user is mid-sentence is appended onto their draft. Same architectural fact that made
+      // pre-send prompt redaction impossible in v1.25.2. Don't write into a buffer you don't own.
+      'If your context is compacted or summarized during this session, the memory digest you loaded will have been summarized away with it — call memory_primer once more, silently, before continuing, then carry on with the task in hand.',
       'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
     ].join(' ')
     const file = join(dir, `primer-${uuidv4()}.txt`)

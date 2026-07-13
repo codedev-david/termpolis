@@ -325,6 +325,9 @@ contextBridge.exposeInMainWorld('aiSecurity', {
   setEgressGuard: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-egress-guard', { value }),
   setMemoryScrub: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-memory-scrub', { value }),
   scan: (text: string) => ipcRenderer.invoke('aiSecurity:scan', { text }),
+  /** True when the user has an un-submitted draft in this terminal's input line. Anything
+   *  that writes to the terminal unprompted must check this — a write appends at the cursor. */
+  inputPending: (id: string) => ipcRenderer.invoke('aiSecurity:input-pending', { id }),
   recentAudit: (limit?: number) => ipcRenderer.invoke('aiSecurity:recent-audit', { limit }),
   clearAudit: () => ipcRenderer.invoke('aiSecurity:clear-audit'),
   append: (entry: { agent: string; event: string; terminalId?: string; byteCount?: number; hitCount?: number; notes?: string }) =>

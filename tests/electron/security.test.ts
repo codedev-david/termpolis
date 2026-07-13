@@ -692,3 +692,40 @@ describe('CSP is present in renderer index.html', () => {
     expect(html).toMatch(/base-uri\s+'self'/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// aiSecurity:input-pending — "is the user mid-sentence?"
+//
+// Anything that writes to a terminal the user did not ask for (the compaction
+// re-prime) must check this first. writeToTerminal APPENDS AT THE CURSOR and the
+// line buffer lives inside the agent's TUI, so an unprompted write that lands while
+// the user is typing gets concatenated onto their draft. This handler exposes the
+// input-staging shadow copy — the only signal we have for "there is an unsubmitted
+// draft" — so the re-prime can defer instead of clobbering it.
+// ---------------------------------------------------------------------------
+describe('aiSecurity:input-pending', () => {
+  // terminal:write is registered with ipcMain.on (not .handle), so pull it off the mock.
+  async function write(id: string, data: string) {
+    const { ipcMain } = (await import('electron')) as any
+    const h = ipcMain.on.mock.calls.find((c: any[]) => c[0] === 'terminal:write')?.[1]
+    if (!h) throw new Error('terminal:write handler not registered')
+    h({}, { id, data })
+  }
+  const pending = (id: string) => invoke('aiSecurity:input-pending', { id })
+
+  it('is false for a terminal nobody has typed into', async () => {
+    expect(await pending('ip-unknown')).toEqual({ success: true, data: false })
+  })
+
+  it('goes true while a draft is un-submitted, and false again on Enter', async () => {
+    const id = 'ip-1'
+    await write(id, 'claude\r') // flags it as an AI terminal; the \r submits, so staging is clear
+    expect(await pending(id)).toEqual({ success: true, data: false })
+
+    await write(id, 'how do I fix the flaky') // mid-sentence — a re-prime here would land on this
+    expect(await pending(id)).toEqual({ success: true, data: true })
+
+    await write(id, '\r') // submitted → staging resets
+    expect(await pending(id)).toEqual({ success: true, data: false })
+  })
+})
