@@ -200,7 +200,7 @@ describe('VectorRamPanel — the toggle', () => {
     render(<VectorRamPanel />)
     await screen.findByTestId('vector-ram-panel')
     fireEvent.click(screen.getByTestId('vector-quantize-toggle'))
-    await waitFor(() => expect(screen.getByTestId('vector-ram-error').textContent).toMatch(/store is locked/))
+    await waitFor(() => expect(screen.getByTestId('vector-quantize-error').textContent).toMatch(/store is locked/))
   })
 
   it('shows an error rather than a blank panel when the read fails outright', async () => {
@@ -214,3 +214,61 @@ describe('VectorRamPanel — the toggle', () => {
     expect(() => render(<VectorRamPanel />)).not.toThrow()
   })
 })
+
+describe('VectorRamPanel — a failed flip must not be erased by the next poll', () => {
+  // THE BUG (found by the coverage audit, in code I wrote). toggle()'s `finally` fires `void load()`,
+  // and a SUCCESSFUL load() runs setErr('') — so a toggle error written into the same slot was wiped
+  // a microtask later. The user clicked the box, it failed, the message flashed and vanished, and
+  // they were left watching a checkbox that simply did not move. No error, no explanation, nothing.
+  //
+  // A failure that presents as silence is the exact class of bug this whole release is about. So the
+  // read error and the action error are now separate: the poll clears its own, and never the other's.
+  //
+  // The existing error tests all freeze the panel (a one-shot read that never resolves again), which
+  // sidesteps the race entirely — they passed even WITH the bug. This one lets the poll actually run.
+  it('the error survives the 2s poll that fires right after the failed toggle', async () => {
+    vi.useFakeTimers()
+    const data = payload()
+    const getRam = vi.fn(async () => ({ success: true, data })) // the poll KEEPS SUCCEEDING
+    const setQ = vi.fn(async () => ({ success: false, error: 'int8 rebuild failed: out of memory' }))
+    ;(window as any).termpolis = { memoryGetVectorRam: getRam, memorySetVectorQuantize: setQ }
+
+    render(<VectorRamPanel />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('vector-quantize-toggle'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getByTestId('vector-quantize-error').textContent).toMatch(/out of memory/)
+
+    // Let several successful polls land on top of it. Each one calls setErr('').
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(getRam.mock.calls.length).toBeGreaterThan(2) // the polls really did run…
+
+    // …and the reason the flip failed is STILL on screen.
+    expect(screen.getByTestId('vector-quantize-error').textContent).toMatch(/out of memory/)
+    vi.useRealTimers()
+  })
+
+  it('retrying the toggle clears the previous failure — only the user resets it', async () => {
+    const data = payload()
+    let fail = true
+    ;(window as any).termpolis = {
+      memoryGetVectorRam: vi.fn(async () => ({ success: true, data })),
+      memorySetVectorQuantize: vi.fn(async () =>
+        fail ? { success: false, error: 'boom' } : { success: true, data: { ...data, quantized: true } },
+      ),
+    }
+    render(<VectorRamPanel />)
+    await screen.findByTestId('vector-ram-panel')
+
+    fireEvent.click(screen.getByTestId('vector-quantize-toggle'))
+    await waitFor(() => expect(screen.getByTestId('vector-quantize-error').textContent).toMatch(/boom/))
+
+    fail = false
+    fireEvent.click(screen.getByTestId('vector-quantize-toggle'))
+    await waitFor(() => expect(screen.queryByTestId('vector-quantize-error')).toBeNull())
+  })
+})
+

@@ -60,7 +60,12 @@ const TONE: Record<Advice['verdict'], { box: string; dot: string; label: string 
 
 export function VectorRamPanel() {
   const [d, setD] = useState<VectorRam | null>(null)
-  const [err, setErr] = useState('')
+  const [err, setErr] = useState('')          // a failed READ (the 2s poll)
+  // A failed ACTION (the toggle). Kept separate on purpose: `load()` clears `err` on every
+  // successful poll, and toggle()'s `finally` fires a load() -- so a toggle error written into
+  // `err` was wiped a microtask later and the user never learned why the flip failed. They just
+  // watched the checkbox not move. A failure that presents as silence is the worst kind.
+  const [actionErr, setActionErr] = useState('')
   const [busy, setBusy] = useState(false)
   const mounted = useRef(true)
 
@@ -86,13 +91,14 @@ export function VectorRamPanel() {
   const toggle = async () => {
     if (!d || busy) return
     setBusy(true)
+    setActionErr('') // a fresh attempt clears the previous failure -- a poll never does
     try {
       const res = await window.termpolis?.memorySetVectorQuantize?.(!d.quantized)
       if (!mounted.current) return
       if (res?.success && res.data) setD((prev) => (prev ? { ...prev, ...(res.data as VectorRam) } : prev))
-      else setErr(res?.error || 'Could not change vector precision')
+      else setActionErr(res?.error || 'Could not change vector precision')
     } catch (e) {
-      if (mounted.current) setErr((e as Error).message || 'Could not change vector precision')
+      if (mounted.current) setActionErr((e as Error).message || 'Could not change vector precision')
     } finally {
       if (mounted.current) { setBusy(false); void load() }
     }
@@ -106,7 +112,10 @@ export function VectorRamPanel() {
   }
 
   const tone = TONE[d.advice.verdict] ?? TONE.optional
-  const stalling = d.health.loopDelayP99Ms >= 50 || d.health.gcMaxPauseMs >= 50
+  // Each row reports its OWN number. The combined stall judgement lives in the verdict (computed
+  // in main from both), so a long GC pause no longer makes the loop row claim its own 4.5 ms is
+  // "above 50 ms".
+  const loopStalling = d.health.loopDelayP99Ms >= 50
 
   return (
     <section data-testid="vector-ram-panel" className="flex flex-col gap-3">
@@ -156,8 +165,8 @@ export function VectorRamPanel() {
           testid="m-loop"
           label="Main-thread stall (p99)"
           value={`${d.health.loopDelayP99Ms} ms`}
-          sub={stalling ? 'above 50 ms — you would feel this' : 'healthy (under 50 ms)'}
-          bad={stalling}
+          sub={loopStalling ? 'above 50 ms — you would feel this' : 'healthy (under 50 ms)'}
+          bad={loopStalling}
         />
         <Metric
           testid="m-gc"
@@ -195,6 +204,9 @@ export function VectorRamPanel() {
         </span>
       </label>
 
+      {actionErr ? (
+        <div data-testid="vector-quantize-error" className="text-xs text-[#EF5350]">{actionErr}</div>
+      ) : null}
       {err ? <div data-testid="vector-ram-error" className="text-xs text-[#EF5350]">{err}</div> : null}
     </section>
   )

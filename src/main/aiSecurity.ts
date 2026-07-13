@@ -50,6 +50,10 @@ export interface AuditEntry {
     | 'commit_scan'
     | 'commit_blocked'
     | 'push_blocked'
+    // The shield tried to scan and COULD NOT. Recorded because a security control whose failure is
+    // indistinguishable from success is the worst kind of control: you go on believing you are
+    // protected. Fail-open stays (git must never wedge) — but it stops being silent.
+    | 'shield_scan_failed'
     | 'egress_violation'
     | 'import_scan'
     | 'import_blocked'

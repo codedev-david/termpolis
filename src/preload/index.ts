@@ -329,6 +329,19 @@ contextBridge.exposeInMainWorld('aiSecurity', {
   setEgressGuard: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-egress-guard', { value }),
   setMemoryScrub: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-memory-scrub', { value }),
   scan: (text: string) => ipcRenderer.invoke('aiSecurity:scan', { text }),
+  /** The Commit Shield tried to scan and COULD NOT — the git op was allowed through UNSCANNED.
+   *  Fail-open is deliberate (git must never wedge), but it must never be fail-SILENT: a control
+   *  whose failure looks like success is worse than no control. */
+  onShieldScanFailed: (
+    cb: (data: { op: 'commit' | 'push'; cwd: string; error: string }) => void,
+  ) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      data: { op: 'commit' | 'push'; cwd: string; error: string },
+    ) => cb(data)
+    ipcRenderer.on('shield:scan-failed', handler)
+    return () => ipcRenderer.removeListener('shield:scan-failed', handler)
+  },
   /** True when the user has an un-submitted draft in this terminal's input line. Anything
    *  that writes to the terminal unprompted must check this — a write appends at the cursor. */
   inputPending: (id: string) => ipcRenderer.invoke('aiSecurity:input-pending', { id }),

@@ -20,6 +20,7 @@ import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
+import { ShieldScanFailedBanner } from './components/ShieldScanFailedBanner/ShieldScanFailedBanner'
 import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
 import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
@@ -977,6 +978,7 @@ export default function App() {
       </div>
       <UpdateBanner />
       <SecretSentBanner />
+      <ShieldScanFailedBanner />
       <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />
       <Suspense fallback={null}>
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}

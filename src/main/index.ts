@@ -1113,16 +1113,41 @@ ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: st
   } catch (e: any) { return err(e.message) }
 })
 
-// Commit/Push Secret Shield — run the SAME ~70-rule engine the outbound scanner uses,
-// but at the GIT boundary: on what a commit will capture (the staged diff) and what a
-// push will send (every unpushed patch). Returns a block reason, or null to allow.
+// Commit/Push Secret Shield -- run the SAME secret-rule engine the prompt watch uses, but at the
+// GIT boundary: on what a commit will capture (the staged diff) and what a push will send (every
+// unpushed patch). Returns a block reason, or null to allow.
 //
-// Fails OPEN by design: a git or scanner error must never wedge the user's commit for a
-// reason unrelated to secrets. The gate only ever blocks on a POSITIVE secret match.
+// FAILS OPEN by design: a git or scanner error must never wedge the user's commit for a reason
+// unrelated to secrets. The gate only ever BLOCKS on a positive secret match.
+//
+// But fail-open must never be fail-SILENT, and that distinction is most of this function's security
+// value. A control whose failure looks exactly like success is worse than no control, because you
+// go on believing you are protected. (Exactly the bug that made the gpg-private watcher rule
+// useless: it could never fire, and its silence read as "nothing to report".)
+//
+// The realistic trigger is the PUSH scan. `git log -p --not --remotes` on a repo with no
+// remote-tracking refs excludes nothing, so it diffs the ENTIRE history. That is CORRECT -- you are
+// about to push all of it -- but it is unbounded. Overflow the buffer or hit the timeout and the
+// throw used to be swallowed: the push went out UNSCANNED, with no warning, at exactly the moment
+// the shield matters most. The first push of a whole history to a fresh remote is precisely when an
+// old secret actually gets published.
 function gitShieldGate(cwd: string, op: 'commit' | 'push'): string | null {
+  let enabled = false
   try {
-    if (!getAiSecuritySettings().commitShield) return null
-    const deps = { git: (args: string[]) => safeGit(args, { cwd, timeout: 20000, maxBuffer: 32 * 1024 * 1024 }) }
+    enabled = getAiSecuritySettings().commitShield
+  } catch {
+    return null // settings unreadable -> treat as off. That is not a scan FAILURE, so do not cry one.
+  }
+  if (!enabled) return null
+
+  try {
+    // Give the push scan room and time. The alternative is throwing, and a throw here used to mean
+    // the shield silently did nothing.
+    const limits =
+      op === 'push'
+        ? { timeout: 120_000, maxBuffer: 512 * 1024 * 1024 }
+        : { timeout: 20_000, maxBuffer: 32 * 1024 * 1024 }
+    const deps = { git: (args: string[]) => safeGit(args, { cwd, ...limits }) }
     const res = op === 'commit' ? scanStagedDiff(deps) : scanPushRange(deps)
     const reason = res.clean ? null : blockMessage(res, op)
     aiSecurityAppend({
@@ -1133,7 +1158,16 @@ function gitShieldGate(cwd: string, op: 'commit' | 'push'): string | null {
       notes: reason ?? `${op} scan clean`,
     }).catch(() => {})
     return reason
-  } catch {
+  } catch (e: any) {
+    // Still ALLOW the operation -- but say so, loudly. Recorded in the audit log and surfaced to the
+    // user, so "the shield did not run" can never again be mistaken for "the shield found nothing".
+    const msg = String(e?.message ?? e)
+    aiSecurityAppend({
+      agent: 'git',
+      event: 'shield_scan_failed',
+      notes: `${op} scan DID NOT RUN (operation allowed through): ${msg}`,
+    }).catch(() => {})
+    mainWindow?.webContents.send('shield:scan-failed', { op, cwd, error: msg })
     return null
   }
 }

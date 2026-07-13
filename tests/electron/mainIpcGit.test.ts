@@ -411,9 +411,19 @@ describe('Commit Shield — gitShieldGate', () => {
     expect(ranGit('push')).toBe(true)
   })
 
-  it('FAILS OPEN: a git failure during the staged-diff scan must not block the commit', async () => {
-    // The gate blocks only on a POSITIVE match. A locked index, a corrupt object, a detached HEAD —
-    // none of those are secrets, and none of them get to stop the user committing.
+  // FAIL OPEN, yes -- but as of v1.25.7, never fail SILENT.
+  //
+  // The gate blocks only on a POSITIVE match. A locked index, a corrupt object, a detached HEAD --
+  // none of those are secrets, and none of them get to stop the user committing. That much is
+  // unchanged, and it is right.
+  //
+  // What changed: the failure used to be swallowed whole. `catch { return null }` -- no audit
+  // entry, no warning, nothing. So "the shield did not run" was indistinguishable from "the shield
+  // found nothing", and the user went on believing they were protected. That is the same failure
+  // mode that made the gpg-private watcher rule useless for months: its silence read as "clean".
+  //
+  // A security control whose failure looks exactly like success is worse than no control at all.
+  it('FAILS OPEN on a git error -- but RECORDS that the scan did not run', async () => {
     git((argv) => {
       if (argv.includes('--cached')) throw new Error('fatal: unable to read index file')
       return ''
@@ -421,9 +431,95 @@ describe('Commit Shield — gitShieldGate', () => {
 
     const r = await invoke('git:commit', { cwd: REPO, message: 'fix: thing' })
 
+    // Fail-open: the commit still goes through. Git is never wedged for a non-secret reason.
     expect(r.success).toBe(true)
     expect(ranGit('commit')).toBe(true)
-    expect(H.appendAudit).not.toHaveBeenCalled() // nothing was scanned, so nothing is claimed
+
+    // …but it is ON THE RECORD that nothing was scanned.
+    expect(H.appendAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: 'git',
+        event: 'shield_scan_failed',
+        notes: expect.stringContaining('DID NOT RUN'),
+      }),
+    )
+    // It must NEVER be logged as a clean scan -- that is the lie this whole change exists to kill.
+    expect(H.appendAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'commit_scan' }),
+    )
+  })
+
+  it('the PUSH scan failing is also recorded, and the push still goes out', async () => {
+    // This is the one that actually bites. `git log -p --not --remotes` on a repo with no
+    // remote-tracking refs excludes nothing, so it diffs the ENTIRE history -- correct (you are
+    // about to push all of it) but unbounded. Overflow the buffer and the throw used to be
+    // swallowed: the push went out UNSCANNED and silent, at exactly the moment the shield matters
+    // most. The first push of a whole history to a fresh remote is precisely when an old secret
+    // actually gets published.
+    git((argv) => {
+      if (argv.includes('log')) throw new Error('stdout maxBuffer length exceeded')
+      return ''
+    })
+
+    const r = await invoke('git:push', { cwd: REPO })
+
+    expect(r.success).toBe(true) // fail open: the push is not wedged
+    expect(H.appendAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'shield_scan_failed',
+        notes: expect.stringContaining('push scan DID NOT RUN'),
+      }),
+    )
+    expect(H.appendAudit).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'commit_scan' }))
+  })
+
+  it('TELLS THE USER: the renderer is notified so an unscanned push cannot pass unnoticed', async () => {
+    // An audit line nobody reads is not much better than silence. The banner is the point.
+    git((argv) => {
+      if (argv.includes('log')) throw new Error('stdout maxBuffer length exceeded')
+      return ''
+    })
+
+    mockWebContents.send.mockClear()
+    await invoke('git:push', { cwd: REPO })
+
+    const sent = mockWebContents.send.mock.calls.filter((c: any[]) => c[0] === 'shield:scan-failed')
+    expect(sent.length).toBe(1)
+    expect(sent[0][1]).toMatchObject({ op: 'push', cwd: REPO })
+    expect(String(sent[0][1].error)).toContain('maxBuffer')
+  })
+
+  it('a DISABLED shield is not a scan FAILURE -- it must not cry wolf', async () => {
+    // Turning the shield off is a choice, not a malfunction. If "off" raised the same alarm as
+    // "broke", the alarm would be worthless within a day.
+    await setShield(false)
+    try {
+      mockWebContents.send.mockClear()
+      git((argv) => {
+        // Only a SCAN explodes. The commit itself must still work, or this test would be asserting
+        // "git is broken" rather than "a disabled shield stays quiet".
+        if (argv.includes('--cached') || argv.includes('log')) throw new Error('scan would have failed')
+        return ''
+      })
+      const r = await invoke('git:commit', { cwd: REPO, message: 'x' })
+      expect(r.success).toBe(true)
+      expect(H.appendAudit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'shield_scan_failed' }),
+      )
+      expect(mockWebContents.send.mock.calls.filter((c: any[]) => c[0] === 'shield:scan-failed')).toEqual([])
+    } finally {
+      await setShield(true)
+    }
+  })
+
+  it('a CLEAN scan is still recorded as clean -- the new path did not swallow the happy case', async () => {
+    git(() => '') // no diff, nothing to find
+    const r = await invoke('git:commit', { cwd: REPO, message: 'x' })
+    expect(r.success).toBe(true)
+    expect(H.appendAudit).toHaveBeenCalledWith(expect.objectContaining({ event: 'commit_scan' }))
+    expect(H.appendAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'shield_scan_failed' }),
+    )
   })
 
   it('FAILS OPEN: a git failure during the push scan must not block the push', async () => {

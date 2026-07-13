@@ -78,10 +78,14 @@ export default defineConfig({
         //
         // These floors sit ~1-2 points under that: high enough that a regression is caught, with
         // enough slack that normal drift does not flap the build.
-        lines: 96,
-        functions: 95,
-        branches: 92,
-        statements: 95,
+        //
+        // RAISED AGAIN in v1.25.7 to 96/93/96/97. Coverage is now 97.59 / 94.53 / 97.10 / 98.56. The
+        // holes that remain are genuinely hard, not laziness: require('fs') paths that vi.mock cannot
+        // reach, platform-gated arms that only run on the other OS, and provably dead defensive code.
+        lines: 97,
+        functions: 96,
+        branches: 93,
+        statements: 96,
       },
     },
   },

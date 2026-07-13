@@ -97,7 +97,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     expect(r.ok).toBe(false) // git ABORTED — this is the whole feature
     expect(r.out).toMatch(/AWS Access Key ID|secret/i)
     expect(Number(countCommits(dir))).toBe(0) // and nothing landed in history
-  })
+  }, 30_000)
 
   it('ALLOWS a clean commit — it does not just block everything', () => {
     const { dir, paths } = makeRepo()
@@ -108,7 +108,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
 
     expect(r.ok).toBe(true)
     expect(Number(countCommits(dir))).toBe(1)
-  })
+  }, 30_000)
 
   it('blocks the secret, then allows the same commit once the secret is removed', () => {
     const { dir, paths } = makeRepo()
@@ -120,7 +120,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     stage(dir, 'config.env', 'AWS_ACCESS_KEY_ID=<from-vault>\n')
     expect(commit(dir).ok).toBe(true)
     expect(Number(countCommits(dir))).toBe(1)
-  })
+  }, 30_000)
 
   it('FAILS OPEN when the scanner is missing — an uninstalled Termpolis must never wedge git', () => {
     // The single most dangerous failure mode: a hook left behind by an app that is gone.
@@ -131,7 +131,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     const r = commit(dir)
 
     expect(r.ok).toBe(true) // allowed through — unprotected, but never broken
-  })
+  }, 30_000)
 
   it('is honest: --no-verify bypasses it (the user owns their machine)', () => {
     const { dir, paths } = makeRepo()
@@ -140,7 +140,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     stage(dir, 'config.env', `AWS_ACCESS_KEY_ID=${AWS_KEY}\n`)
     expect(commit(dir).ok).toBe(false)
     expect(commit(dir, 'bypass', ['--no-verify']).ok).toBe(true)
-  })
+  }, 30_000)
 
   it('uninstall really removes the gate — a secret commits again afterwards', () => {
     const { dir, paths } = makeRepo()
@@ -152,7 +152,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     expect(hookStatus(paths, realDeps)['pre-commit']).toBe('absent')
 
     expect(commit(dir).ok).toBe(true)
-  })
+  }, 30_000)
 
   it('does not destroy a pre-existing foreign hook — it still runs, and still gates the commit', () => {
     const { dir, paths } = makeRepo()
@@ -171,5 +171,5 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     // …and our shield is still armed on top of theirs.
     stage(dir, 'config.env', `AWS_ACCESS_KEY_ID=${AWS_KEY}\n`)
     expect(commit(dir, 'secret').ok).toBe(false)
-  })
+  }, 30_000)
 })

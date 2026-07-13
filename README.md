@@ -52,7 +52,7 @@ Every AI session normally starts cold — you re-explain the task and burn 20–
 - **100% local & private.** Embeddings run in-process (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry, nothing leaves your machine. Optional at-rest encryption (AES-256-GCM) and conflict-free sync across machines via a folder you already sync.
 - **Built to trust.** Content-addressed dedup (never stores the same thing twice), millisecond HNSW retrieval at scale, staleness-guarded recall, and an observable `🧠 Loaded N memories` banner so you always know it fired.
 
-> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **5,500+ tests** (91% statements / 93% lines).
+> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **6,700+ tests** (96.6% statements / 97.8% lines).
 
 **The result: stop re-explaining context every session — and stop paying to reload it.**
 
@@ -94,6 +94,14 @@ What Termpolis **can** do is make the hosted path *substantially* safer than typ
 | Forensic record of what was typed at agents | **Local JSONL audit log**: every AI terminal open/close, **every secret observed leaving in a prompt** (`prompt_secret_sent` — names and rule ids only, never values), every code-chunk / env-dump detection, every Strict-Mode block — plus, as of v1.25, every blocked commit/push, every import scan and refusal, and every egress violation. 10 MB rotated, append-only, on disk only, wipeable. **On by default as of v1.25** (it previously defaulted to off, so for most installs it never existed). | Local. We don't ship it anywhere. If your machine is compromised, so is the log. |
 
 **v1.25 moved the perimeter to the boundaries that actually leak.** The secret engine used to watch exactly one of them — the keystrokes you send to an agent. It now also gates what a commit made through Termpolis captures, what a push made through Termpolis sends, and what gets written into the shared brain; an imported skill or MCP server is scanned before it is wired into an agent; and agent egress is *judged* against an allowlist rather than merely logged. Those gates — and the audit log — **default to on**, and an absent setting key keeps the secure default, so an existing install is protected on upgrade without touching Settings. Each can be turned off individually in **Settings → AI Security**; **Safe Import** lives in **Settings → General**.
+
+**v1.25.6 — three controls that were quietly not firing.** Every one was found by writing a test against code nobody had tested. If you are on **1.25.5 or earlier, this is what was silently not protecting you**:
+
+- **The GnuPG private-keyring rule could never fire.** `secring.gpg` — your *private* keyring — had been grouped into the sensitive-file rule's own **exclusion** list beside the *public* keyrings, so the exclusion returned before the match could. **A read of your private keyring was never flagged**, and the failure mode was total silence, which reads exactly like "nothing happened". Only the `pubring.*` entries are excluded now.
+- **A `NaN` limit defeated the audit-log clamp and returned the entire log.** `typeof NaN === 'number'` is true, so a NaN limit took the clamp arm rather than the 200 default — and `Math.min`/`Math.max` **propagate** NaN rather than clamping it, so the read degraded to "return everything", which is the one thing the 2,000-entry cap exists to prevent. The guard is `Number.isFinite` now.
+- **The Commit Shield reported repositories as PROTECTED after their hooks were removed.** The protected-repo list was compared with a bare `!==`, and install stores either the renderer's cwd (forward slashes) or the native picker's OS-native path (backslashes) — so install-by-picker followed by uninstall-by-cwd never matched, and the repo stayed on the list with its hooks already gone. **A security control that claims to be armed when it is not is worse than one that admits it is off.** It is keyed on a canonical path now (Windows-only separator/case folding — a backslash is a legal filename character on POSIX, and folding it there would conflate two genuinely different repos).
+
+Also fixed: **the Strict-Mode Gemini refusal message never rendered on Windows.** The banner was written to the PTY as a typed `printf` command, which only works on a shell that *has* `printf` — so on cmd.exe / PowerShell you got `'printf' is not recognized` instead of the explanation, at the exact moment you most needed to know why the launch was refused. **The block always worked; the message was what failed.** It now goes straight to the renderer.
 
 **What this is and isn't:** Termpolis is *defense in depth* for the hosted-model path — it raises the cost of accidental disclosure and gives you a record to audit. It is **not** a guarantee that source code cannot reach a provider — only not running the agent at all gives you that. The honest answer to *"can a hosted model leak my code?"* is "yes, if you send it; the question is whether the controls catch the obvious accidents and whether you trust the provider's terms for the rest." Termpolis is built for the engineers who've decided that trade-off is acceptable for the productivity hosted models give them.
 
@@ -181,14 +189,17 @@ A **Memory & Learning** tab in Settings turns the brain from a black box into an
   <img src="assets/memory-dashboard.png" alt="Termpolis Memory & Learning dashboard" width="820">
 </p>
 
+- **Vector memory — int8 quantization, and a straight answer about whether you want it (v1.25.5).** Your embeddings live in the **main process** — the same thread that pumps the PTY — so vector RAM is not an abstraction: at multi-GB it means GC pauses on the one thread whose stalls surface as **typing lag**. Storing vectors as `int8` instead of exact floats is **4× less vector RAM**. But a bare switch would be a trap — nobody can answer *"should I enable int8 quantization?"* in the abstract — so this is a **decision aid**. It polls live and shows the vector count and their **real RAM**, the **main-thread stall** (event-loop delay p99), **GC pauses**, and the vectors' **share of the process** — then gives a recommendation computed from *that machine*. Crucially, it is willing to tell you the toggle will **not** help you: *"your main thread is stalling — but the vectors are only 4% of this process; freeing them would not fix it, and you would lose exactness for nothing."* A control that only ever markets itself is an upsell, not a tool. **Off by default**, and at a typical corpus (~100k vectors, ~160 MB) it says **not needed**. **Settings → Memory & Learning.**
 - **What's stored** — memories by cognitive type (episodic · semantic · procedural · entity · summary) and by which agent authored them.
 - **Live knowledge graph** — a force-directed view of the real typed edges recall walks (bug → fix → what superseded it), colored by type.
 - **Code connections (v1.25)** — the structural code graph (symbols, and the caller/callee edges between them) now has a tile of its own. Indexing a repo was already minting thousands of these edges into a store the dashboard simply never read — so "connections" looked empty while the graph underneath was full.
 - **Competence, calibrated from real work (v1.25)** — per-domain self-competence now learns from what actually happened: a **landed commit** and a **passing *or* failing test run** both feed the calibration. It previously only fired on a completed swarm task, so for most people every domain sat at zero attempts and the panel stayed blank forever. A failing suite is what finally calibrates confidence **down**.
 - **Learning over time** — cumulative growth of the store and the distilled lessons within it.
-- **Reliability SLIs** — recall-fired rate, embedder availability, write durability, and typical (median) recall latency.
+- **Reliability SLIs** — recall-fired rate, embedder availability, write durability, and typical (median) recall latency. **(v1.25.6: a UI search that had fallen back to keyword — because the embedder was down — was still being booked as a *vector* recall, so the dashboard over-counted them. It reports the path that actually ran now. A proof dashboard that flatters itself is worse than no dashboard.)**
 - **Model portability & cross-agent learning** — which agents authored what, and where a lesson one agent learned was later reused by another.
 - **Receipts** — recalls served, solutions reused, and estimated tokens saved.
+
+> **On int8, two guarantees worth stating plainly.** Recall parity against the exact-float baseline is **benchmarked and CI-gated** — the benchmark scores the quantized store against the same committed baseline as the float one on the real `bge` model, and **recall@10 is identical**; a change that degraded it would fail the build. And it is **losslessly reversible**: the JSONL on disk **always keeps exact floats**, so int8 is purely an in-RAM representation, **never a data migration**. Turning it off restores full precision — nothing is ever destroyed.
 
 > The screenshot shows the dashboard's layout with representative sample data; your instance fills in with your own local numbers as you work.
 
@@ -366,7 +377,7 @@ When you're running multiple AI agents concurrently (or a whole swarm), you need
 - **Full Unicode support** — emoji, CJK characters, and special glyphs render correctly
 - **React ErrorBoundary** — catches render crashes gracefully with a recovery UI instead of white screen of death. Terminals survive UI errors.
 - **Sentry crash reporting** (optional) — set `VITE_SENTRY_DSN` and `SENTRY_DSN` env vars to enable. Strips PII, redacts paths. Disabled by default.
-- **5,500+ automated tests** — 5,522 unit & component tests (Vitest, 312 test files) at **91.29% statements / 85.29% branches / 90.14% functions / 93.64% lines**, plus a Playwright end-to-end suite that launches the real Electron app. Coverage is enforced as a hard CI gate — no commits allowed below threshold.
+- **6,700+ automated tests** — unit & component tests (Vitest, 336 test files) at **96.63% statements / 93.27% branches / 96.02% functions / 97.78% lines**, plus a Playwright end-to-end suite that launches the real Electron app. Coverage is enforced as a hard CI gate — no commits allowed below threshold. **v1.25.5 raised the gates to 95 / 92 / 95 / 96** (statements / branches / functions / lines): the old floors were being cleared by as little as 0.08 points, and a gate you clear by a rounding error is not a gate — it goes red on the next commit, and the cheapest way to make it green is to delete a test.
 
 ### Cross-Platform
 - **Windows**, **macOS**, **Linux** — all features work on all platforms
@@ -558,8 +569,8 @@ npm run dev
 npm test
 ```
 
-5,500+ total tests:
-- `npm test` — 5,522 unit & component tests (Vitest, 312 test files, 90%+ coverage)
+6,700+ total tests:
+- `npm test` — 6,700+ unit & component tests (Vitest, 336 test files, 95%+ coverage)
 - `npm run test:coverage` — unit tests with v8 coverage report
 - `npx playwright test` — 75 E2E tests (Playwright, launches the actual Electron app)
 - E2E tests capture 55 screenshots automatically in `e2e/screenshots/`
@@ -679,7 +690,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (5,500+ tests, 312 files, 90%+ coverage)
+├── tests/                           # Vitest test suites (6,700+ tests, 336 files, 95%+ coverage)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)
