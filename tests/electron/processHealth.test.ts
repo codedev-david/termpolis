@@ -199,3 +199,100 @@ describe('processHealth — live sampling', () => {
     spy.mockRestore()
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+// STALL RECORDING — the freezes the user actually feels.
+//
+// David: "the whole app freezes up for 2-3 seconds and says not responding, then goes back."
+// That is the main-thread event loop not being served. Windows paints "(Not Responding)" and every
+// window dies at once, because main pumps every PTY and serves all IPC.
+//
+// A percentile CANNOT show you this: one 2.5s stop-the-world pause barely moves a p99 over a 60s
+// window, so a dashboard of healthy averages will insist nothing is wrong while the app freezes
+// twice a minute. Freezes must be recorded as discrete EVENTS, with a cause.
+// ---------------------------------------------------------------------------------------------
+import {
+  recentStalls,
+  markBusy,
+  clearBusy,
+  tracked,
+  _pushStallForTests,
+  _clearStallsForTests,
+  STALL_RECORD_MS,
+  type Stall,
+} from '../../src/main/processHealth'
+
+const stall = (o: Partial<Stall> = {}): Stall => ({
+  ts: 1000,
+  durationMs: 2400,
+  cause: 'gc',
+  gcPauseMs: 2350,
+  heapUsedMB: 1100,
+  rssMB: 1500,
+  breadcrumb: null,
+  ...o,
+})
+
+describe('stall recording', () => {
+  beforeEach(() => { _clearStallsForTests(); clearBusy() })
+  afterEach(() => { _clearStallsForTests(); clearBusy() })
+
+  it('starts empty — no freezes is a real answer, not a missing one', () => {
+    expect(recentStalls()).toEqual([])
+  })
+
+  it('records a freeze with its duration, cause, and the heap at the time', () => {
+    _pushStallForTests(stall())
+    const [s] = recentStalls()
+    expect(s.durationMs).toBe(2400)
+    expect(s.cause).toBe('gc')
+    expect(s.heapUsedMB).toBe(1100) // the number that explains the freeze
+    expect(s.rssMB).toBe(1500)
+  })
+
+  it('returns a COPY — a caller cannot corrupt the history it is reading', () => {
+    _pushStallForTests(stall())
+    const a = recentStalls()
+    a.push(stall({ durationMs: 9999 }))
+    expect(recentStalls()).toHaveLength(1)
+  })
+
+  it('the threshold is a freeze you would notice, not a hiccup', () => {
+    // 400ms: below this it is lag; above it the app stops answering.
+    expect(STALL_RECORD_MS).toBeGreaterThanOrEqual(250)
+    expect(STALL_RECORD_MS).toBeLessThanOrEqual(1000)
+  })
+
+  it('a GC-caused freeze is labelled GC — not "unknown"', () => {
+    _pushStallForTests(stall({ cause: 'gc', gcPauseMs: 2350, durationMs: 2400 }))
+    expect(recentStalls()[0].cause).toBe('gc')
+  })
+
+  it('synchronous work is labelled by its BREADCRUMB, so the culprit has a name', () => {
+    _pushStallForTests(stall({ cause: 'sync-work', gcPauseMs: 0, breadcrumb: 'memory: persist HNSW index' }))
+    const [s] = recentStalls()
+    expect(s.cause).toBe('sync-work')
+    expect(s.breadcrumb).toBe('memory: persist HNSW index')
+  })
+})
+
+describe('breadcrumbs', () => {
+  beforeEach(() => { _clearStallsForTests(); clearBusy() })
+  afterEach(() => { clearBusy() })
+
+  it('tracked() runs the work and returns its value', () => {
+    expect(tracked('indexing', () => 6 * 7)).toBe(42)
+  })
+
+  it('tracked() clears the breadcrumb even when the work throws', () => {
+    // A breadcrumb left behind would mis-attribute the NEXT freeze to work that already finished —
+    // which is worse than no breadcrumb, because it is confidently wrong.
+    expect(() => tracked('boom', () => { throw new Error('x') })).toThrow('x')
+    _pushStallForTests(stall({ cause: 'sync-work', breadcrumb: null }))
+    expect(recentStalls()[0].breadcrumb).toBeNull()
+  })
+
+  it('markBusy / clearBusy are a matched pair', () => {
+    expect(() => { markBusy('a'); clearBusy() }).not.toThrow()
+  })
+})

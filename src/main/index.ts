@@ -285,7 +285,7 @@ async function reflectOnTask(
 const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
-import { startProcessHealth, processHealth, quantizationAdvice } from './processHealth'
+import { startProcessHealth, processHealth, quantizationAdvice, recentStalls, markBusy, clearBusy } from './processHealth'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1806,6 +1806,15 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
 // Exposed so the Memory panel can be a DECISION AID rather than a mystery switch: it reads the live
 // vector RAM, shows what the other mode would cost, and states the MEASURED recall impact. Off by
 // default; losslessly reversible (disk always keeps exact floats), so it can be tried and reverted.
+// Recent FREEZES of the main thread — the ones the user actually feels as "(Not Responding)".
+//
+// A percentile hides these: one 2.5 s stop-the-world pause barely moves a p99 over a 60 s window.
+// So they are recorded as discrete EVENTS, with what the heap looked like and what was in flight,
+// which is the difference between "the app feels slow sometimes" and "GC, 2.4 s, heap 1.1 GB".
+ipcMain.handle('memory:get-stalls', async () => {
+  try { return ok(recentStalls()) } catch (e: any) { return err(e.message) }
+})
+
 ipcMain.handle('memory:get-vector-ram', async () => {
   try {
     const vectors = vectorRamStats()

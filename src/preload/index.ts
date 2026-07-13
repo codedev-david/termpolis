@@ -160,6 +160,8 @@ const api: TermpolisAPI = {
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   /** Live vector RAM + main-thread health + a recommendation computed from THIS machine. */
   memoryGetVectorRam: () => ipcRenderer.invoke('memory:get-vector-ram'),
+  /** Recent main-thread FREEZES — the "(Not Responding)" ones, with cause and heap at the time. */
+  memoryGetStalls: () => ipcRenderer.invoke('memory:get-stalls'),
   /** Flip int8 quantization and rebuild the packed store. Lossless both ways — disk keeps floats. */
   memorySetVectorQuantize: (value: boolean) => ipcRenderer.invoke('memory:set-vector-quantize', { value }),
   memoryGetPrimerLimit: () => ipcRenderer.invoke('memory:get-primer-limit'),

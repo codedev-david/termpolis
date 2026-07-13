@@ -67,6 +67,15 @@ export function startProcessHealth(now: () => number = Date.now): void {
   } catch {
     loop = null // platform without the histogram — we simply report zeroes rather than crash
   }
+  lastTick = startedAt
+  gcPauseAtLastTick = 0
+  try {
+    ticker = setInterval(() => onTick(now), TICK_MS)
+    // A watchdog that keeps the process alive would be a bug in a desktop app.
+    ;(ticker as unknown as { unref?: () => void }).unref?.()
+  } catch {
+    ticker = null
+  }
   try {
     gcObserver = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
@@ -86,6 +95,8 @@ export function startProcessHealth(now: () => number = Date.now): void {
 }
 
 export function stopProcessHealth(): void {
+  try { if (ticker) clearInterval(ticker) } catch { /* ignore */ }
+  ticker = null
   try { loop?.disable() } catch { /* ignore */ }
   try { gcObserver?.disconnect() } catch { /* ignore */ }
   loop = null
@@ -94,6 +105,12 @@ export function stopProcessHealth(): void {
 
 /** @internal test-only — clears the accumulators without touching the observers. */
 export function _resetProcessHealthForTests(): void {
+  try { if (ticker) clearInterval(ticker) } catch { /* ignore */ }
+  ticker = null
+  stalls = []
+  breadcrumb = null
+  lastTick = 0
+  gcPauseAtLastTick = 0
   gcMajorCount = 0
   gcTotalPauseMs = 0
   gcMaxPauseMs = 0
@@ -120,6 +137,101 @@ export function processHealth(now: () => number = Date.now): ProcessHealth {
     sampleWindowMs: windowMs,
     gcTimeFraction: windowMs > 0 ? Math.min(1, gcTotalPauseMs / windowMs) : 0,
   }
+}
+
+/**
+ * A recorded FREEZE: a stretch where the main thread stopped serving the event loop entirely.
+ *
+ * This is the thing users actually feel. Windows paints the title bar "(Not Responding)" when the
+ * message pump stalls, so a 2-3 second block here is not "a bit of lag" — it is the whole app going
+ * dead and coming back. Averages and percentiles hide it (one 2.5 s freeze barely moves a p99 over a
+ * 60 s window), which is exactly why it has to be recorded as a discrete EVENT, not a statistic.
+ */
+export interface Stall {
+  /** Wall-clock ms when the thread came back. */
+  ts: number
+  /** How long the event loop was blocked. */
+  durationMs: number
+  /** What we can actually attribute it to. */
+  cause: 'gc' | 'sync-work'
+  /** Stop-the-world GC time inside this stall, when GC is the cause. */
+  gcPauseMs: number
+  heapUsedMB: number
+  rssMB: number
+  /** What was in flight, if anything marked itself. */
+  breadcrumb: string | null
+}
+
+/** A freeze the user would notice. Below this it is lag; above it, the app is "not responding". */
+export const STALL_RECORD_MS = 400
+/** How often the watchdog checks in. Small enough to time a freeze, big enough to cost nothing. */
+const TICK_MS = 250
+/** Keep the recent past only — this is a diagnostic, not a log file. */
+const MAX_STALLS = 100
+
+let stalls: Stall[] = []
+let ticker: ReturnType<typeof setInterval> | null = null
+let lastTick = 0
+let gcPauseAtLastTick = 0
+let breadcrumb: string | null = null
+
+/**
+ * Mark what the main thread is busy with, so a freeze can name its cause instead of just its size.
+ * A GC pause is attributed by the GC observer; everything else is synchronous work, and THIS is how
+ * we find out which synchronous work.
+ */
+export function markBusy(label: string): void { breadcrumb = label }
+export function clearBusy(): void { breadcrumb = null }
+
+/** Run `fn` with a breadcrumb attached. Any freeze during it is attributed to `label`. */
+export function tracked<T>(label: string, fn: () => T): T {
+  markBusy(label)
+  try {
+    return fn()
+  } finally {
+    clearBusy()
+  }
+}
+
+export function recentStalls(): Stall[] {
+  return [...stalls]
+}
+
+/** @internal test-only */
+export function _pushStallForTests(s: Stall): void { stalls.push(s) }
+/** @internal test-only */
+export function _clearStallsForTests(): void { stalls = [] }
+
+/**
+ * The watchdog.
+ *
+ * A timer set for TICK_MS that arrives LATE by more than STALL_RECORD_MS can only mean one thing:
+ * the event loop was not being served. That is a direct measurement of the freeze — not a proxy for
+ * it — and it costs one timer callback every 250 ms.
+ */
+function onTick(now: () => number): void {
+  const t = now()
+  const drift = t - lastTick - TICK_MS
+  lastTick = t
+  if (drift < STALL_RECORD_MS) {
+    gcPauseAtLastTick = gcTotalPauseMs
+    return
+  }
+  const gcInStall = Math.max(0, gcTotalPauseMs - gcPauseAtLastTick)
+  gcPauseAtLastTick = gcTotalPauseMs
+  const mem = process.memoryUsage()
+  stalls.push({
+    ts: t,
+    durationMs: Math.round(drift),
+    // If GC accounts for most of the freeze, GC IS the freeze. Otherwise something ran synchronously
+    // on the thread and the breadcrumb is our only witness.
+    cause: gcInStall >= drift * 0.5 ? 'gc' : 'sync-work',
+    gcPauseMs: Math.round(gcInStall),
+    heapUsedMB: Math.round(mem.heapUsed / 1048576),
+    rssMB: Math.round(mem.rss / 1048576),
+    breadcrumb,
+  })
+  if (stalls.length > MAX_STALLS) stalls = stalls.slice(-MAX_STALLS)
 }
 
 export type QuantVerdict =

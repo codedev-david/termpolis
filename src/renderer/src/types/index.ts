@@ -244,6 +244,16 @@ export interface TermpolisAPI {
   /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
   /** Live vector RAM + main-thread health + a recommendation computed from THIS machine. */
   memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>
+  /** Recent main-thread FREEZES: the "(Not Responding)" ones, with cause + heap at the time. */
+  memoryGetStalls: () => Promise<IpcResponse<Array<{
+    ts: number
+    durationMs: number
+    cause: 'gc' | 'sync-work'
+    gcPauseMs: number
+    heapUsedMB: number
+    rssMB: number
+    breadcrumb: string | null
+  }>>>
   /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
   memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>
   memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
