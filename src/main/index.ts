@@ -1190,8 +1190,13 @@ epo`),
  *  (NTFS is case-insensitive; POSIX is not, so only fold where it is correct to). */
 function shieldKey(p: string): string {
   // ghResolve: `resolve` is imported under an alias in this file.
-  const r = ghResolve(p).replace(/\\/g, '/').replace(/\/+$/, '')
-  return process.platform === 'win32' ? r.toLowerCase() : r
+  const r = ghResolve(p)
+  if (process.platform !== 'win32') return r.replace(/\/+$/, '')
+  // Windows only: separators are interchangeable and NTFS is case-insensitive, so the native
+  // picker's `C:\\repo` and the renderer's `C:/repo` are the SAME repository. On POSIX a
+  // backslash is a legal filename character and the filesystem is case-sensitive, so applying
+  // either of these there would conflate two genuinely different paths.
+  return r.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
 function readShieldRepos(): string[] {

@@ -687,7 +687,9 @@ describe('gitHooks', () => {
     // PROTECTED after its hooks were gone. A security control that claims to be armed when it is
     // not is worse than one that admits it is off. The same mismatch let install store the SAME
     // repo twice under two spellings.
-    it('uninstalling by a differently-spelled path still drops the repo from the list', async () => {
+    // Windows-only: on POSIX a backslash is a legal FILENAME character, not a separator, so a
+    // backslash-spelled path there really is a different path and must NOT be folded together.
+    it.runIf(process.platform === 'win32')('uninstalling by a differently-spelled path still drops the repo from the list', async () => {
       await invoke('gitHooks:install', { cwd: REPO })
       expect((await invoke('gitHooks:list')).data.some((e: any) => e.repo === REPO)).toBe(true)
 
@@ -700,7 +702,7 @@ describe('gitHooks', () => {
       expect(list.length).toBe(0) // and no stale ghost entry left behind under either spelling
     })
 
-    it('installing the same repo under two spellings stores it ONCE, not twice', async () => {
+    it.runIf(process.platform === 'win32')('installing the same repo under two spellings stores it ONCE, not twice', async () => {
       await invoke('gitHooks:install', { cwd: REPO })
       await invoke('gitHooks:install', { cwd: REPO.split('/').join('\\') })
       const list = (await invoke('gitHooks:list')).data
@@ -708,6 +710,7 @@ describe('gitHooks', () => {
     })
 
     it('a trailing slash is not a different repository', async () => {
+      await invoke('gitHooks:uninstall', { cwd: REPO }) // start from a known-empty list
       await invoke('gitHooks:install', { cwd: REPO })
       await invoke('gitHooks:install', { cwd: REPO + '/' })
       expect((await invoke('gitHooks:list')).data.length).toBe(1)
