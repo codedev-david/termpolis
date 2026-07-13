@@ -12,6 +12,8 @@
 // Secret samples use repeated characters: they satisfy the rule regexes while failing entropy
 // heuristics, so GitHub push protection will not block this file.
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { processOutboundChunk, scanText } from '../../src/main/aiSecurity'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
@@ -135,5 +137,72 @@ describe('what the user actually asked to catch', () => {
   it('an API key injected directly into the prompt is caught even with no name', () => {
     const r = scanText(`use this key: AKIA${'A'.repeat(16)} to list the buckets`)
     expect(r.hits.some((h) => h.rule === 'aws_access_key')).toBe(true)
+  })
+})
+
+// Guarantee 2 above is enforced through `auditNoteFor`, which MIRRORS how src/main/index.ts builds
+// the note. A mirror is only as good as its fidelity: someone could change index.ts to log
+// `h.sample` and every test in this file would still pass, because none of them read index.ts.
+//
+// `hit.sample` is the dangerous field. For the named rules the match spans the whole assignment
+// (`DB_PASSWORD=hunter2xyz`), so the sample's tail characters come out of the secret itself. It
+// exists for the manual scanner, where the user is looking at text they pasted themselves. It must
+// never reach a log file or cross the process boundary. So this reads the actual source.
+describe('source guard: no secret value can reach the audit log or the renderer', () => {
+  const mainSrc = readFileSync(resolve(__dirname, '../../src/main/index.ts'), 'utf8')
+
+  /** Text of every aiSecurityAppend({...}) call in main, with parens balanced. */
+  function appendCalls(): string[] {
+    const out: string[] = []
+    const marker = 'aiSecurityAppend('
+    let i = mainSrc.indexOf(marker)
+    while (i !== -1) {
+      let depth = 0
+      let j = i + marker.length - 1
+      for (; j < mainSrc.length; j++) {
+        if (mainSrc[j] === '(') depth++
+        else if (mainSrc[j] === ')') {
+          depth--
+          if (depth === 0) break
+        }
+      }
+      out.push(mainSrc.slice(i, j + 1))
+      i = mainSrc.indexOf(marker, j)
+    }
+    return out
+  }
+
+  it('extracted the append call sites (the guard is actually guarding something)', () => {
+    expect(appendCalls().length).toBeGreaterThan(5)
+  })
+
+  /** Strip `//` comments. The call sites are *documented* as never logging `hit.sample`, so a
+   *  naive scan matches the prose that promises the thing and reports the promise as the crime. */
+  const codeOnly = (s: string) => s.replace(/\/\/[^\n]*/g, '')
+
+  it('no audit-log write references hit.sample', () => {
+    const offenders = appendCalls()
+      .filter((c) => /\.sample\b/.test(codeOnly(c)))
+      .map((c) => c.slice(0, 120))
+    expect(offenders).toEqual([])
+  })
+
+  it('...and that check is not vacuous — it catches a sample smuggled into a note', () => {
+    // Guards that cannot fail are decoration. Prove this one bites, using the exact mutation a
+    // future maintainer would make: reach for the sample because it is right there on the hit.
+    const mutated = `aiSecurityAppend({ event: 'prompt_secret_sent', notes: r.hits.map((h) => h.sample).join(',') })`
+    expect(/\.sample\b/.test(codeOnly(mutated))).toBe(true)
+    // ...and that stripping comments does not make it blind to real code on the same line.
+    expect(/\.sample\b/.test(codeOnly(`notes: h.sample, // never log the value`))).toBe(true)
+  })
+
+  it('the secret-observed IPC strips sample before it crosses into the renderer', () => {
+    // A live credential in the renderer is a credential in a devtools console and in a heap
+    // snapshot. main must project the hits down to rule/label/name before sending.
+    const send = mainSrc.match(/webContents\.send\(\s*'terminal:secret-observed'[\s\S]{0,400}?\n\s*\}\)/)
+    expect(send).not.toBeNull()
+    expect(send![0]).not.toMatch(/hits:\s*r\.hits\s*,/) // the raw pass-through that used to be here
+    expect(send![0]).toMatch(/\.map\(/)
+    expect(send![0]).not.toMatch(/sample/)
   })
 })
