@@ -20,7 +20,11 @@ const AUDIT_PREV = 'ai-security-audit.prev.jsonl'
 const MAX_AUDIT_BYTES = 10 * 1024 * 1024
 
 export interface AiSecuritySettings {
-  redactionEnabled: boolean
+  // NOTE: `redactionEnabled` is gone. It tried to REDACT a prompt before it reached the PTY,
+  // which meant withholding keystrokes — and the handler then never wrote them, so typing
+  // "hello<CR>" delivered only "\r". It also could not have worked: against a TUI agent the
+  // text is already in the agent's own line buffer by the time you hit Enter. Replaced by
+  // always-on WATCH: forward every byte untouched, and record what went out.
   auditEnabled: boolean
   strictGeminiPaidOnly: boolean
   /** Block `git commit` / `git push` when the staged diff or unpushed patch carries a secret. */
@@ -37,7 +41,10 @@ export interface AuditEntry {
   event:
     | 'terminal_open'
     | 'terminal_close'
-    | 'redaction_hit'
+    | 'redaction_hit' // legacy: only ever appears in logs written before v1.25.2
+    | 'prompt_secret_sent' // a secret WAS sent to a model. Names + rule ids only, never values.
+    | 'code_chunk_sent'
+    | 'env_dump_sent'
     | 'manual_scan'
     | 'sensitive_file_read'
     | 'commit_scan'
@@ -57,6 +64,9 @@ interface RedactionRule {
   id: string
   label: string
   pattern: RegExp
+  /** Capture group holding the secret's NAME (e.g. `DB_PASSWORD`, `apiKey`). We log the name
+   *  and never the value — that is what tells you what to rotate, without us storing it. */
+  nameGroup?: number
 }
 
 // Patterns scoped to well-shaped, low-false-positive secrets. We deliberately
@@ -182,12 +192,39 @@ export const RULES: RedactionRule[] = [
   { id: 'jwt', label: 'JWT (3-part base64url)', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   { id: 'private_key', label: 'PEM private key block', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g },
   // === .env-style — last because it's the loosest catch-all. ===
-  { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', pattern: /\b(?:[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
+  // === Named secrets — the ones you can actually ACT on =================================
+  //
+  // These capture the secret's NAME (group 1), so the audit can say "DB_PASSWORD was sent to
+  // Claude, 3 times" — which tells you exactly what to rotate. The VALUE is never captured.
+  //
+  // These are deliberately broader than the token rules above. The old code refused generic
+  // password patterns because "too many false hits erode user trust" — but that was written
+  // when a hit REWROTE YOUR PROMPT. A false positive was destructive. Now that we only ever
+  // watch and log, a false positive costs one line in a log nobody is forced to read, while a
+  // miss costs a leaked credential. The trade flipped, so the rules can.
+  { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', nameGroup: 1, pattern: /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
+  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]*)"\s*:\s*"([^"\\]{6,})"/gi },
+  { id: 'password_literal', label: 'Password assigned to a literal', nameGroup: 1, pattern: /\b([A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*)\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
+  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]*)[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
+  { id: 'conn_string_password', label: 'Password in a connection string', nameGroup: 1, pattern: /\b(Password|Pwd)\s*=\s*([^;\s"']{4,})/gi },
+  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]*:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
+  // The shapeless secret. Every rule above matches either a KNOWN TOKEN SHAPE (AKIA…, ghp_…,
+  // sk-ant-…) or a NAMED assignment. Neither fires on the most human thing in the world:
+  //
+  //     "here is the api key for this code, please add it to line 42: 8f3a9b2c4d5e6f7a…"
+  //
+  // A bare hex blob, an internal corporate token, a plain password — no prefix, no `=`, no
+  // shape. Entropy alone can't save us (it flags hashes, UUIDs, git SHAs, base64 images).
+  // But the giveaway isn't the blob — it's the WORDS AROUND IT. So: anchor on the word, and
+  // require the nearby value to actually look like a credential (>=12 chars AND containing
+  // both a digit and a letter), which is what keeps "rotate the api key in production" from
+  // matching on "production". Heuristic, and named as one — but in watch-only mode a false
+  // positive is one line in a log, while a miss is a leaked credential.
+  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]*\d)(?=[A-Za-z0-9_+/=.-]*[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
 ]
 
 let userDataDir = ''
 let settings: AiSecuritySettings = {
-  redactionEnabled: false,
   auditEnabled: true,
   strictGeminiPaidOnly: false,
   commitShield: true,
@@ -212,7 +249,6 @@ export function initAiSecurity(): void {
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === 'object') {
         settings = {
-          redactionEnabled: parsed.redactionEnabled === true,
           strictGeminiPaidOnly: parsed.strictGeminiPaidOnly === true,
           // Default-ON gates. An ABSENT key means "never configured", so it keeps the
           // secure default — existing installs get the protection on upgrade. Only an
@@ -235,13 +271,6 @@ function persist(): void {
 export function getSettings(): AiSecuritySettings {
   if (!initialized) initAiSecurity()
   return { ...settings }
-}
-
-export function setRedactionEnabled(value: boolean): AiSecuritySettings {
-  if (!initialized) initAiSecurity()
-  settings.redactionEnabled = value === true
-  persist()
-  return getSettings()
 }
 
 export function setAuditEnabled(value: boolean): AiSecuritySettings {
@@ -281,18 +310,38 @@ export function setMemoryScrub(value: boolean): AiSecuritySettings {
 
 export interface ScanResult {
   hitCount: number
-  hits: { rule: string; label: string; sample: string }[]
+  /** `name` is the IDENTIFIER that leaked (`DB_PASSWORD`, `apiKey`) — never the value.
+   *  `sample` is a redacted fragment (`AKIA…Q2`) purely so a human can recognise which one. */
+  hits: { rule: string; label: string; sample: string; name?: string }[]
   redacted: string
 }
 
-// Result of staging an outbound terminal:write chunk through the scanner.
-//   action: 'pass' — forward `data` as-is, no scan ran (gate off, non-AI term, mid-input)
-//           'stage' — buffered into `newStaging`, no PTY write
-//           'redact' — flush triggered with hits; forward `writeChunk` (the
-//                      redacted tail) instead of the raw `data`
-//           'flush'  — flush triggered, no hits; forward `data` as-is
+// WATCH, BUT DO NOT TOUCH.
+//
+// This used to try to REDACT a prompt before it reached the PTY, which meant withholding
+// keystrokes ('stage') until submit. That was broken twice over:
+//
+//   1. The handler returned on 'stage' WITHOUT writing to the PTY, and 'flush' only ever
+//      wrote the newest chunk — so typing "hello<CR>" delivered just "\r". Your text was
+//      silently eaten and never echoed. (Invisible only because the toggle defaulted off.)
+//   2. It cannot work anyway. Against a TUI agent like Claude Code the text lives in the
+//      AGENT'S OWN line buffer by the time you press Enter; writing a "redacted" version to
+//      the PTY would APPEND to it, not replace it. You cannot un-send what the agent holds.
+//
+// So we no longer pretend. Every byte is forwarded IMMEDIATELY and UNMODIFIED — the
+// `writeChunk === data` invariant below is the entire "don't touch" contract, and it is
+// pinned by tests. We scan a shadow copy on submit/paste purely to RECORD what went out.
+// Detection, not prevention — and honest about which it is.
+//
+// Cost: the scan never runs per keystroke, only on Enter or paste. ~0.05 ms for a typical
+// prompt (0.3% of a 60fps frame); 2.8 ms for a 100 KB paste. The WASM embedder that once
+// caused typing lag was 100-300 ms — three orders of magnitude more.
+//
+//   action: 'pass'     — nothing to report (mid-typing, non-AI terminal, or a clean submit)
+//           'observed' — a secret was found in what was just sent. Already forwarded.
 export interface OutboundDecision {
-  action: 'pass' | 'stage' | 'flush' | 'redact'
+  action: 'pass' | 'observed'
+  /** ALWAYS identical to `data`. Never withheld, never rewritten. This is the contract. */
   writeChunk: string
   newStaging: string
   scan?: ScanResult
@@ -303,7 +352,6 @@ export interface OutboundDecision {
 }
 
 export interface OutboundOptions {
-  redactionEnabled: boolean
   isAiTerminal: boolean
   pasteThreshold?: number
   stageCap?: number
@@ -322,25 +370,30 @@ export function processOutboundChunk(
   if (typeof data !== 'string' || data.length === 0) {
     return { action: 'pass', writeChunk: data ?? '', newStaging: prevStaging, isSubmit: false, isPaste: false }
   }
-  if (!opts.redactionEnabled || !opts.isAiTerminal) {
+  if (!opts.isAiTerminal) {
     return { action: 'pass', writeChunk: data, newStaging: '', isSubmit: false, isPaste: false }
   }
   let buf = (prevStaging || '') + data
   if (buf.length > stageCap) buf = buf.slice(-stageCap)
   const isSubmit = /[\r\n]/.test(data)
   const isPaste = data.length >= pasteThreshold
+
+  // Mid-typing: forward the keystroke straight through and keep a shadow copy for context.
+  // We do NOT scan per keystroke — only what is actually submitted or pasted.
   if (!isSubmit && !isPaste) {
-    return { action: 'stage', writeChunk: '', newStaging: buf, isSubmit, isPaste }
+    return { action: 'pass', writeChunk: data, newStaging: buf, isSubmit, isPaste }
   }
+
   const scan = scanText(buf)
   const codeChunk = detectCodeChunk(buf)
   const envDump = detectEnvDump(buf)
+  const newStaging = isSubmit ? '' : buf
+
   if (scan.hitCount > 0) {
-    const redactedTail = scan.redacted.slice((prevStaging || '').length)
     return {
-      action: 'redact',
-      writeChunk: redactedTail,
-      newStaging: isSubmit ? '' : scan.redacted,
+      action: 'observed',
+      writeChunk: data, // unmodified — it has already gone to the agent; we only record it
+      newStaging,
       scan,
       codeChunk: codeChunk.isCode ? codeChunk : undefined,
       envDump: envDump.isEnvDump ? envDump : undefined,
@@ -349,9 +402,9 @@ export function processOutboundChunk(
     }
   }
   return {
-    action: 'flush',
+    action: 'pass',
     writeChunk: data,
-    newStaging: isSubmit ? '' : buf,
+    newStaging,
     scan,
     codeChunk: codeChunk.isCode ? codeChunk : undefined,
     envDump: envDump.isEnvDump ? envDump : undefined,
@@ -437,7 +490,10 @@ export function scanText(input: string): ScanResult {
     while ((m = re.exec(input)) !== null) {
       const matched = m[0]
       const sample = matched.length <= 8 ? '****' : matched.slice(0, 4) + '…' + matched.slice(-2)
-      hits.push({ rule: rule.id, label: rule.label, sample })
+      // The NAME (DB_PASSWORD, apiKey) is what makes the audit actionable — it tells you what
+      // to rotate. The VALUE is never captured, never logged, never stored.
+      const name = rule.nameGroup && m[rule.nameGroup] ? String(m[rule.nameGroup]) : undefined
+      hits.push({ rule: rule.id, label: rule.label, sample, name })
       redacted = redacted.split(matched).join('[REDACTED:' + rule.id + ']')
       if (re.flags.indexOf('g') === -1) break
     }

@@ -147,6 +147,16 @@ describe('termpolis-githook — CLI contract', () => {
     expect(err.text).toContain('AKIA')
   })
 
+  it('BLOCKS a staged password assignment that has no token shape at all', () => {
+    // `DB_PASSWORD=hunter2hunter2` carries no vendor prefix and no entropy signature — only the
+    // NAME gives it away. The named rules are what let the commit shield see it; before them,
+    // a line like this sailed straight into history.
+    const g = fakeGit({ [STAGED]: stagedDiff('+DB_PASSWORD=hunter2hunter2\n') })
+    const err = capture()
+    expect(hook.main(['pre-commit'], { git: g.git, readSettings: () => ON, stderr: err.stderr })).toBe(1)
+    expect(err.text).toContain('git commit --no-verify')
+  })
+
   it('exits 0 on a clean staged diff', () => {
     const g = fakeGit({ [STAGED]: '+const answer = 42\n' })
     const err = capture()
@@ -251,7 +261,9 @@ describe('termpolis-githook — the commitShield toggle (fails SECURE)', () => {
 
   it('reads commitShield:false out of a real settings file', () => {
     const p = join(scratch(), 'ai-security-settings.json')
-    writeFileSync(p, JSON.stringify({ redactionEnabled: true, commitShield: false }))
+    // Other keys in the file are none of the hook's business — it reads commitShield and
+    // nothing else. (`redactionEnabled` used to sit here; that setting no longer exists.)
+    writeFileSync(p, JSON.stringify({ auditEnabled: true, commitShield: false }))
     expect(hook.readSettings(p).commitShield).toBe(false)
   })
 
@@ -263,7 +275,7 @@ describe('termpolis-githook — the commitShield toggle (fails SECURE)', () => {
 
   it('an ABSENT commitShield key means ON — existing installs get the protection', () => {
     const p = join(scratch(), 'ai-security-settings.json')
-    writeFileSync(p, JSON.stringify({ redactionEnabled: false, auditEnabled: true }))
+    writeFileSync(p, JSON.stringify({ auditEnabled: true, strictGeminiPaidOnly: false }))
     expect(hook.readSettings(p).commitShield).toBe(true)
   })
 
@@ -395,6 +407,14 @@ describe('termpolis-githook — scanDiffText', () => {
     } finally {
       aws.pattern.lastIndex = 0
     }
+  })
+
+  it('attributes a NAMED-rule hit (env_secret) to its file and line like any other', () => {
+    const res = hook.scanDiffText(stagedDiff('+DB_PASSWORD=hunter2hunter2\n'))
+    const hit = res.hits.find((h) => h.rule === 'env_secret')
+    expect(hit).toBeDefined()
+    expect(hit!.file).toBe('.env')
+    expect(hit!.line).toBe(1)
   })
 
   it('returns a clean result for empty / non-string input', () => {
@@ -593,6 +613,9 @@ describe('termpolis-githook — standalone process invariants', () => {
     const rules = require_(join(process.cwd(), 'src', 'mcp-adapter', 'secretRules.cjs')) as { id: string }[]
     const src = readFileSync(HOOK_PATH, 'utf8')
     expect(src).toMatch(/require\(['"]\.\/secretRules(?:\.cjs)?['"]\)/)
-    expect(rules.length).toBeGreaterThan(50)
+    // Exactly the app's table — 97 rules. secretRulesSync.test.ts proves the two are identical;
+    // this pins the COUNT here too, because a hook that silently carried a shorter table would
+    // still pass every other test in this file while quietly missing secrets.
+    expect(rules.length).toBe(97)
   })
 })

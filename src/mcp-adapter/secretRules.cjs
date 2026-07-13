@@ -128,5 +128,33 @@ module.exports = [
   { id: 'jwt', label: 'JWT (3-part base64url)', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   { id: 'private_key', label: 'PEM private key block', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g },
   // === .env-style — last because it's the loosest catch-all. ===
-  { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', pattern: /\b(?:[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
+  // === Named secrets — the ones you can actually ACT on =================================
+  //
+  // These capture the secret's NAME (group 1), so the audit can say "DB_PASSWORD was sent to
+  // Claude, 3 times" — which tells you exactly what to rotate. The VALUE is never captured.
+  //
+  // These are deliberately broader than the token rules above. The old code refused generic
+  // password patterns because "too many false hits erode user trust" — but that was written
+  // when a hit REWROTE YOUR PROMPT. A false positive was destructive. Now that we only ever
+  // watch and log, a false positive costs one line in a log nobody is forced to read, while a
+  // miss costs a leaked credential. The trade flipped, so the rules can.
+  { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', nameGroup: 1, pattern: /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
+  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]*)"\s*:\s*"([^"\\]{6,})"/gi },
+  { id: 'password_literal', label: 'Password assigned to a literal', nameGroup: 1, pattern: /\b([A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*)\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
+  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]*)[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
+  { id: 'conn_string_password', label: 'Password in a connection string', nameGroup: 1, pattern: /\b(Password|Pwd)\s*=\s*([^;\s"']{4,})/gi },
+  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]*:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
+  // The shapeless secret. Every rule above matches either a KNOWN TOKEN SHAPE (AKIA…, ghp_…,
+  // sk-ant-…) or a NAMED assignment. Neither fires on the most human thing in the world:
+  //
+  //     "here is the api key for this code, please add it to line 42: 8f3a9b2c4d5e6f7a…"
+  //
+  // A bare hex blob, an internal corporate token, a plain password — no prefix, no `=`, no
+  // shape. Entropy alone can't save us (it flags hashes, UUIDs, git SHAs, base64 images).
+  // But the giveaway isn't the blob — it's the WORDS AROUND IT. So: anchor on the word, and
+  // require the nearby value to actually look like a credential (>=12 chars AND containing
+  // both a digit and a letter), which is what keeps "rotate the api key in production" from
+  // matching on "production". Heuristic, and named as one — but in watch-only mode a false
+  // positive is one line in a log, while a miss is a leaked credential.
+  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]*\d)(?=[A-Za-z0-9_+/=.-]*[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
 ]

@@ -688,9 +688,11 @@ describe('preload: aiSecurity API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:get-status')
   })
 
-  it('setRedaction', async () => {
-    await exposed.aiSecurity.setRedaction(true)
-    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:set-redaction', { value: true })
+  // The `setRedaction` bridge and its `aiSecurity:set-redaction` channel are GONE, along with
+  // the setting behind them. The test that drove them is deleted rather than stubbed; this
+  // negative assertion is what stops the API creeping back in unnoticed.
+  it('no longer exposes setRedaction — the redaction toggle is gone, not merely defaulted off', () => {
+    expect(exposed.aiSecurity.setRedaction).toBeUndefined()
   })
 
   it('setAudit', async () => {
@@ -723,21 +725,39 @@ describe('preload: aiSecurity API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:clear-audit')
   })
 
-  it('append', async () => {
-    const entry = { agent: 'claude', event: 'redacted' }
+  it('append forwards a real audit event', async () => {
+    // 'manual_scan' is one of the events main actually accepts from the renderer
+    // (terminal_open / terminal_close / redaction_hit / manual_scan). The old test sent
+    // event: 'redacted', which was never a valid event at all.
+    const entry = { agent: 'claude', event: 'manual_scan', hitCount: 2 }
     await exposed.aiSecurity.append(entry)
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSecurity:append', entry)
   })
 
-  it('onSecretsRedacted registers handler and returns cleanup', () => {
+  it('onSecretSent listens on the channel main actually emits', () => {
+    // The dead bridge, pinned. main emits 'terminal:secret-observed'; preload used to listen on
+    // 'terminal:secrets-redacted', so the leak banner could never fire — the one user-visible
+    // symptom of a real leak was silently unreachable. Renaming a channel on one side of an IPC
+    // pair is invisible to both TypeScript and the runtime, so the only thing that catches it is
+    // an assertion that names the channel on both sides. See also: the source-drift test below.
     const cb = vi.fn()
-    const cleanup = exposed.aiSecurity.onSecretsRedacted(cb)
-    expect(mockIpcRenderer.on).toHaveBeenCalledWith('terminal:secrets-redacted', expect.any(Function))
-    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:secrets-redacted')?.[1]
-    handler({}, { id: 't', hits: [], agent: 'claude' })
-    expect(cb).toHaveBeenCalledWith({ id: 't', hits: [], agent: 'claude' })
+    const cleanup = exposed.aiSecurity.onSecretSent(cb)
+    expect(mockIpcRenderer.on).toHaveBeenCalledWith('terminal:secret-observed', expect.any(Function))
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:secret-observed')?.[1]
+    handler({}, { id: 't', hits: [{ rule: 'env_secret', label: 'env', name: 'DB_PASSWORD' }], agent: 'claude' })
+    expect(cb).toHaveBeenCalledWith({
+      id: 't',
+      hits: [{ rule: 'env_secret', label: 'env', name: 'DB_PASSWORD' }],
+      agent: 'claude',
+    })
     cleanup()
-    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:secrets-redacted', expect.any(Function))
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:secret-observed', expect.any(Function))
+  })
+
+  it('does not expose the deleted onSecretsRedacted bridge', () => {
+    // Negative pin: the redaction API is gone, not renamed-and-aliased.
+    expect((exposed.aiSecurity as Record<string, unknown>).onSecretsRedacted).toBeUndefined()
+    expect((exposed.aiSecurity as Record<string, unknown>).setRedaction).toBeUndefined()
   })
 
   it('onCodeChunkDetected registers handler and returns cleanup', () => {

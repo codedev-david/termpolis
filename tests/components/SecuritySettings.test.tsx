@@ -26,7 +26,7 @@ const baseFacts = [
 const baseStatus = {
   success: true,
   data: {
-    settings: { redactionEnabled: false, auditEnabled: false },
+    settings: { auditEnabled: false },
     facts: baseFacts,
     auditPath: '/tmp/audit.jsonl',
     geminiAccount: {
@@ -41,8 +41,10 @@ const baseStatus = {
 beforeEach(() => {
   ;(window as any).aiSecurity = {
     getStatus: vi.fn().mockResolvedValue(baseStatus),
-    setRedaction: vi.fn().mockResolvedValue({ success: true, data: { redactionEnabled: true, auditEnabled: false } }),
-    setAudit: vi.fn().mockResolvedValue({ success: true, data: { redactionEnabled: false, auditEnabled: true } }),
+    // Deliberately still on the mock even though the bridge no longer ships it: if the component
+    // ever reaches for redaction again, the assertion below catches it instead of a silent throw.
+    setRedaction: vi.fn().mockResolvedValue({ success: true }),
+    setAudit: vi.fn().mockResolvedValue({ success: true, data: { auditEnabled: true } }),
     setStrictGemini: vi.fn().mockResolvedValue({ success: true, data: { strictGeminiPaidOnly: true } }),
     scan: vi.fn().mockResolvedValue({ success: true, data: { hitCount: 0, hits: [], redacted: '' } }),
     recentAudit: vi.fn().mockResolvedValue({ success: true, data: [] }),
@@ -88,15 +90,6 @@ describe('SecuritySettings', () => {
     })
   })
 
-  it('toggles redaction via IPC', async () => {
-    render(<SecuritySettings />)
-    const toggle = await screen.findByTestId('security-redaction-toggle')
-    fireEvent.click(toggle)
-    await waitFor(() => {
-      expect((window as any).aiSecurity.setRedaction).toHaveBeenCalledWith(true)
-    })
-  })
-
   it('toggles audit via IPC', async () => {
     render(<SecuritySettings />)
     const toggle = await screen.findByTestId('security-audit-toggle')
@@ -121,6 +114,24 @@ describe('SecuritySettings', () => {
     fireEvent.click(screen.getByTestId('security-scan-btn'))
     await waitFor(() => {
       expect(screen.getByText(/1 secret detected/i)).toBeInTheDocument()
+    })
+  })
+
+  it('names the identifier in a manual scan hit when the rule captured one', async () => {
+    ;(window as any).aiSecurity.scan = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        hitCount: 1,
+        hits: [{ rule: 'env_secret', label: '.env-style assignment', sample: 'DB_P…2', name: 'DB_PASSWORD' }],
+        redacted: '[REDACTED:env_secret]',
+      },
+    })
+    render(<SecuritySettings />)
+    const textarea = await screen.findByPlaceholderText(/Paste the prompt/)
+    fireEvent.change(textarea, { target: { value: 'DB_PASSWORD=hunter2xyz' } })
+    fireEvent.click(screen.getByTestId('security-scan-btn'))
+    await waitFor(() => {
+      expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
     })
   })
 
@@ -151,10 +162,6 @@ describe('SecuritySettings', () => {
     ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
       success: true,
       data: [{ ts: new Date().toISOString(), agent: 'claude', event: 'terminal_open', byteCount: 12 }],
-    })
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
     })
     render(<SecuritySettings />)
     const toggle = await screen.findByTestId('security-audit-toggle')
@@ -240,10 +247,6 @@ describe('SecuritySettings', () => {
       success: true,
       data: [{ ts: new Date().toISOString(), agent: 'claude', event: 'terminal_open' }],
     })
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
-    })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<SecuritySettings />)
     fireEvent.click(await screen.findByTestId('security-audit-toggle'))
@@ -260,10 +263,6 @@ describe('SecuritySettings', () => {
       success: true,
       data: [{ ts: new Date().toISOString(), agent: 'claude', event: 'terminal_open' }],
     })
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
-    })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<SecuritySettings />)
     fireEvent.click(await screen.findByTestId('security-audit-toggle'))
@@ -275,10 +274,6 @@ describe('SecuritySettings', () => {
   })
 
   it('Refresh button re-fetches recent audit entries', async () => {
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
-    })
     const recent = vi.fn().mockResolvedValue({ success: true, data: [] })
     ;(window as any).aiSecurity.recentAudit = recent
     render(<SecuritySettings />)
@@ -290,10 +285,6 @@ describe('SecuritySettings', () => {
   })
 
   it('renders audit table rows when entries are present', async () => {
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
-    })
     ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
       success: true,
       data: [
@@ -411,7 +402,7 @@ describe('SecuritySettings', () => {
     ;(window as any).aiSecurity.getStatus = vi.fn().mockResolvedValue({
       success: true,
       data: {
-        settings: { redactionEnabled: false, auditEnabled: false },
+        settings: { auditEnabled: false },
         facts: baseFacts,
         auditPath: '/tmp/audit.jsonl',
       },
@@ -442,7 +433,7 @@ describe('SecuritySettings', () => {
       success: true,
       data: {
         ...baseStatus.data,
-        settings: { redactionEnabled: false, auditEnabled: false, strictGeminiPaidOnly: true },
+        settings: { auditEnabled: false, strictGeminiPaidOnly: true },
       },
     })
     render(<SecuritySettings />)
@@ -458,6 +449,8 @@ describe('SecuritySettings', () => {
     expect(disclaimer.textContent).toMatch(/AS IS/i)
     expect(disclaimer.textContent).toMatch(/disclaim all liability/i)
     expect(disclaimer.textContent).toMatch(/Apache License 2\.0/i)
+    // and it must not oversell the watcher as a preventative control
+    expect(disclaimer.textContent).toMatch(/detects; it does not prevent/i)
   })
 
   it('renders the Background watchers card', async () => {
@@ -476,10 +469,6 @@ describe('SecuritySettings', () => {
   })
 
   it('counts sensitive_file_read events from the audit log', async () => {
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
-    })
     ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
       success: true,
       data: [
@@ -498,10 +487,6 @@ describe('SecuritySettings', () => {
   })
 
   it('lists up to 5 recent sensitive-file matches with agent + path', async () => {
-    ;(window as any).aiSecurity.setAudit = vi.fn().mockResolvedValue({
-      success: true,
-      data: { redactionEnabled: false, auditEnabled: true },
-    })
     ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
       success: true,
       data: [
@@ -515,6 +500,91 @@ describe('SecuritySettings', () => {
       expect(card.textContent).toMatch(/claude/)
       expect(card.textContent).toMatch(/\.env\.production/)
     })
+  })
+})
+
+// Prompt watching is NOT a toggle any more. The old "outbound prompt redaction" switch promised to
+// strip a secret out of a prompt before the agent saw it — a promise it could not keep (it withheld
+// keystrokes and never wrote them back, and a TUI agent already holds your line by the time you
+// press Enter). The panel must now say, without a switch to flip, that watching is permanent and
+// that it never touches your text.
+describe('SecuritySettings — prompt watching is always on', () => {
+  it('has NO redaction toggle, and never calls setRedaction', async () => {
+    render(<SecuritySettings />)
+    await screen.findByTestId('security-prompt-watch')
+    expect(screen.queryByTestId('security-redaction-toggle')).toBeNull()
+    expect(screen.queryByText(/Outbound prompt redaction/i)).toBeNull()
+    expect((window as any).aiSecurity.setRedaction).not.toHaveBeenCalled()
+  })
+
+  it('states that watching is permanent and non-destructive', async () => {
+    render(<SecuritySettings />)
+    const card = await screen.findByTestId('security-prompt-watch')
+    expect(card.textContent).toMatch(/always on/i)
+    expect(card.textContent).toMatch(/cannot be turned off/i)
+    expect(card.textContent).toMatch(/never modified, delayed, or withheld/i)
+    expect(card.textContent).toMatch(/recorder, not a filter/i)
+  })
+
+  it('shows the "Secrets sent to a model" count in the panel itself, with the NAMES', async () => {
+    ;(window as any).aiSecurity.getStatus = vi.fn().mockResolvedValue({
+      success: true,
+      data: { ...baseStatus.data, settings: { auditEnabled: true } },
+    })
+    ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
+      success: true,
+      data: [
+        {
+          ts: '2026-07-12T10:00:00.000Z',
+          agent: 'claude',
+          event: 'prompt_secret_sent',
+          hitCount: 2,
+          notes: 'DB_PASSWORD (env_secret), apiKey (json_secret)',
+        },
+      ],
+    })
+    render(<SecuritySettings />)
+    await waitFor(() => {
+      expect(screen.getByTestId('security-secrets-sent-count').textContent).toMatch(/2 sent/)
+    })
+    const names = screen.getByTestId('security-secret-names')
+    expect(names.textContent).toMatch(/DB_PASSWORD/)
+    expect(names.textContent).toMatch(/apiKey/)
+    expect(names.textContent).toMatch(/Rotate these/i)
+    // red, because this is a live leak, not a clean bill of health
+    expect(screen.getByTestId('security-secrets-sent-count').className).toMatch(/bg-\[#3a0d0d\]/)
+  })
+
+  it('does NOT count a code chunk as a secret sent', async () => {
+    ;(window as any).aiSecurity.getStatus = vi.fn().mockResolvedValue({
+      success: true,
+      data: { ...baseStatus.data, settings: { auditEnabled: true } },
+    })
+    ;(window as any).aiSecurity.recentAudit = vi.fn().mockResolvedValue({
+      success: true,
+      data: [
+        {
+          ts: '2026-07-12T10:00:00.000Z',
+          agent: 'claude',
+          event: 'code_chunk_sent',
+          byteCount: 40960,
+          notes: 'code-chunk:indentation,punctuation',
+        },
+      ],
+    })
+    render(<SecuritySettings />)
+    await waitFor(() => {
+      expect(screen.getByTestId('security-secrets-sent-count').textContent).toMatch(/0 sent/)
+    })
+    expect(screen.queryByTestId('security-secret-names')).toBeNull()
+  })
+
+  it('refuses to show a reassuring zero while the audit log is off', async () => {
+    // Watching still runs — but with nothing recorded, "0 sent" would be a claim we cannot make.
+    render(<SecuritySettings />)
+    const count = await screen.findByTestId('security-secrets-sent-count')
+    expect(count.textContent).toMatch(/audit log off/i)
+    expect(count.textContent).not.toMatch(/0 sent/)
   })
 })
 
@@ -582,5 +652,134 @@ describe('SecuritySettings — Commit Shield git hooks', () => {
     await waitFor(() =>
       expect(screen.getByTestId('security-hook-msg').textContent).toMatch(/Not a git repository/),
     )
+  })
+})
+
+// The audit log modal. The whole risk lives in the headline: a secret in the prompt path was NOT
+// stopped — it reached the provider — so the modal must never imply it was intercepted, and it must
+// name what leaked so the user can rotate it. The one remaining way a zero can lie is when the log
+// itself is off: watching still ran, but nothing was written down.
+describe('SecuritySettings — audit log modal', () => {
+  const statusWith = (settings: Record<string, boolean>) =>
+    vi.fn().mockResolvedValue({ success: true, data: { ...baseStatus.data, settings } })
+
+  const auditOf = (rows: any[]) => vi.fn().mockResolvedValue({ success: true, data: rows })
+
+  const openModal = async (): Promise<void> => {
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-open-audit'))
+    fireEvent.click(screen.getByTestId('security-open-audit'))
+    await waitFor(() => screen.getByTestId('audit-verdict'))
+  }
+
+  it('opens the audit log in a modal from the watchers panel', async () => {
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-open-audit'))
+    fireEvent.click(screen.getByTestId('security-open-audit'))
+    await waitFor(() => expect(screen.getByTestId('audit-log-modal')).toBeInTheDocument())
+  })
+
+  it('reports a secret as SENT, names it, and never claims it was intercepted', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
+    ;(window as any).aiSecurity.recentAudit = auditOf([
+      {
+        ts: new Date().toISOString(),
+        agent: 'claude',
+        event: 'prompt_secret_sent',
+        hitCount: 3,
+        notes: 'DB_PASSWORD (env_secret), apiKey (json_secret)',
+      },
+    ])
+    await openModal()
+
+    const verdict = screen.getByTestId('audit-verdict').textContent || ''
+    expect(verdict).toMatch(/3 secrets sent to a model/i)
+    expect(verdict).toMatch(/rotate/i)
+    expect(verdict).not.toMatch(/redacted/i)
+    expect(verdict).not.toMatch(/never received/i)
+
+    // THE ACTIONABLE PART: the identifier, front and centre.
+    const names = screen.getByTestId('audit-secret-names')
+    expect(names.textContent).toMatch(/DB_PASSWORD/)
+    expect(names.textContent).toMatch(/apiKey/)
+    expect(names.textContent).toMatch(/never the value/i)
+
+    expect(screen.getByTestId('audit-rows').textContent).toMatch(/SECRET SENT to a model/)
+  })
+
+  it('does not count a code_chunk_sent as a secret, but does show it', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
+    ;(window as any).aiSecurity.recentAudit = auditOf([
+      {
+        ts: new Date().toISOString(),
+        agent: 'claude',
+        event: 'code_chunk_sent',
+        byteCount: 40960,
+        notes: 'code-chunk:indentation,punctuation',
+      },
+    ])
+    await openModal()
+
+    expect(screen.getByTestId('audit-verdict').textContent).toMatch(/No secret has reached a model/i)
+    expect(screen.queryByTestId('audit-secret-names')).toBeNull()
+    const counts = screen.getByTestId('audit-counts').textContent || ''
+    expect(counts).toMatch(/Code chunks sent/)
+    expect(screen.getByTestId('audit-rows').textContent).toMatch(/Code chunk sent to a model/)
+  })
+
+  it('says clean when the log is recording and nothing was found', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
+    ;(window as any).aiSecurity.recentAudit = auditOf([
+      { ts: new Date().toISOString(), agent: 'claude', event: 'terminal_open' },
+    ])
+    await openModal()
+    expect(screen.getByTestId('audit-verdict').textContent).toMatch(/No secret has reached a model/i)
+  })
+
+  it('REFUSES to claim clean when nothing is being recorded', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: false })
+    ;(window as any).aiSecurity.recentAudit = auditOf([
+      { ts: new Date().toISOString(), agent: 'claude', event: 'terminal_open' },
+    ])
+    await openModal()
+
+    const verdict = screen.getByTestId('audit-verdict').textContent || ''
+    expect(verdict).toMatch(/nothing is being recorded/i)
+    expect(verdict).toMatch(/no record was kept/i)
+    expect(verdict).not.toMatch(/no secret has reached a model/i) // the dangerous sentence
+    expect(screen.getByTestId('audit-coverage').textContent).toMatch(/Recording: OFF/)
+  })
+
+  it('never renders prompt watching as a boolean chip — it says it is always on', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
+    await openModal()
+
+    const coverage = screen.getByTestId('audit-coverage').textContent || ''
+    expect(coverage).not.toMatch(/Prompt scanning/i) // a chip implies it could read OFF
+
+    const banner = screen.getByTestId('audit-watch-always-on').textContent || ''
+    expect(banner).toMatch(/always on and cannot be turned off/i)
+    expect(banner).toMatch(/unmodified/i)
+    expect(banner).toMatch(/recorded/i)
+  })
+
+  it('filters to only the security findings, then closes', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
+    ;(window as any).aiSecurity.recentAudit = auditOf([
+      { ts: new Date().toISOString(), agent: 'claude', event: 'terminal_open' },
+      { ts: new Date().toISOString(), agent: 'codex', event: 'commit_blocked', hitCount: 1 },
+    ])
+    await openModal()
+    await waitFor(() => screen.getByTestId('audit-rows'))
+
+    fireEvent.click(screen.getByTestId('audit-only-notable'))
+    await waitFor(() => {
+      const rows = screen.getByTestId('audit-rows').textContent || ''
+      expect(rows).toMatch(/Commit blocked/)
+      expect(rows).not.toMatch(/Terminal opened/)
+    })
+
+    fireEvent.click(screen.getByTestId('audit-close'))
+    await waitFor(() => expect(screen.queryByTestId('audit-log-modal')).toBeNull())
   })
 })

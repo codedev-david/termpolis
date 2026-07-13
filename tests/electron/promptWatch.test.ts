@@ -1,0 +1,139 @@
+// WATCH, BUT DO NOT TOUCH — the two guarantees, pinned.
+//
+// 1. THE TEXT IS NEVER TOUCHED. Every byte the user types is forwarded to the PTY
+//    immediately and unmodified. The old design withheld keystrokes so it could redact
+//    before the PTY, and the handler then never wrote them back — typing "hello<CR>"
+//    delivered only "\r". Your text was silently eaten. That must never be possible again.
+//
+// 2. THE SECRET VALUE NEVER REACHES THE LOG. An audit log full of secret fragments is just
+//    a second place the secret leaked to. We record the NAME (DB_PASSWORD) and the rule id,
+//    which is what tells you what to rotate — never the value, and not even a slice of it.
+//
+// Secret samples use repeated characters: they satisfy the rule regexes while failing entropy
+// heuristics, so GitHub push protection will not block this file.
+import { describe, it, expect, vi } from 'vitest'
+import { processOutboundChunk, scanText } from '../../src/main/aiSecurity'
+
+vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
+
+const AI = { isAiTerminal: true }
+
+/** Exactly how src/main/index.ts builds the audit note for a `prompt_secret_sent` event. */
+function auditNoteFor(text: string): string {
+  const r = scanText(text)
+  return [...new Set(r.hits.map((h) => (h.name ? `${h.name} (${h.rule})` : h.rule)))].join(', ')
+}
+
+/** Replay the terminal:write handler: it always ends in writeToTerminal(id, data). */
+function ptyReceives(keys: string[]): string {
+  let staging = ''
+  let pty = ''
+  for (const data of keys) {
+    const d = processOutboundChunk(staging, data, AI)
+    staging = d.newStaging
+    pty += d.writeChunk // the handler writes `data` unconditionally
+  }
+  return pty
+}
+
+describe('watch but do not touch — the text is never modified or withheld', () => {
+  it('typing "hello" then Enter delivers "hello\\r" to the PTY (this used to deliver just "\\r")', () => {
+    expect(ptyReceives(['h', 'e', 'l', 'l', 'o', '\r'])).toBe('hello\r')
+  })
+
+  it('writeChunk is ALWAYS exactly the data — even when a secret is found', () => {
+    const secret = `AWS_SECRET_KEY=${'A'.repeat(24)}\r`
+    const d = processOutboundChunk('', secret, AI)
+    expect(d.action).toBe('observed') // we saw it…
+    expect(d.writeChunk).toBe(secret) // …and forwarded it byte-for-byte anyway
+  })
+
+  it('a secret pasted mid-session is still delivered verbatim', () => {
+    const paste = `{"apiKey": "${'b'.repeat(20)}"}`
+    const d = processOutboundChunk('', paste, AI)
+    expect(d.isPaste).toBe(true)
+    expect(d.action).toBe('observed')
+    expect(d.writeChunk).toBe(paste)
+  })
+
+  it('never withholds: no decision may return an empty writeChunk for non-empty data', () => {
+    for (const data of ['a', 'x'.repeat(64), 'q\r', `TOKEN=${'z'.repeat(20)}\n`]) {
+      expect(processOutboundChunk('', data, AI).writeChunk).toBe(data)
+    }
+  })
+
+  it('does not scan mid-typing — only on submit or paste', () => {
+    const d = processOutboundChunk('', 'h', AI)
+    expect(d.action).toBe('pass')
+    expect(d.scan).toBeUndefined() // no scan cost per keystroke
+    expect(d.writeChunk).toBe('h')
+  })
+
+  it('a non-AI terminal is passed through untouched and unscanned', () => {
+    const d = processOutboundChunk('', `AWS_SECRET_KEY=${'A'.repeat(24)}\r`, { isAiTerminal: false })
+    expect(d.action).toBe('pass')
+    expect(d.scan).toBeUndefined()
+  })
+})
+
+describe('the audit note names the secret — and never contains its value', () => {
+  const cases: [string, string, string, string][] = [
+    // [what the user sent, the VALUE that must never leak, expected NAME, rule]
+    ['DB_PASSWORD=' + 'h'.repeat(14), 'h'.repeat(14), 'DB_PASSWORD', 'env_secret'],
+    ['{"apiKey": "' + 'k'.repeat(20) + '"}', 'k'.repeat(20), 'apiKey', 'json_secret'],
+    ['const password = "' + 'p'.repeat(12) + '"', 'p'.repeat(12), 'password', 'password_literal'],
+    ['Password=' + 'c'.repeat(12) + ';Server=db', 'c'.repeat(12), 'Password', 'conn_string_password'],
+  ]
+
+  it.each(cases)('%s -> logs the NAME, never the value', (text, value, name, rule) => {
+    const note = auditNoteFor(text)
+    expect(note).toContain(name) // actionable: you know what to rotate
+    expect(note).toContain(rule)
+    expect(note).not.toContain(value) // THE INVARIANT: the value never reaches disk
+  })
+
+  it('does not leak even a FRAGMENT of the value (no hit.sample in the note)', () => {
+    // `hit.sample` is `first4…last2` of the whole match — and for a named rule the match spans
+    // the entire assignment, so its tail characters come out of the secret itself. The note
+    // must never be built from it.
+    const value = 'q'.repeat(16)
+    const note = auditNoteFor(`API_TOKEN=${value}`)
+    expect(note).not.toContain(value.slice(-2))
+    expect(note).not.toContain('…')
+    expect(note).toBe('API_TOKEN (env_secret)')
+  })
+
+  it('credentials embedded in a URL are named by their user, not their password', () => {
+    const note = auditNoteFor(`git clone https://deploybot:${'s'.repeat(12)}@github.com/x/y.git`)
+    expect(note).toContain('deploybot')
+    expect(note).toContain('basic_auth_url')
+    expect(note).not.toContain('s'.repeat(12))
+  })
+
+  it('a clean prompt produces no note at all', () => {
+    expect(scanText('please refactor the auth middleware').hitCount).toBe(0)
+  })
+})
+
+describe('what the user actually asked to catch', () => {
+  it('a password in an appsettings.json pasted into the prompt', () => {
+    const r = scanText(`{"ConnectionStrings": {"Default": "x"}, "AdminPassword": "${'z'.repeat(14)}"}`)
+    expect(r.hitCount).toBeGreaterThan(0)
+    expect(r.hits.some((h) => h.name === 'AdminPassword')).toBe(true)
+  })
+
+  it('a .env file pasted into the prompt names every variable that leaked', () => {
+    const r = scanText(
+      `STRIPE_SECRET_KEY=${'a'.repeat(20)}\nDB_PASSWORD=${'b'.repeat(14)}\nDEBUG=true\n`,
+    )
+    const names = r.hits.map((h) => h.name)
+    expect(names).toContain('STRIPE_SECRET_KEY')
+    expect(names).toContain('DB_PASSWORD')
+    expect(names).not.toContain('DEBUG') // not a secret — do not cry wolf
+  })
+
+  it('an API key injected directly into the prompt is caught even with no name', () => {
+    const r = scanText(`use this key: AKIA${'A'.repeat(16)} to list the buckets`)
+    expect(r.hits.some((h) => h.rule === 'aws_access_key')).toBe(true)
+  })
+})

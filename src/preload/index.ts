@@ -314,7 +314,6 @@ contextBridge.exposeInMainWorld('safeImport', {
 // AI Security Center — outbound-data controls (redaction, audit, agent facts).
 contextBridge.exposeInMainWorld('aiSecurity', {
   getStatus: () => ipcRenderer.invoke('aiSecurity:get-status'),
-  setRedaction: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-redaction', { value }),
   setAudit: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-audit', { value }),
   setStrictGemini: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-strict-gemini', { value }),
   setCommitShield: (value: boolean) => ipcRenderer.invoke('aiSecurity:set-commit-shield', { value }),
@@ -330,15 +329,18 @@ contextBridge.exposeInMainWorld('aiSecurity', {
   clearAudit: () => ipcRenderer.invoke('aiSecurity:clear-audit'),
   append: (entry: { agent: string; event: string; terminalId?: string; byteCount?: number; hitCount?: number; notes?: string }) =>
     ipcRenderer.invoke('aiSecurity:append', entry),
-  onSecretsRedacted: (
-    cb: (data: { id: string; hits: { rule: string; label: string; sample: string }[]; agent: string | null }) => void,
+  // A secret WAS sent to a model. Nothing was redacted and nothing was withheld — by the time
+  // this fires the bytes are already gone. There is no `sample` in the payload on purpose:
+  // main strips it, because the renderer only ever needs to say WHAT leaked, not show it.
+  onSecretSent: (
+    cb: (data: { id: string; hits: { rule: string; label: string; name?: string }[]; agent: string | null }) => void,
   ) => {
     const handler = (
       _: Electron.IpcRendererEvent,
-      data: { id: string; hits: { rule: string; label: string; sample: string }[]; agent: string | null },
+      data: { id: string; hits: { rule: string; label: string; name?: string }[]; agent: string | null },
     ) => cb(data)
-    ipcRenderer.on('terminal:secrets-redacted', handler)
-    return () => ipcRenderer.removeListener('terminal:secrets-redacted', handler)
+    ipcRenderer.on('terminal:secret-observed', handler)
+    return () => ipcRenderer.removeListener('terminal:secret-observed', handler)
   },
   onCodeChunkDetected: (
     cb: (data: { id: string; agent: string | null; byteSize: number; lineCount: number; signals: string[] }) => void,

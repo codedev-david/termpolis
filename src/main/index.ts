@@ -76,7 +76,6 @@ import {
 import {
   initAiSecurity,
   getSettings as getAiSecuritySettings,
-  setRedactionEnabled,
   setAuditEnabled,
   scanText as aiSecurityScan,
   processOutboundChunk,
@@ -650,79 +649,79 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   // well-shaped secrets BEFORE it reaches the PTY. The decision logic lives
   // in processOutboundChunk so it can be unit-tested without IPC.
   try {
-    const s = getAiSecuritySettings()
     const decision = processOutboundChunk(aiInputStaging.get(id) ?? '', data, {
-      redactionEnabled: s.redactionEnabled,
       isAiTerminal: aiTerminalFlag.has(id),
     })
-    if (decision.action === 'stage') {
-      aiInputStaging.set(id, decision.newStaging)
-      return
-    }
-    if (decision.action === 'redact') {
+    aiInputStaging.set(id, decision.newStaging)
+
+    // A secret was in what just went to the model. It is ALREADY GONE — we do not pretend
+    // otherwise. Record it (rule ids + a redacted sample; never the prompt itself) so the
+    // audit log can answer "was a secret sent?" after the fact, which is the one question
+    // the old redact-before-send design could never answer when it was switched off.
+    if (decision.action === 'observed') {
       const r = decision.scan!
       aiSecurityAppend({
         agent: detectedAgent ?? 'unknown',
-        event: 'redaction_hit',
+        event: 'prompt_secret_sent',
         terminalId: id,
         hitCount: r.hitCount,
-        byteCount: (aiInputStaging.get(id) ?? '').length + data.length,
-        notes: r.hits.map((h) => h.rule).join(','),
+        byteCount: data.length,
+        // NAMES AND RULE IDS ONLY. Never the value, and never `hit.sample` either — for the
+        // named rules the match spans the whole assignment (`DB_PASSWORD=hunter2xyz`), so the
+        // sample's tail characters come out of the secret itself. An audit log full of secret
+        // fragments is just a second place the secret leaked to.
+        notes: [...new Set(r.hits.map((h) => (h.name ? `${h.name} (${h.rule})` : h.rule)))].join(', '),
       }).catch(() => {})
-      writeToTerminal(id, decision.writeChunk)
-      mainWindow?.webContents.send('terminal:secrets-redacted', {
+      // Same rule as the audit note, enforced a second time at the process boundary: the
+      // renderer is told WHAT leaked, never the value. `hit.sample` is deliberately dropped
+      // here — for the named rules the match spans the whole assignment, so the sample carries
+      // the secret inside it, and shipping that into the renderer would put a live credential
+      // in a devtools console, a heap snapshot and any future component that renders a hit.
+      // The banner needs a name and a label to be useful; it never needs the value.
+      mainWindow?.webContents.send('terminal:secret-observed', {
         id,
-        hits: r.hits,
+        hits: r.hits.map((h) => ({ rule: h.rule, label: h.label, name: h.name })),
         agent: detectedAgent ?? null,
       })
-      aiInputStaging.set(id, decision.newStaging)
-      return
     }
-    if (decision.action === 'flush') {
-      aiInputStaging.set(id, decision.newStaging)
-    }
-    // Notify the renderer when a code-shaped or env-shaped prompt fires so
-    // the UI can surface a one-time "X lines of code detected" banner. We
-    // never block here — the prompt has already been forwarded and the user
-    // can use the banner to cancel future similar sends. (A 'redact' decision
-    // returns earlier with its own secrets-redacted notification, so by here
-    // the action can only be 'flush' or 'pass'.)
-    if (decision.action === 'flush') {
-      if (decision.codeChunk?.isCode) {
-        aiSecurityAppend({
-          agent: detectedAgent ?? 'unknown',
-          event: 'redaction_hit',
-          terminalId: id,
-          byteCount: decision.codeChunk.byteSize,
-          notes: 'code-chunk:' + decision.codeChunk.signals.join(','),
-        }).catch(() => {})
-        mainWindow?.webContents.send('terminal:code-chunk-detected', {
-          id,
-          agent: detectedAgent ?? null,
-          byteSize: decision.codeChunk.byteSize,
-          lineCount: decision.codeChunk.lineCount,
-          signals: decision.codeChunk.signals,
-        })
-      }
-      if (decision.envDump?.isEnvDump) {
-        aiSecurityAppend({
-          agent: detectedAgent ?? 'unknown',
-          event: 'redaction_hit',
-          terminalId: id,
-          byteCount: (aiInputStaging.get(id) ?? '').length + data.length,
-          notes: 'env-dump:' + decision.envDump.varCount + ':' + decision.envDump.variableNames.slice(0, 5).join(','),
-        }).catch(() => {})
-        mainWindow?.webContents.send('terminal:env-dump-detected', {
-          id,
-          agent: detectedAgent ?? null,
-          varCount: decision.envDump.varCount,
-          variableNames: decision.envDump.variableNames,
-        })
-      }
-    }
-    // 'pass' or 'flush' both fall through to the normal write path below.
-  } catch {}
 
+    // Code-shaped / env-shaped prompts get their OWN events. They used to be logged as
+    // 'redaction_hit', which conflated "you pasted a big file" with "you leaked a key" and
+    // would inflate the secrets-sent count with things that are not secrets at all.
+    if (decision.codeChunk?.isCode) {
+      aiSecurityAppend({
+        agent: detectedAgent ?? 'unknown',
+        event: 'code_chunk_sent',
+        terminalId: id,
+        byteCount: decision.codeChunk.byteSize,
+        notes: 'code-chunk:' + decision.codeChunk.signals.join(','),
+      }).catch(() => {})
+      mainWindow?.webContents.send('terminal:code-chunk-detected', {
+        id,
+        agent: detectedAgent ?? null,
+        byteSize: decision.codeChunk.byteSize,
+        lineCount: decision.codeChunk.lineCount,
+        signals: decision.codeChunk.signals,
+      })
+    }
+    if (decision.envDump?.isEnvDump) {
+      aiSecurityAppend({
+        agent: detectedAgent ?? 'unknown',
+        event: 'env_dump_sent',
+        terminalId: id,
+        byteCount: data.length,
+        notes: 'env-dump:' + decision.envDump.varCount + ':' + decision.envDump.variableNames.slice(0, 5).join(','),
+      }).catch(() => {})
+      mainWindow?.webContents.send('terminal:env-dump-detected', {
+        id,
+        agent: detectedAgent ?? null,
+        varCount: decision.envDump.varCount,
+        variableNames: decision.envDump.variableNames,
+      })
+    }
+  } catch { /* watching must never break the terminal */ }
+
+  // ALWAYS. Unmodified. Never withheld. This is the "don't touch" half of the contract.
   writeToTerminal(id, data)
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(data)) {
@@ -939,9 +938,6 @@ ipcMain.handle('aiSecurity:get-status', () => {
 })
 ipcMain.handle('aiSecurity:set-strict-gemini', (_, { value }: { value: boolean }) => {
   try { return ok(setStrictGeminiPaidOnly(value === true)) } catch (e: any) { return err(e.message) }
-})
-ipcMain.handle('aiSecurity:set-redaction', (_, { value }: { value: boolean }) => {
-  try { return ok(setRedactionEnabled(value === true)) } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('aiSecurity:set-audit', (_, { value }: { value: boolean }) => {
   try {

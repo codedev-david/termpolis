@@ -36,14 +36,35 @@ beforeAll(() => {
     quitAndInstall: vi.fn().mockResolvedValue({ success: true }),
     onState: vi.fn(() => () => {}),
   }
+  // Mirrors the REAL aiSecurity bridge. `redactionEnabled` and `setRedaction()` are gone from
+  // both the settings object and the preload surface, so the mock must not invent them: a mock
+  // that keeps offering an API the preload dropped is exactly how a component goes on calling a
+  // method that is `undefined` in production and nothing notices.
   ;(window as any).aiSecurity = {
-    getStatus: vi.fn().mockResolvedValue({ success: true, data: { settings: { redactionEnabled: false, auditEnabled: false }, facts: [], auditPath: '/tmp/audit.jsonl' } }),
-    setRedaction: vi.fn().mockResolvedValue({ success: true, data: { redactionEnabled: true, auditEnabled: false } }),
-    setAudit: vi.fn().mockResolvedValue({ success: true, data: { redactionEnabled: false, auditEnabled: true } }),
+    getStatus: vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        settings: {
+          auditEnabled: true,
+          strictGeminiPaidOnly: false,
+          commitShield: true,
+          egressGuard: true,
+          memoryScrub: true,
+        },
+        facts: [],
+        auditPath: '/tmp/audit.jsonl',
+      },
+    }),
+    setAudit: vi.fn().mockResolvedValue({ success: true, data: { auditEnabled: true } }),
+    setStrictGemini: vi.fn().mockResolvedValue({ success: true, data: { strictGeminiPaidOnly: true } }),
+    setCommitShield: vi.fn().mockResolvedValue({ success: true, data: { commitShield: true } }),
+    setEgressGuard: vi.fn().mockResolvedValue({ success: true, data: { egressGuard: true } }),
+    setMemoryScrub: vi.fn().mockResolvedValue({ success: true, data: { memoryScrub: true } }),
     scan: vi.fn().mockResolvedValue({ success: true, data: { hitCount: 0, hits: [], redacted: '' } }),
     recentAudit: vi.fn().mockResolvedValue({ success: true, data: [] }),
     clearAudit: vi.fn().mockResolvedValue({ success: true }),
     append: vi.fn().mockResolvedValue({ success: true }),
+    gitHooksList: vi.fn().mockResolvedValue({ success: true, data: [] }),
   }
 })
 

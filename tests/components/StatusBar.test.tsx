@@ -387,10 +387,28 @@ describe('StatusBar', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.getByText('AI Security Center')).toBeInTheDocument()
-    expect(screen.getByText(/Secret scanner/)).toBeInTheDocument()
+    expect(screen.getByText(/Prompt watch/)).toBeInTheDocument()
     expect(screen.getByText(/Sensitive-file watcher/)).toBeInTheDocument()
     expect(screen.getByText(/Per-agent egress audit/)).toBeInTheDocument()
     expect(screen.getByText(/Strict Mode/)).toBeInTheDocument()
+  })
+
+  it('help dialog describes the prompt path as detection, never as prevention', () => {
+    // The Help modal is where a user forms their mental model of what Termpolis protects. It
+    // used to say "Secret scanner ... redacts secrets before they reach the AI" — a claim that
+    // is not merely stale but actively dangerous, because someone who believes it will paste a
+    // key expecting to be saved. Prevention is claimed at the git boundary and in the memory
+    // layer, where it is real; on the prompt path we only ever watch.
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    const dialog = screen.getByText('AI Security Center').closest('div')!.parentElement!
+    const copy = dialog.textContent || ''
+    expect(copy).toMatch(/forwarded untouched/i)
+    expect(copy).toMatch(/recorded, not blocked/i)
+    expect(copy).toMatch(/never stores the value/i)
+    // The prompt bullet must not promise a save it cannot make.
+    expect(copy).not.toMatch(/redacts? (?:secrets?|it|them|your prompt) before/i)
+    expect(copy).not.toMatch(/before (?:it|they) reach(?:es)? the (?:AI|model|provider)/i)
   })
 
   it('keyboard-shortcuts section lists the four observability shortcuts', () => {

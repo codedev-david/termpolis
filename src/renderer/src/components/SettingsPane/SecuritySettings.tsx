@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { copyText, readClipboardText } from '../../lib/clipboard'
+import { summarizeAudit, type AuditEntry } from '../../lib/auditSummary'
+import { AuditLogModal } from './AuditLogModal'
 
 interface AgentDataFact {
   agentId: string
@@ -11,19 +13,11 @@ interface AgentDataFact {
   notes: string
 }
 
-interface AuditEntry {
-  ts: string
-  agent: string
-  event: string
-  terminalId?: string
-  byteCount?: number
-  hitCount?: number
-  notes?: string
-}
-
 interface ScanResult {
   hitCount: number
-  hits: { rule: string; label: string; sample: string }[]
+  /** `name` is the identifier that matched (`DB_PASSWORD`, `apiKey`) — what you actually rotate.
+   *  It is absent for rules that have no name to give (an AWS key IS its own identifier). */
+  hits: { rule: string; label: string; sample: string; name?: string }[]
   redacted: string
 }
 
@@ -41,10 +35,15 @@ interface ShieldRepo {
   status: Record<string, 'installed' | 'absent' | 'foreign'> | null
 }
 
+// NOTE: there is no `setRedaction` here any more, and no `redactionEnabled` in the settings.
+// Outbound redaction was deleted: it withheld keystrokes to rewrite them (and then never wrote
+// them back — typing "hello<CR>" delivered only "\r"), and against a TUI agent it could never have
+// worked, because the text is already in the agent's own line buffer by the time you press Enter.
+// What replaced it is WATCH, which is not a setting: it is always on and forwards every byte
+// untouched. Nothing in this bridge can turn it off, which is exactly the point.
 interface AiSecurityAPI {
-  getStatus: () => Promise<{ success: boolean; data?: { settings: { redactionEnabled: boolean; auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus } }>
-  setRedaction: (value: boolean) => Promise<{ success: boolean; data?: { redactionEnabled: boolean; auditEnabled: boolean } }>
-  setAudit: (value: boolean) => Promise<{ success: boolean; data?: { redactionEnabled: boolean; auditEnabled: boolean } }>
+  getStatus: () => Promise<{ success: boolean; data?: { settings: { auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus } }>
+  setAudit: (value: boolean) => Promise<{ success: boolean; data?: { auditEnabled: boolean } }>
   setStrictGemini?: (value: boolean) => Promise<{ success: boolean; data?: { strictGeminiPaidOnly: boolean } }>
   setCommitShield?: (value: boolean) => Promise<{ success: boolean }>
   gitHooksList?: () => Promise<{ success: boolean; data?: ShieldRepo[] }>
@@ -75,9 +74,13 @@ function retentionLabel(r: AgentDataFact['retentionDays']): string {
   return r + '-day retention'
 }
 
+/** How many rows the inline "Recent entries" table renders. We FETCH far more than this (see
+ *  refreshAudit) so the secrets-sent count is stable, but rendering 500 rows into a settings pane
+ *  nobody scrolls is just wasted paint — the audit modal is the full view. */
+const RECENT_ROWS = 50
+
 export function SecuritySettings() {
   const api = (typeof window !== 'undefined' ? window.aiSecurity : undefined)
-  const [redactionEnabled, setRedactionEnabled] = useState(false)
   const [auditEnabled, setAuditEnabled] = useState(false)
   const [strictGemini, setStrictGemini] = useState(false)
   // Default-ON gates (see aiSecurity.ts): an absent key means "never configured",
@@ -85,6 +88,7 @@ export function SecuritySettings() {
   const [commitShield, setCommitShield] = useState(true)
   const [egressGuard, setEgressGuard] = useState(true)
   const [memoryScrub, setMemoryScrub] = useState(true)
+  const [showAudit, setShowAudit] = useState(false)
   const [shieldRepos, setShieldRepos] = useState<ShieldRepo[]>([])
   const [hookBusy, setHookBusy] = useState(false)
   const [hookMsg, setHookMsg] = useState('')
@@ -100,7 +104,6 @@ export function SecuritySettings() {
     if (!api) { setLoading(false); return }
     api.getStatus().then(res => {
       if (res.success && res.data) {
-        setRedactionEnabled(res.data.settings.redactionEnabled)
         setAuditEnabled(res.data.settings.auditEnabled)
         setStrictGemini(res.data.settings.strictGeminiPaidOnly === true)
         setCommitShield(res.data.settings.commitShield !== false)
@@ -114,20 +117,24 @@ export function SecuritySettings() {
     }).catch(() => setLoading(false))
   }, [])
 
+  // 500, not 50: the "Secrets sent to a model" number below is read as a fact about this machine,
+  // so it must not silently fall to zero the moment 50 routine terminal_open rows push a real hit
+  // out of the window. The table still renders only the newest 50 — see RECENT_ROWS.
   const refreshAudit = async () => {
     if (!api) return
-    const res = await api.recentAudit(50)
+    const res = await api.recentAudit(500)
     if (res.success && res.data) setAuditEntries(res.data)
   }
 
   useEffect(() => { if (auditEnabled) refreshAudit() }, [auditEnabled])
 
-  const toggleRedaction = async () => {
-    if (!api) return
-    const next = !redactionEnabled
-    setRedactionEnabled(next)
-    await api.setRedaction(next)
-  }
+  // The same summariser the audit modal uses, so the panel and the modal can never disagree about
+  // whether a secret went out. With the log off there is nothing to summarise — and `audit-off`
+  // is precisely the verdict that refuses to call that state "clean".
+  const promptWatch = useMemo(
+    () => summarizeAudit(auditEntries, { auditEnabled, commitShield, egressGuard, memoryScrub }),
+    [auditEntries, auditEnabled, commitShield, egressGuard, memoryScrub],
+  )
 
   const toggleAudit = async () => {
     if (!api) return
@@ -351,22 +358,70 @@ export function SecuritySettings() {
         </div>
       </div>
 
-      {/* Redaction toggle */}
-      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
-        <button
-          onClick={toggleRedaction}
-          aria-label="Toggle outbound prompt redaction"
-          data-testid="security-redaction-toggle"
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${redactionEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'}`}
-        >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${redactionEnabled ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
-        </button>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Outbound prompt redaction (preview)</span>
-          <span className="text-xs text-[#9ca3af] leading-relaxed">
-            Scans copied / pasted text for AWS keys, GitHub PATs, OpenAI / Anthropic / Google keys, JWTs, and .env-style assignments. Use the scanner below before pasting into an AI agent.
+      {/* Prompt watching — NOT a toggle. There is deliberately no switch here: the old "outbound
+          redaction" toggle promised to strip secrets out of a prompt before it reached the agent,
+          which is a promise no terminal can keep (by the time you press Enter, a TUI agent already
+          holds your line). It is replaced by a watcher that touches nothing and tells the truth. */}
+      <div
+        data-testid="security-prompt-watch"
+        className="flex flex-col gap-2 p-3 border border-[#1f6e3a] bg-[#0d2418] rounded"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-medium text-[#7ee2a3] flex items-center gap-2">
+            <i className="fa-solid fa-eye"></i>
+            Prompt watching &mdash; always on
+          </span>
+          <span className="text-[10px] px-2 py-0.5 rounded border bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a] whitespace-nowrap">
+            Cannot be turned off
           </span>
         </div>
+        <span className="text-xs text-[#cfead8] leading-relaxed">
+          Every prompt you submit to an AI agent &mdash; and every paste &mdash; is scanned for well-shaped secrets against the
+          same 91-rule engine used at the git boundary. <strong>Your text is never modified, delayed, or withheld:</strong> every
+          byte reaches the agent exactly as you typed it, and the scan runs on a copy. This is a <strong>recorder, not a filter</strong>.
+          A hit means the value has already gone to the provider, so Termpolis tells you <em>which identifier</em> leaked
+          instead of pretending it can un-send it &mdash; rotate what it names.
+        </span>
+
+        <div className="flex items-center gap-2 pt-2 border-t border-[#1f6e3a]">
+          <span className="text-xs font-medium text-[#d4d4d4]">Secrets sent to a model</span>
+          <span
+            data-testid="security-secrets-sent-count"
+            className={`text-[10px] px-2 py-0.5 rounded border font-mono ${
+              !auditEnabled
+                ? 'bg-[#2d2d2d] text-[#9ca3af] border-[#3c3c3c]'
+                : promptWatch.secretsToModels > 0
+                  ? 'bg-[#3a0d0d] text-[#FFB4B4] border-[#6e1f1f]'
+                  : 'bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a]'
+            }`}
+          >
+            {auditEnabled
+              ? `${promptWatch.secretsToModels} sent`
+              : 'audit log off — not recorded'}
+          </span>
+        </div>
+
+        {auditEnabled && promptWatch.secretNames.length > 0 && (
+          <div className="flex flex-col gap-1.5" data-testid="security-secret-names">
+            <span className="text-[11px] font-medium text-[#FFB4B4]">
+              Rotate these &mdash; they were sent to a model:
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {promptWatch.secretNames.map(name => (
+                <code
+                  key={name}
+                  className="text-[10px] font-mono px-2 py-0.5 rounded border border-[#6e1f1f] bg-[#1e1e1e] text-[#FFB4B4]"
+                >
+                  {name}
+                </code>
+              ))}
+            </div>
+            <span className="text-[10px] text-[#9ca3af] leading-relaxed">
+              Names and matching rules only &mdash; Termpolis never captures or stores the value. Open the audit log for
+              the agent, the timestamp, and the count for each one.
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Commit/Push Secret Shield — the git-boundary gate */}
@@ -492,6 +547,31 @@ export function SecuritySettings() {
           Two passive watchers run alongside every AI-agent terminal. They never block the agent — they record what was read or transmitted so you have a forensic trail and can tighten ignore-files for next session.
         </p>
 
+        <button
+          onClick={() => setShowAudit(true)}
+          data-testid="security-open-audit"
+          className="self-start text-xs px-3 py-1.5 rounded bg-[#0d9488] hover:bg-[#0f766e] font-medium flex items-center gap-1.5"
+        >
+          <i className="fa-solid fa-clipboard-list"></i>
+          Open the audit log
+        </button>
+
+        {showAudit && (
+          <AuditLogModal
+            onClose={() => setShowAudit(false)}
+            auditPath={auditPath}
+            coverage={{
+              // Prompt watching is absent on purpose — it is not a setting, so there is nothing to
+              // report. `auditEnabled` is now the only flag that can make a zero meaningless:
+              // watching still runs, but nothing is written down.
+              auditEnabled,
+              commitShield,
+              egressGuard,
+              memoryScrub,
+            }}
+          />
+        )}
+
         {/* Sensitive-file watcher */}
         <div className="flex flex-col gap-1.5 pt-2 border-t border-[#3c3c3c]">
           <div className="flex items-center justify-between">
@@ -549,7 +629,9 @@ export function SecuritySettings() {
           <div className="flex flex-col gap-0.5 flex-1">
             <span className="text-sm font-medium">Cloud-bound audit log</span>
             <span className="text-xs text-[#9ca3af] leading-relaxed">
-              Append-only JSONL recording every AI-agent terminal session: timestamp, agent, byte count, redaction hit count. Stays on this machine.
+              Append-only JSONL recording every AI-agent terminal session: timestamp, agent, byte count, and the name of any
+              secret that went out. Stays on this machine. Watching does not stop when this is off &mdash; only the <em>record</em> does,
+              which is why a zero above reads as &ldquo;not recorded&rdquo; rather than &ldquo;clean&rdquo; while this is switched off.
             </span>
             {auditPath && (
               <code className="text-[10px] text-[#777] mt-1 break-all">{auditPath}</code>
@@ -577,7 +659,7 @@ export function SecuritySettings() {
               ) : (
                 <table className="w-full text-[10px] font-mono">
                   <tbody>
-                    {auditEntries.map((e, i) => (
+                    {auditEntries.slice(0, RECENT_ROWS).map((e, i) => (
                       <tr key={i} className="border-b border-[#2d2d2d] last:border-b-0">
                         <td className="px-2 py-1 text-[#777] whitespace-nowrap">{new Date(e.ts).toLocaleString()}</td>
                         <td className="px-2 py-1 text-[#22D3EE]">{e.agent}</td>
@@ -631,7 +713,11 @@ export function SecuritySettings() {
           <div className="flex flex-col gap-2 mt-1">
             <ul className="text-xs text-[#FFB4B4] list-disc pl-5">
               {scanResult.hits.map((h, i) => (
-                <li key={i}><strong>{h.label}</strong>: <code className="text-[#d4d4d4]">{h.sample}</code></li>
+                <li key={i}>
+                  <strong>{h.label}</strong>
+                  {h.name && <> &mdash; <code className="text-[#FFB74D]">{h.name}</code></>}
+                  : <code className="text-[#d4d4d4]">{h.sample}</code>
+                </li>
               ))}
             </ul>
             <div className="flex items-center gap-2">
@@ -676,8 +762,10 @@ export function SecuritySettings() {
           Termpolis does not control, audit, or guarantee the data-handling practices of any third-party AI provider (Anthropic, OpenAI, Google, Alibaba/DashScope, Ollama, or any future provider).
         </p>
         <p>
-          The redaction scanner uses regular expressions tuned for low false-positive rates on well-shaped secrets. <strong>It is not a comprehensive DLP solution.</strong>
-          Custom or unusual secret formats (for example, internal corporate tokens) will not be detected. The audit log records what Termpolis observes locally; it does not capture content that bypasses Termpolis (for example, an agent run from a separate native terminal window).
+          The secret scanner uses regular expressions tuned for well-shaped secrets. <strong>It is not a comprehensive DLP solution.</strong>
+          Custom or unusual secret formats (for example, internal corporate tokens) will not be detected.
+          <strong> Prompt watching detects; it does not prevent.</strong> A prompt is forwarded to the agent unmodified and a secret found in it has, by definition, already been transmitted &mdash; the audit entry tells you what to rotate, it does not undo the disclosure.
+          The audit log records what Termpolis observes locally; it does not capture content that bypasses Termpolis (for example, an agent run from a separate native terminal window).
         </p>
         <p>
           <strong>To the maximum extent permitted by law, the authors and contributors of Termpolis disclaim all liability</strong> for any data leak, breach, regulatory violation, contractual breach, or business loss arising from your use of any AI agent launched through this application — including but not limited to use of free-tier accounts that send prompts to provider training pipelines, use of corporate code under personal AI accounts, or misconfiguration of provider-side data controls.
