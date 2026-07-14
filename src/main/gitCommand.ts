@@ -10,6 +10,7 @@
 
 import { execFileSync, execSync } from 'child_process'
 import { existsSync } from 'fs'
+import { tracked } from './processHealth'
 
 export interface GitOptions {
   cwd: string
@@ -116,32 +117,40 @@ export interface RunResult {
   exitCode: number
 }
 
+/**
+ * A SYNCHRONOUS child process on the main thread, whose only bound is a 10-MINUTE default timeout.
+ * Nothing here yields; for however long the subprocess runs, every PTY and every IPC call in the app
+ * is dead. Labelled with the actual binary (`exec:git`, `exec:npm`) so a freeze names the command
+ * that caused it rather than leaving you to guess which of the app's many git calls it was.
+ */
 export function runSafeCommand(cmd: SafeCommand, opts: GitOptions): RunResult {
-  try {
-    // On Windows, npm/yarn/pnpm etc. resolve to .cmd shims which require a
-    // shell to run. Since parseSafeCommand already rejected every shell
-    // metacharacter, delegating to the shell here is purely a PATHEXT /
-    // .cmd resolution shim — the shell has no operators to interpret.
-    const needsShell = process.platform === 'win32'
-    const buf = needsShell
-      ? execSync([cmd.bin, ...cmd.args].join(' '), {
-          cwd: opts.cwd,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: opts.timeout ?? 10 * 60 * 1000,
-          maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
-          windowsHide: true,
-        })
-      : execFileSync(cmd.bin, cmd.args, {
-          cwd: opts.cwd,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: opts.timeout ?? 10 * 60 * 1000,
-          maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
-          shell: false,
-          windowsHide: true,
-        })
-    return { output: buf.toString(), exitCode: 0 }
-  } catch (e: any) {
-    const output = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
-    return { output, exitCode: typeof e.status === 'number' ? e.status : 1 }
-  }
+  return tracked(`exec:${cmd.bin}`, (): RunResult => {
+    try {
+      // On Windows, npm/yarn/pnpm etc. resolve to .cmd shims which require a
+      // shell to run. Since parseSafeCommand already rejected every shell
+      // metacharacter, delegating to the shell here is purely a PATHEXT /
+      // .cmd resolution shim — the shell has no operators to interpret.
+      const needsShell = process.platform === 'win32'
+      const buf = needsShell
+        ? execSync([cmd.bin, ...cmd.args].join(' '), {
+            cwd: opts.cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: opts.timeout ?? 10 * 60 * 1000,
+            maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
+            windowsHide: true,
+          })
+        : execFileSync(cmd.bin, cmd.args, {
+            cwd: opts.cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: opts.timeout ?? 10 * 60 * 1000,
+            maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
+            shell: false,
+            windowsHide: true,
+          })
+      return { output: buf.toString(), exitCode: 0 }
+    } catch (e: any) {
+      const output = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
+      return { output, exitCode: typeof e.status === 'number' ? e.status : 1 }
+    }
+  })
 }

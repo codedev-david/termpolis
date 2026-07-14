@@ -14,12 +14,16 @@ import { StallHistoryPanel } from '../../src/renderer/src/components/SettingsPan
 
 type Stall = {
   ts: number
+  startedAt?: number
   durationMs: number
   cause: 'gc' | 'sync-work'
   gcPauseMs: number
   heapUsedMB: number
   rssMB: number
   breadcrumb: string | null
+  spans?: Array<{ label: string; ms: number }>
+  stack?: Array<{ fn: string; file: string; line: number; ms: number }>
+  sampledGcMs?: number
 }
 
 const gcStall = (over: Partial<Stall> = {}): Stall => ({
@@ -137,5 +141,77 @@ describe('StallHistoryPanel', () => {
     delete (window as any).termpolis
     expect(() => render(<StallHistoryPanel />)).not.toThrow()
     expect(screen.queryByTestId('stall-history-panel')).toBeNull()
+  })
+})
+
+// Every row of this panel used to read `synchronous work`, on a real 18.8-second freeze, while the
+// summary insisted "the breadcrumb below names it". It named nothing. These are the assertions that
+// make the panel keep its promise.
+describe('StallHistoryPanel actually names the freeze', () => {
+  it('translates the machine label into something a person can act on', async () => {
+    mockStalls([gcStall({
+      cause: 'sync-work', gcPauseMs: 0, durationMs: 18_817,
+      breadcrumb: 'memory:build-index',
+      spans: [{ label: 'memory:load-shard', ms: 18_700 }, { label: 'memory:build-index', ms: 15_200 }],
+    })])
+    render(<StallHistoryPanel />)
+    const row = await screen.findByTestId('stall-row')
+    expect(row.textContent).toMatch(/Building the memory search index/i) // not "memory:build-index"
+  })
+
+  it('shows how much of the freeze each labelled operation actually owned', async () => {
+    mockStalls([gcStall({
+      cause: 'sync-work', gcPauseMs: 0, durationMs: 18_817,
+      breadcrumb: 'memory:load-shard',
+      spans: [{ label: 'memory:load-shard', ms: 18_700 }, { label: 'memory:build-index', ms: 15_200 }],
+    })])
+    render(<StallHistoryPanel />)
+    const ev = await screen.findByTestId('stall-evidence')
+    expect(ev.textContent).toMatch(/memory:load-shard 18\.7s/)
+    expect(ev.textContent).toMatch(/memory:build-index 15\.2s/) // the nested detail, not just the wrapper
+  })
+
+  // THE FEATURE. Nobody labelled this work and nobody predicted it — and it is still named, because
+  // V8's sampler kept walking the stack while the thread was dead.
+  it('names UNLABELLED work from the sampled stack instead of shrugging', async () => {
+    mockStalls([gcStall({
+      cause: 'sync-work', gcPauseMs: 0, durationMs: 7_031, breadcrumb: null,
+      stack: [
+        { fn: 'weaveNeighbours', file: 'swarmMemory.ts', line: 1073, ms: 5_900 },
+        { fn: '(garbage collector)', file: '', line: 0, ms: 1_100 },
+      ],
+    })])
+    render(<StallHistoryPanel />)
+    const row = await screen.findByTestId('stall-row')
+    expect(row.textContent).toMatch(/weaveNeighbours/)
+    expect(row.textContent).toMatch(/swarmMemory\.ts/)
+    expect(row.textContent).not.toMatch(/synchronous work/i) // the old, useless answer
+  })
+
+  it('still admits ignorance when it has nothing — no invented culprit', async () => {
+    mockStalls([gcStall({ cause: 'sync-work', gcPauseMs: 0, breadcrumb: null })])
+    render(<StallHistoryPanel />)
+    expect((await screen.findByTestId('stall-row')).textContent).toMatch(/synchronous work/i)
+    const s = await screen.findByTestId('stall-summary')
+    expect(s.textContent).toMatch(/1 could not be attributed/i)
+  })
+
+  // One freeze is an anecdote. This is the sentence that tells you what to go and FIX.
+  it('aggregates the session into the single biggest cost', async () => {
+    mockStalls([
+      gcStall({ cause: 'sync-work', gcPauseMs: 0, durationMs: 18_817, breadcrumb: 'memory:build-index' }),
+      gcStall({ cause: 'sync-work', gcPauseMs: 0, durationMs: 7_031, breadcrumb: 'memory:build-index' }),
+      gcStall({ cause: 'sync-work', gcPauseMs: 0, durationMs: 1_107, breadcrumb: 'code-graph:persist' }),
+    ])
+    render(<StallHistoryPanel />)
+    const worst = await screen.findByTestId('stall-worst-offender')
+    expect(worst.textContent).toMatch(/Building the memory search index/i)
+    expect(worst.textContent).toMatch(/25\.8s across 2 freezes/i) // 18.817 + 7.031
+  })
+
+  it('names a synchronous child process by the command that ran', async () => {
+    mockStalls([gcStall({ cause: 'sync-work', gcPauseMs: 0, durationMs: 2_000, breadcrumb: 'exec:git' })])
+    render(<StallHistoryPanel />)
+    expect((await screen.findByTestId('stall-row')).textContent).toMatch(/Running `git`/)
   })
 })

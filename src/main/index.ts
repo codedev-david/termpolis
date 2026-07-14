@@ -2573,7 +2573,12 @@ if (!gotTheLock) {
     // stalls ARE the typing lag — and that is the only evidence that can honestly justify trading
     // vector exactness for RAM.
     initStallLog(app.getPath('userData')) // freezes outlive the process that had them — before start
-    startProcessHealth()
+    // Arm V8's sampling profiler with it, so a freeze in code nobody thought to label still gets
+    // named. It samples on its own native thread and so keeps working while this one is dead.
+    // Measured cost of the 10 ms interval: p99 event-loop lag 6.6 ms -> 10.8 ms (about one frame,
+    // far below the ~50 ms at which a stall is perceptible) for the ability to name an 18-second one.
+    // TERMPOLIS_STALL_STACKS=0 turns the sampling off and falls back to labelled operations only.
+    startProcessHealth(Date.now, process.env.TERMPOLIS_STALL_STACKS !== '0')
     // Apply the persisted vector-quantization choice BEFORE the store is built — the packed array
     // is allocated inside initSwarmMemory, so the mode has to be known by then. Default is exact
     // float32; int8 is opt-in from Settings -> Memory & Learning.

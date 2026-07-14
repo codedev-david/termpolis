@@ -10,6 +10,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { isTemporallyValid } from './mnemeGraphLogic'
+import { tracked } from './processHealth'
 
 export interface MemoryEdge {
   from: string
@@ -171,27 +172,34 @@ const reverseAdjacency = new Map<string, MemoryEdge[]>()
 let edgeCount = 0
 let graphPath: string | null = null
 
-/** Point the graph at a userData dir and load any existing edges (survives restarts). */
+/**
+ * Point the graph at a userData dir and load any existing edges (survives restarts).
+ *
+ * Read + JSON.parse per line, synchronously, at launch — and the edge log only ever grows. Labelled
+ * so that when it does start costing seconds, the panel says so instead of shrugging.
+ */
 export function initMemoryGraph(dir: string): void {
   adjacency.clear()
   reverseAdjacency.clear()
   edgeCount = 0
   graphPath = path.join(dir, 'memory-graph.jsonl')
-  try {
-    if (fs.existsSync(graphPath)) {
-      for (const line of fs.readFileSync(graphPath, 'utf8').split('\n')) {
-        const t = line.trim()
-        if (!t) continue
-        try {
-          const e = JSON.parse(t) as MemoryEdge & { removeNode?: unknown }
-          // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
-          // deleted memory — applied in append order so edges re-added after it survive.
-          if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
-          if (e && e.from && e.to && e.relation) indexEdge(e)
-        } catch { /* skip a corrupt line */ }
+  tracked('memory:load-graph', () => {
+    try {
+      if (fs.existsSync(graphPath!)) {
+        for (const line of fs.readFileSync(graphPath!, 'utf8').split('\n')) {
+          const t = line.trim()
+          if (!t) continue
+          try {
+            const e = JSON.parse(t) as MemoryEdge & { removeNode?: unknown }
+            // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
+            // deleted memory — applied in append order so edges re-added after it survive.
+            if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
+            if (e && e.from && e.to && e.relation) indexEdge(e)
+          } catch { /* skip a corrupt line */ }
+        }
       }
-    }
-  } catch { /* best effort — a missing/locked file just means an empty graph */ }
+    } catch { /* best effort — a missing/locked file just means an empty graph */ }
+  })
 }
 
 function indexEdge(e: MemoryEdge): void {

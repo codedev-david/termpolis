@@ -1377,14 +1377,26 @@ export async function memoryBackfillVectors(max = 200): Promise<number> {
 }
 
 // Rebuild the packed store from the current hot window (after reload/trim/clear).
+//
+// This is the single most expensive synchronous thing the main thread does. It runs as the last step
+// of reloadFromImpl, so on launch it lands back-to-back with a 464 MB read: line 1391 walks all
+// ~108k entries and builds BOTH the packed vector store AND the BM25 inverted index (nested
+// Map<term, Map>/Set — measured at 1.9 GB), in one unbroken loop with no yield. Measured on David's
+// machine as an 18.8-second freeze at launch, with the heap climbing to 2.5 GB.
+//
+// It is labelled SEPARATELY from (and nested inside) memory:load-shard, because "reading the shard"
+// and "building the index" are wildly different costs and the panel should not have to call an
+// 18-second freeze "loading" when 15 of those seconds were indexing.
 function rebuildVectorIndex(): void {
-  buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
-  vectorStore = newVectorStore()
-  rowToEntry.clear()
-  hnsw = null
-  lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
-  for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
-  hnswStale = vectorStore.size >= hnswThreshold
+  tracked('memory:build-index', () => {
+    buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
+    vectorStore = newVectorStore()
+    rowToEntry.clear()
+    hnsw = null
+    lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
+    for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
+    hnswStale = vectorStore.size >= hnswThreshold
+  })
 }
 
 // BB10: compact orphaned vectors out of the packed store IN MEMORY, remapping the
@@ -1394,23 +1406,25 @@ function rebuildVectorIndex(): void {
 // mis-scoring). The yielded ensureHnsw rebuilds it on the next large search.
 function compactVectorStore(): void {
   if (hnswBuilding) return // never compact mid-build — rows would shift under it
-  const live: number[] = []
-  const liveEntries: MemoryEntry[] = []
-  for (const e of entries) {
-    const r = entryRow.get(e)
-    if (r !== undefined && rowToEntry.get(r) === e) { live.push(r); liveEntries.push(e) }
-  }
-  const remap = vectorStore.compact(live)
-  rowToEntry.clear()
-  for (let i = 0; i < liveEntries.length; i++) {
-    const nr = remap.get(live[i])
-    if (nr === undefined) continue
-    rowToEntry.set(nr, liveEntries[i])
-    entryRow.set(liveEntries[i], nr) // overwrite the stale row
-  }
-  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
-  hnsw = null
-  hnswStale = vectorStore.size >= hnswThreshold
+  tracked('memory:compact-vectors', () => {
+    const live: number[] = []
+    const liveEntries: MemoryEntry[] = []
+    for (const e of entries) {
+      const r = entryRow.get(e)
+      if (r !== undefined && rowToEntry.get(r) === e) { live.push(r); liveEntries.push(e) }
+    }
+    const remap = vectorStore.compact(live)
+    rowToEntry.clear()
+    for (let i = 0; i < liveEntries.length; i++) {
+      const nr = remap.get(live[i])
+      if (nr === undefined) continue
+      rowToEntry.set(nr, liveEntries[i])
+      entryRow.set(liveEntries[i], nr) // overwrite the stale row
+    }
+    try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+    hnsw = null
+    hnswStale = vectorStore.size >= hnswThreshold
+  })
 }
 
 export function _vectorStoreSizeForTests(): number { return vectorStore.size }
@@ -1478,19 +1492,26 @@ function entriesFingerprint(): string {
 function loadPersistedHnsw(): HnswIndex | null {
   const p = hnswFile()
   if (!p) return null
-  try {
-    const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
-    if (!obj || obj.fp !== entriesFingerprint() || obj.graph?.v !== 2) return null // stale / wrong format
-    return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
-  } catch { return null }
+  return tracked('memory:load-hnsw', () => {
+    try {
+      const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
+      if (!obj || obj.fp !== entriesFingerprint() || obj.graph?.v !== 2) return null // stale / wrong format
+      return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
+    } catch { return null }
+  })
 }
 
+// Runs on the background indexer's timer — i.e. on a CADENCE, against a live app. A multi-MB
+// JSON.stringify of the whole graph plus a sha1 over every entry id, all in one synchronous
+// statement, is exactly the shape of a freeze that shows up "randomly" every couple of minutes.
 function savePersistedHnsw(): void {
   const p = hnswFile()
   if (!p || !hnsw) return
-  try {
-    fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw.toJSON() }))
-  } catch { /* best effort */ }
+  tracked('memory:persist-hnsw', () => {
+    try {
+      fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw!.toJSON() }))
+    } catch { /* best effort */ }
+  })
 }
 
 // Persist the current graph if it's fresh — called from the background indexer so

@@ -247,12 +247,21 @@ export interface TermpolisAPI {
   /** Recent main-thread FREEZES: the "(Not Responding)" ones, with cause + heap at the time. */
   memoryGetStalls: () => Promise<IpcResponse<Array<{
     ts: number
+    /** When the freeze BEGAN (ts is when the thread came back). Absent on records written pre-1.25.15. */
+    startedAt?: number
     durationMs: number
     cause: 'gc' | 'sync-work'
     gcPauseMs: number
     heapUsedMB: number
     rssMB: number
+    /** The labelled operation that held the thread longest. */
     breadcrumb: string | null
+    /** Every labelled operation that overlapped the freeze, and its share of it. */
+    spans?: Array<{ label: string; ms: number }>
+    /** What the CPU was actually executing, sampled by V8 straight through the freeze. */
+    stack?: Array<{ fn: string; file: string; line: number; ms: number }>
+    /** GC per the sampler — an independent witness to gcPauseMs. */
+    sampledGcMs?: number
   }>>>
   /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
   memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>

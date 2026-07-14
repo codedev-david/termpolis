@@ -231,6 +231,7 @@ import * as npath from 'node:path'
 
 const stall = (o: Partial<Stall> = {}): Stall => ({
   ts: 1000,
+  startedAt: 1000 - 2400,
   durationMs: 2400,
   cause: 'gc',
   gcPauseMs: 2350,
@@ -305,9 +306,18 @@ describe('breadcrumbs', () => {
 })
 
 // The breadcrumb is the whole point of recording a stall: "sync-work, 2.8s" tells you the app froze,
-// but not what froze it, which is the only question worth answering. These marks shipped with ZERO
-// call sites for two releases, so every stall ever recorded said `breadcrumb: null` — and the freeze
-// had to be diagnosed by hand instead of by the panel built to name it.
+// but not what froze it, which is the only question worth answering.
+//
+// HISTORY, because the first explanation was wrong and the wrong one is seductive: these marks first
+// shipped with ZERO call sites, so the obvious diagnosis was "wire them up". They were wired up — and
+// every stall STILL recorded `breadcrumb: null`, on freezes up to 18.8 seconds, because the watchdog
+// read the label only AFTER the frozen work's `finally` had already cleared it. Call sites were never
+// the problem; the sampling model was.
+//
+// The tests below check that a label is set and cleared correctly, which is necessary and NOT
+// sufficient — every one of them passed throughout the entire period the panel was naming nothing.
+// The tests that actually hold the feature up are in tests/electron/stallAttribution.test.ts, and
+// they work by genuinely freezing the event loop and letting the real watchdog observe it.
 describe('breadcrumbs name the work that froze the thread', () => {
   beforeEach(() => { _clearStallsForTests(); clearBusy() })
   afterEach(() => { _clearStallsForTests(); clearBusy() })
