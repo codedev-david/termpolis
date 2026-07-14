@@ -241,6 +241,11 @@ export interface TermpolisAPI {
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
+  /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
+   *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
+  memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>
+  /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
+  memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>
   /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
   memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
   memorySetPrimerLimit: (value: number) => Promise<IpcResponse<{ primerLimit: number }>>
@@ -508,6 +513,28 @@ export interface AgentActivityAPI {
   attachWatcher: (terminalId: string, cwd: string, agentType: string) => Promise<IpcResponse<{ attached: boolean }>>
   detachWatcher: (terminalId: string) => Promise<IpcResponse>
   onEvent: (cb: (event: AgentActivityEvent) => void) => () => void
+}
+
+/**
+ * What the packed vector store holds, and what it would hold in the other precision.
+ *
+ * Pure arithmetic on the row count — no process health of any kind. The version of this that
+ * carried live RSS/heap/GC/event-loop numbers was polled every 2 s off the thread that echoes
+ * keystrokes, and it was part of what made the app freeze (v1.25.16).
+ */
+export interface VectorRamInfo {
+  vectors: number
+  dim: number
+  /** What the LIVE store is doing right now. */
+  quantized: boolean
+  /** Vector RAM in the current mode. */
+  ramBytes: number
+  /** What the same vectors cost as exact float32 (4 B/component) … */
+  ramBytesFloat: number
+  /** … and as int8 (1 B/component). */
+  ramBytesInt8: number
+  /** The persisted choice — what will be applied at the next launch. */
+  persisted: boolean
 }
 
 declare global {

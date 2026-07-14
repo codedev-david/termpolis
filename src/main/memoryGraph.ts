@@ -83,19 +83,25 @@ export function invertRelation(relation: string): string {
   return RELATION_INVERSE[relation] ?? relation
 }
 
+/** Adjacency lists are kept strongest-edge-first; traversals read the head. */
+const byWeightDesc = (a: MemoryEdge, b: MemoryEdge): number => b.weight - a.weight
+
 /**
  * Insert or update an edge in a node's adjacency list: dedup by from+to+relation,
  * keeping the stronger weight and latest ts, sorted by weight desc. Pure (mutates
  * + returns the list).
  */
-export function upsertEdge(list: MemoryEdge[], edge: MemoryEdge): MemoryEdge[] {
+export function upsertEdge(list: MemoryEdge[], edge: MemoryEdge, sort = true): MemoryEdge[] {
   const i = list.findIndex(e => e.from === edge.from && e.to === edge.to && e.relation === edge.relation)
   if (i >= 0) {
     list[i] = { ...list[i], weight: Math.max(list[i].weight, edge.weight), ts: Math.max(list[i].ts, edge.ts) }
   } else {
     list.push(edge)
   }
-  list.sort((a, b) => b.weight - a.weight)
+  // `sort=false` is the BULK-LOAD path: sorting on every insert makes building a node of degree
+  // d cost O(d^2 log d), and only the final order is ever observed. initMemoryGraph sorts each
+  // list once at the end instead. Every other caller adds one edge at a time and keeps sorting.
+  if (sort) list.sort(byWeightDesc)
   return list
 }
 
@@ -177,6 +183,27 @@ let graphPath: string | null = null
  * Read + JSON.parse per line, synchronously, at launch — and the edge log only ever grows. Labelled
  * so that when it does start costing seconds, the panel says so instead of shrugging.
  */
+/**
+ * Load the graph log into memory.
+ *
+ * MEASURED (v1.25.17): this took **7.4 SECONDS** on a 3.4 MB / 23,587-line file — synchronously,
+ * at launch, on the thread that echoes keystrokes. It was the single largest item in the launch
+ * freeze, and it was hiding inside a file 140x smaller than the memory store. Not a data-volume
+ * problem; two compounding quadratics:
+ *
+ *   1. Every `{removeNode}` marker (there are 1,625 in the real log) called a helper that swept
+ *      the ENTIRE adjacency map — copying it with `[...adjacency]` and allocating a fresh array
+ *      per node via `.filter()` — to find the edges pointing at one id. The reverse index that
+ *      answers exactly that question in O(1) already existed and was simply not used. Fixed in
+ *      `removeIncidentInMemory`.
+ *   2. `upsertEdge` re-sorted a node's whole adjacency list on EVERY insert, so building a node
+ *      of degree d cost O(d^2 log d). The sort is only needed for the FINAL state, so the bulk
+ *      load now defers it and sorts each list once at the end. Identical result, and the
+ *      incremental `addMemoryEdge` path still sorts per insert (one edge at a time — cheap).
+ *
+ * The append-order semantics are preserved exactly: markers are still applied in order as they
+ * are read, so an edge re-added after a marker still survives it.
+ */
 export function initMemoryGraph(dir: string): void {
   adjacency.clear()
   reverseAdjacency.clear()
@@ -192,23 +219,26 @@ export function initMemoryGraph(dir: string): void {
           // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
           // deleted memory — applied in append order so edges re-added after it survive.
           if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
-          if (e && e.from && e.to && e.relation) indexEdge(e)
+          if (e && e.from && e.to && e.relation) indexEdge(e, false) // defer the sort
         } catch { /* skip a corrupt line */ }
       }
+      // Sort every list ONCE, now that the final membership is known.
+      for (const list of adjacency.values()) list.sort(byWeightDesc)
+      for (const list of reverseAdjacency.values()) list.sort(byWeightDesc)
     }
   } catch { /* best effort — a missing/locked file just means an empty graph */ }
 }
 
-function indexEdge(e: MemoryEdge): void {
+function indexEdge(e: MemoryEdge, sort = true): void {
   const list = adjacency.get(e.from) || []
   const before = list.length
-  upsertEdge(list, e)
+  upsertEdge(list, e, sort)
   adjacency.set(e.from, list)
   edgeCount += list.length - before // +1 for a new edge, +0 when it dedups
   // Mirror into the reverse index (keyed by target). Same dedup semantics; we don't
   // re-count here — edgeCount tracks distinct edges via the forward map only.
   const rlist = reverseAdjacency.get(e.to) || []
-  upsertEdge(rlist, e)
+  upsertEdge(rlist, e, sort)
   reverseAdjacency.set(e.to, rlist)
 }
 
@@ -239,21 +269,54 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
 
 // Wave2: remove all edges incident to `id` from the in-memory adjacency (both directions),
 // keeping edgeCount consistent. Pure in-memory — the log side is handled by the callers.
+/**
+ * Prune every edge incident to `id`, in O(degree(id)) rather than O(V + E).
+ *
+ * The previous version swept the ENTIRE adjacency map on every call — `[...adjacency]` copied
+ * all of it, and `.filter()` allocated a fresh array for every node whether or not it held a
+ * matching edge — and then did the same again for the reverse map. That is fine once. It is
+ * called once per `{removeNode}` marker, and the real graph log holds 1,625 of them, so it ran
+ * 1,625 full sweeps at every launch: ~7.4 seconds, synchronously, on the UI thread.
+ *
+ * `reverseAdjacency` is an index whose entire purpose is to answer "which edges point AT this
+ * node?" in O(1). It was already being maintained. It just wasn't being used here.
+ */
 function removeIncidentInMemory(id: string): number {
   let removed = 0
+
+  // OUTGOING (id -> *): the whole list goes, and each of those edges is also mirrored in the
+  // reverse index under its TARGET, so unmirror them there too.
   const out = adjacency.get(id)
-  if (out) { edgeCount -= out.length; removed += out.length; adjacency.delete(id) }
-  for (const [from, list] of [...adjacency]) {
-    const kept = list.filter((e) => e.to !== id)
-    if (kept.length !== list.length) {
-      edgeCount -= list.length - kept.length; removed += list.length - kept.length
-      if (kept.length) adjacency.set(from, kept); else adjacency.delete(from)
+  if (out) {
+    edgeCount -= out.length
+    removed += out.length
+    adjacency.delete(id)
+    for (const e of out) {
+      const rlist = reverseAdjacency.get(e.to)
+      if (!rlist) continue
+      const kept = rlist.filter((x) => x.from !== id)
+      if (kept.length) reverseAdjacency.set(e.to, kept)
+      else reverseAdjacency.delete(e.to)
     }
   }
-  reverseAdjacency.delete(id)
-  for (const [to, list] of [...reverseAdjacency]) {
-    const kept = list.filter((e) => e.from !== id)
-    if (kept.length !== list.length) { if (kept.length) reverseAdjacency.set(to, kept); else reverseAdjacency.delete(to) }
+
+  // INCOMING (* -> id): ask the reverse index directly instead of sweeping every node.
+  // Repeated `from`s (several relations between the same pair) are safe: the first pass filters
+  // out every edge to `id`, so a later pass sees an unchanged list and decrements nothing.
+  const incoming = reverseAdjacency.get(id)
+  if (incoming) {
+    for (const e of incoming) {
+      const list = adjacency.get(e.from)
+      if (!list) continue // already pruned (e.g. a self-loop, whose adjacency entry is gone)
+      const kept = list.filter((x) => x.to !== id)
+      if (kept.length !== list.length) {
+        edgeCount -= list.length - kept.length
+        removed += list.length - kept.length
+        if (kept.length) adjacency.set(e.from, kept)
+        else adjacency.delete(e.from)
+      }
+    }
+    reverseAdjacency.delete(id)
   }
   return removed
 }

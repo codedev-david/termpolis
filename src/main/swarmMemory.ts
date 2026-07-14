@@ -638,6 +638,13 @@ export function _resetForTests(): void {
   searchGen = 0
   searchCache.clear()
   lexicalIndex.clear()
+  // Retire any in-flight background build: bumping the generation makes it drop its work at
+  // its next chunk instead of repopulating the index a test just cleared.
+  lexicalGen++
+  lexicalReady = true // empty index — trivially complete
+  lexicalBuildDone = Promise.resolve()
+  lexBuildLive = null
+  lexicalYieldMs = 8
   graphFusionEnabled = false
   prfEnabled = false
   _resetGraphForTests()
@@ -1167,7 +1174,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     evictedAny = true // Tier-2: hot-window overflow — disk may hold entries outside RAM
     if (dropped) {
       if (dropped.hash) { seenHashes.delete(dropped.hash); rememberForgot(dropped.hash) } // Wave2: evicted content must not re-ingest
-      lexicalIndex.remove(dropped.id)
+      lexRemove(dropped.id)
       const r = entryRow.get(dropped)
       if (r !== undefined) rowToEntry.delete(r) // its packed row is now dead
     }
@@ -1372,23 +1379,28 @@ export async function memoryBackfillVectors(max = 200): Promise<number> {
 
 // Rebuild the packed store from the current hot window (after reload/trim/clear).
 //
-// This is the single most expensive synchronous thing the main thread does. It runs as the last step
-// of reloadFromImpl, so on launch it lands back-to-back with a 464 MB read: line 1391 walks all
-// ~108k entries and builds BOTH the packed vector store AND the BM25 inverted index (nested
-// Map<term, Map>/Set — measured at 1.9 GB), in one unbroken loop with no yield. Measured on David's
-// machine as an 18.8-second freeze at launch, with the heap climbing to 2.5 GB.
+// This USED to be the single most expensive synchronous thing the main thread does. It runs as the
+// last step of reloadFromImpl, so on launch it landed back-to-back with a 475 MB read, and it walked
+// every entry building BOTH the packed vector store AND the BM25 inverted index in one unbroken
+// loop. Measured at launch on the real store: a ~10-second freeze, the app painting "(Not
+// Responding)" while it ran.
 //
-// It is labelled SEPARATELY from (and nested inside) memory:load-shard, because "reading the shard"
-// and "building the index" are wildly different costs and the panel should not have to call an
-// 18-second freeze "loading" when 15 of those seconds were indexing.
+// The two halves have wildly different costs, so they are no longer treated the same:
+//
+//   VECTORS  — cheap (a Float32Array row copy per embedded entry) and search cannot be correct
+//              without it, so it stays synchronous.
+//   BM25     — ~5 seconds, irreducibly (it is Map-hashing 16.4M tokens; the typed-array repack
+//              cut its memory 4.8x and its build time by ~0). It now builds in the BACKGROUND,
+//              yielding to the event loop, so the main thread keeps echoing keystrokes while it
+//              runs. Searches that need it await it; nothing else does.
 function rebuildVectorIndex(): void {
   buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
   vectorStore = newVectorStore()
   rowToEntry.clear()
   hnsw = null
-  lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
-  for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
+  for (const e of entries) indexEntryVector(e)
   hnswStale = vectorStore.size >= hnswThreshold
+  scheduleLexicalRebuild() // BB1: rebuild the lexical index alongside — but off the critical path
 }
 
 // BB10: compact orphaned vectors out of the packed store IN MEMORY, remapping the
@@ -1584,6 +1596,127 @@ const lexicalIndex = new LexicalIndex()
 // Saturate unbounded BM25 into 0..1 for the calibrated fusion: bm25 / (bm25 + K).
 const LEX_SAT_K = 1
 
+// ---------------------------------------------------------------------------------------
+// v1.25.17 — the BM25 index is built in the BACKGROUND, yielded. This is the launch freeze.
+//
+// MEASURED on the real 94,430-entry store, in a real Electron main process: building this
+// index costs ~5 SECONDS, and that cost is Map-hashing 16.4 million tokens. Packing the
+// storage into typed arrays cut its MEMORY by 4.8x (551 MB) but its build time by ~0. The
+// build cannot be optimized away — so it must never run as one unbroken block on the main
+// thread, because the main thread is the thread that echoes every PTY keystroke.
+//
+// The yield MUST be setImmediate. `await` on an already-resolved promise queues a MICROTASK,
+// and Node drains the microtask queue to completion before the event loop turns — so it does
+// not yield at all. That exact mistake was the v1.25.11 freeze: 2,777 ms of unbroken work
+// with ZERO loop ticks, same wall time as the yielding version, but uninterruptible.
+//
+// Chunk size chosen by measurement (chunk=200: 4.9 s total, longest burst well under the
+// ~50 ms perceptibility threshold; chunk=2000 tripled the burst for no gain).
+const LEXICAL_CHUNK = 200
+let lexicalGen = 0
+let lexicalReady = true // an empty index is trivially ready
+let lexicalBuildDone: Promise<void> = Promise.resolve()
+let lexBuildLive: Set<string> | null = null // ids the in-flight build is still allowed to index
+let lexicalYieldMs = 8
+
+/**
+ * Remove a doc from the BM25 index — and retract it from any in-flight background build.
+ *
+ * Without the second half, a memory deleted WHILE the index is building gets resurrected: the
+ * build walks a snapshot taken before the delete, reaches that id, and re-indexes it.
+ *
+ * To be precise about the harm, because it is easy to overstate: such a document is NOT
+ * recallable. memorySearch gates every lexical hit through an `allow` callback that resolves
+ * the id against `entries`, and a deleted memory is no longer there — so it can never be
+ * returned. The damage is subtler and permanent: a phantom document still counts toward N and
+ * toward totalLen, so it shifts the idf and the avgdl used to score EVERY OTHER query, and the
+ * index grows without bound across rebuilds. Wrong scores everywhere, quietly, rather than a
+ * leak — which is exactly why the obvious test (search for it; it's absent) passes against a
+ * broken retraction and proves nothing. Assert on the index's size instead.
+ */
+function lexRemove(id: string): void {
+  lexicalIndex.remove(id)
+  lexBuildLive?.delete(id)
+}
+
+/** Mark the BM25 index stale and start a yielded background rebuild. Never blocks. */
+function scheduleLexicalRebuild(): void {
+  lexicalGen++
+  lexicalReady = false
+  lexicalBuildDone = Promise.resolve()
+  // Start now rather than on first search, so the index is usually warm before anything
+  // asks for it — but init never waits on it.
+  void ensureLexical()
+}
+
+/**
+ * Ensure the BM25 index is built, yielding to the event loop throughout. Callers that need
+ * lexical results await it; the first search after launch may wait, but the main thread stays
+ * free the whole time, so the app is interactive rather than frozen.
+ */
+async function ensureLexical(): Promise<void> {
+  if (lexicalReady) return
+  if (lexBuildLive) return lexicalBuildDone // a build is already in flight
+  const gen = lexicalGen
+  lexicalBuildDone = (async () => {
+    // Snapshot ids+content up front: a mid-build write or trim must not shift the walk.
+    const snapshot = entries.map((e) => ({ id: e.id, content: e.content }))
+    const live = new Set(snapshot.map((d) => d.id))
+    lexBuildLive = live
+    lexicalIndex.clear()
+    try {
+      let i = 0
+      let last = Date.now()
+      while (i < snapshot.length) {
+        if (gen !== lexicalGen) return // superseded by a newer rebuild — drop this one
+        const chunk: Array<{ id: string; content: string }> = []
+        while (i < snapshot.length && chunk.length < LEXICAL_CHUNK) {
+          const d = snapshot[i++]
+          if (live.has(d.id)) chunk.push(d) // deleted mid-build → never index it
+        }
+        if (chunk.length > 0) lexicalIndex.addMany(chunk)
+        if (Date.now() - last >= lexicalYieldMs) {
+          await new Promise<void>((r) => setImmediate(r))
+          last = Date.now()
+        }
+      }
+      if (gen !== lexicalGen) return
+      lexicalReady = true
+    } finally {
+      if (gen === lexicalGen) lexBuildLive = null
+    }
+  })()
+  return lexicalBuildDone
+}
+
+/** Resolves when the in-flight background BM25 build (if any) has finished. */
+export function _whenLexicalSettledForTests(): Promise<void> {
+  return ensureLexical()
+}
+
+/** True once the BM25 index reflects the whole hot window. */
+export function _isLexicalReadyForTests(): boolean {
+  return lexicalReady
+}
+
+/** Force the build to yield after every chunk, so tests can prove it yields at all. */
+export function _setLexicalYieldMsForTests(ms: number): void {
+  lexicalYieldMs = ms
+}
+
+/**
+ * How many documents the BM25 index believes it holds.
+ *
+ * This exists because it is the ONLY observable that a mid-build delete/clear was honoured.
+ * A phantom document cannot be searched for (memorySearch filters lexical hits against
+ * `entries`), so a test that searches for it passes even when the retraction is completely
+ * broken. It must equal memoryCount(); if it drifts, idf and avgdl are being computed from a
+ * document count that includes memories that no longer exist.
+ */
+export function _lexicalSizeForTests(): number {
+  return lexicalIndex.size
+}
+
 // BB3: pseudo-relevance feedback (Rocchio, dense-only). DEFAULT OFF — enabling is
 // gated on a measured recall lift over a labeled set. When on, a moderately-relevant
 // thin result expands the query toward the centroid of its top hits and unions a
@@ -1709,6 +1842,13 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // index is the graceful-degrade path when the embedder is down. The score stays a
   // calibrated 0..1 (soft-OR of dense + saturated BM25), so the adaptiveGate /
   // gateByScore 0.25-floor contract still holds.
+  //
+  // The index now builds in the background, so wait for it here rather than fusing against a
+  // half-built one — a PARTIAL BM25 index is worse than none: its idf is computed from a
+  // document count that is still climbing, so it would score the same query differently
+  // depending on when it was asked. Waiting costs the first recall after launch a few seconds;
+  // it does NOT block the main thread, which is free to paint and echo keystrokes throughout.
+  await ensureLexical()
   if (lexicalIndex.size > 0) {
     const byId = new Map<string, MemorySearchResult>()
     for (const s of scored) byId.set(s.id, s)
@@ -2058,6 +2198,14 @@ export function memoryClear(): void {
   vectorStore = newVectorStore()
   rowToEntry.clear()
   lexicalIndex.clear()
+  // A background build started before the clear is walking a snapshot of the entries we just
+  // dropped. Retire it, or it would faithfully re-index every memory the user asked us to
+  // erase — and for a store that scrubs secrets, "the clear silently undid itself a few
+  // seconds later" is not a cosmetic bug.
+  lexicalGen++
+  lexicalReady = true // empty store — the index is complete by being empty
+  lexicalBuildDone = Promise.resolve()
+  lexBuildLive = null
   hnsw = null
   hnswStale = false
   try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
@@ -2145,7 +2293,7 @@ export function memoryDelete(id: string): void {
       if (r !== undefined) rowToEntry.delete(r)
     }
   }
-  lexicalIndex.remove(id)
+  lexRemove(id)
   removeNodeEdges(id) // Wave2 (graph-edges-dangle-after-delete): prune incident edges so traversals don't hit a dangling link
   tombstones.add(id)
   appendShardLine(JSON.stringify({ deleted: id }), 'delete', { fsync: true })
@@ -2160,7 +2308,7 @@ export function memoryDelete(id: string): void {
         const [twin] = entries.splice(i, 1)
         if (twin) {
           tombstones.add(twin.id)
-          lexicalIndex.remove(twin.id)
+          lexRemove(twin.id)
           const r = entryRow.get(twin)
           if (r !== undefined) rowToEntry.delete(r)
         }
@@ -2203,7 +2351,7 @@ export function memoryArchive(id: string): void {
   if (removed.hash) seenHashes.delete(removed.hash)
   const r = entryRow.get(removed)
   if (r !== undefined) rowToEntry.delete(r)
-  lexicalIndex.remove(id)
+  lexRemove(id)
   tombstones.add(id) // hot-window skip on reload (NOT a content-hash tombstone)
   appendShardLine(JSON.stringify({ deleted: id }), 'archive', { fsync: true })
   bumpSearchGen()
@@ -2259,7 +2407,7 @@ export function memoryPruneCodePath(filePath: string): number {
     if (idx !== -1) entries.splice(idx, 1)
     if (v.hash) seenHashes.delete(v.hash) // NOT tombstonedHashes — the new chunk for an unchanged region may reuse the hash
     const r = entryRow.get(v); if (r !== undefined) rowToEntry.delete(r)
-    lexicalIndex.remove(v.id)
+    lexRemove(v.id)
     removeNodeEdges(v.id)
     tombstones.add(v.id)
     appendShardLine(JSON.stringify({ deleted: v.id }), 'prune-code')
@@ -2316,7 +2464,7 @@ export function memoryForget(opts: { now?: number; max?: number } = {}): number 
     if (idx !== -1) entries.splice(idx, 1)
     const r = entryRow.get(v)
     if (r !== undefined) rowToEntry.delete(r)
-    lexicalIndex.remove(v.id)
+    lexRemove(v.id)
   }
   if (victims.length > 0) {
     persistForgotSet()

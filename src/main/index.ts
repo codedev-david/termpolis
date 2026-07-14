@@ -143,6 +143,7 @@ import {
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
+  vectorRamStats,
   setVectorQuantization,
 } from './swarmMemory'
 import { setSafeStorage } from './secureKeyStore'
@@ -283,7 +284,7 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1805,11 +1806,36 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
   try { return ok(setPrimerLimit(opts?.value)) } catch (e: any) { return err(e.message) }
 })
 
-// The vector-RAM stats panel, the int8 recommendation and the freeze history are GONE — see
-// tests/electron/noMainThreadInstruments.test.ts. Every one of them read live numbers off the
-// thread that echoes your keystrokes, and the freeze detector's own profiler harvest blocked that
-// thread for ~1 s at a time, in a loop it fed itself: 1,139 freezes / 890 s in one 21-minute
-// session. Diagnostics that are paid for out of the user's typing latency are not worth having.
+// Vector quantization — the RAM/exactness dial for the packed vector store.
+//
+// Exposed so the Memory panel can be a DECISION AID rather than a mystery switch: it can show what
+// the vectors actually cost and what the other mode would cost, and so it can say "don't turn this
+// on" — which, at any ordinary corpus size, is the true answer. Off by default; losslessly
+// reversible (disk always keeps exact floats), so it can be tried and reverted.
+//
+// What v1.25.16 deleted was NOT this read. `vectorRamStats()` is O(1) — it multiplies the store's
+// row count by its dimension. What it deleted was the live PROCESS-HEALTH read (RSS, heap, GC
+// pauses, event-loop percentiles) that used to ride along with it on a 2 s poll, off the same
+// thread that echoes the user's keystrokes. So: no health here, and nothing on a timer. The panel
+// reads this when the tab is opened and when Refresh is pressed, exactly like `memory:metrics`.
+// See tests/electron/noMainThreadInstruments.test.ts.
+ipcMain.handle('memory:get-vector-ram', async () => {
+  try { return ok({ ...vectorRamStats(), persisted: getVectorQuantize() }) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean }) => {
+  try {
+    const on = opts?.value === true
+    setVectorQuantize(on)                    // persist the choice...
+    const stats = setVectorQuantization(on)  // ...and rebuild the packed store in the new mode
+    return ok({ ...stats, persisted: on })
+  } catch (e: any) { return err(e.message) }
+})
+
+// The freeze history (`memory:get-stalls`) is GONE and stays gone — see
+// tests/electron/noMainThreadInstruments.test.ts. Its detector named each freeze by harvesting a V8
+// CPU profile on the main thread, a call that blocks for ~1 s at a 1.1 GB heap, from the very
+// watchdog that reacted to blocking: 1,139 freezes / 890 s in one 21-minute session, every one of
+// them its own doing. Diagnostics paid for out of the user's typing latency are not worth having.
 
 // Claude launch primer: when relevant memory exists, write the memory-recall
 // instruction to a temp file so Claude Code can be launched with

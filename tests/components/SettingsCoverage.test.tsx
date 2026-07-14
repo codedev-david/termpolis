@@ -131,6 +131,14 @@ function makeAiSecurity(): Record<string, unknown> {
 
 const EMPTY_GRAPH = { success: true, data: { nodes: [], edges: [], totalNodes: 0, totalEdges: 0 } }
 
+/** Vector RAM: a count and its arithmetic, and nothing else. No process health rides along with it
+ *  any more — that is the whole of what v1.25.16 took out of this read. */
+const VECTOR_RAM = {
+  vectors: 14_170, dim: 384, quantized: false,
+  ramBytes: 14_170 * 384 * 4, ramBytesFloat: 14_170 * 384 * 4, ramBytesInt8: 14_170 * 384,
+  persisted: false,
+}
+
 function makeTermpolis(): Record<string, unknown> {
   return {
     getAvailableShells: vi.fn().mockResolvedValue({ success: true, data: [{ type: 'bash', label: 'Bash' }] }),
@@ -150,6 +158,8 @@ function makeTermpolis(): Record<string, unknown> {
     clipboardWriteText: vi.fn().mockResolvedValue({ success: true }),
     memoryMetrics: vi.fn().mockResolvedValue({ success: true, data: emptyMetrics() }),
     memoryGraphSample: vi.fn().mockResolvedValue(EMPTY_GRAPH),
+    memoryGetVectorRam: vi.fn().mockResolvedValue({ success: true, data: VECTOR_RAM }),
+    memorySetVectorQuantize: vi.fn().mockResolvedValue({ success: true, data: { ...VECTOR_RAM, quantized: true, persisted: true } }),
     groqGetKeyStatus: vi.fn().mockResolvedValue({ success: true, data: { connected: false, hint: '' } }),
   }
 }
@@ -1098,6 +1108,33 @@ describe('MemoryLearningSettings — metrics loading', () => {
 
     expect(fn.mock.calls.length).toBe(afterMount) // ...and it never fired again
     vi.useRealTimers()
+  })
+
+  // The vector-memory panel sits at the top of this tab and follows the SAME contract: it reads on
+  // open and on Refresh, and never on a clock. Its ancestor polled live process health every 2 s off
+  // the thread that echoes keystrokes; what is left is a vector count and the arithmetic on it.
+  it('renders the vector-memory panel, and reads it exactly once per tab-open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    stubBrain(fullMetrics())
+    render(<MemoryLearningSettings />)
+
+    await screen.findByTestId('vector-ram-panel')
+    expect(screen.getByTestId('vector-ram-verdict').textContent).toMatch(/not needed/i)
+    expect(tp().memoryGetVectorRam).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(tp().memoryGetVectorRam).toHaveBeenCalledTimes(1) // no timer, here or in the child
+    vi.useRealTimers()
+  })
+
+  it('Refresh re-reads the vector panel too — the one thing that is allowed to re-read it', async () => {
+    stubBrain(fullMetrics())
+    render(<MemoryLearningSettings />)
+    await screen.findByTestId('vector-ram-panel')
+    expect(tp().memoryGetVectorRam).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('ml-refresh'))
+    await waitFor(() => expect(tp().memoryGetVectorRam).toHaveBeenCalledTimes(2))
   })
 
   it('stops polling on unmount and swallows a metrics reply that lands after it', async () => {

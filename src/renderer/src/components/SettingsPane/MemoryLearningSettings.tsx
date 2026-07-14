@@ -18,6 +18,7 @@ import {
   type SliStatus,
 } from '../../lib/memoryDashboard'
 import { ConnectionsGraph } from './ConnectionsGraph'
+import { VectorRamPanel } from './VectorRamPanel'
 
 const STATUS_COLOR: Record<SliStatus, string> = { good: '#7ee2a3', warn: '#e2c08d', bad: '#f48771', idle: '#9ca3af' }
 
@@ -87,6 +88,9 @@ export function MemoryLearningSettings() {
   const [m, setM] = useState<MemoryMetrics | null>(null)
   const [graph, setGraph] = useState<GraphSample | null>(null)
   const [err, setErr] = useState<string>('')
+  // Bumped by Refresh. VectorRamPanel owns its own (cheap, one-shot) read and re-runs it when this
+  // changes — same contract as everything else here: on open, and when the user asks. Never a timer.
+  const [refreshToken, setRefreshToken] = useState(0)
   const mounted = useRef(true)
 
   const load = async () => {
@@ -120,10 +124,16 @@ export function MemoryLearningSettings() {
     return () => { mounted.current = false }
   }, [])
 
-  const refresh = () => { void load(); void loadGraph() }
+  const refresh = () => { setRefreshToken((n) => n + 1); void load(); void loadGraph() }
 
   return (
     <div className="flex flex-col gap-4" data-testid="memory-learning-settings">
+      {/* Vector memory + the int8 toggle. Lives at the TOP because it is the one panel here that can
+          tell you to change something — and, at any ordinary corpus size, the one that tells you not
+          to. Its numbers are pure arithmetic on the vector count; it reads no process health and runs
+          no timer. (The tiles that did both are what v1.25.16 deleted.) */}
+      <VectorRamPanel refreshToken={refreshToken} />
+
       <div className="flex items-start gap-3">
         <i className="fa-solid fa-brain text-[#22D3EE] text-lg mt-0.5" />
         <div className="flex flex-col gap-0.5 flex-1">

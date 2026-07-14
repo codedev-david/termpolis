@@ -140,6 +140,24 @@ describe('window.termpolis IPC channels', () => {
     await exposed.termpolis.getGitDiff('/repo')
     expect(mockInvoke).toHaveBeenCalledWith('terminal:git-diff', { cwd: '/repo' })
   })
+
+  // The int8 vector toggle. TypeScript cannot see across this seam — the channel is a plain string
+  // on both sides — so a rename in main with no matching rename here compiles, runs, and silently
+  // does nothing. The panel would render, the checkbox would not move, and nothing would say why.
+  it('memoryGetVectorRam invokes memory:get-vector-ram', async () => {
+    await exposed.termpolis.memoryGetVectorRam()
+    expect(mockInvoke).toHaveBeenCalledWith('memory:get-vector-ram')
+  })
+
+  it('memorySetVectorQuantize invokes memory:set-vector-quantize', async () => {
+    await exposed.termpolis.memorySetVectorQuantize(true)
+    expect(mockInvoke).toHaveBeenCalledWith('memory:set-vector-quantize', { value: true })
+  })
+
+  // The freeze history went with the profiler that fed it and is not coming back.
+  it('exposes no bridge to the deleted freeze-history IPC', () => {
+    expect(exposed.termpolis.memoryGetStalls).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------

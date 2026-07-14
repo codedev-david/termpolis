@@ -1718,15 +1718,93 @@ describe('agent-event auto-ingest into memory', () => {
 })
 
 // --------------------------------------------------------------------------------------------
-// v1.25.16 — the vector-RAM stats panel and the int8 recommendation are GONE, with their IPC.
+// Vector RAM + the int8 quantization toggle.
 //
-// They read live process health (RSS, heap, GC, event-loop percentiles) off the thread that echoes
-// your keystrokes, on a 2 s poll, to render a box whose standing verdict was 'not needed'. The
-// freeze history that sat beside them went the same way, and for a far worse reason: see
-// tests/electron/noMainThreadInstruments.test.ts.
+// v1.25.16 deleted this IPC along with the tiles it fed. That was half right. The tiles carried live
+// PROCESS HEALTH — RSS, heap, GC pauses, event-loop percentiles — polled every 2 s off the thread
+// that echoes the user's keystrokes, and they had to go. But the toggle's own numbers never needed
+// any of that: `vectorRamStats()` multiplies a row count by a dimension. So the read is back, with
+// the health stripped out, and the handler's job is now exactly one thing — hand the renderer enough
+// to make an INFORMED choice, including the choice to leave it alone.
 // --------------------------------------------------------------------------------------------
-it('no longer exposes the vector-RAM or int8 IPC at all', () => {
-  expect(ipcHandlers.has('memory:get-vector-ram')).toBe(false)
-  expect(ipcHandlers.has('memory:set-vector-quantize')).toBe(false)
+describe('memory:get-vector-ram', () => {
+  it('returns live vector stats and the persisted choice', async () => {
+    const res = await invoke('memory:get-vector-ram')
+    expect(res.success).toBe(true)
+    expect(res.data.vectors).toBe(1000)
+    expect(res.data.dim).toBe(384)
+    expect(res.data.quantized).toBe(false)
+    expect(res.data.ramBytes).toBe(1000 * 384 * 4)
+    expect(res.data.ramBytesFloat).toBe(1000 * 384 * 4)
+    expect(res.data.ramBytesInt8).toBe(1000 * 384)
+    expect(res.data.persisted).toBe(false)
+  })
+
+  // The whole point of the v1.25.16 amputation. A read the UI performs on tab-open must not drag
+  // the state of the process off the thread that is trying to echo keystrokes.
+  it('carries NO process health — no RSS, no heap, no GC, no event-loop percentiles', async () => {
+    const res = await invoke('memory:get-vector-ram')
+    expect(res.data.health).toBeUndefined()
+    expect(Object.keys(res.data).sort()).toEqual(
+      ['dim', 'persisted', 'quantized', 'ramBytes', 'ramBytesFloat', 'ramBytesInt8', 'vectors'],
+    )
+  })
+
+  it('reports the error instead of throwing when the store cannot be read', async () => {
+    mem.vectorRamStats.mockImplementationOnce(() => { throw new Error('store gone') })
+    const res = await invoke('memory:get-vector-ram')
+    expect(res).toEqual({ success: false, error: 'store gone' })
+  })
+})
+
+describe('memory:set-vector-quantize', () => {
+  // The persisted setting is REAL here (memorySettings is not mocked), and memory:set-primer-limit
+  // asserts on the whole settings object — so put it back the way we found it.
+  afterEach(async () => { await invoke('memory:set-vector-quantize', { value: false }) })
+
+  it('turning it ON persists the choice AND rebuilds the packed store', async () => {
+    const res = await invoke('memory:set-vector-quantize', { value: true })
+    expect(res.success).toBe(true)
+    expect(mem.setVectorQuantization).toHaveBeenCalledWith(true) // the store was actually rebuilt
+    expect(res.data.quantized).toBe(true)
+    expect(res.data.persisted).toBe(true)                        // …and the choice will survive restart
+    expect(res.data.ramBytes).toBe(1000 * 384)                   // 1 B/component
+  })
+
+  it('the persisted choice is what the NEXT read reports', async () => {
+    await invoke('memory:set-vector-quantize', { value: true })
+    expect((await invoke('memory:get-vector-ram')).data.persisted).toBe(true)
+  })
+
+  it('turning it OFF restores exact floats — the de-implement path', async () => {
+    await invoke('memory:set-vector-quantize', { value: true })
+    const res = await invoke('memory:set-vector-quantize', { value: false })
+    expect(mem.setVectorQuantization).toHaveBeenLastCalledWith(false)
+    expect(res.data.quantized).toBe(false)
+    expect(res.data.persisted).toBe(false)
+    expect(res.data.ramBytes).toBe(1000 * 384 * 4) // back to 4 B/component
+  })
+
+  it('only a literal true enables it — junk must not silently quantize the brain', async () => {
+    for (const junk of [undefined, null, 0, '', 'true', 1, {}]) {
+      mem.setVectorQuantization.mockClear()
+      await invoke('memory:set-vector-quantize', { value: junk as never })
+      expect(mem.setVectorQuantization).toHaveBeenCalledWith(false)
+    }
+    await invoke('memory:set-vector-quantize')  // no args at all
+    expect(mem.setVectorQuantization).toHaveBeenLastCalledWith(false)
+  })
+
+  it('reports a rebuild failure rather than lying that it worked', async () => {
+    mem.setVectorQuantization.mockImplementationOnce(() => { throw new Error('rebuild failed') })
+    const res = await invoke('memory:set-vector-quantize', { value: true })
+    expect(res).toEqual({ success: false, error: 'rebuild failed' })
+  })
+})
+
+// The freeze history is a different animal and it stays dead. Its detector named each stall by
+// harvesting a V8 CPU profile ON THE MAIN THREAD — a ~1 s block at a 1.1 GB heap — from the very
+// watchdog that reacted to blocking. See tests/electron/noMainThreadInstruments.test.ts.
+it('never exposes the freeze-history IPC again', () => {
   expect(ipcHandlers.has('memory:get-stalls')).toBe(false)
 })
