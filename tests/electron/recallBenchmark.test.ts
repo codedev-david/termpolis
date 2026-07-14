@@ -38,6 +38,17 @@ vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 const BASELINE_PATH = path.join(__dirname, 'fixtures', 'recall-baseline.json')
 const EPSILON = 0.04 // tolerance for embedder/platform nondeterminism on the headline metrics
 
+// These tests embed a real corpus with the real bge model. That takes ~15-30s when the machine is
+// also running the other 340 test files — comfortably past vitest's 5s DEFAULT, which is what these
+// had. So they failed the full suite and passed in isolation, and got written off as a "flake".
+// They were not flaky: they were being cut off mid-benchmark, having already computed correct
+// numbers (the BENCH-TIER lines printed in full before the timeout fired).
+//
+// A timeout on a slow box reads as "the gate is broken" when it means "that box is slower" — the
+// exact trap v1.25.10's compaction-gate tests hit. Give the budget, never loosen the assertion:
+// EPSILON above is a RECALL tolerance and must not be widened to paper over a clock.
+const BENCH_TIMEOUT_MS = 120_000
+
 interface Doc { tag: string; topic: string; text: string }
 
 // 12 separable topic clusters, 4 docs each = 48 labeled docs. Distinct enough that a paraphrased
@@ -224,7 +235,7 @@ describe.skipIf(!hasBundledModel)('recall benchmark — GATE (real bge, producti
     expect(measured.recall_at_10).toBeGreaterThanOrEqual(baseline.recall_at_10 - EPSILON)
     expect(measured.ndcg_at_10).toBeGreaterThanOrEqual(baseline.ndcg_at_10 - EPSILON)
     expect(measured.mrr).toBeGreaterThanOrEqual(baseline.mrr - EPSILON)
-  })
+  }, BENCH_TIMEOUT_MS)
 
   // Tier-1 (BB8): int8 vector quantization is ~4x less vector RAM. It's only worth shipping if it
   // keeps recall — this proves the two-stage int8 gather + float×int8 rescore holds parity with the
@@ -261,7 +272,7 @@ describe.skipIf(!hasBundledModel)('recall benchmark — GATE (real bge, producti
       _resetForTests()
       try { fs.rmSync(qtmp, { recursive: true, force: true }) } catch { /* ignore */ }
     }
-  })
+  }, BENCH_TIMEOUT_MS)
 
   it('reports the recall delta of each dormant tier (WP-B decision input)', async () => {
     const avgHits = (rq: RankedQuery[]) => rq.reduce((s, q) => s + q.rankedIds.length, 0) / rq.length
@@ -284,7 +295,7 @@ describe.skipIf(!hasBundledModel)('recall benchmark — GATE (real bge, producti
     // Non-collapse guard only here; the numeric verdict drives the WP-B enable/disable decision.
     expect(fusion.r10).toBeGreaterThanOrEqual(gate.r10 - 0.15)
     expect(taste.r10).toBeGreaterThanOrEqual(gate.r10 - 0.15)
-  })
+  }, BENCH_TIMEOUT_MS)
 })
 
 function round(n: number): number { return Math.round(n * 1000) / 1000 }

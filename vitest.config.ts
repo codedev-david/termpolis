@@ -30,6 +30,20 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
     exclude: ['**/node_modules/**', '**/.worktrees/**', '**/e2e/**'],
+    // Vitest's DEFAULT is 5s, which this suite outgrew without anyone noticing. 344 files run in
+    // parallel, and several tests do genuinely slow real work: embedding a corpus with the real bge
+    // model, spawning an external unzip, writing hundreds of encrypted entries. Loaded, they blow
+    // past 5s — so they failed the full suite, passed in isolation, and got written off as "flaky".
+    // They were never flaky: they were being cut off MID-RUN, having already computed correct results
+    // (recallBenchmark printed its complete BENCH-TIER numbers, then died to "Test timed out in
+    // 5000ms"). A timeout on a loaded box reads as "the code is broken" when it means "the box is
+    // busy" — and the cost of that lie is a gate nobody trusts, which is a gate nobody keeps.
+    //
+    // This is a BUDGET, not a tolerance. It never weakens an assertion; it only stops the clock from
+    // pre-empting one. Genuinely hung tests still fail, just 30s later — irrelevant next to a ~200s
+    // suite. The real-bge benchmarks set their own, longer budget locally.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     environmentMatchGlobs: [
       ['tests/electron/**', 'node'],
     ],
