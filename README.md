@@ -189,7 +189,6 @@ A **Memory & Learning** tab in Settings turns the brain from a black box into an
   <img src="assets/memory-dashboard.png" alt="Termpolis Memory & Learning dashboard" width="820">
 </p>
 
-- **Vector memory — int8 quantization, and a straight answer about whether you want it (v1.25.5).** Your embeddings live in the **main process** — the same thread that pumps the PTY — so vector RAM is not an abstraction: at multi-GB it means GC pauses on the one thread whose stalls surface as **typing lag**. Storing vectors as `int8` instead of exact floats is **4× less vector RAM**. But a bare switch would be a trap — nobody can answer *"should I enable int8 quantization?"* in the abstract — so this is a **decision aid**. It polls live and shows the vector count and their **real RAM**, the **main-thread stall** (event-loop delay p99), **GC pauses**, and the vectors' **share of the process** — then gives a recommendation computed from *that machine*. Crucially, it is willing to tell you the toggle will **not** help you: *"your main thread is stalling — but the vectors are only 4% of this process; freeing them would not fix it, and you would lose exactness for nothing."* A control that only ever markets itself is an upsell, not a tool. **Off by default**, and at a typical corpus (~100k vectors, ~160 MB) it says **not needed**. **Settings → Memory & Learning.**
 - **What's stored** — memories by cognitive type (episodic · semantic · procedural · entity · summary) and by which agent authored them.
 - **Live knowledge graph** — a force-directed view of the real typed edges recall walks (bug → fix → what superseded it), colored by type.
 - **Code connections (v1.25)** — the structural code graph (symbols, and the caller/callee edges between them) now has a tile of its own. Indexing a repo was already minting thousands of these edges into a store the dashboard simply never read — so "connections" looked empty while the graph underneath was full.
@@ -199,9 +198,23 @@ A **Memory & Learning** tab in Settings turns the brain from a black box into an
 - **Model portability & cross-agent learning** — which agents authored what, and where a lesson one agent learned was later reused by another.
 - **Receipts** — recalls served, solutions reused, and estimated tokens saved.
 
-> **On int8, two guarantees worth stating plainly.** Recall parity against the exact-float baseline is **benchmarked and CI-gated** — the benchmark scores the quantized store against the same committed baseline as the float one on the real `bge` model, and **recall@10 is identical**; a change that degraded it would fail the build. And it is **losslessly reversible**: the JSONL on disk **always keeps exact floats**, so int8 is purely an in-RAM representation, **never a data migration**. Turning it off restores full precision — nothing is ever destroyed.
+> **These numbers are read when you open the tab and when you press Refresh — never on a timer (v1.25.16).** Computing them means scanning the whole store, and that scan runs in the **main process**, which is the same thread that echoes your keystrokes into the PTY. On a 5-second poll it stalled typing every 5 seconds and generated enough garbage to drive the very GC pauses the dashboard used to display. A dashboard paid for out of your typing latency is not worth having. The **vector-RAM / int8 panel** and the **freeze history** that used to sit above this section are gone for the same reason — see *Diagnostics that cost more than they're worth*, below.
 
 > The screenshot shows the dashboard's layout with representative sample data; your instance fills in with your own local numbers as you work.
+
+### Diagnostics that cost more than they're worth (removed in v1.25.16)
+
+v1.25.15 shipped a V8 sampling profiler so that a freeze in unlabelled code could still be *named*. The reasoning was sound and the measurement was not: `Profiler.stop` was clocked at **4–15 ms** in a small test script, so it was called straight from the stall watchdog. In a real main process — 1.1 GB heap, 1.75 GB RSS, an enormous loaded-code footprint — that same call blocked the thread for **~1000 ms**. And the watchdog called it *on every stall it detected*:
+
+```
+Profiler.stop blocks ~1000ms  ->  the next 250ms tick arrives 750ms late
+750ms > the 400ms threshold   ->  "a freeze!" -> to name it, harvest -> Profiler.stop
+...which blocks ~1000ms       ->  the next tick is 750ms late -> "a freeze!" -> ...
+```
+
+A closed loop, feeding itself, that never breaks: **every freeze it detected was one it had just caused.** One 21-minute session recorded **1,139 freezes blaming the profiler for 890 seconds** of main-thread block — with no application work running at all. The main thread is the thread that echoes your keystrokes, so it surfaced as a 5–10 second typing lag and an app that froze on every click.
+
+The lesson generalises past this bug, so it is worth writing down: **an instrument whose cost you measured somewhere cheap, wired into the loop that reacts to that cost, is a positive feedback loop waiting for a big enough heap.** The profiler, the freeze detector, the live vector-RAM tiles and the int8 recommendation are all removed, and `tests/electron/noMainThreadInstruments.test.ts` now fails the build if the V8 inspector is ever attached to the main process again.
 
 ---
 

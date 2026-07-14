@@ -195,7 +195,9 @@ const mem = vi.hoisted(() => ({
 vi.mock('../../src/main/swarmMemory', () => mem)
 
 const graph = vi.hoisted(() => ({
-  getAllEdges: vi.fn(() => [] as any[]),
+  // Counts relations in place. The dashboard used to call getAllEdges(), which built a fresh flat
+  // copy of every edge in the graph purely to tally it — garbage, on the thread that pumps the PTY.
+  graphRelationStats: vi.fn(() => ({}) as Record<string, number>),
   graphStats: vi.fn(() => ({ nodes: 0, edges: 0 })),
 }))
 vi.mock('../../src/main/memoryGraph', () => graph)
@@ -377,7 +379,7 @@ beforeEach(() => {
   mem.consolidationSimOf.mockReturnValue(() => 0.9)
   mem.weaveCandidates.mockReturnValue([{ id: 'w1' }])
   mem.weaveNeighbours.mockReturnValue([{ id: 'w2' }])
-  graph.getAllEdges.mockReturnValue([])
+  graph.graphRelationStats.mockReturnValue({})
   graph.graphStats.mockReturnValue({ nodes: 0, edges: 0 })
   primer.buildContextPrimer.mockResolvedValue(null)
   cg.buildCodeGraph.mockResolvedValue({ symbols: 12, edges: 5 })
@@ -576,11 +578,17 @@ describe('memory:count / memory:clear / memory:stats', () => {
 // ===========================================================================
 describe('memory:metrics', () => {
   it('tallies graph edges BY RELATION', async () => {
-    graph.getAllEdges.mockReturnValueOnce([
-      { relation: 'explains' }, { relation: 'explains' }, { relation: 'follows' },
-    ])
+    graph.graphRelationStats.mockReturnValueOnce({ explains: 2, follows: 1 })
     const r = await invoke('memory:metrics')
     expect(r.data.graph.byRelation).toEqual({ explains: 2, follows: 1 })
+  })
+
+  // The dashboard is read on demand (tab open / Refresh), never on a timer — so the one thing this
+  // handler must never do is build a throwaway copy of the whole edge set to count it.
+  it('counts relations without copying the edge set', async () => {
+    await invoke('memory:metrics')
+    expect(graph.graphRelationStats).toHaveBeenCalled()
+    expect((graph as Record<string, unknown>).getAllEdges).toBeUndefined()
   })
 
   it('surfaces the STRUCTURAL code graph across all repos — a separate store from the memory graph', async () => {
@@ -1710,83 +1718,15 @@ describe('agent-event auto-ingest into memory', () => {
 })
 
 // --------------------------------------------------------------------------------------------
-// v1.25.5 — vector RAM + the int8 quantization toggle.
+// v1.25.16 — the vector-RAM stats panel and the int8 recommendation are GONE, with their IPC.
 //
-// The handler's job is to hand the renderer everything it needs to make an INFORMED choice: the
-// live vector RAM, this machine's main-thread health, and a recommendation derived from both. The
-// panel must never have to guess at a threshold, and it must be able to say "this won't help you".
+// They read live process health (RSS, heap, GC, event-loop percentiles) off the thread that echoes
+// your keystrokes, on a 2 s poll, to render a box whose standing verdict was 'not needed'. The
+// freeze history that sat beside them went the same way, and for a far worse reason: see
+// tests/electron/noMainThreadInstruments.test.ts.
 // --------------------------------------------------------------------------------------------
-describe('memory:get-vector-ram', () => {
-  it('returns live vector stats, the persisted choice, machine health, and a verdict', async () => {
-    const res = await invoke('memory:get-vector-ram')
-    expect(res.success).toBe(true)
-    expect(res.data.vectors).toBe(1000)
-    expect(res.data.dim).toBe(384)
-    expect(res.data.quantized).toBe(false)
-    expect(res.data.ramBytes).toBe(1000 * 384 * 4)
-    expect(res.data.ramBytesInt8).toBe(1000 * 384)
-    expect(typeof res.data.persisted).toBe('boolean')
-    // health comes from the REAL process — assert it is present and sane, not a fixed value.
-    expect(res.data.health.rssBytes).toBeGreaterThan(0)
-    expect(typeof res.data.health.loopDelayP99Ms).toBe('number')
-    expect(typeof res.data.health.gcMaxPauseMs).toBe('number')
-    // and the verdict is computed, not hardcoded
-    expect(['not-needed', 'wont-help', 'optional', 'recommended', 'enabled']).toContain(res.data.advice.verdict)
-    expect(res.data.advice.headline.length).toBeGreaterThan(0)
-  })
-
-  it('a small corpus is told it does not need this (the default, correct answer)', async () => {
-    // 1000 vectors ≈ 1.5 MB — nowhere near the floor where freeing RAM could matter.
-    const res = await invoke('memory:get-vector-ram')
-    expect(res.data.advice.verdict).toBe('not-needed')
-    expect(res.data.advice.detail).toMatch(/leave it off/i)
-  })
-
-  it('reports the error instead of throwing when the store cannot be read', async () => {
-    mem.vectorRamStats.mockImplementationOnce(() => { throw new Error('store gone') })
-    const res = await invoke('memory:get-vector-ram')
-    expect(res).toEqual({ success: false, error: 'store gone' })
-  })
-})
-
-describe('memory:set-vector-quantize', () => {
-  it('turning it ON persists the choice AND rebuilds the packed store', async () => {
-    const res = await invoke('memory:set-vector-quantize', { value: true })
-    expect(res.success).toBe(true)
-    expect(mem.setVectorQuantization).toHaveBeenCalledWith(true) // the store was actually rebuilt
-    expect(res.data.quantized).toBe(true)
-    expect(res.data.persisted).toBe(true)                        // …and the choice will survive restart
-    expect(res.data.ramBytes).toBe(1000 * 384)                   // 1 B/component
-  })
-
-  it('turning it OFF restores exact floats — the de-implement path', async () => {
-    await invoke('memory:set-vector-quantize', { value: true })
-    const res = await invoke('memory:set-vector-quantize', { value: false })
-    expect(mem.setVectorQuantization).toHaveBeenLastCalledWith(false)
-    expect(res.data.quantized).toBe(false)
-    expect(res.data.persisted).toBe(false)
-    expect(res.data.ramBytes).toBe(1000 * 384 * 4) // back to 4 B/component
-  })
-
-  it('only a literal true enables it — junk must not silently quantize the brain', async () => {
-    for (const junk of [undefined, null, 0, '', 'true', 1, {}]) {
-      mem.setVectorQuantization.mockClear()
-      await invoke('memory:set-vector-quantize', { value: junk as never })
-      expect(mem.setVectorQuantization).toHaveBeenCalledWith(false)
-    }
-    await invoke('memory:set-vector-quantize')  // no args at all
-    expect(mem.setVectorQuantization).toHaveBeenLastCalledWith(false)
-  })
-
-  it('returns fresh advice so the panel updates the moment you flip it', async () => {
-    const res = await invoke('memory:set-vector-quantize', { value: true })
-    expect(res.data.advice.verdict).toBe('enabled')
-    expect(res.data.advice.savingBytes).toBe(0) // already saved — nothing left to offer
-  })
-
-  it('reports a rebuild failure rather than lying that it worked', async () => {
-    mem.setVectorQuantization.mockImplementationOnce(() => { throw new Error('rebuild failed') })
-    const res = await invoke('memory:set-vector-quantize', { value: true })
-    expect(res).toEqual({ success: false, error: 'rebuild failed' })
-  })
+it('no longer exposes the vector-RAM or int8 IPC at all', () => {
+  expect(ipcHandlers.has('memory:get-vector-ram')).toBe(false)
+  expect(ipcHandlers.has('memory:set-vector-quantize')).toBe(false)
+  expect(ipcHandlers.has('memory:get-stalls')).toBe(false)
 })

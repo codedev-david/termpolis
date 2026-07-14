@@ -242,29 +242,6 @@ export interface TermpolisAPI {
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
-  /** Live vector RAM + main-thread health + a recommendation computed from THIS machine. */
-  memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>
-  /** Recent main-thread FREEZES: the "(Not Responding)" ones, with cause + heap at the time. */
-  memoryGetStalls: () => Promise<IpcResponse<Array<{
-    ts: number
-    /** When the freeze BEGAN (ts is when the thread came back). Absent on records written pre-1.25.15. */
-    startedAt?: number
-    durationMs: number
-    cause: 'gc' | 'sync-work'
-    gcPauseMs: number
-    heapUsedMB: number
-    rssMB: number
-    /** The labelled operation that held the thread longest. */
-    breadcrumb: string | null
-    /** Every labelled operation that overlapped the freeze, and its share of it. */
-    spans?: Array<{ label: string; ms: number }>
-    /** What the CPU was actually executing, sampled by V8 straight through the freeze. */
-    stack?: Array<{ fn: string; file: string; line: number; ms: number }>
-    /** GC per the sampler — an independent witness to gcPauseMs. */
-    sampledGcMs?: number
-  }>>>
-  /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
-  memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>
   memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
   memorySetPrimerLimit: (value: number) => Promise<IpcResponse<{ primerLimit: number }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
@@ -531,35 +508,6 @@ export interface AgentActivityAPI {
   attachWatcher: (terminalId: string, cwd: string, agentType: string) => Promise<IpcResponse<{ attached: boolean }>>
   detachWatcher: (terminalId: string) => Promise<IpcResponse>
   onEvent: (cb: (event: AgentActivityEvent) => void) => () => void
-}
-
-export interface VectorRamInfo {
-  vectors: number
-  dim: number
-  quantized: boolean
-  ramBytes: number
-  ramBytesFloat: number
-  ramBytesInt8: number
-  persisted: boolean
-  health: {
-    rssBytes: number
-    heapUsedBytes: number
-    arrayBufferBytes: number
-    loopDelayP50Ms: number
-    loopDelayP99Ms: number
-    loopDelayMaxMs: number
-    gcMajorCount: number
-    gcTotalPauseMs: number
-    gcMaxPauseMs: number
-    sampleWindowMs: number
-    gcTimeFraction: number
-  }
-  advice: {
-    verdict: 'not-needed' | 'wont-help' | 'optional' | 'recommended' | 'enabled'
-    headline: string
-    detail: string
-    savingBytes: number
-  }
 }
 
 declare global {

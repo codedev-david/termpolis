@@ -18,7 +18,6 @@ import { extractFile, extractReferences, languageForFile, type CodeSymbol, type 
 import { extractFileTS } from './codeGraphTreeSitter'
 import { isIndexableCodeFile, discoverRepoFiles } from './codeIngest'
 import { projectKeyOf } from './projectKey'
-import { tracked, trackedAsync } from './processHealth'
 
 export interface CodeGraphEdge {
   from: string // caller symbol id
@@ -295,7 +294,7 @@ export async function reindexRepoGraph(root: string): Promise<CodeGraphStats> {
 export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Promise<CodeGraphStats> {
   // Name the work, so a stall during a repo sweep is reported as `code-graph:sweep` rather than as an
   // anonymous `sync-work` the user has to guess at. (Guessing is precisely what this cost us.)
-  return trackedAsync('code-graph:sweep', () => buildCodeGraphImpl(deps, projectKey))
+  return buildCodeGraphImpl(deps, projectKey)
 }
 
 async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Promise<CodeGraphStats> {
@@ -349,7 +348,7 @@ export async function reindexPaths(
   readFile: (file: string) => Promise<string>,
   projectKey?: string,
 ): Promise<number> {
-  return trackedAsync('code-graph:reindex', () => reindexPathsImpl(files, readFile, projectKey))
+  return reindexPathsImpl(files, readFile, projectKey)
 }
 
 async function reindexPathsImpl(
@@ -413,17 +412,15 @@ export function persistCodeGraph(projectKey?: string): void {
   const st = stateFor(key)
   // Serialising + writing the whole graph is synchronous and unavoidable (it must be atomic), so if
   // it ever grows big enough to stall the thread, the stall should say so by name.
-  tracked('code-graph:persist', () => {
-    try {
-      const data = { symbols: [...st.symbolsById.values()], imports: [...st.fileImports.entries()] }
-      const target = path.join(dir!, graphFileFor(key))
-      const tmp = `${target}.tmp`
-      fs.writeFileSync(tmp, JSON.stringify(data))
-      fs.renameSync(tmp, target) // atomic replace
-    } catch {
-      /* best effort — the graph rebuilds from source on next full index */
-    }
-  })
+  try {
+    const data = { symbols: [...st.symbolsById.values()], imports: [...st.fileImports.entries()] }
+    const target = path.join(dir!, graphFileFor(key))
+    const tmp = `${target}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(data))
+    fs.renameSync(tmp, target) // atomic replace
+  } catch {
+    /* best effort — the graph rebuilds from source on next full index */
+  }
 }
 
 // ---- Queries ---------------------------------------------------------------

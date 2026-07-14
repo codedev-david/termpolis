@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { VectorRamPanel } from './VectorRamPanel'
-import { StallHistoryPanel } from './StallHistoryPanel'
 import type { MemoryMetrics, GraphSample } from '../../types'
 import {
   dashboardReceipts,
@@ -109,30 +107,32 @@ export function MemoryLearningSettings() {
     } catch { /* graph is best-effort; the rest of the dashboard still renders */ }
   }
 
+  // NO POLL. This used to re-fetch every 5 s, and `memory:metrics` is not a cheap read: it scans
+  // every entry in the store (running content regexes over each one), copies the whole edge set and
+  // re-aggregates the event ledger — on the main process, which is also the thread that echoes your
+  // keystrokes. Every 5 s it stalled typing and generated enough garbage to drive the very GC pauses
+  // this dashboard used to display. The numbers here move on the order of minutes, not seconds, so
+  // they load once on open and again when you press Refresh. That is the whole fix.
   useEffect(() => {
     mounted.current = true
     void load()
     void loadGraph()
-    const t = setInterval(() => { void load() }, 5000) // metrics poll; graph is fetched on mount/refresh only
-    return () => { mounted.current = false; clearInterval(t) }
+    return () => { mounted.current = false }
   }, [])
 
   const refresh = () => { void load(); void loadGraph() }
 
   return (
     <div className="flex flex-col gap-4" data-testid="memory-learning-settings">
-      {/* Vector RAM + main-thread health. Lives at the TOP because it is the one panel here that
-          can tell you to change something — and the one that can honestly tell you not to. */}
-      <VectorRamPanel />
-      <StallHistoryPanel />
-
       <div className="flex items-start gap-3">
         <i className="fa-solid fa-brain text-[#22D3EE] text-lg mt-0.5" />
         <div className="flex flex-col gap-0.5 flex-1">
           <span className="text-sm font-medium text-[#e0e0e0]">Proof it&rsquo;s working</span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Live, from your local brain. Every number here is computed on this machine, offline, from
-            the append-only memory store &mdash; no word-taking required. Updates every few seconds.
+            the append-only memory store &mdash; no word-taking required. Reading these numbers means
+            scanning the whole store, so it happens when you open this tab and when you press Refresh
+            &mdash; never on a timer behind your back.
           </span>
         </div>
         <button onClick={refresh} data-testid="ml-refresh" className="text-xs px-2 py-1 rounded bg-[#2d2d2d] hover:bg-[#3c3c3c] border border-[#3c3c3c] shrink-0">Refresh</button>

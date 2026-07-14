@@ -10,7 +10,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { isTemporallyValid } from './mnemeGraphLogic'
-import { tracked } from './processHealth'
 
 export interface MemoryEdge {
   from: string
@@ -183,23 +182,21 @@ export function initMemoryGraph(dir: string): void {
   reverseAdjacency.clear()
   edgeCount = 0
   graphPath = path.join(dir, 'memory-graph.jsonl')
-  tracked('memory:load-graph', () => {
-    try {
-      if (fs.existsSync(graphPath!)) {
-        for (const line of fs.readFileSync(graphPath!, 'utf8').split('\n')) {
-          const t = line.trim()
-          if (!t) continue
-          try {
-            const e = JSON.parse(t) as MemoryEdge & { removeNode?: unknown }
-            // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
-            // deleted memory — applied in append order so edges re-added after it survive.
-            if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
-            if (e && e.from && e.to && e.relation) indexEdge(e)
-          } catch { /* skip a corrupt line */ }
-        }
+  try {
+    if (fs.existsSync(graphPath!)) {
+      for (const line of fs.readFileSync(graphPath!, 'utf8').split('\n')) {
+        const t = line.trim()
+        if (!t) continue
+        try {
+          const e = JSON.parse(t) as MemoryEdge & { removeNode?: unknown }
+          // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
+          // deleted memory — applied in append order so edges re-added after it survive.
+          if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
+          if (e && e.from && e.to && e.relation) indexEdge(e)
+        } catch { /* skip a corrupt line */ }
       }
-    } catch { /* best effort — a missing/locked file just means an empty graph */ }
-  })
+    }
+  } catch { /* best effort — a missing/locked file just means an empty graph */ }
 }
 
 function indexEdge(e: MemoryEdge): void {

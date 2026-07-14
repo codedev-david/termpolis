@@ -143,7 +143,6 @@ import {
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
-  vectorRamStats,
   setVectorQuantization,
 } from './swarmMemory'
 import { setSafeStorage } from './secureKeyStore'
@@ -172,7 +171,7 @@ import { proactiveQuery, proactiveSignals } from './mnemeRetrieval'
 import { codeLocate, type LocatedSite } from './codeLocate'
 import { isHighValueEpisode } from './mnemeReflect'
 import { makeHeadlessDistiller } from './mnemeDistiller'
-import { getAllEdges, graphStats } from './memoryGraph'
+import { graphRelationStats, graphStats } from './memoryGraph'
 import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
@@ -284,8 +283,7 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
-import { startProcessHealth, processHealth, quantizationAdvice, recentStalls, persistedStalls, initStallLog } from './processHealth'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
@@ -1517,8 +1515,9 @@ ipcMain.handle('memory:stats', () => ok(memoryStats()))
 // live reliability/receipt SLIs (sparse until the brain has been used a while).
 ipcMain.handle('memory:metrics', () => {
   try {
-    const byRelation: Record<string, number> = {}
-    for (const e of getAllEdges()) byRelation[e.relation] = (byRelation[e.relation] || 0) + 1
+    // graphRelationStats counts in place. getAllEdges() built a fresh flat copy of EVERY edge in
+    // the graph just to count them by relation — pure garbage, on the thread that pumps the PTY.
+    const byRelation = graphRelationStats()
     const gs = graphStats()
     const competence = competenceRecords()
       .slice()
@@ -1806,44 +1805,11 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
   try { return ok(setPrimerLimit(opts?.value)) } catch (e: any) { return err(e.message) }
 })
 
-// Vector quantization — the RAM/exactness dial for the packed vector store.
-//
-// Exposed so the Memory panel can be a DECISION AID rather than a mystery switch: it reads the live
-// vector RAM, shows what the other mode would cost, and states the MEASURED recall impact. Off by
-// default; losslessly reversible (disk always keeps exact floats), so it can be tried and reverted.
-// Recent FREEZES of the main thread — the ones the user actually feels as "(Not Responding)".
-//
-// A percentile hides these: one 2.5 s stop-the-world pause barely moves a p99 over a 60 s window.
-// So they are recorded as discrete EVENTS, with what the heap looked like and what was in flight,
-// which is the difference between "the app feels slow sometimes" and "GC, 2.4 s, heap 1.1 GB".
-ipcMain.handle('memory:get-stalls', async () => {
-  try {
-    // Prefer the on-disk log: a freeze bad enough to be worth reading about is often one the user
-    // restarted the app to escape, which used to erase the only record of it. Fall back to the live
-    // ring if the log can't be read.
-    const saved = persistedStalls()
-    return ok(saved.length > 0 ? saved : recentStalls())
-  } catch (e: any) { return err(e.message) }
-})
-
-ipcMain.handle('memory:get-vector-ram', async () => {
-  try {
-    const vectors = vectorRamStats()
-    const health = processHealth()
-    // The advice is computed HERE, from this machine's live numbers, so the panel never has to
-    // guess at a threshold — and can tell the user the toggle would NOT help them.
-    return ok({ ...vectors, persisted: getVectorQuantize(), health, advice: quantizationAdvice(vectors, health) })
-  } catch (e: any) { return err(e.message) }
-})
-ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean }) => {
-  try {
-    const on = opts?.value === true
-    setVectorQuantize(on)                    // persist the choice...
-    const stats = setVectorQuantization(on)  // ...and rebuild the packed store in the new mode
-    const health = processHealth()
-    return ok({ ...stats, persisted: on, health, advice: quantizationAdvice(stats, health) })
-  } catch (e: any) { return err(e.message) }
-})
+// The vector-RAM stats panel, the int8 recommendation and the freeze history are GONE — see
+// tests/electron/noMainThreadInstruments.test.ts. Every one of them read live numbers off the
+// thread that echoes your keystrokes, and the freeze detector's own profiler harvest blocked that
+// thread for ~1 s at a time, in a loop it fed itself: 1,139 freezes / 890 s in one 21-minute
+// session. Diagnostics that are paid for out of the user's typing latency are not worth having.
 
 // Claude launch primer: when relevant memory exists, write the memory-recall
 // instruction to a temp file so Claude Code can be launched with
@@ -2569,19 +2535,9 @@ if (!gotTheLock) {
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
     initAnomalyLog(app.getPath('userData')) // burn-in: capture surprising memory events (incl. this init's)
-    // Sample main-thread health for the whole session. The PTY is pumped on this thread, so its
-    // stalls ARE the typing lag — and that is the only evidence that can honestly justify trading
-    // vector exactness for RAM.
-    initStallLog(app.getPath('userData')) // freezes outlive the process that had them — before start
-    // Arm V8's sampling profiler with it, so a freeze in code nobody thought to label still gets
-    // named. It samples on its own native thread and so keeps working while this one is dead.
-    // Measured cost of the 10 ms interval: p99 event-loop lag 6.6 ms -> 10.8 ms (about one frame,
-    // far below the ~50 ms at which a stall is perceptible) for the ability to name an 18-second one.
-    // TERMPOLIS_STALL_STACKS=0 turns the sampling off and falls back to labelled operations only.
-    startProcessHealth(Date.now, process.env.TERMPOLIS_STALL_STACKS !== '0')
     // Apply the persisted vector-quantization choice BEFORE the store is built — the packed array
     // is allocated inside initSwarmMemory, so the mode has to be known by then. Default is exact
-    // float32; int8 is opt-in from Settings -> Memory & Learning.
+    // float32.
     try { setVectorQuantization(getVectorQuantize()) } catch { /* fall back to exact floats */ }
     initSwarmMemory(app.getPath('userData'))
     // Memory-at-rest secret scrub. Redact secrets BEFORE a memory is hashed, embedded, or

@@ -100,23 +100,16 @@ export function ConnectionsGraph({ nodes, edges, totalNodes, totalEdges }: Props
 
     let selIdx: number | null = null
     let hovIdx: number | null = null
-    let frame = 0
-    // Keep the graph gently alive: after it settles, a slow continuous "breathing" drift
-    // + a light ongoing force makes it feel live without the layout wandering. Motion
-    // pauses while a node is selected (so its connections stay readable) and is disabled
-    // under prefers-reduced-motion.
-    const reduce = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const nbrSet = (i: number): Set<number> => { const s = new Set<number>([i]); for (const k of adj[i]) s.add(k.o); return s }
 
     const draw = (): void => {
-      const bob = !reduce && selIdx == null
       ctx.clearRect(0, 0, W, H)
-      // resolve each node's SCREEN position first (settled position + a small sinusoidal
-      // bob when alive) so edges, nodes, labels and hit-testing all agree on where it is.
+      // Screen position == settled position. Resolved up front so edges, nodes, labels and
+      // hit-testing all agree on where each node is.
       for (let i = 0; i < N; i++) {
         const n = sim[i]
-        n.sx = n.x + (bob ? Math.sin(frame * 0.028 + i * 0.7) * 1.3 : 0)
-        n.sy = n.y + (bob ? Math.cos(frame * 0.028 + i * 0.9) * 1.3 : 0)
+        n.sx = n.x
+        n.sy = n.y
       }
       const hi = selIdx != null ? nbrSet(selIdx) : null
       for (const l of links) {
@@ -154,12 +147,21 @@ export function ConnectionsGraph({ nodes, edges, totalNodes, totalEdges }: Props
       }
     }
 
+    // DRAW ON DEMAND — never on a clock.
+    //
+    // This used to run `requestAnimationFrame` forever: ~60 fps, up to 600 stroked edges and 160
+    // node arcs per frame, for as long as the Memory tab was mounted — even while scrolled out of
+    // sight. The entire purpose of that loop was a cosmetic 1.3-pixel sinusoidal "bob". It landed
+    // on exactly the frames scrolling needed, which is why the dashboard juddered whenever it was
+    // dragged. The layout is fully settled by the pre-steps above, so a settled graph is a STATIC
+    // image: paint it once, and repaint only when something a viewer can see actually changes
+    // (hover, selection, resize). Idle cost is now zero.
     let raf = 0
-    // The layout is fully settled by the pre-steps above; the loop only advances the
-    // gentle "breathing" drift (see draw). No ongoing physics — re-simulating a settled
-    // graph makes tightly-coupled/near-coincident nodes oscillate (edges blink).
-    const loop = (): void => { frame++; draw(); raf = requestAnimationFrame(loop) }
-    if (reduce) draw(); else loop()
+    const schedule = (): void => {                 // coalesce: never paint twice in one frame
+      if (raf) return
+      raf = requestAnimationFrame(() => { raf = 0; draw() })
+    }
+    draw()
 
     const hit = (px: number, py: number): number | null => {
       let best: number | null = null, bd = 1e9
@@ -168,23 +170,34 @@ export function ConnectionsGraph({ nodes, edges, totalNodes, totalEdges }: Props
     }
     const onMove = (e: MouseEvent): void => {
       const r = canvas.getBoundingClientRect(); const h = hit(e.clientX - r.left, e.clientY - r.top)
-      canvas.style.cursor = h != null ? 'pointer' : 'default'; hovIdx = h
+      canvas.style.cursor = h != null ? 'pointer' : 'default'
+      if (h === hovIdx) return                     // nothing changed -> nothing to repaint
+      hovIdx = h
+      schedule()
     }
-    const onLeave = (): void => { hovIdx = null }
+    const onLeave = (): void => { if (hovIdx == null) return; hovIdx = null; schedule() }
     const onClick = (e: MouseEvent): void => {
       const r = canvas.getBoundingClientRect(); const h = hit(e.clientX - r.left, e.clientY - r.top)
       selIdx = h != null && h !== selIdx ? h : null
       if (selIdx == null) setSelected(null)
       else setSelected({ node: nodes[selIdx], edges: adj[selIdx].map((k) => ({ rel: k.rel, other: nodes[k.o].label, dir: k.dir })) })
+      schedule()
     }
     canvas.addEventListener('mousemove', onMove)
     canvas.addEventListener('mouseleave', onLeave)
     canvas.addEventListener('click', onClick)
-    const onResize = (): void => { resize(); for (let s = 0; s < 60; s++) step() }
+    // Resize re-runs the O(N^2) relaxation, so it must never fire once per resize EVENT — a window
+    // drag emits those continuously. Coalesce to one settle per quiet moment.
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    const onResize = (): void => {
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => { resize(); for (let s = 0; s < 60; s++) step(); draw() }, 120)
+    }
     window.addEventListener('resize', onResize)
 
     return () => {
       cancelAnimationFrame(raf)
+      clearTimeout(resizeTimer)
       canvas.removeEventListener('mousemove', onMove)
       canvas.removeEventListener('mouseleave', onLeave)
       canvas.removeEventListener('click', onClick)

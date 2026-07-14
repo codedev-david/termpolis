@@ -25,7 +25,6 @@ import { readSecret, writeSecret, isOsEncryptionAvailable } from './secureKeySto
 import { projectKeyOf } from './projectKey'
 import type { CodeRef } from './codeGraph'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
-import { tracked, markBusy, clearBusy } from './processHealth'
 
 // Shared swarm memory — a lightweight RAG layer so agents can write facts,
 // decisions, and hand-offs once and have other agents retrieve them later
@@ -336,12 +335,7 @@ function classifyShardLine(line: string): ShardLineClass {
 // tombstones (deleted ids + clear epoch), deduped by id and content-hash,
 // newest-maxEntries kept. Order-independent → safe to merge any device set.
 function reloadFrom(paths: string[]): void {
-  markBusy('memory:load-shard') // 464 MB read + 108k decrypts, all synchronous — name it if it stalls
-  try {
-    reloadFromImpl(paths)
-  } finally {
-    clearBusy('memory:load-shard')
-  }
+  reloadFromImpl(paths) // 464 MB read + 108k decrypts, all synchronous
 }
 
 function reloadFromImpl(paths: string[]): void {
@@ -1388,15 +1382,13 @@ export async function memoryBackfillVectors(max = 200): Promise<number> {
 // and "building the index" are wildly different costs and the panel should not have to call an
 // 18-second freeze "loading" when 15 of those seconds were indexing.
 function rebuildVectorIndex(): void {
-  tracked('memory:build-index', () => {
-    buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
-    vectorStore = newVectorStore()
-    rowToEntry.clear()
-    hnsw = null
-    lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
-    for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
-    hnswStale = vectorStore.size >= hnswThreshold
-  })
+  buildGen++ // F34: invalidate any in-flight HNSW build — the store rows it indexes are about to change
+  vectorStore = newVectorStore()
+  rowToEntry.clear()
+  hnsw = null
+  lexicalIndex.clear() // BB1: rebuild the lexical index alongside the vector index
+  for (const e of entries) { indexEntryVector(e); lexicalIndex.add(e.id, e.content) }
+  hnswStale = vectorStore.size >= hnswThreshold
 }
 
 // BB10: compact orphaned vectors out of the packed store IN MEMORY, remapping the
@@ -1406,25 +1398,23 @@ function rebuildVectorIndex(): void {
 // mis-scoring). The yielded ensureHnsw rebuilds it on the next large search.
 function compactVectorStore(): void {
   if (hnswBuilding) return // never compact mid-build — rows would shift under it
-  tracked('memory:compact-vectors', () => {
-    const live: number[] = []
-    const liveEntries: MemoryEntry[] = []
-    for (const e of entries) {
-      const r = entryRow.get(e)
-      if (r !== undefined && rowToEntry.get(r) === e) { live.push(r); liveEntries.push(e) }
-    }
-    const remap = vectorStore.compact(live)
-    rowToEntry.clear()
-    for (let i = 0; i < liveEntries.length; i++) {
-      const nr = remap.get(live[i])
-      if (nr === undefined) continue
-      rowToEntry.set(nr, liveEntries[i])
-      entryRow.set(liveEntries[i], nr) // overwrite the stale row
-    }
-    try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
-    hnsw = null
-    hnswStale = vectorStore.size >= hnswThreshold
-  })
+  const live: number[] = []
+  const liveEntries: MemoryEntry[] = []
+  for (const e of entries) {
+    const r = entryRow.get(e)
+    if (r !== undefined && rowToEntry.get(r) === e) { live.push(r); liveEntries.push(e) }
+  }
+  const remap = vectorStore.compact(live)
+  rowToEntry.clear()
+  for (let i = 0; i < liveEntries.length; i++) {
+    const nr = remap.get(live[i])
+    if (nr === undefined) continue
+    rowToEntry.set(nr, liveEntries[i])
+    entryRow.set(liveEntries[i], nr) // overwrite the stale row
+  }
+  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  hnsw = null
+  hnswStale = vectorStore.size >= hnswThreshold
 }
 
 export function _vectorStoreSizeForTests(): number { return vectorStore.size }
@@ -1492,13 +1482,11 @@ function entriesFingerprint(): string {
 function loadPersistedHnsw(): HnswIndex | null {
   const p = hnswFile()
   if (!p) return null
-  return tracked('memory:load-hnsw', () => {
-    try {
-      const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
-      if (!obj || obj.fp !== entriesFingerprint() || obj.graph?.v !== 2) return null // stale / wrong format
-      return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
-    } catch { return null }
-  })
+  try {
+    const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
+    if (!obj || obj.fp !== entriesFingerprint() || obj.graph?.v !== 2) return null // stale / wrong format
+    return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
+  } catch { return null }
 }
 
 // Runs on the background indexer's timer — i.e. on a CADENCE, against a live app. A multi-MB
@@ -1507,11 +1495,9 @@ function loadPersistedHnsw(): HnswIndex | null {
 function savePersistedHnsw(): void {
   const p = hnswFile()
   if (!p || !hnsw) return
-  tracked('memory:persist-hnsw', () => {
-    try {
-      fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw!.toJSON() }))
-    } catch { /* best effort */ }
-  })
+  try {
+    fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw!.toJSON() }))
+  } catch { /* best effort */ }
 }
 
 // Persist the current graph if it's fresh — called from the background indexer so
@@ -2626,7 +2612,7 @@ export function compactSelfShard(opts?: { force?: boolean }): { compacted: boole
   // The measured worst offender in this file (see the cost table above): when the gate says yes, this
   // reads the whole shard, decrypts every line and re-encrypts every line — synchronously, on the
   // thread that pumps the PTY. If it stalls, the stall must say `memory:compact`, not `sync-work`.
-  return tracked('memory:compact', () => compactSelfShardImpl(opts))
+  return compactSelfShardImpl(opts)
 }
 
 function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {

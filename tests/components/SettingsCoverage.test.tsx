@@ -1081,16 +1081,22 @@ describe('MemoryLearningSettings — metrics loading', () => {
     expect(screen.queryByTestId('ml-error')).toBeNull()
   })
 
-  it('polls the brain every 5 seconds', async () => {
+  // v1.25.16: this used to poll every 5 s. `memory:metrics` scans EVERY entry in the store (running
+  // content regexes over each), copies the whole edge set and re-aggregates the event ledger — on
+  // the main process, which is the same thread that echoes your keystrokes into the PTY. A read that
+  // expensive must be tied to a user asking for it, never to a clock. It loads on open and on
+  // Refresh; if a timer ever creeps back in, this test is what catches it.
+  it('NEVER polls the brain on a timer — the read is far too expensive to be on a clock', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const fn = stubBrain(fullMetrics())
     render(<MemoryLearningSettings />)
     await screen.findByTestId('ml-receipts')
-    const before = fn.mock.calls.length
+    const afterMount = fn.mock.calls.length
+    expect(afterMount).toBe(1) // loaded once, because the tab was opened
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) }) // a full minute of nothing
 
-    expect(fn.mock.calls.length).toBe(before + 1)
+    expect(fn.mock.calls.length).toBe(afterMount) // ...and it never fired again
     vi.useRealTimers()
   })
 

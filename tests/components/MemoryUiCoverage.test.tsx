@@ -173,10 +173,16 @@ describe('ConnectionsGraph — draw, selection and layout branches', () => {
     expect(rafSpy).not.toHaveBeenCalled()    // …but it is not animating
   })
 
-  it('animates when matchMedia reports motion is allowed', () => {
+  // v1.25.16: this used to drive requestAnimationFrame FOREVER — ~60 fps of up to 600 stroked edges
+  // and 160 node arcs, for as long as the Memory tab stayed mounted, even scrolled out of sight. All
+  // of it existed to animate a 1.3-pixel cosmetic "bob", and it landed on exactly the frames that
+  // scrolling needed. A settled force layout is a static image: paint it once, repaint only when a
+  // viewer-visible thing changes. Idle cost must be zero.
+  it('paints once and then leaves the main thread alone — no perpetual rAF loop', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
     render(<ConnectionsGraph nodes={HUB_NODES} edges={HUB_EDGES} totalNodes={4} totalEdges={2} />)
-    expect(rafSpy).toHaveBeenCalledTimes(1)
+    expect(rafSpy).not.toHaveBeenCalled()   // the first paint is synchronous; nothing is scheduled
+    expect(ctx.stroke).toHaveBeenCalled()   // ...but it definitely drew
   })
 
   it('falls back to DPR 1 when devicePixelRatio is unset, and clamps a retina DPR to 2', () => {
@@ -198,12 +204,19 @@ describe('ConnectionsGraph — draw, selection and layout branches', () => {
   })
 
   it('re-lays out the graph to the new width when the window resizes', () => {
+    vi.useFakeTimers()
     render(<ConnectionsGraph nodes={HUB_NODES} edges={HUB_EDGES} totalNodes={4} totalEdges={2} />)
     const canvas = screen.getByTestId('ml-graph-canvas') as HTMLCanvasElement
     expect(canvas.style.width).toBe('600px')
 
     rectWidth = 900
+    // Resize re-runs the O(N^2) relaxation, so it is DEBOUNCED — a window drag emits resize events
+    // continuously, and running the settle on each one is a hard main-thread block per event.
     act(() => { window.dispatchEvent(new Event('resize')) })
+    expect(canvas.style.width).toBe('600px') // ...not yet: still coalescing
+    act(() => { vi.advanceTimersByTime(150) })
+    vi.useRealTimers()
+
     expect(canvas.style.width).toBe('900px')
     expect(canvas.width).toBe(900)
 
