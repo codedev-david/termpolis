@@ -27,6 +27,12 @@ jobs:
           done
       - name: Lint
         run: npm run lint
+      # The build is esbuild: it STRIPS types without checking them. So `Cannot find name
+      # 'memoryHostPid'` built clean, got signed, and shipped in v1.26.1 — the handler threw a
+      # ReferenceError on every call and the panel it fed reported "unknown" forever. Nothing in this
+      # repo ran tsc. Now something does, and it runs BEFORE the build that can't see this.
+      - name: Typecheck
+        run: npm run typecheck
       - name: Build
         run: npm run build
 

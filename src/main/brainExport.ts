@@ -78,7 +78,7 @@ export interface ImportDeps {
    *  implementation is an RPC. It is AWAITED below; returning a Promise here and reading `.imported`
    *  off it synchronously would report `undefined` memories imported while the merge raced on. */
   importMemory: (jsonl: string) => { imported: number } | Promise<{ imported: number }>
-  importGraph: (jsonl: string) => number // the graph stays in main — still sync
+  importGraph: (jsonl: string) => number | Promise<number> // crosses to the memory process, like importMemory
   restoreFile: (name: string, data: Buffer) => void // restore a userData file (impl decides absent-only)
 }
 
@@ -132,7 +132,7 @@ export async function importBrainZip(zipBuf: Buffer, deps: ImportDeps): Promise<
   const mem = byName.get(MEMORY_ENTRY)
   const memoriesImported = mem ? (await deps.importMemory(mem.toString('utf8'))).imported : 0
   const graph = byName.get(GRAPH_ENTRY)
-  const edgesImported = graph ? deps.importGraph(graph.toString('utf8')) : 0
+  const edgesImported = graph ? await deps.importGraph(graph.toString('utf8')) : 0
   const restored: string[] = []
   for (const name of RESTORE_FILES) {
     const data = byName.get(name)

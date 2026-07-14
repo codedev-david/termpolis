@@ -40,6 +40,10 @@ import {
   persistMemoryIndex, vectorRamStats, setVectorQuantization,
   exportMemorySnapshot, importMemorySnapshot,
 } from './swarmMemory'
+// The graph is part of the brain, not a main-thread sidecar: initMemoryGraph() is called by
+// initSwarmMemory(), which runs HERE. v1.26.0 ported the store and left these four behind in main,
+// where they read an adjacency Map that nothing ever fills — see noGhostBrainState.test.ts.
+import { graphStats, graphRelationStats, exportGraphEdges, importGraphEdges } from './memoryGraph'
 import { setSafeStorage } from './secureKeyStore'
 import type { WeaveNeighbour } from './mnemeWeave'
 
@@ -183,9 +187,12 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
   memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady,
   memorySourceById, memoryLessons, searchArchive, symbolHistory, weaveCandidates, weaveNeighbours,
   consolidationCandidates, vectorRamStats, memoryScrubStats, getSyncStatus, exportMemorySnapshot,
+  // the graph — counted in place, so only the tallies cross the wire, never the edge set
+  graphStats, graphRelationStats, exportGraphEdges,
   // writes / mutations
   memoryWrite, memoryLink, memoryFeedback, memoryDelete, memoryArchive, memoryClear,
   memoryPatchProjects, memoryPruneCodePath, memoryForget, backfillCodeRefs, importMemorySnapshot,
+  importGraphEdges,
   // maintenance / lifecycle
   warmProbeEmbeddings, compactSelfShard, persistMemoryIndex, reloadMemoryFromSync,
   memoryBackfillVectors, setVectorQuantization,

@@ -1018,6 +1018,21 @@ describe('project metadata (current-directory recall)', () => {
     expect(normalizeProjectSlug('  /  ')).toBe('')
   })
 
+  // The home directory is the one basename that must never become a project: on Windows and macOS
+  // it IS the user's account name. A session opened in ~ scoped its memories to "davidengelhart",
+  // and since a self-competence domain is just the project, the dashboard drew a bar labelled with
+  // the user's own name and every agent primer opened with "low competence in davidengelhart".
+  it('never turns the HOME directory into a project — its basename is the user’s name', () => {
+    const home = os.homedir()
+    expect(normalizeProjectSlug(home)).toBe('')
+    expect(normalizeProjectSlug(home + path.sep)).toBe('')            // trailing separator
+    expect(normalizeProjectSlug(home.replace(/\\/g, '/'))).toBe('')   // posix separators on win32
+    expect(normalizeProjectSlug(home.toUpperCase())).toBe('')         // win32/macOS are case-folding
+
+    // ...but a path INSIDE home is a perfectly good project, and must not be swallowed with it.
+    expect(normalizeProjectSlug(path.join(home, 'repos', 'termpolis'))).toBe('termpolis')
+  })
+
   it('memoryPatchProjects backfills hash-matched entries without overwriting existing tags', async () => {
     await memoryWrite({ agentId: 'a', kind: 'message', content: 'old conversation chunk', hash: 'h-old' })
     await memoryWrite({ agentId: 'a', kind: 'message', content: 'tagged already', hash: 'h-tagged', project: '/repos/keepme' })

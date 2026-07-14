@@ -146,7 +146,8 @@ import {
 //
 // normalizeProjectSlug / projectKeyOf / entityDedupHash are pure string helpers and stay SYNC.
 import {
-  startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode,
+  startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode, memoryHostPid,
+  graphStats, graphRelationStats,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   setMemoryScrubber,
@@ -184,7 +185,6 @@ import { proactiveQuery, proactiveSignals } from './mnemeRetrieval'
 import { codeLocate, type LocatedSite, type LocatorSymbol, type LocatorMemory } from './codeLocate'
 import { isHighValueEpisode } from './mnemeReflect'
 import { makeHeadlessDistiller } from './mnemeDistiller'
-import { graphRelationStats, graphStats } from './memoryGraph'
 import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
@@ -1593,7 +1593,11 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
       // await: embeddingsReady() is a Promise now, and a Promise is truthy — un-awaited, EVERY
       // recall would book itself as a vector recall even with the embedder down.
       const ready = await embeddingsReady()
-      recordMetric({ t: 'recall', ts: Date.now(), hits: results.length, topScore: results[0]?.score ?? 0, path: ready ? 'vector' : 'keyword' })
+      // `ms` is required on a RecallEvent and was simply omitted — `started` above was captured for
+      // it and then never used. Nothing caught it because nothing typechecked main (see the
+      // typecheck script + CI gate added alongside this): the recall-latency SLI has been reading a
+      // missing number on every UI-driven search.
+      recordMetric({ t: 'recall', ts: Date.now(), ms: Date.now() - started, hits: results.length, topScore: results[0]?.score ?? 0, path: ready ? 'vector' : 'keyword' })
       recordMetric({ t: 'embed', ts: Date.now(), available: ready })
     } catch { /* best effort */ }
     return ok(results)
@@ -1623,18 +1627,20 @@ ipcMain.handle('memory:stats', async () => { try { return ok(await memoryStats()
 // live reliability/receipt SLIs (sparse until the brain has been used a while).
 ipcMain.handle('memory:metrics', async () => {
   try {
-    // graphRelationStats counts in place. getAllEdges() built a fresh flat copy of EVERY edge in
-    // the graph just to count them by relation — pure garbage, on the thread that pumps the PTY.
-    const byRelation = graphRelationStats()
-    const gs = graphStats()
     const competence = competenceRecords()
       .slice()
       .sort((a, b) => b.attempts - a.attempts)
       .slice(0, 8)
       .map((c) => ({ domain: c.domain, attempts: c.attempts, confidence: c.confidence }))
-    // Both store reads cross to the memory process. Un-awaited they would sit in this object as
-    // Promises and IPC-serialize to {} — a dashboard that reports an empty brain.
-    const [store, recentActivity] = await Promise.all([memoryDashboardStats(), memoryRecentActivity(14)])
+    // EVERY one of these crosses to the memory process — the graph included. Un-awaited they sit in
+    // the payload as Promises: `gs.nodes` reads undefined and byRelation structured-clones to {}, so
+    // the dashboard reports an empty brain and nothing throws. The graph reads were the two that
+    // v1.26.0 left behind pointing at the in-main module, which is the same empty answer by a
+    // different route. graphRelationStats still counts in place, in the child — the tallies cross the
+    // wire, never the edge set.
+    const [store, recentActivity, gs, byRelation] = await Promise.all([
+      memoryDashboardStats(), memoryRecentActivity(14), graphStats(), graphRelationStats(),
+    ])
     return ok({
       ledger: metricsSummary(Date.now()),
       store,

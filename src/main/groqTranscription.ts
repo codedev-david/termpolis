@@ -105,7 +105,10 @@ export async function transcribeWithGroq(
   const res = await f(opts.endpoint || GROQ_TRANSCRIBE_URL, {
     method: 'POST',
     headers: { Authorization: `Bearer ${opts.apiKey}`, 'Content-Type': contentType },
-    body: body as unknown as BodyInit,
+    // Derived from fetch's own signature rather than named as `BodyInit`: that name is a DOM-lib
+    // global, and main's lib is ES2022 on purpose — pulling in DOM here would let `document` and
+    // `window` typecheck inside the main process.
+    body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>['body'],
   })
   if (!res.ok) {
     let detail = ''

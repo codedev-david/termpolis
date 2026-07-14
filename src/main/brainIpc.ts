@@ -9,8 +9,12 @@ import { buildBrainZip, importBrainZip, type ImportResult } from './brainExport'
 // swarmMemory — the in-main swarmMemory singleton is never initialised any more, so importing them
 // direct would export an EMPTY brain (and import into a store nothing reads). Silent, and the user
 // would only find out when they restored it on the other machine.
-import { exportMemorySnapshot, importMemorySnapshot } from './memoryClient'
-import { exportGraphEdges, importGraphEdges } from './memoryGraph'
+// ...and so must the GRAPH, for exactly the same reason. v1.26.0 repointed the store and left these
+// two importing the in-main memoryGraph, whose adjacency Map is only ever filled by initSwarmMemory
+// — which runs in the memory process. So the export wrote a brain with ZERO edges and the import fed
+// a restored machine's edges into a graph nothing reads: precisely the silent failure the paragraph
+// above predicts, found on the other machine, one release later.
+import { exportMemorySnapshot, importMemorySnapshot, exportGraphEdges, importGraphEdges } from './memoryClient'
 
 /** Injected filesystem surface — real fs in the app, fakes in tests. */
 export interface BrainFs {
@@ -35,10 +39,12 @@ export function realBrainFs(): BrainFs {
  *  handed over as a closure over the resolved value — passing the async proxy itself would make it
  *  serialize a Promise, i.e. export the string "[object Promise]" as the user's brain. */
 export async function buildBrainArchive(userDataDir: string, appVersion: string, now: number, fs: BrainFs): Promise<Buffer> {
-  const memory = await exportMemorySnapshot()
+  // Both resolved BEFORE zipping, then handed over as closures over the values: passing the async
+  // proxies themselves would zip the string "[object Promise]" as the user's brain.
+  const [memory, graph] = await Promise.all([exportMemorySnapshot(), exportGraphEdges()])
   return buildBrainZip({
     memorySnapshot: () => memory,
-    graphSnapshot: exportGraphEdges, // the graph is still in main — genuinely sync
+    graphSnapshot: () => graph,
     readFile: (name) => fs.read(join(userDataDir, name)),
     appVersion,
     now,
@@ -50,7 +56,7 @@ export async function buildBrainArchive(userDataDir: string, appVersion: string,
 export async function mergeBrainArchive(userDataDir: string, zip: Buffer, fs: BrainFs): Promise<ImportResult> {
   return await importBrainZip(zip, {
     importMemory: importMemorySnapshot, // async — importBrainZip awaits it
-    importGraph: importGraphEdges,
+    importGraph: importGraphEdges,      // ...and so is this now: the graph lives with the store
     restoreFile: (name, data) => {
       const p = join(userDataDir, name)
       if (fs.sizeOrZero(p) <= 0) fs.write(p, data)

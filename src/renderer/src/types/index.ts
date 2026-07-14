@@ -114,11 +114,13 @@ export interface HistoryEntry {
   timestamp: number
 }
 
-export interface IpcResponse<T = undefined> {
-  success: boolean
-  data?: T
-  error?: string
-}
+/** A DISCRIMINATED union, not `{success: boolean; data?: T}`. With the old shape `if (res.success)`
+ *  narrowed nothing — `data` stayed `T | undefined` — so every call site was free to write
+ *  `setStats(res.data)` and ship a silent `undefined` into state. TS only tells you that if `success`
+ *  discriminates. (It was telling us: 15 errors across two files, in a project nothing typechecked.) */
+export type IpcResponse<T = undefined> =
+  | { success: true; data: T; error?: undefined }
+  | { success: false; error: string; data?: undefined }
 
 export interface PlatformInfo {
   /** process.platform of the host (e.g. 'win32', 'darwin', 'linux'). */
@@ -257,6 +259,10 @@ export interface TermpolisAPI {
   memoryChooseSyncDir: () => Promise<IpcResponse<MemorySyncStatus>>
   memorySetSyncPassphrase: (passphrase: string) => Promise<IpcResponse<MemorySyncStatus>>
   memoryDisableSyncEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
+  // WP-F, at-rest encryption. Exposed on the bridge since v1.24 but never declared here, so the
+  // preload's own object literal failed to typecheck — silently, because nothing typechecked.
+  memoryEnableLocalEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
+  memoryDisableEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
 
   // Clipboard — native Electron clipboard (focus/permission-immune), used by the
   // terminal context menu where navigator.clipboard silently rejects.

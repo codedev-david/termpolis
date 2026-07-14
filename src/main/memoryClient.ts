@@ -479,6 +479,15 @@ export const memoryHasHash = (hash: string): Promise<boolean> => call('memoryHas
 export const memoryStats = (): Promise<{ count: number; capacity: number; corruptLinesSkipped: number }> => call('memoryStats', [])
 export const memoryDashboardStats = (): Promise<MemoryDashboardStats> => call('memoryDashboardStats', [])
 export const memoryGraphSample = (opts: { limit?: number } = {}): Promise<GraphSample> => call('memoryGraphSample', [opts])
+// The knowledge graph is IN the memory process — it is loaded by initSwarmMemory, which runs there.
+// Reading the in-main memoryGraph module instead gets you a scrupulously honest report on an empty
+// adjacency Map: "0 nodes, 0 relation types" over a live 4.4 MB graph, and a brain export with no
+// edges in it. Both shipped in v1.26.0. Counting stays in the child (in place, no copy of the edge
+// set); only the tallies — or, for export, the JSONL — cross the wire.
+export const graphStats = (): Promise<{ edges: number; nodes: number }> => call('graphStats', [])
+export const graphRelationStats = (): Promise<Record<string, number>> => call('graphRelationStats', [])
+export const exportGraphEdges = (): Promise<string> => call('exportGraphEdges', [])
+export const importGraphEdges = (jsonl: string): Promise<number> => call('importGraphEdges', [jsonl])
 export const memoryRecentActivity = (limit = 14): Promise<ActivityRow[]> => call('memoryRecentActivity', [limit])
 export const embeddingsReady = (): Promise<boolean> => call('embeddingsReady', [])
 export const memorySourceById = (id: string): Promise<string | undefined> => call('memorySourceById', [id])

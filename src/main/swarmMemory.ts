@@ -74,11 +74,33 @@ export interface MemoryEntry {
 }
 
 /** Normalize a cwd/path or bare name into a lowercase project slug (its basename). This is
- *  the DISPLAY scope; it collides across repos with the same folder name (see projectKeyOf). */
+ *  the DISPLAY scope; it collides across repos with the same folder name (see projectKeyOf).
+ *
+ *  The HOME directory is NOT a project, and this is the one basename that must never become one:
+ *  on Windows and macOS it is the user's ACCOUNT NAME. Open a terminal in ~ and the slug was
+ *  "davidengelhart" — which then became the memory's project scope, and, because a self-competence
+ *  domain is just the project (mnemeReflex.ts:67), a competence domain. The dashboard drew a bar
+ *  labelled with the user's own name, and every agent primer opened with "low competence in
+ *  davidengelhart (1/1 succeeded)". Nothing downstream can un-derive that, so it must not happen
+ *  here: home resolves to no project at all, and the callers already treat '' as "unscoped". */
 export function normalizeProjectSlug(pathOrName: string): string {
   if (typeof pathOrName !== 'string') return ''
-  const base = pathOrName.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+  const trimmed = pathOrName.trim().replace(/[\\/]+$/, '')
+  if (isHomeDir(trimmed)) return ''
+  const base = trimmed.split(/[\\/]/).pop() || ''
   return base.trim().toLowerCase().slice(0, 128)
+}
+
+/** Is this path the user's home directory itself? (Not a path INSIDE it — ~/repos/termpolis is a
+ *  perfectly good project.) Separators and case are normalized: Windows gives us both C:\ and C:/,
+ *  and its filesystem is case-insensitive. */
+function isHomeDir(p: string): boolean {
+  if (!p) return false
+  const norm = (s: string): string => s.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase()
+  let home = ''
+  try { home = os.homedir() } catch { return false } // no homedir (odd container) — nothing to guard
+  if (!home) return false
+  return norm(p) === norm(home)
 }
 
 // F19: projectKeyOf is now shared with the code graph (src/main/projectKey.ts) so the SAME repo

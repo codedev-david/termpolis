@@ -151,6 +151,14 @@ const mem = vi.hoisted(() => ({
   createMemoryHostTransport: vi.fn(),
   stopMemoryHost: vi.fn(),
   memoryHostMode: vi.fn(() => 'host'),
+  memoryHostPid: vi.fn(() => 4242),
+  // The graph lives in the memory process with the store — so these are ASYNC, like every other
+  // proxied read. They were the last thing still being read from the in-main module (a singleton
+  // that is never initialised there), which is why the dashboard reported an empty graph.
+  graphStats: vi.fn(async () => ({ nodes: 5, edges: 9 })),
+  graphRelationStats: vi.fn(async () => ({ explains: 2, follows: 1 })),
+  exportGraphEdges: vi.fn(async () => ''),
+  importGraphEdges: vi.fn(async () => 0),
   exportMemorySnapshot: vi.fn(async () => ''),
   importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
   memoryKnownHashes: vi.fn(async () => [] as string[]),
@@ -599,18 +607,35 @@ describe('memory:count / memory:clear / memory:stats', () => {
 // memory:metrics — the Memory & Learning dashboard's proof numbers
 // ===========================================================================
 describe('memory:metrics', () => {
-  it('tallies graph edges BY RELATION', async () => {
-    graph.graphRelationStats.mockReturnValueOnce({ explains: 2, follows: 1 })
+  // The graph lives in the MEMORY PROCESS, with the store. Read it from the in-main module and you
+  // get an honest report on an empty singleton: "Connections mapped: 0 — 0 nodes, 0 relation types",
+  // drawn over a 4.4 MB memory-graph.jsonl the child is still appending to. That shipped in v1.26.0.
+  it('reads the graph from the memory process, not the in-main module', async () => {
     const r = await invoke('memory:metrics')
-    expect(r.data.graph.byRelation).toEqual({ explains: 2, follows: 1 })
+    expect(mem.graphStats).toHaveBeenCalled()
+    expect(mem.graphRelationStats).toHaveBeenCalled()
+    expect(r.data.graph).toEqual({ nodes: 5, edges: 9, byRelation: { explains: 2, follows: 1 } })
+  })
+
+  // The failure mode this handler's OWN comment warns about, one line above the bug: an un-awaited
+  // proxy call sits in the payload as a Promise. `gs.nodes` is then undefined and byRelation
+  // structured-clones to {} — a dashboard reporting an empty brain, with nothing thrown anywhere.
+  it('AWAITS the graph reads — a Promise in the payload is an empty dashboard', async () => {
+    const r = await invoke('memory:metrics')
+    expect(typeof r.data.graph.nodes).toBe('number')
+    expect(typeof r.data.graph.edges).toBe('number')
+    expect(r.data.graph.byRelation).not.toBeInstanceOf(Promise)
+    expect(Object.keys(r.data.graph.byRelation)).not.toEqual([])
   })
 
   // The dashboard is read on demand (tab open / Refresh), never on a timer — so the one thing this
-  // handler must never do is build a throwaway copy of the whole edge set to count it.
-  it('counts relations without copying the edge set', async () => {
-    await invoke('memory:metrics')
-    expect(graph.graphRelationStats).toHaveBeenCalled()
-    expect((graph as Record<string, unknown>).getAllEdges).toBeUndefined()
+  // must never do is build a throwaway copy of the whole edge set to count it. Counting happens in
+  // the child now, in place, and only the tallies cross the wire.
+  it('counts relations without shipping the edge set across the process boundary', async () => {
+    const r = await invoke('memory:metrics')
+    expect(mem.graphRelationStats).toHaveBeenCalled()
+    expect(r.data.graph).not.toHaveProperty('edgeList')
+    expect((mem as Record<string, unknown>).getAllEdges).toBeUndefined()
   })
 
   it('surfaces the STRUCTURAL code graph across all repos — a separate store from the memory graph', async () => {
@@ -644,8 +669,30 @@ describe('memory:metrics', () => {
   })
 
   it('degrades to {success:false,error} when a stats source throws', async () => {
-    graph.graphStats.mockImplementationOnce(() => { throw new Error('graph unreadable') })
+    mem.graphStats.mockRejectedValueOnce(new Error('graph unreadable'))
     expect(await invoke('memory:metrics')).toEqual({ success: false, error: 'graph unreadable' })
+  })
+})
+
+// ===========================================================================
+// memory:host-status — is the brain actually in its own process?
+// ===========================================================================
+// v1.26.1 shipped this handler calling memoryHostPid() without importing it. A free identifier is a
+// ReferenceError, the try/catch swallowed it, and the panel — whose only job was to prove the
+// process split had worked — silently reported "unknown" forever. Nothing typechecked main, so the
+// build never saw `Cannot find name 'memoryHostPid'`; and the panel's own tests mock
+// `window.termpolis`, so they never reached this handler. Both halves were tested. The seam was not.
+describe('memory:host-status', () => {
+  it('reports the mode and the pid of the memory process', async () => {
+    expect(await invoke('memory:host-status')).toEqual({ success: true, data: { mode: 'host', pid: 4242 } })
+  })
+
+  it('reports the DEGRADED fallback honestly — the whole reason the panel exists', async () => {
+    mem.memoryHostMode.mockReturnValueOnce('inproc')
+    mem.memoryHostPid.mockReturnValueOnce(undefined)
+    // pid null, not undefined: `undefined` is dropped by structured clone, and the panel would then
+    // read a payload with no `pid` key at all rather than one that says "there is no child".
+    expect(await invoke('memory:host-status')).toEqual({ success: true, data: { mode: 'inproc', pid: null } })
   })
 })
 
