@@ -93,14 +93,28 @@ export function normalizeProjectSlug(pathOrName: string): string {
 
 /** Is this path the user's home directory itself? (Not a path INSIDE it — ~/repos/termpolis is a
  *  perfectly good project.) Separators and case are normalized: Windows gives us both C:\ and C:/,
- *  and its filesystem is case-insensitive. */
+ *  and its filesystem is case-insensitive.
+ *
+ *  normalizeProjectSlug is called on the memory-write path, so the home directory is resolved and
+ *  normalized ONCE for the life of the process, not per call — homedir() is a syscall and this must
+ *  not add work to a hot path. A length check rejects the overwhelming majority of paths before any
+ *  normalization runs at all. */
+let normalizedHome: string | null = null
+
+function normPath(s: string): string {
+  return s.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
 function isHomeDir(p: string): boolean {
   if (!p) return false
-  const norm = (s: string): string => s.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase()
-  let home = ''
-  try { home = os.homedir() } catch { return false } // no homedir (odd container) — nothing to guard
-  if (!home) return false
-  return norm(p) === norm(home)
+  if (normalizedHome === null) {
+    try { normalizedHome = normPath(os.homedir() || '') } catch { normalizedHome = '' }
+  }
+  if (!normalizedHome) return false
+  // No length short-circuit: normPath COLLAPSES repeated separators, so `C:\Users\\Dave` normalizes
+  // to something shorter than it started and a length test would wave it through as a project named
+  // after the user. One O(len) pass on a path we are already splitting is not a cost worth a hole.
+  return normPath(p) === normalizedHome
 }
 
 // F19: projectKeyOf is now shared with the code graph (src/main/projectKey.ts) so the SAME repo

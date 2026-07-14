@@ -410,7 +410,7 @@ const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit mem
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
-import { safeGit, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
+import { safeGit, safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
 import { writeSecureFile } from './secureFile'
 import {
   initWorkspaceTrust,
@@ -2151,11 +2151,19 @@ ipcMain.handle('swarm:run-command', async (_, { cwd, command }: { cwd: string; c
   return ok(result)
 })
 
+// POLLED every 3 s by the git status bar, per repo terminal. safeGit is execFileSync, which blocks
+// the main thread for the entire spawn — measured at 227-300 ms per poll (a Windows git spawn alone
+// is ~106 ms of process-creation tax), paid TWICE, on the thread that pumps every PTY. That is a
+// 7-10% duty cycle of dead main thread for as long as the panel is open, and it reads as periodic
+// stutter in terminal output. Same two commands, same parsing — just off-thread, and concurrent.
 ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
   try {
-    let branch = ''
-    try { branch = safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).trim() } catch {}
-    const statusRaw = safeGit(['status', '--porcelain'], { cwd, timeout: 5000 }).trim()
+    const [branchRes, statusRes] = await Promise.all([
+      safeGitAsync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).catch(() => ''),
+      safeGitAsync(['status', '--porcelain'], { cwd, timeout: 5000 }),
+    ])
+    const branch = branchRes.trim()
+    const statusRaw = statusRes.trim()
     const staged: { file: string; status: string }[] = []
     const unstaged: { file: string; status: string }[] = []
     for (const line of statusRaw.split('\n')) {

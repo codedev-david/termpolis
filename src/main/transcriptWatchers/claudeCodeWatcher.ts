@@ -257,7 +257,17 @@ export function attachClaudeCodeWatcher(terminalId: string, cwd: string): Claude
     return null
   }
 
-  const tail: TailHandle = tailFile(sessionFile, (line) => processClaudeLine(line, terminalId))
+  // startAtEnd: this watcher is for LIVE events. Without it the tail opened at byte 0 and replayed
+  // the WHOLE transcript through the event bus — 53,023 lines / 77 MB for the largest session on
+  // David's machine — and every replayed line cost an appendFileSync + a statSync on the MAIN
+  // thread (639 µs each, measured), plus a webContents.send and a memoryWrite RPC. At the bus's own
+  // 500/s limiter that is ~319 ms of dead main thread PER SECOND, for about a minute, starting the
+  // moment you open an agent terminal. That is the "typing lags for the first few minutes after
+  // opening an AI terminal, then warms up" complaint, exactly: "warms up" was the replay hitting EOF.
+  // History is not lost — it was never this path's job. runConversationIngest (startIndexer, in
+  // bounded 250-chunk bursts precisely so a first index "can't peg the main thread") owns the
+  // backfill, and it is idempotent.
+  const tail: TailHandle = tailFile(sessionFile, (line) => processClaudeLine(line, terminalId), { startAtEnd: true })
 
   return {
     terminalId,

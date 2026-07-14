@@ -71,6 +71,11 @@ let seq = 0
 let rateCount = 0
 let rateWindowStart = 0
 let droppedCount = 0
+// Bytes in the log, counted in process. rotateIfNeeded used to statSync the file on EVERY publish
+// just to ask "how big are you?" — a syscall per event, on the thread that pumps the PTY, to learn
+// something we already know: we did every write. memoryAudit.ts:59-67 already does it this way
+// ("one statSync total, not per append"). One stat at init, then arithmetic.
+let logBytes = 0
 
 export function initEventBus(userDataPath: string): void {
   // Validate path is a real absolute directory — refuse traversal attempts
@@ -86,23 +91,31 @@ export function initEventBus(userDataPath: string): void {
   try {
     if (!fs.existsSync(logPath)) {
       fs.writeFileSync(logPath, '')
+      logBytes = 0
+    } else {
+      logBytes = fs.statSync(logPath).size // the ONLY stat of this file — publish() does arithmetic
     }
   } catch {
     logPath = null
+    logBytes = 0
   }
 }
 
+/** Rotate once the log passes MAX_LOG_SIZE. Takes the size as an argument rather than asking the
+ *  filesystem: the caller just wrote every byte in it. */
 function rotateIfNeeded(): void {
-  if (!logPath) return
+  if (!logPath || logBytes < MAX_LOG_SIZE) return
   try {
-    const stats = fs.statSync(logPath)
-    if (stats.size >= MAX_LOG_SIZE) {
-      const backup = logPath + '.old'
-      try { fs.unlinkSync(backup) } catch {}
-      fs.renameSync(logPath, backup)
-      fs.writeFileSync(logPath, '')
-    }
-  } catch {}
+    const backup = logPath + '.old'
+    try { fs.unlinkSync(backup) } catch {}
+    fs.renameSync(logPath, backup)
+    fs.writeFileSync(logPath, '')
+    logBytes = 0
+  } catch {
+    // Rotation failed (file locked, disk full). Re-sync from the filesystem rather than let the
+    // counter drift forever — a wrong counter means we either never rotate or rotate every event.
+    try { logBytes = fs.statSync(logPath).size } catch { logBytes = 0 }
+  }
 }
 
 function truncatePayload(payload: Record<string, unknown>): Record<string, unknown> {
@@ -156,7 +169,9 @@ export function publish(event: Omit<AgentEvent, 'id' | 'ts'> & { ts?: number }):
   // Persist synchronously — crash-safe, avoids race with consumers reading the file
   if (logPath) {
     try {
-      fs.appendFileSync(logPath, JSON.stringify(full) + '\n')
+      const line = JSON.stringify(full) + '\n'
+      fs.appendFileSync(logPath, line)
+      logBytes += Buffer.byteLength(line, 'utf8') // byteLength, not .length: JSON can hold non-ASCII
       rotateIfNeeded()
     } catch {}
   }
@@ -221,4 +236,5 @@ export function _resetForTests(): void {
   rateCount = 0
   rateWindowStart = 0
   droppedCount = 0
+  logBytes = 0
 }

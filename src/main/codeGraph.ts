@@ -199,25 +199,45 @@ export function initCodeGraph(d: string): void {
 // structs stay: `new Foo()` is a real construction edge.)
 const NON_CALLABLE: ReadonlySet<string> = new Set(['interface', 'type', 'variable', 'resource', 'module'])
 
-/** Re-resolve every symbol's reference names into caller→callee edges for one repo. */
+/** Re-resolve every symbol's reference names into caller→callee edges for one repo.
+ *
+ *  This was 1,951 ms of BLOCKED MAIN THREAD on David's real graph (61,696 symbols → 634,881 edges),
+ *  and it runs at launch AND on every file save. Nearly all of it went into one global
+ *  `Set<`${s.id}\0${t}`>`: 2,088,218 adds of ~300-char keys, hashing ~600 MB of transient string and
+ *  retaining ~140 MB at peak.
+ *
+ *  That Set was global to answer a question that is purely LOCAL. The outer loop visits each source
+ *  symbol exactly once, so `s.id` can never collide across iterations; and `idsByName` is keyed by
+ *  symbol NAME (see pushInto below), so two DIFFERENT ref names can never resolve to the same target
+ *  id. The only duplicate a symbol can produce is the same ref name repeated in its own `s.refs` —
+ *  and real code does that constantly (`['ArgumentNullException','nameof','ArgumentNullException',
+ *  'nameof']` is a verbatim record from the store). So: dedup the refs locally, drop the global Set,
+ *  and fuse the three .filter() passes into one loop over reused scratch arrays.
+ *
+ *  MEASURED on the real 42 MB graph, old vs new: 1,951 ms -> 176 ms (11.1x), 634,881 edges both
+ *  ways, IDENTICAL AS A LIST — same edges, same order. Order matters: the graph is persisted. */
 export function rebuildEdges(projectKey?: string): void {
   const st = stateFor(projectKey)
   st.callEdges = []
-  const seen = new Set<string>()
+  const sameFile: string[] = []   // scratch, reused across every (symbol, ref) pair
+  const other: string[] = []
   for (const s of st.symbolsById.values()) {
-    for (const ref of s.refs) {
+    // A Set only when there's something to dedup — most symbols have 0-1 refs and shouldn't pay.
+    const refs = s.refs.length > 1 ? new Set(s.refs) : s.refs
+    for (const ref of refs) {
       const named = st.idsByName.get(ref)
       if (!named) continue
-      const candidates = named.filter((id) => !NON_CALLABLE.has(st.symbolsById.get(id)!.kind))
-      if (candidates.length === 0) continue
-      const sameFile = candidates.filter((id) => id !== s.id && st.symbolsById.get(id)!.file === s.file)
-      const targets = sameFile.length ? sameFile : candidates.filter((id) => id !== s.id)
-      for (const t of targets) {
-        const key = `${s.id}\0${t}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        st.callEdges.push({ from: s.id, to: t })
+      sameFile.length = 0
+      other.length = 0
+      for (const id of named) {
+        if (id === s.id) continue                          // never an edge to yourself
+        const c = st.symbolsById.get(id)!
+        if (NON_CALLABLE.has(c.kind)) continue             // a type name before `(` is not a call
+        if (c.file === s.file) sameFile.push(id)
+        else other.push(id)
       }
+      // Same-file definitions win outright; only when there are none do cross-file ones count.
+      for (const t of (sameFile.length ? sameFile : other)) st.callEdges.push({ from: s.id, to: t })
     }
   }
 }

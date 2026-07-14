@@ -194,7 +194,9 @@ export function attachCodexWatcher(terminalId: string): CodexWatcherHandle | nul
     return null
   }
 
-  const tail: TailHandle = tailFile(sessionFile, (line) => processCodexLine(line, terminalId))
+  // startAtEnd — live events only. See claudeCodeWatcher: opening at byte 0 replayed the entire
+  // transcript through the event bus on the main thread. runConversationIngest owns the backfill.
+  const tail: TailHandle = tailFile(sessionFile, (line) => processCodexLine(line, terminalId), { startAtEnd: true })
 
   return {
     terminalId,

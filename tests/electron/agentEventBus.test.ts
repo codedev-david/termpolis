@@ -251,19 +251,61 @@ describe('agentEventBus.clearRing', () => {
   })
 })
 
+// Rotation used to be checked by statSync-ing the log on EVERY publish — a syscall per event, on the
+// thread that pumps the PTY, to ask the filesystem something we already know (we wrote every byte).
+// It is an in-process byte counter now. These tests exist because the previous one could not tell
+// the difference: it said "rotation may or may not have triggered depending on timing; assert no
+// crash" and only checked the backup `if` it happened to exist — green whether or not the log ever
+// rotated at all, which is precisely the property under test.
+const MAX_LOG_SIZE = 5 * 1024 * 1024
+
 describe('agentEventBus log rotation', () => {
-  it('rotates log when exceeding max size', () => {
-    // Force a big payload repeatedly to cross 5MB threshold
+  const live = (): string => path.join(tmpDir, 'agent-events.jsonl')
+  const backup = (): string => path.join(tmpDir, 'agent-events.jsonl.old')
+
+  it('rotates once the log passes 5 MB: the old log is kept, the live one restarts', () => {
     const big = 'z'.repeat(50_000)
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 150; i++) {  // ~7.5 MB — crosses the threshold exactly once
       publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `e${i}`, payload: { data: big } })
     }
-    shutdownEventBus()
-    const backup = path.join(tmpDir, 'agent-events.jsonl.old')
-    // Rotation may or may not have triggered depending on timing; assert no crash
-    expect(fs.existsSync(path.join(tmpDir, 'agent-events.jsonl'))).toBe(true)
-    if (fs.existsSync(backup)) {
-      expect(fs.statSync(backup).size).toBeGreaterThan(0)
-    }
+    expect(fs.existsSync(backup())).toBe(true)                        // it DID rotate
+    // The counter must track the real file. If it drifted, we'd rotate at the wrong size — so assert
+    // the rotated log really had crossed the threshold, and the live one really did start over.
+    expect(fs.statSync(backup()).size).toBeGreaterThanOrEqual(MAX_LOG_SIZE)
+    expect(fs.statSync(live()).size).toBeLessThan(MAX_LOG_SIZE)
+    expect(fs.statSync(live()).size).toBeGreaterThan(0)               // ...and kept taking writes
+  })
+
+  // The counter starts from the file's real size, not zero. Without the one stat at init, a bus that
+  // reopened a 5 MB log would count from 0 and let it grow to 10 MB before rotating — the exact
+  // unbounded growth the rotation exists to prevent, reintroduced by the optimization.
+  it('picks up the size of an EXISTING log on init rather than counting from zero', () => {
+    _resetForTests()
+    fs.writeFileSync(live(), 'x'.repeat(MAX_LOG_SIZE + 1))            // a log already over the line
+    initEventBus(tmpDir)
+
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'first since restart' })
+
+    expect(fs.existsSync(backup())).toBe(true)                        // rotated on the very next event
+    expect(fs.statSync(backup()).size).toBeGreaterThan(MAX_LOG_SIZE)
+    // The event is appended BEFORE the size check, so it rides into the rotated file and the live
+    // log restarts empty. That is what the statSync version did too — this is a pure perf change and
+    // the observable behaviour must be identical, down to which file the boundary event lands in.
+    expect(fs.readFileSync(backup(), 'utf8')).toContain('first since restart')
+    expect(fs.readFileSync(live(), 'utf8')).toBe('')
+    // Nothing is lost, and the ring still has it regardless of which file it went to.
+    expect(query({ kind: 'message' }).at(-1)?.summary).toBe('first since restart')
+  })
+
+  it('counts BYTES, not characters — a non-ASCII summary must not under-count the log', () => {
+    // JSON.stringify keeps 'é' as one CHARACTER but it is two BYTES on disk. Counting .length would
+    // drift low on every multibyte event and rotate late, forever.
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'héllo — ünïcode ✓' })
+    // The in-process count is what rotation trusts; prove it equals what actually landed on disk.
+    const onDisk = fs.statSync(live()).size
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'ascii' })
+    const grew = fs.statSync(live()).size - onDisk
+    expect(grew).toBeGreaterThan(0)
+    expect(fs.readFileSync(live(), 'utf8')).toContain('ünïcode')
   })
 })

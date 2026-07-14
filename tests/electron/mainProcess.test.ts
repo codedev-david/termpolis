@@ -192,6 +192,20 @@ vi.mock('../../src/main/gitCommand', async () => {
       })
       return buf ? buf.toString() : ''
     },
+    // safeGit's non-blocking twin, routed through the SAME mockExecSync so the reconstructed-command
+    // assertions below hold for the polled handlers too. (The real one spawns via execFile, which
+    // this file's child_process mock deliberately doesn't provide — the point of the mock is that no
+    // test here ever reaches a real process.) Rejects on throw, exactly like the real one.
+    safeGitAsync: async (args: string[], opts: any) => {
+      const buf = mockExecSync('git ' + args.join(' '), {
+        cwd: opts.cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: opts.timeout ?? 10000,
+        maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+        windowsHide: true,
+      })
+      return buf ? buf.toString() : ''
+    },
     runSafeCommand: (cmd: any, opts: any) => {
       try {
         const buf = mockExecSync([cmd.bin, ...cmd.args].join(' '), {

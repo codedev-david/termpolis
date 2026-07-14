@@ -74,6 +74,9 @@ const H = vi.hoisted(() => {
     fs,
     execSync: vi.fn(),
     execFileSync: vi.fn(),
+    // execFile (CALLBACK style) — the polled git handlers use it so they don't block the main
+    // thread on a spawn. Defaults to "no output, no error"; tests override per command.
+    execFile: vi.fn((_bin: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => { cb(null, '') }),
     spawn: vi.fn(),
     showOpenDialog: vi.fn(),
     // The audit sink. gitShieldGate fire-and-forgets into this; we assert on WHAT it records — and
@@ -153,9 +156,10 @@ vi.mock('electron', () => ({
 // child_process + fs (BOTH specifiers — index.ts reads hooks via node:fs, writes via fs)
 // ---------------------------------------------------------------------------
 vi.mock('child_process', () => ({
-  default: { execSync: H.execSync, execFileSync: H.execFileSync, spawn: H.spawn },
+  default: { execSync: H.execSync, execFileSync: H.execFileSync, execFile: H.execFile, spawn: H.spawn },
   execSync: H.execSync,
   execFileSync: H.execFileSync,
+  execFile: H.execFile,
   spawn: H.spawn,
 }))
 vi.mock('fs', () => ({ ...H.fs, default: H.fs }))
@@ -309,6 +313,18 @@ function git(route: (argv: string[], opts: { cwd: string }) => string | Error): 
     return Buffer.from(out)
   })
 }
+/** Route the ASYNC (callback) git — what the POLLED handlers use so a spawn can't block main. */
+function gitAsync(route: (argv: string[], opts: { cwd: string }) => string | Error): void {
+  H.execFile.mockImplementation(
+    (_bin: string, argv: string[], opts: { cwd: string }, cb: (e: Error | null, out: string) => void) => {
+      const out = route(argv, opts)
+      if (out instanceof Error) cb(out, '')
+      else cb(null, out)
+    },
+  )
+}
+/** Every git argv the ASYNC path ran, space-joined. */
+const gitAsyncCalls = (): string[] => H.execFile.mock.calls.map((c) => (c[1] as string[]).join(' '))
 /** Every git argv the handlers ran, in order, space-joined. */
 const gitCalls = (): string[] => H.execFileSync.mock.calls.map((c) => (c[1] as string[]).join(' '))
 /** Did git run this subcommand (`commit`, `push`, `add`, …)? */
@@ -960,5 +976,62 @@ describe('workspace:* IPC error envelopes', () => {
     expect(await invoke('workspace:list-trusted', {})).toEqual({ success: true, data: ['/a', '/b'] })
     expect(await invoke('workspace:revoke-trust', { cwd: '/a' })).toEqual({ success: true, data: undefined })
     expect(H.revokeWorkspaceTrust).toHaveBeenCalledWith('/a')
+  })
+})
+
+// ===========================================================================
+// git:status-parsed — the git status bar's 3-second poll
+// ===========================================================================
+// This handler had NO test at all, and it ran TWO execFileSync spawns. execFileSync blocks the main
+// thread for the whole spawn, and on Windows a cold git spawn is ~106 ms of pure process-creation
+// tax before git reads an object: 227-300 ms of dead main thread PER POLL (measured), every 3 s,
+// per repo terminal, on the thread that pumps every PTY. `async` on the handler bought nothing.
+// It is off-thread and concurrent now, and these pin both the parse and the non-blocking property.
+describe('git:status-parsed', () => {
+  beforeEach(() => {
+    H.execFile.mockReset()
+    H.execFileSync.mockReset()
+  })
+
+  it('parses the branch, staged and unstaged entries', async () => {
+    gitAsync((argv) => {
+      if (argv[0] === 'rev-parse') return 'main\n'
+      if (argv[0] === 'status') return 'M  staged.ts\n M unstaged.ts\n?? new.ts\n'
+      return ''
+    })
+    const r = await invoke('git:status-parsed', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data.branch).toBe('main')
+    expect(r.data.staged).toEqual([{ file: 'staged.ts', status: 'M' }])
+    // `??` is untracked — it surfaces as unstaged, mapped to 'U'.
+    expect(r.data.unstaged).toEqual([
+      { file: 'unstaged.ts', status: 'M' },
+      { file: 'new.ts', status: 'U' },
+    ])
+  })
+
+  // The regression that matters. Going back to safeGit here would restore a 7-10% duty cycle of
+  // dead main thread for as long as the panel is open — and every test above would still pass.
+  it('NEVER blocks the main thread — it spawns git asynchronously, not with execFileSync', async () => {
+    gitAsync((argv) => (argv[0] === 'rev-parse' ? 'main\n' : ''))
+    await invoke('git:status-parsed', { cwd: '/repo' })
+    expect(gitAsyncCalls()).toContain('status --porcelain')
+    expect(gitAsyncCalls()).toContain('rev-parse --abbrev-ref HEAD')
+    expect(H.execFileSync).not.toHaveBeenCalled()
+  })
+
+  it('still reports status when the branch cannot be read (a repo with no commits yet)', async () => {
+    gitAsync((argv) => (argv[0] === 'rev-parse' ? new Error('fatal: ambiguous argument HEAD') : 'A  first.ts\n'))
+    const r = await invoke('git:status-parsed', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data.branch).toBe('')                                    // the .catch, not a thrown handler
+    expect(r.data.staged).toEqual([{ file: 'first.ts', status: 'A' }])
+  })
+
+  it('degrades to an error envelope when git status itself fails', async () => {
+    gitAsync(() => new Error('fatal: not a git repository'))
+    const r = await invoke('git:status-parsed', { cwd: '/not-a-repo' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('not a git repository')
   })
 })

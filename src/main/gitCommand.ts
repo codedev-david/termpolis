@@ -8,8 +8,25 @@
 // project's test suite" feature from turning into arbitrary RCE if a
 // compromised renderer (or unsanitised MCP client) sends a crafted string.
 
-import { execFileSync, execSync } from 'child_process'
+import { execFileSync, execSync, execFile } from 'child_process'
 import { existsSync } from 'fs'
+
+/** Hand-rolled rather than `promisify(execFile)` at module scope: promisify resolves its argument
+ *  AT IMPORT, so any test that mocks child_process without an `execFile` (several do — they only
+ *  need execFileSync) would crash the whole module on load. Touch `execFile` when CALLED, not when
+ *  imported. */
+function execFileAsync(
+  bin: string,
+  args: string[],
+  opts: Parameters<typeof execFile>[2],
+): Promise<{ stdout: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, opts, (err, stdout) => {
+      if (err) reject(err)
+      else resolve({ stdout: String(stdout) })
+    })
+  })
+}
 
 export interface GitOptions {
   cwd: string
@@ -49,6 +66,46 @@ export function safeGit(args: string[], opts: GitOptions): string {
         if (existsSync(candidate)) {
           resolvedGit = candidate
           return runGit(candidate, args, opts)
+        }
+      }
+    }
+    throw e
+  }
+}
+
+/**
+ * safeGit's non-blocking twin, for anything on a POLL.
+ *
+ * `execFileSync` blocks the main thread for the WHOLE spawn — and on Windows a cold git spawn is
+ * ~106 ms of pure process-creation tax (measured; Defender), before git reads a single object. The
+ * git status bar polls every 3 s, per repo terminal, and paid that twice: 227 ms (termpolis) to
+ * 300 ms (MSI-PAS-CORE) of fully dead main thread per poll — a 7-10% duty cycle, forever, on the
+ * thread that pumps every PTY. `async` on the IPC handler bought nothing: execFileSync blocks
+ * regardless of what wraps it.
+ *
+ * Identical argv-safety (shell: false) and identical git-resolution fallback as safeGit — the two
+ * must not drift, or a packaged app with no git on PATH would work in one and ENOENT in the other.
+ */
+export async function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
+  const run = async (bin: string): Promise<string> => {
+    const { stdout } = await execFileAsync(bin, args, {
+      cwd: opts.cwd,
+      timeout: opts.timeout ?? 10000,
+      maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+      windowsHide: true,
+      shell: false,
+    })
+    return stdout.toString()
+  }
+  const bin = resolvedGit ?? 'git'
+  try {
+    return await run(bin)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT' && bin === 'git') {
+      for (const candidate of gitInstallCandidates()) {
+        if (existsSync(candidate)) {
+          resolvedGit = candidate
+          return await run(candidate)
         }
       }
     }

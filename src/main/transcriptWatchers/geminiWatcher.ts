@@ -98,7 +98,9 @@ export function attachGeminiWatcher(terminalId: string): GeminiWatcherHandle | n
   if (!sessionFile) return null
   try { resolvePathWithinRoot(GEMINI_DIR, sessionFile) } catch { return null }
 
-  const tail: TailHandle = tailFile(sessionFile, (line) => processGeminiLine(line, terminalId))
+  // startAtEnd — live events only. See claudeCodeWatcher: opening at byte 0 replayed the entire
+  // transcript through the event bus on the main thread. runConversationIngest owns the backfill.
+  const tail: TailHandle = tailFile(sessionFile, (line) => processGeminiLine(line, terminalId), { startAtEnd: true })
 
   return {
     terminalId,
