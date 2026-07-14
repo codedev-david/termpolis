@@ -94,16 +94,28 @@ type CopySnapshot = {
 // Captured at the earliest instant of a right-click so the menu never depends on
 // the live selection surviving — some environments clear xterm's selection the
 // moment you right-click ("the selection disappears as soon as I right-click").
+// How long a completed drag-selection stays copyable after agent output has repainted over it.
+// Long enough to cover "select, read it, then reach for the menu"; short enough that a selection
+// made minutes ago in a scrolled-away buffer is not what Copy hands you. A LEFT click retires it
+// immediately regardless, so this only ever bounds the case where the user has touched nothing.
+const LAST_SELECTION_TTL_MS = 60_000
+
 function buildCopySnapshot(term: Terminal | null): CopySnapshot | null {
   const selection = term?.getSelection() ?? ''
   if (!term || !selection) return null
+  // The five formatters below walk the terminal buffer. If ANY of them throws — a malformed
+  // wide char, a decoration, a buffer that shifted under us mid-repaint — the old code lost the
+  // WHOLE snapshot, including the plain selection, and right-click Copy then silently did
+  // nothing. `selection` is the only thing plain Copy actually needs, so it must survive a
+  // formatter blowing up. Degrade the rich forms to the raw text rather than losing everything.
+  const safe = (f: () => string): string => { try { return f() } catch { return selection } }
   return {
     selection,
-    codeBlockMd: formatAsCodeBlockFromTerm(term),
-    codeBlockHtml: formatAsCodeBlockHtmlFromTerm(term),
-    plainText: formatAsPlainTextFromTerm(term),
-    messagePlain: formatAsMessagePlainTextFromTerm(term),
-    messageHtml: formatAsMessageHtmlFromTerm(term),
+    codeBlockMd: safe(() => formatAsCodeBlockFromTerm(term)),
+    codeBlockHtml: safe(() => formatAsCodeBlockHtmlFromTerm(term)),
+    plainText: safe(() => formatAsPlainTextFromTerm(term)),
+    messagePlain: safe(() => formatAsMessagePlainTextFromTerm(term)),
+    messageHtml: safe(() => formatAsMessageHtmlFromTerm(term)),
   }
 }
 
@@ -201,6 +213,21 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
   // selection handling) can clear xterm's selection. handleContextMenu prefers
   // the live selection but falls back to this when the selection is already gone.
   const mouseDownSnapRef = useRef<{ snap: CopySnapshot | null; t: number } | null>(null)
+  // The LAST COMPLETED drag-selection, taken on mouseup — and deliberately NOT cleared when
+  // xterm's selection is.
+  //
+  // Why this exists: Claude Code (and any TUI that repaints in place — it clears with ESC[2J
+  // rather than using the alt screen) rewrites the screen continuously. A write over the
+  // selected region makes xterm drop the selection. When that lands between the user's mouseup
+  // and their right-click, BOTH of the menu's sources are already empty — the live selection and
+  // the right-mousedown snapshot — so Copy silently did nothing. Ctrl+Shift+C kept working only
+  // because it reads the live selection and can win the race.
+  //
+  // A context menu must never be less capable than the keyboard shortcut behind it. So remember
+  // the selection at the last instant we know the buffer still matched what the user highlighted,
+  // and let Copy fall back to it. Invalidated on the next LEFT click (a deliberate deselect or a
+  // new selection) — never by agent output, which is the whole point.
+  const lastGoodSnapRef = useRef<{ snap: CopySnapshot | null; t: number } | null>(null)
 
   // Whether TUI apps may capture the mouse. Held in a ref so the parser handler
   // (registered once per terminal) always reads the live value — toggling the setting
@@ -410,7 +437,13 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     // A left-button press begins a potential drag-select — start pausing output
     // into xterm from this instant, before the selection is even non-empty, so
     // the very start of the drag is protected. Released on a document mouseup.
-    if (e.button === 0) selectingRef.current = true
+    if (e.button === 0) {
+      selectingRef.current = true
+      // A left press means the user is starting a new selection or deselecting. Either way the
+      // remembered one is stale — retire it, so Copy can never paste something they visibly
+      // dismissed. Agent output repainting does NOT retire it; only the user does.
+      lastGoodSnapRef.current = null
+    }
     if (e.button !== 2) return
     mouseDownSnapRef.current = { snap: buildCopySnapshot(termRef.current), t: Date.now() }
   }, [])
@@ -425,7 +458,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     const live = buildCopySnapshot(termRef.current)
     const md = mouseDownSnapRef.current
     const fresh = md && Date.now() - md.t < 1000 ? md.snap : null
-    copySnapshotRef.current = live ?? fresh ?? null
+    // Third source, and the one that fixes the TUI case: the last completed drag. `live` and
+    // `fresh` are BOTH empty when a repaint cleared the selection before the right-click ever
+    // happened, which is the normal state of affairs in a terminal running Claude Code.
+    const lg = lastGoodSnapRef.current
+    const remembered = lg && Date.now() - lg.t < LAST_SELECTION_TTL_MS ? lg.snap : null
+    copySnapshotRef.current = live ?? fresh ?? remembered ?? null
     mouseDownSnapRef.current = null
     // Right-click always opens the context menu (Windows/Linux convention).
     // The Copy-as-Code-Block / Paste / Plain Text options are the whole point
@@ -936,6 +974,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     })
     const handleDocumentMouseUp = (): void => {
       selectingRef.current = false
+      // The drag just ended. This is the LAST instant we know xterm's buffer still matches what
+      // the user highlighted — output was frozen for the whole drag and is about to resume. If
+      // the selection survives to the right-click, `live` wins and this is never read; if a
+      // repaint eats it first, this is the only thing standing between the user and a Copy that
+      // silently does nothing.
+      if (term.hasSelection()) lastGoodSnapRef.current = { snap: buildCopySnapshot(term), t: Date.now() }
       if (!isSelectionActive()) flushPendingWrite()
     }
     document.addEventListener('mouseup', handleDocumentMouseUp)
@@ -1329,7 +1373,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
             }}
           >
             <button
-              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
+              disabled={!copySnapshotRef.current}
               onClick={() => {
                 const snap = copySnapshotRef.current
                 if (snap) window.termpolis.clipboardWriteText(snap.selection).catch(() => {})
@@ -1339,7 +1384,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               Copy<span className="float-right text-[#999]">Ctrl+Shift+C</span>
             </button>
             <button
-              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
+              disabled={!copySnapshotRef.current}
               onClick={() => {
                 const snap = copySnapshotRef.current
                 if (snap) {
@@ -1352,7 +1398,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               Copy for Teams/Slack
             </button>
             <button
-              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
+              disabled={!copySnapshotRef.current}
               onClick={() => {
                 const snap = copySnapshotRef.current
                 if (snap) {
@@ -1365,7 +1412,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               Copy as Code Block<span className="float-right text-[#999]">Ctrl+Shift+M</span>
             </button>
             <button
-              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
+              disabled={!copySnapshotRef.current}
               onClick={() => {
                 const snap = copySnapshotRef.current
                 if (snap) {
@@ -1378,7 +1426,8 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
               Copy as Plain Text
             </button>
             <button
-              className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
+              disabled={!copySnapshotRef.current}
               onClick={() => {
                 const snap = copySnapshotRef.current
                 if (snap) {

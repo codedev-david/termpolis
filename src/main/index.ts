@@ -1941,6 +1941,12 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
 // thread that echoes the user's keystrokes. So: no health here, and nothing on a timer. The panel
 // reads this when the tab is opened and when Refresh is pressed, exactly like `memory:metrics`.
 // See tests/electron/noMainThreadInstruments.test.ts.
+// v1.26.1 — is the brain actually in its own process, or did it silently fall back to the main
+// thread? The fallback is DESIGNED to be invisible (the app keeps working), which means a user
+// could run for months paying the full main-thread cost with no way to know. Surface it.
+ipcMain.handle('memory:host-status', async () => {
+  try { return ok({ mode: memoryHostMode(), pid: memoryHostPid() ?? null }) } catch (e: any) { return err(e.message) }
+})
 ipcMain.handle('memory:get-vector-ram', async () => {
   // await before the spread: spreading a Promise yields {} — the panel would show a store with no
   // vectors at all and invite the user to "fix" it.

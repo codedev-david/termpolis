@@ -243,6 +243,7 @@ export interface TermpolisAPI {
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
+  memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'inproc' | 'unstarted'; pid: number | null }>>
   memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>
   /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
   memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>

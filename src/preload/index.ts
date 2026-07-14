@@ -160,6 +160,7 @@ const api: TermpolisAPI = {
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
    *  it carries no process health and must never be put on a timer. */
+  memoryHostStatus: () => ipcRenderer.invoke('memory:host-status'),
   memoryGetVectorRam: () => ipcRenderer.invoke('memory:get-vector-ram'),
   /** Flip int8 quantization and rebuild the packed store. Lossless both ways — disk keeps floats. */
   memorySetVectorQuantize: (value: boolean) => ipcRenderer.invoke('memory:set-vector-quantize', { value }),

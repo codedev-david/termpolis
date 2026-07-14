@@ -19,6 +19,7 @@ import {
 } from '../../lib/memoryDashboard'
 import { ConnectionsGraph } from './ConnectionsGraph'
 import { VectorRamPanel } from './VectorRamPanel'
+import { BrainProcessPanel } from './BrainProcessPanel'
 
 const STATUS_COLOR: Record<SliStatus, string> = { good: '#7ee2a3', warn: '#e2c08d', bad: '#f48771', idle: '#9ca3af' }
 
@@ -132,6 +133,7 @@ export function MemoryLearningSettings() {
           tell you to change something — and, at any ordinary corpus size, the one that tells you not
           to. Its numbers are pure arithmetic on the vector count; it reads no process health and runs
           no timer. (The tiles that did both are what v1.25.16 deleted.) */}
+      <BrainProcessPanel refreshToken={refreshToken} />
       <VectorRamPanel refreshToken={refreshToken} />
 
       <div className="flex items-start gap-3">
