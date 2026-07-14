@@ -52,7 +52,7 @@ Every AI session normally starts cold — you re-explain the task and burn 20–
 - **100% local & private.** Embeddings run in-process (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry, nothing leaves your machine. Optional at-rest encryption (AES-256-GCM) and conflict-free sync across machines via a folder you already sync.
 - **Built to trust.** Content-addressed dedup (never stores the same thing twice), millisecond HNSW retrieval at scale, staleness-guarded recall, and an observable `🧠 Loaded N memories` banner so you always know it fired.
 
-> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **6,700+ tests** (96.6% statements / 97.8% lines).
+> **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **7,000+ tests** (97.5% statements / 98.5% lines).
 
 **The result: stop re-explaining context every session — and stop paying to reload it.**
 
@@ -690,7 +690,7 @@ termpolis/
 │           ├── StatusBar/           # App footer + per-terminal status bar
 │           ├── SettingsPane/        # Settings + keybindings + Monaco config editor
 │           └── HistorySearch/       # Command history search modal
-├── tests/                           # Vitest test suites (6,700+ tests, 336 files, 95%+ coverage)
+├── tests/                           # Vitest test suites (7,000+ tests, 344 files, 97%+ coverage)
 ├── scripts/
 │   └── download-tools.sh           # Download latest jq, yq, nano per platform
 ├── resources/tools/                 # Bundled CLI tool binaries (per platform)
