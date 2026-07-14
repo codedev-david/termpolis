@@ -83,9 +83,9 @@ const M = vi.hoisted(() => ({
   enableLocalEncryption: vi.fn(() => ({ encrypted: true, local: true })),
   disableEncryption: vi.fn(() => ({ encrypted: false })),
   memoryWrite: vi.fn(async (input: Record<string, unknown>) => ({ id: `mem-${String(input?.content ?? '').length}` })),
-  memoryLink: vi.fn(),
-  warmProbeEmbeddings: vi.fn(async () => {}),
-  compactSelfShard: vi.fn(),
+  memoryLink: vi.fn(async () => ({ ok: true })),
+  warmProbeEmbeddings: vi.fn(async () => true),
+  compactSelfShard: vi.fn(async () => ({ compacted: false, before: 0, after: 0 })),
   // swarm
   updateTask: vi.fn<(...a: unknown[]) => unknown>(() => undefined),
   // single-instance lock (flipped by the last test)
@@ -231,7 +231,7 @@ vi.mock('../../src/main/liveTranscript', () => ({
 }))
 vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: vi.fn(), stopIndexer: vi.fn() }))
 
-vi.mock('../../src/main/swarmMemory', () => ({
+const MEMC = vi.hoisted(() => ({
   initSwarmMemory: vi.fn(),
   memoryWrite: M.memoryWrite,
   memorySearch: vi.fn(() => []),
@@ -275,9 +275,26 @@ vi.mock('../../src/main/swarmMemory', () => ({
   persistMemoryIndex: vi.fn(),
   entityDedupHash: vi.fn(() => 'entity-hash'),
   projectKeyOf: vi.fn((p: string) => p),
-  vectorRamStats: vi.fn(() => ({ bytes: 0 })),
-  setVectorQuantization: vi.fn(),
+  contentHash: vi.fn((c: string) => `h:${c}`),
+  canonicalEntityName: vi.fn((n: string) => n.trim()),
+  vectorRamStats: vi.fn(async () => ({ bytes: 0 })),
+  setVectorQuantization: vi.fn(async () => ({ bytes: 0 })),
+  // memoryClient-only surface: the utilityProcess lifecycle + the batched calls that replace a
+  // per-item RPC inside a sync planner/ingest loop.
+  startMemoryHost: vi.fn(async () => 'host'),
+  setMemoryHostSpawner: vi.fn(),
+  createMemoryHostTransport: vi.fn(),
+  stopMemoryHost: vi.fn(),
+  memoryHostMode: vi.fn(() => 'host'),
+  memoryKnownHashes: vi.fn(async () => [] as string[]),
+  weaveNeighboursBatch: vi.fn(async () => ({}) as Record<string, unknown[]>),
+  exportMemorySnapshot: vi.fn(async () => ''),
+  importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
 }))
+// v1.26: index.ts + brainIpc talk to the store through memoryClient. Same object serves both, so the
+// M.* spies the assertions below use keep working.
+vi.mock('../../src/main/memoryClient', () => MEMC)
+vi.mock('../../src/main/swarmMemory', () => MEMC)
 
 vi.mock('child_process', () => ({
   default: { execSync: M.execSync, execFileSync: M.execFileSync, spawn: M.spawn },

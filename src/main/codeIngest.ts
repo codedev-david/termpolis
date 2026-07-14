@@ -14,6 +14,7 @@ import { execFile } from 'child_process'
 import { join } from 'path'
 import { matchSensitiveFile } from './sensitiveFileWatcher'
 import { safeGit } from './gitCommand'
+import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
 
 // Promise wrapper that references execFile only when CALLED (not at module
 // load), so test files that mock child_process can still import this module.
@@ -89,7 +90,11 @@ export function chunkCode(filePath: string, content: string, opts: CodeChunkOpti
 export interface CodeIngestDeps {
   listFiles: () => Promise<string[]>
   readFile: (filePath: string) => Promise<string>
-  hasHash: (hash: string) => boolean
+  /** SYNC on purpose — consumed as `if (deps.hasHash(h))`, and a Promise is truthy. With the store
+   *  out of process, wire `hasHashes` instead (see conversationIngest.IngestDeps.hasHash). */
+  hasHash?: (hash: string) => boolean
+  /** v1.26: batched membership, asked once per FILE. Takes precedence over hasHash. */
+  hasHashes?: (hashes: string[]) => Promise<string[]> | string[]
   write: (chunk: CodeChunk) => Promise<void>
   /** Wave2 (codeIngest-stale-chunks): remove a file's previously-indexed chunks before
    *  re-writing, so an edited file replaces its chunks instead of accumulating stale ones. */
@@ -128,19 +133,30 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
     }
     stats.filesScanned++
     const fileChunks = chunkCode(filePath, content, deps.chunkOptions)
+    const hashes = fileChunks.map((c) => c.hash)
     // Wave2 (codeIngest-stale-chunks): if ANY chunk is new, the file changed (edits shift line
     // numbers → hashes) → prune its stale chunks before re-writing; else it's unchanged, skip.
-    const changed = fileChunks.some((c) => !deps.hasHash(c.hash))
+    let known = await knownHashes(deps, hashes)
+    const changed = fileChunks.some((c) => !known.has(c.hash))
     if (!changed) { stats.chunksSkipped += fileChunks.length; continue }
-    if (deps.prunePath) { try { await deps.prunePath(filePath) } catch { /* best effort */ } }
+    if (deps.prunePath) {
+      try { await deps.prunePath(filePath) } catch { /* best effort */ }
+      // RE-ASK after the prune. prunePath just deleted every chunk of this file, INCLUDING the ones
+      // whose content did not change and whose hashes are therefore still in `known`. Reusing the
+      // pre-prune answer would skip exactly those — leaving the untouched parts of an edited file
+      // deleted from the index and never rewritten. One extra round trip, and only for files that
+      // actually changed.
+      known = await knownHashes(deps, hashes)
+    }
     for (const chunk of fileChunks) {
-      if (deps.hasHash(chunk.hash)) {
+      if (known.has(chunk.hash)) {
         stats.chunksSkipped++
         continue
       }
       try {
         await deps.write(chunk)
         stats.chunksWritten++
+        known.add(chunk.hash)
       } catch {
         continue // skip a chunk that fails to persist (no embed happened to yield for)
       }
@@ -184,10 +200,13 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
 }
 
 export interface CodeIngestMemory {
-  hasHash: (hash: string) => boolean
+  /** SYNC, in-process only — see CodeIngestDeps.hasHash. */
+  hasHash?: (hash: string) => boolean
+  /** Batched membership; what the app wires, because the store is out of process. */
+  hasHashes?: (hashes: string[]) => Promise<string[]> | string[]
   write: (input: { agentId: string; kind: 'note'; content: string; source: string; hash: string; project?: string }) => Promise<unknown>
   /** Wave2: prune a file's stale code chunks before re-indexing it. */
-  prunePath?: (filePath: string) => void
+  prunePath?: (filePath: string) => Promise<void> | void
 }
 
 export async function runCodeIngest(
@@ -200,6 +219,7 @@ export async function runCodeIngest(
     listFiles: () => discoverRepoFiles(opts.repoRoot),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
+    hasHashes: memory.hasHashes,
     prunePath: memory.prunePath,
     write: async (chunk) => {
       await memory.write({ agentId: 'code-index', kind: 'note', content: chunk.text, source: 'code', hash: chunk.hash, project: opts.repoRoot })

@@ -74,8 +74,11 @@ export function buildBrainZip(deps: ExportDeps): Buffer {
 }
 
 export interface ImportDeps {
-  importMemory: (jsonl: string) => { imported: number }
-  importGraph: (jsonl: string) => number
+  /** v1.26: may be async — the memory store now lives in a utilityProcess, so the real
+   *  implementation is an RPC. It is AWAITED below; returning a Promise here and reading `.imported`
+   *  off it synchronously would report `undefined` memories imported while the merge raced on. */
+  importMemory: (jsonl: string) => { imported: number } | Promise<{ imported: number }>
+  importGraph: (jsonl: string) => number // the graph stays in main — still sync
   restoreFile: (name: string, data: Buffer) => void // restore a userData file (impl decides absent-only)
 }
 
@@ -90,8 +93,10 @@ export interface ImportResult {
 const fail = (error: string): ImportResult => ({ ok: false, error, memoriesImported: 0, edgesImported: 0, restored: [] })
 
 /** Verify + merge a brain .zip. Verifies the zip CRCs (readZip) AND every manifest SHA-256 BEFORE
- *  applying anything — so corruption from zipping or uploading is rejected, not partially imported. */
-export function importBrainZip(zipBuf: Buffer, deps: ImportDeps): ImportResult {
+ *  applying anything — so corruption from zipping or uploading is rejected, not partially imported.
+ *  Async since v1.26 only because importMemory crosses to the memory process; every rejection above
+ *  still happens before any dep is called, so verify-before-apply is unchanged. */
+export async function importBrainZip(zipBuf: Buffer, deps: ImportDeps): Promise<ImportResult> {
   let entries: ZipEntry[]
   try {
     entries = readZip(zipBuf)
@@ -125,7 +130,7 @@ export function importBrainZip(zipBuf: Buffer, deps: ImportDeps): ImportResult {
 
   // All verified → apply the merge.
   const mem = byName.get(MEMORY_ENTRY)
-  const memoriesImported = mem ? deps.importMemory(mem.toString('utf8')).imported : 0
+  const memoriesImported = mem ? (await deps.importMemory(mem.toString('utf8'))).imported : 0
   const graph = byName.get(GRAPH_ENTRY)
   const edgesImported = graph ? deps.importGraph(graph.toString('utf8')) : 0
   const restored: string[] = []

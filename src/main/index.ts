@@ -133,28 +133,40 @@ import {
   listPins, addPin, removePin, updatePin, clearPins,
   type ContextPin,
 } from './contextPinStore'
+// v1.26 — the memory brain lives in a utilityProcess (memoryHost.ts). NOTHING in main imports
+// ./swarmMemory any more: main talks to the store through this proxy, so initSwarmMemory's ~4,276 ms
+// launch block (measured, 475 MB / 90,817 entries) is off the thread that paints the window and
+// echoes PTY keystrokes. Every store call below is therefore a PROMISE.
+//
+// The `await` is mechanical inside an async handler. It is NOT mechanical wherever a store call is
+// handed to something that consumes it SYNCHRONOUSLY — a Promise is truthy, has no `.length`, and
+// compares NaN — so those sites hoist the data first and hand the consumer a resolved value. See
+// runConsolidation / runSummarization / runWeave in the indexer below, locateIssueSites, and the
+// hasHashes wiring on both ingesters. Getting one of those wrong fails SILENTLY.
+//
+// normalizeProjectSlug / projectKeyOf / entityDedupHash are pure string helpers and stay SYNC.
 import {
-  initSwarmMemory,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
+  startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   setMemoryScrubber,
-  weaveCandidates, weaveNeighbours, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
+  weaveCandidates, weaveNeighboursBatch, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
   vectorRamStats,
   setVectorQuantization,
-} from './swarmMemory'
+} from './memoryClient'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
-import { runWeave } from './mnemeWeave'
+import { runWeave, WEAVE_NEIGHBOUR_K } from './mnemeWeave'
 import { auditMemory } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
@@ -169,7 +181,7 @@ import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
 import { poolLessons, toAgentLesson } from './mnemeSociety'
 import { detectConflictsNli } from './nliContradict'
 import { proactiveQuery, proactiveSignals } from './mnemeRetrieval'
-import { codeLocate, type LocatedSite } from './codeLocate'
+import { codeLocate, type LocatedSite, type LocatorSymbol, type LocatorMemory } from './codeLocate'
 import { isHighValueEpisode } from './mnemeReflect'
 import { makeHeadlessDistiller } from './mnemeDistiller'
 import { graphRelationStats, graphStats } from './memoryGraph'
@@ -177,6 +189,63 @@ import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
+
+// v1.26 — the sync-void `link` dep, made safe against an out-of-process graph write.
+//
+// The mneme planners (onTaskComplete, onSessionEpisode, runSummarization, runWeave) all take
+// `link: (from, to, relation, weight?) => void` and call it from inside a SYNC loop. memoryLink is a
+// Promise now. Firing it and dropping the handle would mint the edges eventually, unordered, with an
+// unhandled rejection if the host is down — so instead the planner's decisions are COLLECTED and
+// applied afterwards, awaited, exactly once. Same edges, same order, and a failure is contained
+// per-edge rather than aborting the pass (which is how every one of these call sites already behaves).
+function collectEdges(createdBy?: string) {
+  const pending: Array<{ from: string; to: string; relation: string; weight?: number }> = []
+  return {
+    /** The SYNC dep to hand the planner — it only records the decision. */
+    collect: (from: string, to: string, relation: string, weight?: number): void => {
+      if (!from || !to) return
+      pending.push({ from, to, relation, weight })
+    },
+    /** Apply them for real, awaited. Call after the planner returns. */
+    async flush(): Promise<number> {
+      let minted = 0
+      for (const e of pending.splice(0)) {
+        try {
+          // Spread createdBy only when set, so the minted edge is byte-identical to what each of
+          // these call sites passed before (the session reflector deliberately stamps no provenance).
+          await memoryLink({ from: e.from, to: e.to, relation: e.relation, weight: e.weight, ...(createdBy ? { createdBy } : {}) })
+          minted++
+        } catch { /* best effort — one bad edge never aborts the pass */ }
+      }
+      return minted
+    },
+  }
+}
+
+/**
+ * The store deps every conversation-ingest pass uses — one definition, so the three call sites
+ * (reindex IPC, slow indexer tick, fast indexer tick) cannot drift apart on the one that matters.
+ *
+ * `hasHashES`, never `hasHash`. The ingest loop consumes membership as a SYNC predicate over every
+ * chunk; the store is out of process, so the only correct answers are batched-and-resolved. Wiring
+ * the async `memoryHasHash` here instead would return a Promise per chunk — truthy — so every chunk
+ * reads as "already stored" and ingestion silently writes NOTHING, forever, with no error anywhere.
+ */
+function ingestMemoryDeps() {
+  return {
+    hasHashes: memoryKnownHashes,
+    write: memoryWrite,
+    patchProjects: (patches: Array<{ hash: string; project: string }>): void => {
+      void memoryPatchProjects(patches).catch(() => { /* best effort — F30 backfill */ })
+    },
+    link: (from: string, to: string, relation: string, weight: number, ts?: number): void => {
+      // The BB6 'follows' backbone. Fire-and-forget by contract (a sync void dep called per chunk),
+      // but the rejection is CAUGHT: an unhandled one in the main process is a crash, and losing a
+      // backbone edge is not worth that.
+      void memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }).catch(() => {})
+    },
+  }
+}
 
 // Mneme entity layer: upsert an `entity` node by name (idempotent via content-hash)
 // and return its id, so a distilled lesson can link to the files/functions/errors it
@@ -206,17 +275,44 @@ async function ensureEntityNode(name: string, project?: string): Promise<string 
 
 // v1.23 C5 — the issue->location predictor, wired to the real code graph + memory bridge.
 // Reused by the code_locate MCP tool, the code:locate IPC, and the proactive-on-error hook.
-function locateIssueSites(issue: string, projectKey?: string, limit?: number): LocatedSite[] {
+//
+// codeLocate is a SYNC planner and its `history` dep returns an ARRAY — but symbolHistory now lives
+// in the memory process. Handing it the async proxy would `.map()` a Promise, throw, get swallowed by
+// the catch below, and make code_locate return [] forever: a feature that silently stops working.
+//
+// So the history is PRE-FETCHED. signals() and resolve() (the code graph) are both still sync and in
+// main, so the exact set of queries codeLocate will ask for is derivable up front — it asks for each
+// resolved symbol's NAME, and for each token that resolved to files. Same queries, same answers, and
+// the planner keeps a sync dep.
+async function locateIssueSites(issue: string, projectKey?: string, limit?: number): Promise<LocatedSite[]> {
   try {
+    const resolveOne = (token: string): { symbols: LocatorSymbol[]; files: string[] } => {
+      const r = resolveToken(token, projectKey)
+      return { symbols: r.symbols.map((s) => ({ id: s.id, name: s.name, file: s.file })), files: r.files }
+    }
+    const tokens = proactiveSignals(issue) || []
+    const queries = new Set<string>()
+    for (const token of tokens) {
+      let r: { symbols: LocatorSymbol[]; files: string[] }
+      try { r = resolveOne(token) } catch { continue }
+      for (const s of r.symbols) queries.add(s.name)
+      if (r.files.length > 0) queries.add(token)
+    }
+    // proactiveSignals is capped (MAX_SIGNALS), so this is a bounded handful of round trips, not a
+    // per-token stampede — and they go out concurrently.
+    const histories = new Map<string, LocatorMemory[]>()
+    await Promise.all([...queries].map(async (q) => {
+      try {
+        const rows = await symbolHistory(q, projectKey)
+        histories.set(q, rows.map((e) => ({ id: e.id, content: e.content, importance: e.importance, ts: e.ts, memoryType: e.memoryType })))
+      } catch { histories.set(q, []) }
+    }))
     return codeLocate(
       issue,
       {
         signals: (t) => proactiveSignals(t),
-        resolve: (token) => {
-          const r = resolveToken(token, projectKey)
-          return { symbols: r.symbols.map((s) => ({ id: s.id, name: s.name, file: s.file })), files: r.files }
-        },
-        history: (q) => symbolHistory(q, projectKey).map((e) => ({ id: e.id, content: e.content, importance: e.importance, ts: e.ts, memoryType: e.memoryType })),
+        resolve: resolveOne,
+        history: (q) => histories.get(q) ?? [], // sync closure over already-resolved data
         impact: (name) => codeImpact(name, 6, projectKey).length,
         now: Date.now(),
       },
@@ -247,6 +343,11 @@ async function reflectOnTask(
   result?: string,
 ): Promise<void> {
   try {
+    // `link` is a SYNC void dep and memoryLink is now a Promise. Collect the edges the reflector
+    // decides on and mint them after it returns — awaited, so reflectOnTask still completes with the
+    // graph fully written (a fire-and-forget `void memoryLink(...)` would leave the edges racing the
+    // next read, and drop a rejection on the floor).
+    const edges = collectEdges('reflect')
     const res = await onTaskComplete(
       {
         id: task?.id ?? 'unknown',
@@ -262,11 +363,12 @@ async function reflectOnTask(
         write: (input) => memoryWrite(input),
         recordOutcome,
         now: Date.now(),
-        link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight, createdBy: 'reflect' }) },
+        link: edges.collect,
         ensureEntity: ensureEntityNode,
         resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
       },
     )
+    await edges.flush()
     try {
       if (res.fired && res.lessons > 0) {
         recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons })
@@ -1488,7 +1590,9 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
       // recall even when the embedder was down and the store had fallen back to keyword, so the
       // Memory dashboard over-counted vector recalls — a proof dashboard that flatters itself is
       // worse than none. The MCP twin below already did this correctly.
-      const ready = embeddingsReady()
+      // await: embeddingsReady() is a Promise now, and a Promise is truthy — un-awaited, EVERY
+      // recall would book itself as a vector recall even with the embedder down.
+      const ready = await embeddingsReady()
       recordMetric({ t: 'recall', ts: Date.now(), hits: results.length, topScore: results[0]?.score ?? 0, path: ready ? 'vector' : 'keyword' })
       recordMetric({ t: 'embed', ts: Date.now(), available: ready })
     } catch { /* best effort */ }
@@ -1498,7 +1602,7 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
 
 ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string; kind?: string; since?: number } = {}) => {
   try {
-    const list = memoryList({
+    const list = await memoryList({
       limit: opts.limit,
       agentId: opts.agentId,
       kind: opts.kind as MemoryEntry['kind'] | undefined,
@@ -1508,13 +1612,16 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
   } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('memory:count', () => ok(memoryCount()))
-ipcMain.handle('memory:clear', () => { memoryClear(); return ok() })
-ipcMain.handle('memory:stats', () => ok(memoryStats()))
+// These MUST await. ok(promise) would ship a Promise across the IPC boundary, where it is not
+// structured-clonable — the renderer gets a clone error or an empty object, i.e. "your memory is
+// gone". An un-awaited memoryClear() would also return success before the store had cleared.
+ipcMain.handle('memory:count', async () => { try { return ok(await memoryCount()) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('memory:clear', async () => { try { await memoryClear(); return ok() } catch (e: any) { return err(e.message) } })
+ipcMain.handle('memory:stats', async () => { try { return ok(await memoryStats()) } catch (e: any) { return err(e.message) } })
 // Memory & Learning dashboard: the proof numbers, computed locally and offline.
 // Store-derived composition + graph connections are always real; the ledger adds
 // live reliability/receipt SLIs (sparse until the brain has been used a while).
-ipcMain.handle('memory:metrics', () => {
+ipcMain.handle('memory:metrics', async () => {
   try {
     // graphRelationStats counts in place. getAllEdges() built a fresh flat copy of EVERY edge in
     // the graph just to count them by relation — pure garbage, on the thread that pumps the PTY.
@@ -1525,16 +1632,19 @@ ipcMain.handle('memory:metrics', () => {
       .sort((a, b) => b.attempts - a.attempts)
       .slice(0, 8)
       .map((c) => ({ domain: c.domain, attempts: c.attempts, confidence: c.confidence }))
+    // Both store reads cross to the memory process. Un-awaited they would sit in this object as
+    // Promises and IPC-serialize to {} — a dashboard that reports an empty brain.
+    const [store, recentActivity] = await Promise.all([memoryDashboardStats(), memoryRecentActivity(14)])
     return ok({
       ledger: metricsSummary(Date.now()),
-      store: memoryDashboardStats(),
+      store,
       graph: { nodes: gs.nodes, edges: gs.edges, byRelation },
       // The STRUCTURAL code graph is a SEPARATE store from the semantic memory graph:
       // indexing a repo mints code symbols + caller->callee edges that never land in `graph`.
       // Surfacing it here is what makes "index a repo -> see connections" actually true.
       codeGraph: codeGraphStats(ALL_REPOS),
       competence,
-      recentActivity: memoryRecentActivity(14),
+      recentActivity,
     })
   } catch (e: any) { return err(e.message) }
 })
@@ -1542,9 +1652,9 @@ ipcMain.handle('memory:metrics', () => {
 // Live connections graph — a legible sample of the REAL knowledge graph (the densest
 // subgraph: nodes + induced edges, labeled + typed). Fetched on demand rather than in
 // the 5s metrics poll, since it's heavier and the force layout shouldn't reset each tick.
-ipcMain.handle('memory:graph-sample', (_e, opts: { limit?: number } = {}) => {
+ipcMain.handle('memory:graph-sample', async (_e, opts: { limit?: number } = {}) => {
   try {
-    return ok(memoryGraphSample({ limit: opts?.limit }))
+    return ok(await memoryGraphSample({ limit: opts?.limit }))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -1553,7 +1663,7 @@ ipcMain.handle('memory:graph-sample', (_e, opts: { limit?: number } = {}) => {
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
-    const stats = await runConversationIngest({ hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }) })
+    const stats = await runConversationIngest(ingestMemoryDeps())
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -1564,7 +1674,19 @@ ipcMain.handle('memory:ingest-conversations', async () => {
 ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
-    const stats = await runCodeIngest({ hasHash: memoryHasHash, write: memoryWrite, prunePath: memoryPruneCodePath }, { repoRoot: opts.repoRoot })
+    // hasHashES, not hasHash: the sync per-chunk predicate cannot be answered by an out-of-process
+    // store, and an async one would report every chunk as already-indexed (a Promise is truthy) —
+    // the repo would appear to index and nothing would be written.
+    const stats = await runCodeIngest(
+      {
+        hasHashes: memoryKnownHashes,
+        write: memoryWrite,
+        // memoryPruneCodePath resolves to the number pruned; the dep is void-returning. AWAITED, not
+        // dropped: ingestCode re-asks membership right after this, and it must see the post-prune store.
+        prunePath: async (filePath) => { await memoryPruneCodePath(filePath) },
+      },
+      { repoRoot: opts.repoRoot },
+    )
     // Also (re)build the native STRUCTURAL code graph over the same repo — best-effort, so a
     // graph hiccup never fails the semantic ingest that already succeeded.
     let codeGraph
@@ -1601,9 +1723,9 @@ ipcMain.handle('code-graph:search', async (_, opts: { query?: string; limit?: nu
 ipcMain.handle('code-graph:callers', async (_, opts: { name: string }) => { try { return ok(codeCallers(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try { return ok(codeImpact(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 // v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
-ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(await locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
 // v1.23 C6 — DEEP recall over the archive tier (cold/consolidated memories beyond the hot window).
-ipcMain.handle('memory:deep-search', async (_, opts: { query: string; limit?: number }) => { try { return ok(searchArchive(opts?.query || '', opts?.limit ?? 20)) } catch (e: any) { return err(e.message) } })
+ipcMain.handle('memory:deep-search', async (_, opts: { query: string; limit?: number }) => { try { return ok(await searchArchive(opts?.query || '', opts?.limit ?? 20)) } catch (e: any) { return err(e.message) } })
 
 // ---- Safe Import ----------------------------------------------------------------
 // Bring in a third-party skill / plugin / command / subagent / MCP server, PROVE it is
@@ -1754,7 +1876,7 @@ ipcMain.handle('brain:export', async () => {
     })
     if (result.canceled || !result.filePath) return ok({ canceled: true })
     const ud = app.getPath('userData')
-    const zip = buildBrainArchive(ud, app.getVersion(), Date.now(), realBrainFs())
+    const zip = await buildBrainArchive(ud, app.getVersion(), Date.now(), realBrainFs())
     writeFileSync(result.filePath, zip)
     return ok({ canceled: false, path: result.filePath, bytes: zip.length })
   } catch (e: any) { return err(e.message) }
@@ -1769,7 +1891,7 @@ ipcMain.handle('brain:import', async () => {
     if (result.canceled || !result.filePaths?.[0]) return ok({ canceled: true })
     const buf = readFileSync(result.filePaths[0])
     const ud = app.getPath('userData')
-    const res = mergeBrainArchive(ud, buf, realBrainFs())
+    const res = await mergeBrainArchive(ud, buf, realBrainFs())
     if (!res.ok) return err(res.error || 'Import failed')
     // Reload stores whose files a fresh-machine import may have restored, so they take effect now.
     try { initCompetence(ud) } catch { /* best effort */ }
@@ -1820,13 +1942,15 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
 // reads this when the tab is opened and when Refresh is pressed, exactly like `memory:metrics`.
 // See tests/electron/noMainThreadInstruments.test.ts.
 ipcMain.handle('memory:get-vector-ram', async () => {
-  try { return ok({ ...vectorRamStats(), persisted: getVectorQuantize() }) } catch (e: any) { return err(e.message) }
+  // await before the spread: spreading a Promise yields {} — the panel would show a store with no
+  // vectors at all and invite the user to "fix" it.
+  try { return ok({ ...(await vectorRamStats()), persisted: getVectorQuantize() }) } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean }) => {
   try {
     const on = opts?.value === true
-    setVectorQuantize(on)                    // persist the choice...
-    const stats = setVectorQuantization(on)  // ...and rebuild the packed store in the new mode
+    setVectorQuantize(on)                          // persist the choice...
+    const stats = await setVectorQuantization(on)  // ...and rebuild the packed store in the new mode
     return ok({ ...stats, persisted: on })
   } catch (e: any) { return err(e.message) }
 })
@@ -1906,19 +2030,24 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
         readTranscript: (cwd, agent) => readSessionTranscript(cwd, agent),
         getCursor: (id) => sessionCursors.get(id),
         setCursor: (id, c) => { sessionCursors.set(id, c) },
-        reflect: (episode) =>
-          onSessionEpisode(episode, {
+        reflect: (episode) => {
+          // Same sync-void `link` dep as reflectOnTask — collect, then mint after the reflector
+          // returns, so the edges are on the graph before this resolves.
+          const edges = collectEdges()
+          return onSessionEpisode(episode, {
             distill: (ep) => distillEpisode(ep, MNEME_DISTILLER_ENABLED && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
             write: (input) => memoryWrite(input),
             recordOutcome,
             now: Date.now(),
-            link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight }) },
+            link: edges.collect,
             ensureEntity: ensureEntityNode,
             resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
-          }).then((r) => {
+          }).then(async (r) => {
+            await edges.flush()
             try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons }) } catch { /* best effort */ }
             return { fired: r.fired, lessons: r.lessons }
-          }),
+          })
+        },
       },
     )
     return ok(res)
@@ -1930,11 +2059,11 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
 // memory follow them across machines — no Termpolis server, no new trust. Each
 // device writes only its own shard, so a file-sync tool never hits a conflict.
 ipcMain.handle('memory:sync-status', async () => {
-  try { return ok(getSyncStatus()) } catch (e: any) { return err(e.message) }
+  try { return ok(await getSyncStatus()) } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
-  try { return ok(setSyncDir(opts?.dir ?? null)) } catch (e: any) { return err(e.message) }
+  try { return ok(await setSyncDir(opts?.dir ?? null)) } catch (e: any) { return err(e.message) }
 })
 
 // Native folder picker → enable sync to the chosen folder in one step.
@@ -1944,8 +2073,8 @@ ipcMain.handle('memory:choose-sync-dir', async () => {
       title: 'Choose a synced folder for Termpolis memory (e.g. inside Dropbox or Syncthing)',
       properties: ['openDirectory', 'createDirectory'],
     })
-    if (res.canceled || !res.filePaths[0]) return ok(getSyncStatus())
-    return ok(setSyncDir(res.filePaths[0]))
+    if (res.canceled || !res.filePaths[0]) return ok(await getSyncStatus())
+    return ok(await setSyncDir(res.filePaths[0]))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -1954,20 +2083,20 @@ ipcMain.handle('memory:choose-sync-dir', async () => {
 // locally and never leaves the machine, so the sync provider only sees
 // ciphertext. Returns an error (e.g. wrong passphrase) without throwing.
 ipcMain.handle('memory:set-sync-passphrase', async (_, opts: { passphrase: string }) => {
-  try { return ok(setSyncPassphrase(opts?.passphrase ?? '')) } catch (e: any) { return err(e.message) }
+  try { return ok(await setSyncPassphrase(opts?.passphrase ?? '')) } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('memory:disable-sync-encryption', async () => {
-  try { return ok(disableSyncEncryption()) } catch (e: any) { return err(e.message) }
+  try { return ok(await disableSyncEncryption()) } catch (e: any) { return err(e.message) }
 })
 
 // WP-F: local at-rest encryption (no cross-machine sync required). Default-ON when the OS keychain is
 // available; these let the user re-enable after an opt-out, or turn it off (decrypts + remembers).
 ipcMain.handle('memory:enable-local-encryption', async () => {
-  try { return ok(enableLocalEncryption()) } catch (e: any) { return err(e.message) }
+  try { return ok(await enableLocalEncryption()) } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:disable-encryption', async () => {
-  try { return ok(disableEncryption()) } catch (e: any) { return err(e.message) }
+  try { return ok(await disableEncryption()) } catch (e: any) { return err(e.message) }
 })
 
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
@@ -2503,24 +2632,27 @@ if (!gotTheLock) {
         depth: opts.depth,
         limit: opts.limit,
       }),
-      memoryFeedback: (opts) => {
+      memoryFeedback: async (opts) => {
         const helpful = opts.helpful !== false
         try {
           recordMetric({ t: 'feedback', ts: Date.now(), helpful })
           // Cross-agent teaching: a helpful memory authored by a DIFFERENT agent than the
           // one giving feedback is real cross-agent reuse — the teaching-matrix signal.
+          // await: un-awaited, `author` is a Promise — never === opts.agentId — so EVERY feedback
+          // would book a cross_recall, with "[object Promise]" as the teaching agent.
           if (helpful && opts.agentId) {
-            const author = memorySourceById(opts.id)
+            const author = await memorySourceById(opts.id)
             if (author && author !== opts.agentId) recordMetric({ t: 'cross_recall', ts: Date.now(), author, reader: opts.agentId })
           }
         } catch { /* best effort */ }
-        return memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query })
+        return await memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query })
       },
       memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),
-      memoryPool: (opts) => poolLessons(
+      memoryPool: async (opts) => poolLessons(
         // F13: pool over the LESSONS in the full window, not just the newest ~200 rows (which an
         // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).
-        memoryLessons(opts.limit ?? 200)
+        // poolLessons takes an ARRAY — .map() on the un-awaited Promise would throw.
+        (await memoryLessons(opts.limit ?? 200))
           .map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance })),
       ),
       memoryAnticipate: async (opts) => {
@@ -2536,7 +2668,7 @@ if (!gotTheLock) {
         // Surface cross-agent contradictions over the SAME lesson set memory_pool uses. Read-only.
         // detectConflictsNli uses the conservative heuristic by default and the NLI model only when
         // it's been explicitly enabled + bundled (opt-in, per the learning-soundness rule).
-        const lessons = memoryLessons(opts.limit ?? 200).map(toAgentLesson)
+        const lessons = (await memoryLessons(opts.limit ?? 200)).map(toAgentLesson)
         const conflicts = await detectConflictsNli(lessons)
         return conflicts.map((c) => ({
           a: { source: c.a.source, content: c.a.content },
@@ -2561,11 +2693,33 @@ if (!gotTheLock) {
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
     initAnomalyLog(app.getPath('userData')) // burn-in: capture surprising memory events (incl. this init's)
-    // Apply the persisted vector-quantization choice BEFORE the store is built — the packed array
-    // is allocated inside initSwarmMemory, so the mode has to be known by then. Default is exact
-    // float32.
-    try { setVectorQuantization(getVectorQuantize()) } catch { /* fall back to exact floats */ }
-    initSwarmMemory(app.getPath('userData'))
+
+    // ── The memory brain starts in ANOTHER PROCESS ────────────────────────────────────────────────
+    // initSwarmMemory() blocked THIS thread for ~4,276 ms on a real 475 MB / 90,817-entry store —
+    // the thread that paints the window and echoes every PTY keystroke. It now runs in a
+    // utilityProcess (memoryHost.ts) and main talks to it over RPC.
+    //
+    // Deliberately NOT awaited. Awaiting would trade a 4.3 s freeze for a 4.3 s blank screen: the
+    // point is that createWindow() happens NOW and the store loads behind it. Calls made before the
+    // child reports ready queue on the handshake inside memoryClient rather than failing.
+    //
+    // The quantization choice rides along in the init message instead of being applied here, because
+    // it must be set BEFORE the packed vector array is allocated — and that allocation now happens
+    // in the child. (Applying it after would re-run initSwarmMemory: a second full load, every boot.)
+    // The settings read is guarded exactly as it was in-process: a corrupt settings file must fall
+    // back to exact float32, never take the brain down with it.
+    let quantize = false
+    try { quantize = getVectorQuantize() } catch { /* fall back to exact floats */ }
+    setMemoryHostSpawner(() => createMemoryHostTransport())
+    void startMemoryHost({
+      userDataPath: app.getPath('userData'),
+      quantize,
+    }).then((m) => {
+      // Say which side is serving. An in-process fallback is a real regression in launch latency and
+      // typing lag, so it must never be silent — this is the line that tells us the child died.
+      if (m === 'host') console.log(`[termpolis][memory] brain is OFF the main thread (mode=${m})`)
+      else console.warn(`[termpolis][memory] FALLBACK — the brain is running ON the main thread (mode=${m}); launch and typing will stall`)
+    })
     // Memory-at-rest secret scrub. Redact secrets BEFORE a memory is hashed, embedded, or
     // written to disk, so a key sitting in a transcript or an indexed source file never
     // lands in the brain — and can therefore never be recalled back into an agent's context
@@ -2592,7 +2746,9 @@ if (!gotTheLock) {
     // Periodically compact this device's append-only shard once it's mostly dead lines
     // (threshold-gated + non-forced → a no-op until it's worth it), so per-reload parse cost
     // stays bounded as the log grows. Lossless + atomic (compactSelfShard proves the round-trip).
-    setInterval(() => { try { compactSelfShard() } catch { /* best effort */ } }, 30 * 60 * 1000)
+    // It runs in the memory process now, so the compaction itself costs main nothing; the .catch is
+    // what keeps a rejected RPC from becoming an unhandled rejection in main.
+    setInterval(() => { compactSelfShard().catch(() => { /* best effort */ }) }, 30 * 60 * 1000)
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
@@ -2611,49 +2767,94 @@ if (!gotTheLock) {
       run: async () => {
         // Pick up entries other machines synced into the shared folder (no-op
         // when cross-machine sync is off).
-        try { reloadMemoryFromSync() } catch { /* best effort */ }
+        try { await reloadMemoryFromSync() } catch { /* best effort */ }
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }) }, // F30: backfill legacy project tags each pass (now persisted)
+          ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           { maxChunks: 250 },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
-        try { persistMemoryIndex() } catch { /* best effort */ }
-        // Mneme P2: the consolidation "sleep" — forget cold, low-value, edge-free
-        // episodic noise so signal stays high as the store grows. Conservative and
-        // capped; curated lessons (tagged / edged / high-importance / recalled) are
-        // never touched. Decay-only on the scheduled pass; merge is on-demand.
+        try { await persistMemoryIndex() } catch { /* best effort */ }
+
+        // ── The three PURE PLANNERS ───────────────────────────────────────────────────────────────
+        // runConsolidation and runWeave are SYNC, and runSummarization hands its deps to a sync
+        // planMerges. They call candidates() / simOf() / neighbours() and use the result IMMEDIATELY.
+        //
+        // The store is out of process, so every one of those is a Promise now. Passing the proxies
+        // straight through would hand the planners a Promise where they expect an array (planMerges
+        // iterates it → nothing) and a Promise where they expect a number (`sim > threshold` → NaN →
+        // false). Consolidation would then either stop working forever or decide to forget the WRONG
+        // memories — and the `catch { /* best effort */ }` around it would swallow every trace.
+        //
+        // So: AWAIT the data first, hand the planner sync closures over the resolved values, let it
+        // DECIDE, and apply its decisions afterwards with real awaits and real error handling.
         try {
           const cnow = Date.now()
           // v1.23 C6: ARCHIVE cold chatter (recoverable) instead of memoryDelete (permanent
           // tombstone) — the "rock solid: never silently lose memory" fix. Archived entries leave
           // the hot window but stay recoverable via searchArchive / the deep-search IPC.
-          runConsolidation({ candidates: () => consolidationCandidates(500), simOf: () => 0, forget: memoryArchive, now: cnow })
+          const decayCands = await consolidationCandidates(500)
+          const toArchive: string[] = []
+          runConsolidation({
+            candidates: () => decayCands,          // resolved data, not a Promise
+            simOf: () => 0,                        // unchanged: the scheduled pass is decay-only
+            forget: (id) => { toArchive.push(id) }, // COLLECT the decision — do not act in the planner
+            now: cnow,
+          })
+          for (const id of toArchive) {
+            try { await memoryArchive(id) } catch { /* best effort — one failure never aborts the pass */ }
+          }
+
           // P2 (summaries): cluster near-duplicates in a bounded window and write a
           // higher-level `summary` node linking them (additive; a no-op when the
           // embedder is unavailable, since it needs real vectors).
+          //
+          // The SAME limit must go to both, or the comparator will not know entries it is asked
+          // about (an unknown id scores 0 — exactly what the in-process closure does for a
+          // vector-less entry). Fetched together so no other main-process task can slip a write
+          // between the two calls and desync the candidate list from the matrix.
+          const [sumCands, simOf] = await Promise.all([consolidationCandidates(200), consolidationSimOf(200)])
+          const sumEdges = collectEdges('consolidate')
           await runSummarization({
-            candidates: () => consolidationCandidates(200),
-            simOf: consolidationSimOf(),
-            write: (i) => memoryWrite(i),
-            link: (from, to, relation) => { memoryLink({ from, to, relation, createdBy: 'consolidate' }) },
+            candidates: () => sumCands,
+            simOf,                          // a sync (a, b) => number, rebuilt in main over the shipped matrix
+            write: (i) => memoryWrite(i),   // genuinely async, and runSummarization already awaits it
+            link: sumEdges.collect,
             now: cnow,
           })
+          await sumEdges.flush()
           auditMemory({ event: 'learn', kind: 'consolidate', detail: 'idle consolidation + summarization pass' }) // WP-E
         } catch { /* best effort */ }
+
         // v1.23 C4 — The Weave: continuously draw cross-repo analogies + backfill bridge anchors
         // AHEAD OF TIME so the agents reason faster (the connections are already there). Bounded,
         // idempotent, best-effort; runs on this idle tick so it never touches a hot path.
         try {
+          const wcands = await weaveCandidates(300)
+          // runWeave asks for neighbours(id, k) from INSIDE its loop, once per candidate — 300 RPCs
+          // per pass if proxied naively. One batched call instead, keyed by id, with the SAME k
+          // runWeave will use (imported, so the two cannot drift).
+          const nbrs = await weaveNeighboursBatch(wcands.map((c) => c.id), WEAVE_NEIGHBOUR_K)
+          const weaveEdges = collectEdges('weave')
+          const backfills: Array<{ id: string; refs: CodeRef[] }> = []
           runWeave(
             {
-              candidates: () => weaveCandidates(300),
-              neighbours: (id, k) => weaveNeighbours(id, k),
-              link: (from, to, relation, weight) => { memoryLink({ from, to, relation, weight, createdBy: 'weave' }) },
+              candidates: () => wcands,
+              neighbours: (id) => nbrs[id] ?? [], // sync closure over the pre-fetched neighbourhood
+              link: weaveEdges.collect,
+              // The CODE graph stays in main and is still synchronous — leave it alone.
               resolveCode: (names, projectKey) => resolveCodeRefs(names, projectKey),
-              backfillCodeRefs: (id, refs) => backfillCodeRefs(id, refs),
+              backfillCodeRefs: (id, refs) => { backfills.push({ id, refs }) },
             },
-            { maxPerPass: 200 },
+            { maxPerPass: 200, neighbourK: WEAVE_NEIGHBOUR_K },
           )
+          // Deferring the backfill is behaviour-identical: weaveCandidates returns a fresh
+          // PROJECTION, so a codeRefs write never reached the objects this pass reasons over anyway
+          // (the explains miner reads e.codeRefs off the projection), and weaveNeighbours ranks by
+          // vector, which a codeRefs patch does not touch.
+          for (const b of backfills) {
+            try { await backfillCodeRefs(b.id, b.refs) } catch { /* best effort */ }
+          }
+          await weaveEdges.flush()
         } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },
@@ -2665,12 +2866,12 @@ if (!gotTheLock) {
       fastIntervalMs: 90_000,
       fastRun: async () => {
         const stats = await runConversationIngest(
-          { hasHash: memoryHasHash, write: memoryWrite, patchProjects: memoryPatchProjects, link: (from, to, relation, weight, ts) => memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }) }, // F30: backfill legacy project tags each pass (now persisted)
+          ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
           // growing trailing partial doesn't deposit a superset duplicate every 90s.
           { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true } },
         )
-        try { persistMemoryIndex() } catch { /* best effort */ }
+        try { await persistMemoryIndex() } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
       },
     })
@@ -2941,6 +3142,9 @@ if (!gotTheLock) {
     try { stopRepoWatches() } catch {}
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
+    // Reap the memory process. The store is already durable on disk (every write is appended before
+    // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
+    try { stopMemoryHost() } catch {}
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {

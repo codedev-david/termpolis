@@ -14,8 +14,16 @@
 //
 // Sentry routing is intentionally lazy via require() so unit tests don't
 // pull in the @sentry/electron native binding.
+//
+// v1.26 — DO NOT re-add `import { app } from 'electron'` here. It was a DEAD import (nothing in this
+// file ever referenced `app`), and it was silently fatal: swarmMemory imports this module, swarmMemory
+// now runs in a utilityProcess, and a utilityProcess's `electron` exports only { default, net,
+// systemPreferences } — no `app`, no `safeStorage`. Under CJS a missing export is merely `undefined`;
+// under ESM (this app is "type": "module") it is a LINK-TIME SyntaxError that kills the whole child at
+// load. The memory host would fall back to the main thread forever, silently. See the guard test in
+// tests/electron/memoryHostImportGraph.test.ts, which fails the build if any electron named import
+// reappears in this graph. Need something from electron in main-only code? Inject it (setSafeStorage).
 
-import { app } from 'electron'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 

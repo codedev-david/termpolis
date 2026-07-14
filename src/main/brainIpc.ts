@@ -5,7 +5,11 @@
 import { join } from 'path'
 import { readFileSync, writeFileSync, statSync } from 'fs'
 import { buildBrainZip, importBrainZip, type ImportResult } from './brainExport'
-import { exportMemorySnapshot, importMemorySnapshot } from './swarmMemory'
+// v1.26: the memory store lives in a utilityProcess. These MUST come from memoryClient, not
+// swarmMemory — the in-main swarmMemory singleton is never initialised any more, so importing them
+// direct would export an EMPTY brain (and import into a store nothing reads). Silent, and the user
+// would only find out when they restored it on the other machine.
+import { exportMemorySnapshot, importMemorySnapshot } from './memoryClient'
 import { exportGraphEdges, importGraphEdges } from './memoryGraph'
 
 /** Injected filesystem surface — real fs in the app, fakes in tests. */
@@ -26,11 +30,15 @@ export function realBrainFs(): BrainFs {
   }
 }
 
-/** Assemble the brain .zip from the live stores + the device-local files under userData. */
-export function buildBrainArchive(userDataDir: string, appVersion: string, now: number, fs: BrainFs): Buffer {
+/** Assemble the brain .zip from the live stores + the device-local files under userData.
+ *  buildBrainZip takes a SYNC `memorySnapshot: () => string`, so the snapshot is fetched first and
+ *  handed over as a closure over the resolved value — passing the async proxy itself would make it
+ *  serialize a Promise, i.e. export the string "[object Promise]" as the user's brain. */
+export async function buildBrainArchive(userDataDir: string, appVersion: string, now: number, fs: BrainFs): Promise<Buffer> {
+  const memory = await exportMemorySnapshot()
   return buildBrainZip({
-    memorySnapshot: exportMemorySnapshot,
-    graphSnapshot: exportGraphEdges,
+    memorySnapshot: () => memory,
+    graphSnapshot: exportGraphEdges, // the graph is still in main — genuinely sync
     readFile: (name) => fs.read(join(userDataDir, name)),
     appVersion,
     now,
@@ -39,9 +47,9 @@ export function buildBrainArchive(userDataDir: string, appVersion: string, now: 
 
 /** Integrity-verify + MERGE a brain .zip into this machine. Restores the device-local learning
  *  files only when they're absent/empty (a fresh machine), never clobbering an existing brain. */
-export function mergeBrainArchive(userDataDir: string, zip: Buffer, fs: BrainFs): ImportResult {
-  return importBrainZip(zip, {
-    importMemory: importMemorySnapshot,
+export async function mergeBrainArchive(userDataDir: string, zip: Buffer, fs: BrainFs): Promise<ImportResult> {
+  return await importBrainZip(zip, {
+    importMemory: importMemorySnapshot, // async — importBrainZip awaits it
     importGraph: importGraphEdges,
     restoreFile: (name, data) => {
       const p = join(userDataDir, name)

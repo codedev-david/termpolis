@@ -138,60 +138,79 @@ vi.mock('../../src/main/embedWorker', () => ({ createWorkerTransport: vi.fn() })
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))
 
 // --- the memory brain: fully mocked, so the handlers are what's under test --
+//
+// v1.26: index.ts talks to the store through memoryClient (the store itself now lives in a
+// utilityProcess), so THAT is what gets mocked. Every proxied call is ASYNC in the real client and
+// the mock mirrors that — a mock answering synchronously where production returns a Promise would
+// hide exactly the bug class this port is about (a Promise is truthy; `.map`/spread/`>` on one
+// misbehaves silently). The pure helpers stay sync, as memoryClient re-exports them.
 const mem = vi.hoisted(() => ({
+  // memoryClient-only surface (lifecycle + the batched calls)
+  startMemoryHost: vi.fn(async () => 'host'),
+  setMemoryHostSpawner: vi.fn(),
+  createMemoryHostTransport: vi.fn(),
+  stopMemoryHost: vi.fn(),
+  memoryHostMode: vi.fn(() => 'host'),
+  exportMemorySnapshot: vi.fn(async () => ''),
+  importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
+  memoryKnownHashes: vi.fn(async () => [] as string[]),
+  weaveNeighboursBatch: vi.fn(async () => ({ w1: [{ id: 'w2', score: 0.9 }] }) as Record<string, any[]>),
+
   initSwarmMemory: vi.fn(),
   memoryWrite: vi.fn(async (i: any) => ({ id: 'm1', memoryType: 'semantic', ...i })),
   memorySearch: vi.fn(async () => [] as any[]),
-  memoryRelated: vi.fn(() => [{ id: 'r1' }]),
-  memoryLink: vi.fn(() => ({ ok: true })),
-  memoryGraphQuery: vi.fn(() => ({ nodes: [], edges: [] })),
-  memoryFeedback: vi.fn(() => ({ ok: true })),
-  memoryList: vi.fn(() => [{ id: 'l1' }]),
-  memoryCount: vi.fn(() => 42),
-  memoryClear: vi.fn(),
-  memoryHasHash: vi.fn(() => false),
-  memoryStats: vi.fn(() => ({ total: 7 })),
-  memoryDashboardStats: vi.fn(() => ({ total: 7, byType: {} })),
-  memoryGraphSample: vi.fn(() => ({ nodes: [{ id: 'n1' }], edges: [] })),
-  memoryRecentActivity: vi.fn(() => [{ day: '2026-07-12', count: 3 }]),
-  embeddingsReady: vi.fn(() => true),
-  memorySourceById: vi.fn(() => 'claude'),
-  memoryDelete: vi.fn(),
-  consolidationCandidates: vi.fn(() => [{ id: 'c1' }]),
-  consolidationSimOf: vi.fn(() => () => 0.9),
-  memoryPatchProjects: vi.fn(),
+  memoryRelated: vi.fn(async () => [{ id: 'r1' }]),
+  memoryLink: vi.fn(async () => ({ ok: true })),
+  memoryGraphQuery: vi.fn(async () => ({ nodes: [], edges: [] })),
+  memoryFeedback: vi.fn(async () => ({ ok: true })),
+  memoryList: vi.fn(async () => [{ id: 'l1' }]),
+  memoryCount: vi.fn(async () => 42),
+  memoryClear: vi.fn(async () => {}),
+  memoryHasHash: vi.fn(async () => false),
+  memoryStats: vi.fn(async () => ({ total: 7 })),
+  memoryDashboardStats: vi.fn(async () => ({ total: 7, byType: {} })),
+  memoryGraphSample: vi.fn(async () => ({ nodes: [{ id: 'n1' }], edges: [] })),
+  memoryRecentActivity: vi.fn(async () => [{ day: '2026-07-12', count: 3 }]),
+  embeddingsReady: vi.fn(async () => true),
+  memorySourceById: vi.fn(async () => 'claude'),
+  memoryDelete: vi.fn(async () => {}),
+  consolidationCandidates: vi.fn(async () => [{ id: 'c1' }]),
+  // The real client resolves to a SYNC comparator, rebuilt in main over the shipped matrix.
+  consolidationSimOf: vi.fn(async () => () => 0.9),
+  memoryPatchProjects: vi.fn(async () => 0),
   normalizeProjectSlug: vi.fn((p: string) => (p || '').split(/[\\/]/).filter(Boolean).pop()?.toLowerCase() || ''),
-  memoryLessons: vi.fn(() => [] as any[]),
-  memoryPruneCodePath: vi.fn(),
-  warmProbeEmbeddings: vi.fn(async () => {}),
-  compactSelfShard: vi.fn(),
+  memoryLessons: vi.fn(async () => [] as any[]),
+  memoryPruneCodePath: vi.fn(async () => 0),
+  warmProbeEmbeddings: vi.fn(async () => true),
+  compactSelfShard: vi.fn(async () => ({ compacted: false, before: 0, after: 0 })),
   setMemoryScrubber: vi.fn(),
-  weaveCandidates: vi.fn(() => [{ id: 'w1' }]),
-  weaveNeighbours: vi.fn(() => [{ id: 'w2' }]),
-  backfillCodeRefs: vi.fn(),
-  symbolHistory: vi.fn(() => [{ id: 'h1', content: 'hist', importance: 0.5, ts: 1, memoryType: 'procedural' }]),
-  memoryArchive: vi.fn(),
-  searchArchive: vi.fn(() => [{ id: 'a1' }]),
-  getSyncStatus: vi.fn(() => ({ enabled: false })),
-  setSyncDir: vi.fn(() => ({ enabled: true })),
-  reloadMemoryFromSync: vi.fn(),
-  setSyncPassphrase: vi.fn(() => ({ ok: true })),
-  disableSyncEncryption: vi.fn(() => ({ ok: true })),
-  enableLocalEncryption: vi.fn(() => ({ ok: true })),
-  disableEncryption: vi.fn(() => ({ ok: true })),
-  persistMemoryIndex: vi.fn(),
+  weaveCandidates: vi.fn(async () => [{ id: 'w1' }]),
+  weaveNeighbours: vi.fn(async () => [{ id: 'w2' }]),
+  backfillCodeRefs: vi.fn(async () => {}),
+  symbolHistory: vi.fn(async () => [{ id: 'h1', content: 'hist', importance: 0.5, ts: 1, memoryType: 'procedural' }]),
+  memoryArchive: vi.fn(async () => {}),
+  searchArchive: vi.fn(async () => [{ id: 'a1' }]),
+  getSyncStatus: vi.fn(async () => ({ enabled: false })),
+  setSyncDir: vi.fn(async () => ({ enabled: true })),
+  reloadMemoryFromSync: vi.fn(async () => {}),
+  setSyncPassphrase: vi.fn(async () => ({ ok: true })),
+  disableSyncEncryption: vi.fn(async () => ({ ok: true })),
+  enableLocalEncryption: vi.fn(async () => ({ ok: true })),
+  disableEncryption: vi.fn(async () => ({ ok: true })),
+  persistMemoryIndex: vi.fn(async () => {}),
   entityDedupHash: vi.fn((n: string, key?: string) => `edh:${n}:${key ?? ''}`),
   projectKeyOf: vi.fn((p: string) => `pk:${p}`),
   // v1.25.5 — int8 vector quantization (the RAM/exactness dial).
-  vectorRamStats: vi.fn(() => ({
+  vectorRamStats: vi.fn(async () => ({
     vectors: 1000, dim: 384, quantized: false,
     ramBytes: 1000 * 384 * 4, ramBytesFloat: 1000 * 384 * 4, ramBytesInt8: 1000 * 384,
   })),
-  setVectorQuantization: vi.fn((on: boolean) => ({
+  setVectorQuantization: vi.fn(async (on: boolean) => ({
     vectors: 1000, dim: 384, quantized: on,
     ramBytes: 1000 * 384 * (on ? 1 : 4), ramBytesFloat: 1000 * 384 * 4, ramBytesInt8: 1000 * 384,
   })),
 }))
+vi.mock('../../src/main/memoryClient', () => mem) // what index.ts + brainIpc import now
 vi.mock('../../src/main/swarmMemory', () => mem)
 
 const graph = vi.hoisted(() => ({
@@ -300,7 +319,10 @@ vi.mock('../../src/main/mnemeCompetence', () => ({
 vi.mock('../../src/main/mnemeIdentity', () => ({ initIdentity: mneme.initIdentity, identitySummary: mneme.identitySummary }))
 vi.mock('../../src/main/mnemeCuriosity', () => ({ findGaps: mneme.findGaps, curiosityPrompts: mneme.curiosityPrompts }))
 vi.mock('../../src/main/mnemeConsolidateRun', () => ({ runConsolidation: mneme.runConsolidation, runSummarization: mneme.runSummarization }))
-vi.mock('../../src/main/mnemeWeave', () => ({ runWeave: mneme.runWeave }))
+// WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
+// cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
+// — inside the weave's best-effort catch, so the whole pass would silently do nothing.
+vi.mock('../../src/main/mnemeWeave', () => ({ runWeave: mneme.runWeave, WEAVE_NEIGHBOUR_K: 6 }))
 vi.mock('../../src/main/mnemeSociety', () => ({ poolLessons: mneme.poolLessons, toAgentLesson: mneme.toAgentLesson }))
 vi.mock('../../src/main/nliContradict', () => ({ detectConflictsNli: mneme.detectConflictsNli }))
 vi.mock('../../src/main/memoryAudit', () => ({ auditMemory: mneme.auditMemory }))
@@ -698,9 +720,18 @@ describe('memory:ingest-conversations', () => {
   it('wires the ingest deps to the real store, stamping ingest-authored edges', async () => {
     await invoke('memory:ingest-conversations')
     const deps = mneme.runConversationIngest.mock.calls[0][0]
-    expect(deps.hasHash).toBe(mem.memoryHasHash)
     expect(deps.write).toBe(mem.memoryWrite)
-    expect(deps.patchProjects).toBe(mem.memoryPatchProjects)
+
+    // v1.26 — THE trap. The ingest loop consumes membership as a SYNC predicate (`if
+    // (deps.hasHash(h))`), and every store call is a Promise now. A Promise is TRUTHY, so wiring the
+    // async proxy to `hasHash` would mark every chunk "already stored" and ingestion would silently
+    // write NOTHING, forever, with no error anywhere. Pin BOTH halves: the batch is wired, and the
+    // per-chunk sync predicate is NOT.
+    expect(deps.hasHashes).toBe(mem.memoryKnownHashes)
+    expect(deps.hasHash).toBeUndefined()
+
+    deps.patchProjects([{ hash: 'h1', project: 'p' }])
+    expect(mem.memoryPatchProjects).toHaveBeenCalledWith([{ hash: 'h1', project: 'p' }])
     deps.link('a', 'b', 'follows', 0.5, 99)
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'follows', weight: 0.5, ts: 99, createdBy: 'ingest' })
   })
@@ -731,7 +762,13 @@ describe('memory:ingest-code', () => {
     await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
     const ingestDeps = mneme.runCodeIngest.mock.calls[0][0]
     expect(ingestDeps.write).toBe(mem.memoryWrite)
-    expect(ingestDeps.prunePath).toBe(mem.memoryPruneCodePath)
+    // Same trap as the transcript ingester: the sync per-chunk predicate must NOT be an async proxy.
+    expect(ingestDeps.hasHashes).toBe(mem.memoryKnownHashes)
+    expect(ingestDeps.hasHash).toBeUndefined()
+    // prunePath is wrapped (the proxy resolves to a count, the dep is void) — assert it DELEGATES,
+    // which pins the behaviour rather than the identity.
+    await ingestDeps.prunePath('/repos/x/a.ts')
+    expect(mem.memoryPruneCodePath).toHaveBeenCalledWith('/repos/x/a.ts')
 
     const graphDeps = cg.buildCodeGraph.mock.calls[0][0]
     expect(graphDeps.listFiles()).toEqual(['a.ts'])
@@ -1249,8 +1286,18 @@ describe('memory:reflect-session', () => {
   })
 
   it('wires the reflex deps to the real store, graph and code resolver', async () => {
+    // v1.26: `link` is a SYNC void dep and memoryLink is a Promise now, so the reflector's edges are
+    // COLLECTED during the pass and minted — awaited — after it returns. Calling link() in isolation
+    // would therefore no longer prove the edge ever reaches the graph. Drive it through the planner,
+    // which is the assertion that actually matters: by the time reflect() resolves, the edge is minted.
+    mneme.onSessionEpisode.mockImplementationOnce(async (_ep: any, deps: any) => {
+      deps.link('a', 'b', 'explains', 0.9)
+      return { fired: true, lessons: 1 }
+    })
     await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
     await mneme.reflectSoloSession.mock.calls[0][1].reflect({ id: 'ep1' })
+    expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'explains', weight: 0.9 })
+
     const reflexDeps = mneme.onSessionEpisode.mock.calls[0][1]
 
     await reflexDeps.distill({ id: 'ep1' })
@@ -1258,9 +1305,6 @@ describe('memory:reflect-session', () => {
 
     await reflexDeps.write({ agentId: 'a', kind: 'note', content: 'c' })
     expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' })
-
-    reflexDeps.link('a', 'b', 'explains', 0.9)
-    expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'explains', weight: 0.9 })
 
     expect(reflexDeps.resolveCode(['foo'], '/repos/x')).toEqual([{ symbol: 'foo', file: 'a.ts' }])
     expect(cg.resolveCodeRefs).toHaveBeenCalledWith(['foo'], 'key:/repos/x')
@@ -1456,37 +1500,40 @@ describe('MCP memory_primer', () => {
 
 describe('MCP memory_feedback', () => {
   it('treats an unspecified verdict as helpful', async () => {
-    mcp.memoryFeedback({ id: 'm1', query: 'q' })
+    await mcp.memoryFeedback({ id: 'm1', query: 'q' })
     expect(metricsOfType('feedback')).toEqual([expect.objectContaining({ helpful: true })])
     expect(mem.memoryFeedback).toHaveBeenCalledWith({ id: 'm1', helpful: undefined, query: 'q' })
   })
 
-  it('books CROSS-AGENT reuse when a helpful memory was authored by a DIFFERENT agent', () => {
-    mem.memorySourceById.mockReturnValueOnce('claude')
-    mcp.memoryFeedback({ id: 'm1', helpful: true, agentId: 'codex' })
+  // memorySourceById is an RPC now, so the author must be AWAITED. Un-awaited it is a Promise —
+  // never === the reader's agentId — so every single feedback would book a cross-agent recall with
+  // "[object Promise]" as the teaching agent. These three pin that in both directions.
+  it('books CROSS-AGENT reuse when a helpful memory was authored by a DIFFERENT agent', async () => {
+    mem.memorySourceById.mockResolvedValueOnce('claude')
+    await mcp.memoryFeedback({ id: 'm1', helpful: true, agentId: 'codex' })
     expect(metricsOfType('cross_recall')).toEqual([expect.objectContaining({ author: 'claude', reader: 'codex' })])
   })
 
-  it('does NOT book cross-agent reuse for an agent recalling its own memory', () => {
-    mem.memorySourceById.mockReturnValueOnce('codex')
-    mcp.memoryFeedback({ id: 'm1', helpful: true, agentId: 'codex' })
+  it('does NOT book cross-agent reuse for an agent recalling its own memory', async () => {
+    mem.memorySourceById.mockResolvedValueOnce('codex')
+    await mcp.memoryFeedback({ id: 'm1', helpful: true, agentId: 'codex' })
     expect(metricsOfType('cross_recall')).toEqual([])
   })
 
-  it('does NOT book cross-agent reuse for an unhelpful memory, or an unknown author', () => {
-    mcp.memoryFeedback({ id: 'm1', helpful: false, agentId: 'codex' })
+  it('does NOT book cross-agent reuse for an unhelpful memory, or an unknown author', async () => {
+    await mcp.memoryFeedback({ id: 'm1', helpful: false, agentId: 'codex' })
     expect(metricsOfType('feedback')).toEqual([expect.objectContaining({ helpful: false })])
     expect(metricsOfType('cross_recall')).toEqual([])
     expect(mem.memorySourceById).not.toHaveBeenCalled() // not even looked up
 
-    mem.memorySourceById.mockReturnValueOnce(undefined as any)
-    mcp.memoryFeedback({ id: 'm1', helpful: true, agentId: 'codex' })
+    mem.memorySourceById.mockResolvedValueOnce(undefined as any)
+    await mcp.memoryFeedback({ id: 'm1', helpful: true, agentId: 'codex' })
     expect(metricsOfType('cross_recall')).toEqual([])
   })
 
-  it('records the feedback even when the metrics ledger throws', () => {
+  it('records the feedback even when the metrics ledger throws', async () => {
     ledger.recordMetric.mockImplementationOnce(() => { throw new Error('ledger down') })
-    expect(mcp.memoryFeedback({ id: 'm1', helpful: true })).toEqual({ ok: true })
+    await expect(mcp.memoryFeedback({ id: 'm1', helpful: true })).resolves.toEqual({ ok: true })
     expect(mem.memoryFeedback).toHaveBeenCalled()
   })
 })
@@ -1499,13 +1546,14 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
     expect(mneme.assessCompetence).toHaveBeenCalledWith('termpolis')
   })
 
-  it('pool draws on the LESSONS window (default 200) and labels an unattributable lesson "unknown"', () => {
-    mem.memoryLessons.mockReturnValueOnce([
+  it('pool draws on the LESSONS window (default 200) and labels an unattributable lesson "unknown"', async () => {
+    // poolLessons takes an ARRAY — .map() on an un-awaited memoryLessons() would throw.
+    mem.memoryLessons.mockResolvedValueOnce([
       { source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
       { agentId: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
       { content: 'c' },
     ])
-    expect(mcp.memoryPool({})).toEqual([{ content: 'pooled', corroboration: 2 }])
+    await expect(mcp.memoryPool({})).resolves.toEqual([{ content: 'pooled', corroboration: 2 }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
     expect(mneme.poolLessons).toHaveBeenCalledWith([
       { source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
@@ -1514,13 +1562,13 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
     ])
   })
 
-  it('pool honours an explicit window size', () => {
-    mcp.memoryPool({ limit: 25 })
+  it('pool honours an explicit window size', async () => {
+    await mcp.memoryPool({ limit: 25 })
     expect(mem.memoryLessons).toHaveBeenCalledWith(25)
   })
 
   it('conflicts returns only the two contradicting sides — read-only, nothing else leaks', async () => {
-    mem.memoryLessons.mockReturnValueOnce([{ source: 'claude', content: 'always X' }])
+    mem.memoryLessons.mockResolvedValueOnce([{ source: 'claude', content: 'always X' }])
     const out = await mcp.memoryConflicts({})
     expect(out).toEqual([{ a: { source: 'claude', content: 'always X' }, b: { source: 'codex', content: 'never X' } }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
@@ -1583,8 +1631,8 @@ describe('MCP code_* tools', () => {
     expect(cg.codeSymbols).toHaveBeenLastCalledWith('foo', 5)
   })
 
-  it('code_locate runs UNSCOPED for agents (no project key) and honours the limit', () => {
-    expect(mcp.codeLocate({ issue: 'crash', limit: 4 })).toEqual([{ file: 'a.ts', score: 1, why: [] }])
+  it('code_locate runs UNSCOPED for agents (no project key) and honours the limit', async () => {
+    await expect(mcp.codeLocate({ issue: 'crash', limit: 4 })).resolves.toEqual([{ file: 'a.ts', score: 1, why: [] }])
     const [issue, , opts] = mneme.codeLocate.mock.calls[0]
     expect(issue).toBe('crash')
     expect(opts).toEqual({ limit: 4 })
@@ -1612,37 +1660,64 @@ describe('memory indexer passes', () => {
     expect(mneme.auditMemory).toHaveBeenCalledWith(expect.objectContaining({ event: 'learn', kind: 'consolidate' }))
   })
 
+  // v1.26 — THE PLANNER CONTRACT. runConsolidation and runWeave are SYNC and runSummarization hands
+  // its deps to a sync planMerges: they call candidates()/simOf()/neighbours() and use the result
+  // IMMEDIATELY. Every store call is a Promise now, so the deps handed to them must be sync closures
+  // over ALREADY-RESOLVED data, and their side-effects (forget / link / backfill) must be COLLECTED
+  // and applied afterwards. These assert both halves: the planner sees plain values, and the
+  // decisions it makes actually land in the store.
   it('consolidation ARCHIVES cold memories — it must never hard-delete them', async () => {
+    // The mocked planner stands in for the real one: it decides to forget c1, exactly where the real
+    // runConsolidation would. That decision must reach memoryArchive — and never memoryDelete.
+    mneme.runConsolidation.mockImplementationOnce((deps: any) => {
+      expect(Array.isArray(deps.candidates())).toBe(true) // NOT a Promise
+      expect(deps.candidates()).toEqual([{ id: 'c1' }])
+      expect(deps.simOf()).toBe(0) // decay-only on the scheduled pass; merge is on-demand
+      deps.forget('c1')
+      return { mergedDuplicates: 0, decayedCold: 1 }
+    })
+    mneme.runSummarization.mockImplementationOnce(async (deps: any) => {
+      expect(deps.candidates()).toEqual([{ id: 'c1' }]) // NOT a Promise
+      expect(typeof deps.simOf).toBe('function')
+      expect(deps.simOf({ id: 'c1' }, { id: 'c1' })).toBe(0.9) // a real NUMBER, not a Promise
+      await deps.write({ agentId: 'a', kind: 'note', content: 'c' })
+      deps.link('a', 'b', 'summarizes')
+      return { summarized: 1 }
+    })
     await indexerOpts().run()
-    const cons = mneme.runConsolidation.mock.calls[0][0]
-    expect(cons.forget).toBe(mem.memoryArchive)
-    expect(cons.forget).not.toBe(mem.memoryDelete) // v1.23 C6: archive, never tombstone
-    expect(cons.candidates()).toEqual([{ id: 'c1' }])
-    expect(mem.consolidationCandidates).toHaveBeenCalledWith(500)
-    expect(cons.simOf()).toBe(0)  // decay-only on the scheduled pass; merge is on-demand
 
-    const summ = mneme.runSummarization.mock.calls[0][0]
-    expect(summ.candidates()).toEqual([{ id: 'c1' }])
+    expect(mem.consolidationCandidates).toHaveBeenCalledWith(500)
+    expect(mem.memoryArchive).toHaveBeenCalledWith('c1') // v1.23 C6: archive...
+    expect(mem.memoryDelete).not.toHaveBeenCalled()      // ...never tombstone
+
+    // The summariser's limit must match the matrix's, or the comparator would not know the entries
+    // it is asked about (and would silently score them 0).
     expect(mem.consolidationCandidates).toHaveBeenCalledWith(200)
-    await summ.write({ agentId: 'a', kind: 'note', content: 'c' })
+    expect(mem.consolidationSimOf).toHaveBeenCalledWith(200)
     expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' })
-    summ.link('a', 'b', 'summarizes')
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'summarizes', createdBy: 'consolidate' })
   })
 
   it('the weave draws bounded cross-repo analogies and backfills code anchors', async () => {
+    mneme.runWeave.mockImplementationOnce((deps: any, opts: any) => {
+      expect(opts).toEqual({ maxPerPass: 200, neighbourK: 6 })
+      expect(deps.candidates()).toEqual([{ id: 'w1' }])              // NOT a Promise
+      expect(deps.neighbours('w1')).toEqual([{ id: 'w2', score: 0.9 }]) // pre-fetched, sync
+      expect(deps.neighbours('unknown-id')).toEqual([])              // an unseen id is [], never undefined
+      expect(deps.resolveCode(['foo'], 'pk')).toEqual([{ symbol: 'foo', file: 'a.ts' }]) // code graph: still sync, still in main
+      deps.link('a', 'b', 'analogous', 0.4)
+      deps.backfillCodeRefs('m1', [{ symbol: 'foo' }])
+      return { considered: 1, bridged: 1, codeAnalogies: 1, knowledgeAnalogies: 0, explains: 0, minted: 1 }
+    })
     await indexerOpts().run()
-    const [deps, opts] = mneme.runWeave.mock.calls[0]
-    expect(opts).toEqual({ maxPerPass: 200 })
-    expect(deps.candidates()).toEqual([{ id: 'w1' }])
+
     expect(mem.weaveCandidates).toHaveBeenCalledWith(300)
-    expect(deps.neighbours('m1', 5)).toEqual([{ id: 'w2' }])
-    expect(mem.weaveNeighbours).toHaveBeenCalledWith('m1', 5)
-    deps.link('a', 'b', 'analogous', 0.4)
-    expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'analogous', weight: 0.4, createdBy: 'weave' })
-    expect(deps.resolveCode(['foo'], 'pk')).toEqual([{ symbol: 'foo', file: 'a.ts' }])
+    // ONE batched neighbour call for the whole candidate set — not 300 round trips from inside the loop.
+    expect(mem.weaveNeighboursBatch).toHaveBeenCalledWith(['w1'], 6)
+    expect(mem.weaveNeighbours).not.toHaveBeenCalled()
     expect(cg.resolveCodeRefs).toHaveBeenCalledWith(['foo'], 'pk')
-    deps.backfillCodeRefs('m1', [{ symbol: 'foo' }])
+    // The deferred effects really are applied.
+    expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'analogous', weight: 0.4, createdBy: 'weave' })
     expect(mem.backfillCodeRefs).toHaveBeenCalledWith('m1', [{ symbol: 'foo' }])
   })
 

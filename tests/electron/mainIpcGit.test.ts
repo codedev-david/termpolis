@@ -226,6 +226,68 @@ vi.mock('../../src/main/swarmMemory', () => ({
   normalizeProjectSlug: vi.fn((p: string) => (p || '').split(/[\\/]/).filter(Boolean).pop() || ''),
   setMemoryScrubber: vi.fn(),
 }))
+
+// v1.26 — index.ts reaches the store through memoryClient (the brain lives in a utilityProcess now).
+// Every proxied call is a Promise there, so the mock is async too; the pure helpers stay sync.
+// Vitest's factory mock THROWS on access to a name it does not define, so this must cover every
+// export index.ts touches — including the lifecycle it calls in app.whenReady().
+vi.mock('../../src/main/memoryClient', () => ({
+  startMemoryHost: vi.fn(async () => 'host'),
+  setMemoryHostSpawner: vi.fn(),
+  createMemoryHostTransport: vi.fn(),
+  stopMemoryHost: vi.fn(),
+  memoryHostMode: vi.fn(() => 'host'),
+  setMemoryScrubber: vi.fn(),
+  memoryWrite: vi.fn(async () => ({ id: 'm1' })),
+  memorySearch: vi.fn(async () => []),
+  memoryRelated: vi.fn(async () => []),
+  memoryLink: vi.fn(async () => ({ ok: true })),
+  memoryGraphQuery: vi.fn(async () => []),
+  memoryFeedback: vi.fn(async () => ({ ok: true })),
+  memoryList: vi.fn(async () => []),
+  memoryCount: vi.fn(async () => 0),
+  memoryClear: vi.fn(async () => {}),
+  memoryKnownHashes: vi.fn(async () => [] as string[]),
+  memoryStats: vi.fn(async () => ({ count: 0 })),
+  memoryDashboardStats: vi.fn(async () => ({ total: 0 })),
+  memoryGraphSample: vi.fn(async () => ({ nodes: [], edges: [] })),
+  memoryRecentActivity: vi.fn(async () => []),
+  embeddingsReady: vi.fn(async () => false),
+  memorySourceById: vi.fn(async () => undefined),
+  memoryDelete: vi.fn(async () => {}),
+  consolidationCandidates: vi.fn(async () => []),
+  consolidationSimOf: vi.fn(async () => () => 0),
+  memoryPatchProjects: vi.fn(async () => 0),
+  memoryLessons: vi.fn(async () => []),
+  memoryPruneCodePath: vi.fn(async () => 0),
+  warmProbeEmbeddings: vi.fn(async () => true),
+  compactSelfShard: vi.fn(async () => ({ compacted: false, before: 0, after: 0 })),
+  weaveCandidates: vi.fn(async () => []),
+  weaveNeighbours: vi.fn(async () => []),
+  weaveNeighboursBatch: vi.fn(async () => ({})),
+  backfillCodeRefs: vi.fn(async () => {}),
+  symbolHistory: vi.fn(async () => []),
+  memoryArchive: vi.fn(async () => {}),
+  searchArchive: vi.fn(async () => []),
+  getSyncStatus: vi.fn(async () => ({ syncing: false })),
+  setSyncDir: vi.fn(async () => ({ syncing: false })),
+  reloadMemoryFromSync: vi.fn(async () => {}),
+  setSyncPassphrase: vi.fn(async () => ({ encrypted: true })),
+  disableSyncEncryption: vi.fn(async () => ({ encrypted: false })),
+  enableLocalEncryption: vi.fn(async () => ({ encrypted: true })),
+  disableEncryption: vi.fn(async () => ({ encrypted: false })),
+  persistMemoryIndex: vi.fn(async () => {}),
+  vectorRamStats: vi.fn(async () => ({ vectors: 0, dim: 384, quantized: false, ramBytes: 0, ramBytesFloat: 0, ramBytesInt8: 0 })),
+  setVectorQuantization: vi.fn(async () => ({ vectors: 0, dim: 384, quantized: false, ramBytes: 0, ramBytesFloat: 0, ramBytesInt8: 0 })),
+  exportMemorySnapshot: vi.fn(async () => ''),
+  importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
+  // pure helpers — SYNC, exactly as memoryClient re-exports them from swarmMemory
+  normalizeProjectSlug: vi.fn((p: string) => (p || '').split(/[\/]/).filter(Boolean).pop()?.toLowerCase() || ''),
+  projectKeyOf: vi.fn((p: string) => `pk:${p}`),
+  entityDedupHash: vi.fn((n: string, k?: string) => `edh:${n}:${k ?? ''}`),
+  contentHash: vi.fn((c: string) => `h:${c}`),
+  canonicalEntityName: vi.fn((n: string) => n.trim()),
+}))
 vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: vi.fn() }))
 vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((cmd: string) => cmd) }))
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))

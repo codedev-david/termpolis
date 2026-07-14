@@ -3012,7 +3012,20 @@ describe('ai-security:sensitive-reads', () => {
 // memory:* cross-machine sync handlers (swarmMemory is real here; the store was
 // initialised in os.tmpdir() during import — see beforeAll)
 // =========================================================================
+// v1.26 — the store now has a real SHUTDOWN. `app.on('before-quit')` calls stopMemoryHost(), and the
+// app-lifecycle tests above fire that callback for real; a stopped client REJECTS every call by
+// design (rather than silently answering "you have no memories" from an uninitialised in-main store).
+// So any suite that needs a live store brings it back up explicitly, instead of depending on nothing
+// upstream having quit the app.
+async function ensureMemoryStore(): Promise<void> {
+  const mc: any = await import('../../src/main/memoryClient')
+  if (mc.memoryHostMode() !== 'inproc') {
+    await mc.startMemoryHost({ userDataPath: require('os').tmpdir(), inProcess: true })
+  }
+}
+
 describe('memory cross-machine sync handlers', () => {
+  beforeAll(ensureMemoryStore)
   const fs = require('fs') as typeof import('fs')
   const os = require('os') as typeof import('os')
   const path = require('path') as typeof import('path')
@@ -3162,6 +3175,7 @@ describe('memory primer-limit handlers', () => {
 
 // v1.23 — the structural code-graph IPC handlers, incl. the C5 issue->location predictor.
 describe('code-graph IPC handlers', () => {
+  beforeAll(ensureMemoryStore) // memory:deep-search reaches the store (see ensureMemoryStore)
   it('stats / search / explore / callers / callees / impact respond without throwing', async () => {
     expect((await invokeHandler('code-graph:stats')).success).toBe(true)
     expect((await invokeHandler('code-graph:search', { query: 'x', limit: 5 })).success).toBe(true)

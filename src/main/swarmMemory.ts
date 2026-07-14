@@ -187,9 +187,12 @@ let hnswYieldMs = 8                            // yield to the event loop every 
 
 const SYNC_CONFIG_FILE = 'memory-sync.json'
 const DEVICE_ID_FILE = 'device-id'
-const SALT_FILE = '.termpolis-salt'      // lives in the SYNC folder — shared across devices, not secret
-const KEY_CACHE_FILE = 'memory-sync.key' // lives in userData — LOCAL to this device, never synced
-const ENCRYPTION_OPTOUT_FILE = 'memory-encryption.optout' // WP-F: presence = user turned default-on encryption OFF
+// v1.26: exported because MAIN now owns key provisioning (it holds the only safeStorage) while this
+// module runs in a utilityProcess. memoryClient resolves the very same paths — exporting the names
+// keeps ONE source of truth, so a rename here can't silently orphan the key main writes.
+export const SALT_FILE = '.termpolis-salt'      // lives in the SYNC folder — shared across devices, not secret
+export const KEY_CACHE_FILE = 'memory-sync.key' // lives in userData — LOCAL to this device, never synced
+export const ENCRYPTION_OPTOUT_FILE = 'memory-encryption.optout' // WP-F: presence = user turned default-on encryption OFF
 const DELETES_FILE = 'memory-deletes.json' // userData — device-local DURABLE floor of clearEpoch + tombstones
 // F1: reject a clear epoch further than this into the future — a mis-clocked (dead-CMOS/
 // drifted-VM) or corrupt peer must never be able to poison the global epoch and wipe the brain.
@@ -499,10 +502,31 @@ function reloadFromImpl(paths: string[]): void {
   bumpSearchGen() // Wave2: a reload can add/drop entries (peer sync) — don't serve stale cached results
 }
 
-export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string | null } = {}): void {
+// v1.26: an at-rest key handed in by the CALLER, already unwrapped. The memory store now runs in
+// an Electron `utilityProcess`, and that child has no `safeStorage` (DPAPI / Keychain / libsecret
+// are main-process-only) — so it cannot run loadCachedKey() itself. Main unwraps the key and
+// injects it here. It MUST be a 32-byte AES-256 key: a short/garbage buffer is a caller bug, and
+// silently falling back to loadCachedKey() (which returns null in the child) would present a fully
+// populated encrypted store as EMPTY — the single worst failure mode this module has. Fail loud.
+function normalizeInjectedKey(k: Buffer | null | undefined): Buffer | null {
+  if (k === undefined || k === null) return null
+  if (!Buffer.isBuffer(k) || k.length !== 32) {
+    throw new Error('initSwarmMemory: encKey must be a 32-byte Buffer (AES-256)')
+  }
+  return k
+}
+
+export function initSwarmMemory(
+  userDataPath: string,
+  opts: { syncDir?: string | null; encKey?: Buffer | null } = {},
+): void {
   if (!userDataPath || typeof userDataPath !== 'string' || !path.isAbsolute(userDataPath)) {
     throw new Error('initSwarmMemory: absolute userDataPath required')
   }
+  // Validated up-front, BEFORE any state is touched, so a bad key can't leave a half-initialised
+  // store behind. An injected key is AUTHORITATIVE — it wins over loadCachedKey() everywhere below.
+  // Absent (every existing caller, every existing test) the key resolution is byte-for-byte as before.
+  const injectedKey = normalizeInjectedKey(opts.encKey)
   const resolved = path.resolve(userDataPath)
   userDataDir = resolved
   legacyPath = path.join(resolved, 'swarm-memory.jsonl')
@@ -556,13 +580,14 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
       ensureTrailingNewline(memPath) // F27: heal a torn tail before any new append
       // Load this device's locally-cached encryption key (if the user enabled
       // encryption previously) so reloadFrom can decrypt — auto-unlocks on launch.
-      encKey = loadCachedKey()
+      // v1.26: an injected key (from the memory utilityProcess's parent) wins.
+      encKey = injectedKey ?? loadCachedKey()
       reloadFrom(shardFiles())
     } else {
       memPath = legacyPath
       // WP-F: load a device key created on a prior launch BEFORE reading, so local ciphertext
       // decrypts (otherwise encrypted lines would be skipped and the store would look empty).
-      encKey = loadCachedKey()
+      encKey = injectedKey ?? loadCachedKey()
       if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
       else fs.writeFileSync(memPath, '')
     }
@@ -576,7 +601,7 @@ export function initSwarmMemory(userDataPath: string, opts: { syncDir?: string |
     recordAnomaly('degraded-init', 'memory init failed — degraded to the local fallback store')
     try {
       memPath = legacyPath
-      if (!encKey) encKey = loadCachedKey() // WP-F: decrypt local ciphertext on the fallback path too
+      if (!encKey) encKey = injectedKey ?? loadCachedKey() // WP-F: decrypt local ciphertext on the fallback path too
       if (memPath) {
         if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
         else fs.writeFileSync(memPath, '')
@@ -2626,6 +2651,42 @@ export function disableEncryption(): SyncStatus {
   if (p) { try { fs.rmSync(p, { force: true }) } catch { /* ignore */ } }
   const op = optoutPath()
   if (op) { try { fs.writeFileSync(op, '1') } catch { /* ignore */ } } // remember the choice across launches
+  reloadFrom(shardFiles())
+  return getSyncStatus()
+}
+
+/**
+ * v1.26 — the WRITE half of key injection, and the reason `encKey` alone is not enough.
+ *
+ * maybeAutoEncrypt() MINTS a key and persists it with `writeSecret` → `safeStorage`. In the memory
+ * utilityProcess there is no safeStorage, so `isOsEncryptionAvailable()` is false and maybeAutoEncrypt
+ * early-returns — meaning enableLocalEncryption() would be a SILENT NO-OP there: the user ticks
+ * "encrypt my memory", nothing happens, and the store stays plaintext.
+ *
+ * So the mint + keychain write stay in MAIN (the only process that has a keychain), and the already-
+ * unwrapped key is adopted here: encrypt this device's existing plaintext shard under it and reload.
+ * That is exactly maybeAutoEncrypt() minus the two steps a child process cannot perform.
+ *
+ * Re-keying is REFUSED, not silently applied: a different key would render every existing ciphertext
+ * line permanently unreadable.
+ *
+ * CONTRACT: this ALWAYS rewrites this device's shard, so call it only when the key is genuinely NEW
+ * (main just minted it, or the user re-enabled encryption) — never on every launch, or a 475 MB store
+ * gets decrypted and re-encrypted at every boot. Passing the key that is already in force is legal
+ * (it is how a fresh mint ciphertext-ifies a store that initSwarmMemory just read as plaintext), but
+ * it is not free.
+ */
+export function adoptEncryptionKey(key: Buffer): SyncStatus {
+  if (!userDataDir) throw new Error('adoptEncryptionKey: memory not initialised')
+  const k = normalizeInjectedKey(key)
+  if (!k) throw new Error('adoptEncryptionKey: key required')
+  if (encKey && !encKey.equals(k)) {
+    throw new Error('adoptEncryptionKey: a different key is already active — refusing to re-key')
+  }
+  const op = optoutPath()
+  if (op) { try { fs.rmSync(op, { force: true }) } catch { /* ignore */ } } // adopting a key clears the opt-out
+  encKey = k
+  rewriteSelfShard((plain) => encryptLine(k, plain)) // ciphertext-ify any plaintext still in our shard
   reloadFrom(shardFiles())
   return getSyncStatus()
 }

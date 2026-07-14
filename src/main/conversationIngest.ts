@@ -315,10 +315,45 @@ export interface IngestStats {
 // embeds, turning a multi-minute freeze into a responsive background trickle.
 const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve))
 
+/**
+ * Which of these chunk hashes are already stored — resolved ONCE, up front, so the ingest loop can
+ * ask a synchronous question about an out-of-process store.
+ *
+ * Degrades toward the EMPTY set, never toward "everything is known". An empty set means every chunk
+ * is offered to the store again, and the store dedups by content hash anyway — so the cost of being
+ * wrong here is wasted work. The opposite error (a truthy Promise, "everything is known") silently
+ * stops ingestion dead and nothing upstream can tell.
+ */
+export async function knownHashes(
+  deps: Pick<IngestDeps, 'hasHash' | 'hasHashes'>,
+  hashes: string[],
+): Promise<Set<string>> {
+  if (deps.hasHashes) {
+    try {
+      return new Set(await deps.hasHashes(hashes))
+    } catch {
+      return new Set() // re-offer the chunks; the store's own hash dedup is the backstop
+    }
+  }
+  const out = new Set<string>()
+  if (!deps.hasHash) return out
+  for (const h of hashes) {
+    try { if (deps.hasHash(h)) out.add(h) } catch { /* treat as unknown */ }
+  }
+  return out
+}
+
 export interface IngestDeps {
   listFiles: (source: ConversationSource) => Promise<string[]>
   readFile: (filePath: string) => Promise<string>
-  hasHash: (hash: string) => boolean
+  /** Per-chunk membership. SYNC on purpose — it is consumed as `if (deps.hasHash(h))`, and a Promise
+   *  is truthy, so an async predicate here reports EVERY chunk as already-stored and ingestion
+   *  silently writes nothing. With the store out of process, wire `hasHashes` instead. */
+  hasHash?: (hash: string) => boolean
+  /** v1.26: batched membership, asked once per FILE. The store lives in a utilityProcess now, so a
+   *  per-chunk round trip would be tens of thousands of RPCs per pass. Returns the subset of
+   *  `hashes` already stored. Takes precedence over hasHash when both are given. */
+  hasHashes?: (hashes: string[]) => Promise<string[]> | string[]
   write: (chunk: IngestChunk) => Promise<void>
   /** Called with already-stored chunks that have a cwd, so legacy entries
    *  (written before project tagging existed) can be backfilled in the store. */
@@ -384,8 +419,14 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
       stats.filesScanned++
       const turns = parseBySource(source, content, filePath)
       if (turns.length === 0) continue
-      for (const chunk of chunkTurns(turns, deps.chunkOptions)) {
-        if (deps.hasHash(chunk.hash)) {
+      const chunks = [...chunkTurns(turns, deps.chunkOptions)]
+      if (chunks.length === 0) continue
+      // One membership query per FILE, resolved BEFORE the write loop, so the predicate below stays
+      // synchronous. `known` is then kept current as we write: two identical chunks in one file must
+      // dedup to one, exactly as they did when hasHash read the live store.
+      const known = await knownHashes(deps, chunks.map((c) => c.hash))
+      for (const chunk of chunks) {
+        if (known.has(chunk.hash)) {
           stats.chunksSkipped++
           if (chunk.cwd) pendingPatches.push({ hash: chunk.hash, project: chunk.cwd })
           continue
@@ -393,6 +434,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         try {
           await deps.write(chunk)
           stats.chunksWritten++
+          known.add(chunk.hash) // the store has it now — a repeat inside this same file must skip
         } catch {
           continue // skip a chunk that fails to persist (no embed happened to yield for)
         }
@@ -491,7 +533,10 @@ export async function findLatestTranscriptFile(source: ConversationSource, root?
 }
 
 export interface IngestMemory {
-  hasHash: (hash: string) => boolean
+  /** SYNC, and only for an in-process store — see IngestDeps.hasHash. */
+  hasHash?: (hash: string) => boolean
+  /** Batched membership; what the app wires, because the store is out of process. */
+  hasHashes?: (hashes: string[]) => Promise<string[]> | string[]
   write: (input: { agentId: string; kind: 'message'; content: string; source: string; hash: string; project?: string; ts?: number }) => Promise<unknown>
   patchProjects?: (patches: Array<{ hash: string; project: string }>) => void
   /** BB6: optionally link each newly-written chunk to the previous one in the same
@@ -520,6 +565,7 @@ export async function runConversationIngest(
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
+    hasHashes: memory.hasHashes,
     patchProjects: memory.patchProjects,
     write: async (chunk) => {
       const entry = (await memory.write({

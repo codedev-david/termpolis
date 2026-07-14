@@ -10,7 +10,21 @@
 // Storage: JSONL file in userData with size-bounded rotation. Settings are a
 // small JSON file alongside it. Both are local-only — no network.
 
-import { app } from 'electron'
+// v1.26 — NAMESPACE import, deliberately, NOT `import { app } from 'electron'`.
+//
+// swarmMemory -> memoryAudit -> this module, and swarmMemory now runs in a utilityProcess. That
+// child's `electron` exports ONLY { default, net, systemPreferences } — no `app`. Under CJS a missing
+// export is just `undefined`; under ESM (this app is "type": "module") a missing NAMED export is a
+// link-time SyntaxError that kills the child before a line of it runs. The memory host would then die
+// on every launch and fall back to the main thread forever — silently, which is the worst kind.
+//
+// A namespace import LINKS in both processes (verified against a real Electron 30.5.1 fork): main
+// gets a working `electron.app`, the child gets `undefined` — and that is fine, because the only use
+// is inside initAiSecurity(), which main calls and the child never does. Only scanText (a pure regex
+// function) is reachable from the memory graph. A DEFAULT import would also link, but it would break
+// the ~40 suites that mock electron as `vi.mock('electron', () => ({ app: … }))` with no `default`.
+// Guarded by tests/electron/memoryHostImportGraph.test.ts.
+import * as electron from 'electron'
 import { promises as fs, existsSync, mkdirSync, statSync, renameSync } from 'fs'
 import { join } from 'path'
 
@@ -243,7 +257,9 @@ function auditPrevPath(): string { return join(userDataDir, AUDIT_PREV) }
 
 export function initAiSecurity(): void {
   if (initialized) return
-  userDataDir = app.getPath('userData')
+  // Main-process only — see the default-import note at the top of this file. Never reached from the
+  // memory utilityProcess, which imports this module solely for scanText.
+  userDataDir = electron.app.getPath('userData')
   if (!existsSync(userDataDir)) {
     try { mkdirSync(userDataDir, { recursive: true }) } catch {}
   }
