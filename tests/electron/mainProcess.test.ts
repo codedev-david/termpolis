@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest'
+import { globalHotkeys } from '../../src/main/appMenu'
 
 // ---------------------------------------------------------------------------
 // Collect IPC handler registrations so we can invoke them directly
@@ -2367,23 +2368,28 @@ describe('App lifecycle events', () => {
 // Global shortcut handlers (using callbacks captured in beforeAll)
 // =========================================================================
 describe('Global shortcut handlers', () => {
-  it('registers Super+Shift+T for new terminal', () => {
-    expect(capturedShortcuts).toHaveProperty('Super+Shift+T')
+  // The accelerators are platform-specific: Super+Shift+* on Windows/Linux, Control+Alt+* on macOS
+  // (where Super is Cmd and Cmd+Shift+T/S belong to other apps). Derive the expected keys from the
+  // SAME source index.ts uses, so this passes on every runner instead of hardcoding the non-mac one.
+  const HK = globalHotkeys(process.platform)
+
+  it('registers the new-terminal hotkey', () => {
+    expect(capturedShortcuts).toHaveProperty(HK.newTerminal)
   })
 
-  it('registers Super+Shift+S for swarm toggle', () => {
-    expect(capturedShortcuts).toHaveProperty('Super+Shift+S')
+  it('registers the swarm-toggle hotkey', () => {
+    expect(capturedShortcuts).toHaveProperty(HK.toggleSwarm)
   })
 
-  it('Super+Shift+T sends global:new-terminal to renderer', () => {
+  it('the new-terminal hotkey sends global:new-terminal to renderer', () => {
     mockWebContents.send.mockClear()
-    capturedShortcuts['Super+Shift+T']()
+    capturedShortcuts[HK.newTerminal]()
     expect(mockWebContents.send).toHaveBeenCalledWith('global:new-terminal')
   })
 
-  it('Super+Shift+S sends global:toggle-swarm to renderer', () => {
+  it('the swarm-toggle hotkey sends global:toggle-swarm to renderer', () => {
     mockWebContents.send.mockClear()
-    capturedShortcuts['Super+Shift+S']()
+    capturedShortcuts[HK.toggleSwarm]()
     expect(mockWebContents.send).toHaveBeenCalledWith('global:toggle-swarm')
   })
 })

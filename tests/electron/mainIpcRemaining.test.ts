@@ -16,6 +16,11 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'events'
 import { homedir } from 'os'
+import { globalHotkeys } from '../../src/main/appMenu'
+
+// Platform-specific accelerators (Super+Shift+* on Windows/Linux, Control+Alt+* on macOS). Derived
+// from the same source index.ts registers with, so these pass on every CI runner.
+const HK = globalHotkeys(process.platform)
 import { join } from 'path'
 
 // ---------------------------------------------------------------------------
@@ -1183,21 +1188,21 @@ describe('global hotkeys work even when the window is minimized', () => {
   afterAll(() => { mockMainWindow.isMinimized.mockReturnValue(false) })
 
   it('Super+Shift+T restores + focuses the window, then asks for a new terminal', async () => {
-    ;(await hotkey('Super+Shift+T'))()
+    ;(await hotkey(HK.newTerminal))()
     expect(mockMainWindow.restore).toHaveBeenCalledTimes(1)
     expect(mockMainWindow.focus).toHaveBeenCalledTimes(1)
     expect(mockWebContents.send).toHaveBeenCalledWith('global:new-terminal')
   })
 
   it('Super+Shift+S restores + focuses the window, then toggles the swarm dashboard', async () => {
-    ;(await hotkey('Super+Shift+S'))()
+    ;(await hotkey(HK.toggleSwarm))()
     expect(mockMainWindow.restore).toHaveBeenCalledTimes(1)
     expect(mockWebContents.send).toHaveBeenCalledWith('global:toggle-swarm')
   })
 
   it('does NOT call restore when the window is already visible', async () => {
     mockMainWindow.isMinimized.mockReturnValue(false)
-    ;(await hotkey('Super+Shift+T'))()
+    ;(await hotkey(HK.newTerminal))()
     expect(mockMainWindow.restore).not.toHaveBeenCalled()
     expect(mockMainWindow.focus).toHaveBeenCalledTimes(1)
   })
@@ -1370,8 +1375,8 @@ describe('after the window is closed', () => {
 
     // A hotkey pressed while no window exists must not throw inside the accelerator callback —
     // an exception there is swallowed by Electron and the shortcut silently dies for the session.
-    ;(await hotkey('Super+Shift+T'))()
-    ;(await hotkey('Super+Shift+S'))()
+    ;(await hotkey(HK.newTerminal))()
+    ;(await hotkey(HK.toggleSwarm))()
     ;(await appCallback('second-instance'))()
     expect(mockWebContents.send).not.toHaveBeenCalled()
     expect(mockMainWindow.focus).not.toHaveBeenCalled()
@@ -1380,7 +1385,7 @@ describe('after the window is closed', () => {
     // macOS dock click / relaunch: activate re-creates the window…
     ;(await appCallback('activate'))()
     // …and the hotkeys work again against the new one.
-    ;(await hotkey('Super+Shift+T'))()
+    ;(await hotkey(HK.newTerminal))()
     expect(mockWebContents.send).toHaveBeenCalledWith('global:new-terminal')
   })
 })
