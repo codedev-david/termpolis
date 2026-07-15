@@ -75,4 +75,31 @@ describe('mnemeCompetence — persistent self-competence store', () => {
     initCompetence(dir)
     expect(assessCompetence('ok').attempts).toBe(2)
   })
+
+  it('purges the stale home-directory (account-name) domain on load, durably', () => {
+    // Before v1.26.2, opening a terminal in ~ normalized to the home basename — the user's ACCOUNT
+    // NAME — as a "project", and a project is a competence domain (mnemeReflex). normalizeProjectSlug
+    // now rejects home, but the record it already wrote replays forever: a dashboard bar labelled
+    // with the user's own name, and "low competence in <name>" atop every agent primer. It can never
+    // be legitimately reproduced, so initCompetence drops it on load and rewrites the sidecar.
+    const home = (os.homedir().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '').toLowerCase()
+    expect(home).not.toBe('') // sanity: the test box has a real home dir
+    const fp = path.join(dir, 'mneme-competence.jsonl')
+    fs.writeFileSync(
+      fp,
+      JSON.stringify({ domain: home, attempts: 1, successes: 1, lastTs: 5, confidence: 0.2065 }) + '\n' +
+        JSON.stringify({ domain: 'termpolis', attempts: 4, successes: 3, lastTs: 6, confidence: 0.42 }) + '\n',
+    )
+    _resetCompetenceForTests()
+    initCompetence(dir)
+    expect(assessCompetence(home).known).toBe(false)       // the account-name domain is gone
+    expect(assessCompetence('termpolis').known).toBe(true)  // real domains survive
+    expect(competenceSummary()).not.toMatch(new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+    // Durable: the dead line was rewritten out, so it does not resurrect on the next load.
+    _resetCompetenceForTests()
+    initCompetence(dir)
+    expect(assessCompetence(home).known).toBe(false)
+    expect(assessCompetence('termpolis').known).toBe(true)
+  })
 })

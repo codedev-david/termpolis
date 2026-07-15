@@ -8,11 +8,37 @@
 // failure never breaks a task's completion path.
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { updateCompetence, assessDomain, summarizeCompetence, type CompetenceRecord } from './mnemeMeta'
 
 let records = new Map<string, CompetenceRecord>()
 let filePath: string | null = null
+
+/** The basename of the user's home directory, lowercased — i.e. their ACCOUNT NAME. Before v1.26.2
+ *  a terminal opened in ~ was normalized to this as a "project", and a project IS a competence
+ *  domain (mnemeReflex), so the brain recorded competence in a domain named after the user.
+ *  normalizeProjectSlug now rejects home (see swarmMemory), but the record already written can never
+ *  be legitimately reproduced — yet it replays on every load. '' when it can't be resolved. */
+function homeDomain(): string {
+  try {
+    return (os.homedir() || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.trim().toLowerCase() || ''
+  } catch {
+    return ''
+  }
+}
+
+/** Rewrite the sidecar to exactly the current in-memory records (one line each). Best-effort: a
+ *  failed rewrite just means the dropped/collapsed lines are re-processed on the next load. */
+function rewriteRecords(): void {
+  if (!filePath) return
+  try {
+    const body = Array.from(records.values()).map((r) => JSON.stringify(r)).join('\n')
+    fs.writeFileSync(filePath, body ? body + '\n' : '')
+  } catch {
+    /* best effort — the in-memory map is already correct for this session */
+  }
+}
 
 /** Load the competence sidecar from `dir` (idempotent; safe to call on startup). */
 export function initCompetence(dir: string): void {
@@ -34,6 +60,12 @@ export function initCompetence(dir: string): void {
   } catch {
     /* best effort — start empty if the sidecar can't be read */
   }
+  // One-time migration: drop the account-name domain (see homeDomain). Its only remaining effect is
+  // a dashboard bar labelled with the user's own name and a "low competence in <name>" line atop
+  // every agent primer. Rewrite the sidecar so the dead record doesn't resurrect next launch. (A
+  // real repo named exactly like the account is not producible via home anymore, so this is safe.)
+  const home = homeDomain()
+  if (home && records.delete(home)) rewriteRecords()
 }
 
 /** Fold one task outcome into the domain's competence and persist it. */

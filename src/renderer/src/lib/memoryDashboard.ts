@@ -124,10 +124,29 @@ export function teachingRows(matrix: Record<string, Record<string, number>>): Te
 
 export interface CompetenceRow { domain: string; confidence: number; attempts: number; status: SliStatus }
 
-/** Per-domain self-competence, strongest first, graded (>=0.85 good, >=0.75 warn, else bad). */
+/** Below this many attempts a domain is too thin to grade: a lone success has a Wilson lower bound
+ *  of ~0.21, which is honest math but not evidence the brain is BAD at the domain. Mirrors
+ *  mnemeMeta's MIN_EVIDENCE so this tile agrees with assessDomain (which reads such a record
+ *  'unproven', never 'caution'). */
+const MIN_COMPETENCE_EVIDENCE = 3
+
+/** Per-domain self-competence, strongest first. Graded on the Wilson bound (>=0.85 good, >=0.75
+ *  warn, else bad) ONCE there is enough evidence; a thin record (<3 attempts) is 'idle' (unproven),
+ *  never a red failure — so a single win does not paint an alarming bar labelled like a weakness. */
 export function competenceRows(m: MemoryMetrics): CompetenceRow[] {
   return m.competence
-    .map((c) => ({ domain: c.domain, confidence: c.confidence, attempts: c.attempts, status: (c.confidence >= 0.85 ? 'good' : c.confidence >= 0.75 ? 'warn' : 'bad') as SliStatus }))
+    .map((c) => ({
+      domain: c.domain,
+      confidence: c.confidence,
+      attempts: c.attempts,
+      status: (c.attempts < MIN_COMPETENCE_EVIDENCE
+        ? 'idle'
+        : c.confidence >= 0.85
+          ? 'good'
+          : c.confidence >= 0.75
+            ? 'warn'
+            : 'bad') as SliStatus,
+    }))
     .sort((a, b) => b.confidence - a.confidence)
 }
 

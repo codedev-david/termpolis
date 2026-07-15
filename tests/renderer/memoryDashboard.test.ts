@@ -124,6 +124,24 @@ describe('memoryDashboard — transforms', () => {
     expect(rows[1].status).toBe('bad')
   })
 
+  it('competenceRows grades a thin track record (<3 attempts) as unproven/idle, not a red failure', () => {
+    // A lone success has a Wilson lower bound of ~0.21 — mathematically right, but too little
+    // evidence to call the brain "bad" at a domain. assessDomain (mnemeMeta) reserves judgement
+    // below MIN_EVIDENCE=3; the tile must agree, or a single win paints an alarming red bar.
+    const rows = competenceRows(mm({ competence: [
+      { domain: 'fresh-1', attempts: 1, confidence: 0.21 },
+      { domain: 'fresh-2', attempts: 2, confidence: 0.5 },
+    ] }))
+    expect(rows.every((r) => r.status === 'idle')).toBe(true)
+  })
+
+  it('competenceRows grades a domain on confidence once it has enough evidence (>=3 attempts)', () => {
+    const rows = competenceRows(mm({ competence: [
+      { domain: 'weak', attempts: 3, confidence: 0.4 },
+    ] }))
+    expect(rows[0].status).toBe('bad') // three attempts is enough to actually call it
+  })
+
   it('isBrainEmpty is true only when nothing is stored', () => {
     expect(isBrainEmpty(mm())).toBe(true)
     expect(isBrainEmpty(mm({ store: { total: 1, capacity: 1, byType: {}, bySource: {}, lessons: 0, timeline: [] } }))).toBe(false)

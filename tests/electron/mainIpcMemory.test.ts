@@ -1454,13 +1454,28 @@ describe('MCP memory tools', () => {
     expect(metricsOfType('embed')).toEqual([expect.objectContaining({ available: true })])
   })
 
-  it('memory_search books it as a KEYWORD-path recall when the embedder is not ready', async () => {
-    const { isEmbedderReady } = await import('../../src/main/localEmbedder')
-    vi.mocked(isEmbedderReady).mockReturnValueOnce(false)
+  it('memory_search books it as a KEYWORD-path recall when the child embedder is down', async () => {
+    mem.embeddingsReady.mockReturnValueOnce(false)
     mem.memorySearch.mockResolvedValueOnce([])
     await mcp.memorySearch({ query: 'q' })
     expect(metricsOfType('recall')).toEqual([expect.objectContaining({ path: 'keyword', hits: 0, topScore: 0 })])
     expect(metricsOfType('embed')).toEqual([expect.objectContaining({ available: false })])
+  })
+
+  // REGRESSION (v1.26.0 process split): the embedder moved into the memory utilityProcess, so main's
+  // localEmbedder.isEmbedderReady() is ALWAYS false here. Reading it booked every agent recall as a
+  // keyword fallback even while the child served a real semantic hit (cosine ~0.99) — the dashboard
+  // then read "Embedding model: down — keyword fallback" over a perfectly working brain. The recall
+  // path must reflect the CHILD's embedder, via the proxied embeddingsReady() the UI path already uses.
+  it('memory_search trusts the child embedder, not main\'s always-false isEmbedderReady (post-split)', async () => {
+    const { isEmbedderReady } = await import('../../src/main/localEmbedder')
+    vi.mocked(isEmbedderReady).mockReturnValue(false) // the post-split reality inside main
+    mem.embeddingsReady.mockReturnValue(true)          // the child actually has the model loaded
+    mem.memorySearch.mockResolvedValueOnce([{ id: 's1', score: 0.994 }])
+    await mcp.memorySearch({ query: 'q' })
+    expect(metricsOfType('recall')).toEqual([expect.objectContaining({ path: 'vector' })])
+    expect(metricsOfType('embed')).toEqual([expect.objectContaining({ available: true })])
+    vi.mocked(isEmbedderReady).mockReturnValue(true)
   })
 
   it('memory_list forwards its filters', () => {

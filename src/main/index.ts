@@ -183,7 +183,7 @@ import { isHighValueEpisode } from './mnemeReflect'
 import { makeHeadlessDistiller } from './mnemeDistiller'
 import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
-import { isEmbedderReady, setWorkerSpawner } from './localEmbedder'
+import { setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
 
 // v1.26 — the sync-void `link` dep, made safe against an out-of-process graph write.
@@ -1582,19 +1582,19 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
     })
     // Reliability/receipt SLIs: a UI recall is a real recall — record it so the
     // dashboard reflects actual usage, not just agent-side MCP tool calls.
+    //
+    // Latency is captured BEFORE the embeddingsReady() probe below: that probe is a second RPC to
+    // the memory process, and folding its round-trip into `ms` would inflate the recall-latency SLI
+    // by the cost of a call the recall itself never made.
+    const ms = Date.now() - started
     try {
-      // `path` must reflect what ACTUALLY ran. This booked every UI-driven search as a vector
-      // recall even when the embedder was down and the store had fallen back to keyword, so the
-      // Memory dashboard over-counted vector recalls — a proof dashboard that flatters itself is
-      // worse than none. The MCP twin below already did this correctly.
-      // await: embeddingsReady() is a Promise now, and a Promise is truthy — un-awaited, EVERY
-      // recall would book itself as a vector recall even with the embedder down.
+      // `path`/`available` must reflect what ACTUALLY ran. embeddingsReady() asks the memory process
+      // — where the embedder lives since v1.26.0 — whether semantic recall is up; booking a keyword
+      // fallback as a vector recall would make this proof dashboard flatter itself, which is worse
+      // than none. await: it is a Promise (a cross-process call), and a Promise is truthy, so
+      // un-awaited EVERY recall would read as a vector hit even with the embedder down.
       const ready = await embeddingsReady()
-      // `ms` is required on a RecallEvent and was simply omitted — `started` above was captured for
-      // it and then never used. Nothing caught it because nothing typechecked main (see the
-      // typecheck script + CI gate added alongside this): the recall-latency SLI has been reading a
-      // missing number on every UI-driven search.
-      recordMetric({ t: 'recall', ts: Date.now(), ms: Date.now() - started, hits: results.length, topScore: results[0]?.score ?? 0, path: ready ? 'vector' : 'keyword' })
+      recordMetric({ t: 'recall', ts: Date.now(), ms, hits: results.length, topScore: results[0]?.score ?? 0, path: ready ? 'vector' : 'keyword' })
       recordMetric({ t: 'embed', ts: Date.now(), available: ready })
     } catch { /* best effort */ }
     return ok(results)
@@ -2599,9 +2599,17 @@ if (!gotTheLock) {
           diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
           fuseGraph: opts.fuseGraph, // …and fuses graph-connected neighbours one hop out
         })
+        // Capture latency BEFORE the readiness probe (a second memory-process RPC) so the probe's
+        // round-trip does not inflate the recall-latency SLI.
+        const ms = Date.now() - started
         try {
-          const ready = isEmbedderReady()
-          recordMetric({ t: 'recall', ts: Date.now(), hits: res.length, topScore: res[0]?.score ?? 0, path: ready ? 'vector' : 'keyword', ms: Date.now() - started })
+          // The embedder lives in the memory utilityProcess since v1.26.0, so main's
+          // localEmbedder.isEmbedderReady() is ALWAYS false here — reading it booked every agent
+          // recall as a keyword fallback even while the child returned a real semantic hit, so the
+          // dashboard read "Embedding model: down" over a healthy brain. Ask the CHILD, via the same
+          // proxied embeddingsReady() the UI recall path uses.
+          const ready = await embeddingsReady()
+          recordMetric({ t: 'recall', ts: Date.now(), hits: res.length, topScore: res[0]?.score ?? 0, path: ready ? 'vector' : 'keyword', ms })
           recordMetric({ t: 'embed', ts: Date.now(), available: ready })
         } catch { /* metrics are best-effort */ }
         return res
