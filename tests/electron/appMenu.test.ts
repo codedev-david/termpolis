@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { applicationMenuTemplate, globalHotkeys } from '../../src/main/appMenu'
+import { describe, it, expect, vi } from 'vitest'
+import { applicationMenuTemplate, installApplicationMenu, globalHotkeys } from '../../src/main/appMenu'
 
 describe('applicationMenuTemplate', () => {
   // On mac the edit-role menu is the ONLY thing that makes Cmd+C/V/X/A/Z and Cmd+Q work in native
@@ -13,6 +13,29 @@ describe('applicationMenuTemplate', () => {
   it('Windows and Linux get NO menu — they draw their own title bar', () => {
     expect(applicationMenuTemplate('win32')).toBeNull()
     expect(applicationMenuTemplate('linux')).toBeNull()
+  })
+})
+
+describe('installApplicationMenu', () => {
+  const makeMenu = () => ({ buildFromTemplate: vi.fn((t) => ({ built: t })), setApplicationMenu: vi.fn() })
+
+  // The exact failure the macOS CI runner hit: on darwin the install path BUILDS a menu, so it calls
+  // buildFromTemplate. Running only on Windows, nothing ever exercised this — a mock without the
+  // method threw during whenReady and cascaded into 44 unrelated failures. This test runs everywhere.
+  it('macOS builds the role menu and installs it', () => {
+    const menu = makeMenu()
+    installApplicationMenu(menu, 'darwin')
+    expect(menu.buildFromTemplate).toHaveBeenCalledWith([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }])
+    expect(menu.setApplicationMenu).toHaveBeenCalledWith({ built: expect.anything() })
+  })
+
+  it('Windows/Linux install a null menu and never build one', () => {
+    for (const p of ['win32', 'linux']) {
+      const menu = makeMenu()
+      installApplicationMenu(menu, p)
+      expect(menu.buildFromTemplate).not.toHaveBeenCalled()
+      expect(menu.setApplicationMenu).toHaveBeenCalledWith(null)
+    }
   })
 })
 

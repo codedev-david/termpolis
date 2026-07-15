@@ -126,7 +126,7 @@ vi.mock('electron', () => ({
     showOpenDialog: H.mockShowOpenDialog,
     showMessageBox: vi.fn(async () => ({ response: 0, checkboxChecked: false })),
   },
-  Menu: { setApplicationMenu: vi.fn() },
+  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn(() => ({})) },
   nativeImage: { createFromPath: vi.fn(() => ({})) },
   globalShortcut: { register: vi.fn(), unregisterAll: vi.fn() },
   shell: { openExternal: vi.fn(), openPath: vi.fn() },

@@ -68,7 +68,7 @@ vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn((c: string, h: Function) => { ipcHandlers.set(c, h) }), on: vi.fn() },
   BrowserWindow: MockBrowserWindow,
   dialog: { showSaveDialog: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn(async () => ({ response: 1 })) },
-  Menu: { setApplicationMenu: vi.fn() },
+  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn(() => ({})) },
   nativeImage: { createFromPath: vi.fn(() => ({})) },
   globalShortcut: { register: vi.fn(), unregisterAll: vi.fn() },
   // No OS keychain: the store stays honestly plaintext, so the assertions read real JSONL.

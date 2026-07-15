@@ -13,7 +13,14 @@
 //   2. Electron maps the `Super` accelerator to Cmd on macOS. Registering `Super+Shift+T` /
 //      `Super+Shift+S` GLOBALLY there hijacks Cmd+Shift+T (reopen-closed-tab) and Cmd+Shift+S from
 //      every other app while Termpolis runs. Mac needs a non-conflicting global combo.
-import type { MenuItemConstructorOptions } from 'electron'
+import type { Menu as ElectronMenu, MenuItemConstructorOptions } from 'electron'
+
+/** The slice of Electron's Menu that installApplicationMenu needs — so it can be tested with a mock
+ *  and so a test that forgets buildFromTemplate fails HERE, not in a 44-test cascade on the mac CI. */
+export interface MenuApi {
+  buildFromTemplate: (t: MenuItemConstructorOptions[]) => ElectronMenu
+  setApplicationMenu: (m: ElectronMenu | null) => void
+}
 
 /**
  * The application-menu template for a platform, or null to install no menu.
@@ -30,6 +37,17 @@ export function applicationMenuTemplate(platform: string): MenuItemConstructorOp
     { role: 'editMenu' },   // Undo / Redo / Cut / Copy / Paste / Select All — the whole point
     { role: 'windowMenu' }, // Minimize / Zoom / Close
   ]
+}
+
+/**
+ * Install (or clear) the application menu for a platform. Extracted from index.ts's whenReady so the
+ * darwin path — which builds a menu and therefore calls Menu.buildFromTemplate — is unit-testable.
+ * (It wasn't, and a test electron-mock without buildFromTemplate turned into a 44-test cascade that
+ * only surfaced on the macOS CI runner.)
+ */
+export function installApplicationMenu(menu: MenuApi, platform: string): void {
+  const template = applicationMenuTemplate(platform)
+  menu.setApplicationMenu(template ? menu.buildFromTemplate(template) : null)
 }
 
 /**

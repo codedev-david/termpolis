@@ -407,7 +407,7 @@ const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit mem
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
 import { safeGit, safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
-import { applicationMenuTemplate, globalHotkeys } from './appMenu'
+import { installApplicationMenu, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
 import {
   initWorkspaceTrust,
@@ -2463,8 +2463,7 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
     // macOS, without which Cmd+Q and copy/paste in native inputs do not work. See appMenu.ts.
-    const menuTemplate = applicationMenuTemplate(process.platform)
-    Menu.setApplicationMenu(menuTemplate ? Menu.buildFromTemplate(menuTemplate) : null)
+    installApplicationMenu(Menu, process.platform)
     createWindow()
 
     // Move ALL embedding onto a worker_thread so the memory brain's one-time model
