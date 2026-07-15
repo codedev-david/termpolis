@@ -1,16 +1,13 @@
 import { useState, useRef } from 'react'
 import { detectAgent, type AgentInfo } from '../lib/agentDetector'
-import { parseCostFromOutput, type CostInfo } from '../lib/costTracker'
 import { parseConversation } from '../lib/conversationParser'
 import { useTerminalStore } from '../store/terminalStore'
 
 const AGENT_SCAN_LIMIT = 2048
-const COST_SCAN_INTERVAL = 5
 const CONVERSATION_PARSE_INTERVAL = 10
 
 interface AgentDetectionState {
   detectedAgent: AgentInfo | null
-  costInfo: CostInfo | null
   /** Call from onData handler with stripped (ANSI-free) output */
   processAgentDetection: (strippedOutput: string, dataLength: number, terminalId: string, terminalName: string) => void
   /** Ref indicating if agent has been detected */
@@ -19,11 +16,9 @@ interface AgentDetectionState {
 
 export function useAgentDetection(): AgentDetectionState {
   const [detectedAgent, setDetectedAgent] = useState<AgentInfo | null>(null)
-  const [costInfo, setCostInfo] = useState<CostInfo | null>(null)
 
   const agentDetectedRef = useRef(false)
   const agentScanBytesRef = useRef(0)
-  const costScanCounterRef = useRef(0)
   const conversationParsedCountRef = useRef(0)
   const detectedAgentRef = useRef<AgentInfo | null>(null)
 
@@ -46,21 +41,9 @@ export function useAgentDetection(): AgentDetectionState {
       }
     }
 
-    // Cost tracking: scan periodically when an agent is active
-    if (agentDetectedRef.current) {
-      costScanCounterRef.current++
-      if (costScanCounterRef.current % COST_SCAN_INTERVAL === 0) {
-        const parsed = parseCostFromOutput(strippedOutput)
-        if (parsed) {
-          setCostInfo(prev => ({
-            tokensIn: parsed.tokensIn ?? prev?.tokensIn ?? 0,
-            tokensOut: parsed.tokensOut ?? prev?.tokensOut ?? 0,
-            estimatedCost: parsed.estimatedCost ?? prev?.estimatedCost ?? 0,
-            lastUpdated: parsed.lastUpdated ?? Date.now(),
-          }))
-        }
-      }
-    }
+    // (Removed v1.27.0: a cost scan ran every 5th chunk, parsing the window and calling setCostInfo
+    // with a FRESH object each time. That re-rendered TerminalPane on a hot path — and NOTHING read
+    // costInfo. The Efficiency panel parses cost independently via costTracker. Dead state, deleted.)
 
     // Conversation parsing: periodically parse output when an agent is active
     if (agentDetectedRef.current) {
@@ -83,7 +66,6 @@ export function useAgentDetection(): AgentDetectionState {
 
   return {
     detectedAgent,
-    costInfo,
     processAgentDetection,
     agentDetectedRef,
   }

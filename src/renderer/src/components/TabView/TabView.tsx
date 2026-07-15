@@ -1,8 +1,13 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalPane } from '../TerminalPane/TerminalPane'
 
 export function TabView() {
-  const { terminals, activeTerminalId } = useTerminalStore()
+  // Select only what we render. A bare useTerminalStore() re-runs this on EVERY store write —
+  // including ones that touch neither terminals nor the active id — and re-maps every pane element.
+  const { terminals, activeTerminalId } = useTerminalStore(
+    useShallow(s => ({ terminals: s.terminals, activeTerminalId: s.activeTerminalId })),
+  )
 
   if (terminals.length === 0) {
     return (

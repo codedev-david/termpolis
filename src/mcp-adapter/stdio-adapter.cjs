@@ -21,15 +21,11 @@
 const http = require('http')
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const readline = require('readline')
 
-function termpolisDataDir() {
-  const platform = process.platform
-  if (platform === 'win32') return path.join(process.env.APPDATA || '', 'termpolis')
-  if (platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-  return path.join(os.homedir(), '.config', 'termpolis')
-}
+// Shared with the other adapters so the data-dir logic (lowercase name, XDG_CONFIG_HOME on Linux)
+// cannot drift again — see dataDir.cjs.
+const { termpolisDataDir } = require('./dataDir.cjs')
 
 // Returns the auth token, or null if Termpolis hasn't written one yet.
 function findToken() {

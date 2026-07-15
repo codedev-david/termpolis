@@ -46,15 +46,21 @@ describe('stdio-adapter.cjs — runtime contract', () => {
     expect(src).toContain("'mcp-port'")
   })
 
-  it('uses platform-specific app-data dirs that match main/index.ts writers', () => {
-    // Windows: %APPDATA%\termpolis
-    expect(src).toMatch(/APPDATA/)
-    expect(src).toMatch(/['"]termpolis['"]/)
-    // macOS: ~/Library/Application Support/termpolis
-    expect(src).toMatch(/Library/)
-    expect(src).toMatch(/Application Support/)
-    // Linux: ~/.config/termpolis
-    expect(src).toMatch(/\.config/)
+  it('resolves the app-data dir through the shared dataDir.cjs (not a private copy)', () => {
+    // The per-platform logic used to be inlined here and in three other adapters, and they drifted
+    // (capital-T on Linux, missing XDG). It lives in ONE place now; the adapter must require it.
+    expect(src).toMatch(/require\(['"]\.\/dataDir\.cjs['"]\)/)
+    expect(src).toContain('termpolisDataDir')
+  })
+
+  it('the shared dataDir.cjs matches main/index.ts writers on every platform', () => {
+    const shared = readFileSync(resolve(REPO_ROOT, 'src/mcp-adapter/dataDir.cjs'), 'utf-8')
+    expect(shared).toMatch(/APPDATA/)                 // Windows
+    expect(shared).toMatch(/['"]termpolis['"]/)       // lowercase name (app.setName('termpolis'))
+    expect(shared).not.toMatch(/['"]Termpolis['"]/)   // never the capital-T that broke Linux
+    expect(shared).toMatch(/Application Support/)      // macOS
+    expect(shared).toMatch(/XDG_CONFIG_HOME/)          // Linux honours XDG — the zero-tools bug
+    expect(shared).toMatch(/\.config/)
   })
 
   it('POSTs to 127.0.0.1 on the /mcp endpoint', () => {

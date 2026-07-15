@@ -20,23 +20,16 @@
 
 const http = require('http')
 const fs = require('fs')
-const path = require('path')
-const os = require('os')
 
 const PORT = 9315
 const TIMEOUT_MS = 5000
 const LIMIT = 12
 
-// Cross-platform location Termpolis writes its local-server bearer token to — must
-// match findToken() in termpolis-cli.cjs for win32 / darwin / linux.
+// Location of Termpolis's local-server bearer token. Shared with the CLI and the MCP adapter so the
+// win32/darwin/linux logic (lowercase name, XDG_CONFIG_HOME on Linux) cannot drift — dataDir.cjs.
+const { dataFile } = require('./dataDir.cjs')
 function tokenPath() {
-  if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'termpolis', 'mcp-token')
-  }
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis', 'mcp-token')
-  }
-  return path.join(os.homedir(), '.config', 'termpolis', 'mcp-token')
+  return dataFile('mcp-token')
 }
 
 // Prime on a fresh start or /resume; skip 'compact'/'clear' (the app re-primes after

@@ -86,9 +86,26 @@ describe('useLiveContextPressure', () => {
     const before = bus.query.mock.calls.length
     act(() => bus.emit(tok(900_000, { terminalId: 't2' }))) // other terminal
     act(() => bus.emit({ kind: 'cost_update', terminalId: 't1', agentType: 'claude', ts: ts++, payload: {} })) // wrong kind
-    expect(bus.query.mock.calls.length).toBe(before) // no recompute
+    expect(bus.query.mock.calls.length).toBe(before) // no recompute (irrelevant, so nothing scheduled)
     act(() => bus.emit(tok(60_000)))
-    expect(bus.query.mock.calls.length).toBe(before + 1) // relevant → recompute
+    await waitFor(() => expect(bus.query.mock.calls.length).toBe(before + 1)) // relevant → recompute (throttled)
+  })
+
+  // The perf fix: an agent streaming a reply fires token_update far faster than the gauge needs to
+  // move, and each recompute is a full IPC query + token count. A burst must fold into ONE recompute.
+  it('coalesces a burst of relevant events into a single throttled recompute', async () => {
+    const bus = mockActivity([tok(10_000)])
+    const { result } = renderHook(() => useLiveContextPressure('t1'))
+    await waitFor(() => expect(result.current).not.toBeNull())
+    const before = bus.query.mock.calls.length
+
+    act(() => { for (let i = 0; i < 25; i++) bus.emit(tok(20_000 + i)) }) // a storm of 25 events
+    expect(bus.query.mock.calls.length).toBe(before) // synchronously: none yet — all folded into one
+
+    await waitFor(() => expect(bus.query.mock.calls.length).toBe(before + 1)) // exactly one recompute
+    // ...and it settled on the latest value, not 25 separate updates.
+    await waitFor(() => expect(result.current?.used).toBe(20_024))
+    expect(bus.query.mock.calls.length).toBe(before + 1) // still just the one
   })
 
   it('sizes the window per agent type (Gemini)', async () => {

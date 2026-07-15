@@ -23,6 +23,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { dirname, join } from 'path'
+import { normalizeNewlines } from './lineEndings'
 import { writeSecureFile } from './secureFile'
 
 const STORE_FILE = 'imported-artifacts.json'
@@ -156,7 +157,10 @@ export function artifactHash(files: { path: string; content: string }[]): string
     // the hash. Prefixing each field with its byte length makes the split
     // unforgeable.
     const path = Buffer.from(f.path, 'utf-8')
-    const content = Buffer.from(f.content, 'utf-8')
+    // Normalize CRLF → LF so an artifact hashes the same on Windows and macOS/Linux, and the same
+    // whether it arrived as a directory (raw bytes, CRLF on Windows) or a .zip (always LF). Otherwise
+    // a GREEN-pinned skill re-prompts as unknown after a sync or a re-package. See lineEndings.ts.
+    const content = Buffer.from(normalizeNewlines(f.content), 'utf-8')
     h.update(`${path.length}:`)
     h.update(path)
     h.update(`${content.length}:`)

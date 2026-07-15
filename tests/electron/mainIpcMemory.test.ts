@@ -101,7 +101,7 @@ vi.mock('electron', () => ({
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 vi.mock('../../src/main/terminalManager', () => ({
   spawnTerminal: vi.fn(), killTerminal: vi.fn(), writeToTerminal: vi.fn(),
-  resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalPid: vi.fn(),
+  resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''), getTerminalPid: vi.fn(),
   computeWindowsPty: vi.fn(() => ({})),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))

@@ -10,6 +10,7 @@
 
 import { execFileSync, execSync, execFile } from 'child_process'
 import { existsSync } from 'fs'
+import { getExtendedPath } from './agentPaths'
 
 /** Hand-rolled rather than `promisify(execFile)` at module scope: promisify resolves its argument
  *  AT IMPORT, so any test that mocks child_process without an `execFile` (several do — they only
@@ -186,6 +187,14 @@ export function runSafeCommand(cmd: SafeCommand, opts: GitOptions): RunResult {
     // metacharacter, delegating to the shell here is purely a PATHEXT /
     // .cmd resolution shim — the shell has no operators to interpret.
     const needsShell = process.platform === 'win32'
+    // A GUI-launched app on macOS inherits launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) —
+    // NOT the login shell's — so npm/pnpm/pytest/cargo/go (the whole SAFE_RUNNERS set) live in
+    // /opt/homebrew/bin or ~/.nvm and are invisible. The command then ENOENTs, returns exitCode 1,
+    // and — worse — the caller records that fabricated "test failed" into the self-competence store.
+    // getExtendedPath() is the same login-shell + known-dirs PATH agent detection already uses; it's
+    // a superset of the current PATH, so it can only help resolution, never break it. (Windows has
+    // npm on the machine PATH, so this is a no-op improvement there.)
+    const env = { ...process.env, PATH: getExtendedPath() }
     const buf = needsShell
       ? execSync([cmd.bin, ...cmd.args].join(' '), {
           cwd: opts.cwd,
@@ -193,6 +202,7 @@ export function runSafeCommand(cmd: SafeCommand, opts: GitOptions): RunResult {
           timeout: opts.timeout ?? 10 * 60 * 1000,
           maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
           windowsHide: true,
+          env,
         })
       : execFileSync(cmd.bin, cmd.args, {
           cwd: opts.cwd,
@@ -201,6 +211,7 @@ export function runSafeCommand(cmd: SafeCommand, opts: GitOptions): RunResult {
           maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
           shell: false,
           windowsHide: true,
+          env,
         })
     return { output: buf.toString(), exitCode: 0 }
   } catch (e: any) {

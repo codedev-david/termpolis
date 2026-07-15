@@ -333,27 +333,31 @@ describe('termpolis-githook — userData dir, computed without Electron', () => 
     restore('XDG_CONFIG_HOME', origXdg)
   })
 
-  it('win32 → %APPDATA%\\Termpolis', () => {
+  // LOWERCASE 'termpolis' — this suite used to assert capital-T 'Termpolis', which enshrined the
+  // very bug it was meant to guard. The app calls app.setName('termpolis'), so app.getPath('userData')
+  // is lowercase on every platform. On case-sensitive Linux the capital-T hook read a settings file
+  // that did not exist and left Commit Shield stuck ON. dataDir.cjs is now the single source of truth.
+  it('win32 → %APPDATA%\\termpolis', () => {
     setPlatform('win32')
     process.env.APPDATA = 'C:\\Users\\x\\AppData\\Roaming'
-    expect(hook.userDataDir().replace(/\\/g, '/')).toBe('C:/Users/x/AppData/Roaming/Termpolis')
+    expect(hook.userDataDir().replace(/\\/g, '/')).toBe('C:/Users/x/AppData/Roaming/termpolis')
   })
 
-  it('darwin → ~/Library/Application Support/Termpolis', () => {
+  it('darwin → ~/Library/Application Support/termpolis', () => {
     setPlatform('darwin')
-    expect(hook.userDataDir().replace(/\\/g, '/')).toContain('Library/Application Support/Termpolis')
+    expect(hook.userDataDir().replace(/\\/g, '/')).toContain('Library/Application Support/termpolis')
   })
 
-  it('linux → $XDG_CONFIG_HOME/Termpolis when set', () => {
+  it('linux → $XDG_CONFIG_HOME/termpolis when set', () => {
     setPlatform('linux')
     process.env.XDG_CONFIG_HOME = '/custom/cfg'
-    expect(hook.userDataDir().replace(/\\/g, '/')).toBe('/custom/cfg/Termpolis')
+    expect(hook.userDataDir().replace(/\\/g, '/')).toBe('/custom/cfg/termpolis')
   })
 
-  it('linux → ~/.config/Termpolis when XDG_CONFIG_HOME is unset', () => {
+  it('linux → ~/.config/termpolis when XDG_CONFIG_HOME is unset', () => {
     setPlatform('linux')
     delete process.env.XDG_CONFIG_HOME
-    expect(hook.userDataDir().replace(/\\/g, '/')).toContain('.config/Termpolis')
+    expect(hook.userDataDir().replace(/\\/g, '/')).toContain('.config/termpolis')
   })
 
   it('settingsPath is ai-security-settings.json inside userData', () => {

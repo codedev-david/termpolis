@@ -155,6 +155,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: vi.fn(),
   killAll: M.killAll,
   getTerminalCwd: vi.fn(() => '/repo'),
+  getTerminalCwdAsync: vi.fn(async () => '/repo'),
   getTerminalPid: vi.fn(() => 0),
   computeWindowsPty: vi.fn(() => undefined),
 }))

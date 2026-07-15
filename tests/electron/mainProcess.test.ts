@@ -92,6 +92,9 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: (...args: any[]) => mockResizeTerminal(...args),
   killAll: vi.fn(),
   getTerminalCwd: (...args: any[]) => mockGetTerminalCwd(...args),
+  // The async cwd probe delegates to the SAME mock, so a mockReturnValue resolves and a throwing
+  // mockImplementation rejects — every existing terminal:status test body works unchanged.
+  getTerminalCwdAsync: async (...args: any[]) => mockGetTerminalCwd(...args),
 }))
 
 const mockDetectAvailableShells = vi.fn()

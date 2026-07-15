@@ -2,7 +2,7 @@ import * as pty from 'node-pty'
 import { homedir } from 'os'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { execSync } from 'child_process'
+import { execSync, exec } from 'child_process'
 import { app } from 'electron'
 import type { ShellType } from './types'
 
@@ -161,6 +161,11 @@ export function getTerminalPid(id: string): number | null {
   return proc?.pty.pid ?? null
 }
 
+/** The shell pipeline that reads a pid's cwd: fast /proc on Linux, lsof on macOS. */
+function cwdProbeCommand(pid: number): string {
+  return `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`
+}
+
 export function getTerminalCwd(id: string): string | null {
   // Windows: no reliable way to get a child process's working directory
   // without shell integration. Return null to use the fallback cwd.
@@ -170,14 +175,33 @@ export function getTerminalCwd(id: string): string | null {
   if (!pid) return null
   try {
     // Linux: /proc/PID/cwd, macOS: lsof
-    const cwd = execSync(
-      `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`,
-      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }
-    ).toString().trim()
+    const cwd = execSync(cwdProbeCommand(pid), { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }).toString().trim()
     return cwd || null
   } catch {
     return null
   }
+}
+
+/**
+ * getTerminalCwd, but async so it never blocks the main thread.
+ *
+ * On macOS there is no /proc, so the probe ALWAYS falls through to `lsof`, which takes 50-500 ms.
+ * getTerminalCwd is called from the `terminal:status` handler, which the status bar polls every 5 s
+ * PER terminal — so the sync version froze the PTY-pumping thread for a few hundred ms every 5 s per
+ * open terminal, on exactly the machines (Macs) where lsof is slowest. This runs the same probe via
+ * async `exec`, so the poll costs the main thread nothing.
+ */
+export function getTerminalCwdAsync(id: string): Promise<string | null> {
+  if (process.platform === 'win32') return Promise.resolve(null)
+  const pid = getTerminalPid(id)
+  if (!pid) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    exec(cwdProbeCommand(pid), { timeout: 2000 }, (err, stdout) => {
+      if (err) { resolve(null); return }
+      const cwd = String(stdout).trim()
+      resolve(cwd || null)
+    })
+  })
 }
 
 function getShellArgs(executable: string): string[] {

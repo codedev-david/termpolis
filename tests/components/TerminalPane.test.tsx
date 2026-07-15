@@ -2,6 +2,7 @@ import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { consumePendingSettingsTab } from '../../src/renderer/src/lib/settingsNav'
+import { __setPlatformForTests } from '../../src/renderer/src/lib/platform'
 
 // vi.hoisted runs before vi.mock factories — we can create vi.fn() here
 const mocks = vi.hoisted(() => {
@@ -226,7 +227,6 @@ vi.mock('../../src/renderer/src/hooks/useCompletionDropdown', () => ({
 vi.mock('../../src/renderer/src/hooks/useAgentDetection', () => ({
   useAgentDetection: vi.fn(() => ({
     detectedAgent: null,
-    costInfo: null,
     processAgentDetection: mocks.mockProcessAgentDetection,
     agentDetectedRef: { current: false },
   })),
@@ -1150,7 +1150,7 @@ describe('TerminalPane', () => {
       // plain shell: no agent launched (empty agentCommand) AND none detected in output.
       // Pass '' not undefined — undefined would trigger withAgents' default (a Claude cmd).
       const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
-      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null, costInfo: null, processAgentDetection: mocks.mockProcessAgentDetection, agentDetectedRef: { current: false } })
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null, processAgentDetection: mocks.mockProcessAgentDetection, agentDetectedRef: { current: false } })
       withAgents(INSTALLED, '')
       render(<TerminalPane {...defaultProps} />)
       await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
@@ -1643,7 +1643,6 @@ describe('TerminalPane', () => {
       const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
       ;(useAgentDetection as any).mockReturnValue({
         detectedAgent: { name: 'claude' },
-        costInfo: null,
         processAgentDetection: mocks.mockProcessAgentDetection,
         agentDetectedRef: { current: true },
       })
@@ -1657,7 +1656,6 @@ describe('TerminalPane', () => {
       // Reset for subsequent tests in this describe.
       ;(useAgentDetection as any).mockReturnValue({
         detectedAgent: null,
-        costInfo: null,
         processAgentDetection: mocks.mockProcessAgentDetection,
         agentDetectedRef: { current: false },
       })
@@ -2066,7 +2064,6 @@ describe('TerminalPane', () => {
       const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
       ;(useAgentDetection as any).mockReturnValue({
         detectedAgent: { name: 'claude' },
-        costInfo: null,
         processAgentDetection: mocks.mockProcessAgentDetection,
         agentDetectedRef: { current: true },
       })
@@ -2079,7 +2076,6 @@ describe('TerminalPane', () => {
       // Reset for subsequent tests in this describe.
       ;(useAgentDetection as any).mockReturnValue({
         detectedAgent: null,
-        costInfo: null,
         processAgentDetection: mocks.mockProcessAgentDetection,
         agentDetectedRef: { current: false },
       })
@@ -2864,6 +2860,72 @@ describe('TerminalPane', () => {
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Copy with Command'))
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
+    })
+  })
+
+  // =====================================================
+  // Ctrl+C / Cmd+C — the interrupt must survive on macOS
+  // =====================================================
+  // The smart-copy handler used to fire on `ctrlKey || metaKey`, which on a Mac swallowed Ctrl+C —
+  // the SIGINT — whenever a selection existed. You could not stop a runaway process. The key handler
+  // returns true to let the byte reach the shell, false when it has consumed the event.
+  describe('Ctrl+C interrupt vs Cmd+C copy, per platform', () => {
+    afterEach(() => __setPlatformForTests(null))
+
+    it('macOS: Ctrl+C with a selection falls through to the shell (SIGINT), does NOT copy', () => {
+      __setPlatformForTests('darwin')
+      mocks.mockTerminal.getSelection.mockReturnValue('some selected text')
+      render(<TerminalPane {...defaultProps} />)
+      mockClipboardWriteText.mockClear()
+
+      const handled = mockKeyHandlerCb?.({
+        type: 'keydown', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+        key: 'c', preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent)
+
+      expect(handled).toBe(true)                       // xterm forwards it → shell gets ^C
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
+    })
+
+    it('macOS: Cmd+C with a selection copies and consumes the event', () => {
+      __setPlatformForTests('darwin')
+      mocks.mockTerminal.getSelection.mockReturnValue('copy me')
+      render(<TerminalPane {...defaultProps} />)
+      mockClipboardWriteText.mockClear()
+
+      const handled = mockKeyHandlerCb?.({
+        type: 'keydown', ctrlKey: false, metaKey: true, shiftKey: false, altKey: false,
+        key: 'c', preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent)
+
+      expect(handled).toBe(false)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('copy me')
+    })
+
+    it('Windows: Ctrl+C with a selection still smart-copies (the convention is correct there)', () => {
+      __setPlatformForTests('win32')
+      mocks.mockTerminal.getSelection.mockReturnValue('copy me')
+      render(<TerminalPane {...defaultProps} />)
+      mockClipboardWriteText.mockClear()
+
+      const handled = mockKeyHandlerCb?.({
+        type: 'keydown', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+        key: 'c', preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent)
+
+      expect(handled).toBe(false)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('copy me')
+    })
+
+    it('any platform: Ctrl+C with NO selection always reaches the shell', () => {
+      __setPlatformForTests('win32')
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      render(<TerminalPane {...defaultProps} />)
+      const handled = mockKeyHandlerCb?.({
+        type: 'keydown', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+        key: 'c', preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent)
+      expect(handled).toBe(true)
     })
   })
 })

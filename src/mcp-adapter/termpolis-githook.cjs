@@ -33,7 +33,6 @@
 
 const { execFileSync } = require('child_process')
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 
 const RULES = require('./secretRules.cjs')
@@ -54,17 +53,11 @@ const GIT_ARGS = {
   'pre-push': ['log', '-p', '--no-color', '--not', '--remotes'],
 }
 
-// Electron's app.getPath('userData') without Electron. Must stay in step with the
-// app's product name — the settings file the user toggles lives here.
-function userDataDir() {
-  if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Termpolis')
-  }
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'Termpolis')
-  }
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Termpolis')
-}
+// Electron's app.getPath('userData') without Electron — SHARED so it can't drift from the app.
+// This file used to hardcode capital-T "Termpolis"; the app calls app.setName('termpolis'), so on
+// case-sensitive Linux the hook read a settings file that did not exist and Commit Shield could not
+// be turned off. dataDir.cjs is the single source of truth (lowercase name, XDG on Linux).
+const { termpolisDataDir: userDataDir } = require('./dataDir.cjs')
 
 function settingsPath() {
   return path.join(userDataDir(), SETTINGS_FILE)

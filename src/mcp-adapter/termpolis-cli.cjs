@@ -13,21 +13,13 @@
 
 const http = require('http')
 const fs = require('fs')
-const path = require('path')
-const os = require('os')
+
+// Data-dir logic is shared so it can't drift (lowercase name, XDG_CONFIG_HOME on Linux) — dataDir.cjs
+const { dataFile } = require('./dataDir.cjs')
 
 // Find the auth token
 function findToken() {
-  const platform = process.platform
-  let tokenDir
-  if (platform === 'win32') {
-    tokenDir = path.join(process.env.APPDATA || '', 'termpolis')
-  } else if (platform === 'darwin') {
-    tokenDir = path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-  } else {
-    tokenDir = path.join(os.homedir(), '.config', 'termpolis')
-  }
-  const tokenPath = path.join(tokenDir, 'mcp-token')
+  const tokenPath = dataFile('mcp-token')
   try {
     return fs.readFileSync(tokenPath, 'utf-8').trim()
   } catch {

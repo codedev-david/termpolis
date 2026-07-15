@@ -25,6 +25,13 @@ function modelFromEvents(events: AgentActivityEvent[]): string {
   return ''
 }
 
+// Coalesce recompute during a burst. Each recompute is a full IPC round-trip (query up to 500
+// events) plus a token count — and an agent streaming a reply fires token_update far faster than a
+// pressure gauge needs to move. Throttle so a burst costs at most one recompute per window while
+// still refreshing at a steady cadence during continuous streaming (a trailing debounce would wait
+// for silence and never update mid-stream).
+export const PRESSURE_THROTTLE_MS = 300
+
 export function useLiveContextPressure(terminalId: string | null): ContextWindow | null {
   const [pressure, setPressure] = useState<ContextWindow | null>(null)
 
@@ -39,6 +46,7 @@ export function useLiveContextPressure(terminalId: string | null): ContextWindow
       return
     }
     let disposed = false
+    let throttle: ReturnType<typeof setTimeout> | null = null
 
     const recompute = (): void => {
       api
@@ -52,16 +60,24 @@ export function useLiveContextPressure(terminalId: string | null): ContextWindow
         .catch(() => {})
     }
 
-    recompute()
+    // At most one recompute per PRESSURE_THROTTLE_MS: the first event schedules a trailing recompute,
+    // and everything else in that window is folded into it.
+    const scheduleRecompute = (): void => {
+      if (throttle) return
+      throttle = setTimeout(() => { throttle = null; recompute() }, PRESSURE_THROTTLE_MS)
+    }
+
+    recompute() // initial read is immediate; only the event-driven storm is throttled
     const unsub = api.onEvent?.((event) => {
       if (disposed) return
       if (event.terminalId === terminalId && (event.kind === 'token_update' || event.kind === 'message')) {
-        recompute()
+        scheduleRecompute()
       }
     })
 
     return () => {
       disposed = true
+      if (throttle) clearTimeout(throttle)
       try {
         unsub?.()
       } catch {

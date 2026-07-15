@@ -2,7 +2,15 @@ import { useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
 import { SplitView } from './components/SplitView/SplitView'
-const SettingsPane = lazy(() => import('./components/SettingsPane/SettingsPane').then(m => ({ default: m.SettingsPane })))
+// monaco-bootstrap (which pulls in the ~8.8 MB monaco-editor) is chained into SettingsPane's lazy
+// load instead of being imported eagerly in main.tsx. SettingsPane is the ONLY <Editor> consumer and
+// only renders when Settings is open, so monaco no longer blocks first paint — it loads on demand,
+// and the bootstrap still runs BEFORE the SettingsPane module (and its Editor) evaluates, preserving
+// the "configure before any <Editor> renders" ordering the CSP fix (v1.11.26) needs.
+const SettingsPane = lazy(() =>
+  import('./lib/monaco-bootstrap')
+    .then(() => import('./components/SettingsPane/SettingsPane'))
+    .then(m => ({ default: m.SettingsPane })))
 const HistorySearchModal = lazy(() => import('./components/HistorySearch/HistorySearchModal').then(m => ({ default: m.HistorySearchModal })))
 const PromptTemplates = lazy(() => import('./components/PromptTemplates/PromptTemplates').then(m => ({ default: m.PromptTemplates })))
 const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel').then(m => ({ default: m.ContextPanel })))
@@ -25,7 +33,9 @@ import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/Onbo
 import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { startRepoResweep } from './hooks/useAutoCodeIndex'
+import { useShallow } from 'zustand/react/shallow'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, DEFAULT_KEYBINDINGS } from './lib/keybindings'
+import { primaryModifier } from './lib/platform'
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
 import { sanitizeVoiceSettings } from './lib/voice/voicePipeline'
 import { getHomedir } from './lib/homedir'
@@ -41,12 +51,23 @@ import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
 
 export default function App() {
+  // useShallow: App is the ROOT — a bare useTerminalStore() re-ran this whole component (and every
+  // non-memoized child: StatusBar, TitleBar, …) on EVERY store write, including the ~twice-a-second
+  // cwd churn from each live shell. Select exactly the fields used; actions are stable references and
+  // never trigger a render.
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
     defaultShell, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides, allowAppMouseControl,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
-  } = useTerminalStore()
+  } = useTerminalStore(useShallow(s => ({
+    viewMode: s.viewMode, showSettings: s.showSettings, terminals: s.terminals, workspaces: s.workspaces, activeTerminalId: s.activeTerminalId,
+    defaultShell: s.defaultShell, keybindings: s.keybindings, customKeybindings: s.customKeybindings, voiceSettings: s.voiceSettings,
+    aiProfiles: s.aiProfiles, promptTemplates: s.promptTemplates, userWorkflows: s.userWorkflows, agentRatingOverrides: s.agentRatingOverrides,
+    allowAppMouseControl: s.allowAppMouseControl,
+    addTerminal: s.addTerminal, removeTerminal: s.removeTerminal, setActiveTerminal: s.setActiveTerminal,
+    toggleViewMode: s.toggleViewMode, setShowSettings: s.setShowSettings, setSidebarCollapsed: s.setSidebarCollapsed,
+  })))
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showPrompts, setShowPrompts] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -283,6 +304,12 @@ export default function App() {
       // time (also stops Ctrl+Shift+M both copying and toggling the panel).
       if (e.defaultPrevented) return
 
+      // The primary modifier is Cmd on macOS, Ctrl elsewhere. The hardcoded shortcuts below were
+      // written `e.ctrlKey` only, so on a Mac every one of them — command palette, all the panels,
+      // the shortcut help — was simply dead. (The configurable keybindings above already route
+      // through matchesKeybinding, which handles both.)
+      const primaryMod = primaryModifier(e)
+
       if (matchesKeybinding(e, kb.historySearch)) {
         e.preventDefault()
         setHistoryOpen(v => !v)
@@ -356,77 +383,77 @@ export default function App() {
       }
 
       // Ctrl+K to toggle command palette
-      if (e.ctrlKey && !e.shiftKey && e.key === 'k') {
+      if (primaryMod && !e.shiftKey && e.key === 'k') {
         e.preventDefault()
         setShowCommandPalette(v => !v)
         return
       }
 
       // Ctrl+Shift+I to toggle conversation search
-      if (e.ctrlKey && e.shiftKey && e.key === 'I') {
+      if (primaryMod && e.shiftKey && e.key === 'I') {
         e.preventDefault()
         setShowConversationSearch(v => !v)
         return
       }
 
       // Ctrl+Shift+E to toggle context panel
-      if (e.ctrlKey && e.shiftKey && e.key === 'E') {
+      if (primaryMod && e.shiftKey && e.key === 'E') {
         e.preventDefault()
         setShowContextPanel(v => !v)
         return
       }
 
       // Ctrl+Shift+A to toggle activity feed
-      if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+      if (primaryMod && e.shiftKey && e.key === 'A') {
         e.preventDefault()
         setShowActivityFeed(v => !v)
         return
       }
 
       // Ctrl+Shift+B to toggle context pins panel
-      if (e.ctrlKey && e.shiftKey && e.key === 'B') {
+      if (primaryMod && e.shiftKey && e.key === 'B') {
         e.preventDefault()
         setShowContextPins(v => !v)
         return
       }
 
       // Ctrl+Shift+D to toggle duplicate-work / redundancy panel
-      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+      if (primaryMod && e.shiftKey && e.key === 'D') {
         e.preventDefault()
         setShowRedundancyPanel(v => !v)
         return
       }
 
       // Ctrl+Shift+Y to toggle efficiency panel
-      if (e.ctrlKey && e.shiftKey && e.key === 'Y') {
+      if (primaryMod && e.shiftKey && e.key === 'Y') {
         e.preventDefault()
         setShowEfficiencyPanel(v => !v)
         return
       }
 
       // Ctrl+Shift+M to toggle the memory panel
-      if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+      if (primaryMod && e.shiftKey && e.key === 'M') {
         e.preventDefault()
         setShowMemory(v => !v)
         return
       }
 
       // Ctrl+Shift+P to toggle prompt templates
-      if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+      if (primaryMod && e.shiftKey && e.key === 'P') {
         e.preventDefault()
         setShowPrompts(v => !v)
         return
       }
 
       // Ctrl+Shift+S to toggle swarm dashboard
-      if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+      if (primaryMod && e.shiftKey && e.key === 'S') {
         e.preventDefault()
         setShowSwarmDashboard(v => !v)
         return
       }
 
       // Ctrl+/ opens the Keybindings/Shortcuts panel
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === '/' || e.key === '?')) {
+      if (primaryMod && !e.shiftKey && !e.altKey && (e.key === '/' || e.key === '?')) {
         e.preventDefault()
         setShowSettings(true)
         window.dispatchEvent(new CustomEvent('termpolis:openShortcuts'))

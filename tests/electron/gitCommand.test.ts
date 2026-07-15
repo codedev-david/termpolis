@@ -143,6 +143,29 @@ describe('runSafeCommand', () => {
     expect(mockExecSync.mock.calls[0][1].maxBuffer).toBe(16 * 1024 * 1024)
   })
 
+  // The mac PATH fix: the child must run with an EXTENDED PATH, not the bare launchd PATH a
+  // GUI-launched app inherits — otherwise npm/pnpm/pytest ENOENT and the swarm test-runner records a
+  // fabricated failure into the competence store. getExtendedPath always appends the current PATH
+  // last, so the child's PATH is a superset of the parent's.
+  it('runs the child with an extended PATH env (linux/macOS path)', () => {
+    setPlatform('linux')
+    mockExecFileSync.mockReturnValue(Buffer.from(''))
+    runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
+    const env = mockExecFileSync.mock.calls[0][2].env
+    expect(env).toBeDefined()
+    expect(typeof env.PATH).toBe('string')
+    if (process.env.PATH) expect(env.PATH).toContain(process.env.PATH) // superset of the parent PATH
+  })
+
+  it('also passes the extended PATH env on win32', () => {
+    setPlatform('win32')
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
+    const env = mockExecSync.mock.calls[0][1].env
+    expect(env).toBeDefined()
+    expect(typeof env.PATH).toBe('string')
+  })
+
   it('honors caller-supplied timeout + maxBuffer (linux)', () => {
     setPlatform('linux')
     mockExecFileSync.mockReturnValue(Buffer.from(''))

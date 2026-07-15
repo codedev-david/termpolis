@@ -11,6 +11,7 @@
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { execFile } from 'child_process'
+import { normalizeNewlines } from './lineEndings'
 import { join } from 'path'
 import { matchSensitiveFile } from './sensitiveFileWatcher'
 import { safeGit } from './gitCommand'
@@ -70,7 +71,10 @@ export function chunkCode(filePath: string, content: string, opts: CodeChunkOpti
   const maxLines = opts.maxLines ?? 60
   const maxBytes = opts.maxFileBytes ?? MAX_FILE_BYTES
   if (!content || content.length > maxBytes) return []
-  const lines = content.split('\n')
+  // Normalize CRLF → LF BEFORE splitting, so the chunk body (and therefore its hash) is identical
+  // whether this file was read on Windows or Linux. Without this the same repo indexed on two OSes
+  // stores every chunk twice. See lineEndings.ts.
+  const lines = normalizeNewlines(content).split('\n')
   const chunks: CodeChunk[] = []
   for (let i = 0; i < lines.length; i += maxLines) {
     const body = lines.slice(i, i + maxLines).join('\n').trim()

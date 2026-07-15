@@ -10,6 +10,7 @@ import { createOutputThrottle } from '../../lib/outputThrottle'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
+import { primaryModifier } from '../../lib/platform'
 import { requestsMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { TerminalSearch, type TerminalSearchOptions } from '../TerminalSearch/TerminalSearch'
@@ -142,7 +143,7 @@ function toXtermSearchOptions(o: TerminalSearchOptions, incremental: boolean) {
   }
 }
 
-export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
+function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -881,9 +882,12 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         return false
       }
 
-      // Ctrl+C (no Shift) — smart copy: if selection, copy + clear; else
-      // let it through so it reaches the shell as SIGINT.
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'C' || e.key === 'c')) {
+      // Smart copy (no Shift): if there's a selection, copy + clear; else fall through.
+      // The modifier is Cmd on macOS, Ctrl elsewhere — and on mac this MUST use the meta key alone,
+      // because Ctrl+C there is SIGINT. Catching Ctrl+C here (as `ctrlKey || metaKey` used to) meant a
+      // mac user with any leftover selection could not interrupt a running process. primaryModifier
+      // encodes that: Ctrl+C falls through to the shell, Cmd+C copies.
+      if (primaryModifier(e) && !e.shiftKey && !e.altKey && (e.key === 'C' || e.key === 'c')) {
         const selection = term.getSelection()
         if (selection) {
           e.preventDefault()
@@ -893,8 +897,9 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         }
         return true
       }
-      // Ctrl+V (no Shift) — paste
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
+      // Paste (no Shift). Same modifier rule — on mac this is Cmd+V; Ctrl+V falls through to the
+      // shell (readline quoted-insert), which is what a mac user expects.
+      if (primaryModifier(e) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
         e.preventDefault()
         window.termpolis.clipboardReadText().then(res => {
           const text = res?.success ? res.data : ''
@@ -1018,8 +1023,15 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
         const promptInfo = parsePromptFromOutput(stripped, shellType)
         if (promptInfo.cwd && !disposed) {
           setParsedCwd(promptInfo.cwd)
-          // Write live cwd back to the store so Git Panel and other components can use it
-          useTerminalStore.getState().updateTerminal(terminalId, { cwd: promptInfo.cwd })
+          // Write live cwd back to the store so Git Panel and other components can use it — but ONLY
+          // when it actually changed. updateTerminal replaces the whole terminals array (a new
+          // reference), which re-renders every store subscriber; a plain shell re-emits the same
+          // prompt ~twice a second, so an unconditional write was a full re-render for no change.
+          // (setParsedCwd above already no-ops on an unchanged string — the store write did not.)
+          const store = useTerminalStore.getState()
+          if (store.terminals.find(t => t.id === terminalId)?.cwd !== promptInfo.cwd) {
+            store.updateTerminal(terminalId, { cwd: promptInfo.cwd })
+          }
         }
         if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
       }
@@ -1588,3 +1600,10 @@ export function TerminalPane({ terminalId, terminalName, shellType, cwd, isVisib
     </div>
   )
 }
+
+// Memoized: TabView and the split panes re-render on every store write (a live shell rewrites its
+// prompt ~twice a second), but a pane's own props — id, name, cwd, theme, all primitives — rarely
+// change. Without memo, each of those writes re-ran this ~1,600-line component for EVERY open
+// terminal. With it, an unchanged pane skips entirely. (The split path must pass STABLE callback
+// props for this to hold — see PaneRenderer.)
+export const TerminalPane = React.memo(TerminalPaneInner)

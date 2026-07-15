@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalTab } from './TerminalTab'
 import { AddTerminalModal } from './AddTerminalModal'
@@ -13,12 +14,21 @@ import type { ShellInfo } from '../../types'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
 
 export function Sidebar() {
+  // useShallow so the sidebar re-renders only when a field it actually reads changes — not on every
+  // store write (conversations, notifications, cwd churn). Store actions are stable references, so
+  // including them in the selection never causes an extra render.
   const {
     terminals, activeTerminalId, viewMode, showSettings, defaultShell,
     addTerminal, removeTerminal, updateTerminal,
     setActiveTerminal, toggleViewMode, setShowSettings,
     sidebarCollapsed, setSidebarCollapsed, swarmActive,
-  } = useTerminalStore()
+  } = useTerminalStore(useShallow(s => ({
+    terminals: s.terminals, activeTerminalId: s.activeTerminalId, viewMode: s.viewMode,
+    showSettings: s.showSettings, defaultShell: s.defaultShell,
+    addTerminal: s.addTerminal, removeTerminal: s.removeTerminal, updateTerminal: s.updateTerminal,
+    setActiveTerminal: s.setActiveTerminal, toggleViewMode: s.toggleViewMode, setShowSettings: s.setShowSettings,
+    sidebarCollapsed: s.sidebarCollapsed, setSidebarCollapsed: s.setSidebarCollapsed, swarmActive: s.swarmActive,
+  })))
 
   const [showAddModal, setShowAddModal] = useState(false)
   const [showWorkflows, setShowWorkflows] = useState(false)

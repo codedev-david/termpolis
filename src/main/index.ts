@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
+import { gpuPolicy } from './gpuPolicy'
 import {
   initTelemetry,
   setOptIn as setTelemetryOptIn,
@@ -40,22 +41,17 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
   app.commandLine.appendSwitch('no-sandbox')
 }
 
-// Linux blank/black-window safety net. Reported by .deb users on Ubuntu after
-// the initial install (no UI, just a black box). Two fixes layered here:
-//
-// 1. Disable VAAPI video decode/encode features. We don't play video — these
-//    Chromium features are opt-out unstable on many Ubuntu setups (especially
-//    NVIDIA proprietary drivers + Wayland) and are the most-reported cause of
-//    "blank Electron window on Linux". Disabling costs us nothing.
-// 2. TERMPOLIS_DISABLE_GPU=1 escape hatch — forces software rendering for users
-//    on broken GPU drivers. Slower (xterm falls back to canvas) but reliable.
-//    Documented in troubleshooting so users hitting the black-box issue can
-//    `TERMPOLIS_DISABLE_GPU=1 termpolis` from a terminal.
-if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
-  if (process.env.TERMPOLIS_DISABLE_GPU === '1') {
-    app.disableHardwareAcceleration()
-  }
+// Linux blank/black-window safety net, as a testable policy (see gpuPolicy.ts). By DEFAULT this
+// disables only VAAPI video decode/encode — the most-reported cause of a blank Electron window on
+// Ubuntu, and free for us since we play no video — and leaves the GPU ON so xterm's WebGL renderer
+// works. The FULL GPU disable is the documented TERMPOLIS_DISABLE_GPU=1 escape hatch for genuinely
+// broken drivers. (Until now `--disable-gpu` was baked into the .deb launcher, forcing the slow DOM
+// renderer on every Linux user and leaving this hatch dead — the executableArgs no longer do that.)
+{
+  const gpu = gpuPolicy(process.platform, process.env)
+  if (gpu.disableVaapi) app.commandLine.appendSwitch('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
+  if (gpu.disableHardwareAcceleration) app.disableHardwareAcceleration()
+  if (gpu.disableGpuSwitch) app.commandLine.appendSwitch('disable-gpu')
 }
 import { join } from 'path'
 import { homedir, release } from 'os'
@@ -63,7 +59,7 @@ import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSy
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells } from './shellDetector'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwd, getTerminalPid, computeWindowsPty } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -411,6 +407,7 @@ const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit mem
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
 import { safeGit, safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
+import { applicationMenuTemplate, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
 import {
   initWorkspaceTrust,
@@ -2192,15 +2189,16 @@ ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+// POLLED every 5 s by the status bar, per terminal. Both the cwd probe (lsof on macOS, always slow —
+// there is no /proc) and the git branch read were SYNCHRONOUS, so this stalled the PTY-pumping thread
+// for a few hundred ms every 5 s per open terminal. Both are async now; the handler was already async.
 ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
   try {
-    // Try to get the real CWD from the PTY process
-    const liveCwd = getTerminalCwd(terminalId)
+    const liveCwd = await getTerminalCwdAsync(terminalId)
     const cwd = liveCwd || fallbackCwd
-    let gitBranch = ''
-    try {
-      gitBranch = safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).trim()
-    } catch {}
+    const gitBranch = await safeGitAsync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 })
+      .then((s) => s.trim())
+      .catch(() => '')
     return ok({ cwd, gitBranch })
   } catch (e: any) { return err(e.message) }
 })
@@ -2463,7 +2461,10 @@ if (!gotTheLock) {
   let mcpServer: ReturnType<typeof startMcpServer> | null = null
 
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(null)
+    // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
+    // macOS, without which Cmd+Q and copy/paste in native inputs do not work. See appMenu.ts.
+    const menuTemplate = applicationMenuTemplate(process.platform)
+    Menu.setApplicationMenu(menuTemplate ? Menu.buildFromTemplate(menuTemplate) : null)
     createWindow()
 
     // Move ALL embedding onto a worker_thread so the memory brain's one-time model
@@ -3135,23 +3136,26 @@ if (!gotTheLock) {
       else if (r.error) console.log('Could not register in Qwen settings (non-fatal):', r.skipped, r.error)
     }
 
-    // Global hotkey: Win+Shift+T to create a new terminal (works even when minimized)
-    globalShortcut.register('Super+Shift+T', () => {
+    // Global hotkeys. On Windows/Linux these are Win+Shift+T / Win+Shift+S; on macOS `Super` is Cmd
+    // and Cmd+Shift+T/S belong to other apps, so appMenu.globalHotkeys hands mac a non-conflicting
+    // Ctrl+Alt combo instead. register() returns false if the OS already owns the combo (common for
+    // Super+Shift on GNOME/KDE) — log it rather than fail silently.
+    const hotkeys = globalHotkeys(process.platform)
+    if (!globalShortcut.register(hotkeys.newTerminal, () => {
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.focus()
         mainWindow.webContents.send('global:new-terminal')
       }
-    })
+    })) console.log(`Global hotkey ${hotkeys.newTerminal} unavailable (already registered by the OS)`)
 
-    // Global hotkey: Win+Shift+S to open/close swarm dashboard
-    globalShortcut.register('Super+Shift+S', () => {
+    if (!globalShortcut.register(hotkeys.toggleSwarm, () => {
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.focus()
         mainWindow.webContents.send('global:toggle-swarm')
       }
-    })
+    })) console.log(`Global hotkey ${hotkeys.toggleSwarm} unavailable (already registered by the OS)`)
   })
 
   app.on('before-quit', () => {

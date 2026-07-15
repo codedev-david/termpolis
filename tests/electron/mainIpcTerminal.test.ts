@@ -30,7 +30,8 @@ const ipcHandlers = new Map<string, Function>()
 const ipcOnHandlers = new Map<string, Function[]>()
 
 const {
-  mockExecSync, mockExecFileSync,
+  mockExecSync, mockExecFileSync, mockExecFile,
+  mockGetTerminalCwdAsync,
   mockShowOpenDialog, mockShowSaveDialog,
   mockClipboardWriteText, mockClipboardReadText, mockClipboardWrite,
   mockOpenExternal, mockOpenPath,
@@ -48,6 +49,11 @@ const {
 } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
   mockExecFileSync: vi.fn(),
+  // execFile (callback style) backs safeGitAsync, which terminal:status now uses so the git branch
+  // read doesn't block the main thread. Default: no output, no error.
+  mockExecFile: vi.fn((_bin: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => cb(null, '')),
+  // getTerminalCwdAsync — the async cwd probe (lsof on mac is slow; the poll must not block main).
+  mockGetTerminalCwdAsync: vi.fn(async () => ''),
   mockShowOpenDialog: vi.fn(),
   mockShowSaveDialog: vi.fn(),
   mockClipboardWriteText: vi.fn(),
@@ -163,6 +169,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: mockResizeTerminal,
   killAll: vi.fn(),
   getTerminalCwd: mockGetTerminalCwd,
+  getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
   computeWindowsPty: mockComputeWindowsPty,
 }))
@@ -282,9 +289,10 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 }))
 
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync, execFileSync: mockExecFileSync },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, execFile: mockExecFile },
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  execFile: mockExecFile,
 }))
 
 vi.mock('fs', () => {
@@ -914,34 +922,51 @@ describe('terminal:resize + terminal:status', () => {
     expect(mockResizeTerminal).toHaveBeenCalledWith('r-1', 120, 40)
   })
 
+  // terminal:status is polled every 5 s per terminal; both the cwd probe (lsof on mac) and the git
+  // branch read are ASYNC now so the poll never blocks the PTY-pumping main thread. These drive the
+  // async seams: getTerminalCwdAsync and execFile (via safeGitAsync).
+  const gitBranchAsync = (out: string | Error) =>
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: (e: Error | null, s: string) => void) =>
+      out instanceof Error ? cb(out, '') : cb(null, out))
+
   it('terminal:status prefers the pty\'s LIVE cwd over the renderer\'s stale one', async () => {
-    mockGetTerminalCwd.mockReturnValue('/live/cwd')
-    mockExecFileSync.mockReturnValue(Buffer.from('feature/x\n'))
+    mockGetTerminalCwdAsync.mockResolvedValue('/live/cwd')
+    gitBranchAsync('feature/x\n')
     expect(await invoke('terminal:status', { terminalId: 's-1', fallbackCwd: '/stale' })).toEqual({
       success: true, data: { cwd: '/live/cwd', gitBranch: 'feature/x' },
     })
   })
 
   it('terminal:status falls back to the supplied cwd when the pty cannot report one', async () => {
-    mockGetTerminalCwd.mockReturnValue('')
-    mockExecFileSync.mockReturnValue(Buffer.from('main\n'))
+    mockGetTerminalCwdAsync.mockResolvedValue('')
+    gitBranchAsync('main\n')
     const r = await invoke('terminal:status', { terminalId: 's-2', fallbackCwd: '/fallback' })
     expect(r.data.cwd).toBe('/fallback')
   })
 
   it('terminal:status still returns the cwd when the folder is not a git repo', async () => {
-    mockGetTerminalCwd.mockReturnValue('/no-git')
-    mockExecFileSync.mockImplementation(() => { throw new Error('not a git repository') })
+    mockGetTerminalCwdAsync.mockResolvedValue('/no-git')
+    gitBranchAsync(new Error('not a git repository'))
     expect(await invoke('terminal:status', { terminalId: 's-3' })).toEqual({
       success: true, data: { cwd: '/no-git', gitBranch: '' },
     })
   })
 
   it('terminal:status reports the failure when the pty lookup itself throws', async () => {
-    mockGetTerminalCwd.mockImplementationOnce(() => { throw new Error('pty registry corrupt') })
+    mockGetTerminalCwdAsync.mockRejectedValueOnce(new Error('pty registry corrupt'))
     expect(await invoke('terminal:status', { terminalId: 's-4' })).toEqual({
       success: false, error: 'pty registry corrupt',
     })
+  })
+
+  it('terminal:status never blocks the main thread — no sync git spawn', async () => {
+    mockGetTerminalCwdAsync.mockResolvedValue('/repo')
+    gitBranchAsync('main\n')
+    mockExecFileSync.mockClear()
+    await invoke('terminal:status', { terminalId: 's-5' })
+    // The git branch read must go through the async execFile, never the blocking execFileSync.
+    expect(mockExecFile).toHaveBeenCalled()
+    expect(mockExecFileSync).not.toHaveBeenCalled()
   })
 })
 

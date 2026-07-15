@@ -61,6 +61,12 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
     [terminal, terminalId, splitTerminal]
   )
 
+  // Stable split callbacks. Passing `() => handleSplit(...)` inline recreated these every render, so
+  // the memoized TerminalPane saw new props each time and re-rendered on every store write — undoing
+  // the memo in split view. handleSplit is already useCallback'd, so these are cheap to stabilise.
+  const handleSplitRight = useCallback(() => handleSplit('vertical'), [handleSplit])
+  const handleSplitDown = useCallback(() => handleSplit('horizontal'), [handleSplit])
+
   if (!terminal) return null
 
   const isActive = activeTerminalId === terminalId
@@ -117,8 +123,8 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
           theme={terminal.theme}
           fontFamily={terminal.fontFamily}
           onTerminalReady={handleTerminalReady}
-          onSplitRight={() => handleSplit('vertical')}
-          onSplitDown={() => handleSplit('horizontal')}
+          onSplitRight={handleSplitRight}
+          onSplitDown={handleSplitDown}
         />
       </div>
     </div>

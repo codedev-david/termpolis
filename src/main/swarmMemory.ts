@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as crypto from 'crypto'
 import { recordSwarmError } from './telemetry'
 import { recordAnomaly } from './memoryAnomalyLog'
+import { normalizeNewlines } from './lineEndings'
 import { embedText, EMBED_DIM, isEmbedderReady } from './localEmbedder'
 import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from './memoryCrypto'
 import { VectorStore } from './vectorStore'
@@ -1015,7 +1016,10 @@ export function contentHash(content: string): string {
   // lines, but PRESERVE internal newlines/indentation — otherwise whitespace-significant
   // content (Python, YAML, diffs, Markdown fences, ASCII tables) false-dedups into a
   // different snippet and the second, genuinely-distinct write is silently dropped.
-  const normalized = (content || '').normalize('NFC').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '')
+  // normalizeNewlines FIRST: the per-line strip below only removes [ \t]+, so a CRLF file kept a \r
+  // at every line end and hashed differently than the same content saved with LF — the cross-machine
+  // dedup miss this store's sync is supposed to prevent. See lineEndings.ts.
+  const normalized = normalizeNewlines((content || '').normalize('NFC')).split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '')
   return crypto.createHash('sha256').update(normalized).digest('hex')
 }
 

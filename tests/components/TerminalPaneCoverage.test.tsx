@@ -361,7 +361,6 @@ function setVoice(over: Record<string, any> = {}): void {
 function setAgent(detectedAgent: any = null): void {
   H.agent.current = {
     detectedAgent,
-    costInfo: null,
     processAgentDetection: H.processAgentDetection,
     agentDetectedRef: { current: !!detectedAgent },
   }
@@ -825,12 +824,17 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       const tick = computeDisplayLevel(RELIABLE_SPEECH_RMS)
       withVoiceOn()
       setVoice({ listening: true, status: 'listening', level: tick + 0.05 })
-      const { rerender } = render(<TerminalPane {...defaultProps} />)
+      const { unmount } = render(<TerminalPane {...defaultProps} />)
 
       expect(screen.getByTestId('voice-level-fill')).toHaveStyle({ backgroundColor: '#7ee787' })
 
+      // Fresh mount rather than rerender-with-identical-props: TerminalPane is React.memo now, so a
+      // parent rerender with unchanged props is (correctly) skipped. In production the voice HOOK's
+      // own state change re-renders the pane internally; a remount reads the new mocked level the
+      // same way, without depending on the memo boundary.
+      unmount()
       setVoice({ listening: true, status: 'listening', level: tick - 0.05 }) // too quiet
-      rerender(<TerminalPane {...defaultProps} />)
+      render(<TerminalPane {...defaultProps} />)
 
       expect(screen.getByTestId('voice-level-fill')).toHaveStyle({ backgroundColor: '#f0b86e' })
     })
@@ -1096,6 +1100,21 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
 
       expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: '/tmp' })
       expect(screen.getByTestId('sb-branch')).toHaveTextContent('')
+    })
+
+    // The perf guard (v1.27.0): a live shell re-emits the same prompt ~twice a second, and each
+    // updateTerminal replaces the whole terminals array → a store-wide re-render. When the cwd hasn't
+    // changed, the write must be skipped entirely.
+    it('does NOT write to the store when the parsed cwd equals the current one', () => {
+      setStore({ terminals: [{ id: 'term-1', isSwarm: false, cwd: '/home/dev/proj' }] })
+      H.parsePrompt.mockReturnValue({ cwd: '/home/dev/proj', gitBranch: 'main' })
+      render(<TerminalPane {...defaultProps} />)
+
+      emitPty('dev@host /home/dev/proj (main)\n$ ')
+
+      // The status bar still shows it (local state), but no store write for an unchanged cwd.
+      expect(screen.getByTestId('sb-cwd')).toHaveTextContent('/home/dev/proj')
+      expect(H.updateTerminal).not.toHaveBeenCalledWith('term-1', { cwd: '/home/dev/proj' })
     })
   })
 
