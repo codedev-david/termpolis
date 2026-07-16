@@ -189,3 +189,51 @@ export function toLinearSelection(
   const endIdx = end.y * cols + end.x
   return { column: start.x, row: start.y, length: endIdx - startIdx + 1 }
 }
+
+// --- Click-to-anchor selection ------------------------------------------------------------------
+// Alt+Shift+Click a start, scroll anywhere, Alt+Shift+Click an end → everything between is selected
+// and copied. This exists because DRAG-select cannot comfortably span scrollback: you must hold the
+// button and fight auto-scroll across hundreds of lines. Anchoring decouples the two ends, so the
+// positions below are ABSOLUTE buffer lines (never viewport rows) — that is what lets the anchor keep
+// pointing at the same text while the user scrolls between the two clicks.
+
+/** A minimal mouse event shape, so the chord test stays a pure unit (no DOM event needed). */
+export interface SelMouseEvent {
+  button: number
+  altKey: boolean
+  shiftKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+}
+
+/**
+ * The chord: Alt+Shift+left-click. Alt ALONE is xterm's own alt-click (moves the readline cursor)
+ * and Ctrl/Cmd are the copy/paste modifiers, so Alt+Shift is the free combination — and unlike the
+ * Ctrl-vs-Cmd split it is the same physical keys everywhere (Option+Shift on mac). Deliberately
+ * strict: a plain left click must still start an ordinary drag-select.
+ */
+export function isAnchorSelectClick(e: SelMouseEvent): boolean {
+  return e.button === 0 && e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey
+}
+
+/** Rendered cell geometry + where the viewport currently sits in the scrollback. */
+export interface CellMetrics {
+  cellWidth: number
+  cellHeight: number
+  /** buffer.active.viewportY — the absolute buffer line drawn at the top of the viewport. */
+  viewportY: number
+}
+
+/**
+ * Map a pixel offset inside the terminal screen to an ABSOLUTE buffer position, clamped to the grid.
+ *
+ * A degenerate cell size (0 / NaN — a hidden or not-yet-measured pane) resolves to 0 rather than
+ * Infinity/NaN: those would sail straight through clampPos's Math.min/Math.max (Math.min(NaN, x) is
+ * NaN) and poison the selection with a non-finite row. Hence Number.isFinite, never a truthiness test.
+ */
+export function cellFromOffsets(px: number, py: number, m: CellMetrics, ctx: GridCtx): GridPos {
+  const cells = (v: number, size: number): number =>
+    Number.isFinite(v) && Number.isFinite(size) && size > 0 ? Math.floor(v / size) : 0
+  const top = Number.isFinite(m.viewportY) ? m.viewportY : 0
+  return clampPos({ x: cells(px, m.cellWidth), y: top + cells(py, m.cellHeight) }, ctx)
+}

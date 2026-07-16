@@ -25,7 +25,7 @@ import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget } from '../../lib/keybindings'
-import { moveCaret, toLinearSelection, selectionKeyAction, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
+import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, cellFromOffsets, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { CLAUDE_MODEL_OPTIONS, modelSwitchCommand } from '../../lib/modelBroker'
@@ -195,6 +195,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const anchorRef = useRef<GridPos>({ x: 0, y: 0 })
   const caretRef = useRef<GridPos>({ x: 0, y: 0 })
   const [selectionMode, setSelectionMode] = useState(false)
+
+  // Click-to-anchor selection: Alt+Shift+Click a start, scroll anywhere, Alt+Shift+Click the end →
+  // everything between is selected and copied. Deliberately SEPARATE state from the keyboard copy
+  // mode above: this pairs two clicks and must never swallow keystrokes. The anchor is an ABSOLUTE
+  // buffer position, which is what lets you scroll between the two clicks (drag-select can't).
+  const clickAnchorRef = useRef<GridPos | null>(null)
+  const [clickAnchorSet, setClickAnchorSet] = useState(false)
 
   // Command fix banner state
   const [fixSuggestion, setFixSuggestion] = useState<string | null>(null)
@@ -432,13 +439,61 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     setPinnedItems(prev => prev.filter(p => p.id !== id))
   }, [])
 
+  // The ABSOLUTE buffer cell under a click. Measured from the rendered .xterm-screen rect rather than
+  // xterm internals (_core._mouseService), so an xterm upgrade can't silently break it; viewportY is
+  // what makes the result absolute rather than a viewport row.
+  const posFromMouse = useCallback((e: React.MouseEvent): GridPos | null => {
+    const term = termRef.current
+    // containerRef, like the wheel handler above — the DOM this component owns, not term.element.
+    const screen = containerRef.current?.querySelector('.xterm-screen') as HTMLElement | null
+    if (!term || !screen) return null
+    const rect = screen.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null // hidden pane — cellFromOffsets would divide by 0
+    const b = term.buffer.active
+    return cellFromOffsets(
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+      { cellWidth: rect.width / term.cols, cellHeight: rect.height / term.rows, viewportY: b.viewportY },
+      { cols: term.cols, lineCount: b.length, getLineText: (y) => b.getLine(y)?.translateToString(true) ?? '' },
+    )
+  }, [])
+
   // Capture the selection at the EARLIEST instant of a right-click — the
   // mousedown, capture phase — before xterm or a React re-render can clear it.
   const handleMouseDownCapture = useCallback((e: React.MouseEvent) => {
+    // Alt+Shift+Click — drop an anchor, then select+copy everything between it and the next one.
+    // Handled in the CAPTURE phase and stopped here so xterm never starts a drag-select from the
+    // same press (which would clear the selection we are about to make).
+    if (isAnchorSelectClick(e)) {
+      e.preventDefault()
+      e.stopPropagation()
+      const term = termRef.current
+      const pos = posFromMouse(e)
+      if (!term || !pos) return
+      const anchor = clickAnchorRef.current
+      if (!anchor) {
+        clickAnchorRef.current = pos
+        setClickAnchorSet(true)
+        term.clearSelection() // the old selection is not what this anchor refers to
+        return
+      }
+      const { column, row, length } = toLinearSelection(anchor, pos, term.cols)
+      term.select(column, row, Math.max(1, length))
+      const sel = term.getSelection()
+      if (sel) window.termpolis.clipboardWriteText(sel).catch(() => {})
+      clickAnchorRef.current = null
+      setClickAnchorSet(false)
+      return
+    }
     // A left-button press begins a potential drag-select — start pausing output
     // into xterm from this instant, before the selection is even non-empty, so
     // the very start of the drag is protected. Released on a document mouseup.
     if (e.button === 0) {
+      // ...and it abandons a half-finished click-anchor: the user moved on.
+      if (clickAnchorRef.current) {
+        clickAnchorRef.current = null
+        setClickAnchorSet(false)
+      }
       selectingRef.current = true
       // A left press means the user is starting a new selection or deselecting. Either way the
       // remembered one is stale — retire it, so Copy can never paste something they visibly
@@ -447,7 +502,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     }
     if (e.button !== 2) return
     mouseDownSnapRef.current = { snap: buildCopySnapshot(termRef.current), t: Date.now() }
-  }, [])
+  }, [posFromMouse])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -1203,6 +1258,15 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           >
             <i className="fa-solid fa-i-cursor text-[9px]"></i>
             SELECT — arrows move · Shift+arrows extend · Ctrl=word · a=all · Enter/y=copy · Esc=exit
+          </div>
+        )}
+        {clickAnchorSet && !selectionMode && (
+          <div
+            data-testid="click-anchor-badge"
+            className="absolute top-1.5 left-2 z-30 flex items-center gap-1.5 text-[10px] font-medium text-[#1e1e1e] bg-[#e2c08d] rounded px-2 py-1 pointer-events-none shadow"
+          >
+            <i className="fa-solid fa-anchor text-[9px]"></i>
+            ANCHOR SET — scroll freely, then Alt+Shift+Click the end to select + copy · any click cancels
           </div>
         )}
         {voice.listening && (

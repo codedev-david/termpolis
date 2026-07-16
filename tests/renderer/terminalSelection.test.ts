@@ -7,8 +7,11 @@ import {
   orderPositions,
   toLinearSelection,
   selectionKeyAction,
+  isAnchorSelectClick,
+  cellFromOffsets,
   type GridCtx,
   type SelKeyEvent,
+  type SelMouseEvent,
 } from '../../src/renderer/src/lib/terminalSelection'
 
 function key(k: string, mods: Partial<SelKeyEvent> = {}): SelKeyEvent {
@@ -172,5 +175,89 @@ describe('terminalSelection (pure logic)', () => {
       expect(selectionKeyAction(key('z'), true)).toBeNull()
       expect(selectionKeyAction(key('5'), true)).toBeNull()
     })
+  })
+})
+
+// Click-to-anchor: Alt+Shift+Click a start, scroll, Alt+Shift+Click an end → select + copy between.
+describe('click-to-anchor selection', () => {
+  const click = (mods: Partial<SelMouseEvent> = {}): SelMouseEvent =>
+    ({ button: 0, altKey: true, shiftKey: true, ctrlKey: false, metaKey: false, ...mods })
+
+  describe('isAnchorSelectClick — the chord must not steal existing gestures', () => {
+    it('accepts Alt+Shift+left-click', () => {
+      expect(isAnchorSelectClick(click())).toBe(true)
+    })
+    it('rejects a plain left click — ordinary drag-select must still work', () => {
+      expect(isAnchorSelectClick(click({ altKey: false, shiftKey: false }))).toBe(false)
+    })
+    it("rejects Alt without Shift — that is xterm's own alt-click (moves the readline cursor)", () => {
+      expect(isAnchorSelectClick(click({ shiftKey: false }))).toBe(false)
+    })
+    it('rejects Shift without Alt', () => {
+      expect(isAnchorSelectClick(click({ altKey: false }))).toBe(false)
+    })
+    it('rejects Ctrl/Cmd — those are the copy/paste modifiers', () => {
+      expect(isAnchorSelectClick(click({ ctrlKey: true }))).toBe(false)
+      expect(isAnchorSelectClick(click({ metaKey: true }))).toBe(false)
+    })
+    it('rejects middle/right buttons (right-click opens the context menu)', () => {
+      expect(isAnchorSelectClick(click({ button: 1 }))).toBe(false)
+      expect(isAnchorSelectClick(click({ button: 2 }))).toBe(false)
+    })
+  })
+
+  describe('cellFromOffsets — pixels to an ABSOLUTE buffer cell', () => {
+    const ctx: GridCtx = { cols: 80, lineCount: 500, getLineText: () => '' }
+    const m = { cellWidth: 10, cellHeight: 20, viewportY: 0 }
+
+    it('maps a pixel offset to the cell containing it', () => {
+      expect(cellFromOffsets(0, 0, m, ctx)).toEqual({ x: 0, y: 0 })
+      expect(cellFromOffsets(25, 45, m, ctx)).toEqual({ x: 2, y: 2 })
+      expect(cellFromOffsets(9, 19, m, ctx)).toEqual({ x: 0, y: 0 }) // still inside cell 0
+    })
+
+    // THE point of the feature: the anchor must keep pointing at the same text while you scroll to
+    // the other end, so the row is viewportY + rowOnScreen, not the on-screen row.
+    it('adds viewportY so the position survives scrolling between the two clicks', () => {
+      expect(cellFromOffsets(0, 40, { ...m, viewportY: 300 }, ctx)).toEqual({ x: 0, y: 302 })
+    })
+
+    it('clamps past the last column/line instead of running off the grid', () => {
+      expect(cellFromOffsets(10_000, 0, m, ctx)).toEqual({ x: 79, y: 0 })
+      expect(cellFromOffsets(0, 10_000, m, ctx)).toEqual({ x: 0, y: 499 })
+    })
+
+    it('clamps negative offsets (click dragged above/left of the screen)', () => {
+      expect(cellFromOffsets(-5, -5, m, ctx)).toEqual({ x: 0, y: 0 })
+    })
+
+    // A hidden/unmeasured pane measures 0×0. NaN/Infinity would sail through clampPos's Math.min/max
+    // (Math.min(NaN, x) === NaN) and poison the selection with a non-finite row.
+    it('never yields NaN/Infinity for a degenerate cell size', () => {
+      for (const bad of [0, NaN, -1]) {
+        const p = cellFromOffsets(50, 50, { cellWidth: bad, cellHeight: bad, viewportY: 0 }, ctx)
+        expect(Number.isFinite(p.x)).toBe(true)
+        expect(Number.isFinite(p.y)).toBe(true)
+        expect(p).toEqual({ x: 0, y: 0 })
+      }
+    })
+
+    it('tolerates a non-finite viewportY', () => {
+      const p = cellFromOffsets(0, 40, { ...m, viewportY: NaN }, ctx)
+      expect(p).toEqual({ x: 0, y: 2 })
+    })
+  })
+
+  // The two clicks feed the SAME toLinearSelection the keyboard copy-mode uses, so the span is
+  // already order-independent: clicking the end before the start selects the identical text.
+  it('selects the same span whichever end is clicked first', () => {
+    const a = { x: 5, y: 10 }
+    const b = { x: 2, y: 12 }
+    expect(toLinearSelection(a, b, 80)).toEqual(toLinearSelection(b, a, 80))
+    expect(toLinearSelection(a, b, 80)).toEqual({ column: 5, row: 10, length: 158 }) // (12*80+2)-(10*80+5)+1
+  })
+
+  it('a single-cell anchor→end selects exactly one cell', () => {
+    expect(toLinearSelection({ x: 3, y: 7 }, { x: 3, y: 7 }, 80)).toEqual({ column: 3, row: 7, length: 1 })
   })
 })

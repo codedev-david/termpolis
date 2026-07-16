@@ -176,6 +176,38 @@ export function recordEvent(name: string, props?: Record<string, unknown>): void
 //
 // Why a dedicated helper instead of recordEvent: we want stack traces and
 // the `swarm` tag so these errors are easy to filter in Sentry.
+/**
+ * Report that the PREVIOUS session ended without a clean exit — i.e. it died hard: a V8 fatal, an
+ * OOM kill, a power cut.
+ *
+ * Why this exists: a native abort never becomes a JS exception, so @sentry/electron's JS layer never
+ * sees it, and the Sentry→GitHub "Auto-file Production crashes" alert — which matches catchable JS
+ * errors — files NOTHING. That is exactly how the v1.27.4 crash-loop (`ReadFileUtf8` →
+ * `ToLocalChecked` → abort, the app unusable for hours) opened ZERO issues while sitting in Sentry
+ * the whole time as an untriaged native crash. Captured here as an ordinary exception so the
+ * existing alert DOES file it. A short uptime is the crash-loop signature — v1.27.4's was ~3 s.
+ */
+export function recordUncleanExit(ctx: { prevVersion: string; uptimeMs: number }): void {
+  const Sentry = sentryOrNull()
+  if (!Sentry) return
+  try {
+    const secs = Math.round(ctx.uptimeMs / 1000)
+    const err = new Error(
+      `Previous session ended without a clean exit (native crash) after ~${secs}s on v${ctx.prevVersion}`,
+    )
+    err.name = 'UncleanExit'
+    Sentry.captureException?.(err, {
+      tags: { uncleanExit: 'true', prevVersion: ctx.prevVersion },
+      extra: {
+        ...ctx,
+        hint: 'No JS exception accompanies a native fatal — check Sentry native crashes at the same timestamp.',
+      },
+    })
+  } catch {
+    /* telemetry must never break startup */
+  }
+}
+
 export function recordSwarmError(
   name: string,
   err: unknown,

@@ -7,7 +7,9 @@ import {
   isEnabled as isTelemetryEnabled,
   dailyLaunchPing,
   recordEvent as recordTelemetryEvent,
+  recordUncleanExit,
 } from './telemetry'
+import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit } from './crashWatch'
 
 // Force a stable app name. When launched via `electron out/main/index.js`
 // (dev, E2E tests) Electron defaults to "Electron" for app.getName() and
@@ -2785,6 +2787,29 @@ if (!gotTheLock) {
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
+    // A native fatal (V8 abort, OOM kill) never becomes a JS exception, so the Sentry→GitHub alert —
+    // which matches catchable JS errors — files NOTHING: v1.27.4's 3-second crash-loop made the app
+    // unusable for hours and opened ZERO issues. You can't catch your own abort, but you can notice it
+    // NEXT boot: an uncleared marker means the last session died hard. Reported as a JS-level event,
+    // which the existing alert does file.
+    // Guarded like the dailyLaunchPing(app.getVersion()) call above, and for the same reason: this is
+    // crash reporting, a nicety — it must NEVER be the thing that stops the app launching. (Written
+    // unguarded first, it threw on app.getVersion() and took whenReady down with it before
+    // startMcpServer ever ran — the cascade the macOS Menu.buildFromTemplate lesson warns about.)
+    try {
+      const crashMarkerPath = join(app.getPath('userData'), 'last-session.json')
+      initCrashWatch({
+        readMarker: () => { try { return readFileSync(crashMarkerPath, 'utf8') } catch { return null } },
+        writeMarker: (json) => { try { writeFileSync(crashMarkerPath, json) } catch { /* best effort */ } },
+        now: () => Date.now(),
+        version: app.getVersion(),
+        pid: process.pid,
+        report: (ctx) => recordUncleanExit(ctx),
+      })
+      // Advances lastSeen so the next boot can report HOW LONG the dead session ran — a ~0s uptime is
+      // the crash-loop tell. One tiny JSON write a minute.
+      setInterval(() => { try { crashHeartbeat() } catch { /* best effort */ } }, 60_000)
+    } catch { /* crash detection unavailable — never block launch over it */ }
     initWorkspaceTrust()
 
     // Auto-feed the memory brain: ingest past AI conversations on a quiet timer
@@ -3171,6 +3196,9 @@ if (!gotTheLock) {
   })
 
   app.on('before-quit', () => {
+    // FIRST: this is a clean shutdown, so the next boot must not report it as a crash. Everything
+    // below can throw; the marker must be cleared regardless.
+    try { markCleanExit() } catch { /* best effort */ }
     globalShortcut.unregisterAll()
     killAll()
     try { clearSensitiveReadCount() } catch {}

@@ -976,6 +976,89 @@ describe('TerminalPane', () => {
   // =====================================================
   // 2d. Voice push-to-talk handler wiring (hold = keydown starts, keyup stops).
   // =====================================================
+  // Alt+Shift+Click a start, scroll anywhere, Alt+Shift+Click an end → select + copy between.
+  // Exists because drag-select cannot comfortably span scrollback (you fight auto-scroll for
+  // hundreds of lines); anchoring decouples the two ends.
+  describe('click-to-anchor selection (Alt+Shift+Click)', () => {
+    // A fake xterm screen with known geometry: 800px / 80 cols = 10px per col, 480px / 24 rows = 20px per row.
+    const mountScreen = (container: HTMLElement): HTMLElement => {
+      const xtermContainer = container.querySelector('.flex-1.relative')!
+      const screenEl = document.createElement('div')
+      screenEl.className = 'xterm-screen'
+      screenEl.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 800, height: 480, right: 800, bottom: 480, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+      xtermContainer.appendChild(screenEl)
+      return screenEl
+    }
+    const chord = { button: 0, altKey: true, shiftKey: true, ctrlKey: false, metaKey: false }
+    let origLength: number
+
+    beforeEach(() => {
+      origLength = mocks.mockTerminal.buffer.active.length
+      mocks.mockTerminal.buffer.active.length = 1000 // scrollback to anchor across
+      mocks.mockTerminal.buffer.active.viewportY = 0
+      mocks.mockTerminal.select.mockClear()
+      mockClipboardWriteText.mockClear()
+    })
+    afterEach(() => {
+      mocks.mockTerminal.buffer.active.length = origLength
+      mocks.mockTerminal.buffer.active.viewportY = 0
+    })
+
+    it('pairs two Alt+Shift+Clicks into one selection and copies it', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const screenEl = mountScreen(container)
+
+      // Click 1 → cell (col 2, row 2): floor(25/10), floor(45/20).
+      fireEvent.mouseDown(screenEl, { ...chord, clientX: 25, clientY: 45 })
+      expect(mocks.mockTerminal.select).not.toHaveBeenCalled() // anchor only — nothing selected yet
+      expect(screen.getByTestId('click-anchor-badge')).toBeInTheDocument()
+
+      mocks.mockTerminal.getSelection.mockReturnValue('everything between')
+      fireEvent.mouseDown(screenEl, { ...chord, clientX: 55, clientY: 125 }) // → cell (col 5, row 6)
+
+      // (2,2)→(5,6) over 80 cols: start 2*80+2=162, end 6*80+5=485 → 324 cells, inclusive.
+      expect(mocks.mockTerminal.select).toHaveBeenCalledWith(2, 2, 324)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('everything between')
+      expect(screen.queryByTestId('click-anchor-badge')).not.toBeInTheDocument()
+    })
+
+    // THE point of the feature. A viewport-relative anchor would select a single cell here.
+    it('the anchor survives scrolling between the two clicks (absolute buffer rows)', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const screenEl = mountScreen(container)
+
+      fireEvent.mouseDown(screenEl, { ...chord, clientX: 5, clientY: 45 }) // viewportY 0 → absolute row 2
+      mocks.mockTerminal.buffer.active.viewportY = 300 // user scrolls 300 lines
+      mocks.mockTerminal.getSelection.mockReturnValue('spanned')
+      fireEvent.mouseDown(screenEl, { ...chord, clientX: 5, clientY: 45 }) // same PIXEL → absolute row 302
+
+      // start 2*80=160, end 302*80=24160 → 24001 cells: 300 lines of scrollback, two clicks.
+      expect(mocks.mockTerminal.select).toHaveBeenCalledWith(0, 2, 24001)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('spanned')
+    })
+
+    it('a plain left click never anchors — ordinary drag-select is untouched', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const screenEl = mountScreen(container)
+      fireEvent.mouseDown(screenEl, { button: 0, clientX: 25, clientY: 45 })
+      expect(screen.queryByTestId('click-anchor-badge')).not.toBeInTheDocument()
+      expect(mocks.mockTerminal.select).not.toHaveBeenCalled()
+    })
+
+    it('a plain click abandons a half-finished anchor', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const screenEl = mountScreen(container)
+      fireEvent.mouseDown(screenEl, { ...chord, clientX: 25, clientY: 45 })
+      expect(screen.getByTestId('click-anchor-badge')).toBeInTheDocument()
+
+      fireEvent.mouseDown(screenEl, { button: 0, clientX: 5, clientY: 5 })
+
+      expect(screen.queryByTestId('click-anchor-badge')).not.toBeInTheDocument()
+      expect(mocks.mockTerminal.select).not.toHaveBeenCalled()
+    })
+  })
+
   describe('voice push-to-talk wiring', () => {
     function withVoice(over: Record<string, unknown> = {}) {
       mocks.mockGetState.mockImplementation(() => ({
