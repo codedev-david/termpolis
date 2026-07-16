@@ -16,6 +16,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 
 type IdentityKind = 'goal' | 'milestone'
 
@@ -66,18 +67,20 @@ export function initIdentity(dir: string): void {
   filePath = path.join(dir, 'mneme-identity.jsonl')
   try {
     if (fs.existsSync(filePath)) {
-      for (const line of fs.readFileSync(filePath, 'utf8').split('\n')) {
+      // Stream from bytes — never decode the whole sidecar as one 'utf8' string (fatals V8 uncatchably
+      // past ~512 MiB; see fileLines.ts).
+      forEachBufferLine(fs.readFileSync(filePath), (line) => {
         const t = line.trim()
-        if (!t) continue
+        if (!t) return
         try {
           const r = JSON.parse(t) as IdentityRecord
-          if (!r || typeof r.text !== 'string') continue // skip malformed
+          if (!r || typeof r.text !== 'string') return // skip malformed
           if (r.type === 'goal') goals = pushCapped(goals, r, MAX_GOALS)
           else if (r.type === 'milestone') milestones = pushCapped(milestones, r, MAX_MILESTONES)
         } catch {
           /* skip a corrupt line */
         }
-      }
+      })
     }
   } catch {
     /* best effort — start empty if the sidecar can't be read */

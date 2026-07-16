@@ -17,6 +17,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 
 export interface RecallEvent { t: 'recall'; ts: number; hits: number; topScore: number; path: 'vector' | 'keyword' | 'cache'; ms: number; agent?: string }
 export interface InjectEvent { t: 'inject'; ts: number; tokens: number; agent?: string }
@@ -185,16 +186,18 @@ export function initMetrics(dir: string): void {
   filePath = path.join(dir, 'memory-metrics.jsonl')
   try {
     if (fs.existsSync(filePath)) {
-      for (const line of fs.readFileSync(filePath, 'utf8').split('\n')) {
+      // Stream from bytes — this ledger is append-only and NEVER rotated, so never decode the whole
+      // file as one 'utf8' string (fatals V8 uncatchably past ~512 MiB; see fileLines.ts).
+      forEachBufferLine(fs.readFileSync(filePath), (line) => {
         const t = line.trim()
-        if (!t) continue
+        if (!t) return
         try {
           const ev = JSON.parse(t) as MetricEvent
           if (ev && typeof ev === 'object' && EVENT_KINDS.has((ev as { t?: string }).t as string)) events.push(ev)
         } catch {
           /* skip a corrupt line */
         }
-      }
+      })
       if (events.length > MAX_EVENTS) events = events.slice(events.length - MAX_EVENTS)
     }
   } catch {

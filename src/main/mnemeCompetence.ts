@@ -10,6 +10,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 import { updateCompetence, assessDomain, summarizeCompetence, type CompetenceRecord } from './mnemeMeta'
 
 let records = new Map<string, CompetenceRecord>()
@@ -46,16 +47,18 @@ export function initCompetence(dir: string): void {
   filePath = path.join(dir, 'mneme-competence.jsonl')
   try {
     if (fs.existsSync(filePath)) {
-      for (const line of fs.readFileSync(filePath, 'utf8').split('\n')) {
+      // Stream from bytes — never decode the whole sidecar as one 'utf8' string (fatals V8 uncatchably
+      // past ~512 MiB; see fileLines.ts).
+      forEachBufferLine(fs.readFileSync(filePath), (line) => {
         const t = line.trim()
-        if (!t) continue
+        if (!t) return
         try {
           const r = JSON.parse(t) as CompetenceRecord
           if (r && r.domain) records.set(r.domain, r) // later line wins
         } catch {
           /* skip a corrupt line */
         }
-      }
+      })
     }
   } catch {
     /* best effort — start empty if the sidecar can't be read */

@@ -18,6 +18,9 @@ import { extractFile, extractReferences, languageForFile, type CodeSymbol, type 
 import { extractFileTS } from './codeGraphTreeSitter'
 import { isIndexableCodeFile, discoverRepoFiles } from './codeIngest'
 import { projectKeyOf } from './projectKey'
+// A code-graph JSON is one object (not line-streamable), but reading a file past the V8 string limit
+// as 'utf8' fatals uncatchably (see fileLines.ts). Guard the whole-file reads below with this cliff.
+import { MAX_SINGLE_STRING_BYTES } from './fileLines'
 
 export interface CodeGraphEdge {
   from: string // caller symbol id
@@ -179,8 +182,12 @@ export function initCodeGraph(d: string): void {
     const m = GRAPH_FILE_RE.exec(name)
     if (!m) continue
     const key = m[1] ?? ''
+    const file = path.join(d, name)
     try {
-      const data = JSON.parse(fs.readFileSync(path.join(d, name), 'utf8')) as {
+      // A code-graph JSON past the V8 string limit would fatal the process on read (uncatchably —
+      // this try/catch could NOT save it); skip it as if corrupt, and a later re-index rebuilds it.
+      if (fs.statSync(file).size > MAX_SINGLE_STRING_BYTES) continue
+      const data = JSON.parse(fs.readFileSync(file, 'utf8')) as {
         symbols?: SymbolRec[]
         imports?: Array<[string, string[]]>
       }
@@ -518,7 +525,11 @@ export function codeExplore(query: string, readSource?: (file: string) => string
     if (!sym) continue
     let source = ''
     try {
-      const content = readSource ? readSource(sym.file) : fs.readFileSync(sym.file, 'utf8')
+      // Guard the whole-file 'utf8' read: a source file past the V8 string limit fatals uncatchably.
+      let content: string
+      if (readSource) content = readSource(sym.file)
+      else if (fs.statSync(sym.file).size > MAX_SINGLE_STRING_BYTES) content = '' // too big to decode as one string
+      else content = fs.readFileSync(sym.file, 'utf8')
       source = content.split('\n').slice(sym.startLine - 1, sym.endLine).join('\n')
     } catch {
       /* source unavailable (file moved) — structure is still useful */

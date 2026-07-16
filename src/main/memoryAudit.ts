@@ -15,6 +15,7 @@
 //   - BEST-EFFORT — auditing never throws into the caller; a failed append must not break a memory op.
 import { appendFileSync, existsSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
+import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 import { scanText } from './aiSecurity'
 
 export type MemoryAuditEvent =
@@ -81,7 +82,10 @@ export function readMemoryAudit(limit = 100): MemoryAuditRecord[] {
   const p = auditPath()
   if (!p || !existsSync(p)) return []
   try {
-    const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim())
+    // Stream from bytes — the audit log is append-only and can grow; never decode the whole file as
+    // one 'utf8' string (fatals V8 uncatchably past ~512 MiB; see fileLines.ts).
+    const lines: string[] = []
+    forEachBufferLine(readFileSync(p), (l) => { if (l.trim()) lines.push(l) })
     const out: MemoryAuditRecord[] = []
     for (const l of lines.slice(-Math.max(1, limit))) {
       try { out.push(JSON.parse(l) as MemoryAuditRecord) } catch { /* skip corrupt line */ }

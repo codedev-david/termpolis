@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
+import { forEachShardLine, MAX_SINGLE_STRING_BYTES } from './fileLines' // byte-safe JSONL reader + the V8 max-string cliff
 import { recordSwarmError } from './telemetry'
 import { recordAnomaly } from './memoryAnomalyLog'
 import { normalizeNewlines } from './lineEndings'
@@ -314,6 +315,10 @@ function shardFiles(): string[] {
   } catch { return memPath ? [memPath] : [] }
 }
 
+// The byte-safe line readers (forEachShardLine / forEachBufferLine) and the V8 max-string constant
+// (MAX_SINGLE_STRING_BYTES) live in ./fileLines — a leaf module, so every JSONL loader in the app can
+// share them without an import cycle (this file is imported by memoryGraph.ts, which also needs them).
+
 type ShardLineClass =
   | { t: 'add'; entry: MemoryEntry }
   | { t: 'delete'; id: string }
@@ -407,11 +412,11 @@ function reloadFromImpl(paths: string[]): void {
   const ownVulnerable = new Set<string>()  // own adds appearing BEFORE an own clear line (pre-clear → epoch-droppable)
   const ownTombstoned = new Set<string>()  // ids the own shard already records (delete/clearIds) — re-emission dedup
   for (const p of paths) {
-    let raw: string
-    try { raw = fs.readFileSync(p, 'utf8') } catch { continue }
     const isOwn = !!memPath && path.resolve(p) === path.resolve(memPath)
     const shardAdds: string[] = [] // own-shard add ids seen so far — marked vulnerable when a clear line follows
-    for (const line of raw.split('\n')) {
+    // Classify ONE LINE AT A TIME straight from the shard's bytes; never decode the whole file into a
+    // single string, which fatals V8 uncatchably past ~512 MiB (see forEachShardLine / the v1.27.4 fix).
+    const onLine = (line: string): void => {
       if (isOwn && line.trim()) ownLineCount++
       const c = classifyShardLine(line)
       switch (c.t) {
@@ -455,6 +460,7 @@ function reloadFromImpl(paths: string[]): void {
           break
       }
     }
+    try { forEachShardLine(p, onLine) } catch { continue } // unreadable shard → skip it, exactly as before
   }
   // Publish what we learned about our own shard, so compaction can be gated from memory
   // instead of by re-reading and re-decrypting the entire thing.
@@ -1560,6 +1566,11 @@ function loadPersistedHnsw(): HnswIndex | null {
   const p = hnswFile()
   if (!p) return null
   try {
+    // The index is one JSON object, so it can't be line-streamed like a shard — but reading a file
+    // past V8's max string length as 'utf8' FATALS uncatchably (see forEachShardLine). A file no
+    // larger than that limit is guaranteed safe to decode (UTF-8 byte length ≥ decoded length), so
+    // if the persisted index ever grew past it, degrade to a rebuild (return null) instead of dying.
+    if (fs.statSync(p).size > MAX_SINGLE_STRING_BYTES) return null
     const obj = JSON.parse(fs.readFileSync(p, 'utf8')) as { fp?: string; graph?: SerializedHnsw }
     if (!obj || obj.fp !== entriesFingerprint() || obj.graph?.v !== 2) return null // stale / wrong format
     return HnswIndex.fromJSON(obj.graph, (r) => vectorStore.get(r))
@@ -2439,10 +2450,12 @@ export function searchArchive(query: string, limit = 20): MemoryEntry[] {
     archiveReadCount++
     const parsed: MemoryEntry[] = []
     try {
-      for (const line of fs.readFileSync(ap, 'utf8').split('\n')) {
-        if (!line.trim()) continue
+      // Stream the archive JSONL from bytes — it can grow as large as the live shard, and reading a
+      // >512 MiB file as one 'utf8' string fatals V8 uncatchably (see forEachShardLine).
+      forEachShardLine(ap, (line) => {
+        if (!line.trim()) return
         try { parsed.push(JSON.parse(line) as MemoryEntry) } catch { /* skip corrupt line */ }
-      }
+      })
     } catch { return [] }
     archiveCache = parsed
     archiveCacheKey = key
@@ -2771,9 +2784,16 @@ function loadOrCreateSalt(): Buffer {
 // Find one encrypted line across the synced shards, to validate a passphrase.
 function findAnyEncryptedLine(): string | null {
   for (const f of shardFiles()) {
-    let raw: string
-    try { raw = fs.readFileSync(f, 'utf8') } catch { continue }
-    for (const line of raw.split('\n')) { const s = line.trim(); if (isEncryptedLine(s)) return s }
+    let found: string | null = null
+    // Stream from bytes and stop at the first hit — never decode a whole (possibly >512 MiB) shard
+    // into one string (see forEachShardLine).
+    try {
+      forEachShardLine(f, (line) => {
+        const s = line.trim()
+        if (isEncryptedLine(s)) { found = s; return false }
+      })
+    } catch { continue }
+    if (found !== null) return found
   }
   return null
 }
@@ -2782,15 +2802,17 @@ function findAnyEncryptedLine(): string | null {
 // `xform`. Lines we can't decrypt are kept verbatim (never dropped).
 function rewriteSelfShard(xform: (plain: string) => string): void {
   if (!memPath) return
-  let raw: string
-  try { raw = fs.readFileSync(memPath, 'utf8') } catch { return }
+  // Stream from bytes — never decode a whole (possibly >512 MiB) shard into one string (see
+  // forEachShardLine). Enabling/rotating encryption rewrites the own shard, which can be the huge one.
   const out: string[] = []
-  for (const line of raw.split('\n')) {
-    const s = line.trim()
-    if (!s) continue
-    const plain = isEncryptedLine(s) ? (encKey ? decryptLine(encKey, s) : null) : s
-    out.push(plain === null ? s : xform(plain))
-  }
+  try {
+    forEachShardLine(memPath, (line) => {
+      const s = line.trim()
+      if (!s) return
+      const plain = isEncryptedLine(s) ? (encKey ? decryptLine(encKey, s) : null) : s
+      out.push(plain === null ? s : xform(plain))
+    })
+  } catch { return }
   try {
     atomicWriteLines(memPath, out) // F7/F33: never truncate mid-rewrite
   } catch (err) {
@@ -2874,9 +2896,11 @@ function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean;
   if (!opts?.force && !compactionMayBeWorthwhile()) {
     return { compacted: false, before: ownShardLines, after: ownShardLines }
   }
-  let raw: string
-  try { raw = fs.readFileSync(memPath, 'utf8') } catch { return { compacted: false, before: 0, after: 0 } }
-  const rawLines = raw.split('\n').filter((l) => l.trim())
+  // Stream the shard from its bytes (see forEachShardLine): a >512 MiB shard read as one 'utf8'
+  // string fatals V8 uncatchably, and compaction runs on a timer, so it must be safe at any size.
+  const rawLines: string[] = []
+  try { forEachShardLine(memPath, (line) => { if (line.trim()) rawLines.push(line) }) }
+  catch { return { compacted: false, before: 0, after: 0 } }
   const before = rawLines.length
   if (before === 0) return { compacted: false, before: 0, after: 0 }
 
@@ -3022,7 +3046,10 @@ export function setSyncDir(dir: string | null): SyncStatus {
     if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
     for (const id of tombstones) lines.push(JSON.stringify({ deleted: id }))
     try {
-      atomicWriteFile(legacyPath, lines.length ? lines.join('\n') + '\n' : '')
+      // atomicWriteLines (not join('\n')): the store can be >512 MiB, and lines.join would build one
+      // string past V8's max length → RangeError → "turn sync off" silently broken for a big store.
+      // atomicWriteLines streams in 4 MB chunks; byte-identical output ('\n' after every line).
+      atomicWriteLines(legacyPath, lines)
     } catch (err) {
       recordSwarmError('swarmMemory.syncOff.snapshot.failed', err, { legacyPath })
       throw new Error('Could not snapshot memory to the local store — sync left ON to avoid data loss. Retry once the disk is writable.')

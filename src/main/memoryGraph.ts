@@ -9,6 +9,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 import { isTemporallyValid } from './mnemeGraphLogic'
 
 export interface MemoryEdge {
@@ -211,17 +212,21 @@ export function initMemoryGraph(dir: string): void {
   graphPath = path.join(dir, 'memory-graph.jsonl')
   try {
     if (fs.existsSync(graphPath!)) {
-      for (const line of fs.readFileSync(graphPath!, 'utf8').split('\n')) {
+      // Stream the (append-only, unbounded) graph log from bytes — never decode the whole file as one
+      // 'utf8' string, which fatals V8 uncatchably past ~512 MiB (see fileLines.ts). This runs in the
+      // memory utilityProcess AND in main on the in-process fallback — the same double-crash surface as
+      // the shard loader. Append-order semantics preserved: markers apply in order, sort once at the end.
+      forEachBufferLine(fs.readFileSync(graphPath!), (line) => {
         const t = line.trim()
-        if (!t) continue
+        if (!t) return
         try {
           const e = JSON.parse(t) as MemoryEdge & { removeNode?: unknown }
           // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
           // deleted memory — applied in append order so edges re-added after it survive.
-          if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); continue }
+          if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); return }
           if (e && e.from && e.to && e.relation) indexEdge(e, false) // defer the sort
         } catch { /* skip a corrupt line */ }
-      }
+      })
       // Sort every list ONCE, now that the final membership is known.
       for (const list of adjacency.values()) list.sort(byWeightDesc)
       for (const list of reverseAdjacency.values()) list.sort(byWeightDesc)
