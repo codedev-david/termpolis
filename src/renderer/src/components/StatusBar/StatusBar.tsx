@@ -415,6 +415,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+/</kbd> Shortcuts panel</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Space</kbd> Keyboard select / copy mode (arrows move · Shift extends · Ctrl=word · a=all · Enter copies · Esc exits)</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Alt+Shift+Click</kbd> Anchor select — click a start, scroll as far as you like, click the end: everything between is selected and copied (any plain click cancels)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+L</kbd> Voice dictation — tap to start/stop, or hold to talk (enable first in Settings → Voice)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+1–4</kbd> Launch first four AI agents (Claude / Codex / Gemini / Qwen)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Win+Shift+T</kbd> New terminal (global, works when minimized)</li>

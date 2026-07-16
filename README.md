@@ -430,6 +430,8 @@ All shortcuts are customizable in **Settings → Keybindings**.
 | `Ctrl+Shift+H` | Search command history |
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste |
+| `Ctrl+Shift+Space` | Keyboard select / copy mode (arrows move · Shift extends · Ctrl=word · Enter copies) |
+| `Alt+Shift+Click` | **Anchor select** — click a start, scroll anywhere, click the end: everything between is selected + copied. Unlike dragging, it spans any amount of scrollback. Any plain click cancels. |
 | `Ctrl+Space` | Trigger autocomplete |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Shift+G` | Toggle split view |
