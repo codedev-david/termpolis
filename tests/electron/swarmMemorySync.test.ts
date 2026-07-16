@@ -368,6 +368,11 @@ describe('cross-machine sync — packed-vector reconstruction on snapshot', () =
     setSyncDir(null) // snapshots the unioned set back to the local file
     const legacy = fs.readFileSync(path.join(userDir, 'swarm-memory.jsonl'), 'utf8')
     expect(legacy).toContain('packed-and-synced')
-    expect(legacy).toContain('"embedding"') // the vector was reconstructed from the store, not lost
+    // v1.28: the vector is still reconstructed from the packed store (the point of this test) — but
+    // as base64 `emb`, never as 384 JSON decimals. Asserting the ABSENCE of "embedding" is what
+    // catches a silent regression to the old encoding, which cost ~7.7 KB of text per memory, was
+    // 100% of the store's growth, and is what drove the shard past V8's string limit in v1.27.4.
+    expect(legacy).toContain('"emb"')
+    expect(legacy).not.toContain('"embedding"')
   })
 })

@@ -45,7 +45,8 @@ export interface MemoryEntry {
   content: string
   tags?: string[]
   taskId?: string
-  embedding?: number[]
+  embedding?: number[]            // LEGACY on-disk form: 384 JSON decimals (~7.7 KB of text). Read forever, never written.
+  emb?: string                    // v1.28 on-disk form: base64 of the raw Float32Array bytes (~2 KB). See encodeEmbedding.
   source?: string                 // provenance (e.g. 'claude'|'codex'|'gemini' for ingested transcripts)
   project?: string                // normalized project slug (cwd basename) — current-directory recall
   projectKey?: string             // F19: stable unique key of the FULL path — disambiguates same-basename repos
@@ -1403,13 +1404,65 @@ function ensureTrailingNewline(p: string): void {
 
 // Move a real (EMBED_DIM) embedding into the packed store and free the number[]
 // from RAM. Non-EMBED_DIM vectors are left on the entry for the per-object path.
+// --- on-disk vector codec (v1.28) ---------------------------------------------------------------
+// The vector used to be written as a JSON DECIMAL ARRAY: `Array.from(Float32Array)` renders 384
+// numbers like 0.023456789012345678 — ~7.7 KB of text per memory. That was ~85% of every line and
+// ~100% of the store's growth (13 KB/memory — which is what crossed V8's 512 MiB string limit and
+// crash-looped v1.27.4), and it cost 1,493 ms of EVERY launch just to JSON.parse ~36M floats back.
+// Measured at the real 93,988 entries: legacy 1,493 ms vs packed 178 ms — 8.4x. So: write the raw
+// f32 bytes as base64 instead.
+//
+// f32 and deliberately NOT int8: int8 would be ~12x smaller and v1.24 measured recall@10 identical,
+// but that was IN-MEMORY search with the f32 source still on disk as ground truth. Quantising the
+// CANONICAL on-disk form destroys the originals irreversibly and forecloses any future model or
+// reranker that wants the precision. int8 stays a runtime choice (setVectorQuantization).
+//
+// Endianness: Float32Array uses platform order. Every target (x64/arm64, Win/mac/Linux) is
+// little-endian, so a shard stays readable across the machines this syncs between.
+
+/** Encode a vector as base64 of its raw Float32Array bytes — the on-disk form since v1.28. */
+export function encodeEmbedding(vec: ArrayLike<number>): string {
+  const f = vec instanceof Float32Array ? vec : Float32Array.from(vec)
+  return Buffer.from(f.buffer, f.byteOffset, f.byteLength).toString('base64')
+}
+
+/**
+ * The vector off a parsed entry, from EITHER on-disk form — packed `emb` or legacy `embedding`.
+ * Returns null when absent or the wrong dimension; the caller then leaves the entry vectorless and
+ * the existing backfill re-embeds it (which is also how a downgrade to <=1.27.x self-heals).
+ *
+ * The packed branch copies into a fresh Uint8Array before viewing it as f32: Buffer.from(base64)
+ * can land at any offset inside Node's shared pool, and Float32Array demands a 4-byte-aligned
+ * byteOffset — viewing the pooled buffer directly throws RangeError on unlucky allocations. The copy
+ * is 1.5 KB of memcpy, still ~8x cheaper than parsing 384 decimals.
+ */
+export function decodeEmbedding(entry: { emb?: unknown; embedding?: unknown }): ArrayLike<number> | null {
+  const packed = entry.emb
+  if (typeof packed === 'string' && packed.length > 0) {
+    try {
+      const buf = Buffer.from(packed, 'base64')
+      if (buf.byteLength !== EMBED_DIM * 4) return null // wrong dim / truncated → re-embed, don't guess
+      const bytes = new Uint8Array(buf.byteLength)
+      bytes.set(buf)
+      return new Float32Array(bytes.buffer)
+    } catch {
+      return null
+    }
+  }
+  const legacy = entry.embedding
+  if (Array.isArray(legacy) && legacy.length === EMBED_DIM) return legacy as number[]
+  return null
+}
+
 function indexEntryVector(entry: MemoryEntry): void {
-  if (!entry.embedding || entry.embedding.length !== EMBED_DIM) return
-  const row = vectorStore.add(entry.embedding)
+  const vec = decodeEmbedding(entry)
+  if (!vec) return
+  const row = vectorStore.add(vec)
   if (row < 0) return
   rowToEntry.set(row, entry)
   entryRow.set(entry, row)
   delete entry.embedding
+  delete entry.emb // both on-disk forms freed — the vector lives in the packed store now
   if (hnswBuilding) buildGen++ // Wave2 (hnsw-build-freshness-by-count): a live add during a build must abort it — the count check alone is fooled by a concurrent add+delete
   if (hnsw && !hnswStale) hnsw.add(row)                        // keep the graph fresh incrementally
   else if (vectorStore.size >= hnswThreshold) hnswStale = true // crossed the threshold → (re)build on next search
@@ -1421,8 +1474,10 @@ function indexEntryVector(entry: MemoryEntry): void {
 // lacks a vector, embed + index it so it becomes first-class semantically recallable.
 async function backfillVectorIfMissing(entry: MemoryEntry): Promise<void> {
   if (entryRow.has(entry)) return                                                       // already packed
-  if (entry.embedding && entry.embedding.length === EMBED_DIM) { indexEntryVector(entry); bumpSearchGen(); return }
-  if (entry.embedding) return                                                           // non-EMBED_DIM legacy vector — leave it
+  // decodeEmbedding, not entry.embedding: since v1.28 the on-disk vector arrives as `emb` (base64).
+  // Reading the legacy field alone would see nothing here and re-embed EVERY packed entry.
+  if (decodeEmbedding(entry)) { indexEntryVector(entry); bumpSearchGen(); return }
+  if (entry.embedding || entry.emb) return                                              // present but wrong dim — leave it, don't re-embed blind
   if (embeddingsAvailable === false) return
   try {
     const emb = await embed(entry.content, false)
@@ -1438,7 +1493,9 @@ export async function memoryBackfillVectors(max = 200): Promise<number> {
   let done = 0
   for (const e of entries) {
     if (done >= max) break
-    if (entryRow.has(e) || e.embedding) continue
+    // `|| e.emb`: an entry carrying a packed vector that failed to decode (wrong dim / truncated)
+    // still HAS a vector field — same as the legacy branch, leave it rather than silently re-embed.
+    if (entryRow.has(e) || e.embedding || e.emb) continue
     try {
       const emb = await embed(e.content, false)
       if (emb && emb.length === EMBED_DIM) { e.embedding = emb; indexEntryVector(e); done++ }
@@ -1600,7 +1657,10 @@ function serializeEntry(e: MemoryEntry): string {
   const row = entryRow.get(e)
   if (row === undefined) return JSON.stringify(e)
   const v = vectorStore.get(row)
-  return JSON.stringify(v ? { ...e, embedding: Array.from(v) } : e)
+  // `emb` (base64 f32), never `embedding` (384 JSON decimals) — see the codec above. Array.from(v)
+  // here was ~7.7 KB of decimal text per memory: 85% of the line, 100% of the growth, and 1.5 s of
+  // every launch to parse back.
+  return JSON.stringify(v ? { ...e, emb: encodeEmbedding(v) } : e)
 }
 
 // F19: match a project scope by the precise full-path key when the search supplied one
