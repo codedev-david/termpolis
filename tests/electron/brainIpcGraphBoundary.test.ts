@@ -22,7 +22,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../../src/main/telemetry', () => ({ recordSwarmError: vi.fn() }))
 
 const client = vi.hoisted(() => ({
-  exportMemorySnapshot: vi.fn(async () => '{"id":"m1","content":"real memory"}'),
+  exportMemorySnapshot: vi.fn(async () => ['{"id":"m1","content":"real memory"}']),
   importMemorySnapshot: vi.fn(async () => ({ imported: 1 })),
   // Async: the graph is across a process boundary, exactly like the store.
   exportGraphEdges: vi.fn(async () => '{"from":"a","to":"b","relation":"explains"}'),
@@ -69,7 +69,7 @@ describe('buildBrainArchive', () => {
 describe('mergeBrainArchive', () => {
   it('imports the edges INTO the memory process — a graph in main is a graph nothing reads', async () => {
     const zip = buildBrainZip({
-      memorySnapshot: () => '{"id":"m9","content":"from the other machine"}',
+      memorySnapshot: () => ['{"id":"m9","content":"from the other machine"}'],
       graphSnapshot: () => '{"from":"x","to":"y","relation":"follows"}',
       readFile: () => null,
       appVersion: '1.26.2',

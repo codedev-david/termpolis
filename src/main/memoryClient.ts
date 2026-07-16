@@ -524,8 +524,10 @@ export const disableSyncEncryption = (): Promise<SyncStatus> => call('disableSyn
 export const disableEncryption = (): Promise<SyncStatus> => call('disableEncryption', [])
 // brainIpc.ts imports these two DIRECTLY from swarmMemory today — which, once the store moves, would
 // export/import against an EMPTY in-main store. Proxied here so step 2 can repoint it.
-export const exportMemorySnapshot = (): Promise<string> => call('exportMemorySnapshot', [])
-export const importMemorySnapshot = (jsonl: string): Promise<{ imported: number }> => call('importMemorySnapshot', [jsonl])
+// string[] not string: a >512 MiB brain joined into ONE string throws RangeError (V8 max-string) and
+// can't cross IPC as a single value — an array of small lines does both fine. See swarmMemory export.
+export const exportMemorySnapshot = (): Promise<string[]> => call('exportMemorySnapshot', [])
+export const importMemorySnapshot = (lines: string[]): Promise<{ imported: number }> => call('importMemorySnapshot', [lines])
 
 // ── Encryption: the ops that need main's keychain ────────────────────────────────────────────────
 

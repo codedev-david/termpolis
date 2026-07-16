@@ -59,7 +59,7 @@ describe('buildBrainArchive / mergeBrainArchive', () => {
   })
 
   it('merges a zip, restoring an absent file via the injected fs', async () => {
-    const zip = buildBrainZip({ memorySnapshot: () => '{"id":"m"}\n', graphSnapshot: () => '', readFile: (n) => (n === 'mneme-competence.jsonl' ? Buffer.from('C') : null), appVersion: 'x', now: 0 })
+    const zip = buildBrainZip({ memorySnapshot: () => ['{"id":"m"}'], graphSnapshot: () => '', readFile: (n) => (n === 'mneme-competence.jsonl' ? Buffer.from('C') : null), appVersion: 'x', now: 0 })
     initMemoryGraph(dir)
     const writes: string[] = []
     const bf = { read: vi.fn(), sizeOrZero: vi.fn((p: string) => (p.includes('competence') ? 0 : 9)), write: vi.fn((p: string) => { writes.push(p) }) }
@@ -69,7 +69,7 @@ describe('buildBrainArchive / mergeBrainArchive', () => {
   })
 
   it('does not restore a file that already has content', async () => {
-    const zip = buildBrainZip({ memorySnapshot: () => '{"id":"m"}\n', graphSnapshot: () => '', readFile: (n) => (n === 'mneme-identity.jsonl' ? Buffer.from('I') : null), appVersion: 'x', now: 0 })
+    const zip = buildBrainZip({ memorySnapshot: () => ['{"id":"m"}'], graphSnapshot: () => '', readFile: (n) => (n === 'mneme-identity.jsonl' ? Buffer.from('I') : null), appVersion: 'x', now: 0 })
     initMemoryGraph(dir)
     const bf = { read: vi.fn(), sizeOrZero: vi.fn(() => 100), write: vi.fn() } // everything already present
     await mergeBrainArchive(dir, zip, bf)

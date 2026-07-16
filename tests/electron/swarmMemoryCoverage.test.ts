@@ -1182,15 +1182,15 @@ describe('brain export / import — additive, never destructive', () => {
   it('round-trips memories AND reinforcement deltas, and refuses to import deletions', async () => {
     initSwarmMemory(userDir)
     keywordOnly()
-    expect(exportMemorySnapshot()).toBe('')   // an empty brain exports nothing
+    expect(exportMemorySnapshot()).toEqual([])   // an empty brain exports nothing (array, not one joined string)
 
     const a = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'portable lesson one' })
     memoryFeedback({ id: a.id, helpful: true })
     memoryFeedback({ id: a.id, helpful: true })
 
     const snap = exportMemorySnapshot()
-    expect(snap).toContain('portable lesson one')
-    expect(snap).toContain('"reinforce"')     // F3: the learning layer survives the round-trip
+    expect(snap.join('\n')).toContain('portable lesson one')
+    expect(snap.join('\n')).toContain('"reinforce"')     // F3: the learning layer survives the round-trip
 
     // import into a SECOND, empty brain
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-cov-o-'))
@@ -1199,7 +1199,7 @@ describe('brain export / import — additive, never destructive', () => {
       keywordOnly()
       initSwarmMemory(other)
 
-      expect(importMemorySnapshot('')).toEqual({ imported: 0 })
+      expect(importMemorySnapshot([])).toEqual({ imported: 0 })
       expect(importMemorySnapshot(snap).imported).toBe(1)    // the reinforce line is not counted as a memory
       expect(memoryList().map((e) => e.content)).toEqual(['portable lesson one'])
       expect(memoryFeedback({ id: a.id, helpful: true }).used).toBe(3)  // 2 imported + 1 now
@@ -1210,7 +1210,7 @@ describe('brain export / import — additive, never destructive', () => {
         JSON.stringify({ clearedBefore: Date.now() }),
         JSON.stringify({ deletedHash: a.hash }),
         JSON.stringify({ id: 'imp-2', ts: Date.now(), agentId: 'z', kind: 'fact', content: 'second imported lesson', hash: 'h-imp2' }),
-      ].join('\n'))
+      ])
       expect(res.imported).toBe(1)
       expect(memoryList().map((e) => e.content).sort()).toEqual(['portable lesson one', 'second imported lesson'])
     } finally {
@@ -1220,7 +1220,7 @@ describe('brain export / import — additive, never destructive', () => {
 
   it('importMemorySnapshot is a no-op with no store', () => {
     _resetForTests()
-    expect(importMemorySnapshot('{"id":"x","ts":1,"agentId":"a","kind":"fact","content":"c"}')).toEqual({ imported: 0 })
+    expect(importMemorySnapshot(['{"id":"x","ts":1,"agentId":"a","kind":"fact","content":"c"}'])).toEqual({ imported: 0 })
   })
 })
 

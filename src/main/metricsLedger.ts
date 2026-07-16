@@ -81,6 +81,12 @@ export interface MetricsSummary {
  *  ages out instead of haunting the tile forever; big enough to be more than one data point. */
 export const EMBED_RECENT_WINDOW = 20
 
+/** Recall latency is the median of the RECENT window, not all history. After an upgrade or a
+ *  heavy-store session, thousands of old (cold / pre-warm) recalls would otherwise dominate the
+ *  median forever and pin the tile red even once steady-state recall is fast again. Mirrors
+ *  EMBED_RECENT_WINDOW — the tile answers "is recall fast NOW", not "was it ever slow". */
+export const LATENCY_RECENT_WINDOW = 50
+
 /** Aggregate a list of metric events into the dashboard summary. Pure. */
 export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSummary {
   let recalls = 0, recallFired = 0, hitsSum = 0, topSum = 0
@@ -142,7 +148,8 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
   // Median latency, not mean — the very first recall of a session pays the one-time
   // embedding-model cold-load (~1s+), which would drag a mean into the "slow/red" band
   // and misrepresent steady-state performance. The median ignores that lone outlier.
-  const sortedMs = latencies.slice().sort((a, b) => a - b)
+  // Steady-state, not lifetime: median over the most recent recalls only (see LATENCY_RECENT_WINDOW).
+  const sortedMs = latencies.slice(-LATENCY_RECENT_WINDOW).sort((a, b) => a - b)
   const medianLatencyMs = sortedMs.length === 0 ? 0
     : sortedMs.length % 2 === 1 ? sortedMs[(sortedMs.length - 1) / 2]
       : (sortedMs[sortedMs.length / 2 - 1] + sortedMs[sortedMs.length / 2]) / 2

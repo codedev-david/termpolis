@@ -228,6 +228,7 @@ describe('initAutoUpdater — missing app-update.yml is benign (Sentry ELECTRON-
     const mod = await import('../../src/main/autoUpdater')
     for (const m of [
       'net::ERR_INTERNET_DISCONNECTED',
+      'net::ERR_NETWORK_IO_SUSPENDED', // GitHub #19 — machine slept mid update-check
       'net::ERR_NAME_NOT_RESOLVED',
       'net::ERR_CONNECTION_RESET',
       'net::ERR_TIMED_OUT',

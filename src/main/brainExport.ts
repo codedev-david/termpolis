@@ -12,6 +12,7 @@
 
 import * as crypto from 'crypto'
 import { createZip, readZip, type ZipEntry } from './zipArchive'
+import { forEachBufferLine } from './fileLines' // byte-safe line split — a >512 MiB entry can't become one string
 
 export const BRAIN_EXPORT_VERSION = 1
 export const MEMORY_ENTRY = 'memory.jsonl'
@@ -35,7 +36,7 @@ function sha256(buf: Buffer): string {
 }
 
 export interface ExportDeps {
-  memorySnapshot: () => string
+  memorySnapshot: () => string[] // array, not one joined string — a 568 MB brain exceeds V8's max string length
   graphSnapshot: () => string
   readFile: (name: string) => Buffer | null // read a userData file by name; null if absent
   appVersion: string
@@ -51,8 +52,11 @@ export function buildBrainZip(deps: ExportDeps): Buffer {
     files[name] = sha256(data)
   }
 
-  const memStr = deps.memorySnapshot()
-  add(MEMORY_ENTRY, Buffer.from(memStr, 'utf8'))
+  const memLines = deps.memorySnapshot()
+  // Build the entry from per-line Buffers (Buffer.concat has a ~2 GB ceiling, no 512 MiB string cap),
+  // so a 568 MB brain zips without ever materialising one giant string. Bytes are identical to the
+  // old lines.join('\n') + '\n' — a trailing '\n' after every line.
+  add(MEMORY_ENTRY, memLines.length ? Buffer.concat(memLines.map((l) => Buffer.from(l + '\n', 'utf8'))) : Buffer.alloc(0))
   const graph = deps.graphSnapshot()
   if (graph) add(GRAPH_ENTRY, Buffer.from(graph, 'utf8'))
   for (const name of RESTORE_FILES) {
@@ -65,7 +69,7 @@ export function buildBrainZip(deps: ExportDeps): Buffer {
     app: deps.appVersion,
     exportedAt: deps.now,
     files,
-    memories: memStr ? memStr.split('\n').filter((l) => l.trim() && !l.includes('"reinforce"')).length : 0,
+    memories: memLines.filter((l) => l.trim() && !l.includes('"reinforce"')).length,
   }
   // manifest.json is not self-referential (it holds the OTHER files' hashes) and rides on the zip's
   // own CRC; a malformed manifest is caught on import (JSON.parse) and refuses the whole archive.
@@ -77,7 +81,7 @@ export interface ImportDeps {
   /** v1.26: may be async — the memory store now lives in a utilityProcess, so the real
    *  implementation is an RPC. It is AWAITED below; returning a Promise here and reading `.imported`
    *  off it synchronously would report `undefined` memories imported while the merge raced on. */
-  importMemory: (jsonl: string) => { imported: number } | Promise<{ imported: number }>
+  importMemory: (lines: string[]) => { imported: number } | Promise<{ imported: number }>
   importGraph: (jsonl: string) => number | Promise<number> // crosses to the memory process, like importMemory
   restoreFile: (name: string, data: Buffer) => void // restore a userData file (impl decides absent-only)
 }
@@ -130,7 +134,14 @@ export async function importBrainZip(zipBuf: Buffer, deps: ImportDeps): Promise<
 
   // All verified → apply the merge.
   const mem = byName.get(MEMORY_ENTRY)
-  const memoriesImported = mem ? (await deps.importMemory(mem.toString('utf8'))).imported : 0
+  let memoriesImported = 0
+  if (mem) {
+    // Split the entry from its bytes — a >512 MiB memory blob can't be decoded as one string (the
+    // same cliff export avoids). forEachBufferLine keeps every decoded line small (see fileLines.ts).
+    const memLines: string[] = []
+    forEachBufferLine(mem, (l) => { memLines.push(l) })
+    memoriesImported = (await deps.importMemory(memLines)).imported
+  }
   const graph = byName.get(GRAPH_ENTRY)
   const edgesImported = graph ? await deps.importGraph(graph.toString('utf8')) : 0
   const restored: string[] = []

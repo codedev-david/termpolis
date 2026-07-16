@@ -2962,25 +2962,29 @@ function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean;
 
 // ---- Brain export / import (portable .zip) --------------------------------
 
-/** Serialize the FULL current brain (the live merged entries + usage) as JSONL — the portable
- *  memory content for an export. Always plaintext (the archive carries its own integrity/opt
- *  encryption). Deliberately add-only: no tombstones/clear lines, so importing this into another
- *  brain never DELETES anything there — it only contributes memories. */
-export function exportMemorySnapshot(): string {
+/** Serialize the FULL current brain (the live merged entries + usage) as an ARRAY of JSONL lines —
+ *  the portable memory content for an export. Returns the array rather than one joined string on
+ *  purpose: a large brain (568 MB in the field) joined into a single string exceeds V8's max string
+ *  length and throws RangeError, breaking export for exactly the biggest brains (see fileLines.ts).
+ *  Each line crosses the memory-process IPC and lands in the zip independently. Always plaintext (the
+ *  archive carries its own integrity/opt encryption). Deliberately add-only: no tombstones/clear
+ *  lines, so importing this into another brain never DELETES anything there — it only contributes. */
+export function exportMemorySnapshot(): string[] {
   const lines: string[] = entries.map(serializeEntry)
   const reinforce = [...usageMap.entries()].filter(([, u]) => u !== 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
   if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
-  return lines.length ? lines.join('\n') + '\n' : ''
+  return lines
 }
 
-/** Merge an exported memory snapshot into THIS brain (grow-only CRDT union — additive, never
- *  destructive). Adds are deduped by id/content-hash on reload; usage deltas are folded in. Lines
- *  are appended through the normal path, so they inherit at-rest encryption if this store is
- *  encrypted. Returns how many memory rows were contributed. */
-export function importMemorySnapshot(jsonl: string): { imported: number } {
-  if (!memPath || !jsonl) return { imported: 0 }
+/** Merge an exported memory snapshot (an ARRAY of JSONL lines — see exportMemorySnapshot) into THIS
+ *  brain (grow-only CRDT union — additive, never destructive). Takes lines, not one joined string, so
+ *  a >512 MiB brain imports without ever building a string past V8's max length. Adds are deduped by
+ *  id/content-hash on reload; usage deltas are folded in. Lines are appended through the normal path,
+ *  so they inherit at-rest encryption if this store is encrypted. Returns how many rows were added. */
+export function importMemorySnapshot(lines: string[]): { imported: number } {
+  if (!memPath || !lines || lines.length === 0) return { imported: 0 }
   let imported = 0
-  for (const line of jsonl.split('\n')) {
+  for (const line of lines) {
     const s = line.trim()
     if (!s) continue
     const c = classifyShardLine(s)

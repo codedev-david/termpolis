@@ -306,12 +306,12 @@ describe('memoryDashboard — uncovered branches', () => {
           recalls: 100, recallFiredRate: 0.75,   // >=0.6, <0.9  -> warn
           embedUp: true, embedRecentUp: 20, embedRecentTotal: 20, // model is UP -> good (a status, not a rate)
           writes: 50, writeDurability: 0.97,     // >=0.95, <0.999 -> warn
-          avgLatencyMs: 120,                     // >=50, <200 -> warn
+          avgLatencyMs: 350,                     // >=250, <600 -> warn (cross-process recall floor)
         },
       }))
       expect(tiles.map((t) => t.status)).toEqual(['warn', 'good', 'warn', 'warn'])
       expect(tiles[0].value).toBe('75%')
-      expect(tiles[3].value).toBe('120ms')
+      expect(tiles[3].value).toBe('350ms')
     })
 
     it('grades floor values as bad', () => {
@@ -321,11 +321,11 @@ describe('memoryDashboard — uncovered branches', () => {
           recalls: 100, recallFiredRate: 0.3,
           embedUp: false, embedRecentUp: 0, embedRecentTotal: 20, // actually down NOW -> bad
           writes: 50, writeDurability: 0.5,
-          avgLatencyMs: 500,
+          avgLatencyMs: 800,
         },
       }))
       expect(tiles.map((t) => t.status)).toEqual(['bad', 'bad', 'bad', 'bad'])
-      expect(tiles[3].value).toBe('500ms')
+      expect(tiles[3].value).toBe('800ms')
     })
 
     // The bug this file now guards, found on a real install: the embedding tile showed the LIFETIME

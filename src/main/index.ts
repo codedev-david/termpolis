@@ -1635,11 +1635,15 @@ ipcMain.handle('memory:metrics', async () => {
     // v1.26.0 left behind pointing at the in-main module, which is the same empty answer by a
     // different route. graphRelationStats still counts in place, in the child — the tallies cross the
     // wire, never the edge set.
-    const [store, recentActivity, gs, byRelation] = await Promise.all([
-      memoryDashboardStats(), memoryRecentActivity(14), graphStats(), graphRelationStats(),
+    const [store, recentActivity, gs, byRelation, embedderUp] = await Promise.all([
+      memoryDashboardStats(), memoryRecentActivity(14), graphStats(), graphRelationStats(), embeddingsReady(),
     ])
     return ok({
-      ledger: metricsSummary(Date.now()),
+      // embedUp reflects the LIVE embedder (a fresh cross-process probe), NOT the last recorded event.
+      // Otherwise a stale 'down' embed event lingers on the tile after an upgrade until ~20 fresh
+      // recalls age it out — the exact v1.27.4 field report: "down — keyword fallback" over a brain
+      // that was actually serving semantic hits. The historical window (embedRecentUp/Total) is kept.
+      ledger: { ...metricsSummary(Date.now()), embedUp: embedderUp },
       store,
       graph: { nodes: gs.nodes, edges: gs.edges, byRelation },
       // The STRUCTURAL code graph is a SEPARATE store from the semantic memory graph:
@@ -2767,10 +2771,11 @@ if (!gotTheLock) {
       return scan
     })
     initCodeGraph(app.getPath('userData')) // native code graph: load any persisted structural graph
-    // Warm the embedder OFF the main thread ~20s after startup so the dashboard's status reflects
-    // reality (ready/unavailable, not a misleading pre-probe "healthy") without a startup model load
-    // stalling the first keystrokes — the worker thread carries it.
-    setTimeout(() => { warmProbeEmbeddings().catch(() => {}) }, 20000)
+    // Warm the embedder shortly after startup so the FIRST recall isn't a cold model-load spike (was
+    // ~2.8 s in the field). Since v1.26.0 the embedder lives in the memory utilityProcess, so the load
+    // is OFF the main thread — it can no longer stall first keystrokes and needn't wait the old ~20 s;
+    // warming it early makes recall fast from the first query instead of paying the cold load then.
+    setTimeout(() => { warmProbeEmbeddings().catch(() => {}) }, 2500)
     // Periodically compact this device's append-only shard once it's mostly dead lines
     // (threshold-gated + non-forced → a no-op until it's worth it), so per-reload parse cost
     // stays bounded as the log grows. Lossless + atomic (compactSelfShard proves the round-trip).

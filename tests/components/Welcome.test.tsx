@@ -43,7 +43,8 @@ describe('Welcome', () => {
     expect(pill).toBeInTheDocument()
     expect(pill.textContent || '').toMatch(/Local-first/)
     expect(pill.textContent || '').toMatch(/secret patterns/i)
-    expect(pill.textContent || '').toMatch(/Auto-scan/i)
+    expect(pill.textContent || '').toMatch(/Auditable/i)
+    expect(pill.textContent || '').not.toMatch(/Auto-scan/i) // we audit after the fact, not scan on prompt
   })
 
   it('shows all three action cards', () => {

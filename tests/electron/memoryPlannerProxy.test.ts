@@ -578,7 +578,8 @@ describe('brain export / import operates on the REAL store', () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'BRAINMARKER gamma' })
     const zip = await buildBrainArchive(tmp, '1.26.0', Date.now(), { read: () => null, sizeOrZero: () => 0, write: () => {} })
     const fromZip = readZip(zip).find((e) => e.name === 'memory.jsonl')!.data.toString('utf8')
-    expect(fromZip).toBe(await exportMemorySnapshot())
+    // export is now string[]; the zip entry is those lines, each newline-terminated (Buffer.concat).
+    expect(fromZip).toBe((await exportMemorySnapshot()).map((l) => l + '\n').join(''))
   })
 
   it('imports INTO the real store — the merged memory is recallable afterwards', async () => {
@@ -588,7 +589,7 @@ describe('brain export / import operates on the REAL store', () => {
     // and importBrainZip verifies every one of those hashes before it applies anything.
     const { buildBrainZip } = await import('../../src/main/brainExport')
     const foreignZip = buildBrainZip({
-      memorySnapshot: () => JSON.stringify(foreign) + '\n',
+      memorySnapshot: () => [JSON.stringify(foreign)],
       graphSnapshot: () => '',
       readFile: () => null,
       appVersion: '1.26.0',

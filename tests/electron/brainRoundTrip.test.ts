@@ -42,7 +42,7 @@ describe('memory snapshot export → import', () => {
     await memoryWrite({ agentId: 'x', kind: 'note', content: 'alpha memory', hash: 'ha' })
     await memoryWrite({ agentId: 'x', kind: 'note', content: 'bravo memory', hash: 'hb' })
     const snap = exportMemorySnapshot()
-    expect(snap).toContain('alpha memory')
+    expect(snap.join('\n')).toContain('alpha memory')
 
     _resetForTests()
     _setEmbedFnForTests(async () => null)

@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildBrainZip, importBrainZip, MEMORY_ENTRY, MANIFEST_ENTRY, BRAIN_EXPORT_VERSION, type ExportDeps } from '../../src/main/brainExport'
 import { createZip, readZip } from '../../src/main/zipArchive'
+import { MAX_SINGLE_STRING_BYTES } from '../../src/main/fileLines'
+
+const RUN_HUGE_STORE_TEST = process.env.RUN_HUGE_STORE_TEST === '1'
 
 function exportDeps(over: Partial<ExportDeps> = {}): ExportDeps {
   return {
-    memorySnapshot: () => '{"id":"m1","content":"alpha"}\n{"id":"m2","content":"bravo"}\n{"reinforce":[{"id":"m1","used":2,"ts":1}]}\n',
+    memorySnapshot: () => ['{"id":"m1","content":"alpha"}', '{"id":"m2","content":"bravo"}', '{"reinforce":[{"id":"m1","used":2,"ts":1}]}'],
     graphSnapshot: () => '{"from":"m1","to":"m2","relation":"follows"}',
     readFile: (name) => (name === 'mneme-competence.jsonl' ? Buffer.from('{"domain":"x","attempts":3}') : null),
     appVersion: '1.21.0',
@@ -34,7 +37,7 @@ describe('brainExport', () => {
     expect(res.ok).toBe(true)
     expect(res.memoriesImported).toBe(2)
     expect(res.edgesImported).toBe(1)
-    expect(d.importMemory).toHaveBeenCalledWith(expect.stringContaining('"id":"m1"'))
+    expect(d.importMemory).toHaveBeenCalledWith(expect.arrayContaining([expect.stringContaining('"id":"m1"')]))
     expect(d.importGraph).toHaveBeenCalledWith(expect.stringContaining('"from":"m1"'))
     expect(res.restored).toContain('mneme-competence.jsonl')
   })
@@ -79,7 +82,7 @@ describe('brainExport', () => {
   })
 
   it('skips an empty graph + empty files, and counts zero memories cleanly', () => {
-    const zip = buildBrainZip(exportDeps({ graphSnapshot: () => '', readFile: () => Buffer.from(''), memorySnapshot: () => '' }))
+    const zip = buildBrainZip(exportDeps({ graphSnapshot: () => '', readFile: () => Buffer.from(''), memorySnapshot: () => [] }))
     const entries = readZip(zip)
     const names = entries.map((e) => e.name)
     expect(names).toContain(MEMORY_ENTRY)
@@ -87,4 +90,37 @@ describe('brainExport', () => {
     expect(names).not.toContain('mneme-competence.jsonl') // empty file → not bundled
     expect(JSON.parse(entries.find((e) => e.name === MANIFEST_ENTRY)!.data.toString()).memories).toBe(0)
   })
+
+  it('export→import round-trips the memory lines faithfully (string[] in, string[] out — no join)', async () => {
+    const lines = ['{"id":"a","content":"one"}', '{"id":"b","content":"two"}', '{"reinforce":[{"id":"a","used":1,"ts":1}]}']
+    const zip = buildBrainZip(exportDeps({ memorySnapshot: () => lines }))
+    let received: string[] | null = null
+    const res = await importBrainZip(zip, {
+      importMemory: (l) => { received = l; return { imported: l.length } },
+      importGraph: () => 0,
+      restoreFile: () => {},
+    })
+    expect(res.ok).toBe(true)
+    expect(received).toEqual(lines) // exactly the exported lines come back — byte-faithful, no giant string built
+  })
+
+  // The whole point of the string[] change: a brain past V8's ~512 MiB max string length used to throw
+  // RangeError on export (lines.join) AND again on import (buffer.toString). Gated — it allocates
+  // >512 MiB; run on demand: RUN_HUGE_STORE_TEST=1 npx vitest run tests/electron/brainExport.test.ts
+  ;(RUN_HUGE_STORE_TEST ? it : it.skip)('exports + imports a brain LARGER than V8 max string length without RangeError', async () => {
+    const chunk = 'y'.repeat(10_000)
+    const n = Math.ceil((MAX_SINGLE_STRING_BYTES + 8 * 1024 * 1024) / (chunk.length + 40))
+    const lines = Array.from({ length: n }, (_, i) => `{"id":"big-${i}","content":"${chunk}"}`)
+    // The joined size would exceed the cliff — exactly what the old lines.join('\n') tried to build.
+    expect(n * (chunk.length + 20)).toBeGreaterThan(MAX_SINGLE_STRING_BYTES)
+    const zip = buildBrainZip(exportDeps({ memorySnapshot: () => lines, graphSnapshot: () => '', readFile: () => null }))
+    let count = 0
+    const res = await importBrainZip(zip, {
+      importMemory: (l) => { count = l.length; return { imported: l.length } },
+      importGraph: () => 0,
+      restoreFile: () => {},
+    })
+    expect(res.ok).toBe(true)
+    expect(count).toBe(n) // every line survived export→zip→import; no >512 MiB string ever built
+  }, 300_000)
 })

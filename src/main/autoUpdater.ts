@@ -50,12 +50,13 @@ export function isMissingUpdateConfigError(err: unknown): boolean {
 // socket errnos. Auto-update simply can't reach the server — there's nothing to
 // fix and the user did nothing wrong — so it must NEVER be reported to Sentry as
 // a production error (was Sentry issue ELECTRON-9 / GitHub #15:
-// "updater error: net::ERR_INTERNET_DISCONNECTED"). Matches only connectivity
-// failures, so genuine errors (e.g. sha512 mismatch) still report.
+// "updater error: net::ERR_INTERNET_DISCONNECTED"; and GitHub #19 / ELECTRON-B:
+// "net::ERR_NETWORK_IO_SUSPENDED" — the machine slept mid-check). Matches only
+// connectivity failures, so genuine errors (e.g. sha512 mismatch) still report.
 export function isTransientNetworkError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '')
   return (
-    /net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|NAME_NOT_RESOLVED|CONNECTION_(RESET|REFUSED|CLOSED|TIMED_OUT)|TIMED_OUT|ADDRESS_UNREACHABLE|NETWORK_ACCESS_DENIED|PROXY_CONNECTION_FAILED)/i.test(
+    /net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|NAME_NOT_RESOLVED|CONNECTION_(RESET|REFUSED|CLOSED|TIMED_OUT)|TIMED_OUT|ADDRESS_UNREACHABLE|NETWORK_ACCESS_DENIED|PROXY_CONNECTION_FAILED)/i.test(
       msg,
     ) || /\b(ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENETDOWN)\b/.test(msg)
   )

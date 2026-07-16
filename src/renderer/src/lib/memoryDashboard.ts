@@ -105,7 +105,11 @@ export function reliabilityTiles(m: MemoryMetrics): Sli[] {
     { label: 'Recall fired', value: l.recalls > 0 ? pct(l.recallFiredRate) : 'no data', status: l.recalls > 0 ? gradeRate(l.recallFiredRate, 0.9, 0.6) : 'idle' },
     embeddingTile(l),
     { label: 'Write durability', value: l.writes > 0 ? pct(l.writeDurability) : 'no data', status: l.writes > 0 ? gradeRate(l.writeDurability, 0.999, 0.95) : 'idle' },
-    { label: 'Recall latency', value: l.recalls > 0 ? `${Math.round(l.avgLatencyMs)}ms` : 'no data', status: l.recalls > 0 ? (l.avgLatencyMs < 50 ? 'good' : l.avgLatencyMs < 200 ? 'warn' : 'bad') : 'idle' },
+    // Thresholds reflect the post-v1.26.0 architecture: a recall is a cross-process round-trip to the
+    // memory utilityProcess PLUS a bge query-embed — whose honest warm floor is ~150 ms, not the
+    // in-process function call the old 50/200 ms thresholds assumed. Warming the embedder at boot keeps
+    // cold-start spikes out of the median; >600 ms is genuinely slow and still flagged.
+    { label: 'Recall latency', value: l.recalls > 0 ? `${Math.round(l.avgLatencyMs)}ms` : 'no data', status: l.recalls > 0 ? (l.avgLatencyMs < 250 ? 'good' : l.avgLatencyMs < 600 ? 'warn' : 'bad') : 'idle' },
   ]
 }
 

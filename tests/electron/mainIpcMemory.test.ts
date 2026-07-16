@@ -643,9 +643,22 @@ describe('memory:metrics', () => {
     expect(cg.codeGraphStats).toHaveBeenCalledWith('__ALL_REPOS__')
     expect(r.data.codeGraph).toEqual({ symbols: 3, edges: 1 })
     expect(r.data.store).toEqual({ total: 7, byType: {} })
-    expect(r.data.ledger).toEqual({ recalls: 1 })
+    expect(r.data.ledger).toEqual({ recalls: 1, embedUp: true }) // embedUp is the LIVE embedder probe, added by the handler
     expect(r.data.recentActivity).toEqual([{ day: '2026-07-12', count: 3 }])
     expect(mem.memoryRecentActivity).toHaveBeenCalledWith(14)
+  })
+
+  it('reports the LIVE embedder state on the tile, not a stale historical embedUp (v1.27.5)', async () => {
+    // The field bug: after an upgrade the ledger's last recorded embed event was a stale `false`, so
+    // the tile read "down — keyword fallback" over a brain that was actually serving semantic hits.
+    // The handler now overrides embedUp with a fresh embeddingsReady() probe; the historical window
+    // (embedRecentUp/Total) is left untouched.
+    ledger.metricsSummary.mockReturnValue({ recalls: 20, embedUp: false, embedRecentUp: 12, embedRecentTotal: 20 })
+    mem.embeddingsReady.mockReturnValue(true) // the embedder is actually UP right now
+    const r = await invoke('memory:metrics')
+    expect(r.data.ledger.embedUp).toBe(true)       // live truth wins over the stale last event
+    expect(r.data.ledger.embedRecentUp).toBe(12)   // ...but the historical window is preserved
+    expect(mem.embeddingsReady).toHaveBeenCalled()
   })
 
   it('returns the 8 busiest competence domains, most-attempted first, and only the display fields', async () => {
