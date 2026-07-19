@@ -309,7 +309,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // for a heuristically-detected session we can't safely interrupt.
   const [liveModel, setLiveModel] = useState('')
   // Re-entrancy guard for the authoritative relaunch path only: relaunchClaudeWithModel
-  // is an async ~700ms multi-step PTY sequence (Ctrl+C, Ctrl+D x2, retype). A second
+  // is an async ~1.8s multi-step PTY sequence (Ctrl+C, Ctrl+D x2, retype). A second
   // pick landing before the first settles would interleave its writes into the same
   // PTY as the in-flight sequence — e.g. sequence B's Ctrl+D arriving after sequence A
   // already exited Claude back to an empty shell prompt, where Ctrl+D exits the shell

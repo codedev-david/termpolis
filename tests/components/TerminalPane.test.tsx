@@ -1195,7 +1195,7 @@ describe('TerminalPane', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
 
-    // --- Re-entrancy guard: a relaunch is a ~700ms async sequence (Ctrl+C, two
+    // --- Re-entrancy guard: a relaunch is a ~1.8s async sequence (Ctrl+C, two
     // Ctrl+D, then the retype). Picking a second model before it settles must NOT
     // let a second sequence's writes interleave into the same PTY as the first's
     // (concretely: sequence B's Ctrl+D landing after sequence A already exited
