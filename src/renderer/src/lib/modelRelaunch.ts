@@ -21,7 +21,7 @@ const CTRL_C = '\x03'
 const CTRL_D = '\x04'
 const NORMALIZE_DELAY_MS = 150
 const CONFIRM_DELAY_MS = 150 // stays well under Claude Code's documented 800ms Ctrl+D exit window
-const EXIT_SETTLE_MS = 400
+const EXIT_SETTLE_MS = 1500
 
 export interface RelaunchIO {
   write: (data: string) => void

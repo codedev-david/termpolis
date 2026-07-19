@@ -34,7 +34,7 @@ describe('relaunchClaudeWithModel', () => {
   it('waits between each keystroke with the documented timing', async () => {
     const io = fakeIo()
     await relaunchClaudeWithModel('opus', io)
-    expect(io.sleeps).toEqual([150, 150, 400])
+    expect(io.sleeps).toEqual([150, 150, 1500])
   })
 
   it('builds the relaunch command for every valid Claude alias', async () => {
