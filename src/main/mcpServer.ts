@@ -3,6 +3,7 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
+import { compressToolResult } from './headroom/compressToolResult'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -475,6 +476,15 @@ const TOOLS: McpTool[] = [
       required: ['issue'],
     },
   },
+  {
+    name: 'retrieve_full',
+    description: 'Expand a Termpolis-compressed tool result back to its full form. When a tool result ends with a [headroom] note and a token, call this with that token to recover the complete, uncompressed result.',
+    inputSchema: {
+      type: 'object',
+      properties: { token: { type: 'string', description: 'The hr_… token from a [headroom] footer' } },
+      required: ['token'],
+    },
+  },
 ]
 
 export interface McpToolHandlers {
@@ -510,6 +520,7 @@ export interface McpToolHandlers {
   codeImpact: (opts: { name: string }) => any
   codeSearch: (opts: { query?: string; limit?: number }) => any
   codeLocate: (opts: { issue: string; limit?: number }) => any
+  retrieveFull: (token: string) => unknown
 }
 
 export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
@@ -637,6 +648,8 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return handlers.codeSearch({ query: args.query, limit: args.limit })
     case 'code_locate':
       return handlers.codeLocate({ issue: args.issue, limit: args.limit })
+    case 'retrieve_full':
+      return handlers.retrieveFull(args.token)
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -682,7 +695,7 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
       const result = await executeTool(name, args || {}, handlers)
       return {
         jsonrpc: '2.0',
-        result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] },
+        result: { content: [{ type: 'text', text: compressToolResult(name, result) }] },
         id,
       }
     } catch (e: any) {

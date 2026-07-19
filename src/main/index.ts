@@ -109,6 +109,7 @@ import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
+import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getGroqKey, setGroqKey, getGroqKeyStatus, clearGroqKey } from './groqKeyStore'
 import { transcribeWithGroq, validateGroqKey } from './groqTranscription'
 import {
@@ -2717,6 +2718,7 @@ if (!gotTheLock) {
       codeImpact: (opts) => codeImpact(opts.name),
       codeSearch: (opts) => codeSymbols(opts.query, opts.limit ?? 50),
       codeLocate: (opts) => locateIssueSites(opts.issue, undefined, opts.limit),
+      retrieveFull: (token: string) => headroomRetrieveFull(token),
     }
 
     initAuditLog(app.getPath('userData'))

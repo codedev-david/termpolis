@@ -2,7 +2,7 @@ import { estimateTokens } from '../memoryEconomy'
 import { getSettings, thresholdsFor, MAX_COMPRESS_BYTES } from './config'
 import { route } from './router'
 import { compressArray, compressObject, type Compressed } from './compressors'
-import { ccrStash } from './ccrStore'
+import { ccrStash, ccrRetrieve } from './ccrStore'
 import { recordEvent } from './savingsLedger'
 
 function footer(token: string): string {
@@ -48,4 +48,16 @@ export function compressToolResult(name: string, result: unknown): string {
   } catch {
     return pretty // fail-open
   }
+}
+
+/**
+ * Inverse of compressToolResult: given an hr_ token from a [headroom] footer,
+ * return the full original result. Records the give-back so net savings stays
+ * honest. Returns a clear message (never throws) on an unknown/expired token.
+ */
+export function retrieveFull(token: string): unknown {
+  const v = ccrRetrieve(token)
+  if (v === undefined) return { error: 'expired', message: 'This result has expired — re-run the original tool.' }
+  try { recordEvent({ tool: 'retrieve_full', kind: 'retrieve', savedTokens: -estimateTokens(JSON.stringify(v, null, 2)) }) } catch { /* best effort */ }
+  return v
 }
