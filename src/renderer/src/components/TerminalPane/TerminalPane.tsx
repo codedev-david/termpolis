@@ -308,6 +308,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // isAuthoritativeClaudeSession above); falls back to a plain /model hot-swap
   // for a heuristically-detected session we can't safely interrupt.
   const [liveModel, setLiveModel] = useState('')
+  // Re-entrancy guard for the authoritative relaunch path only: relaunchClaudeWithModel
+  // is an async ~700ms multi-step PTY sequence (Ctrl+C, Ctrl+D x2, retype). A second
+  // pick landing before the first settles would interleave its writes into the same
+  // PTY as the in-flight sequence — e.g. sequence B's Ctrl+D arriving after sequence A
+  // already exited Claude back to an empty shell prompt, where Ctrl+D exits the shell
+  // itself. The heuristic /model hot-swap branch is a single synchronous write with no
+  // overlap window, so it needs no guard.
+  const [relaunchInFlight, setRelaunchInFlight] = useState(false)
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
   const voiceStopRef = useRef<() => void>(() => {})
@@ -1396,15 +1404,20 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   const alias = e.target.value
                   setLiveModel(alias)
                   if (isAuthoritativeClaudeSession) {
+                    // Guard against a second pick overlapping this one — see
+                    // relaunchInFlight's declaration for why.
+                    if (relaunchInFlight) return
+                    setRelaunchInFlight(true)
                     void relaunchClaudeWithModel(alias, {
                       write: (data) => window.termpolis.writeToTerminal(terminalId, data),
                       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-                    })
+                    }).finally(() => setRelaunchInFlight(false))
                   } else {
                     const cmd = modelSwitchCommand(alias)
                     if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
                   }
                 }}
+                disabled={relaunchInFlight}
                 title="Switch this Claude agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens)."
                 className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none"
               >

@@ -1194,6 +1194,62 @@ describe('TerminalPane', () => {
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: '' } })
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
+
+    // --- Re-entrancy guard: a relaunch is a ~700ms async sequence (Ctrl+C, two
+    // Ctrl+D, then the retype). Picking a second model before it settles must NOT
+    // let a second sequence's writes interleave into the same PTY as the first's
+    // (concretely: sequence B's Ctrl+D landing after sequence A already exited
+    // Claude back to an empty shell prompt, where Ctrl+D exits the shell itself).
+    it('ignores a second pick while a relaunch is still in flight (re-entrancy guard)', async () => {
+      vi.useFakeTimers()
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker')
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      // Mid-sequence: only Ctrl+C + the first Ctrl+D have gone out (150ms in); the
+      // second Ctrl+D and the retype are still pending.
+      await vi.advanceTimersByTimeAsync(150)
+      fireEvent.change(picker, { target: { value: 'opus' } })
+      await vi.runAllTimersAsync()
+      // Exactly ONE full 4-call sequence total — the second pick contributed nothing.
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(4)
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', 'claude --model sonnet --continue\r')
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', expect.stringContaining('opus'))
+      vi.useRealTimers()
+    })
+
+    it('disables the picker while a relaunch is in flight and re-enables it once the relaunch settles', async () => {
+      vi.useFakeTimers()
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker')
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      expect(picker).toBeDisabled()
+      await vi.runAllTimersAsync()
+      expect(picker).not.toBeDisabled()
+      vi.useRealTimers()
+    })
+
+    it('does not block a new pick once a prior relaunch has fully completed', async () => {
+      vi.useFakeTimers()
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker')
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      mockWriteToTerminal.mockClear()
+      fireEvent.change(picker, { target: { value: 'opus' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(4)
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', 'claude --model opus --continue\r')
+      vi.useRealTimers()
+    })
   })
 
   // =====================================================
