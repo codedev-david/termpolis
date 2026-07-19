@@ -9,6 +9,7 @@ import { SecuritySettings } from './SecuritySettings'
 import { MemoryLearningSettings } from './MemoryLearningSettings'
 import { SafeImportPanel } from './SafeImportPanel'
 import { VoiceSettings } from './VoiceSettings'
+import { TokenSavingsSettings } from './TokenSavingsSettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
@@ -235,6 +236,7 @@ export function SettingsPane() {
           { id: 'keybindings', label: 'Keybindings' },
           { id: 'agents', label: 'Agent Ratings' },
           { id: 'shell', label: 'Shell Config' },
+          { id: 'tokenSavings', label: 'Token Savings' },
         ].map(t => (
           <button
             key={t.id}
@@ -603,6 +605,7 @@ export function SettingsPane() {
       {activeTab === 'keybindings' && <KeybindingsSettings />}
 
       {activeTab === 'agents' && <AgentRatingsSettings />}
+      {activeTab === 'tokenSavings' && <TokenSavingsSettings />}
 
       {activeTab === 'shell' && (
         <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>
