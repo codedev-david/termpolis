@@ -158,6 +158,9 @@ const api: TermpolisAPI = {
   brainImport: () => ipcRenderer.invoke('brain:import'),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
+  tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
+  tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
+  tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
    *  it carries no process health and must never be put on a timer. */
   memoryHostStatus: () => ipcRenderer.invoke('memory:host-status'),

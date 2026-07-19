@@ -110,6 +110,9 @@ import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
+import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
+import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
+import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
 import { getGroqKey, setGroqKey, getGroqKeyStatus, clearGroqKey } from './groqKeyStore'
 import { transcribeWithGroq, validateGroqKey } from './groqTranscription'
 import {
@@ -2729,6 +2732,26 @@ if (!gotTheLock) {
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
     initAnomalyLog(app.getPath('userData')) // burn-in: capture surprising memory events (incl. this init's)
+
+    // ── Token Headroom: settings + savings-ledger persistence (best-effort) ─────────────────────
+    // Guarded per the app.whenReady rule — a bad file must never take the boot down.
+    try {
+      const hrDir = join(app.getPath('userData'), 'headroom')
+      loadSettingsFromDisk(hrDir)
+      loadLedgerBaseFromDisk(hrDir)
+      let hrFlushTimer: ReturnType<typeof setTimeout> | null = null
+      setLedgerFlush(() => { // debounced, async, best-effort — never on the hot path
+        if (hrFlushTimer) return
+        hrFlushTimer = setTimeout(() => { hrFlushTimer = null; saveLedgerToDisk(hrDir) }, 2000)
+      })
+      ipcMain.handle('tokenSavings:get-settings', () => ok(getHeadroomSettings()))
+      ipcMain.handle('tokenSavings:set-settings', (_e, p) => {
+        const next = setHeadroomSettings(p || {})
+        try { saveSettingsToDisk(hrDir) } catch { /* best effort */ }
+        return ok(next)
+      })
+      ipcMain.handle('tokenSavings:get-receipt', () => ok(summarizeHeadroomSavings()))
+    } catch { /* headroom persistence is best-effort */ }
 
     // ── The memory brain starts in ANOTHER PROCESS ────────────────────────────────────────────────
     // initSwarmMemory() blocked THIS thread for ~4,276 ms on a real 475 MB / 90,817-entry store —

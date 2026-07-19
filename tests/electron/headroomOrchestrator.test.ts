@@ -25,6 +25,15 @@ describe('compressToolResult', () => {
     expect(ccrRetrieve(token)).toEqual(arr)
   })
 
+  it('compresses a large object result (read_output) and offloads it reversibly', () => {
+    const big = { output: Array.from({ length: 2000 }, (_, i) => `log line ${i}`).join('\n') }
+    const text = compressToolResult('read_output', big)
+    expect(text.length).toBeLessThan(pretty(big).length)
+    expect(text).toContain('retrieve_full')
+    const token = text.match(/hr_[a-z0-9]+/)![0]
+    expect(ccrRetrieve(token)).toEqual(big)
+  })
+
   it('passes memory_* through byte-identical (brain non-interference)', () => {
     const mem = [{ id: 'm1', content: 'x'.repeat(5000) }]
     expect(compressToolResult('memory_search', mem)).toBe(pretty(mem))

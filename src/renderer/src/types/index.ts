@@ -243,6 +243,10 @@ export interface TermpolisAPI {
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
+  /** Token Headroom: compression settings + measured savings receipt. */
+  tokenSavingsGetSettings: () => Promise<IpcResponse<{ enabled: boolean; mode: 'conservative' | 'balanced' | 'aggressive'; steering: boolean }>>
+  tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean }) => Promise<IpcResponse<{ enabled: boolean; mode: 'conservative' | 'balanced' | 'aggressive'; steering: boolean }>>
+  tokenSavingsGetReceipt: () => Promise<IpcResponse<{ session: { netSaved: number; events: number; byTool: Record<string, number> }; cumulative: { netSaved: number; events: number; byTool: Record<string, number> } }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
   memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'inproc' | 'unstarted'; pid: number | null }>>
