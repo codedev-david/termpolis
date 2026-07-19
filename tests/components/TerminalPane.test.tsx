@@ -1143,22 +1143,42 @@ describe('TerminalPane', () => {
       }))
     }
 
-    it('shows the picker for a Claude agent and sends /model on change', () => {
+    it('shows the picker for an authoritatively-launched Claude terminal and relaunches with --model + --continue on change', async () => {
+      vi.useFakeTimers()
       withClaudeTerminal('claude --dangerously-skip-permissions')
       render(<TerminalPane {...defaultProps} />)
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
-      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '/model sonnet\r')
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', 'claude --model sonnet --continue\r')
+      vi.useRealTimers()
     })
 
-    it('switches models back and forth midstream, sending /model each time', () => {
+    it('switches models back and forth midstream, relaunching each time', async () => {
+      vi.useFakeTimers()
       withClaudeTerminal('claude --dangerously-skip-permissions')
       render(<TerminalPane {...defaultProps} />)
       const picker = screen.getByTestId('model-picker')
       for (const alias of ['opus', 'sonnet', 'haiku', 'opus', 'fable']) {
         mockWriteToTerminal.mockClear()
         fireEvent.change(picker, { target: { value: alias } })
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', `/model ${alias}\r`)
+        await vi.runAllTimersAsync()
+        expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', `claude --model ${alias} --continue\r`)
       }
+      vi.useRealTimers()
+    })
+
+    it('falls back to the plain /model hot-swap for a heuristically-detected (not authoritatively-launched) session', async () => {
+      withClaudeTerminal(undefined)
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: { name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' } })
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(1)
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '/model sonnet\r')
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null })
     })
 
     it('does NOT show the picker for a plain (non-agent) terminal', () => {

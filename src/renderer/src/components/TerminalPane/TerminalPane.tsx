@@ -29,6 +29,7 @@ import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, 
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { CLAUDE_MODEL_OPTIONS, modelSwitchCommand } from '../../lib/modelBroker'
+import { relaunchClaudeWithModel } from '../../lib/modelRelaunch'
 import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -276,6 +277,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // Falls back to output detection for an agent started by hand in a plain shell.
   const agentCommand = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.agentCommand)
   const badgeAgent = agentFromCommand(agentCommand) ?? agent.detectedAgent
+  // Only an authoritatively-launched Claude session (Termpolis itself typed the launch
+  // command) is safe to interrupt-and-relaunch — see modelRelaunch.ts's file comment.
+  // A heuristically output-detected "Claude-like" terminal might be a different program
+  // that would just exit on the first Ctrl+D (plain bash does, at an empty prompt)
+  // instead of consuming it like Claude Code does, so that case keeps the old hot-swap.
+  const isAuthoritativeClaudeSession = agentFromCommand(agentCommand)?.name === 'Claude Code'
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings).
   useAutoPrimer(terminalId, agent.detectedAgent, cwd)
@@ -296,7 +303,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // Reactive so the on-pane mic button appears/disappears as voice is toggled in Settings.
   const voiceEnabled = useTerminalStore((s) => s.voiceSettings?.enabled ?? false)
   const setShowSettings = useTerminalStore((s) => s.setShowSettings)
-  // Local hot-swap model for this terminal's Claude agent (sends /model on change).
+  // Local hot-swap model for this terminal's Claude agent — relaunches with
+  // --model/--continue for an authoritatively-launched session (see
+  // isAuthoritativeClaudeSession above); falls back to a plain /model hot-swap
+  // for a heuristically-detected session we can't safely interrupt.
   const [liveModel, setLiveModel] = useState('')
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
@@ -1385,10 +1395,17 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   e.stopPropagation()
                   const alias = e.target.value
                   setLiveModel(alias)
-                  const cmd = modelSwitchCommand(alias)
-                  if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
+                  if (isAuthoritativeClaudeSession) {
+                    void relaunchClaudeWithModel(alias, {
+                      write: (data) => window.termpolis.writeToTerminal(terminalId, data),
+                      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    })
+                  } else {
+                    const cmd = modelSwitchCommand(alias)
+                    if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
+                  }
                 }}
-                title="Switch this Claude agent's model on the fly (takes effect next message). Cheaper models save tokens."
+                title="Switch this Claude agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens)."
                 className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none"
               >
                 <option value="">Model…</option>
