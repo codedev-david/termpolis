@@ -3,10 +3,13 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 
-// Proves live model switching works MID-SESSION on a real Claude terminal: launch Claude,
-// wait for the model picker to appear (which only happens once the terminal is detected as
-// an AI/Claude terminal), then switch models back and forth and confirm each `/model <alias>`
-// is delivered into the running session. Production Termpolis must be closed.
+// Proves live model switching works MID-SESSION for a HEURISTICALLY-detected Claude
+// terminal (no authoritative launch command — Termpolis can't safely interrupt a session
+// it didn't launch itself, so this path intentionally keeps the plain `/model <alias>`
+// hot-swap; see modelRelaunch.ts and TerminalPane.tsx's isAuthoritativeClaudeSession for
+// the authoritatively-launched path, which relaunches instead and is covered by
+// tests/components/TerminalPane.test.tsx + tests/renderer/modelRelaunch.test.ts).
+// Production Termpolis must be closed.
 
 let app: ElectronApplication
 let page: Page
