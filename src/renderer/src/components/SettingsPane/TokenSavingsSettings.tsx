@@ -74,10 +74,19 @@ export function TokenSavingsSettings() {
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>
             Aggressiveness:{' '}
-            <select data-testid="hr-mode" value={settings.mode} onChange={(e) => update({ mode: e.target.value as Mode })} disabled={!settings.enabled}>
-              <option value="conservative">Conservative</option>
-              <option value="balanced">Balanced</option>
-              <option value="aggressive">Aggressive</option>
+            {/* Explicit dark bg + light text: an unstyled native select inherited the theme's light-grey
+                text but kept the OS-default light control/option background → unreadable. Matches the
+                Default Shell / Voice selects so the closed control AND the open option list stay legible. */}
+            <select
+              data-testid="hr-mode"
+              value={settings.mode}
+              onChange={(e) => update({ mode: e.target.value as Mode })}
+              disabled={!settings.enabled}
+              className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none disabled:opacity-50"
+            >
+              <option value="conservative" className="bg-[#2d2d2d] text-[#d4d4d4]">Conservative</option>
+              <option value="balanced" className="bg-[#2d2d2d] text-[#d4d4d4]">Balanced</option>
+              <option value="aggressive" className="bg-[#2d2d2d] text-[#d4d4d4]">Aggressive</option>
             </select>
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>

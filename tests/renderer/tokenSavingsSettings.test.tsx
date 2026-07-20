@@ -42,4 +42,14 @@ describe('TokenSavingsSettings', () => {
       (window as unknown as { termpolis: { tokenSavingsSetSettings: ReturnType<typeof vi.fn> } }).termpolis.tokenSavingsSetSettings,
     ).toHaveBeenCalledWith({ enabled: false }))
   })
+
+  it('gives the aggressiveness select an explicit dark bg + light text (readable contrast, not grey-on-white)', async () => {
+    render(<TokenSavingsSettings />)
+    const sel = await screen.findByTestId('hr-mode')
+    // An unstyled native select inherited light-grey text on the OS-default light background.
+    expect(sel.className).toContain('bg-[#2d2d2d]')
+    expect(sel.className).toContain('text-[#d4d4d4]')
+    // Options carry the dark bg too so the OPEN dropdown list stays legible on Electron/Windows.
+    sel.querySelectorAll('option').forEach((o) => expect(o.className).toContain('bg-[#2d2d2d]'))
+  })
 })
