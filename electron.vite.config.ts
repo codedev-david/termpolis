@@ -35,7 +35,10 @@ export default defineConfig({
     define: {
       'process.env.SENTRY_DSN': sentryDsn,
     },
-    plugins: [externalizeDepsPlugin()]
+    // Bundle pngjs INTO the child entry (headroomProxy) rather than externalize it, so the
+    // utilityProcess never has to resolve it from node_modules at runtime — a missing/unresolvable
+    // dep would crash the child (and silently disable the whole proxy).
+    plugins: [externalizeDepsPlugin({ exclude: ['pngjs'] })]
   },
   preload: {
     build: {
