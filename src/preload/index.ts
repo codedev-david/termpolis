@@ -161,6 +161,7 @@ const api: TermpolisAPI = {
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
   tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
+  tokenSavingsGetProxyReceipt: () => ipcRenderer.invoke('tokenSavings:get-proxy-receipt'),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
    *  it carries no process health and must never be put on a timer. */
   memoryHostStatus: () => ipcRenderer.invoke('memory:host-status'),

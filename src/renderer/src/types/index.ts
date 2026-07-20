@@ -151,6 +151,20 @@ export interface CodeExploreResult {
   callees: CodeSymbolHit[]
 }
 
+export interface ProxyTotalsView {
+  requests: number
+  textOrigTokens: number
+  textSavedTokens: number
+  savedPct: number
+  images: number
+  imageOrigBytes: number
+  imageSavedBytes: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  inputTokens: number
+  outputTokens: number
+}
+
 export interface TermpolisAPI {
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
@@ -247,6 +261,7 @@ export interface TermpolisAPI {
   tokenSavingsGetSettings: () => Promise<IpcResponse<{ enabled: boolean; mode: 'conservative' | 'balanced' | 'aggressive'; steering: boolean }>>
   tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean }) => Promise<IpcResponse<{ enabled: boolean; mode: 'conservative' | 'balanced' | 'aggressive'; steering: boolean }>>
   tokenSavingsGetReceipt: () => Promise<IpcResponse<{ session: { netSaved: number; events: number; byTool: Record<string, number> }; cumulative: { netSaved: number; events: number; byTool: Record<string, number> } }>>
+  tokenSavingsGetProxyReceipt: () => Promise<IpcResponse<{ session: ProxyTotalsView; cumulative: ProxyTotalsView }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
   memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'inproc' | 'unstarted'; pid: number | null }>>
