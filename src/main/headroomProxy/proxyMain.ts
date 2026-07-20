@@ -94,6 +94,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
 // Guarded on process.parentPort so importing this module in tests/main is inert.
 // Per the memory-brain gotcha: the child receives messages as `e.data`. Image
 // compression is delegated to main (nativeImage lives there); bounded + fail-open.
+/* v8 ignore start -- utilityProcess child entry: exercised at runtime in the fork, not unit-testable */
 const parentPort = (process as unknown as { parentPort?: { on: (ev: string, cb: (e: { data: unknown }) => void) => void; postMessage: (m: unknown) => void } }).parentPort
 if (parentPort) {
   let server: http.Server | null = null
@@ -133,3 +134,4 @@ if (parentPort) {
     }
   })
 }
+/* v8 ignore stop */

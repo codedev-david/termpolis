@@ -95,6 +95,7 @@ export function stopProxy(): void {
   healthy = false
 }
 
+/* v8 ignore start -- thin Electron utilityProcess wrapper; needs a real Electron runtime */
 /** Real Electron transport — lazy require so this module imports cleanly in tests (no Electron). */
 export function createProxyTransport(entryPath: string): ProxyTransport {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -108,6 +109,7 @@ export function createProxyTransport(entryPath: string): ProxyTransport {
     get pid() { return child.pid },
   }
 }
+/* v8 ignore stop */
 
 /** Find an OS-assigned free TCP port on loopback (resolves 0 on failure). */
 export function pickFreePort(): Promise<number> {

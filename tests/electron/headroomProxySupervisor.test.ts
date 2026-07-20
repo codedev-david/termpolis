@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-const { setProxySpawner, onProxyResult, setImageCompressor, startProxy, isProxyHealthy, getProxyEnv, stopProxy, _resetProxyForTest } =
+const { setProxySpawner, onProxyResult, setImageCompressor, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, _resetProxyForTest } =
   await import('../../src/main/headroomProxy/proxySupervisor')
 
 interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; fireCompressImages: (reqId: number, images: unknown[]) => void; posted: Array<Record<string, unknown>>; killed: boolean }
@@ -71,6 +71,11 @@ describe('proxy supervisor', () => {
     expect(fakes[0].killed).toBe(true)
     expect(isProxyHealthy()).toBe(false)
     expect(getProxyEnv()).toBeNull()
+  })
+
+  it('pickFreePort resolves a usable loopback port', async () => {
+    const p = await pickFreePort()
+    expect(p).toBeGreaterThan(0)
   })
 
   it('delegates image compression to the registered compressor and replies imagesResult', () => {

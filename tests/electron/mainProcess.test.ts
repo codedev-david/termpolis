@@ -360,6 +360,7 @@ describe('terminal:create', () => {
       '/home/user',
       expect.any(Function),
       expect.any(Array),
+      undefined, // claudeHeadroom env (only injected for Claude launches)
     )
   })
 
@@ -379,6 +380,7 @@ describe('terminal:create', () => {
       '/tmp',
       expect.any(Function),
       expect.any(Array),
+      undefined, // claudeHeadroom env (only injected for Claude launches)
     )
   })
 
