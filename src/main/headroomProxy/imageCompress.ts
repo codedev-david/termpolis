@@ -14,7 +14,6 @@ function getApi(): NativeImageLike | null {
   if (cachedApi !== undefined) return cachedApi ?? null
   try {
     // Lazy require so this module imports cleanly in tests / non-Electron contexts.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     cachedApi = (require('electron') as { nativeImage: NativeImageLike }).nativeImage
   } catch { cachedApi = null }
   return cachedApi ?? null

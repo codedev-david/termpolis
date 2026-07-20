@@ -98,7 +98,6 @@ export function stopProxy(): void {
 /* v8 ignore start -- thin Electron utilityProcess wrapper; needs a real Electron runtime */
 /** Real Electron transport — lazy require so this module imports cleanly in tests (no Electron). */
 export function createProxyTransport(entryPath: string): ProxyTransport {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { utilityProcess } = require('electron') as typeof import('electron')
   const child = utilityProcess.fork(entryPath, [], { serviceName: 'termpolis-headroom' })
   return {
