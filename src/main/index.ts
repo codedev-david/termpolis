@@ -112,7 +112,8 @@ import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPor
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { steeringDirective } from './headroom/outputSteering'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, setImageCompressor, pickFreePort } from './headroomProxy/proxySupervisor'
+import { compressImageBatch } from './headroomProxy/imageCompress'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush } from './headroomProxy/proxyLedger'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
@@ -2773,6 +2774,7 @@ if (!gotTheLock) {
         hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir) }, 3000)
       })
       onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
+      setImageCompressor((imgs) => compressImageBatch(imgs)) // image work runs here (nativeImage lives in main)
       ipcMain.handle('tokenSavings:get-proxy-receipt', () => ok(summarizeProxySavings()))
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
