@@ -212,6 +212,35 @@ describe('WorkspaceList', () => {
           expect.any(String),
           'bash',
           '/home/user', // falls back to homedir
+          undefined,
+          false, // no persisted agentCommand → not a Claude terminal → no compression proxy env
+        )
+      })
+    })
+
+    it('passes the compression-proxy flag for a saved Claude workspace terminal', async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Claude WS',
+            terminals: [
+              { name: 'Claude', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'claude' },
+            ],
+          },
+        ],
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Claude WS'))
+      await waitFor(() => {
+        expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith(
+          expect.any(String),
+          'bash',
+          '/work',
+          undefined,
+          true, // agentCommand 'claude' → gate ON so a manual `claude` in the restored terminal compresses
         )
       })
     })

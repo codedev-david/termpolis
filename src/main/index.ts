@@ -414,7 +414,7 @@ const terminalOutputBuffers = new Map<string, string>()
 const mcpCreatedTerminals = new Set<string>()
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
-import { sanitizeAgentCommand, isClaudeAgentName } from './agentCommandSanitizer'
+import { sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
 import { safeGit, safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
@@ -2521,7 +2521,12 @@ if (!gotTheLock) {
             const existing = terminalOutputBuffers.get(id) || ''
             const updated = existing + data
             terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
-          }, getAgentExtraPaths(), isClaudeAgentName(name) ? (getProxyEnv() ?? undefined) : undefined)
+          // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
+          // reveals the real command, and the conductor may name a Claude worker anything ("Backend
+          // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
+          // (codex/gemini/qwen read OPENAI_*/Google env), so this compresses every Claude worker and
+          // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
+          }, getAgentExtraPaths(), getProxyEnv() ?? undefined)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
@@ -2762,8 +2767,11 @@ if (!gotTheLock) {
 
     // ── Headroom compression proxy: ALWAYS-ON for Claude Code ───────────────────────────────────
     // Runs in a utilityProcess (off the main/PTY thread). Claude terminals launch through it via
-    // ANTHROPIC_BASE_URL. Health-gated: if it can't come up, getProxyEnv() returns null and Claude
-    // launches DIRECT — the feature can never break the agent, only fail to compress. Fully guarded.
+    // ANTHROPIC_BASE_URL. Health-gated AT LAUNCH: if the proxy isn't up, getProxyEnv() returns null and
+    // Claude launches DIRECT. A live session is pinned to the proxy port for its lifetime, so a
+    // sustained proxy outage would surface transient API errors until the child self-heals — it rebinds
+    // the SAME port and maybeRestart() never gives up (backs off, then retries). New launches during an
+    // outage always go direct. Net: launch is failure-proof; a live session is self-healing, not immune.
     try {
       const hrProxyDir = join(app.getPath('userData'), 'headroom')
       loadProxyBaseFromDisk(hrProxyDir)

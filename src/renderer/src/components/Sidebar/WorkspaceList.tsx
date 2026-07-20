@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
+import { isClaudeCommand } from '../../lib/testAgents'
 import { v4 as uuid } from 'uuid'
 
 export function WorkspaceList() {
@@ -29,7 +30,9 @@ export function WorkspaceList() {
     for (const t of ws.terminals) {
       const id = uuid()
       const cwd = t.cwd || homedir
-      await window.termpolis.createTerminal(id, t.shellType as any, cwd)
+      // Gate the compression proxy on the workspace's persisted agentCommand — a saved Claude terminal
+      // gets ANTHROPIC_BASE_URL so a manual `claude` in it is compressed too (matches session-restore).
+      await window.termpolis.createTerminal(id, t.shellType as any, cwd, undefined, isClaudeCommand(t.agentCommand))
       newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily })
     }
     useTerminalStore.setState({
