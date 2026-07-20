@@ -181,6 +181,20 @@ Every model has blind spots. **Second Opinion** hands the most recent answer in 
 
 ---
 
+## ⚡ Token Headroom — compress what Claude Code sends, cut your burn rate (v1.29)
+
+Long AI coding sessions chew through rate limits and hit compaction fast — and the biggest culprit isn't your prompts, it's the **file reads, command output, and pasted screenshots** the agent ships back to the model on every turn. **Token Headroom** compresses that traffic *before* it reaches Anthropic, so you get more work done per session before you hit a wall.
+
+- **Always on for Claude Code.** Every Claude session launches through a **local, off-thread compression proxy** (its own process — never the UI/PTY thread). No toggle, no setup. If the proxy is ever unhealthy the launch silently goes **direct**, so the feature can never *break* your agent — only fail to compress.
+- **It compresses what actually costs you.** Verbose **Bash/command output**, large **file Reads**, and **pasted images** (downscaled below the model's cap) are shrunk deterministically. Nothing is lost — the agent calls the `retrieve_full` tool to pull any compressed result back in full when it needs the detail.
+- **Prompt-cache safe — proven.** Naive compression *busts* Anthropic's prompt cache and costs you **more**. Headroom compresses **deterministically**, so re-sent history stays byte-identical and the cache keeps hitting. Measured on a real multi-turn session: **~50% fewer tokens ingested per turn with cache hits fully preserved.**
+- **Your memory/brain is never touched.** Compression lives only on the outbound wire to Anthropic; the shared memory store, recall, and learning are untouched.
+- **See the receipt.** **Settings → Token Savings** shows the live **% of tokens saved** (session + all-time), by type, plus prompt-cache health — computed from Anthropic's real usage numbers, on your machine.
+
+> **Built in-house, tested hard.** Deterministic compressors, a source-level cache-safety guard, fail-open at every layer, and an end-to-end proof measuring real token reduction with the cache intact — all under Termpolis's 7,000+ test suite.
+
+---
+
 ## 📊 Memory & Learning dashboard — proof it's working, computed locally
 
 A **Memory & Learning** tab in Settings turns the brain from a black box into an inspectable instrument — **every number computed on your machine, offline, from the append-only store.** No word-taking; nothing on the screen leaves your machine.
