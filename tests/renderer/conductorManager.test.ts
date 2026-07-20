@@ -97,6 +97,8 @@ describe('conductorManager', () => {
       'conductor-uuid-1',
       expect.any(String),
       '/tmp/project',
+      undefined,
+      true, // conductor always launches Claude → Headroom proxy env requested
     )
     // Should have written the claude --version command
     expect(window.termpolis.writeToTerminal).toHaveBeenCalledWith(

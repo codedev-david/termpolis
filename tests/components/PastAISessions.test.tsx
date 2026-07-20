@@ -171,7 +171,7 @@ describe('PastAISessions', () => {
     expect(addCall.agentCommand).toContain('claude --resume')
     expect(mockSetActiveTerminal).toHaveBeenCalledWith('fake-uuid-1234')
     expect(onClose).toHaveBeenCalledTimes(1)
-    expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith('fake-uuid-1234', 'bash', 'C:\\repos\\alpha')
+    expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith('fake-uuid-1234', 'bash', 'C:\\repos\\alpha', undefined, true)
 
     // Wait for the 800ms guard (real timers)
     await waitFor(() => {

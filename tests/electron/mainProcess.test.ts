@@ -166,6 +166,7 @@ vi.mock('../../src/main/mcpServer', () => ({
 
 vi.mock('../../src/main/agentCommandSanitizer', () => ({
   sanitizeAgentCommand: vi.fn((cmd: string) => cmd),
+  isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || ''),
 }))
 
 const mockExecSync = vi.fn()
@@ -2186,6 +2187,7 @@ describe('MCP handler callbacks', () => {
       expect.any(String), // homedir()
       expect.any(Function),
       expect.any(Array),
+      undefined, // claudeHeadroom env (non-Claude agent name → none)
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })
@@ -2204,6 +2206,7 @@ describe('MCP handler callbacks', () => {
       '/tmp',
       expect.any(Function),
       expect.any(Array),
+      undefined, // claudeHeadroom env (non-Claude agent name → none)
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })
