@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import * as http from 'http'
 import * as zlib from 'zlib'
+import { PNG } from 'pngjs'
 const { createProxyServer } = await import('../../src/main/headroomProxy/proxyMain')
+
+function bigPngB64(w: number, h: number): string {
+  const png = new PNG({ width: w, height: h })
+  for (let i = 0; i < w * h; i++) { png.data[i * 4] = (i * 3) % 256; png.data[i * 4 + 1] = (i * 5) % 256; png.data[i * 4 + 2] = (i * 7) % 256; png.data[i * 4 + 3] = 255 }
+  return PNG.sync.write(png).toString('base64')
+}
 
 const SSE = [
   'event: message_start',
@@ -81,5 +88,14 @@ describe('headroom proxy server (mock upstream)', () => {
     await post('/v1/messages/count_tokens', messagesBody)
     expect(received[0].body).toBe(messagesBody) // untouched — no compression, no double-count
     expect(results).toHaveLength(0)
+  })
+
+  it('downscales an oversized PNG image in a message body before forwarding', async () => {
+    received = []; results = []
+    const img = bigPngB64(1800, 220)
+    const body = JSON.stringify({ messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: img } }] }] })
+    await post('/v1/messages', body)
+    expect(received[0].body.length).toBeLessThan(body.length) // image downscaled → smaller forwarded body
+    expect(received[0].body).not.toContain(img) // original full-size image not forwarded
   })
 })

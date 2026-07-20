@@ -36,11 +36,6 @@ let resultCb: ((r: ProxyResultMsg) => void) | null = null
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
 export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { resultCb = cb }
-
-type ImageCompressorFn = (imgs: Array<{ data: string; mediaType: string }>) => Array<{ data: string; mediaType: string; changed: boolean }>
-let imageCompressor: ImageCompressorFn | null = null
-/** Register the (main-side, nativeImage-backed) image compressor the child delegates to. */
-export function setImageCompressor(fn: ImageCompressorFn | null): void { imageCompressor = fn }
 export function isProxyHealthy(): boolean { return healthy && port > 0 }
 export function getProxyPort(): number { return port }
 
@@ -68,17 +63,11 @@ function spawnOnce(): void {
     transport = spawner()
   } catch { healthy = false; transport = null; return }
   transport.onMessage((m) => {
-    const msg = m as { kind?: string; port?: number; reqId?: number; images?: Array<{ data: string; mediaType: string }> }
+    const msg = m as { kind?: string; port?: number }
     if (!msg) return
     if (msg.kind === 'ready') { healthy = true; if (msg.port) port = msg.port }
     else if (msg.kind === 'error') { healthy = false }
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
-    else if (msg.kind === 'compressImages' && typeof msg.reqId === 'number') {
-      const imgs = msg.images || []
-      let results: Array<{ data: string; mediaType: string; changed: boolean }>
-      try { results = imageCompressor ? imageCompressor(imgs) : imgs.map((i) => ({ ...i, changed: false })) } catch { results = imgs.map((i) => ({ ...i, changed: false })) }
-      try { transport?.postMessage({ kind: 'imagesResult', reqId: msg.reqId, results }) } catch { /* ignore */ }
-    }
   })
   transport.onExit(() => { healthy = false; transport = null; maybeRestart() })
   try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream }) } catch { healthy = false }
@@ -138,5 +127,5 @@ export function pickFreePort(): Promise<number> {
 
 export function _resetProxyForTest(): void {
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
-  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; imageCompressor = null; spawner = null; upstream = 'api.anthropic.com'
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; spawner = null; upstream = 'api.anthropic.com'
 }

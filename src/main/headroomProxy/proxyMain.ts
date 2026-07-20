@@ -2,6 +2,7 @@ import * as http from 'http'
 import * as https from 'https'
 import { rewriteMessagesBody, type WireStats } from './wireCompress'
 import { parseUsageFromSse, decodeBody, type Usage } from './usageParse'
+import { compressImage } from './imageCodec'
 
 export interface ProxyResult {
   changed: boolean
@@ -25,9 +26,9 @@ export interface ProxyOpts {
  * for real token usage. Every path is wrapped so a bad edge forwards/ends rather than throws —
  * a crash would break every live Claude session pinned to this port.
  *
- * NOTE: image compression is intentionally NOT wired here in v1.29.0 (it required a
- * timing-gated main-thread path that could bust the prompt cache). The image modules remain,
- * ready for a deterministic re-enable.
+ * Image compression runs here too (v1.29.1): a pure-JS, deterministic, memoized PNG downscale
+ * in this CHILD process (off the main thread) — no nativeImage, no timeout, no cross-process
+ * delegation — so identical images compress to identical bytes every turn (cache-safe).
  */
 export function createProxyServer(opts: ProxyOpts): http.Server {
   const useHttps = opts.useHttps !== false
@@ -47,7 +48,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
       let rewritten: { changed: boolean; stats: WireStats; stashes: Array<{ token: string; original: string }> } | null = null
       if (isMessages) {
         try {
-          const r = rewriteMessagesBody(body.toString('utf8'))
+          const r = rewriteMessagesBody(body.toString('utf8'), { compressImage })
           if (r.changed) body = Buffer.from(r.body, 'utf8')
           rewritten = { changed: r.changed, stats: r.stats, stashes: r.stashes }
         } catch { /* fail-open: forward original */ }
