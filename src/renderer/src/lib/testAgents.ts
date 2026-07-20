@@ -14,6 +14,11 @@ export function resolveAgentCommand(command: string): string {
   return command
 }
 
+/** True when a command string launches Claude Code — used to gate the always-on Headroom proxy. */
+export function isClaudeCommand(command?: string | null): boolean {
+  return !!command && command.trim().toLowerCase().startsWith('claude')
+}
+
 export function testDelay(ms: number): number {
   try {
     if (process?.env?.TERMPOLIS_TEST_TIMING === '1') {

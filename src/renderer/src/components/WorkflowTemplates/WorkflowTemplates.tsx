@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
+import { isClaudeCommand } from '../../lib/testAgents'
 import type { PaneNode, ShellType, WorkflowTemplate, WorkflowTerminal, WorkflowLayout } from '../../types'
 
 const BUILT_IN_WORKFLOWS: WorkflowTemplate[] = [
@@ -317,7 +318,7 @@ export function WorkflowTemplates({ onClose }: Props) {
       const id = uuid()
       newIds.push(id)
       const shellType = resolveShell(tmpl.shell)
-      const res = await window.termpolis.createTerminal(id, shellType, cwd)
+      const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(tmpl.command))
       if (!res.success) continue
       addTerminal({
         id,

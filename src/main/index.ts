@@ -414,7 +414,7 @@ const terminalOutputBuffers = new Map<string, string>()
 const mcpCreatedTerminals = new Set<string>()
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
-import { sanitizeAgentCommand } from './agentCommandSanitizer'
+import { sanitizeAgentCommand, isClaudeAgentName } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
 import { safeGit, safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
@@ -2521,7 +2521,7 @@ if (!gotTheLock) {
             const existing = terminalOutputBuffers.get(id) || ''
             const updated = existing + data
             terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
-          }, getAgentExtraPaths())
+          }, getAgentExtraPaths(), isClaudeAgentName(name) ? (getProxyEnv() ?? undefined) : undefined)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)

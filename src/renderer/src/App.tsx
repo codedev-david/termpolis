@@ -42,7 +42,7 @@ import { getHomedir } from './lib/homedir'
 import { getTerminalDefaults, agentTerminalName } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from './types'
-import { resolveAgentCommand, testDelay } from './lib/testAgents'
+import { resolveAgentCommand, testDelay, isClaudeCommand } from './lib/testAgents'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { detectAgentStatus } from './lib/agentStatusDetector'
 import { detectDismissChar, tailSlice } from './lib/promptAutoDismiss'
@@ -150,7 +150,7 @@ export default function App() {
         if (agentTerminals.length > 0) {
           setLaunchingAgent(agentTerminals[0].name)
         }
-        Promise.all(resolvedSaved.map(t => window.termpolis.createTerminal(t.id, t.shellType, t.cwd))).then(() => {
+        Promise.all(resolvedSaved.map(t => window.termpolis.createTerminal(t.id, t.shellType, t.cwd, undefined, isClaudeCommand(t.agentCommand)))).then(() => {
           // Re-launch agent commands after shells initialize
           // Send a no-op newline to flush shell init, then the real command
           if (agentTerminals.length > 0) {
@@ -811,7 +811,7 @@ export default function App() {
         const pCwd = dirRes.data
         const pId = uuid()
         const pShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd)
+        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
           setTimeout(() => {
@@ -860,7 +860,7 @@ export default function App() {
     setLaunchingAgent(config.name)
     const id = uuid()
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-    const res = await window.termpolis.createTerminal(id, shellType, cwd)
+    const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
       setTimeout(() => {

@@ -53,7 +53,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   const id = uuid()
   const isWindows = navigator.platform.startsWith('Win')
   const shellType = isWindows ? 'powershell' as const : 'bash' as const
-  const res = await window.termpolis.createTerminal(id, shellType, cwd)
+  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, true) // conductor always runs `claude`
 
   if (!res.success) {
     conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null }

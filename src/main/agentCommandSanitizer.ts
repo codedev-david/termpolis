@@ -40,6 +40,12 @@ function extractModelAlias(command: string, aliases: string[]): string | null {
   return null
 }
 
+/** Soft signal: does an LLM-chosen swarm terminal NAME denote a Claude agent (e.g. "Claude (Build UI)")?
+ *  Used to gate the always-on Headroom proxy env for swarm-spawned Claude workers. */
+export function isClaudeAgentName(name: string): boolean {
+  return /(^|[^a-z])claude/i.test(name || '')
+}
+
 export function sanitizeAgentCommand(command: string): string {
   const trimmed = command.trim()
 

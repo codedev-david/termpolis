@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
+import { isClaudeCommand } from '../../lib/testAgents'
 import type { AISessionSummary, ShellType } from '../../types'
 
 interface Props {
@@ -131,7 +132,7 @@ export function PastAISessions({ open, onClose }: Props) {
     setActiveTerminal(newId)
     onClose()
     try {
-      await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd)
+      await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, true) // resume always runs `claude --resume`
       // Give the shell ~800ms to print its first prompt before injecting the
       // resume command — too soon and the keystrokes land before the prompt
       // is ready, too late and the user sees a blank pane.
@@ -207,7 +208,7 @@ export function PastAISessions({ open, onClose }: Props) {
       setActiveTerminal(newId)
       onClose()
       try {
-        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd)
+        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd))
         // 1. Boot the agent. 2. Wait for it to be ready. 3. Paste the prompt.
         // Two-step delay because agents take time to print their banner.
         setTimeout(() => {
