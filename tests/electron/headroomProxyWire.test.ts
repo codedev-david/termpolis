@@ -79,9 +79,17 @@ describe('rewriteMessagesBody', () => {
     expect(r2.body).toBe(imgBody)
   })
 
+  it('fails open (no compression) when the body would not round-trip losslessly — e.g. an integer > 2^53', () => {
+    // Hand-built raw JSON containing 2^53+1, which JS numbers cannot represent exactly.
+    const raw = '{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":' + JSON.stringify(BIG) + '}]}],"meta":{"id":9007199254740993}}'
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(false) // guard trips: reserialize yields ...992 !== raw's ...993
+    expect(r.body).toBe(raw) // untouched — no silent corruption
+  })
+
   it('compactToolText produces a deterministic content-hash token', () => {
     const a = compactToolText(BIG), b = compactToolText(BIG)
     expect(a.stash!.token).toBe(b.stash!.token)
-    expect(a.stash!.token).toMatch(/^hr_[a-f0-9]{12}$/)
+    expect(a.stash!.token).toMatch(/^hr_[a-f0-9]{16}$/)
   })
 })

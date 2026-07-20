@@ -75,4 +75,11 @@ describe('headroom proxy server (mock upstream)', () => {
     await post('/v1/messages', 'not json{')
     expect(received[0].body).toBe('not json{')
   })
+
+  it('does NOT rewrite /v1/messages/count_tokens (Claude sizes its own context there)', async () => {
+    received = []; results = []
+    await post('/v1/messages/count_tokens', messagesBody)
+    expect(received[0].body).toBe(messagesBody) // untouched — no compression, no double-count
+    expect(results).toHaveLength(0)
+  })
 })

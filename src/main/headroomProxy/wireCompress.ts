@@ -18,7 +18,7 @@ export interface WireResult {
 export type ImageCompressor = (dataB64: string, mediaType: string) => { data: string; mediaType: string; changed: boolean }
 
 function emptyStats(): WireStats { return { trBlocks: 0, trOrigChars: 0, trCompChars: 0, images: 0, imgOrigBytes: 0, imgCompBytes: 0 } }
-function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 12) }
+function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
 
 /**
  * Deterministically compact one tool_result text. Aggressive: line-dedup + head/tail
@@ -62,6 +62,13 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   let obj: { messages?: unknown[] }
   try { obj = JSON.parse(raw) } catch { return { body: raw, changed: false, stats, stashes } }
   if (!obj || !Array.isArray(obj.messages)) return { body: raw, changed: false, stats, stashes }
+  // Corruption + cache safety: only proceed when the body round-trips LOSSLESSLY (the Anthropic
+  // V8 SDK emits canonical JSON). Otherwise a whole-object reserialize could silently alter an
+  // UNTOUCHED field — an integer > 2^53, unusual escaping, etc. — so fail open. This makes every
+  // non-tool_result byte identical to the client's original, and keeps the prompt cache intact.
+  let reserialized: string
+  try { reserialized = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats, stashes } }
+  if (reserialized !== raw) return { body: raw, changed: false, stats, stashes }
   let changed = false
   try {
     for (const m of obj.messages as Array<{ content?: unknown }>) {

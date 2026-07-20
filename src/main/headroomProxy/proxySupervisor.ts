@@ -30,6 +30,8 @@ let healthy = false
 let port = 0
 let upstream = 'api.anthropic.com'
 let restartTimes: number[] = []
+let stopped = false
+let cooldownTimer: ReturnType<typeof setTimeout> | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
@@ -56,6 +58,7 @@ export function startProxy(opts: { port: number; upstreamHost?: string }): void 
   port = opts.port
   upstream = opts.upstreamHost || 'api.anthropic.com'
   restartTimes = []
+  stopped = false
   spawnOnce()
 }
 
@@ -85,11 +88,21 @@ function maybeRestart(): void {
   const now = Date.now()
   restartTimes = restartTimes.filter((t) => now - t < RESTART_WINDOW_MS)
   restartTimes.push(now)
-  if (restartTimes.length > MAX_RESTARTS) { healthy = false; return } // flapping → give up, Claude launches direct
+  if (stopped) return
+  if (restartTimes.length > MAX_RESTARTS) {
+    healthy = false // flapping → back off; new Claude launches go direct (safe) meanwhile
+    // Don't give up FOREVER — after a cooldown, reset and try again so the proxy self-heals and
+    // any live session pinned to the port recovers on the next successful bind.
+    if (cooldownTimer) clearTimeout(cooldownTimer)
+    cooldownTimer = setTimeout(() => { cooldownTimer = null; if (!stopped && !healthy) { restartTimes = []; spawnOnce() } }, 30_000)
+    return
+  }
   spawnOnce()
 }
 
 export function stopProxy(): void {
+  stopped = true
+  if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
   try { transport?.kill() } catch { /* ignore */ }
   transport = null
   healthy = false
@@ -124,5 +137,6 @@ export function pickFreePort(): Promise<number> {
 }
 
 export function _resetProxyForTest(): void {
-  transport = null; healthy = false; port = 0; restartTimes = []; resultCb = null; imageCompressor = null; spawner = null; upstream = 'api.anthropic.com'
+  if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; imageCompressor = null; spawner = null; upstream = 'api.anthropic.com'
 }

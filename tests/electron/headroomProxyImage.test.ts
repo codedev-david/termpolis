@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-const { compressImage, _resetImageCompress } = await import('../../src/main/headroomProxy/imageCompress')
+const { compressImage, compressImageBatch, _resetImageCompress } = await import('../../src/main/headroomProxy/imageCompress')
 const { compressImagesInBody } = await import('../../src/main/headroomProxy/imagePass')
 
 const fakeNativeImage = (w: number, h: number, outBytes = 40) => ({
@@ -40,6 +40,12 @@ describe('compressImage', () => {
     expect(compressImage(big, 'image/png', 1280, null).changed).toBe(false)
     const boom = { createFromBuffer: () => { throw new Error('bad') } }
     expect(compressImage(big, 'image/png', 1280, boom as never).changed).toBe(false)
+  })
+
+  it('compressImageBatch maps images and is a safe no-op without a native backend', () => {
+    const r = compressImageBatch([{ data: 'A'.repeat(9000), mediaType: 'image/png' }])
+    expect(r).toHaveLength(1)
+    expect(r[0].changed).toBe(false) // no nativeImage in the node test env → fail-open
   })
 })
 
