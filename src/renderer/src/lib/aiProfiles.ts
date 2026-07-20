@@ -52,7 +52,10 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   setLaunchingAgent(profile.name)
   const id = uuid()
   const shellType = resolveShellType(profile.shell, availableShells)
-  const res = await window.termpolis.createTerminal(id, shellType, cwd)
+  // Claude Code launches through the always-on Headroom compression proxy: signal main
+  // to inject ANTHROPIC_BASE_URL (main owns the proxy env; returns direct if unhealthy).
+  const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
+  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude)
   if (!res.success) {
     setLaunchingAgent(null)
     alert(`Failed to open terminal: ${res.error}`)
@@ -65,7 +68,6 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // The other agents get the slim typed pointer via useAutoPrimer on detection.
   let launchCommand = resolveAgentCommand(profile.command)
   let launchPrimed = false
-  const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
   if (isClaude && isAutoPrimerEnabled()) {
     const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
     const label = project || 'this project'

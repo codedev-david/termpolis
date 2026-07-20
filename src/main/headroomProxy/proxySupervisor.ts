@@ -1,3 +1,4 @@
+import * as net from 'net'
 import type { WireStats } from './wireCompress'
 import type { Usage } from './usageParse'
 
@@ -95,6 +96,19 @@ export function createProxyTransport(entryPath: string): ProxyTransport {
     kill: () => { try { child.kill() } catch { /* ignore */ } },
     get pid() { return child.pid },
   }
+}
+
+/** Find an OS-assigned free TCP port on loopback (resolves 0 on failure). */
+export function pickFreePort(): Promise<number> {
+  return new Promise((resolve) => {
+    const srv = net.createServer()
+    srv.on('error', () => resolve(0))
+    srv.listen(0, '127.0.0.1', () => {
+      const a = srv.address()
+      const p = a && typeof a === 'object' ? a.port : 0
+      srv.close(() => resolve(p))
+    })
+  })
 }
 
 export function _resetProxyForTest(): void {

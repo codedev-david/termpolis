@@ -2,8 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { TermpolisAPI, ShellType, PlatformInfo } from '../renderer/src/types'
 
 const api: TermpolisAPI = {
-  createTerminal: (id, shellType, cwd, extraPaths) =>
-    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths }),
+  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom) =>
+    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom }),
 
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),

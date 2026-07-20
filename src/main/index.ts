@@ -112,6 +112,9 @@ import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPor
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { steeringDirective } from './headroom/outputSteering'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort } from './headroomProxy/proxySupervisor'
+import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush } from './headroomProxy/proxyLedger'
+import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
 import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
 import { getGroqKey, setGroqKey, getGroqKeyStatus, clearGroqKey } from './groqKeyStore'
@@ -547,7 +550,7 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
   return ok()
 })
 
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -567,7 +570,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths }) 
           const existing = terminalOutputBuffers.get(id) || ''
           const updated = existing + data
           terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
-        }, allExtraPaths)
+        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
         resolve()
       } catch (e) {
         reject(e)
@@ -2757,6 +2760,25 @@ if (!gotTheLock) {
       ipcMain.handle('tokenSavings:get-receipt', () => ok(summarizeHeadroomSavings()))
     } catch { /* headroom persistence is best-effort */ }
 
+    // ── Headroom compression proxy: ALWAYS-ON for Claude Code ───────────────────────────────────
+    // Runs in a utilityProcess (off the main/PTY thread). Claude terminals launch through it via
+    // ANTHROPIC_BASE_URL. Health-gated: if it can't come up, getProxyEnv() returns null and Claude
+    // launches DIRECT — the feature can never break the agent, only fail to compress. Fully guarded.
+    try {
+      const hrProxyDir = join(app.getPath('userData'), 'headroom')
+      loadProxyBaseFromDisk(hrProxyDir)
+      let hrProxyFlushTimer: ReturnType<typeof setTimeout> | null = null
+      setProxyLedgerFlush(() => {
+        if (hrProxyFlushTimer) return
+        hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir) }, 3000)
+      })
+      onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
+      ipcMain.handle('tokenSavings:get-proxy-receipt', () => ok(summarizeProxySavings()))
+      const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
+      setProxySpawner(() => createProxyTransport(hrProxyEntry))
+      void pickFreePort().then((port) => { if (port > 0) startProxy({ port }) })
+    } catch { /* headroom proxy is best-effort; Claude launches direct */ }
+
     // ── The memory brain starts in ANOTHER PROCESS ────────────────────────────────────────────────
     // initSwarmMemory() blocked THIS thread for ~4,276 ms on a real 475 MB / 90,817-entry store —
     // the thread that paints the window and echoes every PTY keystroke. It now runs in a
@@ -3238,6 +3260,8 @@ if (!gotTheLock) {
     // Reap the memory process. The store is already durable on disk (every write is appended before
     // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
     try { stopMemoryHost() } catch {}
+    try { stopProxy() } catch { /* ignore */ }
+    try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
   })
   app.on('window-all-closed', () => {

@@ -36,7 +36,8 @@ export function spawnTerminal(
   executable: string,
   cwd: string,
   onData: (data: string) => void,
-  extraPaths?: string[]
+  extraPaths?: string[],
+  extraEnv?: Record<string, string>
 ): void {
   const resolvedCwd = (() => {
     try { return existsSync(cwd) ? cwd : homedir() }
@@ -113,6 +114,7 @@ export function spawnTerminal(
     PATH: `${testShimPath}${extraPathStr}${basePath}`,
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
     BASH_SILENCE_DEPRECATION_WARNING: '1',
+    ...(extraEnv || {}),
   } as Record<string, string>
 
   let proc: pty.IPty

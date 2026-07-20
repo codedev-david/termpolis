@@ -16,6 +16,17 @@ export function ccrStash(value: unknown): string {
   return token
 }
 
+/** Stash under a caller-provided (deterministic) token — used by the proxy so its
+ *  content-hash retrieve tokens resolve here for the retrieve_full MCP tool. */
+export function ccrPut(token: string, value: unknown): void {
+  store.set(token, value)
+  while (store.size > CCR_MAX_ENTRIES) {
+    const oldest = store.keys().next().value
+    if (oldest === undefined) break
+    store.delete(oldest)
+  }
+}
+
 export function ccrRetrieve(token: string): unknown | undefined {
   return store.get(token)
 }

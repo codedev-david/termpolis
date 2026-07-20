@@ -25,6 +25,10 @@ export default defineConfig({
           // next to index.js so memoryClient can utilityProcess.fork() it. initSwarmMemory() costs
           // ~4,276ms on a real store; in this child that cost is ZERO on the main (PTY/paint) thread.
           memoryHost: resolve(__dirname, 'src/main/memoryHost.ts'),
+          // v1.29: the Headroom compression proxy's utilityProcess entry — emitted next to
+          // index.js so proxySupervisor can utilityProcess.fork() it. Compresses Claude's
+          // tool_result/image bytes off the main (PTY/paint) thread.
+          headroomProxy: resolve(__dirname, 'src/main/headroomProxy/proxyMain.ts'),
         },
       },
     },

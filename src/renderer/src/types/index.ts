@@ -152,7 +152,7 @@ export interface CodeExploreResult {
 }
 
 export interface TermpolisAPI {
-  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[]) => Promise<IpcResponse>
+  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
   writeToTerminal: (id: string, data: string) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
