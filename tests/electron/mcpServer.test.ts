@@ -294,6 +294,16 @@ describe('MCP HTTP server', () => {
     expect(names).toContain('code_search')
   })
 
+  it('keeps total tool-description text under the slim budget (per-session token cost)', async () => {
+    const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 3 })
+    const tools = JSON.parse(res.body).result.tools as Array<{ description: string }>
+    const total = tools.reduce((n, t) => n + (t.description?.length ?? 0), 0)
+    // v1.29.3 slimmed the verbose memory_*/code_* prose from ~8,861 to ~5,371 chars.
+    // Guard the win: a regression back toward the old bloat trips this.
+    expect(total).toBeLessThanOrEqual(6000)
+    expect(total).toBeGreaterThan(3000) // sanity: descriptions weren't gutted to stubs
+  })
+
   // --- JSON-RPC: tools/call ---
 
   it('tools/call list_terminals calls handler and returns result', async () => {

@@ -111,7 +111,8 @@ import { listPathEntries, listPathCommands, listEnvVars } from './completionServ
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
-import { steeringDirective } from './headroom/outputSteering'
+import { buildInjectedInstruction } from './headroom/injectedInstruction'
+import type { SteeringMode } from './headroom/outputSteering'
 import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort } from './headroomProxy/proxySupervisor'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush } from './headroomProxy/proxyLedger'
 import { fileURLToPath } from 'url'
@@ -2008,29 +2009,14 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
         try { if (now - statSync(p).mtimeMs > 5 * 60_000) unlinkSync(p) } catch { /* ignore */ }
       }
     } catch { /* ignore */ }
-    const cwdArg = opts?.cwd ? ` (cwd "${opts.cwd}")` : ''
-    const instructionParts = [
-      'Termpolis project memory: saved background context exists for this project.',
-      `When you begin working, call the termpolis MCP tool memory_primer${cwdArg} and read it as background reference only — do NOT resume past work from it or summarize it unprompted; just hold it as context.`,
-      'Before re-deriving any fix or solution that may already be stored, call the termpolis memory_search tool first.',
-      // Compaction self-reprime. THIS is what lets the re-prime happen behind the scenes.
-      //
-      // A system prompt is re-sent on every request — compaction summarizes the CONVERSATION,
-      // not the system prompt — so this line survives a compaction while the digest you loaded
-      // (which lived in the conversation) does not. Telling the agent to re-fetch it itself is
-      // the only way to restore that context without typing into its input box.
-      //
-      // The alternative, which this replaces, was to paste "call memory_primer" into the input
-      // after each compaction. That is visible, unexplained, and worse: writeToTerminal appends
-      // at the CURSOR, and the agent owns its own line buffer — so a re-prime that lands while
-      // the user is mid-sentence is appended onto their draft. Same architectural fact that made
-      // pre-send prompt redaction impossible in v1.25.2. Don't write into a buffer you don't own.
-      'If your context is compacted or summarized during this session, the memory digest you loaded will have been summarized away with it — call memory_primer once more, silently, before continuing, then carry on with the task in hand.',
-      'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
-    ]
-    // Output-token steering (Token Headroom): trims what the model writes back. Toggle in Settings.
-    try { if (getHeadroomSettings().steering) instructionParts.push(steeringDirective()) } catch { /* steering optional */ }
-    const instruction = instructionParts.join(' ')
+    // Build the injected system-prompt bytes via a pure, determinism-guarded helper
+    // (see injectedInstruction.ts) — the digest itself is fetched via memory_primer,
+    // never inlined, so these bytes stay byte-stable per (cwd, steering, mode) and the
+    // prompt cache survives. Steering settings are best-effort (optional feature).
+    let steering = false
+    let steeringMode: SteeringMode | undefined
+    try { const hs = getHeadroomSettings(); steering = hs.steering; steeringMode = hs.mode as SteeringMode } catch { /* steering optional */ }
+    const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode })
     const file = join(dir, `primer-${uuidv4()}.txt`)
     writeFileSync(file, instruction, 'utf8')
     // Count the memories in the digest so the launch banner can show how much

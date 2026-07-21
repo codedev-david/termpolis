@@ -1,5 +1,6 @@
 import * as crypto from 'crypto'
 import { compactText } from '../headroom/compactText'
+import { compactWeb, looksLikeHtml } from '../headroom/compactWeb'
 
 export interface WireStats {
   trBlocks: number
@@ -27,14 +28,69 @@ function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').
  */
 export function compactToolText(text: string): { text: string; stash?: { token: string; original: string } } {
   if (text.length < 400) return { text }
-  const r = compactText(text, { headLines: 30, tailLines: 12, maxChars: 4000 })
-  if (r.text.length >= text.length) return { text }
-  if (!r.elided) return { text: r.text }
-  const token = detToken(text)
+  // Content-aware pre-pass: reduce HTML/web dumps (WebFetch, curl'd pages, MCP HTML)
+  // to their readable text BEFORE the head/tail window — a line window barely helps
+  // markup-dense, few-newline HTML. Shrink-only + deterministic; original still stashed.
+  let body = text
+  let webReduced = false
+  if (looksLikeHtml(text)) {
+    const w = compactWeb(text)
+    if (w.length < text.length) {
+      body = w
+      webReduced = true
+    }
+  }
+  const r = compactText(body, { headLines: 30, tailLines: 12, maxChars: 4000 })
+  if (r.text.length >= text.length) return { text } // net no shrink → forward original
+  // No retrieve token needed only when nothing was hidden: pure consecutive-line
+  // dedup is self-describing, whereas an elision OR an HTML reduction hides content.
+  if (!r.elided && !webReduced) return { text: r.text }
+  const token = detToken(text) // key on the ORIGINAL so retrieve_full returns the true original
   return {
     text: `${r.text}\n\n[headroom] Full result cached — call the retrieve_full tool with token "${token}" to expand it.`,
     stash: { token, original: text },
   }
+}
+
+/**
+ * Compact one tool_result text string, OR — if an identical text already appeared
+ * earlier IN THIS SAME REQUEST BODY — replace it with a one-line reference stub.
+ * `seen` is scoped to a single rewriteMessagesBody call and filled left-to-right, so
+ * the output stays a PURE function of the body (determinism guard holds) and remains
+ * byte-stable across turns (cache-safe): a repeat only collapses when its earlier
+ * twin is also present, which it is on every turn that re-sends the conversation.
+ * Reversible: the original is stashed under its content-hash token for retrieve_full.
+ */
+function compactOrDedup(
+  text: string,
+  seen: Set<string>,
+  stats: WireStats,
+  stashes: Array<{ token: string; original: string }>,
+): { text: string; changed: boolean } {
+  stats.trOrigChars += text.length
+  let out = text
+  let changed = false
+  const key = detToken(text)
+  if (text.length >= 400 && seen.has(key)) {
+    // A 400+ char block already seen earlier in THIS body → collapse to a one-line
+    // reference stub (always far shorter than a ≥400 original). Reversible: the
+    // original is stashed under its content-hash token for retrieve_full.
+    out = `[headroom] Identical to an earlier tool result in this conversation — call the retrieve_full tool with token "${key}" to expand it.`
+    changed = true
+    stats.trBlocks++
+    stashes.push({ token: key, original: text })
+  } else {
+    if (text.length >= 400) seen.add(key)
+    const c = compactToolText(text)
+    if (c.text.length < text.length) {
+      out = c.text
+      changed = true
+      stats.trBlocks++
+      if (c.stash) stashes.push(c.stash)
+    }
+  }
+  stats.trCompChars += out.length
+  return { text: out, changed }
 }
 
 function compressImageBlock(block: { source?: { type?: string; media_type?: string; data?: string } }, compressImage: ImageCompressor, stats: WireStats): boolean {
@@ -57,6 +113,7 @@ function compressImageBlock(block: { source?: { type?: string; media_type?: stri
 export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number } = {}): WireResult {
   const stats = emptyStats()
   const stashes: Array<{ token: string; original: string }> = []
+  const seen = new Set<string>() // per-body dedup index (content-hash of seen tool_result text), filled left-to-right
   const maxChars = opts.maxBodyChars ?? 10_000_000
   if (raw.length > maxChars) return { body: raw, changed: false, stats, stashes }
   let obj: { messages?: unknown[] }
@@ -77,17 +134,13 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
         if (!b || typeof b !== 'object') continue
         if (b.type === 'tool_result') {
           if (typeof b.content === 'string') {
-            stats.trOrigChars += b.content.length
-            const c = compactToolText(b.content)
-            if (c.text.length < b.content.length) { b.content = c.text; changed = true; stats.trBlocks++; if (c.stash) stashes.push(c.stash) }
-            stats.trCompChars += (b.content as string).length
+            const r = compactOrDedup(b.content, seen, stats, stashes)
+            if (r.changed) { b.content = r.text; changed = true }
           } else if (Array.isArray(b.content)) {
             for (const item of b.content as Array<Record<string, unknown>>) {
               if (item && item.type === 'text' && typeof item.text === 'string') {
-                stats.trOrigChars += item.text.length
-                const c = compactToolText(item.text)
-                if (c.text.length < item.text.length) { item.text = c.text; changed = true; stats.trBlocks++; if (c.stash) stashes.push(c.stash) }
-                stats.trCompChars += (item.text as string).length
+                const r = compactOrDedup(item.text, seen, stats, stashes)
+                if (r.changed) { item.text = r.text; changed = true }
               } else if (item && item.type === 'image' && opts.compressImage) {
                 changed = compressImageBlock(item as { source?: { type?: string; media_type?: string; data?: string } }, opts.compressImage, stats) || changed
               }

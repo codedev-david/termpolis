@@ -93,3 +93,92 @@ describe('rewriteMessagesBody', () => {
     expect(a.stash!.token).toMatch(/^hr_[a-f0-9]{16}$/)
   })
 })
+
+describe('rewriteMessagesBody — HTML reduction + per-body dedup', () => {
+  const HTML =
+    '<!doctype html><html><head><title>T</title><style>.a{b:c}</style><script>evil()</script></head><body>' +
+    '<nav><a href="/">Home</a></nav><h1>Main Heading Here</h1>' +
+    '<p>Paragraph with enough real words to be meaningful body content worth keeping.</p>'.repeat(6) +
+    '<footer>Foot</footer></body></html>'
+
+  function bodyWith(contents: string[]): string {
+    return JSON.stringify({
+      model: 'claude-x',
+      messages: contents.map((c, i) => ({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: `tu${i}`, content: c }],
+      })),
+    })
+  }
+
+  it('reduces an HTML tool_result to text, reversibly', () => {
+    const r = rewriteMessagesBody(bodyWith([HTML]))
+    expect(r.changed).toBe(true)
+    const text = JSON.parse(r.body).messages[0].content[0].content as string
+    expect(text).not.toContain('evil()')
+    expect(text).not.toContain('.a{b:c}')
+    expect(text).toContain('Main Heading Here')
+    expect(text).toContain('retrieve_full') // footer points back to the original
+    expect(r.stashes.length).toBe(1)
+    expect(r.stashes[0].original).toBe(HTML) // full original recoverable
+  })
+
+  it('is deterministic on HTML (cache-safe)', () => {
+    const b = bodyWith([HTML])
+    expect(rewriteMessagesBody(b).body).toBe(rewriteMessagesBody(b).body)
+  })
+
+  it('collapses an identical repeated tool_result to a one-line reference stub', () => {
+    const dup = 'HEADER\n' + Array.from({ length: 30 }, (_, i) => `data row ${i} value here`).join('\n')
+    const r = rewriteMessagesBody(bodyWith([dup, dup]))
+    const after = JSON.parse(r.body)
+    const first = after.messages[0].content[0].content as string
+    const second = after.messages[1].content[0].content as string
+    expect(second).toContain('Identical to an earlier tool result')
+    expect(second.length).toBeLessThan(first.length)
+    const token = (second.match(/hr_[a-f0-9]{16}/) || [])[0]
+    expect(token).toBeTruthy()
+    expect(r.stashes.some((s) => s.token === token && s.original === dup)).toBe(true) // reversible
+  })
+
+  it('per-body dedup is deterministic across turns', () => {
+    const dup = Array.from({ length: 40 }, (_, i) => `line ${i} with content`).join('\n')
+    const b = bodyWith([dup, dup, dup])
+    expect(rewriteMessagesBody(b).body).toBe(rewriteMessagesBody(b).body)
+  })
+
+  it('does NOT dedup distinct tool_results', () => {
+    const a = Array.from({ length: 40 }, (_, i) => `alpha row ${i} with padding text`).join('\n')
+    const b = Array.from({ length: 40 }, (_, i) => `beta row ${i} with padding text`).join('\n')
+    const after = JSON.parse(rewriteMessagesBody(bodyWith([a, b])).body)
+    expect(after.messages[1].content[0].content as string).not.toContain('Identical to an earlier')
+  })
+
+  it('compresses an image nested inside a tool_result content array', () => {
+    const bigImg = 'A'.repeat(5000)
+    const body = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 't1',
+              content: [
+                { type: 'text', text: 'see the screenshot' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: bigImg } },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+    const shrink = (d: string, mt: string) => ({ data: d.slice(0, 100), mediaType: mt, changed: true })
+    const r = rewriteMessagesBody(body, { compressImage: shrink })
+    expect(r.changed).toBe(true)
+    expect(r.stats.images).toBe(1)
+    const img = JSON.parse(r.body).messages[0].content[0].content[1]
+    expect(img.source.data.length).toBeLessThan(bigImg.length)
+  })
+})

@@ -28,6 +28,32 @@ describe('TokenSavingsSettings', () => {
     expect(screen.getByTestId('hr-proxy-cache-health')).toHaveTextContent('healthy')
   })
 
+  it('scopes the headline % to tool output and shows the honest share of TOTAL input', async () => {
+    render(<TokenSavingsSettings />)
+    // The big % is explicitly captioned as tool-output shrink, NOT total spend.
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-session-pct')).toHaveTextContent('50%'))
+    expect(screen.getByTestId('hr-proxy-session-pct').parentElement).toHaveTextContent('of tool output · this session')
+    // Honest denominator: session textSaved 100000 over ingested (500 + 900000 + 20000 + 100000) ≈ 10%;
+    // cumulative textSaved 2500000 over (500 + 900000 + 20000 + 2500000) ≈ 73%. Far below the 50% headline.
+    const share = screen.getByTestId('hr-proxy-share-total')
+    expect(share).toHaveTextContent('≈10% of all input tokens you sent this session')
+    expect(share).toHaveTextContent('≈73% all-time')
+  })
+
+  it('hides the share-of-total line until real usage is captured (no bogus 100%)', async () => {
+    ;(window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis.tokenSavingsGetProxyReceipt =
+      vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          session: proxyTotals({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }),
+          cumulative: proxyTotals({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }),
+        },
+      })
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-session-pct')).toBeTruthy())
+    expect(screen.queryByTestId('hr-proxy-share-total')).toBeNull()
+  })
+
   it('still renders the tool-output receipt and toggle', async () => {
     render(<TokenSavingsSettings />)
     await waitFor(() => expect(screen.getByTestId('hr-session-saved')).toHaveTextContent('12,345'))

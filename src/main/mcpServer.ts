@@ -262,7 +262,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_write',
-    description: 'Write a fact, decision, or result into Termpolis shared persistent memory — a local brain shared across ALL your AI agents (Claude, Codex, Gemini, Qwen) and your past sessions. Anything stored here can be recalled later via memory_search by you or any other agent. Use it for decisions, conventions, architecture/file notes, and anything worth remembering across terminals and sessions.',
+    description: 'Write a fact, decision, or result into Termpolis shared persistent memory — the brain shared across ALL your AI agents and sessions. Recalled later via memory_search; use it for decisions, conventions, and file/architecture notes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -278,7 +278,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_search',
-    description: 'Retrieve relevant entries from Termpolis shared persistent memory — the local brain shared across ALL your AI agents and your past sessions. Call this at the START of a task to recall prior decisions, conventions, context, and code, so you never re-derive what another agent or an earlier session already worked out. Also call this BEFORE re-deriving a fix or retrying a familiar error mid-task — the solution may already be stored from a past session or another agent. Uses local offline semantic vector search, falling back to keyword matching when the embedding model is unavailable.',
+    description: 'Retrieve relevant entries from Termpolis shared persistent memory — the brain shared across ALL your AI agents and past sessions. Call at the START of a task, and BEFORE re-deriving a fix or retrying a familiar error, to recall prior decisions, conventions, context, and code.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -309,7 +309,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_primer',
-    description: 'Load your background-memory primer: a ranked digest of the most relevant memories (past conversations, decisions, code notes) from the brain shared across ALL your AI agents and past sessions. Context for the current project/directory leads; cross-project context follows, clearly labeled. Call this ONCE near session start when asked to load background memory. Treat the result as background reference only — do NOT act on it or resume past work from it unless the user asks.',
+    description: 'Load your background-memory primer: a digest of the most relevant memories, current project first then cross-project. Call ONCE near session start when asked. Treat as reference only — do NOT act on it or resume past work unless the user asks.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -322,7 +322,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_related',
-    description: 'Find entries CONNECTED to a stored memory — a one-hop traversal of the shared brain. Pass an entry `id` to get the memories most related to it: this blends the TYPED EDGES you have recorded (each such result includes its `relation`) with semantic nearest-neighbours, so an explicit link surfaces even when the wording differs. Or pass a `query` for a plain semantic search. Use it to follow a thread: from a bug to the fix that solved it, from a decision to what superseded it, or to surface similar work by another agent or session — without re-deriving context.',
+    description: 'Find entries CONNECTED to a stored memory — a one-hop traversal of the shared brain. Pass an entry `id` to blend your recorded TYPED EDGES (each includes its `relation`) with semantic nearest-neighbours, or a `query` for plain search. Use it to follow a thread from a bug to its fix.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -335,7 +335,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_audit',
-    description: 'Inspect the LOCAL memory/learning audit trail — an on-by-default, secret-redacted record of what the shared brain actually did: what it stored (write), recalled (recall), learned (learn: feedback / reflection / consolidation), and injected into an agent context (inject). Returns the most recent events (newest first) plus a count summary by type. Local-only; the trail never leaves the machine. Use it to see exactly how memory is being used.',
+    description: 'Inspect the LOCAL memory/learning audit trail — a secret-redacted record of what the shared brain did: stored (write), recalled (recall), learned (learn), injected (inject). Returns recent events plus a count summary; local-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -346,7 +346,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_link',
-    description: 'Record a TYPED connection between two stored memories — build the knowledge graph as you work, so the brain stores not just facts but how they relate. Use it the moment you discover a relationship: a fix that solved a bug, a decision that supersedes an older one, an error caused by a config change, a file that is part of a feature. Pass the two memory ids (from search results) plus a relation. Suggested relations: solves, solved-by, supersedes, superseded-by, caused-by, causes, part-of, follows, duplicates, relates-to (free-form allowed).',
+    description: 'Record a TYPED connection between two stored memories — build the knowledge graph as you work. Use it the moment you find a relationship (e.g. a fix that solved a bug). Pass two ids plus a `relation`: solves, supersedes, caused-by, part-of, relates-to (free-form allowed).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -359,7 +359,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_graph',
-    description: 'Follow the CONNECTIONS in the shared knowledge graph — a multi-hop traversal from a seed memory to everything it links to. Pass an entry `id` (or a `query` to find the seed) and walk the chain: from a bug to the fix that solved it, from a decision to what superseded it, and onward. Returns connected entries with the relation and hop distance. Use it to reuse prior solutions and context fast instead of re-deriving them.',
+    description: 'Follow the CONNECTIONS in the shared knowledge graph — a multi-hop traversal from a seed to all it links to. Pass an entry `id` (or `query` to find the seed); returns connected entries with their relation and hop distance.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -374,7 +374,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_feedback',
-    description: 'Tell the shared brain that a recalled memory was actually HELPFUL — so it learns which memories matter instead of just accumulating them. After a memory_search/memory_related result genuinely helps you (it answered the question, gave the fix, saved a re-derivation), call this with that entry\'s `id` and `helpful: true`. Repeatedly-helpful memories get a small, capped ranking lift for everyone (it nudges/breaks ties, never overrides relevance). This is the cleanest reinforcement signal there is — use it liberally on hits that paid off. If you know your own agent id, pass it as `agentId`: when you reuse a memory another agent authored, that cross-agent teaching gets recorded.',
+    description: 'Tell the shared brain a recalled memory was actually HELPFUL, so it learns which memories matter. After a memory_search/memory_related result helps you, call this with that entry\'s `id` and `helpful: true`. Repeatedly-helpful hits get a small ranking lift — use it liberally. Pass your `agentId` to record cross-agent teaching.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -388,7 +388,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_selfcheck',
-    description: 'Ask the shared brain how reliable it (and the agent fleet) has been in a given area — its calibrated self-competence learned from past task outcomes. Call this BEFORE committing to an approach in a domain you have worked in before: pass a `domain` (a project slug, feature area, or task-type) and get back { confidence 0-1, attempts, verdict }. A verdict of "caution" or "unproven" means think harder, retrieve more, or verify before trusting yourself; "confident" means there is a real track record. This is the metacognition layer — knowing what you know.',
+    description: 'Ask the shared brain how reliable it and the fleet have been in an area — its calibrated self-competence. Call this BEFORE committing to an approach in a `domain` you have worked in before; returns { confidence 0-1, attempts, verdict }. "caution"/"unproven" = verify first, "confident" = a track record.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -399,7 +399,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_pool',
-    description: 'Pool the shared brain\'s lessons across ALL agents and surface the ones multiple agents independently arrived at — cross-agent corroboration. A lesson learned by 2+ agents (Claude, Codex, Gemini, Qwen) is stronger than one; this returns each pooled lesson with its source list and corroboration count, importance-boosted for agreement. Use it to find the fleet\'s most-trusted, cross-validated knowledge.',
+    description: 'Pool lessons across ALL agents and surface those multiple agents independently arrived at — cross-agent corroboration. Returns each with its sources and corroboration count: the fleet\'s most-trusted knowledge.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -410,7 +410,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_anticipate',
-    description: 'BEFORE you start solving something, call this with a description of the current task to proactively surface solutions the fleet has ALREADY found — so you never re-derive what is already known. It extracts the error/file/identifier signals from your task and returns the matching procedural / high-value lessons. This is the anti-re-derivation tool: check it first, act second.',
+    description: 'BEFORE you start solving, call this with the current `task` to surface solutions the fleet has ALREADY found. Returns matching procedural / high-value lessons — check first, act second.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -422,7 +422,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_conflicts',
-    description: 'Surface CROSS-AGENT CONTRADICTIONS in the shared brain — pairs of lessons that DIFFERENT agents (Claude, Codex, Gemini, Qwen) learned that assert OPPOSITE things about the same subject (e.g. one says "always run migrations before seeding", another "never run migrations before seeding"). Read-only and deliberately conservative (it would rather miss a subtle conflict than report a false one). Use it to spot where the fleet disagrees so you can resolve it — investigate, then record the winner and mark the loser with a `supersedes` memory_link.',
+    description: 'Surface CROSS-AGENT CONTRADICTIONS in the shared brain — pairs of lessons DIFFERENT agents learned that assert OPPOSITE things about the same subject. Read-only. Spot where the fleet disagrees, then resolve it: record the winner and mark the loser with a `supersedes` memory_link.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -433,7 +433,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'code_explore',
-    description: 'Ask ONE structural question about the codebase and get back the relevant symbol\'s verbatim source plus its direct callers and callees — instead of grepping and reading files. Pass a symbol name (e.g. "memoryWrite") or a short phrase; returns the best-matching function/class/etc, its source, who calls it, and what it calls. Use this FIRST for "where/how is X" and "what does X touch" — it is backed by a pre-indexed local code graph, so it is cheaper and more precise than file crawling.',
+    description: 'Ask ONE structural question about the codebase and get back the matching symbol\'s verbatim source plus its direct callers and callees, instead of grepping files. Use this FIRST for "where/how is X" or "what does X touch"; backed by a local code graph.',
     inputSchema: {
       type: 'object',
       properties: { query: { type: 'string', description: 'A symbol name or short description' } },
@@ -452,7 +452,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'code_impact',
-    description: 'BLAST RADIUS: the transitive set of symbols that directly or indirectly call a given symbol — i.e. what could break if you change it. Use BEFORE editing a shared function to see the full reach of the change.',
+    description: 'BLAST RADIUS: all symbols that directly or indirectly call a given symbol — what could break if you change it. Use BEFORE editing a shared function.',
     inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'The symbol name you intend to change' } }, required: ['name'] },
   },
   {
@@ -466,7 +466,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'code_locate',
-    description: 'PREDICT WHERE an issue lives / where to fix it. Give a problem description or an error message; get back a ranked list of {file, symbol, why:[past lessons]} — the code sites most likely responsible, each with the memories (fixes/decisions) that point there. This crosses the memory<->code bridge: it mines the issue for file/identifier/error tokens, resolves them to code-graph symbols, and ranks by blast-radius centrality × the utility of the lessons anchored there. Use it FIRST when you hit an error or start debugging, instead of grepping blindly.',
+    description: 'PREDICT WHERE an issue lives / where to fix it. Give a problem or error message; get back a ranked list of {file, symbol, why:[past lessons]} — the likely-responsible code sites, each with the fixes/decisions pointing there. Use it FIRST when debugging, instead of grepping blindly.',
     inputSchema: {
       type: 'object',
       properties: {
