@@ -1,6 +1,7 @@
 import * as crypto from 'crypto'
 import { compactText } from '../headroom/compactText'
 import { compactWeb, looksLikeHtml } from '../headroom/compactWeb'
+import { thresholdsFor, type Mode } from '../headroom/config'
 
 export interface WireStats {
   trBlocks: number
@@ -21,10 +22,40 @@ export type ImageCompressor = (dataB64: string, mediaType: string) => { data: st
 function emptyStats(): WireStats { return { trBlocks: 0, trOrigChars: 0, trCompChars: 0, images: 0, imgOrigBytes: 0, imgCompBytes: 0 } }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
 
+export interface WireWindow { headLines: number; tailLines: number; maxChars: number }
+
 /**
- * Deterministically compact one tool_result text. Aggressive: line-dedup + head/tail
- * window. When it elides content it appends a footer with a CONTENT-HASH token (so
- * re-compression is byte-identical → cache-safe) and returns the original to stash.
+ * Mode → wire window, mirroring the config profiles (maxChars ← maxFieldChars). Exposed so the
+ * proxy child can translate a mode message without importing config's mutable settings state.
+ * Unknown mode → null, so a garbled message can never silently DOWNGRADE the active window.
+ */
+export function windowForMode(mode: string): WireWindow | null {
+  if (mode !== 'conservative' && mode !== 'balanced' && mode !== 'aggressive') return null
+  const t = thresholdsFor(mode as Mode)
+  return { headLines: t.headLines, tailLines: t.tailLines, maxChars: t.maxFieldChars }
+}
+
+/**
+ * The active tool-output window for the LIVE proxy wire — the SOLE driver of the reported
+ * savedPct. Defaults to the 'aggressive' profile (12/6/1000): keep the head (command + first
+ * output) and tail (result/errors) an agent needs inline; the full original is always stashed,
+ * so retrieve_full recovers the middle on demand (empirically rare). setWireWindow() lets the
+ * proxy child honor the user's mode live (proxySupervisor pushes it on init + on change); the
+ * aggressive default is the fail-safe, so a missing/garbled mode keeps savings high, never drops
+ * them. The validated setter also guarantees a bad payload can neither break nor downgrade it.
+ */
+let wireWindow: WireWindow = { headLines: 12, tailLines: 6, maxChars: 1000 }
+export function setWireWindow(w: WireWindow | null | undefined): void {
+  if (w && Number.isFinite(w.headLines) && Number.isFinite(w.tailLines) && Number.isFinite(w.maxChars)
+      && w.headLines >= 0 && w.tailLines >= 0 && w.maxChars > 0) {
+    wireWindow = { headLines: Math.floor(w.headLines), tailLines: Math.floor(w.tailLines), maxChars: Math.floor(w.maxChars) }
+  }
+}
+
+/**
+ * Deterministically compact one tool_result text: line-dedup + head/tail window (wireWindow).
+ * When it elides content it appends a footer with a CONTENT-HASH token (so re-compression is
+ * byte-identical → cache-safe) and returns the original to stash for retrieve_full.
  */
 export function compactToolText(text: string): { text: string; stash?: { token: string; original: string } } {
   if (text.length < 400) return { text }
@@ -40,7 +71,7 @@ export function compactToolText(text: string): { text: string; stash?: { token: 
       webReduced = true
     }
   }
-  const r = compactText(body, { headLines: 30, tailLines: 12, maxChars: 4000 })
+  const r = compactText(body, wireWindow)
   if (r.text.length >= text.length) return { text } // net no shrink → forward original
   // No retrieve token needed only when nothing was hidden: pure consecutive-line
   // dedup is self-describing, whereas an elision OR an HTML reduction hides content.

@@ -57,7 +57,7 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
 }
 import { join } from 'path'
 import { homedir, release } from 'os'
-import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells } from './shellDetector'
@@ -113,8 +113,8 @@ import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolRes
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
 import type { SteeringMode } from './headroom/outputSteering'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort } from './headroomProxy/proxySupervisor'
-import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush } from './headroomProxy/proxyLedger'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode } from './headroomProxy/proxySupervisor'
+import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
 import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
@@ -2746,6 +2746,7 @@ if (!gotTheLock) {
       ipcMain.handle('tokenSavings:set-settings', (_e, p) => {
         const next = setHeadroomSettings(p || {})
         try { saveSettingsToDisk(hrDir) } catch { /* best effort */ }
+        try { setProxyMode(next.mode) } catch { /* proxy honors the new mode live; aggressive default holds if this fails */ }
         return ok(next)
       })
       ipcMain.handle('tokenSavings:get-receipt', () => ok(summarizeHeadroomSavings()))
@@ -2761,6 +2762,13 @@ if (!gotTheLock) {
     try {
       const hrProxyDir = join(app.getPath('userData'), 'headroom')
       loadProxyBaseFromDisk(hrProxyDir)
+      // One-shot lifetime-meter reset: a `.reset-proxy-totals` file in the headroom dir zeroes the
+      // cumulative baseline once on next launch (e.g. after a compression-methodology change), so the
+      // reported savedPct reflects the NEW rate instead of a stale blended lifetime average.
+      try {
+        const resetSentinel = join(hrProxyDir, '.reset-proxy-totals')
+        if (existsSync(resetSentinel)) { resetProxyCounters(); saveProxyTotalsToDisk(hrProxyDir); unlinkSync(resetSentinel) }
+      } catch { /* best effort */ }
       let hrProxyFlushTimer: ReturnType<typeof setTimeout> | null = null
       setProxyLedgerFlush(() => {
         if (hrProxyFlushTimer) return
@@ -2770,6 +2778,8 @@ if (!gotTheLock) {
       ipcMain.handle('tokenSavings:get-proxy-receipt', () => ok(summarizeProxySavings()))
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
+      // Carry the user's mode into the proxy child from its very first init (default 'aggressive').
+      try { setProxyMode(getHeadroomSettings().mode) } catch { /* aggressive default holds */ }
       void pickFreePort().then((port) => { if (port > 0) startProxy({ port }) })
     } catch { /* headroom proxy is best-effort; Claude launches direct */ }
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-const { setProxySpawner, onProxyResult, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, _resetProxyForTest } =
+const { setProxySpawner, onProxyResult, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest } =
   await import('../../src/main/headroomProxy/proxySupervisor')
 
-interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; killed: boolean }
+interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
 let fakes: Fake[] = []
 
 function fakeSpawner(): unknown {
@@ -10,7 +10,7 @@ function fakeSpawner(): unknown {
   let exitCb: (c: number) => void = () => {}
   const f: Fake = {
     transport: {
-      postMessage: (m: { kind?: string; port?: number }) => { if (m?.kind === 'init') msgCb({ kind: 'ready', port: m.port }) },
+      postMessage: (m: { kind?: string; port?: number; mode?: string }) => { f.posted.push(m as Record<string, unknown>); if (m?.kind === 'init') msgCb({ kind: 'ready', port: m.port }) },
       onMessage: (cb: (m: unknown) => void) => { msgCb = cb },
       onExit: (cb: (c: number) => void) => { exitCb = cb },
       kill: () => { f.killed = true },
@@ -19,6 +19,7 @@ function fakeSpawner(): unknown {
     fireExit: () => exitCb(1),
     fireResult: (r: Record<string, unknown>) => msgCb({ kind: 'result', ...r }),
     killed: false,
+    posted: [],
   }
   fakes.push(f)
   return f.transport
@@ -73,5 +74,36 @@ describe('proxy supervisor', () => {
   it('pickFreePort resolves a usable loopback port', async () => {
     const p = await pickFreePort()
     expect(p).toBeGreaterThan(0)
+  })
+
+  it('carries the wire mode on the child init — default aggressive', () => {
+    startProxy({ port: 5000 })
+    expect(fakes[0].posted.find((m) => m.kind === 'init')).toMatchObject({ kind: 'init', mode: 'aggressive' })
+  })
+
+  it('setProxyMode before start is carried on the first init', () => {
+    setProxyMode('balanced')
+    startProxy({ port: 5000 })
+    expect(fakes[0].posted.find((m) => m.kind === 'init')).toMatchObject({ mode: 'balanced' })
+  })
+
+  it('setProxyMode posts a live config message to the running child', () => {
+    startProxy({ port: 5000 })
+    setProxyMode('conservative')
+    expect(fakes[0].posted.some((m) => m.kind === 'config' && m.mode === 'conservative')).toBe(true)
+  })
+
+  it('re-applies the current mode on the init of every respawn', () => {
+    startProxy({ port: 5000 })
+    setProxyMode('conservative')
+    fakes[0].fireExit() // child died → supervisor respawns synchronously
+    expect(fakes.length).toBe(2)
+    expect(fakes[1].posted.find((m) => m.kind === 'init')).toMatchObject({ mode: 'conservative' })
+  })
+
+  it('setProxyMode is a safe no-op before any spawn, then still rides the first init', () => {
+    expect(() => setProxyMode('balanced')).not.toThrow() // no transport yet
+    startProxy({ port: 5000 })
+    expect(fakes[0].posted.find((m) => m.kind === 'init')).toMatchObject({ mode: 'balanced' })
   })
 })

@@ -30,7 +30,7 @@ describe('headroom persist', () => {
 
   it('load is a no-op (defaults kept) when the file is missing', () => {
     loadSettingsFromDisk(path.join(os.tmpdir(), 'does-not-exist-hr', 'x'))
-    expect(getSettings().mode).toBe('balanced')
+    expect(getSettings().mode).toBe('aggressive')
   })
 
   it('save never throws when the target path is unusable', () => {

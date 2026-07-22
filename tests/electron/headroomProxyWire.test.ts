@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-const { rewriteMessagesBody, compactToolText } = await import('../../src/main/headroomProxy/wireCompress')
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+const { rewriteMessagesBody, compactToolText, setWireWindow, windowForMode } = await import('../../src/main/headroomProxy/wireCompress')
 
 const BIG = Array.from({ length: 120 }, (_, i) => `line number ${i} with some content to make it long enough`).join('\n')
 
@@ -180,5 +180,70 @@ describe('rewriteMessagesBody — HTML reduction + per-body dedup', () => {
     expect(r.stats.images).toBe(1)
     const img = JSON.parse(r.body).messages[0].content[0].content[1]
     expect(img.source.data.length).toBeLessThan(bigImg.length)
+  })
+})
+
+describe('wire window — mode-driven, validated, fail-safe (v1.30)', () => {
+  // wireWindow is module state; force the aggressive default around every test so a window
+  // change can never leak into the suites above (they assume the default).
+  beforeEach(() => setWireWindow(windowForMode('aggressive')))
+  afterEach(() => setWireWindow(windowForMode('aggressive')))
+
+  it('windowForMode mirrors the config profiles and rejects unknown modes (no silent downgrade)', () => {
+    expect(windowForMode('aggressive')).toEqual({ headLines: 12, tailLines: 6, maxChars: 1000 })
+    expect(windowForMode('balanced')).toEqual({ headLines: 24, tailLines: 12, maxChars: 2000 })
+    expect(windowForMode('conservative')).toEqual({ headLines: 40, tailLines: 20, maxChars: 4000 })
+    expect(windowForMode('nonsense')).toBeNull()
+    expect(windowForMode('')).toBeNull()
+    expect(windowForMode('AGGRESSIVE')).toBeNull() // case-sensitive
+  })
+
+  it('default window is the aggressive profile — head 12 + tail 6, middle elided', () => {
+    const out = compactToolText(BIG).text
+    expect(out).toContain('line number 11 with')     // 12th head line kept
+    expect(out).not.toContain('line number 12 with') // 13th line elided
+    expect(out).toContain('line number 119 with')    // last tail line kept
+    expect(out).toContain('lines elided')
+  })
+
+  it('setWireWindow makes compression follow the mode: aggressive << balanced << conservative', () => {
+    setWireWindow(windowForMode('aggressive'));   const agg = compactToolText(BIG).text.length
+    setWireWindow(windowForMode('balanced'));     const bal = compactToolText(BIG).text.length
+    setWireWindow(windowForMode('conservative')); const con = compactToolText(BIG).text.length
+    expect(agg).toBeLessThan(bal)
+    expect(bal).toBeLessThan(con)
+  })
+
+  it('rejects every invalid window so a garbled message can never break or downgrade it', () => {
+    const good = compactToolText(BIG).text // aggressive (from beforeEach)
+    const bads: unknown[] = [
+      null, undefined, {}, { headLines: -1, tailLines: 6, maxChars: 1000 },
+      { headLines: 12, tailLines: 6, maxChars: 0 }, { headLines: NaN, tailLines: 6, maxChars: 1000 },
+      { headLines: 12, tailLines: Infinity, maxChars: 1000 }, { headLines: 12, tailLines: -3, maxChars: 1000 },
+    ]
+    for (const bad of bads) {
+      setWireWindow(bad as never)
+      expect(compactToolText(BIG).text).toBe(good) // unchanged — still aggressive
+    }
+  })
+
+  it('windowForMode(unknown) → setWireWindow(null) is a no-op (the proxy-child fail-safe path)', () => {
+    setWireWindow(windowForMode('conservative'))
+    const con = compactToolText(BIG).text
+    setWireWindow(windowForMode('garbage')) // null → no-op → stays conservative
+    expect(compactToolText(BIG).text).toBe(con)
+  })
+
+  it('floors fractional window values without breaking output', () => {
+    setWireWindow({ headLines: 12.9, tailLines: 6.9, maxChars: 1000.9 })
+    const r = compactToolText(BIG)
+    expect(r.text.length).toBeLessThan(BIG.length)
+    expect(r.text).toContain('lines elided')
+  })
+
+  it('stays deterministic after a window change (cache-safety prerequisite)', () => {
+    setWireWindow(windowForMode('balanced'))
+    expect(rewriteMessagesBody(realisticBody()).body).toBe(rewriteMessagesBody(realisticBody()).body)
+    expect(compactToolText(BIG).text).toBe(compactToolText(BIG).text)
   })
 })

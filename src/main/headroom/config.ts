@@ -10,7 +10,11 @@ export interface Thresholds {
 
 export const MAX_COMPRESS_BYTES = 4_000_000
 const MODES: Mode[] = ['conservative', 'balanced', 'aggressive']
-const DEFAULTS: HeadroomSettings = { enabled: true, mode: 'balanced', steering: true }
+// Default 'aggressive': Token Headroom is the product's core value, so out of the box it
+// compresses the tool-output slice as hard as the profile allows (keeps the head + tail an
+// agent needs; the rest is recoverable via retrieve_full). Users who want more inline context
+// can dial to balanced/conservative — the selector now drives the live wire (see proxySupervisor).
+const DEFAULTS: HeadroomSettings = { enabled: true, mode: 'aggressive', steering: true }
 
 let current: HeadroomSettings = { ...DEFAULTS }
 

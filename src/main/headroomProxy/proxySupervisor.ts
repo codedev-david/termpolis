@@ -28,6 +28,7 @@ let spawner: Spawner | null = null
 let transport: ProxyTransport | null = null
 let healthy = false
 let port = 0
+let proxyMode = 'aggressive' // wire compression mode pushed to the child; default = max savings
 let upstream = 'api.anthropic.com'
 let restartTimes: number[] = []
 let stopped = false
@@ -36,6 +37,13 @@ let resultCb: ((r: ProxyResultMsg) => void) | null = null
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
 export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { resultCb = cb }
+/** Push the wire compression mode to the child: applied live if a transport is up, and re-sent
+ *  on the next (re)spawn's init. Best-effort — a failed post just means the aggressive default
+ *  holds in the child, so savings never silently drop. */
+export function setProxyMode(m: string): void {
+  proxyMode = m
+  try { transport?.postMessage({ kind: 'config', mode: m }) } catch { /* best effort */ }
+}
 export function isProxyHealthy(): boolean { return healthy && port > 0 }
 export function getProxyPort(): number { return port }
 
@@ -70,7 +78,7 @@ function spawnOnce(): void {
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
   })
   transport.onExit(() => { healthy = false; transport = null; maybeRestart() })
-  try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream }) } catch { healthy = false }
+  try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode }) } catch { healthy = false }
 }
 
 function maybeRestart(): void {
@@ -127,5 +135,5 @@ export function pickFreePort(): Promise<number> {
 
 export function _resetProxyForTest(): void {
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
-  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; spawner = null; upstream = 'api.anthropic.com'
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'
 }

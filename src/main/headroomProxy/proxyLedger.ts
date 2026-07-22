@@ -70,4 +70,8 @@ export function loadProxyBaseFromDisk(dir: string): void {
 export function saveProxyTotalsToDisk(dir: string): void {
   try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'proxy-totals.json'), JSON.stringify(currentProxyTotals()), 'utf8') } catch { /* best effort */ }
 }
+/** Zero the lifetime meter (session + on-disk base) WITHOUT dropping the flush wiring, so the
+ *  ledger keeps persisting afterward. Used for a live "reset lifetime savings" (e.g. after a
+ *  compression-methodology change) — unlike resetProxyLedger(), which also nulls flush for tests. */
+export function resetProxyCounters(): void { session = empty(); base = empty() }
 export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null }

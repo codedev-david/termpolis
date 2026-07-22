@@ -1,6 +1,6 @@
 import * as http from 'http'
 import * as https from 'https'
-import { rewriteMessagesBody, type WireStats } from './wireCompress'
+import { rewriteMessagesBody, setWireWindow, windowForMode, type WireStats } from './wireCompress'
 import { parseUsageFromSse, decodeBody, type Usage } from './usageParse'
 import { compressImage } from './imageCodec'
 
@@ -100,9 +100,15 @@ if (parentPort) {
   process.on('unhandledRejection', (err) => { try { parentPort.postMessage({ kind: 'error', message: 'rejection: ' + String(err) }) } catch { /* ignore */ } })
 
   let server: http.Server | null = null
+  // Translate a mode string → wire window. Unknown/garbled → windowForMode returns null →
+  // setWireWindow no-ops, so the aggressive default holds (never downgrades on a bad message).
+  const applyMode = (mode: unknown): void => { if (typeof mode === 'string') setWireWindow(windowForMode(mode)) }
   parentPort.on('message', (e) => {
-    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
-    if (!msg || msg.kind !== 'init' || server) return
+    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string; mode?: unknown })
+    if (!msg) return
+    if (msg.kind === 'config') { applyMode(msg.mode); return } // live mode change (Settings → supervisor)
+    if (msg.kind !== 'init' || server) return
+    applyMode(msg.mode) // honor the mode carried on init — and re-applied on every respawn
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {

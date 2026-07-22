@@ -5,19 +5,19 @@ const { getSettings, setSettings, resetSettings, thresholdsFor, MAX_COMPRESS_BYT
 describe('headroom config', () => {
   beforeEach(() => resetSettings())
 
-  it('defaults to enabled + balanced + steering on', () => {
-    expect(getSettings()).toEqual({ enabled: true, mode: 'balanced', steering: true })
+  it('defaults to enabled + aggressive + steering on', () => {
+    expect(getSettings()).toEqual({ enabled: true, mode: 'aggressive', steering: true })
   })
 
   it('setSettings merges partials and returns the new state', () => {
-    expect(setSettings({ enabled: false })).toEqual({ enabled: false, mode: 'balanced', steering: true })
-    expect(setSettings({ mode: 'aggressive' })).toEqual({ enabled: false, mode: 'aggressive', steering: true })
-    expect(getSettings().mode).toBe('aggressive')
+    expect(setSettings({ enabled: false })).toEqual({ enabled: false, mode: 'aggressive', steering: true })
+    expect(setSettings({ mode: 'conservative' })).toEqual({ enabled: false, mode: 'conservative', steering: true })
+    expect(getSettings().mode).toBe('conservative')
   })
 
   it('setSettings ignores an invalid mode', () => {
     setSettings({ mode: 'nonsense' as unknown as 'balanced' })
-    expect(getSettings().mode).toBe('balanced')
+    expect(getSettings().mode).toBe('aggressive')
   })
 
   it('thresholds get stricter as mode escalates', () => {
