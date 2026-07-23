@@ -1080,7 +1080,17 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // the selection survives to the right-click, `live` wins and this is never read; if a
       // repaint eats it first, this is the only thing standing between the user and a Copy that
       // silently does nothing.
-      if (term.hasSelection()) lastGoodSnapRef.current = { snap: buildCopySnapshot(term), t: Date.now() }
+      // Only ever UPGRADE the remembered snapshot — never downgrade a good one to null.
+      // hasSelection() can be true while getSelection() transiently returns '' (a repaint mid-
+      // drag shifted the selected cells out from under the model's range), which makes
+      // buildCopySnapshot() null. Writing that here would clobber the good snapshot onSelectionChange
+      // already banked, and right-click Copy would be greyed again — the exact bug v1.30.1 tried to
+      // fix but this unguarded re-bank kept reintroducing. Guard it the same way onSelectionChange
+      // does; only a LEFT press (capture phase) may retire the snapshot.
+      if (term.hasSelection()) {
+        const snap = buildCopySnapshot(term)
+        if (snap) lastGoodSnapRef.current = { snap, t: Date.now() }
+      }
       if (!isSelectionActive()) flushPendingWrite()
     }
     document.addEventListener('mouseup', handleDocumentMouseUp)

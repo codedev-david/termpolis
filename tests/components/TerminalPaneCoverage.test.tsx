@@ -647,6 +647,42 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       fireEvent.click(copyBtn)
       expect(mockClipboardWriteText).toHaveBeenCalledWith('picked-this-line')
     })
+
+    it('a document mouseup with a transiently-empty getSelection() must NOT clobber the snapshot banked by onSelectionChange', () => {
+      // Regression for the "still greyed after v1.30.1" report. onSelectionChange banks a GOOD
+      // snapshot during the drag (guarded by `if (snap)`), but the document mouseup handler
+      // re-banks UNCONDITIONALLY whenever hasSelection() is true. If a repaint has shifted the
+      // selected cells out from under the range by the time mouseup fires — model still reports
+      // hasSelection()===true, but getSelection() transiently returns '' — the mouseup overwrites
+      // the good banked snapshot with a null one. Then `remembered` is null at right-click and
+      // every Copy is greyed, exactly as before the fix. The mouseup must never downgrade a good
+      // snapshot to null; only a LEFT press may retire it.
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const selCb = H.term.onSelectionChange.mock.calls.at(-1)?.[0] as (() => void) | undefined
+      expect(typeof selCb).toBe('function')
+
+      // Drag commits a selection; onSelectionChange banks the good snapshot.
+      H.term.getSelection.mockReturnValue('survives-the-mouseup')
+      H.term.hasSelection.mockReturnValue(true)
+      act(() => { selCb!() })
+
+      // The drag ends. A repaint during the drag already moved the selected cells, so at the
+      // mouseup instant the model still has a selection but getSelection() comes back empty.
+      H.term.hasSelection.mockReturnValue(true)
+      H.term.getSelection.mockReturnValue('')
+      act(() => { fireEvent.mouseUp(document) })
+
+      // Right-click: live + fresh are null (getSelection() still ''); only the banked snapshot
+      // can keep Copy alive, and the mouseup must not have destroyed it.
+      openMenu(container)
+      expect(screen.getByTestId('terminal-context-menu')).toBeInTheDocument()
+
+      const copyBtn = screen.getByText('Copy').closest('button')!
+      expect(copyBtn).toBeEnabled()
+
+      fireEvent.click(copyBtn)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('survives-the-mouseup')
+    })
   })
 
   // =========================================================================
