@@ -13,6 +13,17 @@
 // context menu's new DISABLED state -- Copy can no longer look clickable and silently do nothing,
 // so the next time it happens the greyed-out item says plainly whether the selection reached the
 // menu at all.
+//
+// UPDATE (v1.30.1): the diagnostic fired for real (David: "the selection goes away on right-click
+// and every Copy is greyed out"). Root cause found without needing this e2e to reproduce it: the
+// greyed state means ALL THREE copy sources were null -- `live` (getSelection at the menu), `fresh`
+// (the right-mousedown sample), and `remembered` (lastGoodSnapRef). `remembered` used to be banked
+// at exactly ONE moment, the document mouseup, guarded by a single hasSelection() sample. xterm's
+// onSelectionChange -- its authoritative, synchronous "a selection exists NOW" signal, decoupled
+// from the rAF visual redraw -- is a far more reliable capture point, so the snapshot is now banked
+// there too (throttled). The gap that lone mouseup sample leaves is exercised deterministically by
+// the unit test "banks the selection at xterm onSelectionChange" in
+// tests/components/TerminalPaneCoverage.test.tsx (RED without the bank, GREEN with it).
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import * as fs from 'fs'
 import * as os from 'os'

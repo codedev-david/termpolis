@@ -614,6 +614,39 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       fireEvent.click(screen.getByText('Copy'))
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
+
+    it('banks the selection at xterm onSelectionChange, so right-click Copy survives a repaint that empties getSelection()', () => {
+      // The reported bug: select text in a repainting TUI, right-click, and every Copy is greyed
+      // out. By the right-click getSelection() is already '' (so `live` and the right-mousedown
+      // `fresh` are both null), and the only proactive snapshot used to be the single document
+      // mouseup sample — which the repaint/commit race can leave null. xterm's onSelectionChange
+      // is the authoritative "a selection exists NOW" signal; banking there means the right-click
+      // still has something to copy.
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const selCb = H.term.onSelectionChange.mock.calls.at(-1)?.[0] as (() => void) | undefined
+      expect(typeof selCb).toBe('function')
+
+      // xterm commits a selection and fires onSelectionChange (output is frozen during the drag).
+      H.term.getSelection.mockReturnValue('picked-this-line')
+      H.term.hasSelection.mockReturnValue(true)
+      act(() => { selCb!() })
+
+      // A repaint then scrolls the selected cells away: xterm clears the model, so getSelection()
+      // is empty by the time the user right-clicks. This must NOT drop the already-banked snapshot.
+      H.term.getSelection.mockReturnValue('')
+      H.term.hasSelection.mockReturnValue(false)
+      act(() => { selCb!() })
+
+      // Right-click with no live/fresh selection: only the banked snapshot can keep Copy alive.
+      openMenu(container)
+      expect(screen.getByTestId('terminal-context-menu')).toBeInTheDocument()
+
+      const copyBtn = screen.getByText('Copy').closest('button')!
+      expect(copyBtn).toBeEnabled()
+
+      fireEvent.click(copyBtn)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('picked-this-line')
+    })
   })
 
   // =========================================================================

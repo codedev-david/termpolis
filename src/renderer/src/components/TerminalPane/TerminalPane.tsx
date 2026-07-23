@@ -101,6 +101,11 @@ type CopySnapshot = {
 // made minutes ago in a scrolled-away buffer is not what Copy hands you. A LEFT click retires it
 // immediately regardless, so this only ever bounds the case where the user has touched nothing.
 const LAST_SELECTION_TTL_MS = 60_000
+// onSelectionChange fires on every mousemove of a drag. Banking the snapshot is a getSelection()
+// plus five buffer walks, so bound it to at most once per this many ms — the selection only grows
+// during a drag, so each throttled sample refines the banked one, and the drag's mouseup still
+// captures the exact final selection. This is a safety net for when that mouseup sample misses.
+const SELECTION_SNAP_THROTTLE_MS = 100
 
 function buildCopySnapshot(term: Terminal | null): CopySnapshot | null {
   const selection = term?.getSelection() ?? ''
@@ -1045,10 +1050,28 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       flushPendingWrite()
       throttledWrite(data)
     }
-    // Flush the moment the selection is gone (a plain click clears it, or the
-    // user copies then clicks away). hasSelection() going false is the signal.
+    // xterm's onSelectionChange is the authoritative, synchronous "the selection model changed"
+    // signal: it fires the instant a selection exists, for ANY gesture (drag, double-click word,
+    // select-all, the drag-scroll timer), decoupled from the rAF-throttled visual redraw. Bank the
+    // snapshot HERE, not only at document mouseup — that lone mouseup sample can miss (the selection
+    // is committed on xterm's own schedule, and a repaint can empty getSelection() before the user
+    // right-clicks), which is the "selection vanishes and every Copy is greyed out" report. Only the
+    // user retires a banked snapshot (a left-press, handled in the capture phase); output repaint
+    // never does, so an empty change here must not drop it.
+    // And flush the moment the selection is gone (a plain click clears it, or the user copies then
+    // clicks away) — hasSelection() going false is the signal.
+    let lastSelSnapAt = 0
     const selectionChangeDisposable = term.onSelectionChange(() => {
-      if (!isSelectionActive()) flushPendingWrite()
+      if (term.hasSelection()) {
+        const now = Date.now()
+        if (now - lastSelSnapAt >= SELECTION_SNAP_THROTTLE_MS) {
+          lastSelSnapAt = now
+          const snap = buildCopySnapshot(term)
+          if (snap) lastGoodSnapRef.current = { snap, t: now }
+        }
+      } else if (!isSelectionActive()) {
+        flushPendingWrite()
+      }
     })
     const handleDocumentMouseUp = (): void => {
       selectingRef.current = false
