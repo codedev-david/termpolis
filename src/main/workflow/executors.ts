@@ -1,5 +1,5 @@
-import type { ControlStep, StepResult, StepStatus } from '../../renderer/src/types'
-import type { Timer } from './contracts'
+import type { CommandStep, ControlStep, StepResult, StepStatus } from '../../renderer/src/types'
+import type { TerminalRunner, Timer } from './contracts'
 import { interpolate, evalCondition } from './workflowExpr'
 
 type Emit = (e: { chunk: string }) => void
@@ -34,5 +34,35 @@ export async function executeControlStep(
     }
     default:
       return { status: 'failed', output: `unknown control action` }
+  }
+}
+
+const CAP = 32_768
+const tail = (s: string) => (s.length > CAP ? s.slice(-CAP) : s)
+
+function fileCommand(scriptPath: string, shell?: string): string {
+  if (shell === 'python' || /\.py$/.test(scriptPath)) return `python ${scriptPath}`
+  if (/\.(mjs|cjs|js)$/.test(scriptPath)) return `node ${scriptPath}`
+  if (/\.ps1$/.test(scriptPath)) return `pwsh -File ${scriptPath}`
+  return `${shell || 'bash'} ${scriptPath}`
+}
+
+export async function executeCommandStep(
+  step: CommandStep, results: Results, terminal: TerminalRunner, onChunk?: (s: string) => void,
+): Promise<StepResult> {
+  const shell = step.shell || 'bash'
+  const command = step.source === 'file'
+    ? fileCommand(step.scriptPath || '', step.shell)
+    : interpolate(step.command || '', results)
+  const res = await terminal.run(
+    { stepId: step.id, command, shell, cwd: step.cwd || '', timeoutMs: step.timeoutMs ?? 600_000, visible: step.visible ?? true },
+    onChunk,
+  )
+  return {
+    stepId: step.id,
+    status: res.exitCode === 0 ? 'succeeded' : 'failed',
+    exitCode: res.exitCode,
+    output: tail(res.output),
+    error: res.timedOut ? `command timed out after ${step.timeoutMs ?? 600_000}ms` : undefined,
   }
 }

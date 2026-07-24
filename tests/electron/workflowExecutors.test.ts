@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { executeControlStep } from '../../src/main/workflow/executors'
-import type { ControlStep, StepResult } from '../../src/renderer/src/types'
+import { executeControlStep, executeCommandStep } from '../../src/main/workflow/executors'
+import type { ControlStep, CommandStep, StepResult } from '../../src/renderer/src/types'
 
 const timer = { sleep: vi.fn(async () => {}) }
 const results: Record<string, StepResult> = {
@@ -51,5 +51,50 @@ describe('control: loop + notify', () => {
     const r = await executeControlStep(step, results, timer, emit)
     expect(r.status).toBe('succeeded')
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ chunk: 'code=1' }))
+  })
+})
+
+function fakeTerminal(result: { exitCode: number; output: string; timedOut?: boolean }, spy?: (s: any) => void) {
+  return { run: vi.fn(async (spec: any) => { spy?.(spec); return result }), cancel: vi.fn() }
+}
+const base: CommandStep = { id: 'c', type: 'command', name: 'run', source: 'inline', command: 'echo hi' }
+
+describe('command executor', () => {
+  it('exit 0 -> succeeded with output', async () => {
+    const term = fakeTerminal({ exitCode: 0, output: 'hi' })
+    const r = await executeCommandStep(base, {}, term as any)
+    expect(r.status).toBe('succeeded'); expect(r.exitCode).toBe(0); expect(r.output).toBe('hi')
+  })
+  it('exit != 0 -> failed', async () => {
+    const term = fakeTerminal({ exitCode: 2, output: 'err' })
+    const r = await executeCommandStep(base, {}, term as any)
+    expect(r.status).toBe('failed'); expect(r.exitCode).toBe(2)
+  })
+  it('timedOut -> failed with error', async () => {
+    const term = fakeTerminal({ exitCode: 124, output: '', timedOut: true })
+    const r = await executeCommandStep({ ...base, timeoutMs: 10 }, {}, term as any)
+    expect(r.status).toBe('failed'); expect(r.error).toMatch(/timed out/i)
+  })
+  it('interpolates ${steps.*} into the command before running', async () => {
+    let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+    await executeCommandStep({ ...base, command: 'deploy ${steps.build.output}' }, { build: { stepId: 'build', status: 'succeeded', output: 'v9', exitCode: 0 } }, term as any)
+    expect(seen.command).toBe('deploy v9')
+  })
+  it('source:file runs the script via the shell (bash script.sh)', async () => {
+    let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+    await executeCommandStep({ id: 'c', type: 'command', name: 'f', source: 'file', scriptPath: 'scripts/x.sh', shell: 'bash' }, {}, term as any)
+    expect(seen.command).toContain('scripts/x.sh')
+    expect(seen.shell).toBe('bash')
+  })
+  it('source:file infers python for .py', async () => {
+    let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+    await executeCommandStep({ id: 'c', type: 'command', name: 'f', source: 'file', scriptPath: 'etl.py' }, {}, term as any)
+    expect(seen.command).toBe('python etl.py')
+  })
+  it('caps captured output at 32KB (tail)', async () => {
+    const big = 'x'.repeat(40_000)
+    const term = fakeTerminal({ exitCode: 0, output: big })
+    const r = await executeCommandStep(base, {}, term as any)
+    expect(r.output.length).toBe(32_768)
   })
 })
