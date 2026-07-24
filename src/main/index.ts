@@ -57,7 +57,7 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
 }
 import { join } from 'path'
 import { homedir, release } from 'os'
-import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells } from './shellDetector'
@@ -108,7 +108,13 @@ import { loadSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeTool, type McpToolHandlers } from './mcpServer'
+import { randomUUID } from 'node:crypto'
+import { detectAgentStatus } from '../renderer/src/lib/agentStatusDetector'
+import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
+import { runWorkflow as wfRun, cancelRun as wfCancel } from './workflow/workflowEngine'
+import { registerWorkflowIpc } from './workflow/ipc'
+import type { FsLike as WorkflowFsLike } from './workflow/workflowStore'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
@@ -3036,6 +3042,34 @@ if (!gotTheLock) {
     })
     mcpServer = startMcpServer(mcpHandlers)
     console.log(`MCP auth token: ${getMcpAuthToken()}`)
+
+    // ── Workflow Orchestrator: deterministic local automation engine ──
+    // Deps are built from the SAME substrate the app already trusts: managed
+    // PTYs (terminalManager), the agent-status heuristic, and the in-process
+    // MCP handlers. Wrapped in try/catch per the app-boot rule so a wiring
+    // fault can never fatal `whenReady`.
+    try {
+      const wfFs = { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } as unknown as WorkflowFsLike
+      const wfSpawn = { spawnTerminal, writeToTerminal, killTerminal }
+      const wfTerminal = makeTerminalRunner(wfSpawn)
+      const wfAgentLaunch: Record<'claude' | 'codex' | 'gemini', string> = { claude: 'claude', codex: 'codex', gemini: 'agy' }
+      const wfAgent = makeAgentRunner(
+        wfSpawn,
+        (out: string, name?: string) => detectAgentStatus(out, name || 'claude'),
+        (agent) => wfAgentLaunch[agent],
+      )
+      const wfTools = makeToolInvoker(mcpHandlers, executeTool)
+      registerWorkflowIpc(ipcMain, () => mainWindow, {
+        fs: wfFs,
+        engine: { runWorkflow: wfRun, cancelRun: wfCancel },
+        isTrusted: (cwd: string) => { try { return isWorkspaceTrusted(cwd) } catch { return false } },
+        newRunId: () => randomUUID(),
+        makeDeps: (emit, runId) => ({ terminal: wfTerminal, agent: wfAgent, tools: wfTools, timer: realTimer, now: Date.now, newRunId: () => runId, emit }),
+      })
+      console.log('[workflow] orchestrator IPC registered')
+    } catch (wfErr) {
+      console.error('[workflow] failed to register orchestrator IPC', wfErr)
+    }
     // Write token to a file so AI agents can discover it. On Windows the
     // 0o600 mode is a no-op, so writeSecureFile also applies an NTFS ACL
     // restricting the file to the current user.
