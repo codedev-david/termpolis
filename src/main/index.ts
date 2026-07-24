@@ -3056,8 +3056,14 @@ if (!gotTheLock) {
       // found" on Windows — so resolve the type to a real path before spawning.
       // Agent steps launch CLIs (claude/codex/agy) that are NOT shell types, so
       // they keep the plain, unresolved spawn.
+      // Fall back to the platform's default shell TYPE when a Command step's
+      // chosen shell can't be spawned in this environment (e.g. a CI runner
+      // that can't posix_spawn `/bin/bash`). Matches getDefaultShell's
+      // preferredByOs so the fallback is a shell the OS is guaranteed to have.
+      const wfDefaultShellType = (({ darwin: 'zsh', linux: 'bash', win32: 'powershell' }) as Record<string, string>)[process.platform] ?? 'bash'
       const wfCommandSpawn = {
         ...wfSpawn,
+        defaultShell: wfDefaultShellType,
         spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void) =>
           spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit),
       }

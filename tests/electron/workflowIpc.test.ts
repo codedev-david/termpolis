@@ -86,6 +86,20 @@ describe('workflow IPC', () => {
     const res = await h.call('workflow:cancel', { runId: 'nope' })
     expect(res.success).toBe(true)
   })
+  it('read of a missing id returns an error envelope (never throws)', async () => {
+    const h = harness()
+    const res = await h.call('workflow:read', { cwd: '/r', id: 'ghost' })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/not found/)
+  })
+  it('run of a missing id (trusted) is refused before the engine starts', async () => {
+    const engine = { runWorkflow: vi.fn(), cancelRun: vi.fn() }
+    const h = harness({ engine })
+    const res = await h.call('workflow:run', { cwd: '/r', id: 'ghost' })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/not found/)
+    expect(engine.runWorkflow).not.toHaveBeenCalled()
+  })
   it('a rejected engine run is swallowed by the handler (no unhandled rejection)', async () => {
     // The run handler returns the runId synchronously and attaches a .catch so an
     // engine that throws cannot surface an unhandled rejection or crash the main process.

@@ -101,3 +101,75 @@ describe('fs CRUD (injected fake fs)', () => {
     expect(files.get(key)!.trim().split('\n').length).toBe(2)
   })
 })
+
+describe('store edge cases', () => {
+  const inlineFs = () => {
+    const files = new Map<string, string>()
+    return {
+      files,
+      fs: {
+        existsSync: (p: string) => files.has(p) || p.endsWith('workflows'),
+        mkdirSync: () => {},
+        readdirSync: () => [...files.keys()].map(k => k.split(/[\\/]/).pop()!),
+        readFileSync: (p: string) => files.get(p)!,
+        writeFileSync: (p: string, d: string) => { files.set(p, d) },
+        appendFileSync: () => {},
+        rmSync: (p: string) => { files.delete(p) },
+      } as any,
+    }
+  }
+  it('flags a step that is missing its name (valid id + type, no name)', () => {
+    const r = validateWorkflow({ ...WF, steps: [{ id: 'a', type: 'command', source: 'inline', command: 'x' }] })
+    expect(r.ok).toBe(false)
+    expect(r.errors).toContain('step a missing name')
+  })
+  it('listWorkflows ignores non-.yml files and unsafe/hostile file names', () => {
+    const { fs, files } = inlineFs()
+    const dir = workflowsDir('/repo')
+    writeWorkflow(dir, WF, fs)                        // demo.yml — the only real workflow
+    files.set(`${dir}/notes.txt`, 'not a workflow')  // wrong extension -> skipped (endsWith .yml)
+    files.set(`${dir}/..evil.yml`, 'id: hax')         // unsafe id -> skipped, fileFor never throws
+    expect(listWorkflows(dir, fs)).toEqual([{ id: 'demo', name: 'Demo' }])
+  })
+  it('readWorkflow returns not-found for a safe id with no file on disk', () => {
+    const { fs } = inlineFs()
+    const r = readWorkflow(workflowsDir('/repo'), 'ghostwf', fs)
+    expect(r.ok).toBe(false)
+    expect(r.errors[0]).toMatch(/not found/)
+  })
+  it('rejects a non-object workflow input (null / string)', () => {
+    expect(validateWorkflow(null).ok).toBe(false)
+    expect(validateWorkflow(null).errors).toContain('not an object')
+    expect(validateWorkflow('nope').ok).toBe(false)
+  })
+  it('flags a step with a missing/non-string id and tolerates a null step entry', () => {
+    const noId = validateWorkflow({ ...WF, steps: [{ type: 'command', name: 'a', source: 'inline', command: 'x' }] })
+    expect(noId.ok).toBe(false)
+    expect(noId.errors).toContain('step missing id')
+    expect(validateWorkflow({ ...WF, steps: [null] }).ok).toBe(false) // !s guard, no throw
+  })
+  it('writeWorkflow creates the workflows dir when it does not yet exist', () => {
+    const files = new Map<string, string>()
+    let madeDir = ''
+    const fs = {
+      existsSync: (p: string) => files.has(p),           // dir absent -> triggers mkdir
+      mkdirSync: (p: string) => { madeDir = p },
+      writeFileSync: (p: string, d: string) => { files.set(p, d) },
+      readdirSync: () => [], readFileSync: () => '', appendFileSync: () => {}, rmSync: () => {},
+    } as any
+    const dir = workflowsDir('/repo')
+    writeWorkflow(dir, WF, fs)
+    expect(madeDir).toBe(dir)
+    expect([...files.keys()][0]).toContain('demo.yml')
+  })
+  it('listWorkflows returns [] when the workflows dir is absent', () => {
+    const fs = { existsSync: () => false } as any
+    expect(listWorkflows(workflowsDir('/repo'), fs)).toEqual([])
+  })
+  it('listWorkflows skips a .yml that fails to parse (never throws)', () => {
+    const { fs, files } = inlineFs()
+    const dir = workflowsDir('/repo')
+    files.set(`${dir}/broken.yml`, 'id: : : nope\n  - broken') // safe id, unparseable body
+    expect(listWorkflows(dir, fs)).toEqual([])                 // corrupt file skipped, not fatal
+  })
+})

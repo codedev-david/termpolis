@@ -65,3 +65,18 @@ describe('evalCondition', () => {
     expect(evalCondition('', results)).toBe(false)
   })
 })
+
+describe('expression edge cases', () => {
+  it('interpolates an unknown step field to empty (ref matches the token but not a real property)', () => {
+    // `${steps.x.output}` is valid; `${steps.x.bogus}` matches the interpolation
+    // token shape but resolveRef only knows output|exitCode|status, so it yields
+    // undefined -> the interpolation collapses to '' rather than leaking the ref.
+    expect(interpolate('v=${steps.build.bogus}', results)).toBe('v=')
+  })
+  it('sugar steps.X.ok/failed is false when step X has no result yet', () => {
+    // A gate that references a step which hasn't run (or does not exist) must be
+    // false, never throw — the engine skips such a step rather than crashing.
+    expect(evalCondition('steps.ghost.ok', results)).toBe(false)
+    expect(evalCondition('steps.ghost.failed', results)).toBe(false)
+  })
+})

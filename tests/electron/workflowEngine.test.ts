@@ -186,4 +186,78 @@ describe('engine', () => {
     expect(run.status).toBe('cancelled')
     expect(run.steps.find(s => s.stepId === 'b')!.status).toBe('cancelled')
   })
+
+  it('a notify step with no message forwards an empty chunk and still succeeds', async () => {
+    // Exercises the engine onEmit adapter's `chunk: e.chunk || ''` fallback and the
+    // executor's `message ?? ''` — an empty notify must not throw or drop the event.
+    const { d, events } = deps()
+    const run = await runWorkflow(wf([
+      { id: 'n', type: 'control', name: 'n', action: 'notify', config: {} },
+    ]), d)
+    expect(run.steps[0].status).toBe('succeeded')
+    expect(events).toContainEqual(expect.objectContaining({ type: 'step:output', stepId: 'n', chunk: '' }))
+  })
+
+  it('a loop with no preceding step is a harmless no-op', async () => {
+    // runLoop guards `wf.steps[loopIdx - 1]` — a loop at index 0 has no body and
+    // must fall through without running (or crashing on) a non-existent step.
+    const { d } = deps()
+    const run = await runWorkflow(wf([
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 3 } },
+    ]), d)
+    expect(run.status).toBe('succeeded')
+    expect(d.terminal.run).not.toHaveBeenCalled()
+    expect(d.agent.run).not.toHaveBeenCalled()
+  })
+
+  it('a loop whose `until` already holds on entry re-runs the body zero times', async () => {
+    const runSpy = vi.fn(async () => ({ exitCode: 0, output: '3' }))
+    const { d } = deps({ terminal: { run: runSpy, cancel: vi.fn() } })
+    await runWorkflow(wf([
+      { id: 'a', type: 'command', name: 'a', source: 'inline', command: 'tick' },
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 5, until: 'steps.a.output == 3' } },
+    ]), d)
+    expect(runSpy).toHaveBeenCalledTimes(1) // initial pass only; until true at loop entry -> break
+  })
+
+  it('a loop with no `until` is bounded by the run-wide execution budget (cannot hang)', async () => {
+    const runSpy = vi.fn(async () => ({ exitCode: 0, output: '' }))
+    const { d } = deps({ terminal: { run: runSpy, cancel: vi.fn() } })
+    const run = await runWorkflow(wf([
+      { id: 'a', type: 'command', name: 'a', source: 'inline', command: 'tick' },
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 1000 } },
+    ]), d)
+    expect(run.status).toBe('succeeded')
+    expect(runSpy.mock.calls.length).toBeGreaterThan(900)
+    expect(runSpy.mock.calls.length).toBeLessThanOrEqual(1000) // MAX_STEP_EXECUTIONS caps runLoop too
+  })
+
+  it('loops an agent step through runOne (agent body re-runs each iteration)', async () => {
+    const agentSpy = vi.fn(async () => ({ output: 'a', ok: true }))
+    const { d } = deps({ agent: { run: agentSpy, cancel: vi.fn() } })
+    await runWorkflow(wf([
+      { id: 'g', type: 'agent', name: 'g', agent: 'claude', prompt: 'hi' },
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 2 } },
+    ]), d)
+    expect(agentSpy).toHaveBeenCalledTimes(2) // initial pass + 1 loop re-run (n=1)
+  })
+
+  it('loops a skill step through runOne (skill body re-runs each iteration)', async () => {
+    const toolSpy = vi.fn(async () => ({ output: 't', ok: true }))
+    const { d } = deps({ tools: { invoke: toolSpy } })
+    await runWorkflow(wf([
+      { id: 's', type: 'skill', name: 's', tool: 'memory_search' },
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 2 } },
+    ]), d)
+    expect(toolSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancelRun for a run with no in-flight step is a harmless no-op', () => {
+    // No step is parked, so runningStep has no entry — cancelRun must not call
+    // terminal/agent cancel (the `if (stepId)` guard) and must not throw.
+    const { d } = deps()
+    expect(() => cancelRun('never-started', d)).not.toThrow()
+    expect(d.terminal.cancel).not.toHaveBeenCalled()
+    expect(d.agent.cancel).not.toHaveBeenCalled()
+  })
 })

@@ -987,3 +987,38 @@ describe('preload — workflow orchestrator bridge', () => {
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('workflow:run-event', handler)
   })
 })
+
+describe('preload IPC surface — every exposed wrapper forwards without throwing', () => {
+  // The preload bridge is the renderer's ONLY door to the main process, so every
+  // exposed function must be safely invocable: a wrapper that throws in the
+  // renderer breaks the feature it fronts (workflow save/run/trust included).
+  // This sweep calls each function on every exposed bridge with benign args
+  // (ipcRenderer is fully mocked) — a regression that makes any wrapper throw is
+  // caught here, and it proves the whole surface is wired end-to-end.
+  it('calls every function on every exposed bridge', () => {
+    expect(Object.keys(exposed)).toEqual(
+      expect.arrayContaining([
+        'termpolis', 'windowControls', 'globalEvents', 'swarmAPI',
+        'updater', 'safeImport', 'aiSecurity', 'mcpEvents',
+      ]),
+    )
+    const threw: string[] = []
+    let called = 0
+    for (const [bridgeName, bridge] of Object.entries(exposed)) {
+      if (!bridge || typeof bridge !== 'object') continue
+      for (const [fnName, val] of Object.entries(bridge as Record<string, unknown>)) {
+        if (typeof val !== 'function') continue
+        called++
+        try {
+          const ret = (val as (...a: unknown[]) => unknown)(vi.fn(), 'x', 'y', 1, {})
+          // Event registrars return an unsubscribe fn — call it to cover teardown.
+          if (typeof ret === 'function') (ret as () => void)()
+        } catch (e) {
+          threw.push(`${bridgeName}.${fnName}: ${(e as Error).message}`)
+        }
+      }
+    }
+    expect(threw).toEqual([])
+    expect(called).toBeGreaterThan(120)
+  })
+})

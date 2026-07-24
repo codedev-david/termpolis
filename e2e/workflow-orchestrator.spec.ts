@@ -55,6 +55,12 @@ test.beforeAll(async () => {
       TERMPOLIS_SMOKE_SKIP_PICKERS: '1',
     },
   })
+  // Surface the Electron main-process stderr in the CI step log. Command steps
+  // spawn a real PTY in the main process; when node-pty can't posix_spawn the
+  // shell on a CI runner the only evidence is main's stderr, which Playwright
+  // does NOT forward on its own. Piping it here makes the exact executable +
+  // errno visible when a spawn-dependent step fails on a runner.
+  app.process().stderr?.on('data', (d: Buffer) => console.log('[app stderr] ' + d.toString().trimEnd()))
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
 

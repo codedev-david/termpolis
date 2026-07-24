@@ -5,6 +5,13 @@ type SpawnDeps = {
   spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void) => void
   writeToTerminal: (id: string, data: string) => void
   killTerminal: (id: string) => void
+  // OS default shell TYPE (e.g. 'zsh' on macOS, 'bash' on Linux). A Command
+  // step whose chosen shell can't be spawned in this environment falls back to
+  // it — a step should run on *some* working shell rather than hard-fail
+  // because the requested one can't be posix_spawn'd here. Optional: without a
+  // default, a spawn failure stays terminal (exit 127), preserving behavior for
+  // callers (and unit tests) that don't supply one.
+  defaultShell?: string
 }
 
 const CAP = 32_768
@@ -19,21 +26,36 @@ export function makeTerminalRunner(sp: SpawnDeps): TerminalRunner {
         const finish = (r: CommandRunResult) => { if (done) return; done = true; clearTimeout(timer); live.delete(spec.stepId); resolve(r) }
         const timer = setTimeout(() => { try { sp.killTerminal(spec.stepId) } catch {} finish({ exitCode: 124, output: buf, timedOut: true }) }, spec.timeoutMs)
         live.set(spec.stepId, () => { try { sp.killTerminal(spec.stepId) } catch {} finish({ exitCode: 130, output: buf }) })
-        try {
-          sp.spawnTerminal(spec.stepId, spec.shell, spec.cwd,
-            (d) => { buf = (buf + d).slice(-CAP); onChunk?.(d) },
-            undefined, undefined,
-            (code) => finish({ exitCode: code, output: buf }))
-          // Non-interactive: write the command + newline, then signal EOF via `exit`.
-          sp.writeToTerminal(spec.stepId, `${spec.command}\n`)
-          if (!spec.visible) sp.writeToTerminal(spec.stepId, `exit $?\n`)
-        } catch (e: any) {
-          // node-pty throws synchronously when it can't spawn the shell. Turn
-          // that into a failed step (exit 127 = command not found) so the
-          // engine reports the failure — a leaked throw would hang the run
-          // with the step stuck "running" forever.
-          finish({ exitCode: 127, output: (buf + `\n[spawn error] ${e?.message ?? e}`).slice(-CAP) })
+        const onData = (d: string) => { buf = (buf + d).slice(-CAP); onChunk?.(d) }
+        // Spawn the command on a real PTY. node-pty throws synchronously when it
+        // can't open the shell — a bad/absent executable, or an environment that
+        // can't posix_spawn the requested shell. When that happens and a working
+        // OS default shell is known, retry once on it: a Command step should run
+        // on *some* shell rather than hard-fail because the chosen one can't be
+        // spawned here. Only a spawn *throw* falls back — a shell that spawns and
+        // exits non-zero is a real command failure and is reported as-is.
+        const attempt = (shell: string, isFallback: boolean) => {
+          try {
+            sp.spawnTerminal(spec.stepId, shell, spec.cwd, onData,
+              undefined, undefined,
+              (code) => finish({ exitCode: code, output: buf }))
+            // Non-interactive: write the command + newline, then signal EOF via `exit`.
+            sp.writeToTerminal(spec.stepId, `${spec.command}\n`)
+            if (!spec.visible) sp.writeToTerminal(spec.stepId, `exit $?\n`)
+          } catch (e: any) {
+            const note = `\n[spawn error] ${e?.message ?? e}`
+            if (!isFallback && sp.defaultShell && sp.defaultShell !== shell) {
+              buf = (buf + note + `\n[retry] falling back to default shell "${sp.defaultShell}"`).slice(-CAP)
+              attempt(sp.defaultShell, true)
+              return
+            }
+            // Terminal: turn the spawn failure into a failed step (exit 127 =
+            // command not found) so the engine reports it — a leaked throw would
+            // hang the run with the step stuck "running" forever.
+            finish({ exitCode: 127, output: (buf + note).slice(-CAP) })
+          }
         }
+        attempt(spec.shell, false)
       })
     },
     cancel(stepId) { live.get(stepId)?.() },

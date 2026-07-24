@@ -139,3 +139,65 @@ describe('skill executor', () => {
     expect(r.status).toBe('failed'); expect(r.error).toBe('no such tool')
   })
 })
+
+describe('control: edge cases', () => {
+  it('an unknown control action fails cleanly rather than silently succeeding', async () => {
+    // The engine gates on status; a control action the store validator would have
+    // rejected must still return failed (defence in depth) if one ever reaches here.
+    const step = { id: 'x', type: 'control', name: 'x', action: 'teleport', config: {} } as unknown as ControlStep
+    const r = await executeControlStep(step, results, timer, () => {})
+    expect(r.status).toBe('failed')
+    expect(r.output).toBe('unknown control action')
+  })
+  it('wait with no waitMs sleeps 0 and succeeds (Number(undefined) || 0 branch)', async () => {
+    const step: ControlStep = { id: 'w', type: 'control', name: 'wait', action: 'wait', config: {} }
+    const r = await executeControlStep(step, results, timer, () => {})
+    expect(timer.sleep).toHaveBeenCalledWith(0)
+    expect(r.status).toBe('succeeded')
+  })
+  it('notify with no message emits an empty chunk (message ?? "" branch)', async () => {
+    const emit = vi.fn()
+    const step: ControlStep = { id: 'n', type: 'control', name: 'nt', action: 'notify', config: {} }
+    const r = await executeControlStep(step, results, timer, emit)
+    expect(r.status).toBe('succeeded')
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ chunk: '' }))
+  })
+  it('branch with no condition evaluates false -> no goto (condition ?? "" branch)', async () => {
+    const step: ControlStep = { id: 'b', type: 'control', name: 'br', action: 'branch', config: { goto: 'fix' } }
+    const r = await executeControlStep(step, results, timer, () => {})
+    expect(r.status).toBe('succeeded')
+    expect(r.output).toBe('branch skipped')
+    expect(r.goto).toBeUndefined()
+  })
+})
+
+describe('command executor — source & shell inference edge cases', () => {
+  it('source:file infers node for .mjs/.cjs/.js', async () => {
+    for (const [p, exe] of [['build.mjs', 'node'], ['tool.cjs', 'node'], ['run.js', 'node']] as const) {
+      let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+      await executeCommandStep({ id: 'c', type: 'command', name: 'f', source: 'file', scriptPath: p }, {}, term as any)
+      expect(seen.command).toBe(`${exe} ${p}`)
+    }
+  })
+  it('source:file infers pwsh -File for .ps1', async () => {
+    let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+    await executeCommandStep({ id: 'c', type: 'command', name: 'f', source: 'file', scriptPath: 'deploy.ps1' }, {}, term as any)
+    expect(seen.command).toBe('pwsh -File deploy.ps1')
+  })
+  it('source:file with no scriptPath falls back to a bare shell invocation (no throw)', async () => {
+    let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+    await executeCommandStep({ id: 'c', type: 'command', name: 'f', source: 'file' }, {}, term as any)
+    expect(seen.command).toBe('bash ') // fileCommand('', undefined) -> `${shell||'bash'} ${''}`
+  })
+  it('inline with no command runs an empty command (command || "" branch)', async () => {
+    let seen: any; const term = fakeTerminal({ exitCode: 0, output: '' }, s => (seen = s))
+    await executeCommandStep({ id: 'c', type: 'command', name: 'run', source: 'inline' }, {}, term as any)
+    expect(seen.command).toBe('')
+  })
+  it('a timeout with no timeoutMs reports the 600000ms default in its error (timeoutMs ?? default)', async () => {
+    const term = fakeTerminal({ exitCode: 124, output: '', timedOut: true })
+    const r = await executeCommandStep(base, {}, term as any) // base has no timeoutMs
+    expect(r.status).toBe('failed')
+    expect(r.error).toMatch(/timed out after 600000ms/)
+  })
+})

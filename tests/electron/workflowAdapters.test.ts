@@ -26,6 +26,40 @@ describe('terminal runner adapter', () => {
     expect(res.exitCode).not.toBe(0)
     expect(res.output).toContain('File not found')
   })
+  it('falls back to the OS default shell when the chosen shell cannot be spawned', async () => {
+    // node-pty throws for the requested shell (e.g. a runner that cannot
+    // posix_spawn /bin/bash) but the OS default (zsh) spawns fine — the step
+    // must run on the fallback shell rather than hard-fail.
+    let onExit: (code: number) => void = () => {}
+    const spawn = vi.fn((_id: string, exe: string, _cwd: string, _d: any, _p: any, _e: any, ex: (c: number) => void) => {
+      if (exe === 'bash') throw new Error('posix_spawnp failed')
+      onExit = ex
+    })
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn(), defaultShell: 'zsh' })
+    const p = runner.run({ stepId: 's', command: 'exit 0', shell: 'bash', cwd: '/x', timeoutMs: 1000, visible: false })
+    onExit(0)
+    const res = await p
+    expect(res.exitCode).toBe(0)
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(spawn.mock.calls[0][1]).toBe('bash')   // first attempt: chosen shell
+    expect(spawn.mock.calls[1][1]).toBe('zsh')    // retry: OS default
+    expect(res.output).toContain('falling back to default shell "zsh"')
+  })
+  it('reports a failed step when neither the chosen shell nor the default can spawn', async () => {
+    const spawn = vi.fn(() => { throw new Error('posix_spawnp failed') })
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn(), defaultShell: 'zsh' })
+    const res = await runner.run({ stepId: 's', command: 'exit 0', shell: 'bash', cwd: '/x', timeoutMs: 1000, visible: false })
+    expect(res.exitCode).toBe(127)
+    expect(spawn).toHaveBeenCalledTimes(2)        // tried bash, then the zsh fallback
+    expect(res.output).toContain('posix_spawnp failed')
+  })
+  it('does not retry when the chosen shell already IS the OS default', async () => {
+    const spawn = vi.fn(() => { throw new Error('boom') })
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn(), defaultShell: 'bash' })
+    const res = await runner.run({ stepId: 's', command: 'exit 0', shell: 'bash', cwd: '/x', timeoutMs: 1000, visible: false })
+    expect(res.exitCode).toBe(127)
+    expect(spawn).toHaveBeenCalledTimes(1)        // no pointless retry on the same shell
+  })
   it('timeout kills the pty and resolves timedOut', async () => {
     vi.useFakeTimers()
     const kill = vi.fn()
@@ -119,5 +153,20 @@ describe('agent runner adapter', () => {
     runner.cancel('g')
     const r = await p
     expect(r.ok).toBe(false); expect(r.error).toMatch(/cancel/)
+  })
+  it('resets the idle countdown when the agent resumes work after briefly going idle', async () => {
+    // idle latches idleSince; a subsequent non-idle poll must clear it so the agent
+    // is only declared done after a *sustained* idle, never a momentary pause.
+    vi.useFakeTimers()
+    const seq = ['idle', 'working', 'errored'] // poll @500ms: latch, reset (else branch), then end
+    let i = 0
+    const detect = () => ({ status: seq[Math.min(i++, seq.length - 1)] as any, summary: '' })
+    const runner = makeAgentRunner(sp(vi.fn()) as any, detect, () => 'claude')
+    const p = runner.run(spec) // idleMs 1000
+    await vi.advanceTimersByTimeAsync(1500)
+    const r = await p
+    expect(r.ok).toBe(false)          // ended on 'errored', NOT a premature idle-complete
+    expect(r.error).toMatch(/errored/)
+    vi.useRealTimers()
   })
 })
