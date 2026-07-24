@@ -8,8 +8,8 @@ import { AGENT_CAPABILITIES, CATEGORY_LABELS } from '../../src/renderer/src/lib/
 // ═══════════════════════════════════════════════════════
 
 describe('agentCapabilities', () => {
-  it('has 4 agents defined', () => {
-    expect(AGENT_CAPABILITIES.length).toBe(4)
+  it('has 3 agents defined', () => {
+    expect(AGENT_CAPABILITIES.length).toBe(3)
   })
 
   it('each agent has all 10 strength categories', () => {
@@ -39,16 +39,15 @@ describe('agentCapabilities', () => {
     expect(gemini.strengths.devops).toBe(5)
   })
 
-  it('Qwen Code is strongest at bulk tasks', () => {
-    const qwen = AGENT_CAPABILITIES.find(a => a.agentId === 'qwen-code')!
-    expect(qwen.strengths.bulkTasks).toBe(5)
+  it('Codex is strongest at bulk tasks', () => {
+    const codex = AGENT_CAPABILITIES.find(a => a.agentId === 'codex')!
+    expect(codex.strengths.bulkTasks).toBe(4)
   })
 
-  it('Claude, Codex, Gemini, Qwen Code all have MCP', () => {
+  it('Claude, Codex, Gemini all have MCP', () => {
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'claude')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'codex')!.hasMcp).toBe(true)
     expect(AGENT_CAPABILITIES.find(a => a.agentId === 'gemini')!.hasMcp).toBe(true)
-    expect(AGENT_CAPABILITIES.find(a => a.agentId === 'qwen-code')!.hasMcp).toBe(true)
   })
 
   it('has labels for all categories', () => {
@@ -211,12 +210,12 @@ describe('smartRouter', () => {
     expect(total).toContain('$')
   })
 
-  it('prefers Qwen Code for bulk tasks based on its 5/5 strength', () => {
+  it('prefers Codex for bulk tasks based on its 4/5 strength', () => {
     const breakdown = analyzeTask('Batch convert all the files in the project')
-    const assignments = routeTasks(breakdown.subtasks, ['claude', 'qwen-code'])
+    const assignments = routeTasks(breakdown.subtasks, ['claude', 'codex'])
     const bulkTask = assignments.find(a => a.subtask.category === 'bulkTasks')
     if (bulkTask) {
-      expect(bulkTask.agentId).toBe('qwen-code')
+      expect(bulkTask.agentId).toBe('codex')
     }
   })
 
@@ -231,9 +230,9 @@ describe('smartRouter', () => {
       complexity: 3,
       tokenIntensity: 'high' as const,
     }
-    // qwen-code is tokenCost='low', and we hand it the only choice so it WILL win.
-    const assignments = routeTasks([subtask], ['qwen-code'])
-    expect(assignments[0].agentId).toBe('qwen-code')
+    // gemini is tokenCost='low', and we hand it the only choice so it WILL win.
+    const assignments = routeTasks([subtask], ['gemini'])
+    expect(assignments[0].agentId).toBe('gemini')
     expect(assignments[0].reason.toLowerCase()).toContain('low token cost')
   })
 

@@ -2,7 +2,7 @@
 
 // Termpolis MCP Stdio Adapter
 //
-// Agents (Claude Code, Gemini CLI, Codex, Qwen Code) launch this as a
+// Agents (Claude Code, Gemini CLI, Codex) launch this as a
 // subprocess and speak JSON-RPC over stdio. We proxy each request to
 // Termpolis's HTTP server on localhost:9315.
 //

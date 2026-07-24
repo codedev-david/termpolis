@@ -56,7 +56,6 @@ test('1. App launches with all agents detected', async () => {
   await ss('01-launch')
   // Verify agents are visible
   await expect(page.locator('text=Claude Code').first()).toBeVisible()
-  await expect(page.locator('text=Qwen AI').first()).toBeVisible()
 })
 
 test('2. Open Swarm Dashboard', async () => {

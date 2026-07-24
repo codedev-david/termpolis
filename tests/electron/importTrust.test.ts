@@ -438,7 +438,7 @@ describe('importTrust persistence', () => {
   })
 
   it('round-trips every field through the injected fs', () => {
-    const a = artifact({ kind: 'mcp', name: 'Weather MCP', targets: ['claude', 'qwen'] })
+    const a = artifact({ kind: 'mcp', name: 'Weather MCP', targets: ['claude', 'gemini'] })
     approveArtifact(a)
 
     // Reboot: a brand-new module state reading the same "disk".
@@ -456,7 +456,7 @@ describe('importTrust persistence', () => {
         hash: a.hash,
         approvedAt: NOW,
         riskLevel: 'green',
-        targets: ['claude', 'qwen'],
+        targets: ['claude', 'gemini'],
       },
     ])
   })

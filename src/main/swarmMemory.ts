@@ -912,7 +912,7 @@ export interface MemoryDashboardStats {
   total: number
   capacity: number
   byType: Record<string, number>   // episodic / semantic / procedural / entity / summary (inferred)
-  bySource: Record<string, number> // claude / codex / gemini / qwen / code / mneme / …
+  bySource: Record<string, number> // claude / codex / gemini / code / mneme / …
   lessons: number                  // semantic + procedural (the distilled, reusable knowledge)
   timeline: TimeBucket[]           // cumulative store growth over the last 12 weeks
 }
@@ -975,7 +975,7 @@ export function memoryGraphSample(opts: { limit?: number } = {}): GraphSample {
 
 /** The authoring source (agent) of a stored memory by id — for cross-agent
  *  attribution: who authored a memory that another agent later reused. Prefers
- *  the provenance `source` (claude/codex/gemini/qwen/mneme) over the writer id. */
+ *  the provenance `source` (claude/codex/gemini/mneme) over the writer id. */
 export function memorySourceById(id: string): string | undefined {
   const e = entries.find((x) => x.id === id)
   return e ? (e.source || e.agentId) : undefined

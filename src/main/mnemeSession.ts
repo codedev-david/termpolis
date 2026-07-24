@@ -3,7 +3,7 @@
 // Mneme — solo-session episode assembly (extends Phase 1 learning to individual
 // agent terminals; see docs/superpowers/specs/2026-07-01-solo-session-learning-design.md).
 // A swarm task has an explicit completed/failed boundary + a result string; a solo
-// Claude/Codex/Gemini/Qwen session does not. This module turns a live transcript's
+// Claude/Codex/Gemini session does not. This module turns a live transcript's
 // turns into the SAME Episode contract mnemeReflex consumes, by (1) tracking a
 // per-terminal cursor so each reflection pass only sees the turns appended since the
 // last one, and (2) inferring a conservative outcome from the final assistant turn.

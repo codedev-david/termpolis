@@ -71,9 +71,9 @@ describe('useTranscriptWatcher', () => {
     expect(api.attachWatcher).toHaveBeenCalledWith('t1', '/cwd', 'gemini')
   })
 
-  it('does nothing for Qwen Code (no transcript watcher yet)', () => {
+  it('does nothing for an unrecognized agent (no transcript watcher)', () => {
     renderHook(() =>
-      useTranscriptWatcher('t1', '/cwd', { name: 'Qwen Code', icon: '', color: '' }),
+      useTranscriptWatcher('t1', '/cwd', { name: 'Unknown Agent', icon: '', color: '' }),
     )
     expect(api.attachWatcher).not.toHaveBeenCalled()
   })

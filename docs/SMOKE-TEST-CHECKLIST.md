@@ -15,7 +15,6 @@
 - [ ] Launch **Claude Code** from sidebar -- directory picker opens, trust prompt auto-confirms, agent starts
 - [ ] Launch **Codex** from sidebar -- trust prompt appears, agent starts
 - [ ] Launch **Gemini CLI** from sidebar -- slower startup expected, agent starts
-- [ ] Launch **Aider+Qwen** (if Ollama installed) -- agent starts with correct model
 - [ ] Loading overlay appears and dismisses for each agent
 - [ ] Agent detection: status bar shows correct agent badge for each running agent
 - [ ] Not-installed agent: InstallHint modal appears with correct install instructions

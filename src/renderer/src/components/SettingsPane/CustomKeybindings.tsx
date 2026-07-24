@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
-import { customComboHasModifier } from '../../lib/keybindings'
+import { customComboHasModifier, isReservedCombo } from '../../lib/keybindings'
 import { KeyComboRecorder } from './KeyComboRecorder'
 
 interface Props {
@@ -24,7 +24,15 @@ export function CustomKeybindings({ recordingId, setRecordingId }: Props) {
   const [draft, setDraft] = useState({ label: '', combo: '', text: '', runOnSend: true })
 
   const comboNeedsModifier = !!draft.combo && !customComboHasModifier(draft.combo)
-  const canAdd = !!(draft.label.trim() && draft.combo.trim() && draft.text.trim() && customComboHasModifier(draft.combo))
+  // Ctrl+Shift+C / K / Q are reserved for copy — a custom shortcut can never claim one.
+  const comboIsReserved = isReservedCombo(draft.combo)
+  const canAdd = !!(
+    draft.label.trim() &&
+    draft.combo.trim() &&
+    draft.text.trim() &&
+    customComboHasModifier(draft.combo) &&
+    !comboIsReserved
+  )
 
   const handleAdd = () => {
     if (!canAdd) return
@@ -69,7 +77,7 @@ export function CustomKeybindings({ recordingId, setRecordingId }: Props) {
                 value={cb.combo}
                 recording={recordingId === `custom:${cb.id}`}
                 onToggle={() => setRecordingId(recordingId === `custom:${cb.id}` ? null : `custom:${cb.id}`)}
-                onCapture={combo => { updateCustomKeybinding(cb.id, { combo }); setRecordingId(null) }}
+                onCapture={combo => { if (!isReservedCombo(combo)) updateCustomKeybinding(cb.id, { combo }); setRecordingId(null) }}
                 onCancel={() => setRecordingId(null)}
                 placeholder="Set combo"
               />
@@ -146,6 +154,12 @@ export function CustomKeybindings({ recordingId, setRecordingId }: Props) {
         <p className="text-[11px] text-[#e0a458]">
           <i className="fa-solid fa-triangle-exclamation mr-1"></i>
           Custom shortcuts must include Ctrl or Alt so they don&apos;t collide with normal typing.
+        </p>
+      )}
+      {comboIsReserved && (
+        <p className="text-[11px] text-[#e0a458]">
+          <i className="fa-solid fa-lock mr-1"></i>
+          That combo is reserved for copy and can&apos;t be reassigned. Pick a different key.
         </p>
       )}
     </div>

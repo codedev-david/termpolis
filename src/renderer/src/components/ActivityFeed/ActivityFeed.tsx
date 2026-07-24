@@ -27,7 +27,7 @@ const KIND_OPTIONS: AgentActivityKind[] = [
   'mcp_audit',
 ]
 
-const AGENT_OPTIONS: AgentActivityType[] = ['claude', 'codex', 'gemini', 'qwen-code']
+const AGENT_OPTIONS: AgentActivityType[] = ['claude', 'codex', 'gemini']
 
 export function ActivityFeed({ terminalId, onClose }: Props) {
   const { events } = useActivityFeed()

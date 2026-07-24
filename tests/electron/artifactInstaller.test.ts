@@ -3,7 +3,7 @@
 // Everything here runs against an INJECTED in-memory fs (no real disk, no
 // electron), which is the whole point of the DI'd InstallerDeps: the risky
 // part of Safe Import is that we write into the user's REAL agent configs
-// (~/.claude, ~/.codex, ~/.gemini, ~/.qwen), so the merge/idempotency/
+// (~/.claude, ~/.codex, ~/.gemini), so the merge/idempotency/
 // never-clobber rules have to be provable without touching them.
 //
 // The one exception is defaultInstallerDeps(), which is exercised against a
@@ -47,7 +47,6 @@ function fakeFs(home = HOME) {
 // assertions hold on win32 (backslashes) and posix alike.
 const claudeSettings = join(HOME, '.claude', 'settings.json')
 const geminiSettings = join(HOME, '.gemini', 'settings.json')
-const qwenSettings = join(HOME, '.qwen', 'settings.json')
 const codexToml = join(HOME, '.codex', 'config.toml')
 
 const SKILL_MD = '---\nname: pdf-filler\ndescription: Fill in PDF forms\n---\n\n# PDF Filler\nDo the thing.\n'
@@ -184,14 +183,14 @@ describe('artifactInstaller', () => {
 
   describe('supportedTargets', () => {
     it('mcp is the only artifact every agent can take', () => {
-      expect(supportedTargets('mcp')).toEqual(['claude', 'codex', 'gemini', 'qwen'])
+      expect(supportedTargets('mcp')).toEqual(['claude', 'codex', 'gemini'])
     })
     it('skills and plugins are Claude-only', () => {
       expect(supportedTargets('skill')).toEqual(['claude'])
       expect(supportedTargets('plugin')).toEqual(['claude'])
     })
     it('commands go everywhere except codex (which uses prompts, not commands)', () => {
-      expect(supportedTargets('command')).toEqual(['claude', 'gemini', 'qwen'])
+      expect(supportedTargets('command')).toEqual(['claude', 'gemini'])
     })
     it('subagents are Claude-only', () => {
       expect(supportedTargets('subagent')).toEqual(['claude'])
@@ -203,7 +202,7 @@ describe('artifactInstaller', () => {
     it('hands back a fresh array each call (callers must not corrupt the table)', () => {
       const a = supportedTargets('mcp')
       a.push('claude')
-      expect(supportedTargets('mcp')).toHaveLength(4)
+      expect(supportedTargets('mcp')).toHaveLength(3)
     })
   })
 
@@ -279,9 +278,9 @@ describe('artifactInstaller', () => {
       expect(files.has(join(HOME, '.claude', 'skills', 'odd', 'notes.txt'))).toBe(true)
     })
 
-    it('is a no-op for unsupported targets (codex/gemini/qwen cannot take skills)', () => {
+    it('is a no-op for unsupported targets (codex/gemini cannot take skills)', () => {
       const { deps, files } = fakeFs()
-      const written = installArtifact(skillArtifact(), ['codex', 'gemini', 'qwen'], deps)
+      const written = installArtifact(skillArtifact(), ['codex', 'gemini'], deps)
       expect(written).toEqual([])
       expect(files.size).toBe(0)
     })
@@ -324,14 +323,12 @@ describe('artifactInstaller', () => {
       expect(files.get(p)).toBe(COMMAND_MD)
     })
 
-    it('transpiles to Gemini/Qwen TOML commands (they are not markdown)', () => {
+    it('transpiles to Gemini TOML commands (they are not markdown)', () => {
       const { deps, files } = fakeFs()
-      const written = installArtifact(commandArtifact(), ['gemini', 'qwen'], deps)
+      const written = installArtifact(commandArtifact(), ['gemini'], deps)
       const gp = join(HOME, '.gemini', 'commands', 'deploy.toml')
-      const qp = join(HOME, '.qwen', 'commands', 'deploy.toml')
       expect(written).toEqual([
         { target: 'gemini', path: gp },
-        { target: 'qwen', path: qp },
       ])
       const toml = files.get(gp) as string
       expect(toml).toContain('description = "Ship the current branch"')
@@ -339,7 +336,6 @@ describe('artifactInstaller', () => {
       expect(toml).toContain('Deploy {{args}} to prod.') // $ARGUMENTS → {{args}}
       expect(toml).not.toContain('$ARGUMENTS')
       expect(toml).not.toContain('---') // frontmatter stripped, not shipped as prompt text
-      expect(files.get(qp)).toBe(toml)
     })
 
     it('escapes TOML metacharacters in the prompt body', () => {
@@ -417,8 +413,8 @@ describe('artifactInstaller', () => {
     it('writes env when the server declares it', () => {
       const { deps, files } = fakeFs()
       const a: Artifact = { ...mcpArtifact(), mcp: { command: 'npx', env: { API_KEY: 'xyz' } } }
-      installArtifact(a, ['qwen'], deps)
-      const entry = JSON.parse(files.get(qwenSettings) as string).mcpServers.context7
+      installArtifact(a, ['gemini'], deps)
+      const entry = JSON.parse(files.get(geminiSettings) as string).mcpServers.context7
       expect(entry).toEqual({ command: 'npx', env: { API_KEY: 'xyz' } })
       expect('args' in entry).toBe(false) // no empty args noise
     })
@@ -470,9 +466,9 @@ describe('artifactInstaller', () => {
 
     it('recovers when the settings root is the wrong shape (array / primitive)', () => {
       const { deps, files } = fakeFs()
-      files.set(qwenSettings, '[1,2,3]')
-      installArtifact(mcpArtifact(), ['qwen'], deps)
-      expect(JSON.parse(files.get(qwenSettings) as string).mcpServers.context7.command).toBe('npx')
+      files.set(geminiSettings, '[1,2,3]')
+      installArtifact(mcpArtifact(), ['gemini'], deps)
+      expect(JSON.parse(files.get(geminiSettings) as string).mcpServers.context7.command).toBe('npx')
     })
 
     it('appends a [mcp_servers.<name>] block to the Codex TOML, preserving user content', () => {
@@ -509,10 +505,10 @@ describe('artifactInstaller', () => {
       expect(files.get(codexToml)).toContain('[mcp_servers.context7]')
     })
 
-    it('installs to all four agents at once', () => {
+    it('installs to all three agents at once', () => {
       const { deps } = fakeFs()
-      const written = installArtifact(mcpArtifact(), ['claude', 'codex', 'gemini', 'qwen'], deps)
-      expect(written.map((w) => w.target)).toEqual(['claude', 'codex', 'gemini', 'qwen'])
+      const written = installArtifact(mcpArtifact(), ['claude', 'codex', 'gemini'], deps)
+      expect(written.map((w) => w.target)).toEqual(['claude', 'codex', 'gemini'])
     })
 
     it('omits the target when the server def cannot be resolved at all', () => {
@@ -565,9 +561,9 @@ describe('artifactInstaller', () => {
     it('only reports what actually existed (second uninstall removes nothing)', () => {
       const { deps } = fakeFs()
       const a = commandArtifact()
-      installArtifact(a, ['claude', 'gemini', 'qwen'], deps)
-      expect(uninstallArtifact(a, ['claude', 'gemini', 'qwen'], deps)).toHaveLength(3)
-      expect(uninstallArtifact(a, ['claude', 'gemini', 'qwen'], deps)).toEqual([])
+      installArtifact(a, ['claude', 'gemini'], deps)
+      expect(uninstallArtifact(a, ['claude', 'gemini'], deps)).toHaveLength(2)
+      expect(uninstallArtifact(a, ['claude', 'gemini'], deps)).toEqual([])
     })
 
     it('deletes ONLY our mcpServers key — other servers and keys survive', () => {
@@ -620,7 +616,7 @@ describe('artifactInstaller', () => {
 
     it('does not CREATE a config for an agent that has none (uninstall never writes)', () => {
       const { deps, files } = fakeFs()
-      expect(uninstallArtifact(mcpArtifact(), ['claude', 'codex', 'gemini', 'qwen'], deps)).toEqual([])
+      expect(uninstallArtifact(mcpArtifact(), ['claude', 'codex', 'gemini'], deps)).toEqual([])
       expect(files.size).toBe(0)
     })
 

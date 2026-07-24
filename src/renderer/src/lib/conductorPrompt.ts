@@ -74,17 +74,14 @@ STEP 4 — Start agents in INTERACTIVE mode:
     Claude Code → 'claude --dangerously-skip-permissions'
     Codex       → 'codex --full-auto'
     Gemini CLI  → 'agy --dangerously-skip-permissions'
-    Qwen Code   → 'qwen'
 ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
 
-  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex, Qwen Code):
+  ⚠ CRITICAL — THESE RULES APPLY TO ALL AGENTS (Claude, Gemini, Codex):
     ✗ claude -p "prompt"                    — loses tool access (no file writes)
     ✗ gemini -p "prompt"                    — loses tool access (no file writes)
     ✗ gemini --sandbox                      — restricts capabilities, do NOT use
     ✗ gemini --sandbox -p "prompt"          — even worse, no tools at all
     ✗ codex -p "prompt"                     — loses tool access
-    ✗ qwen -p "prompt"                      — loses tool access (Gemini-CLI fork, same restriction)
-    ✗ qwen --sandbox                        — restricts capabilities, do NOT use
     ✗ echo "prompt" | claude                — piping breaks stdin (Ink raw mode error)
     ✗ agent_command "prompt as argument"    — positional args not supported
     ✗ Any flag not listed in STEP 4         — do NOT add -p, --sandbox, --print, or any flag besides an optional Claude --model <opus|sonnet|haiku>
@@ -135,7 +132,6 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   ✗ WRONG: run_command(command='claude -p "Build the login page"')     — no -p flag!
   ✗ WRONG: run_command(command='gemini -p "Write docs"')               — no -p flag!
   ✗ WRONG: run_command(command='gemini --sandbox -p "Write docs"')     — no --sandbox or -p!
-  ✗ WRONG: run_command(command='qwen -p "Refactor module"')            — no -p flag (Gemini-fork, same rule)!
   ✗ WRONG: run_command(command='Build the login page')                 — raw text in shell!
   ✗ WRONG: write_to_terminal BEFORE run_command                        — agent must be started first!
 
@@ -145,7 +141,7 @@ IMPORTANT RULES:
 - Be decisive. Do not ask the user for input.
 - If only one agent type is installed, run multiple instances with different roles.
 - NEVER add -p, --sandbox, or --print. The ONLY optional flag is a Claude --model <opus|sonnet|haiku> (STEP 4) — add nothing else.
-- NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex, not Qwen Code).
+- NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.

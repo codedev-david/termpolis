@@ -507,17 +507,27 @@ describe('terminalStore', () => {
   // ---- Keybindings ----
 
   describe('setKeybinding', () => {
-    it('sets a specific keybinding', () => {
-      useTerminalStore.getState().setKeybinding('copy', 'Ctrl+C')
-      expect(useTerminalStore.getState().keybindings.copy).toBe('Ctrl+C')
+    it('sets a non-reserved keybinding', () => {
+      useTerminalStore.getState().setKeybinding('terminalSearch', 'Ctrl+Alt+F')
+      expect(useTerminalStore.getState().keybindings.terminalSearch).toBe('Ctrl+Alt+F')
       // Other bindings unchanged
       expect(useTerminalStore.getState().keybindings.paste).toBe(DEFAULT_KEYBINDINGS.paste)
+    })
+
+    it('refuses to remap a reserved copy action (copy/copyForMessage/copyAsCodeBlock)', () => {
+      useTerminalStore.getState().setKeybinding('copy', 'Ctrl+C')
+      useTerminalStore.getState().setKeybinding('copyForMessage', 'Ctrl+J')
+      useTerminalStore.getState().setKeybinding('copyAsCodeBlock', 'Ctrl+Shift+M')
+      const kb = useTerminalStore.getState().keybindings
+      expect(kb.copy).toBe('Ctrl+Shift+C')
+      expect(kb.copyForMessage).toBe('Ctrl+Shift+K')
+      expect(kb.copyAsCodeBlock).toBe('Ctrl+Shift+Q')
     })
   })
 
   describe('resetKeybindings', () => {
     it('resets all keybindings to defaults', () => {
-      useTerminalStore.getState().setKeybinding('copy', 'Ctrl+C')
+      useTerminalStore.getState().setKeybinding('terminalSearch', 'Ctrl+Alt+F')
       useTerminalStore.getState().setKeybinding('paste', 'Ctrl+V')
       useTerminalStore.getState().resetKeybindings()
 

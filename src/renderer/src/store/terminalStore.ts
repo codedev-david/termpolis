@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate, CustomKeybinding } from '../types'
-import { DEFAULT_KEYBINDINGS, type KeybindingMap } from '../lib/keybindings'
+import { DEFAULT_KEYBINDINGS, isReservedAction, type KeybindingMap } from '../lib/keybindings'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
@@ -256,9 +256,13 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
 
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
 
-  setKeybinding: (action, binding) => set(s => ({
-    keybindings: { ...s.keybindings, [action]: binding },
-  })),
+  setKeybinding: (action, binding) => set(s => (
+    // The three copy actions are reserved — always their fixed defaults, never
+    // remappable. Silently ignore any attempt to change one.
+    isReservedAction(action)
+      ? {}
+      : { keybindings: { ...s.keybindings, [action]: binding } }
+  )),
 
   resetKeybindings: () => set({ keybindings: { ...DEFAULT_KEYBINDINGS } }),
 

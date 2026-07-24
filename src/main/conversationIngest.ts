@@ -5,7 +5,6 @@
 //   • Claude Code  ~/.claude/projects/**/*.jsonl      — JSONL, type user/assistant
 //   • Codex CLI    ~/.codex/sessions/**/rollout-*.jsonl — JSONL, response_item/message
 //   • Gemini CLI   ~/.gemini/tmp/<proj>/chats/session-*.json — single JSON, messages[]
-//   • Qwen Code    PTY-captured for now (its on-disk format is undocumented/unstable)
 //
 // The parsers here are PURE (string in → turns out) so they unit-test without
 // fs/model/network. They aggressively strip non-dialogue noise (tool calls,
@@ -18,7 +17,7 @@ import { promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
-export type ConversationSource = 'claude' | 'codex' | 'gemini' | 'qwen'
+export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
 export interface IngestTurn {
   role: 'user' | 'assistant'
@@ -368,8 +367,7 @@ export interface IngestDeps {
   maxChunks?: number
 }
 
-// Sources with stable, documented on-disk transcripts. Qwen is captured from
-// the PTY stream elsewhere (its on-disk format is undocumented/unstable).
+// Sources with stable, documented on-disk transcripts.
 export const DISK_SOURCES: ConversationSource[] = ['claude', 'codex', 'gemini']
 
 export function parseBySource(source: ConversationSource, content: string, filePath?: string): IngestTurn[] {

@@ -43,9 +43,9 @@ describe('detectAgentStatus', () => {
       expect(result.status).toBe('waiting_for_input')
     })
 
-    it('detects Qwen Code question prompts', () => {
+    it('detects generic agent question prompts', () => {
       const output = filler(10) + '\nApply this change?\n'
-      const result = detectAgentStatus(output, 'Qwen Code')
+      const result = detectAgentStatus(output, 'Gemini CLI')
       expect(result.status).toBe('waiting_for_input')
     })
 

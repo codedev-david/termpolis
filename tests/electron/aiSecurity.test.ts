@@ -508,7 +508,7 @@ describe('AGENT_FACTS catalog', () => {
   it('includes all 4 supported agents', async () => {
     const m = await freshModule()
     const ids = m.AGENT_FACTS.map(f => f.agentId).sort()
-    expect(ids).toEqual(['claude', 'codex', 'gemini', 'qwen-code'])
+    expect(ids).toEqual(['claude', 'codex', 'gemini'])
   })
 
   it('every fact has a privacy URL and a console URL', async () => {

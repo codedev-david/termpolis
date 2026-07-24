@@ -92,7 +92,6 @@ import {
   registerInGlobalMcp,
   registerInCodex,
   registerInGemini,
-  registerInQwen,
   resolveNodeCommand,
 } from '../../src/main/agentMcpRegistry'
 import {
@@ -398,13 +397,6 @@ describe('discoverTranscriptFiles / findLatestTranscriptFile — default roots, 
     expect(await discoverTranscriptFiles('gemini')).toEqual([join(gm, 'session-1.json')])
   })
 
-  it('qwen has no documented on-disk root — it resolves to nothing and never touches the filesystem', async () => {
-    realFs.mkdirSync(join(home, '.qwen'), { recursive: true })
-    realFs.writeFileSync(join(home, '.qwen', 'anything.jsonl'), 'x')
-    expect(await discoverTranscriptFiles('qwen')).toEqual([])
-    expect(await findLatestTranscriptFile('qwen')).toBeNull()
-  })
-
   it('stops recursing past depth 6 — a pathologically deep tree cannot trap the walk', async () => {
     const root = join(home, 'deep')
     const d6 = join(root, 'd1', 'd2', 'd3', 'd4', 'd5', 'd6')
@@ -505,17 +497,12 @@ describe('agentMcpRegistry — a config we cannot write must be REPORTED, never 
     expect(realFs.existsSync(p)).toBe(false)
   })
 
-  it('gemini + qwen settings.json: report write-failed', () => {
+  it('gemini settings.json: report write-failed', () => {
     const g = join(dir, 'gemini.json')
-    const q = join(dir, 'qwen.json')
     realFs.writeFileSync(g, '{}')
-    realFs.writeFileSync(q, '{}')
     blockTmp(g)
-    blockTmp(q)
     expect(registerInGemini(g, ADAPTER)).toMatchObject({ changed: false, skipped: 'write-failed' })
-    expect(registerInQwen(q, ADAPTER)).toMatchObject({ changed: false, skipped: 'write-failed' })
     expect(realFs.readFileSync(g, 'utf-8')).toBe('{}')
-    expect(realFs.readFileSync(q, 'utf-8')).toBe('{}')
   })
 
   it('codex config.toml: an unreadable path (a directory) is reported as corrupt', () => {
@@ -540,9 +527,8 @@ describe('agentMcpRegistry — a config we cannot write must be REPORTED, never 
   it('a thrown NON-Error (no .message) is still surfaced as a string, never as "undefined"', () => {
     const settings = join(dir, 'settings.json')
     const gem = join(dir, 'gemini.json')
-    const qwen = join(dir, 'qwen.json')
     const toml = join(dir, 'config.toml')
-    for (const p of [settings, gem, qwen]) realFs.writeFileSync(p, '{}')
+    for (const p of [settings, gem]) realFs.writeFileSync(p, '{}')
     realFs.writeFileSync(toml, '')
 
     fsCtl.rules.push({ op: 'write', match: dir, err: 'raw string blew up' })
@@ -550,7 +536,6 @@ describe('agentMcpRegistry — a config we cannot write must be REPORTED, never 
 
     expect(registerInClaudeSettings(settings, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
     expect(registerInGemini(gem, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
-    expect(registerInQwen(qwen, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
     expect(registerInGlobalMcp(join(dir, '.mcp.json'), ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
     expect(registerInCodex(toml, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw append blew up' })
   })
@@ -563,7 +548,6 @@ describe('agentMcpRegistry — a config we cannot write must be REPORTED, never 
     fsCtl.rules.push({ op: 'read', match: dir, err: 'read blew up' })
     expect(registerInClaudeSettings(p, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
     expect(registerInGemini(p, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
-    expect(registerInQwen(p, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
     // registerInCodex reads the TOML as a raw blob (no JSON parse) — it has its own catch.
     expect(registerInCodex(toml, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
   })

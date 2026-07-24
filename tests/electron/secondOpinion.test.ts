@@ -40,11 +40,6 @@ describe('secondOpinionCommand', () => {
     expect(bin).toBe('agy')
     expect(args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions'])
   })
-  it('qwen: -p <prompt> (Gemini-CLI fork)', () => {
-    const { bin, args } = secondOpinionCommand('qwen')
-    expect(bin).toBe('qwen')
-    expect(args).toEqual(['-p', PROMPT_TOKEN])
-  })
 })
 
 describe('secondOpinionSpawnPlan', () => {

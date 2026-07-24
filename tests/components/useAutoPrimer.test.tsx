@@ -233,7 +233,7 @@ describe('useCompactionReprimer', () => {
   })
 })
 
-describe('Qwen self-record (no disk transcript → the agent writes its own lessons)', () => {
+describe('primer self-record clause (buildPrimerPointer/injectAutoPrimer param — kept wired for future non-transcript agents)', () => {
   it('buildPrimerPointer is a single paste-safe line with NO self-record clause by default', () => {
     const p = buildPrimerPointer('/home/me/proj')
     expect(p).not.toContain('\n')
@@ -262,15 +262,6 @@ describe('Qwen self-record (no disk transcript → the agent writes its own less
     expect(payload).not.toContain('memory_write')
   })
 
-  it('useAutoPrimer adds the self-record clause for a detected Qwen agent', async () => {
-    vi.useFakeTimers()
-    renderHook(() => useAutoPrimer('term-qwen', { name: 'Qwen Code' } as any, '/home/me/proj'))
-    await vi.advanceTimersByTimeAsync(1500)
-    const calls = (window as any).termpolis.writeToTerminal.mock.calls
-    expect(calls).toHaveLength(1)
-    expect(calls[0][1]).toContain('memory_write')
-  })
-
   it('useAutoPrimer does NOT add the clause for a disk-transcript agent (Claude)', async () => {
     vi.useFakeTimers()
     renderHook(() => useAutoPrimer('term-claude', { name: 'Claude Code' } as any, '/home/me/proj'))
@@ -281,7 +272,7 @@ describe('Qwen self-record (no disk transcript → the agent writes its own less
   })
 })
 
-describe('memories-loaded banner (Codex / Gemini / Qwen typed-pointer path)', () => {
+describe('memories-loaded banner (Codex / Gemini typed-pointer path)', () => {
   beforeEach(() => {
     useTerminalStore.setState({ memoryNotice: null, terminals: [] })
   })
@@ -379,7 +370,7 @@ describe('reprimeAfterCompaction', () => {
   })
 
   it('pastes for a non-launch-primed agent when the input line is idle', async () => {
-    // Codex/Gemini/Qwen have no system-prompt file to append to, so the paste is the only channel.
+    // Codex/Gemini have no system-prompt file to append to, so the paste is the only channel.
     const d = deps()
     const injected = await reprimeAfterCompaction('t1', '/repo', d)
     expect(injected).toBe(true)

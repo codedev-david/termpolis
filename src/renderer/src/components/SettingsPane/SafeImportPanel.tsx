@@ -65,7 +65,7 @@ const LEVEL_STYLE: Record<RiskLevel, { chip: string; label: string; icon: string
   red: { chip: 'bg-[#3a0d0d] text-[#FFB4B4] border-[#6e1f1f]', label: 'Blocked — unsafe', icon: 'fa-ban' },
 }
 
-const ALL_TARGETS = ['claude', 'codex', 'gemini', 'qwen'] as const
+const ALL_TARGETS = ['claude', 'codex', 'gemini'] as const
 
 export function SafeImportPanel(): JSX.Element {
   const api = typeof window !== 'undefined' ? window.safeImport : undefined

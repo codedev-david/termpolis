@@ -108,7 +108,7 @@ test.describe.serial('2. Sidebar', () => {
       await page.waitForTimeout(300)
     }
     // Verify agents
-    for (const agent of ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Qwen AI']) {
+    for (const agent of ['Claude Code', 'OpenAI Codex', 'Gemini CLI']) {
       const el = page.locator(`text=${agent}`).first()
       const visible = await el.isVisible().catch(() => false)
       if (!visible) {

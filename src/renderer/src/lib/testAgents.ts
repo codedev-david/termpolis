@@ -2,7 +2,6 @@ const TEST_AGENT_MAP: Record<string, string> = {
   'claude': 'node e2e/mocks/mock-claude.cjs',
   'codex': 'node e2e/mocks/mock-codex.cjs',
   'gemini': 'node e2e/mocks/mock-gemini.cjs',
-  'qwen': 'node e2e/mocks/mock-qwen.cjs',
 }
 
 export function resolveAgentCommand(command: string): string {

@@ -4,6 +4,7 @@ import {
   KEYBINDING_LABELS,
   DEFAULT_KEYBINDINGS,
   findKeybindingConflict,
+  isReservedAction,
   type KeybindingMap,
 } from '../../lib/keybindings'
 import { KeyComboRecorder } from './KeyComboRecorder'
@@ -43,6 +44,7 @@ export function KeybindingsSettings() {
           <tbody>
             {actions.map((action, i) => {
               const isDefault = keybindings[action] === DEFAULT_KEYBINDINGS[action]
+              const reserved = isReservedAction(action)
               const conflict = findKeybindingConflict(keybindings[action], keybindings, customKeybindings, { action })
               return (
                 <tr
@@ -51,13 +53,27 @@ export function KeybindingsSettings() {
                 >
                   <td className="px-3 py-2 text-[#d4d4d4]">{KEYBINDING_LABELS[action]}</td>
                   <td className="px-3 py-2">
-                    <KeyComboRecorder
-                      value={keybindings[action]}
-                      recording={recordingId === action}
-                      onToggle={() => setRecordingId(recordingId === action ? null : action)}
-                      onCapture={combo => { setKeybinding(action, combo); setRecordingId(null) }}
-                      onCancel={() => setRecordingId(null)}
-                    />
+                    {reserved ? (
+                      <span className="inline-flex items-center gap-2">
+                        <kbd className="px-1.5 py-0.5 rounded bg-[#2d2d2d] border border-[#3c3c3c] text-xs font-mono text-[#d4d4d4]">
+                          {keybindings[action]}
+                        </kbd>
+                        <span
+                          className="inline-flex items-center text-[11px] text-[#9ca3af]"
+                          title="Always-on copy shortcut — cannot be changed or overridden by a custom hotkey."
+                        >
+                          <i className="fa-solid fa-lock mr-1"></i>Reserved
+                        </span>
+                      </span>
+                    ) : (
+                      <KeyComboRecorder
+                        value={keybindings[action]}
+                        recording={recordingId === action}
+                        onToggle={() => setRecordingId(recordingId === action ? null : action)}
+                        onCapture={combo => { setKeybinding(action, combo); setRecordingId(null) }}
+                        onCancel={() => setRecordingId(null)}
+                      />
+                    )}
                     {conflict && (
                       <span
                         className="ml-2 text-[11px] text-[#e0a458]"
@@ -68,7 +84,7 @@ export function KeybindingsSettings() {
                     )}
                   </td>
                   <td className="px-2 py-2 text-center">
-                    {!isDefault && (
+                    {!reserved && !isDefault && (
                       <button
                         onClick={() => setKeybinding(action, DEFAULT_KEYBINDINGS[action])}
                         title="Reset to default"

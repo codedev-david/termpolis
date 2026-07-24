@@ -9,13 +9,13 @@
 </p>
 
 <p align="center">
-  Claude, Codex, Gemini, and Qwen share <strong>one local memory that learns as you work</strong> —<br>
+  Claude, Codex, and Gemini share <strong>one local memory that learns as you work</strong> —<br>
   so every agent already knows your project, your decisions, and what got figured out yesterday.<br>
   <strong>100% on your machine. No cloud. No telemetry.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/🧠_One_shared_memory-across_all_4_agents-6E56CF?style=for-the-badge" alt="One shared memory across all four agents">
+  <img src="https://img.shields.io/badge/🧠_One_shared_memory-across_all_3_agents-6E56CF?style=for-the-badge" alt="One shared memory across all three agents">
   <img src="https://img.shields.io/badge/🌱_Learns_every_session-never_re--explain-1f6e3a?style=for-the-badge" alt="Learns from every session">
   <img src="https://img.shields.io/badge/🔀_Second_Opinion-agents_review_each_other-b07407?style=for-the-badge" alt="Second Opinion — agents review each other">
   <img src="https://img.shields.io/badge/🔒_100%25_local-no_cloud,_no_telemetry-0078d4?style=for-the-badge" alt="100% local, no cloud, no telemetry">
@@ -44,10 +44,10 @@
 
 ## 🧠 Meet Mneme — one memory, every agent, that learns as you work
 
-Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude, Codex, Gemini, and Qwen all read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself.
+Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude, Codex, and Gemini all read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself.
 
-- **One memory, four agents.** All four read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the others — no copy-paste, no re-discovery.
-- **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude, Codex, and Gemini (from their session transcripts); Qwen records its own.
+- **One memory, three agents.** All three read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the others — no copy-paste, no re-discovery.
+- **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude, Codex, and Gemini (from their session transcripts).
 - **Every new agent starts warm.** Open a fresh Codex or Gemini terminal and it already knows your project — the relevant memory loads at launch, behind the scenes, no wall of text.
 - **100% local & private.** Embeddings run in-process (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry, nothing leaves your machine. Optional at-rest encryption (AES-256-GCM) and conflict-free sync across machines via a folder you already sync.
 - **Built to trust.** Content-addressed dedup (never stores the same thing twice), millisecond HNSW retrieval at scale, staleness-guarded recall, and an observable `🧠 Loaded N memories` banner so you always know it fired.
@@ -65,7 +65,7 @@ Termpolis **runs those exact CLIs, unchanged** — and fixes the one thing they 
 | What you get | Claude Code / Codex on their own | The same agent inside Termpolis |
 | --- | --- | --- |
 | **Long-term memory** | Starts cold every launch; you re-explain and re-pay tokens to reload context | **Mneme** — a local brain holding months of context, surviving restarts, recalled in ms |
-| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | All four agents read/write **one memory**; a fact one learns, the others recall |
+| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | All three agents read/write **one memory**; a fact one learns, the others recall |
 | **It learns** | No learning — every session is a blank slate | Distills a lesson from every finished task + tracks its own competence |
 | **Every new session** | Re-explain your codebase from scratch | Opens already knowing the project; one-click cross-agent handoff, no re-explaining |
 | **Your data & lock-in** | One vendor's account + cloud; telemetry varies | 100% local, Apache-2.0, no account/backend; prompts scanned for secrets |
@@ -76,7 +76,7 @@ Termpolis **runs those exact CLIs, unchanged** — and fixes the one thing they 
 
 ### 🛡 AI Security Center — what it actually does
 
-**Honest framing first.** Any tool that lets you talk to a hosted model (Claude, Codex, Gemini, Qwen) is, by definition, sending your prompt to that provider. Termpolis cannot air-gap a prompt you choose to send, cannot guarantee a provider's stated retention policy is enforced server-side, and cannot stop a provider from later changing their terms. If your threat model requires those guarantees, run a local model — but accept the quality + hardware trade-off that comes with it.
+**Honest framing first.** Any tool that lets you talk to a hosted model (Claude, Codex, Gemini) is, by definition, sending your prompt to that provider. Termpolis cannot air-gap a prompt you choose to send, cannot guarantee a provider's stated retention policy is enforced server-side, and cannot stop a provider from later changing their terms. If your threat model requires those guarantees, run a local model — but accept the quality + hardware trade-off that comes with it.
 
 What Termpolis **can** do is make the hosted path *substantially* safer than typing into a stock terminal, a browser, or a VS Code plug-in:
 
@@ -87,7 +87,7 @@ What Termpolis **can** do is make the hosted path *substantially* safer than typ
 | Secret gets *remembered* — persisted into the shared brain | **Memory-at-rest scrub (v1.25)** — secrets are redacted **before** a memory is hashed, embedded, or written to disk, so a key sitting in a transcript or an indexed source file never lands in the brain and can never be recalled back into an agent's context later. On by default. | Applies at **write time** — it redacts what's being stored now, not what a pre-v1.25 store already holds. Regex-shaped secrets only. |
 | Whole `.env` or source file pasted | **Code-chunk + env-dump detectors (v1.11.52)** flag prompts >2 KB that look like code (indentation + braces + keywords) or contain 5+ `KEY=value` lines. The renderer surfaces a notice + audit entry. | Heuristic — false negatives possible on minified or unusual code shapes. The prompt is not blocked; you decide. |
 | Free-tier Gemini sending prompts to Google for product improvement | **Gemini account-mode auto-detection** reads `GEMINI_API_KEY` / `GOOGLE_GENAI_USE_GCA` / `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to classify the active session. **Strict Mode** intercepts `gemini` launches that look free-tier and refuses to forward them. Blocked launches are audited. | Detection is env-var based; if you ship credentials some other way the heuristic can't see, it can't classify them. |
-| Provider quietly changes their ToS / data-controls page | **Weekly ToS drift watcher (v1.11.52)** GitHub Action fetches the four provider pages we cite (Anthropic, OpenAI, Google, Alibaba), normalizes the HTML, hashes it, and opens a tracking issue when the hash changes — so the docs in *this* repo stay aligned with what the providers actually publish. | Detects rendered-text changes, not legal intent. A human still reads the diff. |
+| Provider quietly changes their ToS / data-controls page | **Weekly ToS drift watcher (v1.11.52)** GitHub Action fetches the three provider pages we cite (Anthropic, OpenAI, Google), normalizes the HTML, hashes it, and opens a tracking issue when the hash changes — so the docs in *this* repo stay aligned with what the providers actually publish. | Detects rendered-text changes, not legal intent. A human still reads the diff. |
 | Agent silently talking to an unexpected endpoint | **Egress audit (v1.11.52)** polls `netstat` (Windows) / `ss` (Linux) / `lsof` (macOS) once a minute for the AI agent's PID and records each unique remote `host:port` to the audit log + Security panel. **As of v1.25 that record is a *policy*: Egress Guard** judges every observed endpoint against a published allowlist of AI-provider domains and raises anything else as a **violation** in the audit trail. Suffix matching is **dot-anchored** (an exact host, or a true dot-delimited subdomain of one), so `evil-anthropic.com` and `anthropic.com.evil.net` do **not** pass as Anthropic. Loopback and LAN addresses are never violations — a local model server is not exfiltration. On by default. | Polling, not packet capture — sub-minute bursts can be missed. No payload inspection. **It flags; it never kills a connection.** The poller only yields IP literals, so the allowlist is forward-resolved — when DNS is unavailable the guard stays silent rather than reporting every provider IP as exfiltration. |
 | A third-party **skill / plugin / MCP server** you import | **Safe Import (v1.25)** — a skill, plugin, slash-command, subagent, or MCP server is not data: it's *code* plus *instruction text* handed to an agent that already holds your credentials, your repo, and a live PTY. Termpolis statically scans it **before it touches your machine** — **41 rules** across outbound network calls, shell / `eval` execution, credential + `~/.ssh` access, obfuscated payloads, and **prompt injection hidden in the artifact's own instructions** (tool poisoning — no dangerous API call appears anywhere; the *agent* is the exploit), plus context-sensitive checks that judge a construct by what surrounds it: a base64 decode feeding an execution sink is red, a decode on its own is yellow. You get a red / yellow / green report with `file:line` and the offending line. **Red can never be installed** — the refusal is enforced in the main process, not the UI. Approvals are **hash-pinned**, so editing an approved artifact re-prompts (no trust-on-first-use-then-swap). Zip-slip and TOML injection are refused by the installer. | **A static review aid, not a sandbox** — nothing is executed, in a jail or otherwise. It is line-based, and a determined attacker can obfuscate past any of it. Its job is to put the three lines that matter in front of you *before* you click Import — not to prove the artifact is safe. |
 | Tampering surface beyond the terminal itself | No browser extension, no IDE plug-in, no ad-hoc cloud sync. The MCP server is bound to `127.0.0.1` with a token that rotates on every restart. No Termpolis telemetry, no Termpolis cloud accounts. | Termpolis is itself an Electron app — same caveats apply as any local desktop process running with your privileges. |
@@ -109,9 +109,9 @@ See [`PRIVACY.md`](PRIVACY.md) for the data-flow spec, [`TERMS.md`](TERMS.md) fo
 
 ### 🧠 Shared memory — the deep dive
 
-The moat above in full — every capability of the brain that all four agents share:
+The moat above in full — every capability of the brain that all three agents share:
 
-- **One memory, four agents.** Claude, Codex, Gemini, and Qwen all read and write the same store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`). A fact one agent figures out is instantly available to the others — no copy-paste, no re-discovery.
+- **One memory, three agents.** Claude, Codex, and Gemini all read and write the same store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`). A fact one agent figures out is instantly available to the others — no copy-paste, no re-discovery.
 - **It survives quitting the app.** Stored as plain JSONL (`swarm-memory.jsonl`) in Termpolis's per-user app-data folder — `%APPDATA%\termpolis\` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with its embeddings at startup. Because it lives in your user profile (not the install folder), it survives app updates and even an uninstall/reinstall — close Termpolis, reopen it tomorrow, the context is still there.
 - **It can follow you across machines (optional).** Point the brain at a folder you already sync — **Dropbox, OneDrive, iCloud Drive, Google Drive, Syncthing, or a git repo** — and the same memory shows up on every computer. It rides the *local synced folder* their desktop client maintains (no provider API, no OAuth), so each machine writes its own shard file: there are never sync conflicts; the stores merge conflict-free (a content-hash-deduped grow-only set) and deletes propagate as tombstones. (Google Drive: use **mirror** mode so files stay on disk, not online-only.) **No Termpolis server, no new account.** Off by default; enable it in the Memory panel. Optionally **encrypt it at rest with a passphrase** (AES-256-GCM, key in the OS keychain) so the cloud provider only ever sees ciphertext — enter the same passphrase on each device to unlock.
 - **It feeds itself.** A background indexer ingests your past Claude / Codex / Gemini transcripts automatically (10 s after launch, then every 30 min). Idempotent (content-hash dedup), so it only ever embeds genuinely new content — no action required from you.
@@ -151,12 +151,12 @@ The result: stop re-explaining context every session, and stop paying to reload 
 
 ### 🆚 How Termpolis improves on other AI harnesses
 
-Termpolis doesn't replace Claude Code, Codex, Gemini CLI, or Qwen Code — **it runs them, unchanged, and adds the layer they're all missing.** A bare AI CLI (or an IDE assistant like Cursor or Copilot) is a single vendor's model talking to a single session: no memory of yesterday, no awareness of the other tools you use, and no guardrail on what leaves your machine. Termpolis turns that into a coordinated, persistent, auditable workspace.
+Termpolis doesn't replace Claude Code, Codex, or Gemini CLI — **it runs them, unchanged, and adds the layer they're all missing.** A bare AI CLI (or an IDE assistant like Cursor or Copilot) is a single vendor's model talking to a single session: no memory of yesterday, no awareness of the other tools you use, and no guardrail on what leaves your machine. Termpolis turns that into a coordinated, persistent, auditable workspace.
 
 | What you actually get | A bare AI CLI / IDE assistant | The same agent inside Termpolis |
 | --- | --- | --- |
-| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **all four agents share**, surviving restarts and (optionally) syncing across machines; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
-| **More than one model** | Locked to one vendor's family | Claude + Codex + Gemini + Qwen run **as a team** under a local conductor that routes each subtask to the best-suited model |
+| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **all three agents share**, surviving restarts and (optionally) syncing across machines; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
+| **More than one model** | Locked to one vendor's family | Claude + Codex + Gemini run **as a team** under a local conductor that routes each subtask to the best-suited model |
 | **Secrets / code leaving the machine** | Whatever you type is sent as-is, and you never find out | Every prompt is scanned against **97 secret patterns**. Your text is forwarded untouched, and a hit is **logged by name** (`DB_PASSWORD`) so you know what to rotate — the value is never stored. And since v1.25 the same engine **actually blocks a `git commit` or `git push`** that would carry a secret into history or to a remote |
 | **Importing a third-party skill / plugin / MCP server** | Wired straight into the agent's config — a zip nobody diffs, whose *instruction text* the agent reads as if you'd typed it | **Safe Import** statically scans it first (**41 rules**, including prompt injection hidden in the artifact's own prose). **Red is never installable**, and approvals are **hash-pinned** so an edited artifact re-prompts |
 | **Knowing what the agent contacted** | Opaque — you can't tell who it talked to | **Per-agent egress audit** (netstat / ss / lsof) records every remote host the agent reached — and **Egress Guard** judges each one against a provider allowlist, raising anything else as a violation |
@@ -164,7 +164,7 @@ Termpolis doesn't replace Claude Code, Codex, Gemini CLI, or Qwen Code — **it 
 | **Lock-in** | Vendor account, cloud backend, or a specific IDE | **Apache-2.0, local-first, no Termpolis account, no Termpolis server** |
 | **Coordinating parallel agents** | You juggle terminals by hand | Real-time **observability** — activity feed, redundancy detector, efficiency panel, and a swarm dashboard |
 
-**The short version:** other harnesses optimize a single agent's loop. Termpolis optimizes *your whole agent fleet* — giving four competing models one shared, durable, trustworthy memory (hardened in v1.16.7 so a working recall is visible, fresh, and never cites a file that no longer exists), a security perimeter around the hosted-model path, and a single place to watch and review everything they do. See the full, sourced [feature-by-feature comparison vs Warp, Wave, JetBrains Air, and Tabby](https://termpolis.com/#compare).
+**The short version:** other harnesses optimize a single agent's loop. Termpolis optimizes *your whole agent fleet* — giving three competing models one shared, durable, trustworthy memory (hardened in v1.16.7 so a working recall is visible, fresh, and never cites a file that no longer exists), a security perimeter around the hosted-model path, and a single place to watch and review everything they do. See the full, sourced [feature-by-feature comparison vs Warp, Wave, JetBrains Air, and Tabby](https://termpolis.com/#compare).
 
 ---
 
@@ -172,7 +172,7 @@ Termpolis doesn't replace Claude Code, Codex, Gemini CLI, or Qwen Code — **it 
 
 Every model has blind spots. **Second Opinion** hands the most recent answer in any AI terminal to a *different* agent for a fast, read-only critique — the feedback is pasted back into the same terminal, ready for you to send to your primary agent or just read and discard.
 
-- **Pick any installed agent.** A **Second Opinion** dropdown on each AI terminal lists exactly the agents you have installed — **OpenAI Codex, Gemini, Qwen** — with **Claude** and its models (**Fable · Opus · Sonnet · Haiku**) nested underneath. So while you're driving Opus, you can have **Fable** — or Codex, or Gemini — sanity-check the last solution.
+- **Pick any installed agent.** A **Second Opinion** dropdown on each AI terminal lists exactly the agents you have installed — **OpenAI Codex, Gemini** — with **Claude** and its models (**Fable · Opus · Sonnet · Haiku**) nested underneath. So while you're driving Opus, you can have **Fable** — or Codex, or Gemini — sanity-check the last solution.
 - **It reviews the real, recent work.** Termpolis captures the terminal's most recent output, asks the chosen agent to review the latest solution/answer/approach, and injects its concise feedback back into your terminal as an **unsent block** — you decide whether to act on it.
 - **Read-only by design.** A review needs no file access, so it runs the agent in one-shot headless mode — nothing it says touches your repo. The captured text is passed **out-of-band** (never on a command line), so a prompt scraped from your terminal can't inject a command.
 - **Only what's installed shows up**, and it appears only on AI terminals. Gemini runs through the **Antigravity CLI (`agy`)**, its current headless entry point.
@@ -306,11 +306,11 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Shell config editor** — edit .bashrc, .zshrc, PowerShell profiles with Monaco Editor
 
 ### AI-Native Features
-- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, Gemini CLI, and Qwen Code with custom profiles support
+- **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, and Gemini CLI with custom profiles support
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
 - **Multi-Agent Workflow Templates** — built-in split-pane layouts (Claude + Shell, Full Stack Dev, Code Review) plus a visual editor to create, edit, and save your own custom workflows (name, icon, layout, 1–8 terminals each with shell + startup command + color, persisted across restarts)
-- **Agent Status Detection** — automatically detects when Claude Code, Codex, Gemini, or Qwen Code is running and shows a colored badge in the status bar
+- **Agent Status Detection** — automatically detects when Claude Code, Codex, or Gemini is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
 - **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
 - **Output Pinning** — pin important output blocks to a persistent panel that stays visible as the terminal scrolls
@@ -322,7 +322,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Knowledge Graph** — the shared memory stores **typed connections** between entries (`bug → solved-by → fix`, `decision → supersedes → …`), built explicitly via `memory_link` and **automatically** as curated memories are written. Agents follow the chain with `memory_graph` to reuse prior solutions fast instead of re-deriving them — the graph gets denser, and the agents get smarter, the more you use it
 - **No duplicate data** — every write is content-addressed (SHA-256 over normalized text); storing the same information twice is a no-op, so the vector store and the on-disk log never accumulate duplicates and never re-embed what they already hold
 - **Code Graph** — a native, **AST-precise** map of your repository built with **web-tree-sitter** (WebAssembly — native-free, nothing compiled, nothing leaves your machine): every function, class, method, and the calls between them. Agents query it over MCP with `code_explore` / `code_callers` / `code_callees` / `code_impact` (change blast-radius) / `code_search` / `code_locate` (predict *where* an issue lives) instead of grepping the same files repeatedly. Deep support for TypeScript/JavaScript, Python, Go, Rust, Java, C#, Ruby, and Swift; Terraform and Bicep fall back to a regex heuristic for symbol discovery. **As of v1.23 the graph is keyed per repository** — opening a second repo no longer clobbers the first, and because each repo's graph is a durable on-disk store, a transient non-git directory (or git off the PATH) won't wipe one you've already built. **As of v1.23.1**, an edit re-indexes **just the changed file** (debounced, AST-first) rather than re-sweeping the whole tree, backstopped by a periodic full re-index. Auto-indexed (opt-out in Settings), with an in-app **Code Graph browser** (`Ctrl+Shift+M`)
-- **Safe Import** — import a third-party **skill, plugin, slash-command, subagent, or MCP server** and Termpolis **statically scans it before it touches your machine**: 41 rules across outbound network calls, shell / `eval` execution, credential + `~/.ssh` access, obfuscated payloads, and **prompt injection hidden in the artifact's own instructions**, plus context-sensitive checks that judge a construct by its surroundings. You get a red / yellow / green report with `file:line`; **red can never be installed**, and approvals are **hash-pinned**, so editing an approved artifact re-prompts. On approval it wires the artifact into the agents that support its kind — an MCP server into all four (Claude Code, Codex, Gemini CLI, Qwen Code), custom commands into Claude / Gemini / Qwen, and skills, subagents, and plugins into Claude Code. **Settings → General.** It is a static review aid, not a sandbox — nothing is executed
+- **Safe Import** — import a third-party **skill, plugin, slash-command, subagent, or MCP server** and Termpolis **statically scans it before it touches your machine**: 41 rules across outbound network calls, shell / `eval` execution, credential + `~/.ssh` access, obfuscated payloads, and **prompt injection hidden in the artifact's own instructions**, plus context-sensitive checks that judge a construct by its surroundings. You get a red / yellow / green report with `file:line`; **red can never be installed**, and approvals are **hash-pinned**, so editing an approved artifact re-prompts. On approval it wires the artifact into the agents that support its kind — an MCP server into all three (Claude Code, Codex, Gemini CLI), custom commands into Claude / Gemini, and skills, subagents, and plugins into Claude Code. **Settings → General.** It is a static review aid, not a sandbox — nothing is executed
 
 ### MCP Server & Agent Integration
 - **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 33 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, the `memory_audit` self-inspection tool, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`)
@@ -334,7 +334,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 ### Context Handoff
 - **Seamless agent switching** — when an AI agent runs out of context/tokens, an amber banner offers to switch to another agent
 - **Automatic context capture** — captures your task, git branch, modified files, recent commands, diff summary, and recent output
-- **One-click handoff** — click "Switch to Codex" (or Gemini/Qwen Code) to launch the new agent with your full context pre-loaded
+- **One-click handoff** — click "Switch to Codex" (or Gemini) to launch the new agent with your full context pre-loaded
 - **Editable handoff prompt** — preview and customize the context before switching via the "More Options" modal
 - **Keep or close** — choose whether to keep the old terminal for reference or close it
 
@@ -346,15 +346,15 @@ No AI company has built a tool that brings together competing models to work as 
 
 - **Smart Task Routing** — the conductor assigns subtasks to the best agent based on a customizable capability matrix. Scores are transparent (0-100) with human-readable reasons explaining every assignment. Token-heavy work is routed to cheaper agents for cost efficiency. Every assignment can be manually overridden. Default ratings are estimates based on general model capabilities — customize them in **Settings > Agent Capability Ratings** based on your experience. The conductor uses ratings as hints but makes its own judgment.
 
-  | Capability | Claude Code | Codex | Gemini CLI | Qwen Code |
-  |-----------|:-----------:|:-----:|:----------:|:---------:|
-  | Refactoring | ★★★★★ | ★★★★ | ★★★ | ★★★ |
-  | Testing | ★★★★ | ★★★★★ | ★★★ | ★★★ |
-  | Documentation | ★★★★ | ★★★★ | ★★★★★ | ★★★ |
-  | Code Review | ★★★★★ | ★★★ | ★★★★ | ★★★ |
-  | DevOps/Infra | ★★★ | ★★★ | ★★★★★ | ★★★ |
-  | Bulk Tasks | ★★★ | ★★★★ | ★★★ | ★★★★ |
-  | Token Cost | $$$$ | $$$ | $$ | $$ |
+  | Capability | Claude Code | Codex | Gemini CLI |
+  |-----------|:-----------:|:-----:|:----------:|
+  | Refactoring | ★★★★★ | ★★★★ | ★★★ |
+  | Testing | ★★★★ | ★★★★★ | ★★★ |
+  | Documentation | ★★★★ | ★★★★ | ★★★★★ |
+  | Code Review | ★★★★★ | ★★★ | ★★★★ |
+  | DevOps/Infra | ★★★ | ★★★ | ★★★★★ |
+  | Bulk Tasks | ★★★ | ★★★★ | ★★★ |
+  | Token Cost | $$$$ | $$$ | $$ |
 
 - **Swarm Wizard** — 3-step flow: prepare conductor → describe task → launch. Includes guidance on when to use a swarm (autonomous task completion) vs individual agent terminals (back-and-forth conversation). Live progress tracking shows conductor status in real time — the modal stays open until the first task or message appears (can take up to 30 seconds).
 - **Agents run in the background** — swarm-spawned agent terminals are hidden from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. For back-and-forth conversations, launch individual agents from the AI Agents sidebar section — those still appear in the sidebar and work normally.
@@ -368,15 +368,14 @@ No AI company has built a tool that brings together competing models to work as 
 - **Agent Install Status** — the AI Agents sidebar shows green checkmarks for installed agents and red X icons for missing ones. Clicking a missing agent's icon shows installation instructions.
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
-- **MCP-native end to end** — Claude Code, Codex, Gemini CLI, and Qwen Code all speak MCP. No terminal-output bridges, no parser glue, no special-case code paths.
+- **MCP-native end to end** — Claude Code, Codex, and Gemini CLI all speak MCP. No terminal-output bridges, no parser glue, no special-case code paths.
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
-- **Open-weight Qwen option** — Qwen Code is Alibaba's MCP-native CLI for the Qwen3-Coder family, a non-Anthropic, non-Google option in the swarm.
 
 ### AI Observability
 
 When you're running multiple AI agents concurrently (or a whole swarm), you need to see what each is doing, spot when they duplicate work, and know when one is about to run out of context. Termpolis ships a full observability layer that doesn't require any external dashboard — everything is local, capped in memory, and tested end-to-end.
 
-- **Activity Feed** — `Ctrl+Shift+A` opens a live stream of every agent event. Captures messages, tool calls, tool results, token updates, compaction events, errors, status changes, and MCP audit entries. Filter by agent (claude/codex/gemini/qwen-code), by kind, or search full text. Newest first.
+- **Activity Feed** — `Ctrl+Shift+A` opens a live stream of every agent event. Captures messages, tool calls, tool results, token updates, compaction events, errors, status changes, and MCP audit entries. Filter by agent (claude/codex/gemini), by kind, or search full text. Newest first.
 - **Context Pins** — pin any snippet (migration rule, test policy, API contract) scoped to the current project. Pins are re-injected on agent handoff so the new agent doesn't lose the plot. Per-project storage, full CRUD.
 - **Redundancy Detector** — `Ctrl+Shift+D` shows duplicate work across terminals. If two agents are running `npm test` at the same time or both editing the same file, you'll see a severity-ranked finding with the affected terminals.
 - **Efficiency Panel** — `Ctrl+Shift+Y` aggregates per-agent stats: token totals, cost, error rate, average tool-call duration. Spot when one agent is burning budget while another is cruising.
@@ -583,7 +582,7 @@ Termpolis takes security seriously, especially with AI agent integration.
 - Third-party plugins are a major attack surface — they run with full app permissions, can access terminals, read output, and execute commands
 - Every feature in Termpolis is built-in, auditable, and ships with the app
 - If you need custom behavior, fork the repo — the codebase is open source and well-documented
-- **Safe Import does not change this.** It never loads third-party code *into Termpolis* — nothing imported executes inside the app, in a sandbox or otherwise. It is a gate on artifacts you were going to hand to **your agents** anyway: it scans the skill / plugin / command / subagent / MCP server, refuses to install a red one, and — only on your approval — writes it into the agents' own config directories (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.qwen`), which is exactly where you'd have put it by hand. Termpolis's own attack surface is unchanged.
+- **Safe Import does not change this.** It never loads third-party code *into Termpolis* — nothing imported executes inside the app, in a sandbox or otherwise. It is a gate on artifacts you were going to hand to **your agents** anyway: it scans the skill / plugin / command / subagent / MCP server, refuses to install a red one, and — only on your approval — writes it into the agents' own config directories (`~/.claude`, `~/.codex`, `~/.gemini`), which is exactly where you'd have put it by hand. Termpolis's own attack surface is unchanged.
 
 ### What Users Should Know
 - Terminal sessions run with your user permissions — same as any terminal application

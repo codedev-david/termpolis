@@ -2,6 +2,7 @@ import type { CustomKeybinding } from '../types'
 
 export interface KeybindingMap {
   copy: string
+  copyForMessage: string
   copyAsCodeBlock: string
   paste: string
   historySearch: string
@@ -13,17 +14,19 @@ export interface KeybindingMap {
   toggleAutocomplete: string
   toggleSidebar: string
   toggleGrid: string
-  // Per-agent launch shortcuts — map to the first four AI profiles, which are
-  // always the built-in Claude / Codex / Gemini / Qwen defaults.
+  // Per-agent launch shortcuts — map to the first three AI profiles, which are
+  // always the built-in Claude / Codex / Gemini defaults.
   launchAgent1: string
   launchAgent2: string
   launchAgent3: string
-  launchAgent4: string
 }
 
 export const DEFAULT_KEYBINDINGS: KeybindingMap = {
+  // The three copy hotkeys are RESERVED (see RESERVED_COPY_ACTIONS): always
+  // these fixed combos, never remappable, never overridable by a custom binding.
   copy: 'Ctrl+Shift+C',
-  copyAsCodeBlock: 'Ctrl+Shift+M',
+  copyForMessage: 'Ctrl+Shift+K',
+  copyAsCodeBlock: 'Ctrl+Shift+Q',
   paste: 'Ctrl+Shift+V',
   historySearch: 'Ctrl+Shift+H',
   terminalSearch: 'Ctrl+Shift+F',
@@ -39,12 +42,12 @@ export const DEFAULT_KEYBINDINGS: KeybindingMap = {
   launchAgent1: 'Ctrl+1',
   launchAgent2: 'Ctrl+2',
   launchAgent3: 'Ctrl+3',
-  launchAgent4: 'Ctrl+4',
 }
 
 export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   copy: 'Copy',
-  copyAsCodeBlock: 'Copy as Code Block (Slack/Teams)',
+  copyForMessage: 'Copy for Teams/Slack',
+  copyAsCodeBlock: 'Copy as Code Block',
   paste: 'Paste',
   historySearch: 'Search History',
   terminalSearch: 'Find in Terminal',
@@ -58,7 +61,37 @@ export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   launchAgent1: 'Launch Claude Code',
   launchAgent2: 'Launch OpenAI Codex',
   launchAgent3: 'Launch Gemini CLI',
-  launchAgent4: 'Launch Qwen Code',
+}
+
+/**
+ * The three copy actions whose combos are RESERVED. They are always pinned to
+ * their fixed defaults (Ctrl+Shift+C / K / Q): the settings UI renders them
+ * read-only, the store refuses to remap them, and findKeybindingConflict reports
+ * any custom binding that tries to claim one — so a custom hotkey can never
+ * shadow or override them. Copy must Just Work, everywhere, always.
+ */
+export const RESERVED_COPY_ACTIONS = ['copy', 'copyForMessage', 'copyAsCodeBlock'] as const
+
+export type ReservedCopyAction = (typeof RESERVED_COPY_ACTIONS)[number]
+
+/** True when `action` is one of the reserved copy actions. */
+export function isReservedAction(action: string): action is ReservedCopyAction {
+  return (RESERVED_COPY_ACTIONS as readonly string[]).includes(action)
+}
+
+/**
+ * Merge a (possibly partial / persisted) keybinding map over the defaults, then
+ * FORCE every reserved copy action back to its fixed default. Persisted state
+ * from an older build — e.g. `copyAsCodeBlock: 'Ctrl+Shift+M'` — must never
+ * override a reserved combo on upgrade. This is the single choke point for that
+ * guarantee; call it wherever keybindings are hydrated from disk.
+ */
+export function withReservedDefaults(partial?: Partial<KeybindingMap> | null): KeybindingMap {
+  const merged: KeybindingMap = { ...DEFAULT_KEYBINDINGS, ...(partial ?? {}) }
+  for (const action of RESERVED_COPY_ACTIONS) {
+    merged[action] = DEFAULT_KEYBINDINGS[action]
+  }
+  return merged
 }
 
 /** Human-readable label for a built-in keybinding action. */
@@ -69,6 +102,22 @@ export function describeBinding(action: keyof KeybindingMap): string {
 // Normalize a combo so "Ctrl+Shift+C" and "Shift+Ctrl+C" compare equal.
 function normalizeCombo(combo: string): string {
   return combo.toLowerCase().split('+').sort().join('+')
+}
+
+// The reserved copy combos, normalized, for O(1) "is this combo reserved?" checks.
+const RESERVED_COMBOS: ReadonlySet<string> = new Set(
+  RESERVED_COPY_ACTIONS.map(action => normalizeCombo(DEFAULT_KEYBINDINGS[action])),
+)
+
+/**
+ * True when `combo` is one of the three reserved copy combos (Ctrl+Shift+C / K /
+ * Q), compared order-insensitively. A custom keybinding on a reserved combo can
+ * never be created (the settings UI rejects it) and never fires (matchCustomKeybinding
+ * skips it) — reserved copy Just Works, everywhere, always.
+ */
+export function isReservedCombo(combo: string): boolean {
+  if (!combo) return false
+  return RESERVED_COMBOS.has(normalizeCombo(combo))
 }
 
 /**
@@ -101,9 +150,9 @@ export function findKeybindingConflict(
   return null
 }
 
-// The four per-agent launch bindings, in slot order. Slot i maps to the i-th
-// AI profile (the built-in Claude/Codex/Gemini/Qwen always lead the list).
-const LAUNCH_AGENT_SLOTS: (keyof KeybindingMap)[] = ['launchAgent1', 'launchAgent2', 'launchAgent3', 'launchAgent4']
+// The three per-agent launch bindings, in slot order. Slot i maps to the i-th
+// AI profile (the built-in Claude/Codex/Gemini always lead the list).
+const LAUNCH_AGENT_SLOTS: (keyof KeybindingMap)[] = ['launchAgent1', 'launchAgent2', 'launchAgent3']
 
 /** Slot index (0..3) of the launch-agent binding matching this event, else null. */
 export function matchLaunchAgentSlot(e: KeyboardEvent, keybindings: KeybindingMap): number | null {
@@ -126,7 +175,11 @@ export function customComboHasModifier(combo: string): boolean {
 /** The custom binding whose combo matches this event, else null. */
 export function matchCustomKeybinding(e: KeyboardEvent, customKeybindings: CustomKeybinding[]): CustomKeybinding | null {
   for (const cb of customKeybindings) {
-    if (cb.combo && customComboHasModifier(cb.combo) && matchesKeybinding(e, cb.combo)) return cb
+    if (!cb.combo) continue
+    // A reserved copy combo can never be overridden by a custom binding, even a
+    // stale/imported one — skip it so reserved copy always wins.
+    if (isReservedCombo(cb.combo)) continue
+    if (customComboHasModifier(cb.combo) && matchesKeybinding(e, cb.combo)) return cb
   }
   return null
 }

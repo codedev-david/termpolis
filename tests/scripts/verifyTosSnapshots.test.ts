@@ -72,7 +72,7 @@ describe('verifyTosSnapshots — PROVIDERS config', () => {
     const ids = PROVIDERS.map(p => p.id).sort()
     // If you add or remove an agent in AGENT_FACTS, mirror it here so the
     // weekly drift watcher actually covers the agent.
-    expect(ids).toEqual(['alibaba-qwen', 'anthropic', 'google-gemini', 'openai'])
+    expect(ids).toEqual(['anthropic', 'google-gemini', 'openai'])
   })
 
   it('every provider has an https URL and at least one expected keyword', () => {

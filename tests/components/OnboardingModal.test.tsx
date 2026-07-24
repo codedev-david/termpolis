@@ -87,6 +87,17 @@ describe('OnboardingModal', () => {
     expect(screen.getByText('ANTHROPIC_API_KEY')).toBeInTheDocument()
   })
 
+  it('step 2 lists only the three US agent providers (no Alibaba / DashScope)', () => {
+    render(<OnboardingModal onDone={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }))
+    expect(screen.getByText('ANTHROPIC_API_KEY')).toBeInTheDocument()
+    expect(screen.getByText('OPENAI_API_KEY')).toBeInTheDocument()
+    expect(screen.getByText('GEMINI_API_KEY')).toBeInTheDocument()
+    // Qwen Code was removed — its Alibaba DashScope key must not appear.
+    expect(screen.queryByText('DASHSCOPE_API_KEY')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Alibaba/i)).not.toBeInTheDocument()
+  })
+
   it('Back from step 2 returns to step 1', () => {
     render(<OnboardingModal onDone={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /Next/ }))

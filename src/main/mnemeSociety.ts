@@ -2,7 +2,7 @@
 //
 // Mneme — the society-of-mind layer (Phase 5 of the learning architecture; see
 // docs/learning-architecture.md §P5 "Society"). Several agents (Claude Code /
-// Codex / Gemini CLI / Qwen Code) reflect over the SAME shared brain, so they
+// Codex / Gemini CLI) reflect over the SAME shared brain, so they
 // independently distil overlapping — and occasionally contradictory — lessons.
 // This module POOLS those lessons: the same insight learned by different agents
 // is fused into one representative whose importance is boosted by cross-agent
@@ -18,7 +18,7 @@
 // `now` clock like the sibling modules do rather than reaching for the wall clock.
 
 export interface AgentLesson {
-  /** Which agent learned it (e.g. 'claude', 'codex', 'gemini', 'qwen'). */
+  /** Which agent learned it (e.g. 'claude', 'codex', 'gemini'). */
   source: string
   content: string
   memoryType?: string

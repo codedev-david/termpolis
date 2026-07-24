@@ -677,13 +677,4 @@ export const AGENT_FACTS: AgentDataFact[] = [
     consoleUrl: 'https://aistudio.google.com/app/apikey',
     notes: 'Free tier (AI Studio) WILL use prompts to improve Google products unless you switch to a paid Gemini API key. Paid Gemini API: prompts not used for training.',
   },
-  {
-    agentId: 'qwen-code',
-    agentName: 'Qwen Code',
-    trainingOptOut: 'default-off',
-    retentionDays: 'configurable',
-    privacyDocUrl: 'https://www.alibabacloud.com/help/en/model-studio/legal-agreement',
-    consoleUrl: 'https://dashscope.console.aliyun.com/',
-    notes: 'Paid DashScope tier: prompts not used for training per the Model Studio agreement. Local Ollama / vLLM mode (recommended in-product): zero data leaves the machine.',
-  },
 ]

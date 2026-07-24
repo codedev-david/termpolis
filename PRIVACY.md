@@ -62,7 +62,7 @@ Termpolis itself only makes network requests for:
    breadcrumbs are redacted to `C:\Users\<redacted>`.
 
 Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini
-CLI, Qwen Code, your own shells) make their own network requests according
+CLI, your own shells) make their own network requests according
 to their own privacy policies. Termpolis does not proxy or intercept that
 traffic.
 
@@ -92,7 +92,7 @@ locally and every log stays on the machine.
   intercepts `gemini` invocations from any terminal and refuses to forward
   them unless paid-tier credentials are detected.
 - **Auto-scan on every prompt.** Once the user types `claude`, `codex`,
-  `gemini`, or `qwen` in a terminal, every subsequent keystroke is staged
+  `gemini` in a terminal, every subsequent keystroke is staged
   in main-process memory and scanned with a 70+ rule regex catalog
   on each Enter or paste-sized chunk (≥32 bytes). Hits are redacted in
   place before reaching the PTY, audited as `redaction_hit` events, and
@@ -124,7 +124,7 @@ disclaimer.
 ## Third-Party Services
 
 Termpolis integrates with third-party AI tools (such as Claude Code, OpenAI
-Codex, Gemini CLI, and Qwen Code) that you choose to install and run
+Codex, Gemini CLI) that you choose to install and run
 independently. These tools have their own privacy policies and may
 communicate with their respective cloud services. Termpolis does not control
 or intercept these communications — it simply provides a terminal environment

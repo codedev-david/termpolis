@@ -220,7 +220,7 @@ function firstWordLength(line: string): number {
 // Un-wrap an agent's own word-wrapping so a copied selection pastes as flowing
 // text instead of hard returns mid-sentence.
 //
-// WHY THIS EXISTS: agent CLIs (Claude Code, Codex, Gemini, Qwen — all Ink-based
+// WHY THIS EXISTS: agent CLIs (Claude Code, Codex, Gemini — all Ink-based
 // TUIs) wrap their output to the pane width THEMSELVES and commit each visual
 // line with a real newline. xterm therefore never sets `isWrapped` on the
 // continuation rows, so `extractSelectionWithLogicalNewlines` (which trusts

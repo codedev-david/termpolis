@@ -31,7 +31,7 @@ function stripAnsi(text: string): string {
  * Detect the current status of a swarm agent from its terminal output.
  *
  * @param recentOutput - The last ~2-4KB of the terminal's output buffer
- * @param agentName - The agent type (e.g. "Claude", "Codex", "Gemini", "Qwen Code")
+ * @param agentName - The agent type (e.g. "Claude", "Codex", "Gemini")
  * @param previousStatus - The agent's previous status (for hysteresis)
  */
 export function detectAgentStatus(
@@ -109,7 +109,6 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
   if (/claude/i.test(agentName) && /Do you want to proceed|Allow|Deny/i.test(tail)) return true
   if (/codex/i.test(agentName) && /press.*to confirm|select.*option/i.test(tail)) return true
   if (/gemini/i.test(agentName) && /\?\s*$/m.test(tail.slice(-200))) return true
-  if (/qwen/i.test(agentName) && /\?\s*$/m.test(tail.slice(-200))) return true
   return false
 }
 
@@ -152,7 +151,7 @@ function isErrored(tail: string): boolean {
   // Claude's own stub shim prints this exact message when the native binary
   // wasn't installed (postinstall skipped or --ignore-scripts).
   if (/claude native binary not installed/i.test(tail)) return true
-  if (/command not found.*(?:claude|codex|gemini|qwen)/i.test(tail)) return true
+  if (/command not found.*(?:claude|codex|gemini)/i.test(tail)) return true
   return false
 }
 

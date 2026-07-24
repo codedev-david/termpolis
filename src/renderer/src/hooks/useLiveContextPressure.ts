@@ -14,7 +14,6 @@ const AGENT_MODEL: Record<string, string> = {
   claude: 'claude',
   codex: 'gpt-4o',
   gemini: 'gemini',
-  'qwen-code': 'qwen',
 }
 
 function modelFromEvents(events: AgentActivityEvent[]): string {

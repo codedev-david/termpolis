@@ -5,18 +5,16 @@ import { getTerminalDefaults, agentTerminalName } from './terminalDefaults'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
-import qwenIcon from '../assets/qwen-ai-logo.svg'
 import { claudeModelArg } from './modelBroker'
 
 /**
- * The four built-in AI agents. Always rendered first in the sidebar and always
- * mapped to launch shortcuts 1..4, so this order is load-bearing.
+ * The three built-in AI agents. Always rendered first in the sidebar and always
+ * mapped to launch shortcuts 1..3, so this order is load-bearing.
  */
 export const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
   { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
   { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'agy', shell: 'bash', color: '#4285F4' },
-  { id: 'qwen-code', name: 'Qwen Code', icon: 'fa-solid fa-feather', iconImage: qwenIcon, command: 'qwen', shell: 'bash', color: '#A855F7' },
 ]
 
 export function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
@@ -107,7 +105,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     agentCommand: profile.command,
     launchPrimed,
   })
-  // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini/Qwen) — the
+  // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini) — the
   // folder was chosen explicitly, so don't wait on cwd-tracking (agent TUIs don't emit OSC 633).
   // Deduped against the per-terminal effect, and it surfaces a "🧭 Code graph: N symbols" notice.
   void autoIndexRepo(cwd)
@@ -136,6 +134,6 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     // Codex requires '1' to trust the directory
     setTimeout(() => writeIfAlive('1\r'), testDelay(9000))
   }
-  const dismissMs = (profile.id === 'gemini' || profile.id === 'qwen-code') ? 15000 : 8000
+  const dismissMs = profile.id === 'gemini' ? 15000 : 8000
   setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
 }

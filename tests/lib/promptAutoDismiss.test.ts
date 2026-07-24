@@ -71,12 +71,12 @@ describe('promptAutoDismiss.detectDismissChar', () => {
   describe('generic Y/n prompts', () => {
     it('answers [Y/n] with y', () => {
       const tail = 'Install additional tools? [Y/n]'
-      expect(detectDismissChar(tail, { agentName: 'Qwen Code' })).toBe('y\r')
+      expect(detectDismissChar(tail, { agentName: 'Gemini CLI' })).toBe('y\r')
     })
 
     it('answers (Y/n) with y', () => {
       const tail = 'Continue? (Y/n)'
-      expect(detectDismissChar(tail, { agentName: 'Qwen Code' })).toBe('y\r')
+      expect(detectDismissChar(tail, { agentName: 'Gemini CLI' })).toBe('y\r')
     })
   })
 

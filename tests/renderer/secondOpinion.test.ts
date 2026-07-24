@@ -10,13 +10,13 @@ const CLAUDE_MODELS = [
 
 describe('buildSecondOpinionMenu', () => {
   it('lists only installed top-level agents and nests Claude models', () => {
-    const menu = buildSecondOpinionMenu({ claude: true, codex: true, agy: true, 'qwen-code': true }, CLAUDE_MODELS)
-    expect(menu.flat.map((o) => o.value)).toEqual(['codex', 'gemini', 'qwen']) // gemini via agy, qwen binary name
+    const menu = buildSecondOpinionMenu({ claude: true, codex: true, agy: true }, CLAUDE_MODELS)
+    expect(menu.flat.map((o) => o.value)).toEqual(['codex', 'gemini']) // gemini via agy
     expect(menu.claude?.map((o) => o.value)).toEqual(['claude:fable', 'claude:opus', 'claude:sonnet', 'claude:haiku'])
     expect(menu.hasAny).toBe(true)
   })
   it('hasAny is true from the Claude group alone when no flat agents are installed', () => {
-    const menu = buildSecondOpinionMenu({ claude: true }, CLAUDE_MODELS) // no codex/agy/qwen
+    const menu = buildSecondOpinionMenu({ claude: true }, CLAUDE_MODELS) // no codex/agy
     expect(menu.flat).toEqual([])
     expect(menu.claude).toHaveLength(4)
     expect(menu.hasAny).toBe(true) // exercises the `flat.length>0 || !!(claude && claude.length>0)` right side
@@ -26,12 +26,12 @@ describe('buildSecondOpinionMenu', () => {
     expect(buildSecondOpinionMenu({ gemini: true }, CLAUDE_MODELS).flat.map((o) => o.value)).not.toContain('gemini')
   })
   it('omits the Claude group entirely when Claude is not installed', () => {
-    const menu = buildSecondOpinionMenu({ claude: false, codex: true, agy: false, 'qwen-code': false }, CLAUDE_MODELS)
+    const menu = buildSecondOpinionMenu({ claude: false, codex: true, agy: false }, CLAUDE_MODELS)
     expect(menu.claude).toBeNull()
     expect(menu.flat.map((o) => o.value)).toEqual(['codex'])
   })
   it('hasAny is false when nothing is installed', () => {
-    const menu = buildSecondOpinionMenu({ claude: false, codex: false, gemini: false, 'qwen-code': false }, CLAUDE_MODELS)
+    const menu = buildSecondOpinionMenu({ claude: false, codex: false, gemini: false }, CLAUDE_MODELS)
     expect(menu.hasAny).toBe(false)
     expect(menu.flat).toEqual([])
     expect(menu.claude).toBeNull()
@@ -48,7 +48,6 @@ describe('parseSecondOpinion', () => {
   it('parses a top-level agent value', () => {
     expect(parseSecondOpinion('codex')).toEqual({ agent: 'codex' })
     expect(parseSecondOpinion('gemini')).toEqual({ agent: 'gemini' })
-    expect(parseSecondOpinion('qwen')).toEqual({ agent: 'qwen' })
   })
   it('returns null for the placeholder or an unknown value', () => {
     expect(parseSecondOpinion('')).toBeNull()

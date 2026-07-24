@@ -44,9 +44,9 @@ beforeEach(() => {
 })
 
 describe('DEFAULT_AI_PROFILES', () => {
-  it('exposes the four built-in agents in Claude/Codex/Gemini/Qwen order', () => {
-    expect(DEFAULT_AI_PROFILES.map(p => p.id)).toEqual(['claude', 'codex', 'gemini', 'qwen-code'])
-    expect(DEFAULT_AI_PROFILES).toHaveLength(4)
+  it('exposes the three built-in agents in Claude/Codex/Gemini order', () => {
+    expect(DEFAULT_AI_PROFILES.map(p => p.id)).toEqual(['claude', 'codex', 'gemini'])
+    expect(DEFAULT_AI_PROFILES).toHaveLength(3)
   })
 })
 

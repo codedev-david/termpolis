@@ -15,7 +15,7 @@ beforeAll(() => {
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockResolvedValue({
       success: true,
-      data: { claude: true, codex: true, gemini: false, aider: false, 'aider-qwen': false },
+      data: { claude: true, codex: true, gemini: false },
     }),
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
@@ -71,7 +71,7 @@ describe('conductorManager', () => {
   it('checkClaudeInstalled returns false when claude is not detected', async () => {
     ;(window.termpolis.detectAgents as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
-      data: { claude: false, codex: true, gemini: false, aider: false, 'aider-qwen': false },
+      data: { claude: false, codex: true, gemini: false },
     })
     const result = await checkClaudeInstalled()
     expect(result).toBe(false)

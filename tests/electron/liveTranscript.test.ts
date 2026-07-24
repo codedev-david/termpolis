@@ -134,8 +134,8 @@ describe('readSessionTranscript — cross-agent active-session reader', () => {
     expect(await readSessionTranscript('C:/repo', 'codex', sessionDeps({ parse }))).toEqual([])
   })
 
-  it('with default deps, an unsupported agent (qwen) resolves no file → []', async () => {
-    expect(await readSessionTranscript('C:/repo', 'qwen')).toEqual([])
+  it('with default deps, an unsupported agent resolves no file → []', async () => {
+    expect(await readSessionTranscript('C:/repo', 'unknown-agent')).toEqual([])
   })
 
   it('awaits an ASYNC findFile (codex/gemini resolve their newest session asynchronously)', async () => {

@@ -12,6 +12,7 @@ import {
   discoverTranscriptFiles,
   findLatestTranscriptFile,
   runConversationIngest,
+  type ConversationSource,
   type IngestTurn,
   type IngestChunk,
   type IngestDeps,
@@ -145,13 +146,13 @@ describe('chunkTurns', () => {
 })
 
 describe('parseBySource', () => {
-  it('dispatches to the right parser; returns [] for qwen', () => {
+  it('dispatches to the right parser; returns [] for an unknown source', () => {
     expect(parseBySource('claude', '{"type":"user","message":{"role":"user","content":"hi"}}')).toHaveLength(1)
     expect(
       parseBySource('codex', '{"type":"session_meta","payload":{"id":"x"}}\n{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"hey"}]}}'),
     ).toHaveLength(1)
     expect(parseBySource('gemini', JSON.stringify({ messages: [{ type: 'user', content: [{ text: 'g' }] }] }))).toHaveLength(1)
-    expect(parseBySource('qwen', 'anything')).toEqual([])
+    expect(parseBySource('unknown' as ConversationSource, 'anything')).toEqual([])
   })
 })
 
@@ -325,9 +326,9 @@ describe('discoverTranscriptFiles', () => {
     expect(await discoverTranscriptFiles('gemini', root)).toHaveLength(1)
   })
 
-  it('returns [] for a missing root and for qwen', async () => {
+  it('returns [] for a missing root and for an unknown source', async () => {
     expect(await discoverTranscriptFiles('claude', path.join(root, 'nope'))).toEqual([])
-    expect(await discoverTranscriptFiles('qwen', root)).toEqual([])
+    expect(await discoverTranscriptFiles('unknown' as ConversationSource, root)).toEqual([])
   })
 
   it('freshness filter (#2): returns only files modified at/after the cutoff', async () => {
@@ -382,9 +383,9 @@ describe('findLatestTranscriptFile — newest matching session for solo-session 
     expect(await findLatestTranscriptFile('gemini', root)).toBe(s2)
   })
 
-  it('returns null for a missing root, for qwen, and when nothing matches the pattern', async () => {
+  it('returns null for a missing root, for an unknown source, and when nothing matches the pattern', async () => {
     expect(await findLatestTranscriptFile('codex', path.join(root, 'nope'))).toBeNull()
-    expect(await findLatestTranscriptFile('qwen', root)).toBeNull()
+    expect(await findLatestTranscriptFile('unknown' as ConversationSource, root)).toBeNull()
     fs.writeFileSync(path.join(root, 'notes.txt'), 'x')
     expect(await findLatestTranscriptFile('gemini', root)).toBeNull()
   })

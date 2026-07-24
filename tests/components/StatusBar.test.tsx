@@ -238,6 +238,24 @@ describe('StatusBar', () => {
     expect(screen.getByText('All Keyboard Shortcuts')).toBeInTheDocument()
   })
 
+  it('keyboard-shortcuts list documents the three reserved copy hotkeys', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    // The durable "All Keyboard Shortcuts" list must surface all three reserved
+    // copy hotkeys (Ctrl+Shift+C / K / Q) and flag them as non-rebindable.
+    expect(screen.getByText(/reserved defaults, never rebindable/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/Ctrl\+Shift\+K/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Ctrl\+Shift\+Q/).length).toBeGreaterThan(0)
+  })
+
+  it('ToS drift watcher lists only US providers — no Alibaba after Qwen removal', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText(/ToS drift watcher/i)).toBeInTheDocument()
+    // Qwen Code was removed; Alibaba must no longer appear anywhere in the modal.
+    expect(screen.queryAllByText(/Alibaba/i)).toHaveLength(0)
+  })
+
   // -- Voice dictation docs --
 
   it('help dialog documents Voice Dictation', () => {

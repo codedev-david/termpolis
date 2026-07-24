@@ -5,7 +5,7 @@
 //
 // WHY it is its own module, fully dependency-injected:
 //   Installing means writing into the user's LIVE agent configs — ~/.claude,
-//   ~/.codex, ~/.gemini, ~/.qwen. Those files are irreplaceable (hand-edited
+//   ~/.codex, ~/.gemini. Those files are irreplaceable (hand-edited
 //   settings, other people's MCP servers, existing skills). The two ways to get
 //   this wrong are (a) clobbering something that was already there and (b)
 //   letting a hostile archive path escape the install dir. Both are pure logic,
@@ -14,13 +14,13 @@
 //   defaultInstallerDeps().
 //
 // Mirrors agentMcpRegistry.ts for the config shapes (mcpServers in JSON for
-// Claude/Gemini/Qwen, an [mcp_servers.x] TOML block for Codex) — that module
+// Claude/Gemini, an [mcp_servers.x] TOML block for Codex) — that module
 // registers OUR server, this one registers THEIRS.
 
 import { basename, dirname, extname, join } from 'path'
 
 export type ArtifactKind = 'skill' | 'command' | 'subagent' | 'mcp' | 'plugin'
-export type AgentTarget = 'claude' | 'codex' | 'gemini' | 'qwen'
+export type AgentTarget = 'claude' | 'codex' | 'gemini'
 
 export interface ArtifactFile {
   /** Path RELATIVE to the archive root, as it came out of the zip/repo. */
@@ -71,12 +71,11 @@ const AGENT_DIR: Record<AgentTarget, string> = {
   claude: '.claude',
   codex: '.codex',
   gemini: '.gemini',
-  qwen: '.qwen',
 }
 
 const TARGETS_BY_KIND: Record<ArtifactKind, AgentTarget[]> = {
-  mcp: ['claude', 'codex', 'gemini', 'qwen'],
-  command: ['claude', 'gemini', 'qwen'],
+  mcp: ['claude', 'codex', 'gemini'],
+  command: ['claude', 'gemini'],
   skill: ['claude'],
   subagent: ['claude'],
   plugin: ['claude'],
@@ -247,7 +246,7 @@ export function supportedTargets(kind: ArtifactKind): AgentTarget[] {
 }
 
 // ---------------------------------------------------------------------------
-// TOML rendering (Codex config + Gemini/Qwen commands)
+// TOML rendering (Codex config + Gemini commands)
 // ---------------------------------------------------------------------------
 
 function tomlString(s: string): string {
@@ -277,8 +276,8 @@ function codexBlock(name: string, s: McpServerDef): string {
   return `${lines.join('\n')}\n`
 }
 
-// Gemini CLI (and its Qwen-Code fork) take custom commands as TOML, not
-// markdown — and their argument placeholder is {{args}}, not Claude's
+// Gemini CLI takes custom commands as TOML, not
+// markdown — and its argument placeholder is {{args}}, not Claude's
 // $ARGUMENTS. Translating is the difference between a command that works after
 // import and one that silently passes the literal string "$ARGUMENTS".
 function toCommandToml(md: string): string {

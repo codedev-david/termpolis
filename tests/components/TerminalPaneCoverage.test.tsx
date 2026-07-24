@@ -615,7 +615,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
-    it('banks the selection at xterm onSelectionChange, so right-click Copy survives a repaint that empties getSelection()', () => {
+    it('banks the selection at xterm onSelectionChange, so right-click Pin Selection survives a repaint that empties getSelection()', () => {
       // The reported bug: select text in a repainting TUI, right-click, and every Copy is greyed
       // out. By the right-click getSelection() is already '' (so `live` and the right-mousedown
       // `fresh` are both null), and the only proactive snapshot used to be the single document
@@ -637,15 +637,17 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       H.term.hasSelection.mockReturnValue(false)
       act(() => { selCb!() })
 
-      // Right-click with no live/fresh selection: only the banked snapshot can keep Copy alive.
+      // Right-click with no live/fresh selection: only the banked snapshot can keep Pin Selection
+      // alive (Copy is keyboard-driven now and reads the live selection, so the snapshot's sole
+      // consumer is Pin Selection).
       openMenu(container)
       expect(screen.getByTestId('terminal-context-menu')).toBeInTheDocument()
 
-      const copyBtn = screen.getByText('Copy').closest('button')!
-      expect(copyBtn).toBeEnabled()
+      const pinBtn = screen.getByText('Pin Selection').closest('button')!
+      expect(pinBtn).toBeEnabled()
 
-      fireEvent.click(copyBtn)
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('picked-this-line')
+      fireEvent.click(pinBtn)
+      expect(screen.getByText('picked-this-line')).toBeInTheDocument()
     })
 
     it('a document mouseup with a transiently-empty getSelection() must NOT clobber the snapshot banked by onSelectionChange', () => {
@@ -673,15 +675,15 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       act(() => { fireEvent.mouseUp(document) })
 
       // Right-click: live + fresh are null (getSelection() still ''); only the banked snapshot
-      // can keep Copy alive, and the mouseup must not have destroyed it.
+      // can keep Pin Selection alive, and the mouseup must not have destroyed it.
       openMenu(container)
       expect(screen.getByTestId('terminal-context-menu')).toBeInTheDocument()
 
-      const copyBtn = screen.getByText('Copy').closest('button')!
-      expect(copyBtn).toBeEnabled()
+      const pinBtn = screen.getByText('Pin Selection').closest('button')!
+      expect(pinBtn).toBeEnabled()
 
-      fireEvent.click(copyBtn)
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('survives-the-mouseup')
+      fireEvent.click(pinBtn)
+      expect(screen.getByText('survives-the-mouseup')).toBeInTheDocument()
     })
   })
 
@@ -978,7 +980,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
   // 9. Second Opinion — the failure and label arms
   // =========================================================================
   describe('Second Opinion', () => {
-    const INSTALLED = { claude: true, codex: true, agy: true, 'qwen-code': true }
+    const INSTALLED = { claude: true, codex: true, agy: true }
 
     async function renderWithAgents(installed: Record<string, boolean> = INSTALLED) {
       setStore({ terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'claude --resume' }] })
@@ -1000,16 +1002,16 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
 
-    it('labels the pasted block with the reviewing agent (Qwen)', async () => {
+    it('labels the pasted block with the reviewing agent (Gemini)', async () => {
       mockReadTerminalBuffer.mockResolvedValue({ success: true, data: { output: 'a failing test' } })
       mockSecondOpinion.mockResolvedValue({ success: true, data: { feedback: 'Check the mock.' } })
       await renderWithAgents()
 
-      fireEvent.change(screen.getByTestId('second-opinion-picker'), { target: { value: 'qwen' } })
+      fireEvent.change(screen.getByTestId('second-opinion-picker'), { target: { value: 'gemini' } })
       await waitFor(() => expect(mockWriteToTerminal).toHaveBeenCalled())
 
-      expect(mockSecondOpinion).toHaveBeenCalledWith({ agent: 'qwen', model: undefined, content: 'a failing test' })
-      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('=== Second Opinion (Qwen) ===')
+      expect(mockSecondOpinion).toHaveBeenCalledWith({ agent: 'gemini', model: undefined, content: 'a failing test' })
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('=== Second Opinion (Gemini) ===')
       expect(mockWriteToTerminal.mock.calls[0][1]).toContain('Check the mock.')
     })
 
@@ -1051,14 +1053,25 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
   // 10. Clipboard failure paths — keyboard shortcuts
   // =========================================================================
   describe('clipboard shortcuts under failure', () => {
-    it('a rejected rich-clipboard write on Ctrl+Shift+M is swallowed', async () => {
+    it('a rejected rich-clipboard write on Ctrl+Shift+Q is swallowed', async () => {
       H.term.getSelection.mockReturnValue('fenced')
       mockClipboardWriteRich.mockRejectedValue(new Error('OLE busy'))
       render(<TerminalPane {...defaultProps} />)
 
-      expect(keyDown({ ctrlKey: true, shiftKey: true, key: 'M' })).toBe(false)
+      expect(keyDown({ ctrlKey: true, shiftKey: true, key: 'Q' })).toBe(false)
 
       expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nfenced\n```', '<pre><code>fenced</code></pre>')
+      await act(async () => { await Promise.resolve() })
+    })
+
+    it('a rejected rich-clipboard write on Ctrl+Shift+K (Teams/Slack) is swallowed', async () => {
+      H.term.getSelection.mockReturnValue('msg')
+      mockClipboardWriteRich.mockRejectedValue(new Error('OLE busy'))
+      render(<TerminalPane {...defaultProps} />)
+
+      expect(keyDown({ ctrlKey: true, shiftKey: true, key: 'K' })).toBe(false)
+
+      expect(mockClipboardWriteRich).toHaveBeenCalledWith('MSG:msg', '<span>msg</span>')
       await act(async () => { await Promise.resolve() })
     })
 
@@ -1402,28 +1415,6 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
   // 18. Context menu under a failing clipboard
   // =========================================================================
   describe('context menu under a failing clipboard', () => {
-    it.each([
-      ['Copy', () => mockClipboardWriteText, ['grabbed']],
-      ['Copy for Teams/Slack', () => mockClipboardWriteRich, ['MSG:grabbed', '<span>grabbed</span>']],
-      ['Copy as Code Block', () => mockClipboardWriteRich, ['```text\ngrabbed\n```', '<pre><code>grabbed</code></pre>']],
-      ['Copy as Plain Text', () => mockClipboardWriteText, ['PLAIN:grabbed']],
-      ['Copy with Command', () => mockClipboardWriteText, ['```text\ngrabbed\n```']],
-    ])('%s swallows a rejected clipboard IPC and still closes the menu', async (label, api, args) => {
-      H.term.getSelection.mockReturnValue('grabbed')
-      mockClipboardWriteText.mockRejectedValue(new Error('clipboard locked'))
-      mockClipboardWriteRich.mockRejectedValue(new Error('clipboard locked'))
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      openMenu(container)
-
-      fireEvent.click(screen.getByText(label as string))
-
-      // The right payload still went out, the rejection stayed contained (one that
-      // escapes fails the run as an unhandled rejection), and the menu dismissed.
-      expect((api as () => any)()).toHaveBeenCalledWith(...(args as string[]))
-      expect(screen.queryByTestId('terminal-context-menu')).not.toBeInTheDocument()
-      await act(async () => { await Promise.resolve() })
-    })
-
     it('menu Paste writes nothing when the clipboard read FAILS', async () => {
       mockClipboardReadText.mockResolvedValue({ success: false })
       const { container } = render(<TerminalPane {...defaultProps} />)

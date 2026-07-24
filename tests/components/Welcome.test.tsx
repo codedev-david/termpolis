@@ -5,13 +5,13 @@ import { Welcome } from '../../src/renderer/src/components/Welcome/Welcome'
 
 let mockDetectAgentsResult: any = {
   success: true,
-  data: { claude: true, codex: false, gemini: true, 'qwen-code': false },
+  data: { claude: true, codex: false, gemini: true },
 }
 
 beforeEach(() => {
   mockDetectAgentsResult = {
     success: true,
-    data: { claude: true, codex: false, gemini: true, 'qwen-code': false },
+    data: { claude: true, codex: false, gemini: true },
   }
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockImplementation(() => Promise.resolve(mockDetectAgentsResult)),
@@ -96,7 +96,6 @@ describe('Welcome', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
-    expect(screen.getByText('Qwen Code')).toBeInTheDocument()
   })
 
   it('toggles agent picker open and closed', () => {
@@ -171,7 +170,7 @@ describe('Welcome', () => {
     })
     fireEvent.click(screen.getByText('Launch AI Agent'))
     const installBadges = screen.getAllByText('Install')
-    // codex and qwen-code are not installed
-    expect(installBadges.length).toBe(2)
+    // codex is not installed
+    expect(installBadges.length).toBe(1)
   })
 })

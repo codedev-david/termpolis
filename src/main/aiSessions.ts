@@ -171,7 +171,7 @@ export async function listAISessions(opts?: { projectsRoot?: string }): Promise<
 // Cross-AI context handoff
 // =====================================================
 // Produces a portable summary of a past Claude Code session that can be
-// injected as the first prompt to ANY AI agent (Codex, Gemini, Qwen, or
+// injected as the first prompt to ANY AI agent (Codex, Gemini, or
 // even back into Claude). The goal is to give the new agent enough context
 // to "pick up where the last one left off" without re-reading the full
 // JSONL — that file can be megabytes.

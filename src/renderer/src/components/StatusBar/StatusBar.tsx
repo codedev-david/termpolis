@@ -32,13 +32,9 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <i className="fa-solid fa-star text-xs"></i> What&apos;s New{appVersion ? ` in v${appVersion}` : ''}
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><strong>Vector memory (int8)</strong> — see what your embeddings actually cost the main thread, and store them as <code className="bg-[#3c3c3c] px-1 rounded">int8</code> for <strong>4&times; less RAM</strong> if it would help. It is willing to tell you it <em>won&apos;t</em> (<strong>Settings → Memory &amp; Learning</strong>)</li>
-              <li><strong>Fixed: your private GnuPG keyring was never flagged</strong> — <code className="bg-[#3c3c3c] px-1 rounded">secring.gpg</code> had been grouped into the watcher rule&apos;s own <em>exclusion</em> list, so the rule that exists to catch it could never fire</li>
-              <li><strong>Fixed: a <code className="bg-[#3c3c3c] px-1 rounded">NaN</code> limit returned the entire audit log</strong> — <code className="bg-[#3c3c3c] px-1 rounded">typeof NaN</code> is <code className="bg-[#3c3c3c] px-1 rounded">&apos;number&apos;</code>, and <code className="bg-[#3c3c3c] px-1 rounded">Math.min</code>/<code className="bg-[#3c3c3c] px-1 rounded">Math.max</code> <em>propagate</em> NaN rather than clamping it, so the 2,000-entry cap was defeated</li>
-              <li><strong>Fixed: Commit Shield claimed PROTECTED after the hooks were gone</strong> — repo paths were compared with a bare <code className="bg-[#3c3c3c] px-1 rounded">!==</code>, so installing via the folder picker and uninstalling via the working directory never matched</li>
-              <li><strong>Fixed: the Gemini strict-mode refusal never showed on Windows</strong> — it shelled out to <code className="bg-[#3c3c3c] px-1 rounded">printf</code>, which cmd.exe and PowerShell do not have. The <strong>block</strong> always worked; the <strong>message</strong> did not</li>
-              <li><strong>Fixed: the Memory dashboard over-counted vector recalls</strong> — a search that had fallen back to keyword was still booked as a <em>vector</em> recall</li>
-              <li><strong>Test coverage</strong> — 96.6% statements / 93.3% branches / 96.0% functions / 97.8% lines, with the CI gates raised to <strong>95/92/95/96</strong>. Every fix above was found by writing a test against code nobody had tested</li>
+              <li><strong>Reserved copy hotkeys</strong> — <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+C</code> copies, <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+K</code> copies <strong>for Teams/Slack</strong>, and <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Q</code> copies <strong>as a code block</strong>. These three are <em>always</em> pinned to their defaults — a custom keybinding can never steal them, so copy Just Works everywhere</li>
+              <li><strong>Teams/Slack paste that looks right</strong> — <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+K</code> formats your selection with emoji intact and <strong>no hard line breaks</strong>, so it lands as one clean message instead of a wall of broken lines</li>
+              <li><strong>Qwen Code removed</strong> — the agent lineup is now <strong>Claude Code, OpenAI Codex, and Gemini CLI</strong> across the sidebar, swarm, Second Opinion, and shared memory</li>
             </ul>
           </section>
 
@@ -96,7 +92,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong><i className="fa-solid fa-microphone text-[10px]"></i> Voice</strong> — dictate into the terminal. <strong>Tap</strong> to start, tap again to stop; or <strong>hold</strong> the push-to-talk hotkey and release to send. (Enable it in <strong>Settings → Voice</strong>.)</li>
               <li><strong><i className="fa-solid fa-clock-rotate-left text-[10px]"></i> Past AI Sessions</strong> — browse every past Claude Code session on this machine and resume any one in a new terminal at its original folder.</li>
               <li><strong>Model…</strong> — switch this Claude agent's model <strong>mid-session</strong> (Fable · Opus · Sonnet · Haiku). Takes effect on the next message; cheaper models save tokens. <em>(Claude terminals only.)</em></li>
-              <li><strong>Second Opinion…</strong> — have a <strong>different</strong> installed agent review the terminal's most recent answer. Pick <strong>Codex, Gemini, or Qwen</strong>, or a nested <strong>Claude</strong> model (e.g. run Opus but ask <strong>Fable</strong>). Its concise feedback is pasted back as an <strong>unsent block</strong> — send it to your agent or clear it. Only installed agents appear.</li>
+              <li><strong>Second Opinion…</strong> — have a <strong>different</strong> installed agent review the terminal's most recent answer. Pick <strong>Codex or Gemini</strong>, or a nested <strong>Claude</strong> model (e.g. run Opus but ask <strong>Fable</strong>). Its concise feedback is pasted back as an <strong>unsent block</strong> — send it to your agent or clear it. Only installed agents appear.</li>
             </ul>
           </section>
 
@@ -106,12 +102,12 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <i className="fa-solid fa-robot text-xs"></i> AI Agents
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><strong>AI Agents</strong> section in the sidebar — one-click launch for Claude Code, Codex, Gemini CLI, Qwen Code</li>
+              <li><strong>AI Agents</strong> section in the sidebar — one-click launch for Claude Code, Codex, Gemini CLI</li>
               <li><strong>+</strong> button to add custom AI agent profiles with name, command, shell, and color</li>
               <li><strong>Workflows</strong> button — pre-built multi-terminal layouts (Claude + Shell, Full Stack Dev, Code Review)</li>
-              <li><strong>Agent badge</strong> — the per-terminal status bar shows a colored badge for the agent you launched (Claude Code, Codex, Gemini, Qwen)</li>
+              <li><strong>Agent badge</strong> — the per-terminal status bar shows a colored badge for the agent you launched (Claude Code, Codex, Gemini)</li>
               <li><strong>Context gauge</strong> — the bottom bar shows a live <code>ctx %</code> pill of how full the focused agent's context window is (real token counts for Claude), so you can see compaction coming</li>
-              <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex", "Qwen Code") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
+              <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
             </ul>
           </section>
 
@@ -248,7 +244,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>Egress Guard</strong> <em>(on by default)</em> — flags agent network traffic to any host <strong>outside the known AI-provider allowlist</strong>, so a call to an unexpected endpoint surfaces instead of passing quietly.</li>
               <li><strong>Per-agent egress audit</strong> — every outbound network connection an agent makes is logged with host + count, viewable in <strong>Settings → AI Security → Egress Audit</strong>. JSONL log on disk for forensics.</li>
               <li><strong>Audit log</strong> <em>(on by default)</em> — security events are appended to <code className="bg-[#3c3c3c] px-1 rounded">ai-security-audit.jsonl</code> in the Termpolis user-data folder. Append-only, rotated, and wipeable from Settings.</li>
-              <li><strong>ToS drift watcher</strong> — flags Anthropic / OpenAI / Google / Alibaba ToS changes that affect how your prompts are stored or used for training.</li>
+              <li><strong>ToS drift watcher</strong> — flags Anthropic / OpenAI / Google ToS changes that affect how your prompts are stored or used for training.</li>
               <li><strong>Strict Mode (Gemini)</strong> — auto-detects when Gemini drops to the free OAuth tier (which trains on your prompts) and blocks calls until you switch to a paid API key. <em>(v1.25.6 — the refusal <strong>message</strong> never rendered on Windows: it was written to the terminal as a typed <code className="bg-[#3c3c3c] px-1 rounded">printf</code> command, which cmd.exe and PowerShell do not have, so you saw <code className="bg-[#3c3c3c] px-1 rounded">&apos;printf&apos; is not recognized</code> instead of the explanation. The <strong>block</strong> always worked; it now says why.)</em></li>
               <li><strong>Code-chunk + env-dump detection</strong> — extra heuristics that catch obfuscated secrets and wholesale environment dumps the regex scanner alone might miss.</li>
             </ul>
@@ -264,7 +260,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>Scanned before anything is installed</strong> — 41 rules over every file: outbound network calls, shell/<code className="bg-[#3c3c3c] px-1 rounded">eval</code> execution, credential and <code className="bg-[#3c3c3c] px-1 rounded">~/.ssh</code> access, obfuscated payloads, and <strong>prompt-injection hidden in the instructions</strong> (a poisoned <code className="bg-[#3c3c3c] px-1 rounded">SKILL.md</code> needs no dangerous API call — the prose <em>is</em> the exploit).</li>
               <li><strong>Red / yellow / green report</strong> — you see the exact file, line, and reason for every finding, then decide. <strong>Red can never be installed</strong>: if it can exfiltrate data or execute code, the button is gone, not just discouraged.</li>
               <li><strong>Approvals are hash-pinned</strong> — trust is keyed to the artifact's contents, so an update that quietly swaps in a credential stealer re-prompts you instead of inheriting the old yes.</li>
-              <li><strong>On approval it is wired in for you</strong> — into Claude, Codex, Gemini, and/or Qwen, whichever you pick.</li>
+              <li><strong>On approval it is wired in for you</strong> — into Claude, Codex, and/or Gemini, whichever you pick.</li>
               <li><strong>It is a static review aid, not a sandbox</strong> — Termpolis reads the artifact, it never runs it to find out what it does. A determined attacker can obfuscate past any static check, so treat a green report as "nothing obvious found", not as proof of safety.</li>
             </ul>
           </section>
@@ -275,7 +271,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <i className="fa-solid fa-brain text-xs"></i> Memory Auto-Recall
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><strong>Claude Code</strong> launches with the recall instruction in its <strong>system prompt</strong> (via <code className="bg-[#3c3c3c] px-1 rounded">--append-system-prompt-file</code>) — nothing is typed into the terminal at all. Codex, Gemini, and Qwen get a <strong>short one-line note</strong> pointing them at the <code className="bg-[#3c3c3c] px-1 rounded">memory_primer</code> MCP tool. Either way the agent loads your saved memory <strong>behind the scenes</strong>, with no wall of text</li>
+              <li><strong>Claude Code</strong> launches with the recall instruction in its <strong>system prompt</strong> (via <code className="bg-[#3c3c3c] px-1 rounded">--append-system-prompt-file</code>) — nothing is typed into the terminal at all. Codex and Gemini get a <strong>short one-line note</strong> pointing them at the <code className="bg-[#3c3c3c] px-1 rounded">memory_primer</code> MCP tool. Either way the agent loads your saved memory <strong>behind the scenes</strong>, with no wall of text</li>
               <li><strong>This repo/directory first</strong> — memories for the current project (past conversations leading) take the top slots; cross-project context follows, clearly labeled</li>
               <li><strong>Background only</strong> — the agent holds the memory as context and waits for your instruction; it will not start acting on past work by itself</li>
               <li><strong>Signal, not noise</strong> — recall is relevance-gated (with a floor so it never starves), de-duplicated, and search-first, so it injects the memories that matter without bloating the context window. Writes are content-addressed too: identical information is never stored — or embedded — twice, in the vector store or on disk.</li>
@@ -331,7 +327,6 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li className="pl-4 text-xs">Claude Code — strongest at refactoring and code review (default)</li>
               <li className="pl-4 text-xs">Codex — best at test writing (default)</li>
               <li className="pl-4 text-xs">Gemini CLI — leads in documentation and DevOps (default)</li>
-              <li className="pl-4 text-xs">Qwen Code — Alibaba Gemini-CLI fork, strong on bulk tasks (default)</li>
               <li className="pl-4 text-xs"><strong>Customize ratings</strong> in <strong>Settings &gt; Agent Capability Ratings</strong>. Defaults are estimates — adjust based on your experience. The conductor uses ratings as hints but makes its own judgment.</li>
               <li><strong>Live Launch Progress</strong> — the start modal tracks real conductor progress and closes automatically when the first task or message appears. It can take up to <strong>30 seconds</strong> for tasks to show up after launch.</li>
               <li><strong>Agents run in the background</strong> — swarm-spawned agent terminals are <em>hidden</em> from the sidebar. The conductor drives all work via MCP tools (creating files, running commands, coordinating agents) and posts progress to the dashboard. You never need to watch individual agent terminals.</li>
@@ -340,7 +335,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>Swarm Complete dialog</strong> — when all tasks finish, a summary dialog appears showing completed vs failed tasks with results. Includes "What next?" guidance for iterating.</li>
               <li><strong>Swarm vs Individual Agents</strong> — swarms are best for completing a well-defined task autonomously (all agents run hidden). For back-and-forth conversations or iterating on details, launch individual agents from the <strong>AI Agents</strong> section in the sidebar — those terminals appear in the sidebar and work exactly as before.</li>
               <li><strong>Agent Install Status</strong> — the AI Agents sidebar shows <i className="fa-solid fa-circle-check text-green-400 text-[10px]"></i> for installed agents and <i className="fa-solid fa-circle-xmark text-red-400 text-[10px]"></i> for missing ones. Click a missing agent for setup instructions.</li>
-              <li><strong>MCP-native swarm</strong> — every supported agent (Claude Code, Codex, Gemini, Qwen Code) talks to Termpolis via MCP. A bridge proxies non-MCP-native agents into the same protocol so the conductor's tool surface is uniform.</li>
+              <li><strong>MCP-native swarm</strong> — every supported agent (Claude Code, Codex, Gemini) talks to Termpolis via MCP. A bridge proxies non-MCP-native agents into the same protocol so the conductor's tool surface is uniform.</li>
             </ul>
           </section>
 
@@ -414,12 +409,13 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+A</kbd> Activity feed &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+B</kbd> Context pins &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+D</kbd> Redundancy &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Y</kbd> Efficiency</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+/</kbd> Shortcuts panel</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+C</kbd> Copy &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+K</kbd> Copy for Teams/Slack &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Q</kbd> Copy as code block <span className="text-[#8a8a8a]">— reserved defaults, never rebindable</span></li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Space</kbd> Keyboard select / copy mode (arrows move · Shift extends · Ctrl=word · a=all · Enter copies · Esc exits)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Alt+Shift+Click</kbd> Anchor select — click a start, scroll as far as you like, click the end: everything between is selected and copied (any plain click cancels)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+L</kbd> Voice dictation — tap to start/stop, or hold to talk (enable first in Settings → Voice)</li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+1–4</kbd> Launch first four AI agents (Claude / Codex / Gemini / Qwen)</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+1–3</kbd> Launch first three AI agents (Claude / Codex / Gemini)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Win+Shift+T</kbd> New terminal (global, works when minimized)</li>
-              <li>All customizable — plus add your own snippet macros — in <strong>Settings → Keybindings</strong></li>
+              <li>Everything except those three reserved copy shortcuts is customizable — plus add your own snippet macros — in <strong>Settings → Keybindings</strong></li>
             </ul>
           </section>
 
@@ -433,7 +429,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               <li><strong>Turn it on first</strong> in <strong>Settings → Voice</strong> — it's off by default — then <strong>Connect Groq</strong> (paste a free Groq API key). The key is validated and stored encrypted in your OS keychain; it never touches settings or logs.</li>
               <li><strong>Tap <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Shift+L</kbd> to start and tap again to stop — or hold it to talk and release to send.</strong> Both work on the same key by default (tap-or-hold). Pure hold, tap-to-toggle, and tap-then-send-key modes are selectable under <strong>Activation</strong>, and both the hotkey and the send key are rebindable.</li>
               <li><strong>Wait for the "Listening…" badge, then speak normally.</strong> Groq's Whisper model is tuned for <strong>English</strong>. If the mic catches no speech you'll see <strong>"No speech detected"</strong> — hold the key, speak, and release again (Termpolis never injects a guessed phrase, and never sends silence to Groq).</li>
-              <li><strong>In an AI-agent terminal</strong> (Claude · Codex · Gemini · Qwen) your words are <strong>sent straight to the agent as a prompt</strong> — it absorbs minor mis-hearings, so just talk naturally.</li>
+              <li><strong>In an AI-agent terminal</strong> (Claude · Codex · Gemini) your words are <strong>sent straight to the agent as a prompt</strong> — it absorbs minor mis-hearings, so just talk naturally.</li>
               <li><strong>In a plain shell</strong> the transcript is <em>inserted but never run automatically</em> — you review it and press <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> yourself (a mis-heard command is never executed for you).</li>
               <li><strong>When dictation ends the caret returns to the terminal</strong> — keep typing or start another dictation right away, no clicking back in.</li>
               <li><strong>Privacy</strong> — only the few seconds you dictate are sent, and only to Groq. By default Groq does not train on or retain it; for the hardened setup, enable <strong>Zero Data Retention</strong> in your Groq console (the Connect dialog links you there). Free tier covers everyday use; paid is ~$0.04/hr of audio.</li>

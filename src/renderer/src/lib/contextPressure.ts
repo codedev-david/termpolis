@@ -42,8 +42,6 @@ const MODEL_WINDOWS: Array<{ match: RegExp; tokens: number; label: string }> = [
   { match: /gpt-4/i, tokens: 8_192, label: 'GPT-4' },
   { match: /gemini-1\.5|gemini-2/i, tokens: 1_000_000, label: 'Gemini 1M' },
   { match: /gemini/i, tokens: 128_000, label: 'Gemini' },
-  { match: /qwen.*coder|qwen2\.5-coder/i, tokens: 32_768, label: 'Qwen Coder' },
-  { match: /qwen/i, tokens: 32_768, label: 'Qwen' },
 ]
 
 const FALLBACK_WINDOW = 128_000

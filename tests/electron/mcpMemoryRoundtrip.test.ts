@@ -31,7 +31,7 @@ afterEach(() => {
 })
 
 // The memory_* tools only touch the memory handlers; one server instance backs
-// all four agents (Claude/Codex/Gemini/Qwen), so a write by one is visible to
+// all three agents (Claude/Codex/Gemini), so a write by one is visible to
 // every other — that's what "shared brain" means, proven through the exact
 // dispatch path the agents use.
 const handlers = (): McpToolHandlers => ({ memoryWrite, memorySearch, memoryList } as unknown as McpToolHandlers)

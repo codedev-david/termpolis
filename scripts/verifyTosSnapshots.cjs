@@ -63,13 +63,6 @@ const PROVIDERS = [
     // (Maps/Grounding) plus "improve our products" (the actual data-use clause).
     expectKeywords: ['train', 'paid', 'free', 'gemini'],
   },
-  {
-    id: 'alibaba-qwen',
-    label: 'Alibaba / Qwen Model Studio',
-    url: 'https://www.alibabacloud.com/help/en/model-studio/legal-agreement',
-    expectKeywords: ['training', 'service', 'data'],
-    manualReview: true,
-  },
 ]
 
 const SNAPSHOT_DIR = path.join(__dirname, '..', 'docs', 'security-snapshots')

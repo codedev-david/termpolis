@@ -108,4 +108,33 @@ describe('CustomKeybindings', () => {
     fireEvent.click(checkbox)
     expect(updateCustomKeybinding).toHaveBeenCalledWith('c1', { runOnSend: false })
   })
+
+  // The three reserved copy combos (Ctrl+Shift+C / K / Q) can never be claimed by
+  // a custom shortcut — not through the Add form, not by re-recording an existing
+  // row. Copy must always win. (v1.30.3)
+  it('does not add a custom shortcut bound to a reserved copy combo', () => {
+    render(<Harness />)
+    fireEvent.change(screen.getByPlaceholderText(/Label/i), { target: { value: 'Steal Copy' } })
+    fireEvent.change(screen.getByPlaceholderText(/Text to send/i), { target: { value: 'nope' } })
+    fireEvent.click(screen.getByText('Set combo'))
+    // Ctrl+Shift+C carries a modifier but is the reserved Copy hotkey — refuse it.
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, shiftKey: true })) })
+    fireEvent.click(screen.getByText('Add Shortcut'))
+    expect(addCustomKeybinding).not.toHaveBeenCalled()
+  })
+
+  it('warns when the drafted combo is a reserved copy hotkey', () => {
+    render(<Harness />)
+    fireEvent.click(screen.getByText('Set combo'))
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', ctrlKey: true, shiftKey: true })) })
+    expect(screen.getByText(/reserved for copy/i)).toBeInTheDocument()
+  })
+
+  it('refuses to overwrite an existing custom shortcut with a reserved combo', () => {
+    mockCustom = [{ id: 'c1', label: 'Git Status', combo: 'Ctrl+Alt+G', text: 'git status', runOnSend: true }]
+    render(<Harness />)
+    fireEvent.click(screen.getByText('Ctrl+Alt+G'))
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Q', ctrlKey: true, shiftKey: true })) })
+    expect(updateCustomKeybinding).not.toHaveBeenCalled()
+  })
 })

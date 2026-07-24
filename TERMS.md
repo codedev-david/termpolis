@@ -27,7 +27,7 @@ the `NOTICE` file. In particular:
 ## 2. Third-party tools
 
 Termpolis is a frame around tools you already run — shells, AI coding agents
-(Claude Code, Codex, Gemini CLI, Qwen Code), compilers, git, your own scripts. Your
+(Claude Code, Codex, Gemini CLI), compilers, git, your own scripts. Your
 use of those tools is governed by their own licenses and terms of service,
 not these terms. Termpolis does not endorse or make guarantees about any
 third-party tool.
@@ -75,7 +75,7 @@ particular:
   summaries of public provider Terms of Service as of the build date.
   Provider terms can change without notice. Termpolis does not, and cannot,
   guarantee that any third-party AI provider (Anthropic, OpenAI, Google,
-  Alibaba/DashScope, Ollama, or any future provider) will honor the data-
+  Ollama, or any future provider) will honor the data-
   handling commitments described. **You must verify provider terms via the
   links provided before transmitting confidential data.**
 - The **redaction scanner** uses regular expressions targeted at well-shaped
@@ -105,7 +105,7 @@ above.
 Privacy practices are documented separately in `PRIVACY.md`. In short:
 Termpolis itself does not transmit your data anywhere unless you opt in to
 crash reporting. AI agents you launch from Termpolis (Claude Code, Codex,
-Gemini CLI, Qwen Code) communicate directly with their respective providers
+Gemini CLI) communicate directly with their respective providers
 under those providers' own privacy terms — Termpolis is the local terminal
 host, not a privacy shield over those agents.
 

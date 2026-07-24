@@ -678,7 +678,7 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
     }
   }
 
-  // MCP utility ping — empty result per spec. Used by Qwen Code's
+  // MCP utility ping — empty result per spec. Used by an agent's
   // `mcp list` connection check; without this it reports "Disconnected".
   if (method === 'ping') {
     return { jsonrpc: '2.0', result: {}, id }

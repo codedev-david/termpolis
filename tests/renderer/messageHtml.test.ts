@@ -85,7 +85,7 @@ describe('formatAsMessageHtmlFromTerm', () => {
 
 // =====================================================
 // reflowForMessage — un-wrap an AGENT'S own word-wrapping.
-// Agent TUIs (Claude Code, Codex, Gemini, Qwen — all Ink-based) wrap their
+// Agent TUIs (Claude Code, Codex, Gemini — all Ink-based) wrap their
 // output to the pane width themselves, committing each visual line with a real
 // newline, so xterm never flags the continuation `isWrapped` and the extractor
 // can't rejoin them. Pasting into a Teams/Slack MESSAGE then shows a hard break

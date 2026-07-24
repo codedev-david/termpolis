@@ -50,10 +50,6 @@ const ZONE: Record<string, ZoneEntry> = {
   'googleapis.com': { v4: ['142.250.72.235'] },
   'google.com': { v4: ['142.250.72.236'] },
   'gstatic.com': { v4: ['142.250.72.237'] },
-  // qwen
-  'dashscope.aliyuncs.com': { v4: ['47.88.55.10'] },
-  'aliyuncs.com': { v4: ['47.88.55.11'] },
-  'modelscope.cn': { v4: ['47.88.55.12'] },
   // infra
   'registry.npmjs.org': { v4: ['104.16.0.35'] },
   'npmjs.org': { v4: ['104.16.0.36'] },
@@ -113,7 +109,6 @@ describe('egressAttribute — refreshAllowedIps resolves the whole allowlist', (
     expect(map.get('2607:6bc0::10')).toBe('anthropic') // api.anthropic.com AAAA
     expect(map.get('162.159.140.245')).toBe('openai')
     expect(map.get('142.250.72.234')).toBe('google')
-    expect(map.get('47.88.55.10')).toBe('qwen')
     expect(map.get('140.82.121.4')).toBe('infra')
   })
 
@@ -226,7 +221,6 @@ describe('egressAttribute — a DNS failure on one host never aborts the refresh
     expect(map.get('2607:6bc0::10')).toBe('anthropic')   // its AAAA still resolved
     expect(map.get('160.79.104.11')).toBe('anthropic')   // sibling host in the same rule
     expect(map.get('140.82.121.4')).toBe('infra')        // an unrelated rule
-    expect(map.get('47.88.55.10')).toBe('qwen')
   })
 
   it('every AAAA lookup failing (v4-only network) still yields a full v4 map', async () => {
@@ -245,7 +239,7 @@ describe('egressAttribute — a DNS failure on one host never aborts the refresh
     const map = await refreshAllowedIps(d)
     // Every host in the allowlist has a fixture, so a full map came back despite
     // most hosts having NO AAAA record (rejections).
-    expect(map.size).toBeGreaterThanOrEqual(20)
+    expect(map.size).toBeGreaterThanOrEqual(ALL_HOSTS.length)
   })
 
   it('total DNS failure with no prior cache => empty map, and the failure is NOT cached', async () => {
@@ -426,7 +420,6 @@ const allowedMap = () => new Map<string, string>([
   ['2607:6bc0::10', 'anthropic'],
   ['162.159.140.245', 'openai'],
   ['142.250.72.234', 'google'],
-  ['47.88.55.10', 'qwen'],
   ['140.82.121.4', 'infra'],
 ])
 
@@ -445,10 +438,10 @@ describe('egressAttribute — an IP resolved from an allowlisted host is ALLOWED
 
   it('attributes each provider IP to its own rule', () => {
     const r = attributeEgress(
-      ['160.79.104.10', '162.159.140.245', '142.250.72.234', '47.88.55.10', '140.82.121.4'],
+      ['160.79.104.10', '162.159.140.245', '142.250.72.234', '140.82.121.4'],
       allowedMap(),
     )
-    expect(r.results.map((x) => x.matchedRule)).toEqual(['anthropic', 'openai', 'google', 'qwen', 'infra'])
+    expect(r.results.map((x) => x.matchedRule)).toEqual(['anthropic', 'openai', 'google', 'infra'])
     expect(r.results.every((x) => x.verdict === 'allowed')).toBe(true)
     expect(r.clean).toBe(true)
   })
@@ -677,7 +670,7 @@ describe('egressAttribute — never throws at the caller', () => {
 // ---------------------------------------------------------------------------
 
 describe('egressAttribute — end-to-end against a realistic poll', () => {
-  it('an ordinary four-agent swarm poll (provider IPs + loopback) is CLEAN', async () => {
+  it('an ordinary three-agent swarm poll (provider IPs + loopback) is CLEAN', async () => {
     const allowed = await refreshAllowedIps(makeDeps())
     const observed = [
       '160.79.104.10',      // claude → api.anthropic.com
@@ -685,7 +678,6 @@ describe('egressAttribute — end-to-end against a realistic poll', () => {
       '34.120.195.249',     // claude → sentry.io
       '162.159.140.245',    // codex → api.openai.com
       '142.250.72.234',     // gemini → generativelanguage.googleapis.com
-      '47.88.55.10',        // qwen → dashscope.aliyuncs.com
       '104.16.0.35',        // npm install
       '140.82.121.4',       // git push
       '127.0.0.1',          // local dev server
@@ -694,7 +686,7 @@ describe('egressAttribute — end-to-end against a realistic poll', () => {
     const r = attributeEgress(observed, allowed)
     expect(r.clean).toBe(true)
     expect(r.violations).toEqual([])
-    expect(r.summary).toBe('No egress violations — 8 allowed, 2 local')
+    expect(r.summary).toBe('No egress violations — 7 allowed, 2 local')
   })
 
   it('the exfil case: one unexplained IP among ordinary provider traffic', async () => {

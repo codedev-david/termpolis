@@ -24,7 +24,7 @@ import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
-import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget } from '../../lib/keybindings'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, RESERVED_COPY_ACTIONS, KEYBINDING_LABELS, DEFAULT_KEYBINDINGS } from '../../lib/keybindings'
 import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, cellFromOffsets, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
@@ -383,7 +383,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     const parsed = parseSecondOpinion(value)
     if (!parsed) return
     const label = parsed.model ? `Claude ${parsed.model}`
-      : parsed.agent === 'codex' ? 'OpenAI Codex' : parsed.agent === 'gemini' ? 'Gemini' : parsed.agent === 'qwen' ? 'Qwen' : parsed.agent
+      : parsed.agent === 'codex' ? 'OpenAI Codex' : parsed.agent === 'gemini' ? 'Gemini' : parsed.agent
     const bp = (t: string): string => `\x1b[200~${t.replace(/\r?\n/g, '\r')}\x1b[201~`
     setSecondOpinionBusy(true)
     try {
@@ -907,7 +907,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // shortcut below that returns false.
 
       // Shift+Enter → newline-without-submit. Two flavors:
-      //   AI agents (Claude/Codex/Gemini/Qwen) read Esc+Enter (\x1b\r) as the
+      //   AI agents (Claude/Codex/Gemini) read Esc+Enter (\x1b\r) as the
       //     multi-line sequence — sends a literal LF inside the input box
       //     without firing the submit keybind.
       //   Plain shells (bash/zsh/fish on git-bash, mintty, etc.) treat
@@ -923,6 +923,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       if (matchesKeybinding(e, kb.copyAsCodeBlock)) {
         e.preventDefault()
         if (term.getSelection()) window.termpolis.clipboardWriteRich(formatAsCodeBlockFromTerm(term), formatAsCodeBlockHtmlFromTerm(term)).catch(() => {})
+        return false
+      }
+      // Copy for Teams/Slack — rich message format (emojis, tight line breaks, NOT a code box)
+      if (matchesKeybinding(e, kb.copyForMessage)) {
+        e.preventDefault()
+        if (term.getSelection()) window.termpolis.clipboardWriteRich(formatAsMessagePlainTextFromTerm(term), formatAsMessageHtmlFromTerm(term)).catch(() => {})
         return false
       }
       // Copy (explicit force-copy form)
@@ -1511,76 +1517,24 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               visibility: menuPos ? 'visible' : 'hidden',
             }}
           >
-            <button
-              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
-              disabled={!copySnapshotRef.current}
-              onClick={() => {
-                const snap = copySnapshotRef.current
-                if (snap) window.termpolis.clipboardWriteText(snap.selection).catch(() => {})
-                setContextMenu({ visible: false, x: 0, y: 0 })
-              }}
-            >
-              Copy<span className="float-right text-[#999]">Ctrl+Shift+C</span>
-            </button>
-            <button
-              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
-              disabled={!copySnapshotRef.current}
-              onClick={() => {
-                const snap = copySnapshotRef.current
-                if (snap) {
-                  window.termpolis.clipboardWriteRich(snap.messagePlain, snap.messageHtml).catch(() => {})
-                }
-                setContextMenu({ visible: false, x: 0, y: 0 })
-              }}
-              title="Copy for pasting into a Teams or Slack message — emojis, tight line breaks, and spacing preserved. Not a code box."
-            >
-              Copy for Teams/Slack
-            </button>
-            <button
-              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
-              disabled={!copySnapshotRef.current}
-              onClick={() => {
-                const snap = copySnapshotRef.current
-                if (snap) {
-                  window.termpolis.clipboardWriteRich(snap.codeBlockMd, snap.codeBlockHtml).catch(() => {})
-                }
-                setContextMenu({ visible: false, x: 0, y: 0 })
-              }}
-              title="Strip ANSI, recover logical newlines from the buffer, write both rich-text (HTML) and markdown forms. Pastes as a real code box in Slack, Teams, Outlook, GitHub, Discord."
-            >
-              Copy as Code Block<span className="float-right text-[#999]">Ctrl+Shift+M</span>
-            </button>
-            <button
-              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
-              disabled={!copySnapshotRef.current}
-              onClick={() => {
-                const snap = copySnapshotRef.current
-                if (snap) {
-                  window.termpolis.clipboardWriteText(snap.plainText).catch(() => {})
-                }
-                setContextMenu({ visible: false, x: 0, y: 0 })
-              }}
-              title="Strip ANSI colors and recover logical newlines from the buffer. No markdown fence."
-            >
-              Copy as Plain Text
-            </button>
-            <button
-              className={`w-full text-left px-3 py-1.5 text-xs ${copySnapshotRef.current ? 'text-[#d4d4d4] hover:bg-[#094771] cursor-pointer' : 'text-[#666] cursor-default'}`}
-              disabled={!copySnapshotRef.current}
-              onClick={() => {
-                const snap = copySnapshotRef.current
-                if (snap) {
-                  const cmd = lastCommandRef.current
-                  const body = snap.codeBlockMd
-                  const withCmd = cmd ? '`$ ' + cmd + '`\n' + body : body
-                  window.termpolis.clipboardWriteText(withCmd).catch(() => {})
-                }
-                setContextMenu({ visible: false, x: 0, y: 0 })
-              }}
-              title="Prepend the last command that produced this output."
-            >
-              Copy with Command
-            </button>
+            {/* Copy is keyboard-driven now: a right-click can't reliably carry the
+                xterm selection, so instead of greyed Copy buttons we surface the three
+                reserved hotkeys here for discoverability. These rows are informational —
+                never clickable, never greyed. */}
+            <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[#8a8a8a] select-none">
+              Copy shortcuts
+            </div>
+            {RESERVED_COPY_ACTIONS.map(action => (
+              <div
+                key={action}
+                data-testid={`copy-hint-${action}`}
+                className="w-full px-3 py-1 text-xs text-[#b0b0b0] flex items-center justify-between gap-6 select-none cursor-default"
+              >
+                <span>{KEYBINDING_LABELS[action]}</span>
+                <span className="text-[#8a8a8a]">{DEFAULT_KEYBINDINGS[action]}</span>
+              </div>
+            ))}
+            <div className="border-t border-[#454545] my-1"></div>
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
               onClick={() => {

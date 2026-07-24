@@ -4,7 +4,7 @@ cask "termpolis" do
 
   url "https://github.com/codedev-david/termpolis/releases/download/v#{version}/Termpolis-#{version}.dmg"
   name "Termpolis"
-  desc "Secure AI-Assisted Development — local-first multi-agent terminal (Claude, Codex, Gemini, Qwen)"
+  desc "Secure AI-Assisted Development — local-first multi-agent terminal (Claude, Codex, Gemini)"
   homepage "https://github.com/codedev-david/termpolis"
 
   livecheck do

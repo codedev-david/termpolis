@@ -1256,7 +1256,7 @@ describe('TerminalPane', () => {
   // Second Opinion dropdown + review pipeline
   // =====================================================
   describe('Second Opinion', () => {
-    const INSTALLED = { claude: true, codex: true, gemini: true, agy: true, 'qwen-code': true }
+    const INSTALLED = { claude: true, codex: true, gemini: true, agy: true }
     const mockSecondOpinion = vi.fn(async () => ({ success: true, data: { feedback: 'Consider quicksort instead.' } }))
 
     function withAgents(installed: Record<string, boolean> = INSTALLED, agentCommand: string | undefined = 'claude --dangerously-skip-permissions') {
@@ -1287,7 +1287,7 @@ describe('TerminalPane', () => {
       expect(group).toBeTruthy()
       expect(Array.from(group!.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Fable', 'Opus', 'Sonnet', 'Haiku'])
       const topValues = Array.from(picker.children).filter((c) => c.tagName === 'OPTION').map((o) => (o as HTMLOptionElement).value)
-      expect(topValues).toEqual(expect.arrayContaining(['codex', 'gemini', 'qwen']))
+      expect(topValues).toEqual(expect.arrayContaining(['codex', 'gemini']))
     })
 
     it('does not crash when agent detection fails (menus stay hidden)', async () => {
@@ -1299,7 +1299,7 @@ describe('TerminalPane', () => {
     })
 
     it('is hidden entirely when no agents are installed', async () => {
-      withAgents({ claude: false, codex: false, gemini: false, 'qwen-code': false })
+      withAgents({ claude: false, codex: false, gemini: false })
       render(<TerminalPane {...defaultProps} />)
       await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
       expect(screen.queryByTestId('second-opinion-picker')).not.toBeInTheDocument()
@@ -1357,7 +1357,7 @@ describe('TerminalPane', () => {
     })
 
     it('gates the models picker when the terminal is Claude but Claude is not installed', async () => {
-      withAgents({ claude: false, codex: true, gemini: false, 'qwen-code': false }, 'claude --dangerously-skip-permissions')
+      withAgents({ claude: false, codex: true, gemini: false }, 'claude --dangerously-skip-permissions')
       render(<TerminalPane {...defaultProps} />)
       const mp = await screen.findByTestId('model-picker')
       await waitFor(() => expect(mp.textContent || '').toMatch(/needs Claude/))
@@ -1877,6 +1877,70 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 5d. Reserved copy hotkeys — always-on, selection-gated.
+  //   Ctrl+Shift+C = plain · Ctrl+Shift+K = Teams/Slack message · Ctrl+Shift+Q = code block.
+  // =====================================================
+  describe('reserved copy hotkeys (Ctrl+Shift+C / K / Q)', () => {
+    it('Ctrl+Shift+C copies the raw selection as plain text', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('plain-sel')
+      const result = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'C' }))
+      expect(result).toBe(false)
+      expect(mockClipboardWriteText).toHaveBeenCalledWith('plain-sel')
+    })
+
+    it('Ctrl+Shift+K copies the Teams/Slack message format (plain + unboxed HTML, never a code box)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('msg-sel')
+      const result = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'K' }))
+      expect(result).toBe(false)
+      // text/plain for Slack, unboxed monospace HTML for Teams — and crucially NOT a code box.
+      expect(mockClipboardWriteRich).toHaveBeenCalledWith('msg-sel', '<span style="font-family:monospace">msg-sel</span>')
+      const lastCall = mockClipboardWriteRich.mock.calls[mockClipboardWriteRich.mock.calls.length - 1]
+      expect(lastCall[1]).not.toContain('<pre')
+      expect(lastCall[1]).not.toContain('<code')
+    })
+
+    it('Ctrl+Shift+Q copies as a code block (rich)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('code-sel')
+      const result = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'Q' }))
+      expect(result).toBe(false)
+      expect(mockClipboardWriteRich).toHaveBeenCalled()
+    })
+
+    it('all three copy hotkeys stay consumed but write nothing without a selection', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const c = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'C' }))
+      const k = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'K' }))
+      const q = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'Q' }))
+      expect([c, k, q]).toEqual([false, false, false])
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
+    })
+
+    it('a custom macro on Ctrl+Shift+K can never shadow the reserved Teams/Slack hotkey', () => {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [{ id: 'rogue', label: 'Rogue', combo: 'Ctrl+Shift+K', text: 'rm -rf /', runOnSend: true }],
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      mocks.mockTerminal.getSelection.mockReturnValue('msg-sel')
+      const result = mockKeyHandlerCb?.(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, key: 'K' }))
+      expect(result).toBe(false)
+      expect(mockClipboardWriteRich).toHaveBeenCalled()
+      // The rogue macro must NOT have run.
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'rm -rf /\r')
+    })
+  })
+
+  // =====================================================
   // 5d. App-level shortcuts (launch slots + custom macros) are intercepted in
   // the xterm key handler so the terminal never gets a stray control byte
   // (Ctrl+3 -> ESC, Ctrl+4 -> FS) and the action still fires.
@@ -1957,6 +2021,59 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 6b. Copy is keyboard-only now — the context menu shows the three reserved
+  // copy hotkeys as non-interactive hint rows (a right-click can't reliably
+  // carry the xterm selection, so the old greyed Copy buttons were removed).
+  // =====================================================
+  describe('copy hotkey hints (context menu)', () => {
+    const HINTS: Array<[string, string, string]> = [
+      ['copy-hint-copy', 'Copy', 'Ctrl+Shift+C'],
+      ['copy-hint-copyForMessage', 'Copy for Teams/Slack', 'Ctrl+Shift+K'],
+      ['copy-hint-copyAsCodeBlock', 'Copy as Code Block', 'Ctrl+Shift+Q'],
+    ]
+
+    it('shows the three reserved copy hotkeys as info rows, even with no selection', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      for (const [testid, label, combo] of HINTS) {
+        const row = screen.getByTestId(testid)
+        expect(row).toHaveTextContent(label)
+        expect(row).toHaveTextContent(combo)
+      }
+    })
+
+    it('the copy hint rows are not clickable — clicking one copies nothing', () => {
+      mocks.mockTerminal.getSelection.mockReturnValue('has-selection')
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      // Capture all rows while the menu is open, then click each: a real click on a
+      // non-interactive hint must never reach the clipboard.
+      const rows = HINTS.map(([testid]) => screen.getByTestId(testid))
+      rows.forEach(row => fireEvent.click(row))
+      expect(mockClipboardWriteText).not.toHaveBeenCalled()
+      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
+    })
+
+    it('the copy hint rows are never rendered as <button> elements', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      for (const [testid] of HINTS) expect(screen.getByTestId(testid).tagName).not.toBe('BUTTON')
+    })
+
+    it('no longer offers the removed Copy as Plain Text / Copy with Command menu items', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
+      expect(screen.queryByText('Copy as Plain Text')).toBeNull()
+      expect(screen.queryByText('Copy with Command')).toBeNull()
+    })
+  })
+
+  // =====================================================
   // 7. Context menu
   // =====================================================
   describe('context menu', () => {
@@ -2010,53 +2127,36 @@ describe('TerminalPane', () => {
       }
     })
 
-    it('clicking Copy in context menu copies selection', () => {
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      mocks.mockTerminal.getSelection.mockReturnValue('copied-text')
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy'))
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('copied-text')
-    })
-
     // Regression: "right-click deselects the text and it won't copy." In the real
     // app, xterm only guarantees the selection through the right-click itself;
     // focus changes / re-renders while the menu is open can clear xterm's selection
     // model, so reading getSelection() lazily at click time returns ''. The menu
     // must SNAPSHOT the selection at right-click. We simulate the clear by changing
     // the mock's return value to '' after the menu opens.
-    it('Copy uses the selection snapshotted at right-click even after xterm clears it', () => {
+    // Copy is keyboard-only now, but the same right-click snapshot still powers
+    // Pin Selection, so the "selection survives the menu opening" guard lives on here.
+    it('Pin Selection uses the selection snapshotted at right-click even after xterm clears it', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       mocks.mockTerminal.getSelection.mockReturnValue('snapshot-text')
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
       mocks.mockTerminal.getSelection.mockReturnValue('') // selection lost while menu open
-      fireEvent.click(screen.getByText('Copy'))
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('snapshot-text')
-    })
-
-    it('Copy as Code Block uses the right-click snapshot even after the selection clears', () => {
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      mocks.mockTerminal.getSelection.mockReturnValue('snap-code')
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
-      mocks.mockTerminal.getSelection.mockReturnValue('')
-      fireEvent.click(screen.getByText('Copy as Code Block'))
-      expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nsnap-code\n```', '<pre><code>snap-code</code></pre>')
+      fireEvent.click(screen.getByText('Pin Selection'))
+      expect(screen.getByText('snapshot-text')).toBeInTheDocument()
     })
 
     // David's exact symptom: "the selection disappears as soon as I right-click",
     // so getSelection() is already '' by the time the contextmenu fires. The
     // right-button mousedown (capture phase) must have snapshotted it first.
-    it('Copy still works when the selection vanishes the instant you right-click', () => {
+    it('Pin Selection still works when the selection vanishes the instant you right-click', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       mocks.mockTerminal.getSelection.mockReturnValue('right-click-text')
       fireEvent.mouseDown(terminalContainer, { button: 2 }) // capture-phase snapshot
       mocks.mockTerminal.getSelection.mockReturnValue('')    // selection gone on right-click
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200 })
-      fireEvent.click(screen.getByText('Copy'))
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('right-click-text')
+      fireEvent.click(screen.getByText('Pin Selection'))
+      expect(screen.getByText('right-click-text')).toBeInTheDocument()
     })
 
     it('clicking Paste in context menu pastes from clipboard', async () => {
@@ -2885,15 +2985,15 @@ describe('TerminalPane', () => {
   // =====================================================
   // 25. Slack/Teams copy submenu (v1.11.43)
   // =====================================================
-  describe('copy as code block / plain text / image', () => {
-    it('Ctrl+Shift+M with selection copies fenced output via native clipboard (rich)', () => {
+  describe('copy as code block (Ctrl+Shift+Q)', () => {
+    it('Ctrl+Shift+Q with selection copies fenced output via native clipboard (rich)', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('hello')
 
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
         ctrlKey: true,
         shiftKey: true,
-        key: 'M',
+        key: 'Q',
       })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
@@ -2902,123 +3002,16 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nhello\n```', '<pre><code>hello</code></pre>')
     })
 
-    it('Ctrl+Shift+M with no selection does not write to clipboard', () => {
+    it('Ctrl+Shift+Q with no selection does not write to clipboard', () => {
       mocks.mockTerminal.getSelection.mockReturnValue('')
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
         ctrlKey: true,
         shiftKey: true,
-        key: 'M',
+        key: 'Q',
       })
       mockKeyHandlerCb?.(event)
       expect(mockClipboardWriteRich).not.toHaveBeenCalled()
-    })
-
-    it('Copy as Code Block submenu item formats and copies', async () => {
-      mocks.mockTerminal.getSelection.mockReturnValue('selected')
-
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy as Code Block'))
-
-      // Menu copy goes through the native Electron clipboard (focus-immune) with
-      // BOTH the markdown fence and the rich HTML form.
-      expect(mockClipboardWriteRich).toHaveBeenCalledWith('```text\nselected\n```', '<pre><code>selected</code></pre>')
-    })
-
-    it('Copy as Code Block with empty selection does nothing', async () => {
-      mocks.mockTerminal.getSelection.mockReturnValue('')
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy as Code Block'))
-      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
-    })
-
-    it('Copy for Teams/Slack copies the message form (plain + unboxed HTML, never a code box)', () => {
-      mocks.mockTerminal.getSelection.mockReturnValue('selected')
-
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy for Teams/Slack'))
-
-      // text/plain for Slack, unboxed HTML for Teams — and crucially NOT a code box.
-      expect(mockClipboardWriteRich).toHaveBeenCalledWith('selected', '<span style="font-family:monospace">selected</span>')
-      const lastCall = mockClipboardWriteRich.mock.calls[mockClipboardWriteRich.mock.calls.length - 1]
-      expect(lastCall[1]).not.toContain('<pre')
-      expect(lastCall[1]).not.toContain('<code')
-    })
-
-    it('Copy for Teams/Slack with empty selection does nothing', () => {
-      mocks.mockTerminal.getSelection.mockReturnValue('')
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy for Teams/Slack'))
-      expect(mockClipboardWriteRich).not.toHaveBeenCalled()
-    })
-
-    it('Copy as Plain Text strips ANSI and copies', async () => {
-      const { formatAsPlainTextFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsPlainTextFromTerm as any).mockReturnValue('plain output')
-      mocks.mockTerminal.getSelection.mockReturnValue('plain output')
-
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy as Plain Text'))
-
-      expect(formatAsPlainTextFromTerm).toHaveBeenCalledWith(mocks.mockTerminal)
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('plain output')
-    })
-
-    it('Copy as Plain Text with empty selection does nothing', () => {
-      mocks.mockTerminal.getSelection.mockReturnValue('')
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy as Plain Text'))
-      expect(mockClipboardWriteText).not.toHaveBeenCalled()
-    })
-
-    it('Copy with Command prepends last command and copies fence', async () => {
-      const { formatAsCodeBlockFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlockFromTerm as any).mockReturnValue('```text\nresult\n```')
-      mocks.mockTerminal.getSelection.mockReturnValue('result')
-
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      // Type a command and submit so lastCommandRef captures it
-      act(() => { mockOnDataCb?.('l'); mockOnDataCb?.('s'); mockOnDataCb?.('\r') })
-
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy with Command'))
-
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('`$ ls`\n```text\nresult\n```')
-    })
-
-    it('Copy with Command falls back to plain fence when no last command', async () => {
-      const { formatAsCodeBlockFromTerm } = await import('../../src/renderer/src/lib/exportTerminal')
-      ;(formatAsCodeBlockFromTerm as any).mockReturnValue('```text\nresult\n```')
-      mocks.mockTerminal.getSelection.mockReturnValue('result')
-
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy with Command'))
-
-      expect(mockClipboardWriteText).toHaveBeenCalledWith('```text\nresult\n```')
-    })
-
-    it('Copy with Command with empty selection does nothing', () => {
-      mocks.mockTerminal.getSelection.mockReturnValue('')
-      const { container } = render(<TerminalPane {...defaultProps} />)
-      const terminalContainer = container.querySelector('.flex-1.relative')!
-      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
-      fireEvent.click(screen.getByText('Copy with Command'))
-      expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
   })
 

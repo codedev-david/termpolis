@@ -973,7 +973,6 @@ describe('agents:detect', () => {
     expect(result.data).toHaveProperty('claude')
     expect(result.data).toHaveProperty('codex')
     expect(result.data).toHaveProperty('gemini')
-    expect(result.data).toHaveProperty('qwen-code')
   })
 
   it('detects agents when commands exist on PATH', async () => {
@@ -986,7 +985,6 @@ describe('agents:detect', () => {
     expect(result.data.claude).toBe(true)
     expect(result.data.codex).toBe(true)
     expect(result.data.gemini).toBe(true)
-    expect(result.data['qwen-code']).toBe(true)
   })
 })
 
@@ -1843,7 +1841,6 @@ describe('findAgentInstalled fallback paths', () => {
     expect(typeof result.data.claude).toBe('boolean')
     expect(typeof result.data.codex).toBe('boolean')
     expect(typeof result.data.gemini).toBe('boolean')
-    expect(typeof result.data['qwen-code']).toBe('boolean')
   })
 
   // Issue #8: the actual fix is that findAgentInstalled now passes an

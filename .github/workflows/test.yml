@@ -263,7 +263,7 @@ jobs:
   #   - chrome-smoke: clicks every sidebar button, catches hooks/render
   #     regressions and node-pty rebuild drift.
   #   - first-run-zero-agents: proves a brand-new macOS user — no Claude,
-  #     no Codex, no Gemini, no Qwen — can still boot the app and open a
+  #     no Codex, no Gemini — can still boot the app and open a
   #     terminal. This is the path a first-time TestFlight reviewer hits.
   #
   # Required on main as of v1.11.15 — first green seen on 0342333.

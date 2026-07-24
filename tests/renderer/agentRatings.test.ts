@@ -76,13 +76,13 @@ describe('getEffectiveCapabilities', () => {
 
   it('preserves non-strength fields (tokenCost, hasMcp, agentName)', () => {
     const overrides: AgentRatingOverrides = {
-      'qwen-code': { bulkTasks: 1 },
+      gemini: { bulkTasks: 1 },
     }
     const result = getEffectiveCapabilities(overrides)
-    const qwen = result.find(a => a.agentId === 'qwen-code')!
-    expect(qwen.tokenCost).toBe('low')
-    expect(qwen.hasMcp).toBe(true)
-    expect(qwen.agentName).toBe('Qwen Code')
+    const gemini = result.find(a => a.agentId === 'gemini')!
+    expect(gemini.tokenCost).toBe('low')
+    expect(gemini.hasMcp).toBe(true)
+    expect(gemini.agentName).toBe('Gemini CLI')
   })
 
   it('ignores overrides for non-existent agent IDs', () => {
@@ -90,8 +90,8 @@ describe('getEffectiveCapabilities', () => {
       'nonexistent-agent': { refactoring: 5 },
     }
     const result = getEffectiveCapabilities(overrides)
-    // Should still return 4 agents, unchanged
-    expect(result.length).toBe(4)
+    // Should still return 3 agents, unchanged
+    expect(result.length).toBe(3)
     for (const agent of result) {
       const def = DEFAULT_AGENT_CAPABILITIES.find(a => a.agentId === agent.agentId)!
       expect(agent.strengths).toEqual(def.strengths)
@@ -178,7 +178,7 @@ describe('routeTasks with overrides', () => {
 // ═══════════════════════════════════════════════════════
 
 describe('buildConductorPrompt with agentRatingOverrides', () => {
-  const allInstalled = { claude: true, codex: true, gemini: true, 'qwen-code': true }
+  const allInstalled = { claude: true, codex: true, gemini: true }
 
   it('reflects overridden ratings in the conductor prompt', () => {
     const overrides: AgentRatingOverrides = {
@@ -200,7 +200,7 @@ describe('buildConductorPrompt with agentRatingOverrides', () => {
 
   it('shows boosted ratings in the conductor prompt', () => {
     const overrides: AgentRatingOverrides = {
-      'qwen-code': { architecture: 5 },
+      codex: { architecture: 5 },
     }
     const prompt = buildConductorPrompt({
       taskDescription: 'Refactor the auth module',
@@ -208,9 +208,9 @@ describe('buildConductorPrompt with agentRatingOverrides', () => {
       projectCwd: '/home/user/project',
       agentRatingOverrides: overrides,
     })
-    // Qwen Code normally has architecture 3 (below threshold), but boosted to 5 it should appear
-    const qwenLine = prompt.split('\n').find(l => l.includes('Qwen Code'))!
-    expect(qwenLine).toContain('Architecture (5/5)')
+    // OpenAI Codex normally has architecture 3 (below threshold), but boosted to 5 it should appear
+    const codexLine = prompt.split('\n').find(l => l.includes('OpenAI Codex'))!
+    expect(codexLine).toContain('Architecture (5/5)')
   })
 
   it('without overrides, shows default ratings', () => {
@@ -228,7 +228,7 @@ describe('buildConductorPrompt with agentRatingOverrides', () => {
     }
     const prompt = buildConductorPrompt({
       taskDescription: 'Set up CI/CD',
-      installedAgents: { claude: true, codex: false, gemini: false, 'qwen-code': false },
+      installedAgents: { claude: true, codex: false, gemini: false },
       projectCwd: '/home/user/project',
       agentRatingOverrides: overrides,
     })

@@ -15,8 +15,6 @@ interface InstallInstructions {
   pricing: string | null
 }
 
-const isWindows = navigator.platform.startsWith('Win')
-
 function getInstallInstructions(agentId: string): InstallInstructions {
   switch (agentId) {
     case 'claude':
@@ -47,44 +45,6 @@ function getInstallInstructions(agentId: string): InstallInstructions {
         ],
         url: 'https://github.com/google-gemini/gemini-cli',
         pricing: 'Free tier available. Paid Google AI API plan for higher usage.',
-      }
-    case 'qwen-code':
-      return {
-        steps: [
-          isWindows
-            ? 'curl -fsSL -o %TEMP%\\install-qwen.bat https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.bat && %TEMP%\\install-qwen.bat --source qwenchat'
-            : 'bash -c "$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)" -s --source qwenchat',
-          'qwen --version  (to verify)',
-        ],
-        sections: [
-          {
-            title: 'Official install page',
-            lines: [
-              'These commands come from the official Qwen Code site:',
-              'https://qwen.ai/qwencode',
-            ],
-          },
-          {
-            title: 'Authenticate Qwen Code',
-            lines: [
-              'On first launch, Qwen prompts for an auth method. Pick one:',
-              'Local Ollama / vLLM — free, offline, no account',
-              'Alibaba Cloud Coding Plan — subscription, hosted Qwen3-Coder',
-              'OpenRouter / Fireworks AI — bring-your-own API key',
-              'Any OpenAI / Anthropic / Gemini-compatible endpoint — BYO key',
-              'Note: Qwen-OAuth was discontinued April 15, 2026.',
-            ],
-          },
-          {
-            title: 'MCP Tools (auto-registered)',
-            lines: [
-              'Termpolis writes its MCP server entry to ~/.qwen/settings.json on startup.',
-              'After install, run "qwen mcp list" — you should see "termpolis" listed as Connected.',
-            ],
-          },
-        ],
-        url: 'https://qwen.ai/qwencode',
-        pricing: 'Free if pointed at local Ollama / vLLM. Paid tiers: Alibaba Coding Plan (monthly), or pay-per-token via OpenRouter / Fireworks / BYO API key.',
       }
     default:
       return {
@@ -163,7 +123,7 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
               {section.title}
             </h3>
             {section.lines.map((line, li) => {
-              const isCommand = /^(npm|pip|npx|claude|codex|gemini|qwen|setx|sudo|apt|brew)\b/.test(line.trim())
+              const isCommand = /^(npm|pip|npx|claude|codex|gemini|setx|sudo|apt|brew)\b/.test(line.trim())
               if (isCommand) {
                 return (
                   <div key={li} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">

@@ -1,6 +1,6 @@
 # Termpolis Documentation
 
-The definitive guide to Termpolis — **Secure AI-Assisted Development**. The local-first multi-agent terminal where Claude, Codex, Gemini, and Qwen work as a team, coordinated by a dedicated AI conductor, **without your source code leaving the machine**.
+The definitive guide to Termpolis — **Secure AI-Assisted Development**. The local-first multi-agent terminal where Claude, Codex, and Gemini work as a team, coordinated by a dedicated AI conductor, **without your source code leaving the machine**.
 
 This document covers installation, the AI Security Center, the share-to-Slack/Teams workflow, every feature, every panel, every keyboard shortcut, and the architecture behind the swarm. Screenshots live in `../e2e/screenshots/docs/` and are mirrored to the website at `termpolis-web/docs/screenshots/`.
 
@@ -50,13 +50,13 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 **What makes it different:**
 
 - **Secure AI-Assisted Development**: a built-in AI Security Center (Settings → Security) auto-scans every AI prompt against 70+ secret patterns (AWS, GitHub, Azure, GCP, Stripe, Slack, JWT, PEM, …), enforces Gemini paid-tier mode, keeps a local JSONL audit log, and surfaces per-provider training-disposition facts sourced from live ToS pages. See the [Security](#security-center) section.
-- **Multi-agent swarm**: Claude Code, Codex, Gemini CLI, and Qwen Code work together on a task. A dedicated Claude Code instance acts as the conductor.
+- **Multi-agent swarm**: Claude Code, Codex, and Gemini CLI work together on a task. A dedicated Claude Code instance acts as the conductor.
 - **MCP server** baked in: AI agents can control Termpolis via Model Context Protocol — open terminals, run commands, send messages.
 - **Transparent routing**: every subtask shows *which* agent got it, *why*, and *what it cost*.
 - **Activity observability**: every token, every tool call, every message from every agent is visible in real time.
 - **Intervention controls**: pause, cancel, or steer any agent mid-task without leaving the feed.
 - **Shared memory**: a RAG-backed memory store that any agent can read and write via MCP.
-- **MCP-native end to end**: all four agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
+- **MCP-native end to end**: all three agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
 - **Share-ready output**: a four-way Copy submenu (`Ctrl+Shift+M`) — Copy as Code Block, Plain Text, With Command, or PNG Image — turns any terminal selection into a Slack/Teams/PR-ready paste. See [Copy for Slack / Teams / PRs](#copy-for-slack-teams-prs).
 
 Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well, securely.
@@ -65,8 +65,8 @@ Everything is built around the idea that **you're not writing code alone anymore
 
 The **AI Security Center** at Settings → Security is the security backbone of Termpolis. Every check runs on the local machine. None of these features send data to Termpolis or any third party.
 
-- **Per-provider training-disposition facts.** Live ToS-sourced summaries: Claude (default off), Codex (default off), Gemini paid (excluded), Gemini free OAuth (Google may use prompts, flagged yellow), Qwen Code paid DashScope (excluded) / local Ollama (never leaves machine).
-- **Auto-scan on every prompt.** Once you launch `claude`, `codex`, `gemini`, or `qwen` in a terminal, every Enter and every paste-sized chunk (≥32 bytes) is scanned in main-process memory against 70+ regex rules before it reaches the PTY. Hits are redacted in place, audited as `redaction_hit` events, and surfaced via a dismissable banner. Catalog covers AWS (access/secret/session), GitHub (classic/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage, SAS, conn-string, AD client secret, DevOps PAT), GCP (SA JSON, OAuth client), AI providers (OpenAI, Anthropic, Google, HuggingFace, Cohere, Replicate), payments (Stripe, PayPal Braintree, Square), comms (Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark), cloud (Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi), CI/CD (CircleCI, Travis, Codecov), observability (Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Mapbox, Okta, Auth0), package registries (npm, PyPI, Docker Hub), secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database connection strings (Postgres/MySQL/MongoDB/Redis), HTTP basic-auth URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead). A manual paste-and-scan box is also available in the Settings panel.
+- **Per-provider training-disposition facts.** Live ToS-sourced summaries: Claude (default off), Codex (default off), Gemini paid (excluded), Gemini free OAuth (Google may use prompts, flagged yellow).
+- **Auto-scan on every prompt.** Once you launch `claude`, `codex`, or `gemini` in a terminal, every Enter and every paste-sized chunk (≥32 bytes) is scanned in main-process memory against 70+ regex rules before it reaches the PTY. Hits are redacted in place, audited as `redaction_hit` events, and surfaced via a dismissable banner. Catalog covers AWS (access/secret/session), GitHub (classic/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage, SAS, conn-string, AD client secret, DevOps PAT), GCP (SA JSON, OAuth client), AI providers (OpenAI, Anthropic, Google, HuggingFace, Cohere, Replicate), payments (Stripe, PayPal Braintree, Square), comms (Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark), cloud (Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi), CI/CD (CircleCI, Travis, Codecov), observability (Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Mapbox, Okta, Auth0), package registries (npm, PyPI, Docker Hub), secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database connection strings (Postgres/MySQL/MongoDB/Redis), HTTP basic-auth URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead). A manual paste-and-scan box is also available in the Settings panel.
 - **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_GCA`, and `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify which tier the Gemini CLI will hit (Vertex / Code Assist / Paid API key / Free OAuth).
 - **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts shell-level `gemini` invocations and refuses to forward them unless paid-tier credentials are detected. Blocked launches are recorded in the audit log as `BLOCKED: strict-mode + free-tier`.
 - **Local JSONL audit log.** Every AI-agent terminal launch can be appended to `ai-security-audit.jsonl` in userData. Append-only, 10 MB rotated. Wipeable from Settings.
@@ -152,7 +152,7 @@ Workspaces are the **project-level container** in Termpolis — think of them as
 - **Terminals** — every open pty in that workspace, with its shell, working directory, label, color, and scrollback buffer.
 - **Layout** — tab view, split view (the full pane tree), or grid view. Restored exactly on relaunch.
 - **Focus** — which terminal was active, cursor position, selection.
-- **Agent sessions** — any Claude Code, Codex, Gemini, or Qwen Code runs tied to terminals in the workspace.
+- **Agent sessions** — any Claude Code, Codex, or Gemini runs tied to terminals in the workspace.
 - **Panel state** — which side panels are open and their size.
 - **Per-workspace overrides** — if you've changed a setting scoped to this workspace (shell default, font size, etc.).
 
@@ -266,7 +266,7 @@ Talk instead of type. Transcription uses **Groq's cloud Whisper API** — your r
 
 - **Hold `Ctrl+Shift+L` and speak; release to send** (true push-to-talk). Prefer hands-free? Switch to **tap-to-start / tap-to-stop** under *Activation*. The hotkey is rebindable.
 - **Wait for the "Listening…" badge, then speak normally.** Level doesn't matter much — the model handles quiet and loud speech — but it does need to actually hear words.
-- **In an AI-agent terminal** (Claude · Codex · Gemini · Qwen) your words are **sent straight to the agent as a prompt** — the agent absorbs minor mis-hearings, so just talk naturally. (Optionally auto-submit so the prompt sends the moment you finish.)
+- **In an AI-agent terminal** (Claude · Codex · Gemini) your words are **sent straight to the agent as a prompt** — the agent absorbs minor mis-hearings, so just talk naturally. (Optionally auto-submit so the prompt sends the moment you finish.)
 - **In a plain shell** the transcript is **inserted but never run automatically** — you review it and press `Enter` yourself, so a mis-heard command is never executed for you.
 - When dictation ends the caret returns to the terminal so you can keep typing or dictate again without clicking back in.
 
@@ -310,7 +310,7 @@ See [§30](#30-keyboard-shortcut-reference) for the complete default list.
 
 ![Agent capability ratings](../e2e/screenshots/docs/10-agent-capability-ratings.png)
 
-The heart of smart swarm routing. This tab lets you score each agent (Claude Code, Codex, Gemini CLI, Qwen Code) across 10 categories:
+The heart of smart swarm routing. This tab lets you score each agent (Claude Code, Codex, Gemini CLI) across 10 categories:
 
 1. Refactoring
 2. Testing
@@ -436,7 +436,7 @@ Click a result to copy, re-run in the focused terminal, or pin to context.
 
 `Ctrl+Shift+I` opens conversation search — the AI-session equivalent of history search. Search across every agent session Termpolis has recorded:
 
-- Filter by agent (Claude / Codex / Gemini / Qwen Code).
+- Filter by agent (Claude / Codex / Gemini).
 - Filter by kind (prompt, tool call, tool result, error).
 - Full-text search with highlighting.
 - Time range.
@@ -463,7 +463,7 @@ Every action runs as a real git command in a spawned process — no reimplementa
 
 ## 18. AI Agent Profiles
 
-Launch any AI CLI as a profiled terminal: Claude Code, Codex, Gemini CLI, Qwen Code. Profiles come pre-configured with:
+Launch any AI CLI as a profiled terminal: Claude Code, Codex, Gemini CLI. Profiles come pre-configured with:
 
 - The correct shell + startup command.
 - A color + label for visual distinction.
@@ -564,7 +564,7 @@ The conductor is **not keyword matching** — it reasons with the same capabilit
 Click **Start Swarm** in the dashboard. The wizard asks for:
 
 - **Task description** — natural language, as detailed as you want.
-- **Agents to include** — defaults to all four.
+- **Agents to include** — defaults to all three.
 - **Budget** — optional soft cap on token spend.
 - **Working directory** — defaults to current workspace.
 
@@ -639,13 +639,13 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 
 ### What's in it
 
-- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded. Qwen is captured from the live terminal stream.
+- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded.
 - **Your repo's code** — git-tracked files (so `node_modules`/`dist` are excluded), chunked by line-window. The indexer reuses the **same sensitive-file denylist as the read watcher**, so `.env`, keys, and cloud credentials are never embedded.
 
 ### How it works
 
 - **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
-- **Shared across all four agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`). One store backs Claude/Codex/Gemini/Qwen, so a fact one learns is instantly available to the others.
+- **Shared across all three agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`). One store backs Claude/Codex/Gemini, so a fact one learns is instantly available to the others.
 - **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\Termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/Termpolis/` on macOS, `~/.config/Termpolis/` on Linux (plain text, hand-editable) — and reloaded with embeddings at startup. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A ~100k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
 - **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver).
@@ -725,7 +725,7 @@ The bottom strip shows, left to right:
 
 ### Agents & CLI tools
 
-**Agent launch button fails silently.** The CLI isn't on your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`, `qwen`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — restart Termpolis after updating `~/.zprofile` (not just `~/.zshrc`), or relaunch from Terminal with `open -a Termpolis` so the shell PATH is inherited.
+**Agent launch button fails silently.** The CLI isn't on your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — restart Termpolis after updating `~/.zprofile` (not just `~/.zshrc`), or relaunch from Terminal with `open -a Termpolis` so the shell PATH is inherited.
 
 **Wrong `claude` / `codex` binary runs.** If you've installed the CLI via multiple package managers (Homebrew, npm, cargo), PATH order decides the winner. Use `which claude` to see which one Termpolis will launch. Override per-agent in Settings → Agents.
 
@@ -794,7 +794,7 @@ If none of the above fixes your problem, **[open an issue](https://github.com/co
 └──────────────────┬──────────────────────────────────┘
                    │  localhost:48211 (MCP)
 ┌──────────────────▼──────────────────────────────────┐
-│  AI agents (Claude, Codex, Gemini, Qwen Code)       │
+│  AI agents (Claude, Codex, Gemini)                  │
 │  Each in its own pty-backed terminal                │
 └─────────────────────────────────────────────────────┘
 ```

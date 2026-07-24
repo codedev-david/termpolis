@@ -2,7 +2,7 @@
  * First-run with zero AI agents installed — critical UX path.
  *
  * Simulates a brand-new user on a clean machine: Termpolis boots, Welcome
- * screen renders, and NONE of Claude Code / Codex / Gemini CLI / Qwen are
+ * screen renders, and NONE of Claude Code / Codex / Gemini CLI are
  * available. The app must NOT crash, must surface install hints cleanly,
  * and must let the user still open a plain terminal. Start Swarm must fail
  * gracefully with the Claude-Code-Required pitch (not silently hang or
@@ -56,7 +56,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       // THE critical env — force every AI agent to report missing.
-      TERMPOLIS_FORCE_MISSING_AGENTS: 'claude,codex,gemini,aider,aider-qwen',
+      TERMPOLIS_FORCE_MISSING_AGENTS: 'claude,codex,gemini',
     },
   })
   page = await app.firstWindow()

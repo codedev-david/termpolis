@@ -937,8 +937,8 @@ describe('safeImport:scan', () => {
   })
 
   it.each([
-    ['a bare .mcp.json', { '.mcp.json': '{"mcpServers":{"weather":{"command":"node","args":["s.js"]}}}' }, 'mcp', 'weather', ['claude', 'codex', 'gemini', 'qwen']],
-    ['a slash command', { 'deploy.md': '---\ndescription: Ship the current branch\n---\n\nShip it.\n' }, 'command', 'deploy', ['claude', 'gemini', 'qwen']],
+    ['a bare .mcp.json', { '.mcp.json': '{"mcpServers":{"weather":{"command":"node","args":["s.js"]}}}' }, 'mcp', 'weather', ['claude', 'codex', 'gemini']],
+    ['a slash command', { 'deploy.md': '---\ndescription: Ship the current branch\n---\n\nShip it.\n' }, 'command', 'deploy', ['claude', 'gemini']],
     ['a subagent', { 'rev.md': '---\nname: reviewer\ntools: Read, Grep\ndescription: reviews code\n---\n\nReview it.\n' }, 'subagent', 'reviewer', ['claude']],
     ['a plugin bundle', { '.claude-plugin/plugin.json': '{"name":"tidy-plugin","version":"1.0.0"}' }, 'plugin', 'tidy-plugin', ['claude']],
   ])('classifies %s and offers only the agents that KIND supports', async (desc, files, kind, name, targets) => {
@@ -1036,11 +1036,11 @@ describe('safeImport:approve-install', () => {
     expect(readFileSync(join(H.FAKE_HOME, '.claude', 'skills', 'tidy-tables', 'SKILL.md'), 'utf8')).toContain('Tidy a markdown table')
   })
 
-  it('wires an MCP server into all four agents', async () => {
+  it('wires an MCP server into all three agents', async () => {
     picks(fixtureDir('install-mcp', { '.mcp.json': '{"mcpServers":{"weather":{"command":"node","args":["s.js"]}}}' }))
     await invoke('safeImport:scan')
-    const r = await invoke('safeImport:approve-install', { targets: ['claude', 'codex', 'gemini', 'qwen'] })
-    expect(r.data.installed.map((i: any) => i.target).sort()).toEqual(['claude', 'codex', 'gemini', 'qwen'])
+    const r = await invoke('safeImport:approve-install', { targets: ['claude', 'codex', 'gemini'] })
+    expect(r.data.installed.map((i: any) => i.target).sort()).toEqual(['claude', 'codex', 'gemini'])
   })
 
   it('REFUSES when every requested target is unsupported for the kind', async () => {

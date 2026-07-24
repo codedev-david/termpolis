@@ -68,42 +68,6 @@ describe('InstallHint', () => {
     expect(screen.getByText(/gemini --version/)).toBeInTheDocument()
   })
 
-  it('shows qwen-code install instructions using the official installer script', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    // Either the bash or the .bat installer line is present depending on platform
-    expect(screen.getByText(/install-qwen\.(sh|bat)/)).toBeInTheDocument()
-    expect(screen.getByText(/--source qwenchat/)).toBeInTheDocument()
-    expect(screen.getByText(/qwen --version/)).toBeInTheDocument()
-  })
-
-  it('shows MCP auto-registration note for qwen-code', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    expect(screen.getByText(/~\/\.qwen\/settings\.json/)).toBeInTheDocument()
-  })
-
-  it('shows pricing info for qwen-code (local-Ollama-free, paid otherwise)', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    expect(screen.getByText(/local Ollama/)).toBeInTheDocument()
-    expect(screen.getByText(/Alibaba Coding Plan/)).toBeInTheDocument()
-  })
-
-  it('flags that Qwen-OAuth was discontinued', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    expect(screen.getByText(/Qwen-OAuth was discontinued/)).toBeInTheDocument()
-  })
-
-  it('shows the official install page URL inline for qwen-code', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    expect(screen.getByText('Official install page')).toBeInTheDocument()
-    expect(screen.getByText('https://qwen.ai/qwencode')).toBeInTheDocument()
-  })
-
-  it('opens correct URL for qwen-code documentation', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
-    fireEvent.click(screen.getByText('Documentation'))
-    expect(window.open).toHaveBeenCalledWith('https://qwen.ai/qwencode', '_blank')
-  })
-
   it('shows default instructions for unknown agent', () => {
     render(<InstallHint agentId="unknown-agent" agentName="Unknown" onClose={vi.fn()} />)
     expect(screen.getByText('Install Unknown')).toBeInTheDocument()
@@ -222,7 +186,7 @@ describe('InstallHint', () => {
   // agent instructions don't overflow screen.
   // -----------------------------------------------------------------------
   it('modal card has max-height and vertical overflow scroll', () => {
-    render(<InstallHint agentId="qwen-code" agentName="Qwen Code" onClose={vi.fn()} />)
+    render(<InstallHint agentId="gemini" agentName="Gemini CLI" onClose={vi.fn()} />)
     const modal = screen.getByTestId('install-hint-modal')
     expect(modal.className).toMatch(/max-h-/)
     expect(modal.className).toMatch(/overflow-y-auto/)

@@ -11,7 +11,7 @@
 // the untrusted (terminal-scraped) prompt out-of-band — via a temp file / env var, never on
 // a shell command line — and a scraped prompt can't inject a command.
 
-export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini' | 'qwen'
+export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
 
 // Claude model aliases valid for `--model` (mirrors agentCommandSanitizer.AGENT_MODEL_ALIASES).
 export const CLAUDE_MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku'] as const
@@ -50,7 +50,6 @@ export function buildReviewPrompt(content: string, opts: { maxChars?: number } =
  *             now the Antigravity CLI `agy` — the old `gemini` free-tier headless client was
  *             deprecated. Verified: `-p`/`--print` runs one prompt non-interactively;
  *             skip-permissions prevents a tool-approval prompt hanging the run.)
- *  - qwen:    `qwen -p <prompt>`     (Gemini-CLI fork, same flag)
  * An invalid/absent Claude model alias is dropped (the prompt is never here, so nothing an
  * attacker controls reaches the argv). Pure.
  */
@@ -67,8 +66,6 @@ export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string):
     case 'gemini':
       // Gemini is accessed through the Antigravity CLI (`agy`) now, not `gemini`.
       return { bin: 'agy', args: ['-p', PROMPT_TOKEN, '--dangerously-skip-permissions'] }
-    case 'qwen':
-      return { bin: 'qwen', args: ['-p', PROMPT_TOKEN] }
   }
 }
 

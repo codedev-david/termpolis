@@ -16,10 +16,6 @@ describe('sanitizeAgentCommand', () => {
     expect(sanitizeAgentCommand('codex --full-auto')).toBe('codex --full-auto')
   })
 
-  it('passes through correct qwen command', () => {
-    expect(sanitizeAgentCommand('qwen')).toBe('qwen')
-  })
-
   // ---- Strips -p flag from all agents ----
 
   it('strips -p flag from claude', () => {
@@ -92,7 +88,7 @@ describe('sanitizeAgentCommand', () => {
   // ---- Allowlist has all expected agents ----
 
   it('has entries for the MCP-native agents incl. Gemini via the Antigravity CLI (agy)', () => {
-    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'agy', 'gemini', 'qwen'])
+    expect(Object.keys(AGENT_COMMAND_ALLOWLIST)).toEqual(['claude', 'codex', 'agy', 'gemini'])
   })
 
   it('launches Gemini as `agy --dangerously-skip-permissions` and strips headless/positional flags', () => {
@@ -148,7 +144,6 @@ describe('sanitizeAgentCommand', () => {
   it('does NOT honor --model on agents without model control (they keep their default)', () => {
     expect(sanitizeAgentCommand('gemini --model gemini-2.5-pro')).toBe('gemini')
     expect(sanitizeAgentCommand('codex --full-auto --model o4')).toBe('codex --full-auto')
-    expect(sanitizeAgentCommand('qwen --model qwen-max')).toBe('qwen')
   })
 
   it('still strips -p even when a valid model is also present', () => {

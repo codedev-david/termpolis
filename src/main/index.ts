@@ -433,7 +433,6 @@ import {
   registerInGlobalMcp,
   registerInCodex,
   registerInGemini,
-  registerInQwen,
   resolveNodeCommand,
 } from './agentMcpRegistry'
 
@@ -583,12 +582,12 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
   }
 })
 
-// Heuristic: when the user types `claude`, `codex`, `gemini`, or `qwen` as
+// Heuristic: when the user types `claude`, `codex`, or `gemini` as
 // the start of a command line, the next bytes typed are about to be a prompt
 // going to that AI provider's network. We log a terminal_open audit entry
 // (only if the audit toggle is on) so security-conscious teams can prove
 // "exactly when did developer X launch agent Y in repo Z."
-const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini|qwen)(?:\s|$)/
+const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini)(?:\s|$)/
 // Strict mode: refuse to forward a `gemini` invocation when the account
 // detector says we're on the free OAuth tier. We intercept before the bytes
 // hit the PTY, write a clear refusal message to the terminal, and audit it.
@@ -597,7 +596,7 @@ const recentlyAuditedTerminals = new Map<string, number>()
 
 // Per-terminal "this is an AI session" flag. We set this the first time a
 // terminal:write matches auditLaunchPattern (the user typed `claude` /
-// `codex` / `gemini` / `qwen`). All subsequent writes on that terminal are
+// `codex` / `gemini`). All subsequent writes on that terminal are
 // then auto-scanned for secrets before they reach the PTY.
 const aiTerminalFlag = new Set<string>()
 // Per-terminal staging buffer: characters typed since the last submit. We
@@ -1018,7 +1017,7 @@ ipcMain.handle('conversation:read-active', async (_evt, opts: { cwd?: string; ag
 })
 
 // Context handoff: read a full Claude Code JSONL and return a prompt
-// the renderer can inject into any AI shell (Codex, Gemini, Qwen, or
+// the renderer can inject into any AI shell (Codex, Gemini, or
 // even a fresh Claude). Filepath is supplied by the renderer and must
 // match a file under ~/.claude/projects/ — we sanity-check that.
 ipcMain.handle('aiSessions:digest', async (_evt, filePath: string) => {
@@ -2256,8 +2255,6 @@ ipcMain.handle('agents:detect', async () => {
   for (const agent of agents) {
     results[agent] = findAgentInstalled(agent)
   }
-  // Qwen-Code: id 'qwen-code', binary 'qwen' (Alibaba's Gemini-CLI fork)
-  results['qwen-code'] = findAgentInstalled('qwen')
   // Gemini's CLI is the Antigravity CLI (`agy`) now — both the sidebar "Gemini CLI" profile
   // (id 'gemini') and the Second Opinion Gemini option key off agy availability, not the
   // deprecated `gemini` binary.
@@ -2327,7 +2324,7 @@ const deliverSecondOpinion = (bin: string, args: string[], prompt: string, promp
 ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?: string; content: string }) => {
   try {
     const agent = opts?.agent as SecondOpinionAgent
-    if (!['claude', 'codex', 'gemini', 'qwen'].includes(agent)) return err('unsupported agent')
+    if (!['claude', 'codex', 'gemini'].includes(agent)) return err('unsupported agent')
     const res = await runSecondOpinion({ agent, model: opts?.model, content: opts?.content || '' }, deliverSecondOpinion)
     return res.ok ? ok({ feedback: res.feedback }) : err(res.error || 'second opinion failed')
   } catch (e: any) { return err(e.message) }
@@ -2510,7 +2507,7 @@ if (!gotTheLock) {
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
-          // (codex/gemini/qwen read OPENAI_*/Google env), so this compresses every Claude worker and
+          // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
           // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
           }, getAgentExtraPaths(), getProxyEnv() ?? undefined)
         }
@@ -3218,14 +3215,6 @@ if (!gotTheLock) {
       const r = registerInGemini(geminiSettingsPath, adapterPath)
       if (r.changed) console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
       else if (r.error) console.log('Could not register in Gemini settings (non-fatal):', r.skipped, r.error)
-    }
-
-    // Auto-register in Qwen-Code CLI (~/.qwen/settings.json)
-    {
-      const qwenSettingsPath = join(homedir(), '.qwen', 'settings.json')
-      const r = registerInQwen(qwenSettingsPath, adapterPath)
-      if (r.changed) console.log('Auto-registered Termpolis MCP server in Qwen-Code CLI settings')
-      else if (r.error) console.log('Could not register in Qwen settings (non-fatal):', r.skipped, r.error)
     }
 
     // Global hotkeys. On Windows/Linux these are Win+Shift+T / Win+Shift+S; on macOS `Super` is Cmd

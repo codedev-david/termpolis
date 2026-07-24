@@ -57,31 +57,33 @@ describe('KeybindingsSettings', () => {
 
   it('clicking a shortcut enters recording mode', () => {
     render(<KeybindingsSettings />)
-    const copyBtn = screen.getByText('Ctrl+Shift+C')
-    fireEvent.click(copyBtn)
+    // Paste is editable (not reserved) — reserved copy rows are read-only, tested below.
+    const pasteBtn = screen.getByText('Ctrl+Shift+V')
+    fireEvent.click(pasteBtn)
     expect(screen.getByText('Press a key combination...')).toBeInTheDocument()
   })
 
   it('shows help text when recording', () => {
     render(<KeybindingsSettings />)
-    fireEvent.click(screen.getByText('Ctrl+Shift+C'))
+    // Record an editable row (Paste) — reserved copy rows never enter recording.
+    fireEvent.click(screen.getByText('Ctrl+Shift+V'))
     expect(screen.getByText(/Click anywhere outside or press Escape to cancel/)).toBeInTheDocument()
   })
 
   it('pressing Escape while recording cancels', () => {
     render(<KeybindingsSettings />)
-    fireEvent.click(screen.getByText('Ctrl+Shift+C'))
+    fireEvent.click(screen.getByText('Ctrl+Shift+V'))
     expect(screen.getByText('Press a key combination...')).toBeInTheDocument()
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     })
-    // Recording should be cleared — Ctrl+Shift+C text back
-    expect(screen.getByText('Ctrl+Shift+C')).toBeInTheDocument()
+    // Recording should be cleared — Ctrl+Shift+V text back
+    expect(screen.getByText('Ctrl+Shift+V')).toBeInTheDocument()
   })
 
   it('pressing a key combo while recording invokes setKeybinding', () => {
     render(<KeybindingsSettings />)
-    fireEvent.click(screen.getByText('Ctrl+Shift+C'))
+    fireEvent.click(screen.getByText('Ctrl+Shift+V'))
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'X',
@@ -89,12 +91,12 @@ describe('KeybindingsSettings', () => {
         shiftKey: true,
       }))
     })
-    expect(setKeybinding).toHaveBeenCalledWith('copy', 'Ctrl+Shift+X')
+    expect(setKeybinding).toHaveBeenCalledWith('paste', 'Ctrl+Shift+X')
   })
 
   it('pressing a modifier-only key does not set keybinding', () => {
     render(<KeybindingsSettings />)
-    fireEvent.click(screen.getByText('Ctrl+Shift+C'))
+    fireEvent.click(screen.getByText('Ctrl+Shift+V'))
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Control',
@@ -106,11 +108,11 @@ describe('KeybindingsSettings', () => {
 
   it('clicking recording button again cancels recording', () => {
     render(<KeybindingsSettings />)
-    const copyBtn = screen.getByText('Ctrl+Shift+C')
-    fireEvent.click(copyBtn)
+    const pasteBtn = screen.getByText('Ctrl+Shift+V')
+    fireEvent.click(pasteBtn)
     // Now click again to cancel
     fireEvent.click(screen.getByText('Press a key combination...'))
-    expect(screen.getByText('Ctrl+Shift+C')).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Shift+V')).toBeInTheDocument()
   })
 
   it('reset all button calls resetKeybindings', () => {
@@ -120,20 +122,21 @@ describe('KeybindingsSettings', () => {
   })
 
   it('shows reset-per-row button when non-default binding', () => {
-    mockKeybindings = { ...mockKeybindings, copy: 'Alt+C' }
+    // New Terminal is editable; reserved copy rows never show a reset control.
+    mockKeybindings = { ...mockKeybindings, newTerminal: 'Alt+T' }
     const { container } = render(<KeybindingsSettings />)
-    // Non-default copy value should yield one reset icon
+    // Non-default value should yield one reset icon
     const icons = container.querySelectorAll('.fa-rotate-left')
     expect(icons.length).toBeGreaterThanOrEqual(1)
   })
 
   it('clicking per-row reset sets default binding', () => {
-    mockKeybindings = { ...mockKeybindings, copy: 'Alt+C' }
+    mockKeybindings = { ...mockKeybindings, newTerminal: 'Alt+T' }
     const { container } = render(<KeybindingsSettings />)
     const icon = container.querySelector('.fa-rotate-left')
     expect(icon).toBeTruthy()
     fireEvent.click(icon!.parentElement as HTMLElement)
-    expect(setKeybinding).toHaveBeenCalledWith('copy', 'Ctrl+Shift+C')
+    expect(setKeybinding).toHaveBeenCalledWith('newTerminal', 'Ctrl+Shift+T')
   })
 
   it('key event without recording does nothing', () => {
@@ -149,7 +152,6 @@ describe('KeybindingsSettings', () => {
     expect(screen.getByText('Launch Claude Code')).toBeInTheDocument()
     expect(screen.getByText('Launch OpenAI Codex')).toBeInTheDocument()
     expect(screen.getByText('Launch Gemini CLI')).toBeInTheDocument()
-    expect(screen.getByText('Launch Qwen Code')).toBeInTheDocument()
   })
 
   it('renders the Custom Shortcuts section', () => {
@@ -162,5 +164,30 @@ describe('KeybindingsSettings', () => {
     render(<KeybindingsSettings />)
     // Both the Copy row and the Paste row flag the clash.
     expect(screen.getAllByText(/Conflicts with/i).length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// The three reserved copy rows are locked to Ctrl+Shift+C / K / Q — read-only,
+// never remappable, so a custom hotkey can never shadow copy. (v1.30.3)
+describe('KeybindingsSettings — reserved copy rows', () => {
+  it('renders the three reserved combos but does NOT arm the recorder when clicked', () => {
+    render(<KeybindingsSettings />)
+    expect(screen.getByText('Ctrl+Shift+C')).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Shift+K')).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Shift+Q')).toBeInTheDocument()
+    // Reserved rows are read-only: clicking the combo must not start recording.
+    fireEvent.click(screen.getByText('Ctrl+Shift+C'))
+    expect(screen.queryByText('Press a key combination...')).not.toBeInTheDocument()
+  })
+
+  it('marks each reserved row with a Reserved lock and never remaps it', () => {
+    render(<KeybindingsSettings />)
+    expect(screen.getAllByText('Reserved')).toHaveLength(3)
+    // Clicking a reserved row arms nothing, so a follow-up combo is a no-op.
+    fireEvent.click(screen.getByText('Ctrl+Shift+K'))
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'X', ctrlKey: true, shiftKey: true }))
+    })
+    expect(setKeybinding).not.toHaveBeenCalled()
   })
 })

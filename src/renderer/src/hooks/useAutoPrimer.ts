@@ -18,7 +18,7 @@ import { useTerminalStore } from '../store/terminalStore'
 //             also tells Claude to re-call memory_primer itself if its context gets compacted.
 //             It re-primes behind the scenes. We never write to its input. Not once.
 //
-//   Others  → Codex/Gemini/Qwen have no system-prompt file to append to, so the one-line pointer
+//   Others  → Codex/Gemini have no system-prompt file to append to, so the one-line pointer
 //             is pasted into their input at launch, while the line is still empty.
 //
 // The hard rule for anything that writes to a terminal the user did not ask for: writeToTerminal
@@ -47,7 +47,7 @@ export function buildPrimerPointer(cwd: string, selfRecord = false): string {
     'do NOT act on it, resume past work, or summarize it. Reply exactly "Memory loaded." then wait. ' +
     'Use memory_search before re-deriving a stored fix; if memory_primer is unavailable, reply "Memory tools unavailable." then wait.'
   if (selfRecord) {
-    // Qwen (and any agent without a parseable on-disk transcript) can't be auto-learned
+    // Agents without a parseable on-disk transcript can't be auto-learned
     // FROM the way Claude/Codex/Gemini are, so ask it to record its own lesson via MCP —
     // that is how its work reaches the shared brain. One paste-safe line (no newline/backtick).
     pointer +=
@@ -99,7 +99,7 @@ export async function injectAutoPrimer(terminalId: string, cwd: string, selfReco
     const res = await api.memoryBuildPrimer(query, undefined, cwd || undefined)
     if (!res?.success || !res.data) return false
     // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
-    // memories" banner Claude gets — so Codex/Gemini/Qwen recall doesn't look like
+    // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
     // nothing happened. Compaction re-primes pass notify=false and stay silent.
     if (notify) {
       const n = countPrimerMemories(String(res.data))
@@ -193,9 +193,9 @@ export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | nul
       return
     }
     primedRef.current = true
-    // Qwen has no parseable on-disk transcript, so it can't be auto-learned from like the
-    // others — prime it to record its own lessons via memory_write instead.
-    const selfRecord = (agentName ?? '').toLowerCase().includes('qwen')
+    // All built-in agents (Claude / Codex / Gemini) have parseable on-disk transcripts, so
+    // none need the self-record primer path; keep it wired for future agents that might.
+    const selfRecord = false
     const handle = setTimeout(() => {
       // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
       void injectAutoPrimer(terminalId, cwd, selfRecord, true)
@@ -248,7 +248,6 @@ function agentSourceId(a: AgentInfo | null): string | null {
   if (n.includes('claude')) return 'claude'
   if (n.includes('codex')) return 'codex'
   if (n.includes('gemini')) return 'gemini'
-  if (n.includes('qwen')) return 'qwen'
   return null
 }
 

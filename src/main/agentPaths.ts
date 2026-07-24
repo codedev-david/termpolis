@@ -1,4 +1,4 @@
-// Extra PATH discovery for AI-agent CLIs (claude/codex/gemini/qwen).
+// Extra PATH discovery for AI-agent CLIs (claude/codex/gemini).
 //
 // Why this module exists:
 //   Electron GUI launches on macOS inherit launchd's minimal PATH (no

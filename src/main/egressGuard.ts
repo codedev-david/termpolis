@@ -5,7 +5,7 @@
 // OBSERVED: a user who never opens the log learns nothing, and "Claude talked
 // to 41 hosts today" is not a signal — it's homework. This module supplies the
 // missing half: a judgement. We hold every observed endpoint against the set of
-// hosts the four supported agents legitimately need, and anything outside that
+// hosts the three supported agents legitimately need, and anything outside that
 // set is a violation.
 //
 // That one bit is the whole point. An agent talking to api.anthropic.com is the
@@ -84,8 +84,6 @@ export const EGRESS_ALLOWLIST: { rule: string; suffixes: string[] }[] = [
   { rule: 'openai', suffixes: ['api.openai.com', 'openai.com', 'chatgpt.com'] },
   // Gemini CLI (googleapis.com covers oauth2/cloudcode/generativelanguage).
   { rule: 'google', suffixes: ['generativelanguage.googleapis.com', 'googleapis.com', 'google.com', 'gstatic.com'] },
-  // Qwen Code → DashScope / Model Studio / ModelScope.
-  { rule: 'qwen', suffixes: ['dashscope.aliyuncs.com', 'aliyuncs.com', 'modelscope.cn'] },
   // Package + source infra every agent reaches for while it works. Not AI
   // providers, but blocking-by-alarm on `npm install` would be pure noise.
   { rule: 'infra', suffixes: ['registry.npmjs.org', 'npmjs.org', 'github.com', 'githubusercontent.com', 'pypi.org'] },

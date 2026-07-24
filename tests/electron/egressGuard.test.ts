@@ -123,13 +123,13 @@ describe('egressGuard — local endpoints are NEVER violations', () => {
 })
 
 describe('egressGuard — EGRESS_ALLOWLIST shape', () => {
-  it('covers the four supported agents plus package/infra', () => {
+  it('covers the three supported agents plus package/infra', () => {
     const rules = EGRESS_ALLOWLIST.map((e) => e.rule)
     expect(rules).toContain('anthropic')
     expect(rules).toContain('openai')
     expect(rules).toContain('google')
-    expect(rules).toContain('qwen')
     expect(rules).toContain('infra')
+    expect(rules).not.toContain('qwen')
   })
 
   it('lists the specific provider hosts the agents need', () => {
@@ -138,10 +138,14 @@ describe('egressGuard — EGRESS_ALLOWLIST shape', () => {
       'api.anthropic.com', 'anthropic.com', 'claude.ai', 'statsig.anthropic.com', 'sentry.io',
       'api.openai.com', 'openai.com', 'chatgpt.com',
       'generativelanguage.googleapis.com', 'googleapis.com', 'google.com', 'gstatic.com',
-      'dashscope.aliyuncs.com', 'aliyuncs.com', 'modelscope.cn',
       'registry.npmjs.org', 'npmjs.org', 'github.com', 'githubusercontent.com', 'pypi.org',
     ]) {
       expect(all).toContain(host)
+    }
+    // Qwen Code removed (US-based providers only) - Alibaba DashScope hosts
+    // must NOT be on the allowlist any more.
+    for (const gone of ['dashscope.aliyuncs.com', 'aliyuncs.com', 'modelscope.cn']) {
+      expect(all).not.toContain(gone)
     }
   })
 
@@ -189,14 +193,6 @@ describe('egressGuard — allowlist families (exact host + subdomain)', () => {
     expect(judgeEndpoint(ep('oauth2.googleapis.com')).matchedRule).toBe('google')
     expect(judgeEndpoint(ep('www.google.com')).matchedRule).toBe('google')
     expect(judgeEndpoint(ep('fonts.gstatic.com')).matchedRule).toBe('google')
-  })
-
-  it('qwen: DashScope / Alibaba hosts', () => {
-    for (const h of ['dashscope.aliyuncs.com', 'aliyuncs.com', 'modelscope.cn']) {
-      expect(judgeEndpoint(ep(h, 443)).matchedRule).toBe('qwen')
-    }
-    expect(judgeEndpoint(ep('oss-cn-beijing.aliyuncs.com')).matchedRule).toBe('qwen')
-    expect(judgeEndpoint(ep('www.modelscope.cn')).matchedRule).toBe('qwen')
   })
 
   it('infra: package registries + GitHub', () => {
@@ -449,13 +445,12 @@ describe('egressGuard — judgeEgress report', () => {
     expect(r.summary).toBe('1 violation ((empty))')
   })
 
-  it('the realistic swarm case: four agents, all provider traffic, is clean', () => {
+  it('the realistic swarm case: three agents, all provider traffic, is clean', () => {
     const r = judgeEgress([
       ep('api.anthropic.com', 443, 101),
       ep('statsig.anthropic.com', 443, 101),
       ep('api.openai.com', 443, 102),
       ep('generativelanguage.googleapis.com', 443, 103),
-      ep('dashscope.aliyuncs.com', 443, 104),
       ep('registry.npmjs.org', 443, 105),
       ep('127.0.0.1', 3000, 101),
     ])

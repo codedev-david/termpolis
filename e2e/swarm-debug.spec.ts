@@ -111,7 +111,7 @@ test('6. Check conductor prompt file generation', async () => {
   // Build the conductor prompt in Node (no bundling or dynamic import needed).
   const promptContent = buildConductorPrompt({
     taskDescription: 'Test task',
-    installedAgents: { claude: true, codex: false, gemini: false, 'aider-qwen': false },
+    installedAgents: { claude: true, codex: false, gemini: false },
     projectCwd: 'C:\\test',
     shellType: 'powershell',
   })

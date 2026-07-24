@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { buildConductorPrompt } from '../../src/renderer/src/lib/conductorPrompt'
 
-const allInstalled = { claude: true, codex: true, gemini: true, 'qwen-code': true }
-const onlyClaude = { claude: true, codex: false, gemini: false, 'qwen-code': false }
+const allInstalled = { claude: true, codex: true, gemini: true }
+const onlyClaude = { claude: true, codex: false, gemini: false }
 
 function buildDefault(overrides: Partial<Parameters<typeof buildConductorPrompt>[0]> = {}) {
   return buildConductorPrompt({
@@ -29,19 +29,17 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('Claude Code')
     expect(prompt).toContain('OpenAI Codex')
     expect(prompt).toContain('Gemini CLI')
-    expect(prompt).toContain('Qwen Code')
   })
 
   it('excludes agents that are not installed (installedAgents[id] === false)', () => {
     const prompt = buildDefault({
-      installedAgents: { claude: true, codex: false, gemini: false, 'qwen-code': false },
+      installedAgents: { claude: true, codex: false, gemini: false },
     })
     // Extract just the INSTALLED AGENTS section
     const agentsSection = prompt.split('INSTALLED AGENTS:')[1].split('YOUR MCP TOOLS:')[0]
     expect(agentsSection).toContain('Claude Code')
     expect(agentsSection).not.toContain('OpenAI Codex')
     expect(agentsSection).not.toContain('Gemini CLI')
-    expect(agentsSection).not.toContain('Qwen Code')
   })
 
   it('includes MCP tool names', () => {
@@ -82,7 +80,6 @@ describe('buildConductorPrompt', () => {
     expect(agentsSection).toContain('Claude Code')
     expect(agentsSection).not.toContain('OpenAI Codex')
     expect(agentsSection).not.toContain('Gemini CLI')
-    expect(agentsSection).not.toContain('Qwen Code')
     // Should still be a valid prompt with tools section
     expect(prompt).toContain('swarm_create_task')
   })
@@ -168,15 +165,6 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain("gemini --sandbox -p")
   })
 
-  it('includes Qwen Code launch command in STEP 4', () => {
-    const prompt = buildDefault()
-    const step4Idx = prompt.indexOf('STEP 4')
-    const step5Idx = prompt.indexOf('STEP 5')
-    const step4Block = prompt.slice(step4Idx, step5Idx)
-    expect(step4Block).toContain("Qwen Code")
-    expect(step4Block).toContain("'qwen'")
-  })
-
   it('offers Claude model brokering in STEP 4 so the conductor can downshift to save tokens', () => {
     const prompt = buildDefault()
     const step4Idx = prompt.indexOf('STEP 4')
@@ -186,12 +174,6 @@ describe('buildConductorPrompt', () => {
     expect(step4Block).toContain('--model sonnet')
     expect(step4Block).toContain('--model opus')
     expect(step4Block).toMatch(/conserve tokens/i)
-  })
-
-  it('warns against headless flags for Qwen Code (Gemini-fork)', () => {
-    const prompt = buildDefault()
-    expect(prompt).toContain('qwen -p "prompt"')
-    expect(prompt).toContain('qwen --sandbox')
   })
 
   // ---- shellType branch coverage (line 12) ----
@@ -257,6 +239,5 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('Claude Code')
     expect(prompt).toContain('OpenAI Codex')
     expect(prompt).toContain('Gemini CLI')
-    expect(prompt).toContain('Qwen Code')
   })
 })

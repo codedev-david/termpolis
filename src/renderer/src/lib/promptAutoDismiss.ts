@@ -1,6 +1,6 @@
 // Auto-dismiss AI agent onboarding/trust prompts.
 //
-// When the user launches Claude Code / Codex / Gemini / Qwen Code, each tool shows
+// When the user launches Claude Code / Codex / Gemini, each tool shows
 // one or more blocking prompts on first run that Termpolis should answer
 // automatically so users don't have to remember which key dismisses which
 // tool's safety dialog.
@@ -17,8 +17,6 @@
 //     - "Do you trust the files..."                      -> "1"  (Codex: 1 = Yes)
 //     - "Select an option" / "Type 1 to..."              -> "1"
 //   Gemini CLI
-//     - "Accept the terms" / "Authenticate with"         -> Enter (default)
-//   Qwen Code (Gemini-CLI fork)
 //     - "Accept the terms" / "Authenticate with"         -> Enter (default)
 //
 // This module is pure: no IPC, no state. Callers decide when to poll and how

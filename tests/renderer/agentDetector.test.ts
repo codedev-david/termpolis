@@ -38,12 +38,6 @@ describe('agentDetector', () => {
       expect(detectAgent('agy v1.0 starting')!.name).toBe('Gemini CLI')
     })
 
-    it('detects Qwen Code from output containing "qwen"', () => {
-      const result = detectAgent('qwen v0.35.0')
-      expect(result).not.toBeNull()
-      expect(result!.name).toBe('Qwen Code')
-    })
-
     it('returns null for regular terminal output', () => {
       expect(detectAgent('npm install completed successfully')).toBeNull()
     })
@@ -63,7 +57,7 @@ describe('agentDetector', () => {
 
     it('is case insensitive and first match wins', () => {
       // "CLAUDE" should match Claude Code first, even if other patterns could match later
-      const result = detectAgent('CLAUDE and QWEN running')
+      const result = detectAgent('CLAUDE and CODEX running')
       expect(result).not.toBeNull()
       expect(result!.name).toBe('Claude Code')
     })
@@ -87,9 +81,6 @@ describe('agentDetector', () => {
     it('maps agy (Antigravity CLI) to Gemini CLI', () => {
       expect(agentFromCommand('agy')!.name).toBe('Gemini CLI')
       expect(agentFromCommand('agy --dangerously-skip-permissions')!.name).toBe('Gemini CLI')
-    })
-    it('maps qwen to Qwen Code', () => {
-      expect(agentFromCommand('qwen')!.name).toBe('Qwen Code')
     })
     it('is case-insensitive and tolerates leading whitespace', () => {
       expect(agentFromCommand('  CLAUDE ')!.name).toBe('Claude Code')

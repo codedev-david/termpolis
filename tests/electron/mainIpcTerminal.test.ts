@@ -595,7 +595,7 @@ describe('terminal:write — always forwards, never withholds', () => {
     expect(mockWriteToTerminal).toHaveBeenCalledWith(id, 'claude\r')
   })
 
-  it.each(['codex', 'gemini', 'qwen'])('recognises `%s` as an agent launch too', (agent) => {
+  it.each(['codex', 'gemini'])('recognises `%s` as an agent launch too', (agent) => {
     const id = newId(`w-${agent}`)
     fire('terminal:write', { id, data: `${agent} --help\r` })
     expect(auditEvents()).toContainEqual(expect.objectContaining({ agent, event: 'terminal_open' }))

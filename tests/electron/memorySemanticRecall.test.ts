@@ -25,7 +25,7 @@ import { hasBundledModel } from './_modelFixture'
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 const { executeTool } = await import('../../src/main/mcpServer')
 
-// One server instance backs all four agents (Claude/Codex/Gemini/Qwen); these
+// One server instance backs all three agents (Claude/Codex/Gemini); these
 // handlers are the same the live server dispatches to.
 const handlers = (): McpToolHandlers => ({ memoryWrite, memorySearch, memoryList } as unknown as McpToolHandlers)
 

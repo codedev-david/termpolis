@@ -265,7 +265,6 @@ describe('PastAISessions', () => {
     expect(menu).toBeInTheDocument()
     expect(menu.textContent).toMatch(/Continue in Codex/)
     expect(menu.textContent).toMatch(/Continue in Gemini CLI/)
-    expect(menu.textContent).toMatch(/Continue in Qwen Code/)
     expect(menu.textContent).toMatch(/Continue in Claude Code/)
     expect(menu.textContent).toMatch(/Resume in active shell/)
     expect(menu.textContent).toMatch(/Inject context into active shell/)

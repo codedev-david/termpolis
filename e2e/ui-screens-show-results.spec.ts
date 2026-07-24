@@ -176,9 +176,9 @@ test.describe.serial('UI screens show visible results', () => {
   test('3. Sidebar lists all four built-in AI agents by name', async () => {
     await closeOverlays()
     // Agents sidebar is always mounted; these are the four canonical
-    // profile names. All four MUST be visible — a missing one means
+    // profile names. All three MUST be visible — a missing one means
     // the profile list regressed.
-    for (const name of ['Claude Code', 'OpenAI Codex', 'Gemini CLI', 'Qwen Code']) {
+    for (const name of ['Claude Code', 'OpenAI Codex', 'Gemini CLI']) {
       await expect(
         page.locator(`text=${name}`).first(),
       ).toBeVisible({ timeout: 5000 })

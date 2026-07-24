@@ -766,7 +766,7 @@ export function SecuritySettings() {
         <p>
           Termpolis is provided <strong>"AS IS" without warranty of any kind</strong>, express or implied (see the Apache 2.0 LICENSE shipped with this build).
           The training-disposition facts shown above are summaries of public provider terms as of the build date; they may change without notice.
-          Termpolis does not control, audit, or guarantee the data-handling practices of any third-party AI provider (Anthropic, OpenAI, Google, Alibaba/DashScope, Ollama, or any future provider).
+          Termpolis does not control, audit, or guarantee the data-handling practices of any third-party AI provider (Anthropic, OpenAI, Google, Ollama, or any future provider).
         </p>
         <p>
           The secret scanner uses regular expressions tuned for well-shaped secrets. <strong>It is not a comprehensive DLP solution.</strong>

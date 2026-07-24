@@ -717,7 +717,7 @@ describe('agents:detect', () => {
   it('reports every agent id the sidebar asks about, with gemini aliased to the agy CLI', async () => {
     M.execSync.mockReturnValue(Buffer.from('found'))
     const r = await invoke('agents:detect')
-    expect(Object.keys(r.data).sort()).toEqual(['agy', 'claude', 'codex', 'gemini', 'qwen-code'])
+    expect(Object.keys(r.data).sort()).toEqual(['agy', 'claude', 'codex', 'gemini'])
     // Gemini's CLI IS agy now — the two ids must never disagree, or the sidebar offers a profile
     // whose binary Second Opinion says is missing.
     expect(r.data.gemini).toBe(r.data.agy)
@@ -753,11 +753,10 @@ describe('agents:detect', () => {
     // The e2e hook that lets Playwright open the InstallHint modal deterministically. It has to
     // win over a real detection, or the modal never opens on a dev box that has the agent.
     M.execSync.mockReturnValue(Buffer.from('/usr/bin/claude')) // detection would say "installed"
-    process.env.TERMPOLIS_FORCE_MISSING_AGENTS = 'claude, qwen-code'
+    process.env.TERMPOLIS_FORCE_MISSING_AGENTS = 'claude'
     try {
       const r = await invoke('agents:detect')
       expect(r.data.claude).toBe(false)
-      expect(r.data['qwen-code']).toBe(false)
       expect(r.data.codex).toBe(true) // untouched
     } finally {
       delete process.env.TERMPOLIS_FORCE_MISSING_AGENTS
@@ -1352,7 +1351,7 @@ describe('agent:second-opinion — the scraped prompt never reaches a shell', ()
     armSpawn((c) => { c.stdout.emit('data', Buffer.from('ok')); c.emit('close', 0) })
     let r: any
     await withPlatform('linux', async () => {
-      r = await invoke('agent:second-opinion', { agent: 'qwen' })
+      r = await invoke('agent:second-opinion', { agent: 'claude' })
     })
     expect(r.success).toBe(true)
     const argv = M.spawn.mock.calls[0][1] as string[]

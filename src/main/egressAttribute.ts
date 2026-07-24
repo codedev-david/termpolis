@@ -40,7 +40,7 @@
 //     verdict is an audit entry for the human to review, never a block — and why
 //     the TTL is short enough to track rotation but long enough not to be a DNS
 //     storm.
-//   - Several allowlist apexes (githubusercontent.com, aliyuncs.com) have no A
+//   - Several allowlist apexes (e.g. githubusercontent.com) have no A
 //     record at all. NXDOMAIN on an individual host is the NORMAL case here, not
 //     an error — which is precisely why one failing lookup must never abort the
 //     refresh.
@@ -171,8 +171,8 @@ function allowlistJobs(): { rule: string; host: string }[] {
 
 /**
  * A + AAAA for one host. NEVER rejects: `allSettled` is the whole requirement —
- * githubusercontent.com has no A record, aliyuncs.com has no AAAA, and a single
- * NXDOMAIN must not take the other nineteen hosts down with it.
+ * githubusercontent.com has no A record, and a single
+ * NXDOMAIN must not take the other hosts down with it.
  */
 async function resolveHost(d: DnsDeps, host: string): Promise<string[]> {
   const [a, aaaa] = await Promise.allSettled([d.resolve4(host), d.resolve6(host)])

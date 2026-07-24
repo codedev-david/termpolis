@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchCustomKeybinding, customComboHasModifier, isEditableTarget } from '../../src/renderer/src/lib/keybindings'
+import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchCustomKeybinding, customComboHasModifier, isEditableTarget, RESERVED_COPY_ACTIONS, isReservedAction, isReservedCombo, withReservedDefaults } from '../../src/renderer/src/lib/keybindings'
 import type { CustomKeybinding } from '../../src/renderer/src/types'
 
 function key(overrides: Partial<KeyboardEvent>): KeyboardEvent {
@@ -157,17 +157,16 @@ describe('eventToKeybinding', () => {
 // ---------------------------------------------------------------------------
 
 describe('copyAsCodeBlock binding', () => {
-  it('defaults to Ctrl+Shift+M', () => {
-    expect(DEFAULT_KEYBINDINGS.copyAsCodeBlock).toBe('Ctrl+Shift+M')
+  it('defaults to the reserved Ctrl+Shift+Q', () => {
+    expect(DEFAULT_KEYBINDINGS.copyAsCodeBlock).toBe('Ctrl+Shift+Q')
   })
 
-  it('has a Slack/Teams-flavored label', () => {
-    expect(KEYBINDING_LABELS.copyAsCodeBlock).toMatch(/Slack/i)
-    expect(KEYBINDING_LABELS.copyAsCodeBlock).toMatch(/Teams/i)
+  it('has a code-block label', () => {
+    expect(KEYBINDING_LABELS.copyAsCodeBlock).toMatch(/code block/i)
   })
 
-  it('matches a real Ctrl+Shift+M event', () => {
-    expect(matchesKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'M' }), 'Ctrl+Shift+M')).toBe(true)
+  it('matches a real Ctrl+Shift+Q event', () => {
+    expect(matchesKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'Q' }), 'Ctrl+Shift+Q')).toBe(true)
   })
 
   it('every default has a label', () => {
@@ -178,22 +177,107 @@ describe('copyAsCodeBlock binding', () => {
 })
 
 // ---------------------------------------------------------------------------
+// copyForMessage binding (Copy for Teams/Slack) — added v1.30.3
+// ---------------------------------------------------------------------------
+
+describe('copyForMessage binding (Teams/Slack)', () => {
+  it('defaults to the reserved Ctrl+Shift+K', () => {
+    expect(DEFAULT_KEYBINDINGS.copyForMessage).toBe('Ctrl+Shift+K')
+  })
+
+  it('has a Teams/Slack label', () => {
+    expect(KEYBINDING_LABELS.copyForMessage).toMatch(/Teams/i)
+    expect(KEYBINDING_LABELS.copyForMessage).toMatch(/Slack/i)
+  })
+
+  it('matches a real Ctrl+Shift+K event', () => {
+    expect(matchesKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'K' }), 'Ctrl+Shift+K')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reserved copy actions — the three copy hotkeys are fixed defaults that a
+// custom keybinding can never claim or override. (v1.30.3)
+// ---------------------------------------------------------------------------
+
+describe('reserved copy actions', () => {
+  it('reserves copy, copyForMessage and copyAsCodeBlock', () => {
+    expect([...RESERVED_COPY_ACTIONS].sort()).toEqual(['copy', 'copyAsCodeBlock', 'copyForMessage'])
+  })
+
+  it('isReservedAction is true for the three copy actions and false otherwise', () => {
+    expect(isReservedAction('copy')).toBe(true)
+    expect(isReservedAction('copyForMessage')).toBe(true)
+    expect(isReservedAction('copyAsCodeBlock')).toBe(true)
+    expect(isReservedAction('paste')).toBe(false)
+    expect(isReservedAction('toggleSidebar')).toBe(false)
+  })
+
+  it('pins the reserved combos to Ctrl+Shift+C / K / Q', () => {
+    expect(DEFAULT_KEYBINDINGS.copy).toBe('Ctrl+Shift+C')
+    expect(DEFAULT_KEYBINDINGS.copyForMessage).toBe('Ctrl+Shift+K')
+    expect(DEFAULT_KEYBINDINGS.copyAsCodeBlock).toBe('Ctrl+Shift+Q')
+  })
+
+  it('a custom keybinding cannot claim a reserved copy combo', () => {
+    expect(findKeybindingConflict('Ctrl+Shift+K', DEFAULT_KEYBINDINGS, [])).toBe('Copy for Teams/Slack')
+    expect(findKeybindingConflict('Ctrl+Shift+Q', DEFAULT_KEYBINDINGS, [])).toBe('Copy as Code Block')
+  })
+
+  it('isReservedCombo recognises the three reserved combos, order-insensitively', () => {
+    expect(isReservedCombo('Ctrl+Shift+C')).toBe(true)
+    expect(isReservedCombo('Ctrl+Shift+K')).toBe(true)
+    expect(isReservedCombo('Ctrl+Shift+Q')).toBe(true)
+    // normalization: modifier order must not matter
+    expect(isReservedCombo('Shift+Ctrl+C')).toBe(true)
+  })
+
+  it('isReservedCombo is false for non-reserved and empty combos', () => {
+    expect(isReservedCombo('Ctrl+Shift+V')).toBe(false)
+    expect(isReservedCombo('Ctrl+C')).toBe(false)
+    expect(isReservedCombo('Ctrl+Alt+C')).toBe(false)
+    expect(isReservedCombo('')).toBe(false)
+  })
+})
+
+describe('withReservedDefaults', () => {
+  it('forces reserved copy combos back to their defaults, even against stale persisted values', () => {
+    // Simulate an upgrade from a build where copyAsCodeBlock was Ctrl+Shift+M and
+    // a user had somehow remapped copy — both must snap back to the reserved combos.
+    const persisted = { copy: 'Ctrl+X', copyForMessage: 'Ctrl+Y', copyAsCodeBlock: 'Ctrl+Shift+M' }
+    const kb = withReservedDefaults(persisted)
+    expect(kb.copy).toBe('Ctrl+Shift+C')
+    expect(kb.copyForMessage).toBe('Ctrl+Shift+K')
+    expect(kb.copyAsCodeBlock).toBe('Ctrl+Shift+Q')
+  })
+
+  it('preserves non-reserved persisted overrides', () => {
+    const kb = withReservedDefaults({ toggleSidebar: 'Ctrl+Alt+B', newTerminal: 'Ctrl+Alt+T' })
+    expect(kb.toggleSidebar).toBe('Ctrl+Alt+B')
+    expect(kb.newTerminal).toBe('Ctrl+Alt+T')
+  })
+
+  it('returns the full defaults for null/undefined input', () => {
+    expect(withReservedDefaults(null)).toEqual(DEFAULT_KEYBINDINGS)
+    expect(withReservedDefaults(undefined)).toEqual(DEFAULT_KEYBINDINGS)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // launchAgent1..4 bindings (per-agent launch shortcuts)
 // ---------------------------------------------------------------------------
 
 describe('launchAgent bindings', () => {
-  it('default to Ctrl+1 through Ctrl+4', () => {
+  it('default to Ctrl+1 through Ctrl+3', () => {
     expect(DEFAULT_KEYBINDINGS.launchAgent1).toBe('Ctrl+1')
     expect(DEFAULT_KEYBINDINGS.launchAgent2).toBe('Ctrl+2')
     expect(DEFAULT_KEYBINDINGS.launchAgent3).toBe('Ctrl+3')
-    expect(DEFAULT_KEYBINDINGS.launchAgent4).toBe('Ctrl+4')
   })
 
-  it('name the four default agents in their labels', () => {
+  it('name the three default agents in their labels', () => {
     expect(KEYBINDING_LABELS.launchAgent1).toMatch(/Claude/i)
     expect(KEYBINDING_LABELS.launchAgent2).toMatch(/Codex/i)
     expect(KEYBINDING_LABELS.launchAgent3).toMatch(/Gemini/i)
-    expect(KEYBINDING_LABELS.launchAgent4).toMatch(/Qwen/i)
   })
 
   it('Ctrl+1 default actually matches a real Ctrl+1 event (digit survives the matcher)', () => {
@@ -263,8 +347,8 @@ describe('matchLaunchAgentSlot', () => {
     expect(matchLaunchAgentSlot(key({ ctrlKey: true, key: '1' }), DEFAULT_KEYBINDINGS)).toBe(0)
   })
 
-  it('returns slot 3 for the launchAgent4 combo (Ctrl+4)', () => {
-    expect(matchLaunchAgentSlot(key({ ctrlKey: true, key: '4' }), DEFAULT_KEYBINDINGS)).toBe(3)
+  it('returns null for the retired launchAgent4 combo (Ctrl+4)', () => {
+    expect(matchLaunchAgentSlot(key({ ctrlKey: true, key: '4' }), DEFAULT_KEYBINDINGS)).toBeNull()
   })
 
   it('returns null when no launch slot matches', () => {
@@ -290,6 +374,20 @@ describe('matchCustomKeybinding', () => {
 
   it('returns the matching custom binding', () => {
     expect(matchCustomKeybinding(key({ ctrlKey: true, altKey: true, key: 'l' }), custom)?.id).toBe('c2')
+  })
+
+  it('never matches a custom binding parked on a reserved copy combo', () => {
+    // Defense in depth: even if a custom binding somehow carries a reserved combo
+    // (stale import, hand-edited store), it must never fire — the reserved copy
+    // action owns Ctrl+Shift+C / K / Q and can never be overridden.
+    const shadowing: CustomKeybinding[] = [
+      { id: 'x1', label: 'Evil Copy', combo: 'Ctrl+Shift+C', text: 'rm -rf', runOnSend: true },
+      { id: 'x2', label: 'Evil Teams', combo: 'Ctrl+Shift+K', text: 'nope', runOnSend: true },
+      { id: 'x3', label: 'Evil Block', combo: 'Ctrl+Shift+Q', text: 'nope', runOnSend: true },
+    ]
+    expect(matchCustomKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'C' }), shadowing)).toBeNull()
+    expect(matchCustomKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'K' }), shadowing)).toBeNull()
+    expect(matchCustomKeybinding(key({ ctrlKey: true, shiftKey: true, key: 'Q' }), shadowing)).toBeNull()
   })
 
   it('returns null when nothing matches', () => {

@@ -34,7 +34,7 @@ import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { startRepoResweep } from './hooks/useAutoCodeIndex'
 import { useShallow } from 'zustand/react/shallow'
-import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, DEFAULT_KEYBINDINGS } from './lib/keybindings'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, withReservedDefaults } from './lib/keybindings'
 import { primaryModifier } from './lib/platform'
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
 import { sanitizeVoiceSettings } from './lib/voice/voicePipeline'
@@ -121,7 +121,9 @@ export default function App() {
           defaultShell: ds,
           viewMode: resolvedVm,
           activeTerminalId: saved[0]?.id ?? null,
-          keybindings: { ...DEFAULT_KEYBINDINGS, ...(kb ?? {}) },
+          // withReservedDefaults forces the reserved copy hotkeys (Ctrl+Shift+C/K/Q)
+          // back to their fixed defaults, so a stale persisted combo can't survive upgrade.
+          keybindings: withReservedDefaults(kb),
           customKeybindings: cz ?? [],
           voiceSettings: sanitizeVoiceSettings(vsRaw),
           allowAppMouseControl: amc ?? false,
@@ -136,7 +138,6 @@ export default function App() {
           'Claude Code': 'claude',
           'OpenAI Codex': 'codex',
           'Gemini CLI': 'gemini',
-          'Qwen Code': 'qwen',
         }
         const resolvedSaved = saved.map(t => ({
           ...t,
@@ -174,7 +175,7 @@ export default function App() {
             for (const t of codexTerminals) {
               setTimeout(() => window.termpolis.writeToTerminal(t.id, '1\r'), testDelay(10000))
             }
-            const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini' || t.agentCommand?.startsWith('qwen'))
+            const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini')
             setTimeout(() => setLaunchingAgent(null), testDelay(hasSlowAgent ? 15000 : 8000))
           } else {
             // No agent terminals — just show terminals after a brief shell init
@@ -371,7 +372,7 @@ export default function App() {
       }
 
       // Launch an AI agent by slot (Ctrl+1..4 by default → first four profiles,
-      // which are always the built-in Claude/Codex/Gemini/Qwen). This window
+      // which are always the built-in Claude/Codex/Gemini). This window
       // path runs when NO terminal is focused; a focused terminal routes through
       // TerminalPane → the 'termpolis:launch-agent-slot' listener below.
       const launchSlot = matchLaunchAgentSlot(e, kb)
@@ -564,7 +565,7 @@ export default function App() {
       const isClaudeAgent = /claude/i.test(agentName)
 
       // Start bridge for non-MCP agents (output monitoring + signal detection)
-      // Claude Code has native MCP, but others (Codex, Gemini, Qwen Code) need the bridge
+      // Claude Code has native MCP, but others (Codex, Gemini) need the bridge
       if (!isClaudeAgent) {
         startBridgeForAgent(data.id, agentName)
       }
@@ -675,7 +676,7 @@ export default function App() {
   }, [])
 
   // Prompt auto-dismiss for regular (non-swarm) AI agent terminals.
-  // When a user launches Claude / Codex / Gemini / Qwen Code from the sidebar,
+  // When a user launches Claude / Codex / Gemini from the sidebar,
   // each tool shows first-run prompts (folder trust, MCP server trust,
   // "Press Enter to continue" splash). The swarm loop above handles this for
   // swarm-tracked agents; this loop covers everyone else. Two small loops
@@ -847,7 +848,6 @@ export default function App() {
     claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
     codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
     gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
-    'qwen-code': { name: 'Qwen Code', command: 'qwen', color: '#A855F7' },
   }
 
   const handleWelcomeLaunchAgent = async (agentId: string) => {
@@ -873,7 +873,7 @@ export default function App() {
       if (config.command.startsWith('codex')) {
         setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(10000))
       }
-      const dismissMs = (agentId === 'gemini' || agentId === 'qwen-code') ? 15000 : 8000
+      const dismissMs = agentId === 'gemini' ? 15000 : 8000
       setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
     } else {
       setLaunchingAgent(null)

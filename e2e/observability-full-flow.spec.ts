@@ -9,7 +9,7 @@
  *   4. Redundancy Panel  — Ctrl+Shift+D, refresh, close, empty-state
  *   5. Efficiency Panel  — Ctrl+Shift+Y, refresh, close, empty-state
  *   6. Event Bus         — query, stats, ring-buffer, transcript watcher IPC
- *   7. Pressure lib      — model-specific thresholds (opus/sonnet/gemini/qwen)
+ *   7. Pressure lib      — model-specific thresholds (opus/sonnet/gemini)
  *   8. Redundancy lib    — duplicate-command and duplicate-file detection
  *   9. Efficiency lib    — per-agent aggregation, error-rate, token totals
  *
@@ -485,14 +485,12 @@ test.describe.serial('7. Pressure computation library', () => {
         opus: lib.resolveWindowSize('claude-opus-4-7').tokens,
         sonnet: lib.resolveWindowSize('claude-sonnet-4-6').tokens,
         gemini: lib.resolveWindowSize('gemini-2.5-pro').tokens,
-        qwen: lib.resolveWindowSize('qwen2.5-coder').tokens,
       }
     })
     expect(sizes.opus).toBe(200_000)
     expect(sizes.sonnet).toBe(200_000)
     // gemini-2.5 should hit the Gemini 1M tier
     expect(sizes.gemini).toBeGreaterThanOrEqual(128_000)
-    expect(sizes.qwen).toBe(32_768)
   })
 
   test('7.6 extractTokensFromEvents uses max across token_update events', async () => {

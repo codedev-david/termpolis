@@ -97,7 +97,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
               <h3 className="text-base font-medium text-[#22D3EE]">What Termpolis is</h3>
               <p>
                 Termpolis is a terminal that knows how to launch and coordinate AI coding
-                agents (Claude Code, Codex, Gemini CLI, Qwen Code) in one window. Each agent
+                agents (Claude Code, Codex, Gemini CLI) in one window. Each agent
                 runs in its own pane; you can drive one at a time or orchestrate a swarm of
                 them.
               </p>
@@ -126,10 +126,9 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
                 <div><span className="text-[#22D3EE]">Anthropic (Claude Code):</span> <code className="text-[#d4d4d4]">ANTHROPIC_API_KEY</code></div>
                 <div><span className="text-[#22D3EE]">OpenAI (Codex):</span> <code className="text-[#d4d4d4]">OPENAI_API_KEY</code></div>
                 <div><span className="text-[#22D3EE]">Google AI Studio:</span> <code className="text-[#d4d4d4]">GEMINI_API_KEY</code></div>
-                <div><span className="text-[#22D3EE]">Alibaba DashScope:</span> <code className="text-[#d4d4d4]">DASHSCOPE_API_KEY</code></div>
               </div>
               <p className="text-xs text-[#9ca3af]">
-                Pick one provider to start — you don't need all four. Add the export to
+                Pick one provider to start — you don't need all three. Add the export to
                 your <code>~/.bashrc</code>, <code>~/.zshrc</code>, or PowerShell profile,
                 restart Termpolis, and the env var is inherited everywhere.
               </p>

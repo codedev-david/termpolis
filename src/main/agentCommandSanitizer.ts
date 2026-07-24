@@ -5,7 +5,6 @@ export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
   'codex': 'codex --full-auto',
   'agy': 'agy --dangerously-skip-permissions', // Gemini via the Antigravity CLI (autonomous swarm worker → auto-approve, like Claude)
   'gemini': 'gemini', // legacy fallback
-  'qwen': 'qwen',
 }
 
 // The ONLY model aliases the model broker may pass through `--model`, per agent.

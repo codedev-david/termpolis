@@ -86,7 +86,7 @@ export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Pro
 }
 
 /**
- * Reflex for a SOLO agent session (Claude/Codex/Gemini/Qwen), where the caller has
+ * Reflex for a SOLO agent session (Claude/Codex/Gemini), where the caller has
  * already assembled an Episode from the live transcript (see mnemeSession). Unlike a
  * swarm task, a solo session carries no explicit pass/fail, so competence is recorded
  * ONLY when the episode has a confidently-inferred outcome; reflection still runs on

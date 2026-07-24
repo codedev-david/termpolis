@@ -10,20 +10,18 @@ interface Props {
   onClose: () => void
 }
 
-type HandoffAgent = 'claude' | 'codex' | 'gemini' | 'qwen'
+type HandoffAgent = 'claude' | 'codex' | 'gemini'
 
 const AGENT_COMMANDS: Record<HandoffAgent, string> = {
   claude: 'claude',
   codex: 'codex',
   gemini: 'gemini',
-  qwen: 'qwen',
 }
 
 const AGENT_LABELS: Record<HandoffAgent, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
   gemini: 'Gemini CLI',
-  qwen: 'Qwen Code',
 }
 
 function formatRelative(ts: number): string {
@@ -41,7 +39,7 @@ function projectLabel(cwd: string): string {
 }
 
 // Wrap a multi-line prompt in xterm bracketed-paste markers so the receiving
-// AI CLI (Claude Code, Codex, Gemini CLI, Qwen Code — all of which run TUI
+// AI CLI (Claude Code, Codex, Gemini CLI — all of which run TUI
 // frontends with bracketed-paste enabled) treats it as a single paste rather
 // than dispatching one keypress / submit per embedded newline. This is the
 // fix for "the AI got confused by what looked like a bunch of random commands"
@@ -74,7 +72,7 @@ export function PastAISessions({ open, onClose }: Props) {
   // Inject only works when the focused tab is actually an AI agent — pasting
   // a multi-paragraph CONTEXT HANDOFF prompt into bash/PowerShell just dumps
   // a giant garbled command at the prompt. `agentCommand` is set on terminals
-  // launched as Claude / Codex / Gemini / Qwen.
+  // launched as Claude / Codex / Gemini.
   const activeIsAIShell = !!terminals?.find(t => t.id === activeTerminalId)?.agentCommand
 
   useEffect(() => {
@@ -181,7 +179,7 @@ export function PastAISessions({ open, onClose }: Props) {
           return
         }
         if (!activeIsAIShell) {
-          setStatusMsg('Active shell is not an AI agent — open a Claude/Codex/Gemini/Qwen tab first.')
+          setStatusMsg('Active shell is not an AI agent — open a Claude/Codex/Gemini tab first.')
           return
         }
         // Write the prompt without a trailing CR — let the user review and submit.
@@ -330,7 +328,7 @@ export function PastAISessions({ open, onClose }: Props) {
                         data-testid="past-ai-session-handoff-menu"
                       >
                         <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-[#7ee2a3]">Cross-AI handoff</div>
-                        {(['codex', 'gemini', 'qwen', 'claude'] as HandoffAgent[]).map(target => (
+                        {(['codex', 'gemini', 'claude'] as HandoffAgent[]).map(target => (
                           <button
                             key={target}
                             onClick={() => { setHandoffMenu(null); handoff(s, target) }}
@@ -363,7 +361,7 @@ export function PastAISessions({ open, onClose }: Props) {
                             !activeTerminalId
                               ? 'Open an AI agent terminal first'
                               : !activeIsAIShell
-                                ? 'Active shell is not an AI agent — open a Claude/Codex/Gemini/Qwen tab first'
+                                ? 'Active shell is not an AI agent — open a Claude/Codex/Gemini tab first'
                                 : 'Paste this session\'s context summary into the focused AI terminal'
                           }
                           data-testid="past-ai-session-inject-btn"

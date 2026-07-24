@@ -450,7 +450,7 @@ describe('MCP HTTP server', () => {
     expect(body.result).toEqual({})
   })
 
-  it('ping returns empty result (Qwen Code mcp list connection check)', async () => {
+  it('ping returns empty result (agent mcp list connection check)', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',
       method: 'ping',
