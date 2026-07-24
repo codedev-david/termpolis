@@ -104,14 +104,16 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     await expect(page.locator('.xterm-rows')).toContainText(MARKER, { timeout: 15000 })
   })
 
-  // --- COPY: select terminal text, right-click a Copy variant, read the REAL OS
-  // clipboard. Copy reads xterm's BUFFER model (term.getSelection()), so it works
-  // headlessly regardless of the GPU/canvas renderer. (Copy as Image uses a WebGL
-  // canvas capture that xvfb can't reliably produce, so it's exercised by the unit
-  // test for the clipboard:write-image IPC, not here.) ---
+  // --- COPY: select terminal text, press a RESERVED Copy hotkey, read the REAL OS
+  // clipboard. As of v1.30.3 the greyed-area right-click Copy items were removed and
+  // copy is hotkey-only (Ctrl+Shift+C / +K / +Q), so these drive the keyboard. Copy
+  // reads xterm's BUFFER model (term.getSelection()), so it works headlessly
+  // regardless of the GPU/canvas renderer. (Copy as Image uses a WebGL canvas capture
+  // that xvfb can't reliably produce, so it's exercised by the unit test for the
+  // clipboard:write-image IPC, not here.) ---
 
-  /** Put `marker` on a clean top line and triple-click to select that line.
-   *  Returns the click point so the caller can right-click the same spot. */
+  /** Put `marker` on a clean top line and triple-click to select it, leaving the
+   *  xterm textarea focused so a reserved Copy hotkey acts on the live selection. */
   async function selectMarkerLine(marker: string): Promise<{ x: number; y: number }> {
     const term = page.locator('.xterm').first()
     await term.click() // focus xterm
@@ -131,26 +133,29 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
 
   const readClip = () => app.evaluate(async ({ clipboard }) => clipboard.readText())
 
-  test('right-click Copy puts the selected terminal text on the real clipboard', async () => {
+  test('Ctrl+Shift+C copies the selected terminal text to the real clipboard', async () => {
     const marker = 'zz_copy_plain_71'
-    const pt = await selectMarkerLine(marker)
+    await selectMarkerLine(marker)
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__')) // prove freshness
-    await page.mouse.click(pt.x, pt.y, { button: 'right' })
-    const menu = page.locator('[data-testid="terminal-context-menu"]')
-    await expect(menu).toBeVisible({ timeout: 5000 })
-    await menu.locator('button').filter({ hasText: 'Copy' }).first().click() // plain "Copy"
+    await page.keyboard.press('Control+Shift+C') // reserved plain-Copy hotkey
     await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
   })
 
-  test('right-click "Copy as Code Block" writes the markdown form to the clipboard', async () => {
+  test('Ctrl+Shift+Q copies the selection as a markdown code block', async () => {
     const marker = 'zz_copy_codeblock_72'
-    const pt = await selectMarkerLine(marker)
+    await selectMarkerLine(marker)
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__'))
-    await page.mouse.click(pt.x, pt.y, { button: 'right' })
-    const menu = page.locator('[data-testid="terminal-context-menu"]')
-    await expect(menu).toBeVisible({ timeout: 5000 })
-    await menu.locator('button').filter({ hasText: 'Copy as Code Block' }).click()
-    // The plain-text flavor is a ```-fenced block that contains the selected line.
+    await page.keyboard.press('Control+Shift+Q') // reserved Copy-as-Code-Block hotkey
+    // The text/plain flavor is a ```-fenced block that contains the selected line.
+    await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
+  })
+
+  test('Ctrl+Shift+K copies the selection as a Teams/Slack message', async () => {
+    const marker = 'zz_copy_teams_73'
+    await selectMarkerLine(marker)
+    await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__'))
+    await page.keyboard.press('Control+Shift+K') // reserved Copy-for-Teams/Slack hotkey
+    // Message form reflows wrapped lines (no hard returns) but preserves the token.
     await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
   })
 })

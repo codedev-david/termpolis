@@ -8,7 +8,7 @@
  * gracefully with the Claude-Code-Required pitch (not silently hang or
  * produce a JavaScript exception).
  *
- * Deterministic via TERMPOLIS_FORCE_MISSING_AGENTS forcing all four ids
+ * Deterministic via TERMPOLIS_FORCE_MISSING_AGENTS forcing all three ids
  * missing regardless of the dev machine's real install state.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -118,14 +118,15 @@ test.describe.serial('First-run with zero agents installed', () => {
     await expect(page.locator('button:has-text("Start Swarm")').first()).toBeVisible()
   })
 
-  test('all four agents show "Install" badges in the picker', async () => {
+  test('all three agents show "Install" badges in the picker', async () => {
     await page.locator('button:has-text("Launch AI Agent")').first().click()
     await page.waitForTimeout(400)
     // Install badges appear ONLY for not-installed agents. With all forced
-    // missing, we expect at least four — one per agent in AGENT_OPTIONS.
+    // missing, we expect at least three — one per agent in AGENT_OPTIONS
+    // (Claude Code, Codex, Gemini CLI; Qwen was removed in v1.30.3).
     const installBadges = page.locator('span:has-text("Install")')
     const count = await installBadges.count()
-    expect(count, 'expected an Install badge per agent row').toBeGreaterThanOrEqual(4)
+    expect(count, 'expected an Install badge per agent row').toBeGreaterThanOrEqual(3)
     await ss('2-picker-all-install')
   })
 

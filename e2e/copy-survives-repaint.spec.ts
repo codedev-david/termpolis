@@ -34,7 +34,13 @@ let page: Page
 let ud: string
 const MARKER = 'COPYSURVIVESQQ'
 
-test.describe.serial('right-click Copy keeps working in a repainting mouse-tracking TUI', () => {
+// UPDATE (v1.30.3): the right-click Copy item in the greyed selection area was REMOVED at David's
+// request ("just remove the right click feature in the greyed out area, just put the hotkeys").
+// Copy is now hotkey-only (Ctrl+Shift+C), which reads the LIVE xterm selection — so this test now
+// drives that hotkey instead of a menu button. The buried-selection assertion still holds:
+// getSelection() survives the repaint (see the honesty note above; Copy worked in every repro), so
+// the live read still finds the marker even after the redraw visually buries it.
+test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-tracking TUI', () => {
   test.setTimeout(180_000)
 
   test.beforeAll(async () => {
@@ -62,7 +68,7 @@ test.describe.serial('right-click Copy keeps working in a repainting mouse-track
     try { fs.rmSync(ud, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  test('smoke: select + right-click Copy still reaches the clipboard', async () => {
+  test('smoke: select + Ctrl+Shift+C still reaches the clipboard after a repaint', async () => {
     await page.locator('button:has-text("+ Add Terminal")').first().click()
     await page.waitForTimeout(500)
     await page.locator('h2:has-text("New Terminal")').locator('..').locator('input').first().fill('RepaintCopy')
@@ -115,17 +121,11 @@ test.describe.serial('right-click Copy keeps working in a repainting mouse-track
     // the repaint lands squarely on the selection. This is the state a Claude Code user is in.
     await page.waitForTimeout(12000)
 
-    // THE POINT: xterm's selection is very likely gone by now. The user's INTENT is not, and a
-    // context menu must never be less capable than the keyboard shortcut printed next to it.
-    await page.mouse.click((x0 + x1) / 2, y, { button: 'right' })
-    const menu = page.locator('[data-testid="terminal-context-menu"]')
-    await expect(menu).toBeVisible({ timeout: 6000 })
-
-    const copyBtn = menu.locator('button').filter({ hasText: /^Copy/ }).first()
-    // A Copy that LOOKS clickable and does nothing is the bug wearing a disguise. It must either
-    // work, or visibly say it cannot.
-    await expect(copyBtn).toBeEnabled()
-    await copyBtn.click()
+    // THE POINT: xterm's selection may be visually buried by the repaint by now, but the live
+    // buffer selection survives it. The reserved Copy hotkey reads that live selection, so the
+    // user's INTENT to copy still lands on the clipboard even after 12s of in-place rewriting —
+    // a hotkey must never be less capable than the keyboard shortcut printed next to it.
+    await page.keyboard.press('Control+Shift+C')
 
     await expect.poll(
       async () => app.evaluate(async ({ clipboard }) => clipboard.readText()),
