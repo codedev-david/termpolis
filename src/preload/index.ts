@@ -8,6 +8,14 @@ const api: TermpolisAPI = {
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),
 
+  listWorkflows: (cwd) => ipcRenderer.invoke('workflow:list', { cwd }),
+  readWorkflow: (cwd, id) => ipcRenderer.invoke('workflow:read', { cwd, id }),
+  saveWorkflow: (cwd, workflow) => ipcRenderer.invoke('workflow:save', { cwd, workflow }),
+  deleteWorkflow: (cwd, id) => ipcRenderer.invoke('workflow:delete', { cwd, id }),
+  runWorkflow: (cwd, id) => ipcRenderer.invoke('workflow:run', { cwd, id }),
+  cancelWorkflow: (runId) => ipcRenderer.invoke('workflow:cancel', { runId }),
+  onWorkflowRunEvent: (cb) => { const h = (_: unknown, e: import('../renderer/src/types').WorkflowRunEvent) => cb(e); ipcRenderer.on('workflow:run-event', h); return () => ipcRenderer.removeListener('workflow:run-event', h) },
+
   writeToTerminal: (id, data) =>
     ipcRenderer.send('terminal:write', { id, data }),
 

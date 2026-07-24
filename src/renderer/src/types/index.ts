@@ -168,6 +168,13 @@ export interface ProxyTotalsView {
 export interface TermpolisAPI {
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
+  listWorkflows: (cwd: string) => Promise<IpcResponse<{ id: string; name: string }[]>>
+  readWorkflow: (cwd: string, id: string) => Promise<IpcResponse<Workflow>>
+  saveWorkflow: (cwd: string, workflow: Workflow) => Promise<IpcResponse<void>>
+  deleteWorkflow: (cwd: string, id: string) => Promise<IpcResponse<void>>
+  runWorkflow: (cwd: string, id: string) => Promise<IpcResponse<{ runId: string }>>
+  cancelWorkflow: (runId: string) => Promise<IpcResponse<void>>
+  onWorkflowRunEvent: (cb: (event: WorkflowRunEvent) => void) => () => void
   writeToTerminal: (id: string, data: string) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
   onTerminalData: (cb: (id: string, data: string) => void) => () => void
@@ -562,6 +569,57 @@ export interface VectorRamInfo {
   /** The persisted choice — what will be applied at the next launch. */
   persisted: boolean
 }
+
+// ─── Workflow Orchestrator ───────────────────────────────────────────────
+// Deterministic local automation: command/agent/skill/control step pipeline.
+export type WorkflowStepType = 'command' | 'agent' | 'skill' | 'control'
+export type WorkflowTriggerType = 'manual' | 'schedule' | 'gitPush' | 'fileWatch'
+export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
+export type RunStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface WorkflowTrigger { type: WorkflowTriggerType; config?: Record<string, string> }
+
+export interface CommandStep {
+  id: string; type: 'command'; name: string; when?: string
+  source: 'inline' | 'file'; command?: string; scriptPath?: string
+  shell?: ShellType; cwd?: string; timeoutMs?: number; visible?: boolean; continueOnError?: boolean
+}
+export interface AgentStep {
+  id: string; type: 'agent'; name: string; when?: string
+  agent: 'claude' | 'codex' | 'gemini'; prompt: string; cwd?: string
+  idleMs?: number; timeoutMs?: number; doneMarker?: string; continueOnError?: boolean
+}
+export interface SkillStep {
+  id: string; type: 'skill'; name: string; when?: string
+  tool: string; args?: Record<string, unknown>; timeoutMs?: number; continueOnError?: boolean
+}
+export interface ControlStep {
+  id: string; type: 'control'; name: string; when?: string
+  action: 'wait' | 'branch' | 'loop' | 'notify'; config: Record<string, string | number>
+}
+export type WorkflowStep = CommandStep | AgentStep | SkillStep | ControlStep
+
+export interface Workflow {
+  id: string; name: string; description?: string; version: 1
+  trigger: WorkflowTrigger; steps: WorkflowStep[]
+}
+
+export interface StepResult {
+  stepId: string; status: StepStatus; exitCode?: number; output: string
+  startedAt?: number; endedAt?: number; iteration?: number; error?: string
+}
+export interface WorkflowRun {
+  runId: string; workflowId: string; status: RunStatus
+  steps: StepResult[]; startedAt: number; endedAt?: number
+}
+
+export type WorkflowRunEvent =
+  | { type: 'run:started'; runId: string; workflowId: string; at: number }
+  | { type: 'step:started'; runId: string; stepId: string; at: number }
+  | { type: 'step:output'; runId: string; stepId: string; chunk: string }
+  | { type: 'step:status'; runId: string; stepId: string; status: StepStatus }
+  | { type: 'step:finished'; runId: string; stepId: string; result: StepResult }
+  | { type: 'run:finished'; runId: string; status: RunStatus; at: number }
 
 declare global {
   interface Window {
