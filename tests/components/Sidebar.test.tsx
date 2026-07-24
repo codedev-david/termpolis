@@ -24,6 +24,8 @@ function getDefaultState() {
     swarmAgents: [],
     workspaces: [],
     aiProfiles: [],
+    workflows: [],
+    activeRuns: {},
     addTerminal: mockAddTerminal,
     removeTerminal: mockRemoveTerminal,
     updateTerminal: mockUpdateTerminal,
@@ -426,5 +428,36 @@ describe('Sidebar', () => {
     const { container } = render(<Sidebar />)
     const indicator = container.querySelector('.animate-pulse')
     expect(indicator).toBeInTheDocument()
+  })
+
+  // -- Workflow orchestrator section + overlay --
+
+  it('the legacy fa-cubes workflow toolbar button is gone', () => {
+    render(<Sidebar />)
+    expect(document.querySelector('.fa-cubes')).toBeNull()
+  })
+
+  it('renders the Workflows sidebar section header', () => {
+    render(<Sidebar />)
+    expect(screen.getByText('Workflows')).toBeInTheDocument()
+  })
+
+  it('New Workflow opens the workflow overlay, and Close dismisses it', () => {
+    render(<Sidebar />)
+    expect(screen.queryByRole('dialog', { name: 'Workflow' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('New Workflow'))
+    const dialog = screen.getByRole('dialog', { name: 'Workflow' })
+    expect(dialog).toBeInTheDocument()
+    expect(screen.getByText('New Workflow')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Close workflow'))
+    expect(screen.queryByRole('dialog', { name: 'Workflow' })).not.toBeInTheDocument()
+  })
+
+  it('clicking a saved workflow row opens the edit overlay', () => {
+    mockState = { ...getDefaultState(), workflows: [{ id: 'wf1', name: 'Deploy' }] }
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('Deploy'))
+    expect(screen.getByRole('dialog', { name: 'Workflow' })).toBeInTheDocument()
+    expect(screen.getByText('Edit Workflow')).toBeInTheDocument()
   })
 })

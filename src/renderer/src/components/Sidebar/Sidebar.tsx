@@ -7,6 +7,7 @@ import { WorkspaceList } from './WorkspaceList'
 import { AIProfiles } from './AIProfiles'
 import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { GitPanel } from '../GitPanel/GitPanel'
+import { WorkflowSidebarSection } from '../Workflow/WorkflowSidebarSection'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -32,6 +33,10 @@ export function Sidebar() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [showSwarm, setShowSwarm] = useState(false)
   const [showGit, setShowGit] = useState(false)
+  // The workflow orchestrator overlay: null = closed, else authoring a new
+  // workflow or opening an existing one by id. The Designer/Runner render
+  // inside this frame (Tasks 13/14); the frame + open/close lives here.
+  const [workflowView, setWorkflowView] = useState<{ mode: 'new' } | { mode: 'edit'; id: string } | null>(null)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
   const [terminalsCollapsed, setTerminalsCollapsed] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
@@ -133,6 +138,10 @@ export function Sidebar() {
       <div className="border-t border-[#3c3c3c]"></div>
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
+      <WorkflowSidebarSection
+        onCreate={() => setWorkflowView({ mode: 'new' })}
+        onOpen={id => setWorkflowView({ mode: 'edit', id })}
+      />
       <div className="px-3 py-1.5 flex items-center justify-between">
         <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]">
           <i className={`fa-solid fa-chevron-${terminalsCollapsed ? 'right' : 'down'} text-[9px]`}></i>
@@ -170,6 +179,27 @@ export function Sidebar() {
       )}
       {showSwarm && <SwarmDashboard onClose={() => { setShowSwarm(false); setSwarmCwd(null) }} initialCwd={swarmCwd} />}
       {showGit && <GitPanel onClose={() => setShowGit(false)} />}
+      {workflowView && (
+        <div
+          role="dialog"
+          aria-label="Workflow"
+          className="fixed inset-0 z-50 flex flex-col bg-[#1e1e1e]"
+        >
+          <div className="flex items-center justify-between px-4 py-2 border-b border-[#3c3c3c]">
+            <span className="text-sm text-[#d4d4d4]">
+              <i className="fa-solid fa-diagram-project text-[#22D3EE] mr-2"></i>
+              {workflowView.mode === 'new' ? 'New Workflow' : 'Edit Workflow'}
+            </span>
+            <button
+              onClick={() => setWorkflowView(null)}
+              title="Close workflow"
+              className="px-2 py-1 rounded text-[#999] hover:text-white hover:bg-[#37373d]"
+            ><i className="fa-solid fa-xmark"></i></button>
+          </div>
+          {/* Designer (Task 13) / Runner (Task 14) render inside this frame. */}
+          <div className="flex-1 overflow-auto"></div>
+        </div>
+      )}
     </aside>
   )
 }
