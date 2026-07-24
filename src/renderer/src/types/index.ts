@@ -174,6 +174,8 @@ export interface TermpolisAPI {
   deleteWorkflow: (cwd: string, id: string) => Promise<IpcResponse<void>>
   runWorkflow: (cwd: string, id: string) => Promise<IpcResponse<{ runId: string }>>
   cancelWorkflow: (runId: string) => Promise<IpcResponse<void>>
+  /** Tell main which project the sidebar is showing so its automatic triggers arm. */
+  watchWorkflowProject: (cwd: string) => Promise<IpcResponse<void>>
   onWorkflowRunEvent: (cb: (event: WorkflowRunEvent) => void) => () => void
   writeToTerminal: (id: string, data: string) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
@@ -573,7 +575,13 @@ export interface VectorRamInfo {
 // ─── Workflow Orchestrator ───────────────────────────────────────────────
 // Deterministic local automation: command/agent/skill/control step pipeline.
 export type WorkflowStepType = 'command' | 'agent' | 'skill' | 'control'
-export type WorkflowTriggerType = 'manual' | 'schedule' | 'gitPush' | 'fileWatch'
+// Trigger config is a flat string map so it round-trips through YAML unchanged.
+// Per-type keys the supervisor understands:
+//   schedule  → { cron: '0 2 * * *', catchUp?: '1' }   (5-field or @daily alias)
+//   gitCommit → { branch?: 'main' }                    (empty = whatever HEAD points at)
+//   gitPush   → { remote?: 'origin', branch?: 'main' } (empty branch = any)
+//   fileWatch → { paths?: 'src/,docs/', debounceMs?: '2000' }
+export type WorkflowTriggerType = 'manual' | 'schedule' | 'gitCommit' | 'gitPush' | 'fileWatch'
 export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
 export type RunStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 

@@ -14,6 +14,7 @@ const api: TermpolisAPI = {
   deleteWorkflow: (cwd, id) => ipcRenderer.invoke('workflow:delete', { cwd, id }),
   runWorkflow: (cwd, id) => ipcRenderer.invoke('workflow:run', { cwd, id }),
   cancelWorkflow: (runId) => ipcRenderer.invoke('workflow:cancel', { runId }),
+  watchWorkflowProject: (cwd) => ipcRenderer.invoke('workflow:watch-project', { cwd }),
   onWorkflowRunEvent: (cb) => { const h = (_: unknown, e: import('../renderer/src/types').WorkflowRunEvent) => cb(e); ipcRenderer.on('workflow:run-event', h); return () => ipcRenderer.removeListener('workflow:run-event', h) },
 
   writeToTerminal: (id, data) =>

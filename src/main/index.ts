@@ -114,6 +114,8 @@ import { detectAgentStatus } from '../renderer/src/lib/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
 import { runWorkflow as wfRun, cancelRun as wfCancel } from './workflow/workflowEngine'
 import { registerWorkflowIpc } from './workflow/ipc'
+import { TriggerSupervisor } from './workflow/triggers'
+import { cleanupDemoWorkflows, oncePerVersion } from './workflow/demoCleanup'
 import type { FsLike as WorkflowFsLike } from './workflow/workflowStore'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
@@ -3075,14 +3077,66 @@ if (!gotTheLock) {
         (agent) => wfAgentLaunch[agent],
       )
       const wfTools = makeToolInvoker(mcpHandlers, executeTool)
-      registerWorkflowIpc(ipcMain, () => mainWindow, {
+      // Trigger supervisor: arms schedule/gitCommit/gitPush/fileWatch workflows
+      // and drives them through the SAME startRun the Run button uses. Created
+      // before the IPC so it can be handed the change callbacks, and given
+      // startRun afterwards (the two reference each other).
+      let wfStartRun: ((cwd: string, id: string) => { ok: boolean; done?: Promise<void>; error?: string }) | null = null
+      const wfTriggers = new TriggerSupervisor({
         fs: wfFs,
+        readBytes: (p: string) => readFileSync(p),
+        watch: (dir, listener) => fsWatch(dir, { recursive: true }, listener),
+        setTimer: (fn, ms) => setTimeout(fn, ms),
+        clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+        now: Date.now,
+        isTrusted: (cwd: string) => { try { return isWorkspaceTrusted(cwd) } catch { return false } },
+        fire: (cwd, id, reason) => {
+          const r = wfStartRun?.(cwd, id)
+          if (!r?.ok) console.warn(`[workflow] trigger (${reason}) could not start ${id}: ${r?.error ?? 'no runner'}`)
+          return r?.done
+        },
+        log: (m) => console.log(m),
+      })
+      const wfIpc = registerWorkflowIpc(ipcMain, () => mainWindow, {
+        fs: wfFs,
+        onWorkflowsChanged: (cwd) => wfTriggers.rearm(cwd),
+        onWatchProject: (cwd) => wfTriggers.watchProject(cwd),
         engine: { runWorkflow: wfRun, cancelRun: wfCancel },
         isTrusted: (cwd: string) => { try { return isWorkspaceTrusted(cwd) } catch { return false } },
         newRunId: () => randomUUID(),
         makeDeps: (emit, runId) => ({ terminal: wfTerminal, agent: wfAgent, tools: wfTools, timer: realTimer, now: Date.now, newRunId: () => runId, emit }),
       })
-      console.log('[workflow] orchestrator IPC registered')
+      wfStartRun = wfIpc.startRun
+      // The home store is always watched: it's the fallback project the sidebar
+      // shows before any terminal exists, so triggers saved there must arm too.
+      // Before arming it, sweep out any demo workflows a screenshot/demo run
+      // left behind in the home store — once per version, so a fresh install or
+      // an upgrade cleans up and ordinary launches do nothing.
+      oncePerVersion(app.getPath('userData'), app.getVersion(), wfFs, () => {
+        cleanupDemoWorkflows(homedir(), wfFs, undefined, (m) => console.log(m))
+      })
+      wfTriggers.watchProject(homedir())
+      // Arm every project the last session had open, not just the home store.
+      // The sidebar registers a project when you look at it, which is too late
+      // for a cron saved in a project you don't click into this launch.
+      try {
+        const sess = loadSession()
+        const seen = new Set<string>([homedir()])
+        const cwds = [
+          ...sess.terminals.map(t => t.cwd),
+          ...sess.workspaces.flatMap(w => w.terminals.map(t => t.cwd)),
+        ]
+        for (const c of cwds) {
+          if (!c || seen.has(c)) continue
+          seen.add(c)
+          wfTriggers.watchProject(c)
+        }
+      } catch (e) {
+        console.warn('[workflow] could not arm saved-session projects:', (e as Error)?.message)
+      }
+      wfTriggers.start()
+      app.on('before-quit', () => { try { wfTriggers.stop() } catch { /* shutting down anyway */ } })
+      console.log(`[workflow] orchestrator IPC registered (${wfTriggers.armedCount} trigger(s) armed)`)
     } catch (wfErr) {
       console.error('[workflow] failed to register orchestrator IPC', wfErr)
     }

@@ -1,6 +1,54 @@
 import { useState } from 'react'
-import type { Workflow, WorkflowStep, WorkflowStepType } from '../../types'
+import type { Workflow, WorkflowStep, WorkflowStepType, WorkflowTriggerType } from '../../types'
 import { StepEditor } from './stepEditors'
+
+// The trigger palette. Every type here is live: picking one arms the workflow
+// in the main-process supervisor the next time it's saved.
+const TRIGGER_CHOICES: { type: WorkflowTriggerType; label: string; icon: string; title: string }[] = [
+  { type: 'manual', label: 'Manual', icon: 'fa-solid fa-hand-pointer', title: 'Run it yourself' },
+  { type: 'schedule', label: 'Schedule', icon: 'fa-solid fa-clock', title: 'On a cron schedule' },
+  { type: 'gitCommit', label: 'Git commit', icon: 'fa-solid fa-code-commit', title: 'After a commit lands (post-commit)' },
+  { type: 'gitPush', label: 'Git push', icon: 'fa-brands fa-git-alt', title: 'After a successful push' },
+  { type: 'fileWatch', label: 'File change', icon: 'fa-solid fa-file-pen', title: 'When files in the project change' },
+]
+
+// Sensible starting config per type, so switching trigger types never leaves an
+// empty form the user has to guess at.
+const DEFAULT_TRIGGER_CONFIG: Record<WorkflowTriggerType, Record<string, string>> = {
+  manual: {},
+  schedule: { cron: '0 9 * * 1-5', catchUp: '1' },
+  gitCommit: { branch: '' },
+  gitPush: { remote: 'origin', branch: '' },
+  fileWatch: { paths: '', debounceMs: '2000' },
+}
+
+/** Shape-only check for the inline warning. The authoritative parse lives in
+ *  main (`workflow/cron.ts`); the renderer must not import main-process code,
+ *  so this just catches the obvious "that isn't a cron expression" case. */
+export function looksLikeCron(expr: string): boolean {
+  const t = (expr ?? '').trim().toLowerCase()
+  if (!t) return false
+  if (/^@(hourly|daily|midnight|weekly|monthly|yearly|annually)$/.test(t)) return true
+  return t.split(/\s+/).length === 5
+}
+
+function TriggerField({
+  label, hint, value, placeholder, onChange,
+}: { label: string; hint: string; value: string; placeholder: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="block text-[10px] uppercase tracking-wider text-[#9ca3af] mb-1">{label}</span>
+      <input
+        value={value}
+        placeholder={placeholder}
+        aria-label={label}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+      />
+      <span className="block text-[11px] text-[#6b7280] mt-1">{hint}</span>
+    </label>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // The Workflow Designer — an Azure-Logic-Apps-style vertical canvas: a trigger
@@ -61,6 +109,14 @@ export function WorkflowDesigner({
   const [saving, setSaving] = useState(false)
 
   const steps = wf.steps
+
+  // Switching type swaps in that type's defaults; re-picking the current type is
+  // a no-op so a stray click can't wipe config the user already filled in.
+  const setTriggerType = (type: WorkflowTriggerType): void =>
+    setWf(w => (w.trigger.type === type ? w : { ...w, trigger: { type, config: { ...DEFAULT_TRIGGER_CONFIG[type] } } }))
+
+  const setTriggerCfg = (key: string, value: string): void =>
+    setWf(w => ({ ...w, trigger: { ...w.trigger, config: { ...(w.trigger.config ?? {}), [key]: value } } }))
 
   const updateStep = (index: number, patch: Partial<WorkflowStep>): void =>
     setWf(w => ({
@@ -131,29 +187,108 @@ export function WorkflowDesigner({
         />
       </div>
 
-      {/* Trigger card — Manual is active; the rest are roadmap. */}
+      {/* Trigger card — picking anything but Manual reveals that trigger's
+          config fields; the main-process supervisor arms it on save. */}
       <div className="rounded border border-[#3c3c3c] bg-[#252526] p-3">
         <span className="block text-[10px] uppercase tracking-wider text-[#9ca3af] mb-2">Trigger</span>
         <div className="flex flex-wrap gap-2">
-          <span className="px-2.5 py-1 rounded text-xs bg-[#22D3EE]/10 text-[#22D3EE] border border-[#22D3EE]/40">
-            <i className="fa-solid fa-hand-pointer mr-1.5"></i>Manual
-          </span>
-          <button
-            disabled
-            title="Schedule (coming soon)"
-            className="px-2.5 py-1 rounded text-xs text-[#6b7280] border border-[#3c3c3c] cursor-not-allowed"
-          ><i className="fa-solid fa-clock mr-1.5"></i>Schedule</button>
-          <button
-            disabled
-            title="On git push (coming soon)"
-            className="px-2.5 py-1 rounded text-xs text-[#6b7280] border border-[#3c3c3c] cursor-not-allowed"
-          ><i className="fa-brands fa-git-alt mr-1.5"></i>Git push</button>
-          <button
-            disabled
-            title="On file change (coming soon)"
-            className="px-2.5 py-1 rounded text-xs text-[#6b7280] border border-[#3c3c3c] cursor-not-allowed"
-          ><i className="fa-solid fa-file-pen mr-1.5"></i>File change</button>
+          {TRIGGER_CHOICES.map(t => (
+            <button
+              key={t.type}
+              type="button"
+              title={t.title}
+              aria-pressed={wf.trigger.type === t.type}
+              onClick={() => setTriggerType(t.type)}
+              className={
+                wf.trigger.type === t.type
+                  ? 'px-2.5 py-1 rounded text-xs bg-[#22D3EE]/10 text-[#22D3EE] border border-[#22D3EE]/40'
+                  : 'px-2.5 py-1 rounded text-xs text-[#9ca3af] border border-[#3c3c3c] hover:text-[#d4d4d4] hover:border-[#6b7280]'
+              }
+            ><i className={`${t.icon} mr-1.5`}></i>{t.label}</button>
+          ))}
         </div>
+        {wf.trigger.type !== 'manual' && (
+          <div className="mt-3 pt-3 border-t border-[#3c3c3c] space-y-2">
+            {wf.trigger.type === 'schedule' && (
+              <>
+                <TriggerField
+                  label="Cron"
+                  hint="min hour day month weekday — or @daily / @hourly / @weekly"
+                  value={wf.trigger.config?.cron ?? ''}
+                  placeholder="0 9 * * 1-5"
+                  onChange={v => setTriggerCfg('cron', v)}
+                />
+                {!looksLikeCron(wf.trigger.config?.cron ?? '') && (
+                  <p className="text-[11px] text-[#f59e0b]">
+                    Needs 5 fields (or an @alias). An invalid expression never fires.
+                  </p>
+                )}
+                <label className="flex items-center gap-2 text-xs text-[#9ca3af]">
+                  <input
+                    type="checkbox"
+                    checked={(wf.trigger.config?.catchUp ?? '1') !== '0'}
+                    onChange={e => setTriggerCfg('catchUp', e.target.checked ? '1' : '0')}
+                  />
+                  Run at launch if it was due while Termpolis was closed
+                </label>
+              </>
+            )}
+            {wf.trigger.type === 'gitCommit' && (
+              <>
+                <TriggerField
+                  label="Branch"
+                  hint="blank = whichever branch is checked out"
+                  value={wf.trigger.config?.branch ?? ''}
+                  placeholder="main"
+                  onChange={v => setTriggerCfg('branch', v)}
+                />
+                <p className="text-[11px] text-[#6b7280]">
+                  Fires after a commit lands (post-commit) — it cannot block or reject a commit.
+                </p>
+              </>
+            )}
+            {wf.trigger.type === 'gitPush' && (
+              <>
+                <TriggerField
+                  label="Remote"
+                  hint="defaults to origin"
+                  value={wf.trigger.config?.remote ?? ''}
+                  placeholder="origin"
+                  onChange={v => setTriggerCfg('remote', v)}
+                />
+                <TriggerField
+                  label="Branch"
+                  hint="blank = whichever branch is checked out"
+                  value={wf.trigger.config?.branch ?? ''}
+                  placeholder="main"
+                  onChange={v => setTriggerCfg('branch', v)}
+                />
+              </>
+            )}
+            {wf.trigger.type === 'fileWatch' && (
+              <>
+                <TriggerField
+                  label="Paths"
+                  hint="comma-separated prefixes, blank = whole project"
+                  value={wf.trigger.config?.paths ?? ''}
+                  placeholder="src/, docs/"
+                  onChange={v => setTriggerCfg('paths', v)}
+                />
+                <TriggerField
+                  label="Debounce (ms)"
+                  hint="quiet period after the last change before running"
+                  value={wf.trigger.config?.debounceMs ?? ''}
+                  placeholder="2000"
+                  onChange={v => setTriggerCfg('debounceMs', v)}
+                />
+              </>
+            )}
+            <p className="text-[11px] text-[#6b7280]">
+              Automatic runs only happen in a trusted workspace, and never while a previous run of
+              this workflow is still going.
+            </p>
+          </div>
+        )}
       </div>
 
       {gapPlus(0)}

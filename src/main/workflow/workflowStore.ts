@@ -26,6 +26,11 @@ export function appendRunHistory(dir: string, run: WorkflowRun, fs: FsLike): voi
 }
 
 const STEP_TYPES = new Set(['command', 'agent', 'skill', 'control'])
+// Kept in lockstep with WorkflowTriggerType in renderer/src/types. A workflow
+// carrying an unknown trigger type is rejected at save AND at load, so a
+// hand-edited or downgraded file can never arm something the supervisor
+// doesn't understand.
+const TRIGGER_TYPES = new Set(['manual', 'schedule', 'gitCommit', 'gitPush', 'fileWatch'])
 
 // Per-type structural checks: enums must be valid. Free-text fields (command/prompt/tool)
 // may be blank at save time (a draft) — the executors handle empties at run time.
@@ -45,6 +50,10 @@ export function validateWorkflow(obj: unknown): { ok: boolean; errors: string[];
   else if (!isSafeId(o.id)) errors.push('id may contain only letters, digits, hyphen, underscore (no path separators)')
   if (typeof o.name !== 'string' || !o.name.trim()) errors.push('missing name')
   if (!o.trigger || typeof o.trigger.type !== 'string') errors.push('missing trigger.type')
+  else if (!TRIGGER_TYPES.has(o.trigger.type)) errors.push(`trigger.type must be one of ${[...TRIGGER_TYPES].join('|')}`)
+  else if (o.trigger.config !== undefined && (typeof o.trigger.config !== 'object' || o.trigger.config === null || Array.isArray(o.trigger.config))) {
+    errors.push('trigger.config must be a string map')
+  }
   if (!Array.isArray(o.steps)) errors.push('steps must be an array')
   const seen = new Set<string>()
   if (Array.isArray(o.steps)) {
@@ -88,17 +97,24 @@ export function writeWorkflow(dir: string, wf: Workflow, fs: FsLike): void {
   fs.writeFileSync(fileFor(dir, wf.id), serializeWorkflow(wf))
 }
 
-export function listWorkflows(dir: string, fs: FsLike): { id: string; name: string }[] {
+/** Every valid workflow in a project, fully parsed. The trigger supervisor needs
+ *  the whole document (it arms off `trigger`), where the sidebar only needs the
+ *  id/name summary `listWorkflows` returns. */
+export function listWorkflowsFull(dir: string, fs: FsLike): Workflow[] {
   if (!fs.existsSync(dir)) return []
-  const out: { id: string; name: string }[] = []
+  const out: Workflow[] = []
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith('.yml')) continue
     const id = f.replace(/\.yml$/, '')
     if (!isSafeId(id)) continue // ignore stray/hostile file names, never let fileFor throw here
     const r = parseWorkflow(fs.readFileSync(fileFor(dir, id), 'utf8'))
-    if (r.ok && r.workflow) out.push({ id: r.workflow.id, name: r.workflow.name })
+    if (r.ok && r.workflow) out.push(r.workflow)
   }
   return out
+}
+
+export function listWorkflows(dir: string, fs: FsLike): { id: string; name: string }[] {
+  return listWorkflowsFull(dir, fs).map(w => ({ id: w.id, name: w.name }))
 }
 
 export function readWorkflow(dir: string, id: string, fs: FsLike): { ok: boolean; errors: string[]; workflow?: Workflow } {

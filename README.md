@@ -310,6 +310,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
 - **Workflow Orchestrator** — an Azure-Logic-Apps-style canvas that chains four kinds of step — **Command** (a shell line on a real terminal), **Agent** (Claude Code / Codex / Gemini CLI on a prompt), **Skill** (a built-in tool), and **Control** (wait / branch / loop / notify) — into one repeatable, saveable run. Real control flow with per-step `when` gates and `continueOnError`; later steps read earlier results (`steps.build.exitCode`, captured output) through a **sandboxed expression engine** (no `eval`); and a live Runner timeline streams every step and lets you cancel mid-run
+- **Workflow Triggers** — a saved workflow can run itself. Pick **Schedule** (a real cron expression — `0 2 * * *`, or `@daily`-style aliases — evaluated in local time, with catch-up so a run missed while the app was closed still fires once), **Git commit** (fires *after* a commit lands on the checked-out branch — a post-commit hook that can lint, test, or hand the diff to an agent), **Git push** (the remote-tracking ref moves), or **File change** (a debounced recursive watch, optionally filtered to a path prefix). Triggers are watched in the main process with no polling child processes, survive restarts (last-seen state is persisted per project), and every automatic run takes the **exact same path as pressing Run** — same workspace-trust gate, same run history, same live timeline. Untrusted folders never fire
 - **Agent Status Detection** — automatically detects when Claude Code, Codex, or Gemini is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
 - **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
@@ -700,7 +701,8 @@ termpolis/
 │   │   ├── sessionStore.ts          # JSON session persistence with migration
 │   │   ├── historyStore.ts          # Cross-terminal command history
 │   │   ├── configFileManager.ts     # Read/write shell config files
-│   │   ├── workflow/                # Workflow Orchestrator engine (steps, sandboxed expr, YAML store, IPC)
+│   │   ├── workflow/                # Workflow Orchestrator engine (steps, sandboxed expr, YAML store, IPC,
+│   │   │                            #   cron parser + schedule/git/file trigger supervisor)
 │   │   └── types.ts                 # Main process type definitions
 │   ├── preload/
 │   │   └── index.ts                 # contextBridge API + MCP event bridge

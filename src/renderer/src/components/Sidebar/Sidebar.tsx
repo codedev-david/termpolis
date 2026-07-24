@@ -67,6 +67,9 @@ export function Sidebar() {
   useEffect(() => {
     if (!workflowCwd) return
     let alive = true
+    // Register the project with main so its schedule/git/file triggers arm for
+    // the directory the user is actually working in, not just the home store.
+    window.termpolis.watchWorkflowProject?.(workflowCwd)
     window.termpolis.listWorkflows(workflowCwd).then(res => {
       if (alive && res.success && res.data) setWorkflows(res.data)
     })

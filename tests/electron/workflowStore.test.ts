@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
+﻿import { describe, it, expect } from 'vitest'
+import { join } from 'path'
 import {
   validateWorkflow, serializeWorkflow, parseWorkflow,
   listWorkflows, readWorkflow, writeWorkflow, deleteWorkflow, workflowsDir,
-  runsDir, appendRunHistory,
+  runsDir, appendRunHistory, listWorkflowsFull,
 } from '../../src/main/workflow/workflowStore'
 import type { Workflow } from '../../src/renderer/src/types'
 
@@ -126,7 +127,7 @@ describe('store edge cases', () => {
   it('listWorkflows ignores non-.yml files and unsafe/hostile file names', () => {
     const { fs, files } = inlineFs()
     const dir = workflowsDir('/repo')
-    writeWorkflow(dir, WF, fs)                        // demo.yml — the only real workflow
+    writeWorkflow(dir, WF, fs)                        // demo.yml â€” the only real workflow
     files.set(`${dir}/notes.txt`, 'not a workflow')  // wrong extension -> skipped (endsWith .yml)
     files.set(`${dir}/..evil.yml`, 'id: hax')         // unsafe id -> skipped, fileFor never throws
     expect(listWorkflows(dir, fs)).toEqual([{ id: 'demo', name: 'Demo' }])
@@ -171,5 +172,91 @@ describe('store edge cases', () => {
     const dir = workflowsDir('/repo')
     files.set(`${dir}/broken.yml`, 'id: : : nope\n  - broken') // safe id, unparseable body
     expect(listWorkflows(dir, fs)).toEqual([])                 // corrupt file skipped, not fatal
+  })
+})
+
+describe('automatic trigger validation', () => {
+  const withTrigger = (trigger: any): any => ({ ...WF, trigger })
+
+  it.each(['manual', 'schedule', 'gitCommit', 'gitPush', 'fileWatch'])('accepts the %s trigger type', (type) => {
+    expect(validateWorkflow(withTrigger({ type })).ok).toBe(true)
+  })
+
+  it('rejects an unknown trigger type', () => {
+    const r = validateWorkflow(withTrigger({ type: 'telepathy' }))
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toMatch(/trigger\.type must be one of/)
+  })
+
+  it('rejects a missing trigger and a non-string type', () => {
+    expect(validateWorkflow({ ...WF, trigger: undefined } as any).ok).toBe(false)
+    expect(validateWorkflow(withTrigger({ type: 7 })).ok).toBe(false)
+  })
+
+  it('accepts a string-map trigger config and an absent one', () => {
+    expect(validateWorkflow(withTrigger({ type: 'schedule', config: { cron: '0 2 * * *', catchUp: '1' } })).ok).toBe(true)
+    expect(validateWorkflow(withTrigger({ type: 'schedule' })).ok).toBe(true)
+  })
+
+  it.each([
+    ['an array', []],
+    ['null', null],
+    ['a string', 'cron'],
+  ])('rejects %s as trigger.config', (_label, config) => {
+    const r = validateWorkflow(withTrigger({ type: 'schedule', config }))
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toMatch(/trigger\.config must be a string map/)
+  })
+
+  it('round-trips a trigger config through YAML unchanged', () => {
+    const wf = withTrigger({ type: 'fileWatch', config: { paths: 'src/,docs/', debounceMs: '2000' } })
+    const r = parseWorkflow(serializeWorkflow(wf))
+    expect(r.ok).toBe(true)
+    expect(r.workflow!.trigger).toEqual(wf.trigger)
+  })
+})
+
+describe('listWorkflowsFull', () => {
+  const dir = workflowsDir('/repo')
+  // Keys are bare file names; they are normalised the same way workflowStore
+  // builds paths (path.join), so this fake works on both separators.
+  function seededFs(entries: Record<string, string>) {
+    const files = new Map<string, string>()
+    for (const [name, body] of Object.entries(entries)) files.set(join(dir, name), body)
+    return {
+      existsSync: (p: string) => files.has(p) || p === dir,
+      mkdirSync: () => {},
+      readdirSync: () => [...files.keys()].map(k => k.split(/[\\/]/).pop()!),
+      readFileSync: (p: string) => files.get(p)!,
+      writeFileSync: () => {},
+      appendFileSync: () => {},
+      rmSync: () => {},
+    } as any
+  }
+
+  it('returns whole workflows, including the trigger the supervisor arms off', () => {
+    const wf = { ...WF, id: 'nightly', trigger: { type: 'schedule', config: { cron: '0 2 * * *' } } } as any
+    const full = listWorkflowsFull(dir, seededFs({ 'nightly.yml': serializeWorkflow(wf) }))
+    expect(full).toHaveLength(1)
+    expect(full[0].trigger).toEqual({ type: 'schedule', config: { cron: '0 2 * * *' } })
+    expect(full[0].steps).toHaveLength(WF.steps.length)
+  })
+
+  it('agrees with listWorkflows on ids and names', () => {
+    const fs = seededFs({ 'demo.yml': serializeWorkflow(WF) })
+    expect(listWorkflowsFull(dir, fs).map(w => ({ id: w.id, name: w.name }))).toEqual(listWorkflows(dir, fs))
+  })
+
+  it('skips non-yml files, unsafe ids and unparseable bodies', () => {
+    const fs = seededFs({
+      'demo.yml': serializeWorkflow(WF),
+      'notes.txt': 'ignore me',
+      'broken.yml': 'id: : : nope\n  - broken',
+    })
+    expect(listWorkflowsFull(dir, fs).map(w => w.id)).toEqual(['demo'])
+  })
+
+  it('returns [] when the directory is absent', () => {
+    expect(listWorkflowsFull(dir, { existsSync: () => false } as any)).toEqual([])
   })
 })

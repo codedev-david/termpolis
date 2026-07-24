@@ -15,13 +15,17 @@ function harness({ trusted = true, engine: engineOver }: { trusted?: boolean; en
     rmSync: (p: string) => files.delete(p),
   }
   const engine = engineOver ?? { runWorkflow: vi.fn(async (wf: any, deps: any) => { deps.emit({ type: 'run:finished', runId: 'r', status: 'succeeded', at: 1 }); return { runId: 'r', status: 'succeeded', workflowId: wf.id, steps: [], startedAt: 0 } }), cancelRun: vi.fn() }
-  registerWorkflowIpc(ipcMain as any, () => win as any, {
+  const changed: string[] = []
+  const watched: string[] = []
+  const api = registerWorkflowIpc(ipcMain as any, () => win as any, {
     fs: fs as any, engine,
     isTrusted: () => trusted,
     newRunId: () => 'r',
     makeDeps: (emit) => ({ emit }) as any,
+    onWorkflowsChanged: (cwd: string) => changed.push(cwd),
+    onWatchProject: (cwd: string) => watched.push(cwd),
   })
-  return { call: (ch: string, arg: any) => handlers.get(ch)!(null, arg), sent, files }
+  return { call: (ch: string, arg: any) => handlers.get(ch)!(null, arg), sent, files, changed, watched, handlers, api, engine }
 }
 
 describe('workflow IPC', () => {
@@ -114,5 +118,97 @@ describe('workflow IPC', () => {
     expect(res.success).toBe(true)
     await new Promise((r) => setTimeout(r, 0)) // let the rejected promise settle through .catch/.finally
     expect(engine.runWorkflow).toHaveBeenCalled()
+  })
+})
+
+describe('workflow IPC — trigger wiring', () => {
+  const wf = (id = 'x') => ({ id, name: 'X', version: 1, trigger: { type: 'schedule', config: { cron: '@daily' } }, steps: [] })
+
+  it('save and delete tell the supervisor to re-arm that project', async () => {
+    const h = harness()
+    await h.call('workflow:save', { cwd: '/r', workflow: wf() })
+    expect(h.changed).toEqual(['/r'])
+    await h.call('workflow:delete', { cwd: '/r', id: 'x' })
+    expect(h.changed).toEqual(['/r', '/r'])
+  })
+
+  it('a failed save does not re-arm', async () => {
+    const h = harness()
+    const res = await h.call('workflow:save', { cwd: '/r', workflow: { id: 'bad!', name: 'B', version: 1, trigger: { type: 'manual' }, steps: [] } })
+    expect(res.success).toBe(false)
+    expect(h.changed).toEqual([])
+  })
+
+  it('watch-project forwards the cwd the renderer is showing', async () => {
+    const h = harness()
+    expect((await h.call('workflow:watch-project', { cwd: '/r' })).success).toBe(true)
+    expect(h.watched).toEqual(['/r'])
+  })
+
+  it('watch-project with no cwd is a harmless no-op', async () => {
+    const h = harness()
+    expect((await h.call('workflow:watch-project', { cwd: '' })).success).toBe(true)
+    expect(h.watched).toEqual([])
+  })
+
+  it('watch-project reports a throwing supervisor instead of crashing the handler', async () => {
+    const handlers = new Map<string, Function>()
+    const ipcMain = { handle: (ch: string, fn: Function) => handlers.set(ch, fn) }
+    registerWorkflowIpc(ipcMain as any, () => null as any, {
+      fs: { existsSync: () => false, mkdirSync: () => {}, readdirSync: () => [], readFileSync: () => '', writeFileSync: () => {}, appendFileSync: () => {}, rmSync: () => {} } as any,
+      engine: { runWorkflow: vi.fn(), cancelRun: vi.fn() },
+      isTrusted: () => true,
+      newRunId: () => 'r',
+      makeDeps: (emit) => ({ emit }) as any,
+      onWatchProject: () => { throw new Error('supervisor exploded') },
+    })
+    const res = await handlers.get('workflow:watch-project')!(null, { cwd: '/r' })
+    expect(res).toEqual({ success: false, error: 'supervisor exploded' })
+  })
+
+  it('the IPC layer wires the ipc channels the preload calls', () => {
+    const h = harness()
+    for (const ch of ['workflow:list', 'workflow:read', 'workflow:save', 'workflow:delete', 'workflow:run', 'workflow:cancel', 'workflow:watch-project']) {
+      expect(h.handlers.has(ch)).toBe(true)
+    }
+  })
+
+  it('exposes startRun so an automatic trigger takes exactly the manual path', async () => {
+    const h = harness()
+    await h.call('workflow:save', { cwd: '/r', workflow: wf() })
+    const r = h.api.startRun('/r', 'x')
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('unreachable')
+    expect(r.runId).toBe('r')
+    await r.done
+    expect(h.engine.runWorkflow).toHaveBeenCalled()
+    // Same run-history side effect as a manual run.
+    expect([...h.files.keys()].some((k) => k.endsWith('x.jsonl'))).toBe(true)
+    // Same run events reach the window.
+    expect(h.sent.some((s) => s.ch === 'workflow:run-event')).toBe(true)
+  })
+
+  it('startRun refuses an untrusted workspace', () => {
+    const h = harness({ trusted: false })
+    const r = h.api.startRun('/r', 'x')
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('unreachable')
+    expect(r.error).toMatch(/trust/i)
+  })
+
+  it('startRun reports a missing workflow rather than throwing', () => {
+    const h = harness()
+    const r = h.api.startRun('/r', 'nope')
+    expect(r.ok).toBe(false)
+  })
+
+  it('startRun resolves `done` even when the engine rejects', async () => {
+    const engine = { runWorkflow: vi.fn().mockRejectedValue(new Error('engine blew up')), cancelRun: vi.fn() }
+    const h = harness({ engine })
+    await h.call('workflow:save', { cwd: '/r', workflow: wf() })
+    const r = h.api.startRun('/r', 'x')
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('unreachable')
+    await expect(r.done).resolves.toBeUndefined()
   })
 })

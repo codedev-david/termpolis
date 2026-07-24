@@ -51,12 +51,57 @@ describe('WorkflowDesigner', () => {
     expect(screen.getAllByTestId('step-card').length).toBe(2)
   })
 
-  it('renders the manual trigger card with future triggers disabled', () => {
+  it('renders every trigger type as selectable, with Manual selected by default', () => {
     render(<WorkflowDesigner workflow={baseWf()} cwd="/r" onSaved={() => {}} />)
-    expect(screen.getByText('Manual')).toBeTruthy()
-    expect((screen.getByTitle('Schedule (coming soon)') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByTitle('On git push (coming soon)') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByTitle('On file change (coming soon)') as HTMLButtonElement).disabled).toBe(true)
+    for (const label of ['Manual', 'Schedule', 'Git commit', 'Git push', 'File change']) {
+      const btn = screen.getByText(label).closest('button') as HTMLButtonElement
+      expect(btn.disabled).toBe(false)
+    }
+    expect(screen.getByText('Manual').closest('button')!.getAttribute('aria-pressed')).toBe('true')
+    // Manual has no configuration, so no config panel is shown for it.
+    expect(screen.queryByLabelText('Cron')).toBeNull()
+  })
+
+  it('selecting Schedule reveals the cron field seeded with a default expression', () => {
+    render(<WorkflowDesigner workflow={baseWf()} cwd="/r" onSaved={() => {}} />)
+    fireEvent.click(screen.getByText('Schedule'))
+    expect(screen.getByText('Schedule').closest('button')!.getAttribute('aria-pressed')).toBe('true')
+    expect((screen.getByLabelText('Cron') as HTMLInputElement).value).toBe('0 9 * * 1-5')
+  })
+
+  it('warns on a malformed cron and clears the warning once it has 5 fields', () => {
+    render(<WorkflowDesigner workflow={baseWf()} cwd="/r" onSaved={() => {}} />)
+    fireEvent.click(screen.getByText('Schedule'))
+    fireEvent.change(screen.getByLabelText('Cron'), { target: { value: 'nope' } })
+    expect(screen.getByText(/Needs 5 fields/)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Cron'), { target: { value: '@daily' } })
+    expect(screen.queryByText(/Needs 5 fields/)).toBeNull()
+  })
+
+  it('git push exposes remote + branch, and git commit says it is post-commit', () => {
+    render(<WorkflowDesigner workflow={baseWf()} cwd="/r" onSaved={() => {}} />)
+    fireEvent.click(screen.getByText('Git push'))
+    expect((screen.getByLabelText('Remote') as HTMLInputElement).value).toBe('origin')
+    expect(screen.getByLabelText('Branch')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Git commit'))
+    expect(screen.getByText(/cannot block or reject a commit/)).toBeTruthy()
+    expect(screen.queryByLabelText('Remote')).toBeNull()
+  })
+
+  it('file change exposes paths + debounce', () => {
+    render(<WorkflowDesigner workflow={baseWf()} cwd="/r" onSaved={() => {}} />)
+    fireEvent.click(screen.getByText('File change'))
+    expect(screen.getByLabelText('Paths')).toBeTruthy()
+    expect((screen.getByLabelText('Debounce (ms)') as HTMLInputElement).value).toBe('2000')
+  })
+
+  it('re-clicking the active trigger keeps edited config instead of resetting it', () => {
+    render(<WorkflowDesigner workflow={baseWf()} cwd="/r" onSaved={() => {}} />)
+    fireEvent.click(screen.getByText('Schedule'))
+    fireEvent.change(screen.getByLabelText('Cron'), { target: { value: '30 2 * * *' } })
+    fireEvent.click(screen.getByText('Schedule'))
+    expect((screen.getByLabelText('Cron') as HTMLInputElement).value).toBe('30 2 * * *')
   })
 
   it('inserts each of the four step types from the gap picker', () => {
