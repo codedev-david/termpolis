@@ -299,22 +299,17 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Build
         run: npm run build
-      # node-pty spawns a PTY on macOS through a helper binary (build/Release/spawn-helper)
-      # that must carry the executable bit; npm's tarball extraction on the macos runner
-      # can land it without +x, which surfaces only at run time as "posix_spawnp failed"
-      # when a Command step tries to open its terminal. Re-assert +x (harmless if already
-      # set) and print what we found so any future spawn regression has evidence in the log.
-      - name: Ensure node-pty spawn-helper is executable (macOS)
-        shell: bash
+      # node-pty spawns a PTY on macOS through a helper binary (spawn-helper) that
+      # must carry the executable bit; npm's tarball extraction on the macos runner
+      # can land it without +x, which surfaces only at run time as "posix_spawnp
+      # failed" when a Command step opens its terminal. node-pty 1.x ships PREBUILT
+      # binaries — the helper lives at prebuilds/<platform>-<arch>/spawn-helper (NOT
+      # build/Release, which doesn't exist for the prebuild), so `find` it wherever
+      # it lands and re-assert +x. Mirrors release.yml's proven step exactly so the
+      # e2e runner matches the shipped mac build; -print leaves evidence in the log.
+      - name: Fix spawn-helper permissions (macOS)
         run: |
-          helper=node_modules/node-pty/build/Release/spawn-helper
-          if [ -f "$helper" ]; then
-            chmod +x "$helper"
-            ls -l "$helper"
-          else
-            echo "spawn-helper not found at $helper — listing build dir:"
-            ls -lR node_modules/node-pty/build/Release || true
-          fi
+          find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
       - name: Smoke-click every sidebar button (macOS)
         run: npx playwright test e2e/chrome-smoke.spec.ts
       - name: First-run with zero AI agents installed (macOS)
