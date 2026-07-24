@@ -15,6 +15,17 @@ describe('terminal runner adapter', () => {
     expect(res.exitCode).toBe(0)
     expect(chunks.join('')).toContain('hi')
   })
+  it('resolves failed (never rejects/hangs) when spawnTerminal throws', async () => {
+    // node-pty throws synchronously when it cannot spawn the shell (e.g. a
+    // bad executable). The runner MUST catch it and resolve a failed result
+    // so the engine reports the step failed — a rejected promise here would
+    // hang the whole run with the step stuck "running" forever.
+    const spawn = vi.fn(() => { throw new Error('File not found: bogus') })
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn() })
+    const res = await runner.run({ stepId: 's', command: 'echo hi', shell: 'bogus', cwd: '/x', timeoutMs: 1000, visible: false })
+    expect(res.exitCode).not.toBe(0)
+    expect(res.output).toContain('File not found')
+  })
   it('timeout kills the pty and resolves timedOut', async () => {
     vi.useFakeTimers()
     const kill = vi.fn()
@@ -25,6 +36,21 @@ describe('terminal runner adapter', () => {
     const res = await p
     expect(res.timedOut).toBe(true); expect(kill).toHaveBeenCalled()
     vi.useRealTimers()
+  })
+  it('cancel(stepId) kills the live pty and resolves the run (exit 130)', async () => {
+    // spawn never drives onExit — the run stays in-flight until cancel fires.
+    const kill = vi.fn()
+    const spawn = vi.fn((_id, _exe, _cwd, _d, _p, _e, _ex) => {})
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: kill })
+    const p = runner.run({ stepId: 's', command: 'sleep 999', shell: 'bash', cwd: '/x', timeoutMs: 100000, visible: false })
+    runner.cancel('s')
+    const res = await p
+    expect(res.exitCode).toBe(130)
+    expect(kill).toHaveBeenCalledWith('s')
+  })
+  it('cancel of an unknown stepId is a harmless no-op', () => {
+    const runner = makeTerminalRunner({ spawnTerminal: vi.fn() as any, writeToTerminal: vi.fn(), killTerminal: vi.fn() })
+    expect(() => runner.cancel('never-started')).not.toThrow()
   })
 })
 

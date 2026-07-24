@@ -74,6 +74,20 @@ describe('WorkflowRunner', () => {
     expect((window as any).termpolis.cancelWorkflow).toHaveBeenCalledWith('r')
   })
 
+  it('Run button invokes runWorkflow with the cwd and workflow id', () => {
+    render(<WorkflowRunner workflow={twoStep()} runId={null} cwd="/proj" />)
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+    expect((window as any).termpolis.runWorkflow).toHaveBeenCalledWith('/proj', 'x')
+  })
+
+  it('Run button is disabled while a run is in progress', () => {
+    ev({ type: 'run:started', runId: 'r', workflowId: 'x', at: 1 })
+    render(<WorkflowRunner workflow={twoStep()} runId="r" cwd="/proj" />)
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+    // disabled → onRun never fires
+    expect((window as any).termpolis.runWorkflow).not.toHaveBeenCalled()
+  })
+
   it('does not show Cancel when there is no active run', () => {
     render(<WorkflowRunner workflow={twoStep()} runId={null} cwd="/r" />)
     expect(screen.queryByText('Cancel')).toBeNull()
@@ -84,5 +98,18 @@ describe('WorkflowRunner', () => {
     expect((window as any).termpolis.onWorkflowRunEvent).toHaveBeenCalledTimes(1)
     unmount()
     expect(unsub).toHaveBeenCalledTimes(1)
+  })
+
+  it('pipes each streamed run event into the store via applyRunEvent', () => {
+    // The mount subscription hands the main process a callback; prove that callback
+    // actually routes events into the store reducer (not merely that we subscribed).
+    let cb: (e: any) => void = () => {}
+    ;(window as any).termpolis.onWorkflowRunEvent = vi.fn((fn: any) => { cb = fn; return unsub })
+    render(<WorkflowRunner workflow={twoStep()} runId="r" cwd="/r" />)
+    cb({ type: 'run:started', runId: 'r', workflowId: 'x', at: 1 })
+    cb({ type: 'step:finished', runId: 'r', stepId: 'a', result: { stepId: 'a', status: 'succeeded', output: '', exitCode: 0 } })
+    expect(
+      useTerminalStore.getState().activeRuns['r']?.steps.find(s => s.stepId === 'a')?.status,
+    ).toBe('succeeded')
   })
 })

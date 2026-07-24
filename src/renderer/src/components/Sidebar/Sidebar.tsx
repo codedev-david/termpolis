@@ -221,6 +221,7 @@ export function Sidebar() {
             <button
               onClick={() => setWorkflowView(null)}
               title="Close workflow"
+              aria-label="Close workflow"
               className="px-2 py-1 rounded text-[#999] hover:text-white hover:bg-[#37373d]"
             ><i className="fa-solid fa-xmark"></i></button>
           </div>

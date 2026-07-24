@@ -931,3 +931,59 @@ describe('preload: commit shield git-hook bridge', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('gitHooks:install', { cwd: undefined })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Workflow Orchestrator bridge — the renderer's only door to the main-process
+// workflow store + engine. Each method must invoke the exact channel with the
+// exact payload shape the main handlers destructure, and onWorkflowRunEvent must
+// register a listener, forward each event to the callback, and return a cleanup
+// that unsubscribes.
+// ---------------------------------------------------------------------------
+describe('preload — workflow orchestrator bridge', () => {
+  it('listWorkflows invokes workflow:list with the cwd', async () => {
+    await exposed.termpolis.listWorkflows('/proj')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workflow:list', { cwd: '/proj' })
+  })
+
+  it('readWorkflow invokes workflow:read with cwd + id', async () => {
+    await exposed.termpolis.readWorkflow('/proj', 'wf1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workflow:read', { cwd: '/proj', id: 'wf1' })
+  })
+
+  it('saveWorkflow invokes workflow:save with cwd + workflow', async () => {
+    const wf = { id: 'wf1', name: 'W', steps: [] }
+    await exposed.termpolis.saveWorkflow('/proj', wf)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workflow:save', { cwd: '/proj', workflow: wf })
+  })
+
+  it('deleteWorkflow invokes workflow:delete with cwd + id', async () => {
+    await exposed.termpolis.deleteWorkflow('/proj', 'wf1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workflow:delete', { cwd: '/proj', id: 'wf1' })
+  })
+
+  it('runWorkflow invokes workflow:run with cwd + id', async () => {
+    await exposed.termpolis.runWorkflow('/proj', 'wf1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workflow:run', { cwd: '/proj', id: 'wf1' })
+  })
+
+  it('cancelWorkflow invokes workflow:cancel with the runId', async () => {
+    await exposed.termpolis.cancelWorkflow('run-42')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('workflow:cancel', { runId: 'run-42' })
+  })
+
+  it('onWorkflowRunEvent registers a listener, forwards events, and returns a working cleanup', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.termpolis.onWorkflowRunEvent(cb)
+    // The listener is registered on the run-event channel.
+    expect(mockIpcRenderer.on).toHaveBeenCalledWith('workflow:run-event', expect.any(Function))
+    // The registered handler forwards the event payload (dropping the ipc event arg) to cb.
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'workflow:run-event')![1] as Function
+    const evt = { runId: 'r', kind: 'run-started' }
+    handler({}, evt)
+    expect(cb).toHaveBeenCalledWith(evt)
+    // Cleanup removes exactly that handler.
+    expect(typeof cleanup).toBe('function')
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('workflow:run-event', handler)
+  })
+})

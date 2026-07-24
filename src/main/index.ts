@@ -60,7 +60,7 @@ import { homedir, release } from 'os'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
-import { detectAvailableShells } from './shellDetector'
+import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -3051,7 +3051,17 @@ if (!gotTheLock) {
     try {
       const wfFs = { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } as unknown as WorkflowFsLike
       const wfSpawn = { spawnTerminal, writeToTerminal, killTerminal }
-      const wfTerminal = makeTerminalRunner(wfSpawn)
+      // Command steps store a logical shell TYPE ('bash'|'powershell'|...).
+      // node-pty needs a concrete executable — bare 'bash' throws "File not
+      // found" on Windows — so resolve the type to a real path before spawning.
+      // Agent steps launch CLIs (claude/codex/agy) that are NOT shell types, so
+      // they keep the plain, unresolved spawn.
+      const wfCommandSpawn = {
+        ...wfSpawn,
+        spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void) =>
+          spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit),
+      }
+      const wfTerminal = makeTerminalRunner(wfCommandSpawn)
       const wfAgentLaunch: Record<'claude' | 'codex' | 'gemini', string> = { claude: 'claude', codex: 'codex', gemini: 'agy' }
       const wfAgent = makeAgentRunner(
         wfSpawn,

@@ -20,7 +20,11 @@ const SHELL_CANDIDATES: Record<string, { type: ShellType; label: string; paths: 
   ],
 }
 
-export async function detectAvailableShells(): Promise<ShellInfo[]> {
+// Synchronous core: probe the platform's candidate shells and return the ones
+// whose executable actually exists. The body is fully synchronous (existsSync),
+// so callers that cannot await — e.g. resolving a workflow step's shell inside
+// a synchronous spawn wrapper — use this directly.
+export function detectAvailableShellsSync(): ShellInfo[] {
   const currentPlatform = os.platform()
   const key = currentPlatform === 'win32' ? 'win32' : currentPlatform === 'darwin' ? 'darwin' : 'linux'
   const candidates = SHELL_CANDIDATES[key] ?? []
@@ -30,6 +34,53 @@ export async function detectAvailableShells(): Promise<ShellInfo[]> {
     if (exe) found.push({ type: candidate.type, label: candidate.label, executable: exe })
   }
   return found
+}
+
+export async function detectAvailableShells(): Promise<ShellInfo[]> {
+  return detectAvailableShellsSync()
+}
+
+// When an exact shell type isn't installed, fall back to the nearest compatible
+// one (a step asking for POSIX `bash` on Windows should get Git Bash; a Windows
+// step asking for `powershell` should get cmd if pwsh is missing).
+const SHELL_FALLBACKS: Record<string, ShellType[]> = {
+  bash: ['bash', 'gitbash', 'zsh'],
+  gitbash: ['gitbash', 'bash', 'zsh'],
+  zsh: ['zsh', 'bash', 'gitbash'],
+  powershell: ['powershell', 'cmd'],
+  cmd: ['cmd', 'powershell'],
+}
+
+// A shell value is already a concrete executable (not a logical type) if it
+// looks like a path or names a .exe — pass those straight through.
+function isExecutablePath(shell: string): boolean {
+  return shell.includes('/') || shell.includes('\\') || shell.toLowerCase().endsWith('.exe')
+}
+
+// Map a workflow step's logical shell TYPE (what the Designer stores, e.g.
+// 'bash') to a concrete executable node-pty can spawn. This is PURE — it takes
+// the already-detected shell list so it can be unit-tested without fs/os.
+//
+// node-pty on Windows CANNOT resolve a bare 'bash' via PATH — it must be handed
+// a real path or it throws "File not found". So a Command step that stores
+// shell:'bash' has to be resolved to the Git Bash executable before spawning.
+export function pickShellExecutable(shells: ShellInfo[], shell: string): string {
+  if (isExecutablePath(shell)) return shell
+  const order = SHELL_FALLBACKS[shell] ?? [shell as ShellType]
+  for (const type of order) {
+    const match = shells.find(s => s.type === type)
+    if (match) return match.executable
+  }
+  // Unknown type with nothing compatible detected: return the raw value and let
+  // node-pty fail honestly (the adapter turns that throw into a failed step)
+  // rather than silently substituting an unrelated shell.
+  return shell
+}
+
+// Real substrate: detect the machine's shells, then resolve a logical type to a
+// concrete executable. Used to wire the workflow Command-step spawn.
+export function resolveShellExecutable(shell: string): string {
+  return pickShellExecutable(detectAvailableShellsSync(), shell)
 }
 
 export function getDefaultShell(shells: ShellInfo[], os: string): ShellInfo | undefined {

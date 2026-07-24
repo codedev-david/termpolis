@@ -67,7 +67,9 @@ test('02 - welcome screen shows on first launch', async () => {
 
 test('03 - sidebar icon bar visible', async () => {
   await expect(page.locator('button[title="Settings"]')).toBeVisible()
-  await expect(page.locator('button[title="Workflows"]')).toBeVisible()
+  // Workflows retired the toolbar icon (Task 12); it's now a permanent sidebar
+  // section whose "New Workflow" button proves the section is present.
+  await expect(page.locator('button[title="New Workflow"]')).toBeVisible()
   await expect(page.locator('button[title="Git Panel"]')).toBeVisible()
   await expect(page.locator('button[title="Swarm Dashboard (Ctrl+Shift+S)"]')).toBeVisible()
   await expect(page.locator('button[title="Collapse sidebar"]')).toBeVisible()
@@ -293,9 +295,10 @@ test('22 - git panel opens from sidebar', async () => {
 // 8. WORKFLOW TEMPLATES
 // ══════════════════════════════════════════════════════
 
-test('23 - workflow templates modal opens', async () => {
+test('23 - workflow designer overlay opens', async () => {
   await closeAnyModal()
-  await page.locator('button[title="Workflows"]').click()
+  await page.locator('button[title="New Workflow"]').click()
+  await expect(page.locator('[role="dialog"][aria-label="Workflow"]')).toBeVisible()
   await page.waitForTimeout(500)
 
   await screenshot('23-workflow-templates')

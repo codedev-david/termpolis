@@ -4,7 +4,7 @@ import { existsSync } from 'fs'
 vi.mock('fs')
 vi.mock('os', () => ({ homedir: () => '/home/user', platform: () => 'linux' }))
 
-const { detectAvailableShells, getDefaultShell } = await import('../../src/main/shellDetector')
+const { detectAvailableShells, detectAvailableShellsSync, getDefaultShell, pickShellExecutable, resolveShellExecutable } = await import('../../src/main/shellDetector')
 
 describe('detectAvailableShells', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -80,6 +80,63 @@ describe('getDefaultShell', () => {
 
   it('returns undefined when shells empty', () => {
     expect(getDefaultShell([], 'linux')).toBeUndefined()
+  })
+})
+
+// pickShellExecutable is PURE — it never touches fs/os, so these cases hold
+// regardless of the linux mocks above. It maps a workflow step's logical
+// shell TYPE (what the Designer stores, e.g. 'bash') to a concrete executable
+// node-pty can actually spawn. node-pty on Windows CANNOT resolve a bare
+// 'bash' via PATH — it must be handed a real path — which is the whole reason
+// this function exists.
+describe('pickShellExecutable', () => {
+  const win = [
+    { type: 'powershell' as const, label: 'PowerShell', executable: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' },
+    { type: 'cmd' as const, label: 'Command Prompt', executable: 'C:\\Windows\\System32\\cmd.exe' },
+    { type: 'gitbash' as const, label: 'Git Bash', executable: 'C:\\Program Files\\Git\\bin\\bash.exe' },
+  ]
+  const linux = [
+    { type: 'bash' as const, label: 'Bash', executable: '/bin/bash' },
+    { type: 'zsh' as const, label: 'Zsh', executable: '/usr/bin/zsh' },
+  ]
+
+  it("maps logical 'bash' to the Git Bash executable when no native bash is present (Windows)", () => {
+    expect(pickShellExecutable(win, 'bash')).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  })
+
+  it("maps logical 'zsh' to Git Bash on Windows (nearest POSIX shell)", () => {
+    expect(pickShellExecutable(win, 'zsh')).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  })
+
+  it('returns the exact executable for an exactly-matching shell type', () => {
+    expect(pickShellExecutable(win, 'powershell')).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe')
+    expect(pickShellExecutable(win, 'cmd')).toBe('C:\\Windows\\System32\\cmd.exe')
+  })
+
+  it('passes a full path or .exe straight through unchanged', () => {
+    expect(pickShellExecutable(win, 'C:\\custom\\fish.exe')).toBe('C:\\custom\\fish.exe')
+    expect(pickShellExecutable(linux, '/opt/homebrew/bin/fish')).toBe('/opt/homebrew/bin/fish')
+  })
+
+  it("resolves 'bash' to native /bin/bash on a Linux shell list", () => {
+    expect(pickShellExecutable(linux, 'bash')).toBe('/bin/bash')
+  })
+
+  it('returns the raw type as a last resort when it is unknown and nothing compatible is detected', () => {
+    expect(pickShellExecutable(win, 'fish')).toBe('fish')
+    expect(pickShellExecutable([], 'bash')).toBe('bash')
+  })
+})
+
+describe('resolveShellExecutable (linux platform mock)', () => {
+  it("resolves 'bash' to the detected /bin/bash", () => {
+    vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
+    expect(resolveShellExecutable('bash')).toBe('/bin/bash')
+  })
+
+  it('detectAvailableShellsSync returns the same result as the async detector', async () => {
+    vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
+    expect(detectAvailableShellsSync()).toEqual(await detectAvailableShells())
   })
 })
 

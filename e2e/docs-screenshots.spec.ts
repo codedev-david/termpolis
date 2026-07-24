@@ -367,18 +367,19 @@ test('capture all docs screenshots', async () => {
   await ss('12-prompt-templates')
   await closeModals() // must fully close, or it blocks the Workflows button (13/13b)
 
-  // 13 — Workflow templates
-  await clickIf('button[title="Workflows"]', 2500)
-  await page.locator('h2:text-is("Workflow Templates")').first()
+  // 13 — Workflow designer (the New Workflow overlay opens from the permanent
+  // Workflows sidebar section; the old toolbar icon + templates modal are gone).
+  await clickIf('button[title="New Workflow"]', 2500)
+  await page.locator('[role="dialog"][aria-label="Workflow"]')
     .waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
   await safeWait(500)
   await ss('13-workflow-templates')
 
-  // 13b — Create-workflow form (the New Workflow editor)
-  await clickIf('button:has-text("New Workflow")', 2000)
-  await safeWait(700)
+  // 13b — Create-workflow form (the Design tab where steps are authored)
+  await clickIf('button[aria-label="Design tab"]', 1500)
+  await safeWait(500)
   await ss('13b-workflow-create')
-  await clickIf('button[aria-label="Back to workflow list"]', 1500)
+  await clickIf('button[aria-label="Close workflow"]', 1500)
   await safeWait(300)
   await closeModals()
 

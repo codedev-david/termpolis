@@ -250,6 +250,12 @@ jobs:
       - name: In-terminal find bar searches scrollback
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/terminal-search.spec.ts
+      # Workflow Orchestrator gate: author a Command + Control workflow through
+      # the real Designer UI, run it, and assert both steps reach `succeeded`
+      # on the live timeline — the whole author→save→run→events→timeline pipe.
+      - name: Workflow Orchestrator author→run→green
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npx playwright test e2e/workflow-orchestrator.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
@@ -299,6 +305,8 @@ jobs:
         run: npx playwright test e2e/first-run-zero-agents.spec.ts
       - name: Report-a-Problem flow (macOS)
         run: npx playwright test e2e/report-problem.spec.ts
+      - name: Workflow Orchestrator author→run→green (macOS)
+        run: npx playwright test e2e/workflow-orchestrator.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

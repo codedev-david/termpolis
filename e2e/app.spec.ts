@@ -62,8 +62,8 @@ test('sidebar shows icon bar with all buttons', async () => {
   const git = page.locator('button[title="Git Panel"]')
   await expect(git).toBeVisible()
 
-  // Workflows button
-  const workflows = page.locator('button[title="Workflows"]')
+  // Workflows sidebar section — New Workflow create button
+  const workflows = page.locator('button[title="New Workflow"]')
   await expect(workflows).toBeVisible()
 
   // Swarm button
@@ -244,23 +244,22 @@ test('Git Panel opens from sidebar', async () => {
   await page.waitForTimeout(300)
 })
 
-// ── Workflow Templates ──────────────────────────────
+// ── Workflows overlay ───────────────────────────────
 
-test('Workflow Templates modal opens', async () => {
-  const workflows = page.locator('button[title="Workflows"]')
-  await workflows.click()
+test('Workflow overlay opens and closes', async () => {
+  // The retired toolbar Workflows icon was replaced by the permanent sidebar
+  // section. New Workflow opens the author/run overlay; the X button
+  // (title="Close workflow") closes it — the full-screen overlay has no
+  // Escape/backdrop dismiss.
+  const newWf = page.locator('button[title="New Workflow"]').first()
+  await newWf.click()
   await page.waitForTimeout(500)
 
-  // Should show workflow cards
-  const claudeShell = page.locator('text=Claude Code + Shell').first()
-  const isVisible = await claudeShell.isVisible().catch(() => false)
-  if (isVisible) {
-    await expect(claudeShell).toBeVisible()
-  }
+  const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
+  await expect(dlg).toBeVisible()
 
-  // Close
-  await page.keyboard.press('Escape')
-  await page.waitForTimeout(300)
+  await page.locator('button[title="Close workflow"]').first().click()
+  await expect(dlg).toBeHidden()
 })
 
 // ── Swarm Dashboard ─────────────────────────────────

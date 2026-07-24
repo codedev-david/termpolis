@@ -209,8 +209,17 @@ test.describe.serial('Chrome smoke', () => {
     expect(fatal, fatal.join('\n')).toEqual([])
   })
 
-  test('3. Sidebar: Workflows opens and closes via backdrop', async () => {
-    await clickAndReturn('button[title="Workflows"]', 'backdrop')
+  test('3. Sidebar: Workflows overlay opens and closes', async () => {
+    // The old toolbar Workflows icon was retired for the permanent sidebar
+    // section; author-flow now opens via the section's New Workflow button and
+    // closes via the overlay's X (title="Close workflow"). The full-screen
+    // overlay has no backdrop-dismiss, so drive open/close explicitly.
+    await closeAnyOpenModal()
+    await page.locator('button[title="New Workflow"]').first().click()
+    const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
+    await expect(dlg).toBeVisible()
+    await page.locator('button[title="Close workflow"]').first().click()
+    await expect(dlg).toBeHidden()
     const fatal = errors.filter(isFatal)
     expect(fatal, fatal.join('\n')).toEqual([])
   })

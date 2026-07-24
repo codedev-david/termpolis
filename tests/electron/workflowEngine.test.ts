@@ -73,6 +73,41 @@ describe('engine', () => {
     expect(run.status).toBe('succeeded')
   })
 
+  it('streams a command step\'s live output as step:output events', async () => {
+    // The terminal substrate calls onChunk mid-run; the engine must relay each
+    // chunk to the renderer as a step:output event tagged with the step id.
+    const runSpy = vi.fn(async (_s: any, onChunk?: (c: string) => void) => { onChunk?.('line-1\n'); return { exitCode: 0, output: 'line-1\n' } })
+    const { d, events } = deps({ terminal: { run: runSpy, cancel: vi.fn() } })
+    await runWorkflow(wf([{ id: 'a', type: 'command', name: 'a', source: 'inline', command: 'echo hi' }]), d)
+    expect(events).toContainEqual(expect.objectContaining({ type: 'step:output', stepId: 'a', chunk: 'line-1\n' }))
+  })
+
+  it('a notify control step emits its message as step:output', async () => {
+    // notify is the one control action that emits; the engine\'s onEmit adapter
+    // must forward the executor\'s chunk out as a step:output event.
+    const { d, events } = deps()
+    const run = await runWorkflow(wf([
+      { id: 'n', type: 'control', name: 'n', action: 'notify', config: { message: 'ship it' } },
+    ]), d)
+    expect(run.steps[0].status).toBe('succeeded')
+    expect(events).toContainEqual(expect.objectContaining({ type: 'step:output', stepId: 'n', chunk: 'ship it' }))
+  })
+
+  it('relays live output from a looped step on every iteration', async () => {
+    // The looped step re-runs via runOne, which builds its own onChunk. Prove
+    // that per-iteration output is streamed too, not just the first pass.
+    let n = 0
+    const runSpy = vi.fn(async (_s: any, onChunk?: (c: string) => void) => { n++; onChunk?.(`iter-${n}`); return { exitCode: 0, output: String(n) } })
+    const { d, events } = deps({ terminal: { run: runSpy, cancel: vi.fn() } })
+    await runWorkflow(wf([
+      { id: 'a', type: 'command', name: 'a', source: 'inline', command: 'tick' },
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 5, until: 'steps.a.output == 3' } },
+    ]), d)
+    const outputs = events.filter(e => e.type === 'step:output' && e.stepId === 'a').map(e => (e as any).chunk)
+    expect(outputs).toContain('iter-1') // first pass (main loop onChunk)
+    expect(outputs).toContain('iter-2') // re-run inside runLoop -> runOne onChunk
+  })
+
   it('branch goto jumps forward to the target step', async () => {
     const order: string[] = []
     const runSpy = vi.fn(async (s: any) => { order.push(s.command); return { exitCode: 0, output: '' } })
@@ -95,6 +130,20 @@ describe('engine', () => {
       { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 5, until: 'steps.a.output == 3' } },
     ]), d)
     expect(n).toBe(3) // ran once, then looped until output==3
+  })
+
+  it('re-runs a preceding control (notify) step through runOne, not just commands', async () => {
+    // When the step before a loop is itself a control step, runLoop re-runs it via
+    // runOne, whose control branch executes it with a no-op emit sink. Proves any
+    // step type is a valid loop body; each re-run pushes a fresh step:finished.
+    const { d, events } = deps()
+    const run = await runWorkflow(wf([
+      { id: 'n', type: 'control', name: 'n', action: 'notify', config: { message: 'ping' } },
+      { id: 'l', type: 'control', name: 'l', action: 'loop', config: { maxIterations: 3 } },
+    ]), d)
+    expect(run.status).toBe('succeeded')
+    const finished = events.filter(e => e.type === 'step:finished' && (e as any).stepId === 'n')
+    expect(finished.length).toBeGreaterThanOrEqual(2) // 2 loop re-runs (n=1,2) via runOne
   })
 
   it('aborts a runaway backward branch goto at the execution cap (does not hang)', async () => {

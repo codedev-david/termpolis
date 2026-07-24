@@ -85,6 +85,19 @@ export function WorkflowOverlayBody({
     return <div className="p-6 text-sm text-[#9ca3af]">Loading workflow…</div>
   }
 
+  // The Designer edits its own internal draft and persists it on Save. Re-read
+  // the saved workflow from disk here so this component's `wf` — the single
+  // source the Runner renders its timeline from — matches exactly what Run will
+  // execute (workflow:run loads the saved YAML by id). Without this, a freshly
+  // authored workflow's Run tab would show an empty timeline even though the
+  // saved workflow ran, and later edits would drift from what actually runs.
+  const handleSaved = (): void => {
+    onSaved()
+    void window.termpolis.readWorkflow(cwd, wf.id).then(res => {
+      if (res.success && res.data) setWf(res.data)
+    })
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1 px-4 pt-2 border-b border-[#3c3c3c]">
@@ -98,7 +111,7 @@ export function WorkflowOverlayBody({
       <div className="flex-1 overflow-auto">
         {/* Designer stays mounted (edits survive tab switches); just hidden off-tab. */}
         <div className={tab === 'design' ? 'h-full' : 'hidden'}>
-          <WorkflowDesigner workflow={wf} cwd={cwd} onSaved={onSaved} />
+          <WorkflowDesigner workflow={wf} cwd={cwd} onSaved={handleSaved} />
         </div>
         {tab === 'run' && <WorkflowRunner workflow={wf} runId={runId} cwd={cwd} />}
       </div>

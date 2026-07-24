@@ -423,18 +423,20 @@ test.describe.serial('7. Git Panel', () => {
 // SECTION 8: WORKFLOW TEMPLATES
 // ════════════════════════════════════════════════════════════
 
-test.describe.serial('8. Workflow Templates', () => {
+test.describe.serial('8. Workflows overlay', () => {
   test('8.1 opens from sidebar', async () => {
-    await page.locator('button[title="Workflows"]').click()
+    // Retired toolbar icon → permanent sidebar section's New Workflow button.
+    await page.locator('button[title="New Workflow"]').first().click()
     await page.waitForTimeout(500)
     await ss('8.1-workflows-open')
   })
 
-  test('8.2 shows workflow options', async () => {
-    const claude = page.locator('text=Claude Code').first()
-    const visible = await claude.isVisible().catch(() => false)
-    expect(visible || true).toBeTruthy()
-    await esc()
+  test('8.2 shows the authoring overlay and closes', async () => {
+    const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
+    await expect(dlg).toBeVisible()
+    // Close via the X (title="Close workflow"); no Escape/backdrop dismiss.
+    await page.locator('button[title="Close workflow"]').first().click()
+    await expect(dlg).toBeHidden()
   })
 })
 

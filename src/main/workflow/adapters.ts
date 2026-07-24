@@ -19,13 +19,21 @@ export function makeTerminalRunner(sp: SpawnDeps): TerminalRunner {
         const finish = (r: CommandRunResult) => { if (done) return; done = true; clearTimeout(timer); live.delete(spec.stepId); resolve(r) }
         const timer = setTimeout(() => { try { sp.killTerminal(spec.stepId) } catch {} finish({ exitCode: 124, output: buf, timedOut: true }) }, spec.timeoutMs)
         live.set(spec.stepId, () => { try { sp.killTerminal(spec.stepId) } catch {} finish({ exitCode: 130, output: buf }) })
-        sp.spawnTerminal(spec.stepId, spec.shell, spec.cwd,
-          (d) => { buf = (buf + d).slice(-CAP); onChunk?.(d) },
-          undefined, undefined,
-          (code) => finish({ exitCode: code, output: buf }))
-        // Non-interactive: write the command + newline, then signal EOF via `exit`.
-        sp.writeToTerminal(spec.stepId, `${spec.command}\n`)
-        if (!spec.visible) sp.writeToTerminal(spec.stepId, `exit $?\n`)
+        try {
+          sp.spawnTerminal(spec.stepId, spec.shell, spec.cwd,
+            (d) => { buf = (buf + d).slice(-CAP); onChunk?.(d) },
+            undefined, undefined,
+            (code) => finish({ exitCode: code, output: buf }))
+          // Non-interactive: write the command + newline, then signal EOF via `exit`.
+          sp.writeToTerminal(spec.stepId, `${spec.command}\n`)
+          if (!spec.visible) sp.writeToTerminal(spec.stepId, `exit $?\n`)
+        } catch (e: any) {
+          // node-pty throws synchronously when it can't spawn the shell. Turn
+          // that into a failed step (exit 127 = command not found) so the
+          // engine reports the failure — a leaked throw would hang the run
+          // with the step stuck "running" forever.
+          finish({ exitCode: 127, output: (buf + `\n[spawn error] ${e?.message ?? e}`).slice(-CAP) })
+        }
       })
     },
     cancel(stepId) { live.get(stepId)?.() },

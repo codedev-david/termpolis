@@ -16,7 +16,7 @@
  *   1. Welcome screen on cold start
  *   2. Settings pane — tabs render + switching shows different content
  *   3. AI Agents sidebar — all four built-in agents render by name
- *   4. Workflow Templates — all built-in templates render with names
+ *   4. Workflows overlay — New Workflow opens the authoring canvas with content
  *   5. Prompt Templates — built-in templates render
  *   6. Context Pins — seeded pin renders with label + body text
  *   7. Command Palette — typed query filters visible results
@@ -186,29 +186,29 @@ test.describe.serial('UI screens show visible results', () => {
     await shot('03-ai-profiles')
   })
 
-  test('4. Workflow Templates overlay shows built-in templates by name', async () => {
+  test('4. Workflows overlay opens the authoring canvas with visible content', async () => {
     await closeOverlays()
-    // Sidebar button with title="Workflows". No keyboard shortcut is wired
-    // for this overlay, so click the button directly.
-    const sidebarBtn = page.locator('button[title="Workflows"]').first()
-    await expect(sidebarBtn).toBeVisible({ timeout: 5000 })
-    await sidebarBtn.click()
+    // The retired toolbar Workflows icon was replaced by the permanent
+    // Workflows sidebar section; its New Workflow button opens the author/run
+    // overlay. This guards the "screen opens but renders nothing" regression:
+    // the overlay must show real authoring affordances, not an empty frame.
+    const newBtn = page.locator('button[title="New Workflow"]').first()
+    await expect(newBtn).toBeVisible({ timeout: 5000 })
+    await newBtn.click()
     await page.waitForTimeout(500)
 
-    await expect(
-      page.locator('text=/Workflow Templates|New Workflow/i').first(),
-    ).toBeVisible({ timeout: 5000 })
-    // Built-in templates should always render — verifying at least two
-    // distinct names catches "list is empty" regressions.
-    const templateNames = await page.locator(
-      '[data-testid="workflow-template-name"], h3, h4, span',
-    ).allTextContents()
-    const joined = templateNames.join(' | ')
-    // Any two of these built-ins indicate the list rendered.
-    const builtIns = ['Claude', 'Full Stack', 'Code Review', 'Shell']
-    const hits = builtIns.filter((name) => joined.includes(name))
-    expect(hits.length, `built-in workflow names found in overlay: ${hits.join(', ')}`).toBeGreaterThanOrEqual(2)
-    await shot('04-workflow-templates')
+    const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
+    await expect(dlg).toBeVisible({ timeout: 5000 })
+    // Visible, populated authoring surface: the workflow-name field, the
+    // Design/Run tabs, and at least one step-insert control.
+    await expect(dlg.locator('input[aria-label="Workflow name"]')).toBeVisible({ timeout: 5000 })
+    await expect(dlg.locator('button[aria-label="Design tab"]')).toBeVisible()
+    await expect(dlg.locator('button[aria-label="Run tab"]')).toBeVisible()
+    await expect(dlg.locator('button[title="Insert a step"]').first()).toBeVisible()
+    await shot('04-workflows-overlay')
+    // Leave no overlay open for the next test in this serial suite.
+    await page.locator('button[title="Close workflow"]').first().click()
+    await expect(dlg).toBeHidden()
   })
 
   test('5. Prompt Templates palette shows built-in templates', async () => {

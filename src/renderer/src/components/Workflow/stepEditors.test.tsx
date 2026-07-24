@@ -85,6 +85,22 @@ describe('StepEditor — skill', () => {
     fireEvent.change(screen.getByLabelText('Arguments (JSON)'), { target: { value: '{"q":"foo"}' } })
     expect(onChange).toHaveBeenCalledWith({ args: { q: 'foo' } })
   })
+  it('edits timeout, continueOnError and the gate (when)', () => {
+    const { onChange } = renderEditor(base)
+    fireEvent.change(screen.getByLabelText('Timeout (ms)'), { target: { value: '2500' } })
+    fireEvent.click(screen.getByLabelText('Continue on error'))
+    fireEvent.change(screen.getByLabelText('Run when (gate)'), { target: { value: 'steps.a.ok' } })
+    expect(onChange).toHaveBeenCalledWith({ timeoutMs: 2500 })
+    expect(onChange).toHaveBeenCalledWith({ continueOnError: true })
+    expect(onChange).toHaveBeenCalledWith({ when: 'steps.a.ok' })
+  })
+  it('clears timeout and gate back to undefined when emptied', () => {
+    const { onChange } = renderEditor({ ...base, timeoutMs: 2500, when: 'x' })
+    fireEvent.change(screen.getByLabelText('Timeout (ms)'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('Run when (gate)'), { target: { value: '' } })
+    expect(onChange).toHaveBeenCalledWith({ timeoutMs: undefined })
+    expect(onChange).toHaveBeenCalledWith({ when: undefined })
+  })
   it('shows an error and does not emit args on invalid JSON', () => {
     const { onChange } = renderEditor(base)
     fireEvent.change(screen.getByLabelText('Arguments (JSON)'), { target: { value: '{bad' } })
@@ -122,5 +138,10 @@ describe('StepEditor — control', () => {
     const { onChange } = renderEditor({ id: 'a', type: 'control', name: 'N', action: 'notify', config: {} })
     fireEvent.change(screen.getByLabelText('Notify message'), { target: { value: 'done!' } })
     expect(onChange).toHaveBeenCalledWith({ config: { message: 'done!' } })
+  })
+  it('edits the run-when gate (shared across every control action)', () => {
+    const { onChange } = renderEditor({ id: 'a', type: 'control', name: 'W', action: 'wait', config: { waitMs: 1000 } })
+    fireEvent.change(screen.getByLabelText('Run when (gate)'), { target: { value: 'steps.a.ok' } })
+    expect(onChange).toHaveBeenCalledWith({ when: 'steps.a.ok' })
   })
 })
