@@ -1,5 +1,5 @@
-import type { CommandStep, ControlStep, StepResult, StepStatus } from '../../renderer/src/types'
-import type { TerminalRunner, Timer } from './contracts'
+import type { AgentStep, CommandStep, ControlStep, StepResult, StepStatus } from '../../renderer/src/types'
+import type { AgentRunner, TerminalRunner, Timer } from './contracts'
 import { interpolate, evalCondition } from './workflowExpr'
 
 type Emit = (e: { chunk: string }) => void
@@ -65,4 +65,15 @@ export async function executeCommandStep(
     output: tail(res.output),
     error: res.timedOut ? `command timed out after ${step.timeoutMs ?? 600_000}ms` : undefined,
   }
+}
+
+export async function executeAgentStep(
+  step: AgentStep, results: Results, agent: AgentRunner, onChunk?: (s: string) => void,
+): Promise<StepResult> {
+  const res = await agent.run({
+    stepId: step.id, agent: step.agent, prompt: interpolate(step.prompt, results),
+    cwd: step.cwd || '', idleMs: step.idleMs ?? 8_000, timeoutMs: step.timeoutMs ?? 900_000,
+    doneMarker: step.doneMarker,
+  }, onChunk)
+  return { stepId: step.id, status: res.ok ? 'succeeded' : 'failed', output: tail(res.output), error: res.error }
 }

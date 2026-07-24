@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { executeControlStep, executeCommandStep } from '../../src/main/workflow/executors'
-import type { ControlStep, CommandStep, StepResult } from '../../src/renderer/src/types'
+import { executeControlStep, executeCommandStep, executeAgentStep } from '../../src/main/workflow/executors'
+import type { ControlStep, CommandStep, AgentStep, StepResult } from '../../src/renderer/src/types'
 
 const timer = { sleep: vi.fn(async () => {}) }
 const results: Record<string, StepResult> = {
@@ -96,5 +96,28 @@ describe('command executor', () => {
     const term = fakeTerminal({ exitCode: 0, output: big })
     const r = await executeCommandStep(base, {}, term as any)
     expect(r.output.length).toBe(32_768)
+  })
+})
+
+const A: AgentStep = { id: 'g', type: 'agent', name: 'ask', agent: 'claude', prompt: 'fix ${steps.test.output}' }
+
+describe('agent executor', () => {
+  it('ok:true -> succeeded, prompt interpolated', async () => {
+    let seen: any
+    const agent = { run: vi.fn(async (s: any) => { seen = s; return { output: 'patched', ok: true } }), cancel: vi.fn() }
+    const r = await executeAgentStep(A, { test: { stepId: 'test', status: 'failed', exitCode: 1, output: 'boom' } }, agent as any)
+    expect(seen.prompt).toBe('fix boom')
+    expect(r.status).toBe('succeeded'); expect(r.output).toBe('patched')
+  })
+  it('ok:false -> failed with error', async () => {
+    const agent = { run: vi.fn(async () => ({ output: '', ok: false, error: 'timeout after 900000ms' })), cancel: vi.fn() }
+    const r = await executeAgentStep(A, {}, agent as any)
+    expect(r.status).toBe('failed'); expect(r.error).toMatch(/timeout/)
+  })
+  it('passes idleMs/timeoutMs/doneMarker through to the runner', async () => {
+    let seen: any
+    const agent = { run: vi.fn(async (s: any) => { seen = s; return { output: '', ok: true } }), cancel: vi.fn() }
+    await executeAgentStep({ ...A, idleMs: 3000, timeoutMs: 60000, doneMarker: '<<DONE>>' }, {}, agent as any)
+    expect(seen).toMatchObject({ idleMs: 3000, timeoutMs: 60000, doneMarker: '<<DONE>>', agent: 'claude' })
   })
 })
