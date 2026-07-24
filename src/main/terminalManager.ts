@@ -37,7 +37,8 @@ export function spawnTerminal(
   cwd: string,
   onData: (data: string) => void,
   extraPaths?: string[],
-  extraEnv?: Record<string, string>
+  extraEnv?: Record<string, string>,
+  onExit?: (exitCode: number) => void
 ): void {
   const resolvedCwd = (() => {
     try { return existsSync(cwd) ? cwd : homedir() }
@@ -133,7 +134,7 @@ export function spawnTerminal(
   }
 
   proc.onData(onData)
-  proc.onExit(() => { processes.delete(id) })
+  proc.onExit((e: { exitCode: number }) => { try { onExit?.(e.exitCode) } finally { processes.delete(id) } })
   processes.set(id, { pty: proc })
 }
 
