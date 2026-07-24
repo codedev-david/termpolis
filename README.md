@@ -309,7 +309,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, and Gemini CLI with custom profiles support
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
-- **Multi-Agent Workflow Templates** — built-in split-pane layouts (Claude + Shell, Full Stack Dev, Code Review) plus a visual editor to create, edit, and save your own custom workflows (name, icon, layout, 1–8 terminals each with shell + startup command + color, persisted across restarts)
+- **Workflow Orchestrator** — an Azure-Logic-Apps-style canvas that chains four kinds of step — **Command** (a shell line on a real terminal), **Agent** (Claude Code / Codex / Gemini CLI on a prompt), **Skill** (a built-in tool), and **Control** (wait / branch / loop / notify) — into one repeatable, saveable run. Real control flow with per-step `when` gates and `continueOnError`; later steps read earlier results (`steps.build.exitCode`, captured output) through a **sandboxed expression engine** (no `eval`); and a live Runner timeline streams every step and lets you cancel mid-run
 - **Agent Status Detection** — automatically detects when Claude Code, Codex, or Gemini is running and shows a colored badge in the status bar
 - **Cost Tracking** — parses token usage and cost from AI agent output, displays running totals in the status bar
 - **Session Recording** — record terminal sessions with timestamps, export as shareable text logs
@@ -700,6 +700,7 @@ termpolis/
 │   │   ├── sessionStore.ts          # JSON session persistence with migration
 │   │   ├── historyStore.ts          # Cross-terminal command history
 │   │   ├── configFileManager.ts     # Read/write shell config files
+│   │   ├── workflow/                # Workflow Orchestrator engine (steps, sandboxed expr, YAML store, IPC)
 │   │   └── types.ts                 # Main process type definitions
 │   ├── preload/
 │   │   └── index.ts                 # contextBridge API + MCP event bridge
@@ -727,7 +728,7 @@ termpolis/
 │           ├── TerminalPane/        # xterm.js terminal with all integrations
 │           ├── CommandPalette/      # Natural language command bar (Ctrl+K)
 │           ├── PromptTemplates/     # Reusable prompt snippets (Ctrl+Shift+P)
-│           ├── WorkflowTemplates/   # Multi-agent workspace templates
+│           ├── Workflow/            # Workflow Orchestrator UI (designer, runner, sidebar)
 │           ├── ContextPanel/        # File tree, git status, recent commits
 │           ├── ConversationSearch/  # AI conversation history search
 │           ├── DiffViewer/          # Syntax-highlighted diff rendering
