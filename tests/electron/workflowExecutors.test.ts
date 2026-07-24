@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { executeControlStep, executeCommandStep, executeAgentStep } from '../../src/main/workflow/executors'
-import type { ControlStep, CommandStep, AgentStep, StepResult } from '../../src/renderer/src/types'
+import { executeControlStep, executeCommandStep, executeAgentStep, executeSkillStep } from '../../src/main/workflow/executors'
+import type { ControlStep, CommandStep, AgentStep, SkillStep, StepResult } from '../../src/renderer/src/types'
 
 const timer = { sleep: vi.fn(async () => {}) }
 const results: Record<string, StepResult> = {
@@ -119,5 +119,23 @@ describe('agent executor', () => {
     const agent = { run: vi.fn(async (s: any) => { seen = s; return { output: '', ok: true } }), cancel: vi.fn() }
     await executeAgentStep({ ...A, idleMs: 3000, timeoutMs: 60000, doneMarker: '<<DONE>>' }, {}, agent as any)
     expect(seen).toMatchObject({ idleMs: 3000, timeoutMs: 60000, doneMarker: '<<DONE>>', agent: 'claude' })
+  })
+})
+
+describe('skill executor', () => {
+  it('invokes the tool with interpolated string args and captures output', async () => {
+    let seen: any
+    const tools = { invoke: vi.fn(async (tool: string, args: any) => { seen = { tool, args }; return { output: '3 hits', ok: true } }) }
+    const step: SkillStep = { id: 's', type: 'skill', name: 'search', tool: 'memory_search', args: { query: 'about ${steps.a.output}', limit: 5 } }
+    const r = await executeSkillStep(step, { a: { stepId: 'a', status: 'succeeded', output: 'X', exitCode: 0 } }, tools as any)
+    expect(seen.tool).toBe('memory_search')
+    expect(seen.args).toEqual({ query: 'about X', limit: 5 })
+    expect(r.status).toBe('succeeded'); expect(r.output).toBe('3 hits')
+  })
+  it('tool error -> failed', async () => {
+    const tools = { invoke: vi.fn(async () => ({ output: '', ok: false, error: 'no such tool' })) }
+    const step: SkillStep = { id: 's', type: 'skill', name: 'x', tool: 'nope' }
+    const r = await executeSkillStep(step, {}, tools as any)
+    expect(r.status).toBe('failed'); expect(r.error).toBe('no such tool')
   })
 })

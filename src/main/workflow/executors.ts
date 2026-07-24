@@ -1,5 +1,5 @@
-import type { AgentStep, CommandStep, ControlStep, StepResult, StepStatus } from '../../renderer/src/types'
-import type { AgentRunner, TerminalRunner, Timer } from './contracts'
+import type { AgentStep, CommandStep, ControlStep, SkillStep, StepResult, StepStatus } from '../../renderer/src/types'
+import type { AgentRunner, TerminalRunner, ToolInvoker, Timer } from './contracts'
 import { interpolate, evalCondition } from './workflowExpr'
 
 type Emit = (e: { chunk: string }) => void
@@ -75,5 +75,14 @@ export async function executeAgentStep(
     cwd: step.cwd || '', idleMs: step.idleMs ?? 8_000, timeoutMs: step.timeoutMs ?? 900_000,
     doneMarker: step.doneMarker,
   }, onChunk)
+  return { stepId: step.id, status: res.ok ? 'succeeded' : 'failed', output: tail(res.output), error: res.error }
+}
+
+export async function executeSkillStep(step: SkillStep, results: Results, tools: ToolInvoker): Promise<StepResult> {
+  const args: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(step.args || {})) {
+    args[k] = typeof v === 'string' ? interpolate(v, results) : v
+  }
+  const res = await tools.invoke(step.tool, args, step.timeoutMs ?? 120_000)
   return { stepId: step.id, status: res.ok ? 'succeeded' : 'failed', output: tail(res.output), error: res.error }
 }
