@@ -8,6 +8,7 @@ import { AIProfiles } from './AIProfiles'
 import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { GitPanel } from '../GitPanel/GitPanel'
 import { WorkflowSidebarSection } from '../Workflow/WorkflowSidebarSection'
+import { WorkflowOverlayBody } from '../Workflow/WorkflowOverlayBody'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -21,13 +22,14 @@ export function Sidebar() {
     terminals, activeTerminalId, viewMode, showSettings, defaultShell,
     addTerminal, removeTerminal, updateTerminal,
     setActiveTerminal, toggleViewMode, setShowSettings,
-    sidebarCollapsed, setSidebarCollapsed, swarmActive,
+    sidebarCollapsed, setSidebarCollapsed, swarmActive, setWorkflows,
   } = useTerminalStore(useShallow(s => ({
     terminals: s.terminals, activeTerminalId: s.activeTerminalId, viewMode: s.viewMode,
     showSettings: s.showSettings, defaultShell: s.defaultShell,
     addTerminal: s.addTerminal, removeTerminal: s.removeTerminal, updateTerminal: s.updateTerminal,
     setActiveTerminal: s.setActiveTerminal, toggleViewMode: s.toggleViewMode, setShowSettings: s.setShowSettings,
     sidebarCollapsed: s.sidebarCollapsed, setSidebarCollapsed: s.setSidebarCollapsed, swarmActive: s.swarmActive,
+    setWorkflows: s.setWorkflows,
   })))
 
   const [showAddModal, setShowAddModal] = useState(false)
@@ -37,6 +39,9 @@ export function Sidebar() {
   // workflow or opening an existing one by id. The Designer/Runner render
   // inside this frame (Tasks 13/14); the frame + open/close lives here.
   const [workflowView, setWorkflowView] = useState<{ mode: 'new' } | { mode: 'edit'; id: string } | null>(null)
+  // Bumped after a save so the sidebar list re-reads the persisted workflows.
+  const [workflowNonce, setWorkflowNonce] = useState(0)
+  const [homeCwd, setHomeCwd] = useState<string | null>(null)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
   const [terminalsCollapsed, setTerminalsCollapsed] = useState(false)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
@@ -46,6 +51,29 @@ export function Sidebar() {
       if (res.success && res.data) setAvailableShells(res.data)
     })
   }, [])
+
+  // Resolve the workflow project directory: the active terminal's cwd, else the
+  // first terminal's, else the home directory. Workflows are stored per-project
+  // under <cwd>/.termpolis/workflows, so the sidebar list + overlay are scoped
+  // to whatever project the user is currently working in.
+  useEffect(() => {
+    getHomedir().then(setHomeCwd).catch(() => setHomeCwd('~'))
+  }, [])
+  const workflowCwd =
+    terminals.find(t => t.id === activeTerminalId)?.cwd ?? terminals[0]?.cwd ?? homeCwd
+
+  // Load the current project's saved workflows into the store so the sidebar
+  // section lists them; re-runs when the project changes or after a save.
+  useEffect(() => {
+    if (!workflowCwd) return
+    let alive = true
+    window.termpolis.listWorkflows(workflowCwd).then(res => {
+      if (alive && res.success && res.data) setWorkflows(res.data)
+    })
+    return () => {
+      alive = false
+    }
+  }, [workflowCwd, workflowNonce, setWorkflows])
 
   const handleCreate = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
     const id = uuid()
@@ -197,7 +225,13 @@ export function Sidebar() {
             ><i className="fa-solid fa-xmark"></i></button>
           </div>
           {/* Designer (Task 13) / Runner (Task 14) render inside this frame. */}
-          <div className="flex-1 overflow-auto"></div>
+          <div className="flex-1 overflow-auto">
+            <WorkflowOverlayBody
+              view={workflowView}
+              cwd={workflowCwd}
+              onSaved={() => setWorkflowNonce(n => n + 1)}
+            />
+          </div>
         </div>
       )}
     </aside>

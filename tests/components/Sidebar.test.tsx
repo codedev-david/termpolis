@@ -9,6 +9,7 @@ const mockSetSidebarCollapsed = vi.fn()
 const mockAddTerminal = vi.fn()
 const mockRemoveTerminal = vi.fn()
 const mockUpdateTerminal = vi.fn()
+const mockSetWorkflows = vi.fn()
 
 let mockState: Record<string, any> = {}
 
@@ -33,6 +34,7 @@ function getDefaultState() {
     toggleViewMode: mockToggleViewMode,
     setShowSettings: mockSetShowSettings,
     setSidebarCollapsed: mockSetSidebarCollapsed,
+    setWorkflows: mockSetWorkflows,
   }
 }
 
@@ -47,6 +49,9 @@ beforeAll(() => {
     killTerminal: vi.fn().mockResolvedValue({ success: true }),
     loadSession: vi.fn().mockResolvedValue({ success: true, data: { terminals: [], workspaces: [] } }),
     saveSession: vi.fn(),
+    listWorkflows: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    readWorkflow: vi.fn().mockResolvedValue({ success: false, error: 'not found' }),
+    onWorkflowRunEvent: vi.fn(() => vi.fn()),
   }
   ;(window as any).swarmAPI = {
     getMessages: vi.fn().mockResolvedValue({ success: true, data: [] }),
@@ -459,5 +464,27 @@ describe('Sidebar', () => {
     fireEvent.click(screen.getByText('Deploy'))
     expect(screen.getByRole('dialog', { name: 'Workflow' })).toBeInTheDocument()
     expect(screen.getByText('Edit Workflow')).toBeInTheDocument()
+  })
+
+  it("loads the active project's saved workflows on mount", async () => {
+    const wfs = [{ id: 'w1', name: 'Deploy' }]
+    ;(window as any).termpolis.listWorkflows = vi.fn().mockResolvedValue({ success: true, data: wfs })
+    mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
+    render(<Sidebar />)
+    await waitFor(() => expect((window as any).termpolis.listWorkflows).toHaveBeenCalledWith('/proj'))
+    await waitFor(() => expect(mockSetWorkflows).toHaveBeenCalledWith(wfs))
+  })
+
+  it('falls back to the home directory to load workflows when no terminal is open', async () => {
+    mockState = getDefaultState()
+    render(<Sidebar />)
+    await waitFor(() => expect((window as any).termpolis.listWorkflows).toHaveBeenCalledWith('/home/user'))
+  })
+
+  it('the workflow overlay hosts the Designer body over the active project', () => {
+    mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
+    render(<Sidebar />)
+    fireEvent.click(screen.getByTitle('New Workflow'))
+    expect(screen.getByLabelText('Workflow name')).toBeInTheDocument()
   })
 })
