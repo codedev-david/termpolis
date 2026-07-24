@@ -195,6 +195,8 @@ test.describe.serial('UI screens show visible results', () => {
     const newBtn = page.locator('button[title="New Workflow"]').first()
     await expect(newBtn).toBeVisible({ timeout: 5000 })
     await newBtn.click()
+    // "+" opens a create menu; "Blank workflow" opens the author overlay.
+    await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
     await page.waitForTimeout(500)
 
     const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')

@@ -451,6 +451,7 @@ describe('Sidebar', () => {
     render(<Sidebar />)
     expect(screen.queryByRole('dialog', { name: 'Workflow' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByTitle('New Workflow'))
+    fireEvent.click(screen.getByText('Blank workflow'))
     const dialog = screen.getByRole('dialog', { name: 'Workflow' })
     expect(dialog).toBeInTheDocument()
     expect(screen.getByText('New Workflow')).toBeInTheDocument()
@@ -485,6 +486,7 @@ describe('Sidebar', () => {
     mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
     render(<Sidebar />)
     fireEvent.click(screen.getByTitle('New Workflow'))
+    fireEvent.click(screen.getByText('Blank workflow'))
     expect(screen.getByLabelText('Workflow name')).toBeInTheDocument()
   })
 })

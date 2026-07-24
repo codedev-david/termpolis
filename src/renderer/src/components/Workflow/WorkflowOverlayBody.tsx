@@ -15,7 +15,7 @@ import { WorkflowRunner } from './WorkflowRunner'
 // is never a second subscriber duplicating streamed output.
 // ---------------------------------------------------------------------------
 
-export type WorkflowOverlayView = { mode: 'new' } | { mode: 'edit'; id: string }
+export type WorkflowOverlayView = { mode: 'new'; seed?: Workflow } | { mode: 'edit'; id: string }
 
 /** A blank manual-trigger workflow for the "new" path. `crypto.randomUUID` is a
  *  renderer-only id mint — the deterministic engine never sees this call. */
@@ -39,7 +39,11 @@ export function WorkflowOverlayBody({
   cwd: string | null
   onSaved: () => void
 }) {
-  const [wf, setWf] = useState<Workflow | null>(() => (view.mode === 'new' ? freshWorkflow() : null))
+  // New mode seeds a workflow: a starter template (re-id'd to a fresh instance so
+  // saving never overwrites another) when one is supplied, otherwise a blank one.
+  const [wf, setWf] = useState<Workflow | null>(() =>
+    view.mode === 'new' ? (view.seed ? { ...view.seed, id: crypto.randomUUID() } : freshWorkflow()) : null,
+  )
   const [tab, setTab] = useState<'design' | 'run'>('design')
   const [loadError, setLoadError] = useState<string | null>(null)
   const activeRuns = useTerminalStore(useShallow(s => s.activeRuns))

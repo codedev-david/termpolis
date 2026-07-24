@@ -216,6 +216,8 @@ test.describe.serial('Chrome smoke', () => {
     // overlay has no backdrop-dismiss, so drive open/close explicitly.
     await closeAnyOpenModal()
     await page.locator('button[title="New Workflow"]').first().click()
+    // "+" opens a create menu; "Blank workflow" opens the author overlay.
+    await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
     const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
     await expect(dlg).toBeVisible()
     await page.locator('button[title="Close workflow"]').first().click()

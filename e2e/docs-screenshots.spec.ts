@@ -370,6 +370,8 @@ test('capture all docs screenshots', async () => {
   // 13 — Workflow designer (the New Workflow overlay opens from the permanent
   // Workflows sidebar section; the old toolbar icon + templates modal are gone).
   await clickIf('button[title="New Workflow"]', 2500)
+  // "+" opens a create menu; choose "Blank workflow" to open the overlay.
+  await page.getByRole('menuitem', { name: 'Blank workflow' }).click().catch(() => {})
   await page.locator('[role="dialog"][aria-label="Workflow"]')
     .waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
   await safeWait(500)

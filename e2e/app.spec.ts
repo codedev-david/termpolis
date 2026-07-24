@@ -253,6 +253,8 @@ test('Workflow overlay opens and closes', async () => {
   // Escape/backdrop dismiss.
   const newWf = page.locator('button[title="New Workflow"]').first()
   await newWf.click()
+  // "+" now opens a create menu; pick "Blank workflow" to open the overlay.
+  await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
   await page.waitForTimeout(500)
 
   const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')

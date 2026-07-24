@@ -8,7 +8,7 @@ import { AIProfiles } from './AIProfiles'
 import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { GitPanel } from '../GitPanel/GitPanel'
 import { WorkflowSidebarSection } from '../Workflow/WorkflowSidebarSection'
-import { WorkflowOverlayBody } from '../Workflow/WorkflowOverlayBody'
+import { WorkflowOverlayBody, type WorkflowOverlayView } from '../Workflow/WorkflowOverlayBody'
 import { getHomedir } from '../../lib/homedir'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
@@ -38,7 +38,7 @@ export function Sidebar() {
   // The workflow orchestrator overlay: null = closed, else authoring a new
   // workflow or opening an existing one by id. The Designer/Runner render
   // inside this frame (Tasks 13/14); the frame + open/close lives here.
-  const [workflowView, setWorkflowView] = useState<{ mode: 'new' } | { mode: 'edit'; id: string } | null>(null)
+  const [workflowView, setWorkflowView] = useState<WorkflowOverlayView | null>(null)
   // Bumped after a save so the sidebar list re-reads the persisted workflows.
   const [workflowNonce, setWorkflowNonce] = useState(0)
   const [homeCwd, setHomeCwd] = useState<string | null>(null)
@@ -167,7 +167,7 @@ export function Sidebar() {
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
       <WorkflowSidebarSection
-        onCreate={() => setWorkflowView({ mode: 'new' })}
+        onCreate={seed => setWorkflowView({ mode: 'new', seed })}
         onOpen={id => setWorkflowView({ mode: 'edit', id })}
       />
       <div className="px-3 py-1.5 flex items-center justify-between">

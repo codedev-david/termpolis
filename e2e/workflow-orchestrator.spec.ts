@@ -93,6 +93,8 @@ test('author a Command + Control workflow, run it, and watch both steps go green
 
   // 1. Open the permanent Workflows sidebar section → New Workflow.
   await page.locator('button[title="New Workflow"]').click()
+  // "+" opens a create menu; "Blank workflow" opens the author overlay.
+  await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
   const dialog = page.locator('[role="dialog"][aria-label="Workflow"]')
   await expect(dialog).toBeVisible()
   await dialog.getByLabel('Workflow name').fill(WF_NAME)

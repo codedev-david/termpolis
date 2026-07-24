@@ -427,6 +427,8 @@ test.describe.serial('8. Workflows overlay', () => {
   test('8.1 opens from sidebar', async () => {
     // Retired toolbar icon → permanent sidebar section's New Workflow button.
     await page.locator('button[title="New Workflow"]').first().click()
+    // "+" opens a create menu; "Blank workflow" opens the author overlay.
+    await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
     await page.waitForTimeout(500)
     await ss('8.1-workflows-open')
   })

@@ -25,7 +25,29 @@ beforeEach(() => {
 describe('WorkflowOverlayBody', () => {
   it('new mode renders the Designer on a blank workflow and never reads from disk', () => {
     render(<WorkflowOverlayBody view={{ mode: 'new' }} cwd="/p" onSaved={vi.fn()} />)
-    expect(screen.getByLabelText('Workflow name')).toBeTruthy()
+    expect((screen.getByLabelText('Workflow name') as HTMLInputElement).value).toBe('New workflow')
+    expect((window as any).termpolis.readWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('new mode seeds the Designer from a starter template instead of a blank', () => {
+    render(
+      <WorkflowOverlayBody
+        view={{
+          mode: 'new',
+          seed: {
+            id: 'claude-dev',
+            name: 'Claude Code + Shell',
+            version: 1,
+            trigger: { type: 'manual' },
+            steps: [{ id: 'claude', type: 'command', name: 'Claude Code', source: 'inline', command: 'claude', visible: true }],
+          },
+        }}
+        cwd="/p"
+        onSaved={vi.fn()}
+      />,
+    )
+    // The name comes from the seed (not the blank "New workflow"), proving the seed was used.
+    expect((screen.getByLabelText('Workflow name') as HTMLInputElement).value).toBe('Claude Code + Shell')
     expect((window as any).termpolis.readWorkflow).not.toHaveBeenCalled()
   })
 
