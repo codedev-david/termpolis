@@ -98,9 +98,6 @@ vi.mock('../../src/renderer/src/components/Sidebar/AddTerminalModal', () => ({
 vi.mock('../../src/renderer/src/components/PromptTemplates/PromptTemplates', () => ({
   PromptTemplates: ({ onClose }: any) => <div data-testid="prompt-templates"><button onClick={onClose}>Close Prompts</button></div>,
 }))
-vi.mock('../../src/renderer/src/components/WorkflowTemplates/WorkflowTemplates', () => ({
-  WorkflowTemplates: ({ onClose }: any) => <div data-testid="workflow-templates"><button onClick={onClose}>Close Workflows</button></div>,
-}))
 vi.mock('../../src/renderer/src/components/SwarmDashboard/SwarmDashboard', () => ({
   SwarmDashboard: ({ onClose, initialCwd }: any) => (
     <div data-testid="swarm-dashboard" data-cwd={initialCwd}>
@@ -124,7 +121,6 @@ describe('Sidebar', () => {
   it('renders sidebar with icon bar buttons', () => {
     render(<Sidebar />)
     expect(screen.getByTitle('Settings')).toBeInTheDocument()
-    expect(screen.getByTitle('Workflows')).toBeInTheDocument()
     expect(screen.getByTitle('Git Panel')).toBeInTheDocument()
     expect(screen.getByTitle('Swarm Dashboard (Ctrl+Shift+S)')).toBeInTheDocument()
   })
@@ -296,13 +292,6 @@ describe('Sidebar', () => {
     expect(mockSetShowSettings).toHaveBeenCalledWith(false)
   })
 
-  it('workflows button opens WorkflowTemplates', async () => {
-    render(<Sidebar />)
-    expect(screen.queryByTestId('workflow-templates')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByTitle('Workflows'))
-    expect(screen.getByTestId('workflow-templates')).toBeInTheDocument()
-  })
-
   it('shows Add Terminal button that opens modal', () => {
     render(<Sidebar />)
     fireEvent.click(screen.getByText('+ Add Terminal'))
@@ -413,16 +402,6 @@ describe('Sidebar', () => {
       expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Shell not found'))
     })
     alertSpy.mockRestore()
-  })
-
-  // -- Closing prompt/workflow templates --
-
-  it('closing WorkflowTemplates hides it', () => {
-    render(<Sidebar />)
-    fireEvent.click(screen.getByTitle('Workflows'))
-    expect(screen.getByTestId('workflow-templates')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Close Workflows'))
-    expect(screen.queryByTestId('workflow-templates')).not.toBeInTheDocument()
   })
 
   it('closing SwarmDashboard hides it and clears cwd', async () => {

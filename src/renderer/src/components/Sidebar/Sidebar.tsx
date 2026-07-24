@@ -5,7 +5,6 @@ import { TerminalTab } from './TerminalTab'
 import { AddTerminalModal } from './AddTerminalModal'
 import { WorkspaceList } from './WorkspaceList'
 import { AIProfiles } from './AIProfiles'
-import { WorkflowTemplates } from '../WorkflowTemplates/WorkflowTemplates'
 import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { GitPanel } from '../GitPanel/GitPanel'
 import { getHomedir } from '../../lib/homedir'
@@ -31,7 +30,6 @@ export function Sidebar() {
   })))
 
   const [showAddModal, setShowAddModal] = useState(false)
-  const [showWorkflows, setShowWorkflows] = useState(false)
   const [showSwarm, setShowSwarm] = useState(false)
   const [showGit, setShowGit] = useState(false)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(null)
@@ -99,11 +97,6 @@ export function Sidebar() {
           title={viewMode === 'tabs' ? 'Split View' : 'Tab View'}
           className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className={`fa-solid ${viewMode === 'tabs' ? 'fa-columns' : 'fa-bars'}`}></i></button>
-        <button
-          onClick={() => setShowWorkflows(true)}
-          title="Workflows"
-          className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
-        ><i className="fa-solid fa-cubes"></i></button>
         <button
           onClick={() => setShowGit(true)}
           title="Git Panel"
@@ -175,7 +168,6 @@ export function Sidebar() {
           onCancel={() => setShowAddModal(false)}
         />
       )}
-      {showWorkflows && <WorkflowTemplates onClose={() => setShowWorkflows(false)} />}
       {showSwarm && <SwarmDashboard onClose={() => { setShowSwarm(false); setSwarmCwd(null) }} initialCwd={swarmCwd} />}
       {showGit && <GitPanel onClose={() => setShowGit(false)} />}
     </aside>

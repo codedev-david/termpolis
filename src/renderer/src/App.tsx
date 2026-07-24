@@ -57,13 +57,13 @@ export default function App() {
   // never trigger a render.
   const {
     viewMode, showSettings, terminals, workspaces, activeTerminalId,
-    defaultShell, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides, allowAppMouseControl,
+    defaultShell, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, agentRatingOverrides, allowAppMouseControl,
     addTerminal, removeTerminal, setActiveTerminal,
     toggleViewMode, setShowSettings, setSidebarCollapsed,
   } = useTerminalStore(useShallow(s => ({
     viewMode: s.viewMode, showSettings: s.showSettings, terminals: s.terminals, workspaces: s.workspaces, activeTerminalId: s.activeTerminalId,
     defaultShell: s.defaultShell, keybindings: s.keybindings, customKeybindings: s.customKeybindings, voiceSettings: s.voiceSettings,
-    aiProfiles: s.aiProfiles, promptTemplates: s.promptTemplates, userWorkflows: s.userWorkflows, agentRatingOverrides: s.agentRatingOverrides,
+    aiProfiles: s.aiProfiles, promptTemplates: s.promptTemplates, agentRatingOverrides: s.agentRatingOverrides,
     allowAppMouseControl: s.allowAppMouseControl,
     addTerminal: s.addTerminal, removeTerminal: s.removeTerminal, setActiveTerminal: s.setActiveTerminal,
     toggleViewMode: s.toggleViewMode, setShowSettings: s.setShowSettings, setSidebarCollapsed: s.setSidebarCollapsed,
@@ -111,7 +111,7 @@ export default function App() {
     started.current = true
     window.termpolis.loadSession().then(res => {
       if (res.success && res.data) {
-        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, customKeybindings: cz, voiceSettings: vsRaw, aiProfiles: ap, promptTemplates: pt, userWorkflows: uw, agentRatingOverrides: aro, allowAppMouseControl: amc } = res.data
+        const { terminals: saved, workspaces, defaultShell: ds, viewMode: vm, keybindings: kb, customKeybindings: cz, voiceSettings: vsRaw, aiProfiles: ap, promptTemplates: pt, agentRatingOverrides: aro, allowAppMouseControl: amc } = res.data
         // Migration defaults already applied by sessionStore.loadSession in main process
         // Migrate old 'grid' viewMode to 'split'
         const resolvedVm = (vm as string) === 'grid' ? 'split' as const : vm
@@ -129,7 +129,6 @@ export default function App() {
           allowAppMouseControl: amc ?? false,
           aiProfiles: ap ?? [],
           promptTemplates: pt ?? [],
-          userWorkflows: uw ?? [],
           agentRatingOverrides: aro ?? {},
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.filter(t => !t.hidden).map(t => t.id)) : null,
         })
@@ -277,11 +276,10 @@ export default function App() {
         allowAppMouseControl: state.allowAppMouseControl,
         aiProfiles: state.aiProfiles,
         promptTemplates: state.promptTemplates,
-        userWorkflows: state.userWorkflows,
         agentRatingOverrides: state.agentRatingOverrides,
       })
     }, 1000) // debounce 1 second
-  }, [terminals, workspaces, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, userWorkflows, agentRatingOverrides, allowAppMouseControl])
+  }, [terminals, workspaces, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, agentRatingOverrides, allowAppMouseControl])
 
   // Global keyboard shortcuts
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowTemplate, CustomKeybinding } from '../types'
+import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowRun, WorkflowRunEvent, StepResult, CustomKeybinding } from '../types'
 import { DEFAULT_KEYBINDINGS, isReservedAction, type KeybindingMap } from '../lib/keybindings'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
@@ -85,7 +85,8 @@ interface TerminalStore {
   paneTree: PaneNode | null
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
-  userWorkflows: WorkflowTemplate[]
+  workflows: { id: string; name: string }[]
+  activeRuns: Record<string, WorkflowRun>
   conversations: ConversationIndex[]
   swarmActive: boolean
   swarmAgents: SwarmAgentEntry[]
@@ -127,10 +128,8 @@ interface TerminalStore {
   removeAIProfile: (id: string) => void
   addPromptTemplate: (template: PromptTemplate) => void
   removePromptTemplate: (id: string) => void
-  addUserWorkflow: (workflow: WorkflowTemplate) => void
-  updateUserWorkflow: (id: string, patch: Partial<Omit<WorkflowTemplate, 'id'>>) => void
-  removeUserWorkflow: (id: string) => void
-  setUserWorkflows: (workflows: WorkflowTemplate[]) => void
+  setWorkflows: (workflows: { id: string; name: string }[]) => void
+  applyRunEvent: (e: WorkflowRunEvent) => void
   addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
   clearConversations: (terminalId: string) => void
   setSwarmActive: (active: boolean) => void
@@ -161,7 +160,8 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   paneTree: null,
   aiProfiles: [],
   promptTemplates: [],
-  userWorkflows: [],
+  workflows: [],
+  activeRuns: {},
   conversations: [],
   swarmActive: false,
   swarmAgents: [],
@@ -319,19 +319,27 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     promptTemplates: s.promptTemplates.filter(t => t.id !== id),
   })),
 
-  addUserWorkflow: (workflow) => set(s => ({
-    userWorkflows: [...s.userWorkflows, workflow],
-  })),
+  setWorkflows: (workflows) => set({ workflows }),
 
-  updateUserWorkflow: (id, patch) => set(s => ({
-    userWorkflows: s.userWorkflows.map(w => w.id === id ? { ...w, ...patch, id } : w),
-  })),
-
-  removeUserWorkflow: (id) => set(s => ({
-    userWorkflows: s.userWorkflows.filter(w => w.id !== id),
-  })),
-
-  setUserWorkflows: (workflows) => set({ userWorkflows: workflows }),
+  applyRunEvent: (e) => set(st => {
+    const runs = { ...st.activeRuns }
+    if (e.type === 'run:started') runs[e.runId] = { runId: e.runId, workflowId: e.workflowId, status: 'running', steps: [], startedAt: e.at }
+    const run = runs[e.runId]
+    if (!run) return { activeRuns: runs } // event for an unknown/finished run -> ignore
+    const upsert = (stepId: string, patch: Partial<StepResult>) => {
+      const steps = [...run.steps]
+      const i = steps.findIndex(x => x.stepId === stepId)
+      if (i >= 0) steps[i] = { ...steps[i], ...patch }
+      else steps.push({ stepId, status: 'running', output: '', ...patch })
+      runs[e.runId] = { ...run, steps }
+    }
+    if (e.type === 'step:started') upsert(e.stepId, { status: 'running', startedAt: e.at })
+    if (e.type === 'step:status') upsert(e.stepId, { status: e.status })
+    if (e.type === 'step:output') upsert(e.stepId, { output: (run.steps.find(x => x.stepId === e.stepId)?.output ?? '') + e.chunk })
+    if (e.type === 'step:finished') upsert(e.result.stepId, e.result)
+    if (e.type === 'run:finished') runs[e.runId] = { ...run, status: e.status, endedAt: e.at }
+    return { activeRuns: runs }
+  }),
 
   addConversationTurn: (terminalId, terminalName, agentName, turn) => set(s => {
     const existing = s.conversations.find(c => c.terminalId === terminalId)
