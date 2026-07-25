@@ -106,6 +106,55 @@ export function markCleanExit(): void {
   persist()
 }
 
+/**
+ * Termination signals that mean "someone asked us to stop", not "we died".
+ *
+ * SIGTERM is the OS/`taskkill`/`killall` polite stop, SIGINT the console interrupt, SIGHUP a closed
+ * console window or a terminated login session. None of them is a crash.
+ */
+export const TERMINATION_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const
+
+export interface CleanExitGuardDeps {
+  /** `app.on` — Electron's OS session-end event. */
+  onAppEvent: (event: 'session-end', handler: () => void) => void
+  /** `process.on` — POSIX-style termination signals. */
+  onSignal: (signal: string, handler: () => void) => void
+  /** `app.quit` — see below; registering a signal listener disables Node's default terminate. */
+  quit: () => void
+}
+
+/**
+ * Cover the shutdown paths that never reach `before-quit` — and are NOT crashes.
+ *
+ * `markCleanExit()` hangs off `before-quit`, which fires for a normal quit, a Cmd+Q, and the
+ * restart-to-install. It does NOT fire when the OS ends the session (Windows shutdown / logoff /
+ * restart, macOS logout) or when the process is asked to terminate by signal. Without this, every
+ * one of those exits leaves the marker uncleared and the NEXT launch files a phantom "native crash"
+ * — which is exactly the shape of Sentry ELECTRON-D / GitHub #20: one unclean exit after ~8 minutes
+ * of healthy uptime, with no accompanying native crash to explain it. Crying wolf here is worse than
+ * silence: a detector nobody trusts is a detector nobody reads.
+ *
+ * A SIGKILL still can't be caught — that one is genuinely indistinguishable from a fatal, and should
+ * be reported.
+ */
+export function installCleanExitGuards(d: CleanExitGuardDeps): void {
+  const clean = (): void => {
+    try { markCleanExit() } catch { /* best effort — shutdown must never throw */ }
+  }
+  try { d.onAppEvent('session-end', clean) } catch { /* best effort */ }
+  for (const sig of TERMINATION_SIGNALS) {
+    try {
+      d.onSignal(sig, () => {
+        clean()
+        // Registering a listener REPLACES Node's default terminate-on-signal, so without this the
+        // app would just keep running after a `taskkill`/`kill`. Quit through the normal path so
+        // before-quit still tears everything down.
+        try { d.quit() } catch { /* best effort */ }
+      })
+    } catch { /* a signal this platform refuses to register is not an error */ }
+  }
+}
+
 /** @internal test-only */
 export function _resetCrashWatchForTests(): void {
   deps = null

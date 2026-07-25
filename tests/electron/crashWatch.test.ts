@@ -9,6 +9,8 @@ import {
   initCrashWatch,
   heartbeat,
   markCleanExit,
+  installCleanExitGuards,
+  TERMINATION_SIGNALS,
   _resetCrashWatchForTests,
   type CrashWatchDeps,
   type SessionMarker,
@@ -171,5 +173,95 @@ describe('heartbeat / markCleanExit', () => {
   it('heartbeat/markCleanExit are no-ops before init (never throw)', () => {
     expect(() => heartbeat()).not.toThrow()
     expect(() => markCleanExit()).not.toThrow()
+  })
+})
+
+// `before-quit` is not the only way the app stops. The exits BELOW never reach it, and reporting
+// them as native crashes is what filed the phantom Sentry ELECTRON-D / #20.
+describe('installCleanExitGuards — the exits that never reach before-quit', () => {
+  function guardHarness() {
+    const appEvents: Record<string, () => void> = {}
+    const signals: Record<string, () => void> = {}
+    const quit = vi.fn()
+    installCleanExitGuards({
+      onAppEvent: (event, handler) => { appEvents[event] = handler },
+      onSignal: (signal, handler) => { signals[signal] = handler },
+      quit,
+    })
+    return { appEvents, signals, quit }
+  }
+
+  it('registers session-end and every termination signal', () => {
+    const g = guardHarness()
+    expect(Object.keys(g.appEvents)).toEqual(['session-end'])
+    expect(Object.keys(g.signals)).toEqual([...TERMINATION_SIGNALS])
+  })
+
+  it('an OS session end (Windows shutdown/logoff) is a CLEAN exit, not a crash', () => {
+    const h = harness(null)
+    initCrashWatch(h.deps)
+    const g = guardHarness()
+
+    h.tick(480_000) // ~8 minutes of healthy uptime — #20's shape exactly
+    heartbeat()
+    g.appEvents['session-end']()
+    _resetCrashWatchForTests()
+
+    // Next boot: silence.
+    expect(initCrashWatch(h.deps)).toBeNull()
+    expect(h.report).not.toHaveBeenCalled()
+  })
+
+  it.each([...TERMINATION_SIGNALS])('%s marks a clean exit and quits through the normal path', (sig) => {
+    const h = harness(null)
+    initCrashWatch(h.deps)
+    const g = guardHarness()
+
+    h.tick(5_000)
+    g.signals[sig]()
+
+    expect(h.read()?.cleanExit).toBe(true)
+    // Registering a listener disables Node's default terminate — without an explicit quit the app
+    // would survive its own `kill`.
+    expect(g.quit).toHaveBeenCalledTimes(1)
+
+    _resetCrashWatchForTests()
+    expect(initCrashWatch(h.deps)).toBeNull()
+  })
+
+  it('a SIGKILL-shaped death (no handler runs) is STILL reported', () => {
+    const h = harness(null)
+    initCrashWatch(h.deps)
+    guardHarness()
+
+    h.tick(3_000)
+    heartbeat() // ...and then the process vanishes without any handler firing
+    _resetCrashWatchForTests()
+
+    expect(initCrashWatch(h.deps)).toEqual({ prevVersion: '1.27.6', uptimeMs: 3_000 })
+  })
+
+  it('a platform that refuses a signal, and a throwing quit, never break shutdown', () => {
+    const signals: Record<string, () => void> = {}
+    expect(() =>
+      installCleanExitGuards({
+        onAppEvent: () => { throw new Error('no session-end on this platform') },
+        onSignal: (signal, handler) => {
+          if (signal === 'SIGHUP') throw new Error('unsupported signal')
+          signals[signal] = handler
+        },
+        quit: () => { throw new Error('already quitting') },
+      }),
+    ).not.toThrow()
+    // The signals that DID register still work, and a throwing quit is swallowed.
+    expect(Object.keys(signals)).toEqual(['SIGTERM', 'SIGINT'])
+    expect(() => signals['SIGTERM']()).not.toThrow()
+  })
+
+  it('the guards are safe before initCrashWatch — nothing to mark, nothing thrown', () => {
+    const g = guardHarness()
+    expect(() => g.appEvents['session-end']()).not.toThrow()
+    expect(() => g.signals['SIGINT']()).not.toThrow()
+    expect(g.quit).toHaveBeenCalledTimes(1)
   })
 })

@@ -9,7 +9,7 @@ import {
   recordEvent as recordTelemetryEvent,
   recordUncleanExit,
 } from './telemetry'
-import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit } from './crashWatch'
+import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit, installCleanExitGuards } from './crashWatch'
 
 // Force a stable app name. When launched via `electron out/main/index.js`
 // (dev, E2E tests) Electron defaults to "Electron" for app.getName() and
@@ -3359,6 +3359,14 @@ if (!gotTheLock) {
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
     if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
+  })
+  // `before-quit` above misses the shutdowns we don't initiate — an OS session end and a
+  // termination signal — and each of those would otherwise be filed as a phantom native crash
+  // (Sentry ELECTRON-D / #20). Neither is one.
+  installCleanExitGuards({
+    onAppEvent: (event, handler) => { app.on(event as 'before-quit', handler) },
+    onSignal: (signal, handler) => { process.on(signal as NodeJS.Signals, handler) },
+    quit: () => app.quit(),
   })
   app.on('window-all-closed', () => {
     killAll()

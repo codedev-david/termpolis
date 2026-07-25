@@ -10,6 +10,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { recordUpdaterEvent } from './telemetry'
+import { isBenignUpdaterError } from './updaterErrors'
 
 export interface UpdateState {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -32,35 +33,15 @@ export function __setUpdaterProviderForTests(fn: () => any): void {
   updaterProvider = fn
 }
 
-// electron-updater reads `resources/app-update.yml` at the start of every
-// checkForUpdates(). When that file is absent — an interrupted/partial install,
-// an antivirus quarantine, a manual delete — it emits an ENOENT 'error'. Auto-
-// update genuinely cannot run without it and there is nothing the app can do
-// about it at runtime, so this is a benign, unactionable environmental state,
-// NOT a production crash. We detect it so it never gets reported to Sentry as an
-// error (was Sentry issue ELECTRON-8 / GitHub #14).
-export function isMissingUpdateConfigError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err ?? '')
-  return /ENOENT/i.test(msg) && /app-update\.yml/i.test(msg)
-}
-
-// A transient network failure during an update check: the user is offline, on a
-// flaky/captive-portal connection, or the update host is briefly unreachable.
-// electron-updater surfaces these as Chromium net errors (net::ERR_*) or Node
-// socket errnos. Auto-update simply can't reach the server — there's nothing to
-// fix and the user did nothing wrong — so it must NEVER be reported to Sentry as
-// a production error (was Sentry issue ELECTRON-9 / GitHub #15:
-// "updater error: net::ERR_INTERNET_DISCONNECTED"; and GitHub #19 / ELECTRON-B:
-// "net::ERR_NETWORK_IO_SUSPENDED" — the machine slept mid-check). Matches only
-// connectivity failures, so genuine errors (e.g. sha512 mismatch) still report.
-export function isTransientNetworkError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err ?? '')
-  return (
-    /net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|NAME_NOT_RESOLVED|CONNECTION_(RESET|REFUSED|CLOSED|TIMED_OUT)|TIMED_OUT|ADDRESS_UNREACHABLE|NETWORK_ACCESS_DENIED|PROXY_CONNECTION_FAILED)/i.test(
-      msg,
-    ) || /\b(ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENETDOWN)\b/.test(msg)
-  )
-}
+// The benign-error predicates live in `./updaterErrors` — a pure module with no `electron` import,
+// because `sentry.ts` needs them during early main init too. Re-exported here so the updater's
+// public surface (and its tests) stay where they've always been.
+export {
+  isMissingUpdateConfigError,
+  isTransientNetworkError,
+  isReadOnlyVolumeError,
+  isBenignUpdaterError,
+} from './updaterErrors'
 
 // Injectable so unit tests can simulate a present/absent app-update.yml without
 // a real packaged resources dir. Defaults to the exact path electron-updater
@@ -182,7 +163,9 @@ export function initAutoUpdater(
     //   - a missing app-update.yml (isMissingUpdateConfigError; ELECTRON-8 / #14)
     //   - a transient network failure / offline (isTransientNetworkError;
     //     ELECTRON-9 / #15)
-    if (isMissingUpdateConfigError(err) || isTransientNetworkError(err)) {
+    //   - the app running from a read-only volume / the .dmg on macOS
+    //     (isReadOnlyVolumeError; ELECTRON-E+F / #21+#22)
+    if (isBenignUpdaterError(err)) {
       setState({ status: 'not-available' })
       return
     }

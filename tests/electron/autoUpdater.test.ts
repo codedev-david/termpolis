@@ -245,6 +245,43 @@ describe('initAutoUpdater — missing app-update.yml is benign (Sentry ELECTRON-
     expect(mod.isTransientNetworkError(undefined)).toBe(false)
   })
 
+  it('surfaces a read-only volume refusal (macOS .dmg) as a benign not-available state', async () => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['error']?.(
+      new Error(
+        'Cannot update while running on a read-only volume. The application is on a ' +
+          'read-only volume. Please move the application and try again. If you’re on ' +
+          'macOS Sierra or later, you’ll need to move the application out of the ' +
+          'Downloads directory.',
+      ),
+    )
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'not-available' }),
+    )
+    // Never as an error: an 'error' state is what telemetry.ts turns into a
+    // Sentry captureMessage, which is how one launch filed BOTH #21 and #22.
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error' }),
+    )
+    expect(fakeWindow.webContents.send).toHaveBeenCalledWith(
+      'updater:state',
+      expect.objectContaining({ status: 'not-available' }),
+    )
+  })
+
+  it('isReadOnlyVolumeError matches the Squirrel refusal but not genuine errors', async () => {
+    vi.resetModules()
+    const mod = await import('../../src/main/autoUpdater')
+    expect(mod.isReadOnlyVolumeError(new Error('Cannot update while running on a read-only volume.'))).toBe(true)
+    // Squirrel's own casing varies across versions; the match is case-insensitive.
+    expect(mod.isReadOnlyVolumeError(new Error('The application is on a READ-ONLY VOLUME'))).toBe(true)
+    expect(mod.isReadOnlyVolumeError('Cannot update while running on a read-only volume')).toBe(true)
+    expect(mod.isReadOnlyVolumeError(new Error('sha512 checksum mismatch'))).toBe(false)
+    expect(mod.isReadOnlyVolumeError(new Error('EROFS: read-only file system, open'))).toBe(false)
+    expect(mod.isReadOnlyVolumeError(missingConfigErr())).toBe(false)
+    expect(mod.isReadOnlyVolumeError(undefined)).toBe(false)
+  })
+
   it('skips scheduling periodic checks when app-update.yml is absent, but keeps an error listener', async () => {
     vi.resetModules()
     for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]

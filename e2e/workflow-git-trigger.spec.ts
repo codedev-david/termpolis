@@ -58,9 +58,9 @@ function git(...args: string[]): string {
  * `app.getVersion()` reads the package.json next to the app path. Launched
  * unpackaged the way Playwright does it, the app path is `out/main` — which has
  * no package.json — so Electron falls back to reporting its OWN version
- * (30.5.1), NOT the 1.32.1 in the repo's package.json. Guessing the version
- * from package.json therefore writes a session the app throws away, and the
- * spec fails for a reason that has nothing to do with triggers.
+ * (30.5.1), NOT the one in the repo's package.json. Guessing the version from
+ * package.json therefore writes a session the app throws away, and the spec
+ * fails for a reason that has nothing to do with triggers.
  *
  * So: a short throwaway launch that just asks. Its own user-data dir, so the
  * session it writes on quit can never touch the fixture.
