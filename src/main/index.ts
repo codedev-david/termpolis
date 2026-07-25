@@ -115,8 +115,10 @@ import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from 
 import { runWorkflow as wfRun, cancelRun as wfCancel } from './workflow/workflowEngine'
 import { registerWorkflowIpc } from './workflow/ipc'
 import { TriggerSupervisor } from './workflow/triggers'
+import { sessionProjectCwds, type SessionLike } from './workflow/sessionProjects'
 import { cleanupDemoWorkflows, oncePerVersion } from './workflow/demoCleanup'
 import type { FsLike as WorkflowFsLike } from './workflow/workflowStore'
+import type { WorkflowScope } from '../renderer/src/types'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
@@ -3081,7 +3083,7 @@ if (!gotTheLock) {
       // and drives them through the SAME startRun the Run button uses. Created
       // before the IPC so it can be handed the change callbacks, and given
       // startRun afterwards (the two reference each other).
-      let wfStartRun: ((cwd: string, id: string) => { ok: boolean; done?: Promise<void>; error?: string }) | null = null
+      let wfStartRun: ((cwd: string, id: string, opts?: { scope?: WorkflowScope }) => { ok: boolean; done?: Promise<void>; error?: string }) | null = null
       const wfTriggers = new TriggerSupervisor({
         fs: wfFs,
         readBytes: (p: string) => readFileSync(p),
@@ -3090,8 +3092,11 @@ if (!gotTheLock) {
         clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
         now: Date.now,
         isTrusted: (cwd: string) => { try { return isWorkspaceTrusted(cwd) } catch { return false } },
-        fire: (cwd, id, reason) => {
-          const r = wfStartRun?.(cwd, id)
+        // Global workflows arm in every watched project, not just the one they
+        // were authored in.
+        globalDir: app.getPath('userData'),
+        fire: (cwd, id, reason, scope) => {
+          const r = wfStartRun?.(cwd, id, { scope })
           if (!r?.ok) console.warn(`[workflow] trigger (${reason}) could not start ${id}: ${r?.error ?? 'no runner'}`)
           return r?.done
         },
@@ -3099,11 +3104,12 @@ if (!gotTheLock) {
       })
       const wfIpc = registerWorkflowIpc(ipcMain, () => mainWindow, {
         fs: wfFs,
-        onWorkflowsChanged: (cwd) => wfTriggers.rearm(cwd),
+        onWorkflowsChanged: (cwd, scope) => { if (scope === 'global') wfTriggers.rearmAll(); else wfTriggers.rearm(cwd) },
         onWatchProject: (cwd) => wfTriggers.watchProject(cwd),
         engine: { runWorkflow: wfRun, cancelRun: wfCancel },
         isTrusted: (cwd: string) => { try { return isWorkspaceTrusted(cwd) } catch { return false } },
         newRunId: () => randomUUID(),
+        userDataDir: app.getPath('userData'),
         makeDeps: (emit, runId) => ({ terminal: wfTerminal, agent: wfAgent, tools: wfTools, timer: realTimer, now: Date.now, newRunId: () => runId, emit }),
       })
       wfStartRun = wfIpc.startRun
@@ -3115,25 +3121,18 @@ if (!gotTheLock) {
       oncePerVersion(app.getPath('userData'), app.getVersion(), wfFs, () => {
         cleanupDemoWorkflows(homedir(), wfFs, undefined, (m) => console.log(m))
       })
-      wfTriggers.watchProject(homedir())
       // Arm every project the last session had open, not just the home store.
       // The sidebar registers a project when you look at it, which is too late
       // for a cron saved in a project you don't click into this launch.
+      // Only the session READ is guarded — a broken session file must still
+      // leave the home store armed, which sessionProjectCwds guarantees.
+      let wfSession: SessionLike = null
       try {
-        const sess = loadSession()
-        const seen = new Set<string>([homedir()])
-        const cwds = [
-          ...sess.terminals.map(t => t.cwd),
-          ...sess.workspaces.flatMap(w => w.terminals.map(t => t.cwd)),
-        ]
-        for (const c of cwds) {
-          if (!c || seen.has(c)) continue
-          seen.add(c)
-          wfTriggers.watchProject(c)
-        }
+        wfSession = loadSession()
       } catch (e) {
-        console.warn('[workflow] could not arm saved-session projects:', (e as Error)?.message)
+        console.warn('[workflow] could not read the saved session:', (e as Error)?.message)
       }
+      for (const c of sessionProjectCwds(wfSession, homedir())) wfTriggers.watchProject(c)
       wfTriggers.start()
       app.on('before-quit', () => { try { wfTriggers.stop() } catch { /* shutting down anyway */ } })
       console.log(`[workflow] orchestrator IPC registered (${wfTriggers.armedCount} trigger(s) armed)`)

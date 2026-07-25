@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowRun, WorkflowRunEvent, StepResult, CustomKeybinding } from '../types'
+import type { TerminalSession, Workspace, ViewMode, ShellType, PaneNode, AIProfile, PromptTemplate, WorkflowRun, WorkflowRunEvent, WorkflowListItem, StepResult, CustomKeybinding } from '../types'
 import { DEFAULT_KEYBINDINGS, isReservedAction, type KeybindingMap } from '../lib/keybindings'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
@@ -85,7 +85,7 @@ interface TerminalStore {
   paneTree: PaneNode | null
   aiProfiles: AIProfile[]
   promptTemplates: PromptTemplate[]
-  workflows: { id: string; name: string }[]
+  workflows: WorkflowListItem[]
   activeRuns: Record<string, WorkflowRun>
   conversations: ConversationIndex[]
   swarmActive: boolean
@@ -128,7 +128,7 @@ interface TerminalStore {
   removeAIProfile: (id: string) => void
   addPromptTemplate: (template: PromptTemplate) => void
   removePromptTemplate: (id: string) => void
-  setWorkflows: (workflows: { id: string; name: string }[]) => void
+  setWorkflows: (workflows: WorkflowListItem[]) => void
   applyRunEvent: (e: WorkflowRunEvent) => void
   addConversationTurn: (terminalId: string, terminalName: string, agentName: string, turn: ConversationTurn) => void
   clearConversations: (terminalId: string) => void

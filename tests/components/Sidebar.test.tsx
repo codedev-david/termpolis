@@ -447,11 +447,10 @@ describe('Sidebar', () => {
     expect(screen.getByText('Workflows')).toBeInTheDocument()
   })
 
-  it('New Workflow opens the workflow overlay, and Close dismisses it', () => {
+  it('Start Workflow opens the workflow overlay in one click, and Close dismisses it', () => {
     render(<Sidebar />)
     expect(screen.queryByRole('dialog', { name: 'Workflow' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByTitle('New Workflow'))
-    fireEvent.click(screen.getByText('Blank workflow'))
+    fireEvent.click(screen.getByTitle('Start Workflow'))
     const dialog = screen.getByRole('dialog', { name: 'Workflow' })
     expect(dialog).toBeInTheDocument()
     expect(screen.getByText('New Workflow')).toBeInTheDocument()
@@ -485,8 +484,29 @@ describe('Sidebar', () => {
   it('the workflow overlay hosts the Designer body over the active project', () => {
     mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
     render(<Sidebar />)
-    fireEvent.click(screen.getByTitle('New Workflow'))
-    fireEvent.click(screen.getByText('Blank workflow'))
+    fireEvent.click(screen.getByTitle('Start Workflow'))
     expect(screen.getByLabelText('Workflow name')).toBeInTheDocument()
+  })
+
+  it('opens a global row against the global store, and a project row against the project one', async () => {
+    mockState = {
+      ...getDefaultState(),
+      terminals: [{ id: 't1', cwd: '/proj' }],
+      activeTerminalId: 't1',
+      workflows: [
+        { id: 'g1', name: 'Everywhere', scope: 'global' },
+        { id: 'p1', name: 'Just here', scope: 'project' },
+      ],
+    }
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('Everywhere'))
+    await waitFor(() =>
+      expect((window as any).termpolis.readWorkflow).toHaveBeenCalledWith('/proj', 'g1', 'global'),
+    )
+    fireEvent.click(screen.getByTitle('Close workflow'))
+    fireEvent.click(screen.getByText('Just here'))
+    await waitFor(() =>
+      expect((window as any).termpolis.readWorkflow).toHaveBeenCalledWith('/proj', 'p1', 'project'),
+    )
   })
 })

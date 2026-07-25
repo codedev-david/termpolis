@@ -256,6 +256,13 @@ jobs:
       - name: Workflow Orchestrator author→run→green
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/workflow-orchestrator.spec.ts
+      # gitCommit trigger gate: a REAL `git commit` in a real temp repo, armed
+      # only by the boot session fan-out, must land a run in the repo's history.
+      # Ubuntu-only — the unit suites drive triggers against a fake filesystem,
+      # so this is the one place real git plumbing is exercised.
+      - name: gitCommit trigger against a real repo
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npx playwright test e2e/workflow-git-trigger.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

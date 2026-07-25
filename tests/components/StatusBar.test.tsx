@@ -1,7 +1,7 @@
 import React from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { StatusBar } from '../../src/renderer/src/components/StatusBar/StatusBar'
+import { StatusBar, DOCS_URL } from '../../src/renderer/src/components/StatusBar/StatusBar'
 
 let mockSwarmActive = false
 let mockSwarmAgents: any[] = []
@@ -342,38 +342,31 @@ describe('StatusBar', () => {
     expect(screen.getByText('Accessibility')).toBeInTheDocument()
   })
 
-  // -- Show tour again --
+  // -- Docs (replaced "Show tour again" in v1.32.1) --
 
-  it('help dialog shows a Show-tour-again link', () => {
+  it('help dialog shows a Docs link instead of the old tour link', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    expect(screen.getByTestId('help-show-tour')).toBeInTheDocument()
+    expect(screen.getByTestId('help-docs')).toBeInTheDocument()
+    expect(screen.queryByTestId('help-show-tour')).not.toBeInTheDocument()
   })
 
-  it('Show-tour-again link clears the seen flag', () => {
-    localStorage.setItem('termpolis.onboarding.seen.v1', '1')
+  it('Docs link opens the published documentation page in a new tab', () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
-    fireEvent.click(screen.getByTestId('help-show-tour'))
-    expect(localStorage.getItem('termpolis.onboarding.seen.v1')).toBeNull()
+    fireEvent.click(screen.getByTestId('help-docs'))
+    expect(open).toHaveBeenCalledWith(DOCS_URL, '_blank')
+    expect(DOCS_URL).toBe('https://termpolis.com/docs.html')
+    open.mockRestore()
   })
 
-  it('Show-tour-again link closes the help modal', () => {
+  it('Docs link leaves the help modal open so it is not a dead end', () => {
+    vi.spyOn(window, 'open').mockImplementation(() => null)
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
+    fireEvent.click(screen.getByTestId('help-docs'))
     expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId('help-show-tour'))
-    expect(screen.queryByText('Quick Start Guide')).not.toBeInTheDocument()
-  })
-
-  it('Show-tour-again link dispatches termpolis:reopenOnboarding', () => {
-    const listener = vi.fn()
-    window.addEventListener('termpolis:reopenOnboarding', listener)
-    render(<StatusBar />)
-    fireEvent.click(screen.getByText('Help / Support'))
-    fireEvent.click(screen.getByTestId('help-show-tour'))
-    expect(listener).toHaveBeenCalledTimes(1)
-    window.removeEventListener('termpolis:reopenOnboarding', listener)
   })
 
   it('MCP section reflects the real 33-tool count', () => {

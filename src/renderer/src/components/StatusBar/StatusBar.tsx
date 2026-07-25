@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { ReportProblemModal } from './ReportProblemModal'
-import { resetOnboarding } from '../Onboarding/OnboardingModal'
 import { ContextPressureIndicator } from './ContextPressureIndicator'
 import { useLiveContextPressure } from '../../hooks/useLiveContextPressure'
 
-function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClose: () => void; onReportProblem: () => void; onShowTour: () => void; appVersion: string }) {
+/** The published documentation, kept in lockstep with the site's docs page. */
+export const DOCS_URL = 'https://termpolis.com/docs.html'
+
+function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => void; onReportProblem: () => void; appVersion: string }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
       <div className="bg-[#252526] rounded-lg shadow-xl border border-[#3c3c3c] w-[560px] max-h-[85vh] flex flex-col">
@@ -103,7 +105,7 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
               <li><strong>AI Agents</strong> section in the sidebar — one-click launch for Claude Code, Codex, Gemini CLI</li>
               <li><strong>+</strong> button to add custom AI agent profiles with name, command, shell, and color</li>
-              <li><strong>Workflows</strong> button — pre-built multi-terminal layouts (Claude + Shell, Full Stack Dev, Code Review)</li>
+              <li><strong>Workflows</strong> section — press <strong>+</strong> (Start Workflow) to build a pipeline of Command, Agent, Skill, and Control steps; save it Global to reuse it in every project, give it a Category to folder it, and Inputs to parameterize it</li>
               <li><strong>Agent badge</strong> — the per-terminal status bar shows a colored badge for the agent you launched (Claude Code, Codex, Gemini)</li>
               <li><strong>Context gauge</strong> — the bottom bar shows a live <code>ctx %</code> pill of how full the focused agent's context window is (real token counts for Claude), so you can see compaction coming</li>
               <li><strong>Agent terminals are named by default after the agent type</strong> (e.g., "Claude Code", "Codex") — <strong>right-click the terminal tab</strong> to rename it to anything you like (plus change color, theme, or font) while keeping the underlying agent intact.</li>
@@ -489,12 +491,12 @@ function HelpModal({ onClose, onReportProblem, onShowTour, appVersion }: { onClo
               Report a problem
             </button>
             <button
-              onClick={onShowTour}
+              onClick={() => window.open(DOCS_URL, '_blank')}
               className="text-[#22D3EE] hover:underline text-sm flex items-center gap-1.5"
-              data-testid="help-show-tour"
+              data-testid="help-docs"
             >
-              <i className="fa-solid fa-route"></i>
-              Show tour again
+              <i className="fa-solid fa-book"></i>
+              Docs
             </button>
           </div>
           <button
@@ -583,11 +585,6 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
         <HelpModal
           onClose={() => setShowHelp(false)}
           onReportProblem={() => { setShowHelp(false); setShowReport(true) }}
-          onShowTour={() => {
-            resetOnboarding()
-            setShowHelp(false)
-            window.dispatchEvent(new CustomEvent('termpolis:reopenOnboarding'))
-          }}
           appVersion={appVersion}
         />
       )}

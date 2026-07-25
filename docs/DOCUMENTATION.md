@@ -20,7 +20,7 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 10. [Agent Capability Ratings](#10-agent-capability-ratings)
 11. [Command Palette](#11-command-palette)
 12. [Prompt Templates](#12-prompt-templates)
-13. [Workflow Templates](#13-workflow-templates)
+13. [Workflow Orchestrator](#13-workflow-orchestrator)
 14. [Context Panel](#14-context-panel)
 15. [History Search](#15-history-search)
 16. [Conversation Search](#16-conversation-search)
@@ -158,7 +158,7 @@ Workspaces are the **project-level container** in Termpolis — think of them as
 
 **How workspaces persist.** Everything above is written to `session.json` in the Termpolis data directory (see [§2](#2-installation) for the per-platform path) as soon as it changes — so an unclean shutdown still leaves you with last-known-good state. Re-opening the app restores the workspaces in the same order with the same terminals, split layouts, and focus.
 
-**Creating a workspace.** Use the **+ Workspace** button at the top of the sidebar or the `Ctrl+Shift+N` shortcut. Each new workspace starts empty; pick a shell to open the first terminal, or apply a workflow template (see [§13](#13-workflow-templates)) to stamp a whole pre-built layout into it.
+**Creating a workspace.** Use the **+ Workspace** button at the top of the sidebar or the `Ctrl+Shift+N` shortcut. Each new workspace starts empty; pick a shell to open the first terminal.
 
 **Managing workspaces.** Right-click any workspace row in the sidebar for:
 
@@ -169,9 +169,9 @@ Workspaces are the **project-level container** in Termpolis — think of them as
 
 **Switching between workspaces.** Click a workspace row to activate it. Keyboard users can cycle with `Ctrl+Alt+[` / `Ctrl+Alt+]`. Unsaved terminal output in background workspaces keeps streaming — nothing is paused just because it's not visible.
 
-**Workspace root directory.** Each workspace has a default working directory that new terminals start in. Set it when you create the workspace, or change it later from Settings → Workspace. Terminals started with the agent launcher or a workflow template inherit this unless they override it per-terminal.
+**Workspace root directory.** Each workspace has a default working directory that new terminals start in. Set it when you create the workspace, or change it later from Settings → Workspace. Terminals started with the agent launcher or by a workflow step inherit this unless they override it per-terminal.
 
-**How workspaces differ from workflows.** Workspaces are *long-lived containers* that own state across restarts; workflows are *one-shot recipes* that populate the current workspace with a pre-configured set of terminals, commands, and a split layout. You can think of a workspace as the room you're working in, and a workflow as the "set the room up like this" macro. Launching a workflow inside a workspace closes any existing terminals in that workspace and replaces them with the workflow's terminals — the workspace stays, the contents get reset. Workflows have no independent persistence beyond the template itself. See [§13](#13-workflow-templates).
+**How workspaces differ from workflows.** Workspaces are *long-lived containers* that own state across restarts; workflows are *pipelines of steps* the app executes for you. A workspace is the room you're working in; a workflow is a job that runs inside it. A workflow never rearranges your terminals — it runs its steps, streams their output, and records the result. See [§13](#13-workflow-orchestrator).
 
 ---
 
@@ -366,35 +366,48 @@ Each template supports `{{variables}}` that are filled from the current selectio
 
 ---
 
-## 13. Workflow Templates
+## 13. Workflow Orchestrator
 
-![Workflow templates](../e2e/screenshots/docs/13-workflow-templates.png)
+![Workflow designer](../e2e/screenshots/docs/13-workflow-templates.png)
 
-Workflows are **one-shot setup recipes** for a workspace. Each template describes a set of terminals — their names, colors, shell, optional startup command — and a layout (vertical splits or a 2×2 grid). Clicking **Launch** closes the terminals you have open, spawns the template's terminals in the configured split layout, and fires the startup commands after a brief delay so the shells finish initializing first.
+A workflow is an ordered pipeline of steps that Termpolis runs for you. Open the **Workflows** section in the sidebar and press the inline **+** (**Start Workflow**) to author one on a blank canvas. Every saved workflow appears as a row in that section — press it to open the run view.
 
-Open the Workflows panel from the **Workflows** sidebar button.
+### Steps
 
-### Built-in templates
+Four kinds, in any order:
 
-- **Claude Code + Shell** — Claude Code on the left, plain shell on the right (2-pane vertical split).
-- **Full Stack Dev** — AI agent + Frontend + Backend + Tests in a 2×2 grid.
-- **Code Review** — AI reviewer + Git pane (2-pane vertical split).
+- **Command** — a shell line (inline or a script file) on a real terminal, with its own shell and timeout.
+- **Agent** — launches Claude Code, OpenAI Codex, or Gemini CLI on a prompt and waits for it to finish.
+- **Skill** — calls one of Termpolis's own tools: code search, memory, git.
+- **Control** — `wait`, `branch`, `loop`, or `notify`.
 
-Built-ins are read-only. Use **Duplicate** on a built-in to get an editable copy with the `(copy)` suffix.
+Each step takes an optional `when` gate and an optional *continue even if this step fails*. Later steps read earlier results (`${steps.build.exitCode}`, a step's captured output) inside gates, branch conditions, loop guards, and notify messages. Expressions run through a small, pure, sandboxed evaluator — never `eval`.
 
-### Creating your own
+### Availability, categories, and inputs
 
-Click **+ New Workflow** at the bottom of the picker. You get a form for:
+![Workflow designer — availability, category, and inputs](../e2e/screenshots/docs/13b-workflow-create.png)
 
-- **Name** and **Description**
-- **Icon** (Font Awesome solid) and **Layout** (vertical splits or 2×2 grid — the grid requires exactly four terminals to tile cleanly)
-- **Terminals** (1–8) — per terminal: name, startup command (optional), shell, and color
+- **Availability** — **Project** stores the workflow in `<repo>/.termpolis/workflows/<id>.yml` and shows it only in that repo. **Global** stores it in your Termpolis data directory and offers it in *every* project. Switching availability moves the file between the two stores; scope is derived from where the file lives and is never written into the YAML, so moving a `.yml` by hand re-scopes it.
+- **Category** — a free-text label (`Build`, `Release/Nightly`, …). The sidebar files every workflow with that label into a collapsible folder; uncategorized workflows stay at the top level.
+- **Inputs** — named values the workflow asks for before it runs. Each has a name, an optional label and description, an optional default, and a *required* flag. Termpolis collects them in the run view and keeps **Run** locked until every required input is filled. Reference them as `${inputs.NAME}` in any step field, gate, branch, or loop condition.
 
-Saved workflows appear with a **Custom** badge in the picker, are persisted as part of your session alongside workspaces and prompt templates, and sync via the same save mechanism (`session.json` in your Termpolis data directory). You can **edit** or **delete** any custom workflow from its row. On Windows, templates that specify `bash` are auto-resolved to Git Bash.
+A global workflow always runs against the directory you're standing in, so `${project.cwd}`, `${project.name}`, and `${project.branch}` resolve to the repo you're actually in — one workflow, reused everywhere, parameterized by inputs.
 
-### Difference from workspaces
+### Triggers
 
-Workflows don't *own* state the way workspaces do — they're a template you apply. After launch, the terminals they spawn live inside your current workspace and behave like any other terminals. Closing and re-launching the same workflow gives you fresh terminals, not the ones from last time.
+Give a workflow a trigger and it stops needing you:
+
+- **Manual** — only when you press Run.
+- **Schedule** — a real cron expression (`0 2 * * *`, or `@daily`) in your local time, with an optional catch-up for a run missed while the app was closed.
+- **Git commit** — fires when a new commit lands on the checked-out branch, optionally narrowed to one branch. This is the post-commit hook: lint, test, or hand the diff to an agent.
+- **Git push** — watches the remote-tracking ref for a chosen remote and branch.
+- **File change** — a debounced recursive watch you can narrow to specific paths.
+
+Triggers survive restarts, and a triggered run takes the exact same path as pressing Run — including the workspace-trust gate, so an untrusted folder never fires. A global workflow arms in every project the app has open, and each project keeps its own trigger state, so a commit in one repo only fires that repo's run.
+
+### Watching a run
+
+The run view streams each step's output live, marks it succeeded, failed, or skipped, and shows how long it took. Cancel mid-run and every in-flight step is torn down cleanly. Run history is appended to `.termpolis/workflows/runs/<workflowId>.jsonl` next to the store the workflow came from.
 
 ---
 

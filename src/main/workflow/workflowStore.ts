@@ -1,6 +1,6 @@
 import YAML from 'yaml'
 import { join } from 'path'
-import type { Workflow, WorkflowStep, WorkflowRun } from '../../renderer/src/types'
+import type { Workflow, WorkflowStep, WorkflowRun, WorkflowScope } from '../../renderer/src/types'
 
 export type FsLike = {
   existsSync(p: string): boolean
@@ -18,6 +18,31 @@ export function workflowsDir(cwd: string): string {
 
 export function runsDir(cwd: string): string {
   return join(cwd, '.termpolis', 'workflows', 'runs')
+}
+
+// ---------------------------------------------------------------------------
+// Scope: a workflow is either a project's own or a global one offered in every
+// project. The two are ordinary directories with identical layout — the only
+// difference is where they live, so everything below takes a plain `dir`.
+// ---------------------------------------------------------------------------
+
+/** Global store root. `userDataDir` is `app.getPath('userData')` in production. */
+export function globalWorkflowsDir(userDataDir: string): string {
+  return join(userDataDir, 'workflows')
+}
+
+export function globalRunsDir(userDataDir: string): string {
+  return join(userDataDir, 'workflows', 'runs')
+}
+
+/** Resolve the store a scope refers to. A global run still executes in the
+ *  project the user is standing in — only the definition is shared. */
+export function dirForScope(scope: WorkflowScope, cwd: string, userDataDir: string): string {
+  return scope === 'global' ? globalWorkflowsDir(userDataDir) : workflowsDir(cwd)
+}
+
+export function runsDirForScope(scope: WorkflowScope, cwd: string, userDataDir: string): string {
+  return scope === 'global' ? globalRunsDir(userDataDir) : runsDir(cwd)
 }
 
 export function appendRunHistory(dir: string, run: WorkflowRun, fs: FsLike): void {
@@ -42,6 +67,33 @@ function validateStep(s: any): string[] {
   return e
 }
 
+// An input name is substituted into command lines and prompts as `${inputs.x}`,
+// so it must be a plain identifier — anything looser and a hand-edited file
+// could smuggle regex/expression syntax into the interpolation.
+export const INPUT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function validateInputs(inputs: unknown): string[] {
+  if (inputs === undefined) return []
+  if (!Array.isArray(inputs)) return ['inputs must be an array']
+  const errors: string[] = []
+  const seen = new Set<string>()
+  for (const raw of inputs) {
+    const i = raw as any
+    if (!i || typeof i !== 'object' || Array.isArray(i)) { errors.push('input must be an object'); continue }
+    if (typeof i.name !== 'string' || !INPUT_NAME.test(i.name)) {
+      errors.push(`input name must match ${INPUT_NAME.source}: ${JSON.stringify(i.name)}`)
+      continue
+    }
+    if (seen.has(i.name)) errors.push(`duplicate input: ${i.name}`)
+    seen.add(i.name)
+    for (const k of ['label', 'description', 'default'] as const) {
+      if (i[k] !== undefined && typeof i[k] !== 'string') errors.push(`input ${i.name}: ${k} must be a string`)
+    }
+    if (i.required !== undefined && typeof i.required !== 'boolean') errors.push(`input ${i.name}: required must be a boolean`)
+  }
+  return errors
+}
+
 export function validateWorkflow(obj: unknown): { ok: boolean; errors: string[]; workflow?: Workflow } {
   const errors: string[] = []
   const o = obj as any
@@ -54,6 +106,8 @@ export function validateWorkflow(obj: unknown): { ok: boolean; errors: string[];
   else if (o.trigger.config !== undefined && (typeof o.trigger.config !== 'object' || o.trigger.config === null || Array.isArray(o.trigger.config))) {
     errors.push('trigger.config must be a string map')
   }
+  if (o.category !== undefined && typeof o.category !== 'string') errors.push('category must be a string')
+  errors.push(...validateInputs(o.inputs))
   if (!Array.isArray(o.steps)) errors.push('steps must be an array')
   const seen = new Set<string>()
   if (Array.isArray(o.steps)) {
@@ -70,7 +124,10 @@ export function validateWorkflow(obj: unknown): { ok: boolean; errors: string[];
 }
 
 export function serializeWorkflow(wf: Workflow): string {
-  return YAML.stringify(wf)
+  // `scope` is derived from the directory the file lives in, so persisting it
+  // would let a stale value contradict reality after a move.
+  const { scope: _scope, ...rest } = wf
+  return YAML.stringify(rest)
 }
 
 export function parseWorkflow(text: string): { ok: boolean; errors: string[]; workflow?: Workflow } {
@@ -100,7 +157,7 @@ export function writeWorkflow(dir: string, wf: Workflow, fs: FsLike): void {
 /** Every valid workflow in a project, fully parsed. The trigger supervisor needs
  *  the whole document (it arms off `trigger`), where the sidebar only needs the
  *  id/name summary `listWorkflows` returns. */
-export function listWorkflowsFull(dir: string, fs: FsLike): Workflow[] {
+export function listWorkflowsFull(dir: string, fs: FsLike, scope?: WorkflowScope): Workflow[] {
   if (!fs.existsSync(dir)) return []
   const out: Workflow[] = []
   for (const f of fs.readdirSync(dir)) {
@@ -108,20 +165,23 @@ export function listWorkflowsFull(dir: string, fs: FsLike): Workflow[] {
     const id = f.replace(/\.yml$/, '')
     if (!isSafeId(id)) continue // ignore stray/hostile file names, never let fileFor throw here
     const r = parseWorkflow(fs.readFileSync(fileFor(dir, id), 'utf8'))
-    if (r.ok && r.workflow) out.push(r.workflow)
+    if (r.ok && r.workflow) out.push(scope ? { ...r.workflow, scope } : r.workflow)
   }
   return out
 }
 
-export function listWorkflows(dir: string, fs: FsLike): { id: string; name: string }[] {
-  return listWorkflowsFull(dir, fs).map(w => ({ id: w.id, name: w.name }))
+export type WorkflowSummary = { id: string; name: string; category?: string; scope?: WorkflowScope }
+
+export function listWorkflows(dir: string, fs: FsLike, scope?: WorkflowScope): WorkflowSummary[] {
+  return listWorkflowsFull(dir, fs, scope).map(w => ({ id: w.id, name: w.name, category: w.category, scope: w.scope }))
 }
 
-export function readWorkflow(dir: string, id: string, fs: FsLike): { ok: boolean; errors: string[]; workflow?: Workflow } {
+export function readWorkflow(dir: string, id: string, fs: FsLike, scope?: WorkflowScope): { ok: boolean; errors: string[]; workflow?: Workflow } {
   if (!isSafeId(id)) return { ok: false, errors: [`unsafe workflow id: ${JSON.stringify(id)}`] }
   const p = fileFor(dir, id)
   if (!fs.existsSync(p)) return { ok: false, errors: [`not found: ${id}`] }
-  return parseWorkflow(fs.readFileSync(p, 'utf8'))
+  const r = parseWorkflow(fs.readFileSync(p, 'utf8'))
+  return r.ok && r.workflow && scope ? { ...r, workflow: { ...r.workflow, scope } } : r
 }
 
 export function deleteWorkflow(dir: string, id: string, fs: FsLike): void {

@@ -1,5 +1,5 @@
-/**
- * UI Screens Show Results — cross-cutting visible-content assertions
+﻿/**
+ * UI Screens Show Results â€” cross-cutting visible-content assertions
  * ---------------------------------------------------------------
  * Audit of the existing e2e suite revealed a recurring pattern: tests
  * click UI chrome and assert that elements EXIST, but very few assert
@@ -14,15 +14,15 @@
  *
  * Surfaces covered (each in its own .serial test):
  *   1. Welcome screen on cold start
- *   2. Settings pane — tabs render + switching shows different content
- *   3. AI Agents sidebar — all four built-in agents render by name
- *   4. Workflows overlay — New Workflow opens the authoring canvas with content
- *   5. Prompt Templates — built-in templates render
- *   6. Context Pins — seeded pin renders with label + body text
- *   7. Command Palette — typed query filters visible results
- *   8. Swarm Dashboard — seeded agents/tasks/messages render as text
- *   9. Swarm Complete Dialog — seeded completion renders tasks + summary
- *  10. Swarm Notification banner — seeded notification renders in sidebar
+ *   2. Settings pane â€” tabs render + switching shows different content
+ *   3. AI Agents sidebar â€” all four built-in agents render by name
+ *   4. Workflows overlay â€” New Workflow opens the authoring canvas with content
+ *   5. Prompt Templates â€” built-in templates render
+ *   6. Context Pins â€” seeded pin renders with label + body text
+ *   7. Command Palette â€” typed query filters visible results
+ *   8. Swarm Dashboard â€” seeded agents/tasks/messages render as text
+ *   9. Swarm Complete Dialog â€” seeded completion renders tasks + summary
+ *  10. Swarm Notification banner â€” seeded notification renders in sidebar
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -129,7 +129,7 @@ async function closeOverlays() {
     if (typeof setNotif === 'function') setNotif(null)
   })
   // Escape for palettes (command palette, prompt templates) that do close
-  // on Escape — double-press since some have confirmation sub-dialogs.
+  // on Escape â€” double-press since some have confirmation sub-dialogs.
   await page.keyboard.press('Escape').catch(() => {})
   await page.waitForTimeout(100)
   await page.keyboard.press('Escape').catch(() => {})
@@ -176,7 +176,7 @@ test.describe.serial('UI screens show visible results', () => {
   test('3. Sidebar lists all four built-in AI agents by name', async () => {
     await closeOverlays()
     // Agents sidebar is always mounted; these are the four canonical
-    // profile names. All three MUST be visible — a missing one means
+    // profile names. All three MUST be visible â€” a missing one means
     // the profile list regressed.
     for (const name of ['Claude Code', 'OpenAI Codex', 'Gemini CLI']) {
       await expect(
@@ -192,11 +192,9 @@ test.describe.serial('UI screens show visible results', () => {
     // Workflows sidebar section; its New Workflow button opens the author/run
     // overlay. This guards the "screen opens but renders nothing" regression:
     // the overlay must show real authoring affordances, not an empty frame.
-    const newBtn = page.locator('button[title="New Workflow"]').first()
+    const newBtn = page.locator('button[title="Start Workflow"]').first()
     await expect(newBtn).toBeVisible({ timeout: 5000 })
     await newBtn.click()
-    // "+" opens a create menu; "Blank workflow" opens the author overlay.
-    await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
     await page.waitForTimeout(500)
 
     const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
@@ -256,7 +254,7 @@ test.describe.serial('UI screens show visible results', () => {
 
     await expect(page.locator('text=/Pinned Context/i').first()).toBeVisible({ timeout: 5000 })
     await expect(page.locator('text=E2E-SEED-PIN-SCREEN-TEST').first()).toBeVisible({ timeout: 5000 })
-    // Body text is truncated in the pin card — assert the unique sentinel.
+    // Body text is truncated in the pin card â€” assert the unique sentinel.
     await expect(page.locator('text=BODY-SENTINEL').first()).toBeVisible({ timeout: 5000 })
     await shot('06-context-pins')
 
@@ -273,7 +271,7 @@ test.describe.serial('UI screens show visible results', () => {
 
   test('7. Command Palette filters results when user types', async () => {
     await closeOverlays()
-    // Use the narrow test hook — Playwright's keyboard.press doesn't reliably
+    // Use the narrow test hook â€” Playwright's keyboard.press doesn't reliably
     // deliver Ctrl+K to the window-level handler in the Electron harness
     // when there's no focused element, and there's no way to "focus nothing"
     // cleanly. The hook exercises the exact same render path.

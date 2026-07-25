@@ -1,16 +1,16 @@
-/**
- * Workflow Orchestrator — end-to-end proof.
+﻿/**
+ * Workflow Orchestrator â€” end-to-end proof.
  *
  * Authors a two-step workflow through the REAL Designer UI in the running
- * Electron app — a headless Command step that runs `exit 0` on a real PTY, then
- * a Control "notify" step — Saves it to disk, opens the Run tab, clicks Run, and
+ * Electron app â€” a headless Command step that runs `exit 0` on a real PTY, then
+ * a Control "notify" step â€” Saves it to disk, opens the Run tab, clicks Run, and
  * asserts BOTH nodes on the live timeline reach `succeeded` and the run bar
  * reports overall completion.
  *
  * This is the whole-pipe proof the unit suites can't give on their own: renderer
- * authoring → workflow:save YAML → workflow:run (trust gate + engine) → real
- * spawnTerminal command substrate → workflow:run-event IPC → store.applyRunEvent
- * → Runner timeline. Command (real bash) + Control (pure) are exercised here;
+ * authoring â†’ workflow:save YAML â†’ workflow:run (trust gate + engine) â†’ real
+ * spawnTerminal command substrate â†’ workflow:run-event IPC â†’ store.applyRunEvent
+ * â†’ Runner timeline. Command (real bash) + Control (pure) are exercised here;
  * Agent/Skill steps drive external CLIs and stay covered by the unit fakes so CI
  * never shells out to claude/codex/gemini.
  */
@@ -34,7 +34,7 @@ test.beforeAll(async () => {
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   // Isolate Electron's userData (session.json, trusted-workspaces.json) from the
-  // developer's real ~/AppData/Roaming/termpolis profile — see chrome-smoke.
+  // developer's real ~/AppData/Roaming/termpolis profile â€” see chrome-smoke.
   isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-wf-'))
   const clean = JSON.stringify({ terminals: [], workspaces: [], defaultShell: 'bash', viewMode: 'tabs' })
   fs.writeFileSync(path.join(isolatedUserData, 'session.json'), clean)
@@ -90,17 +90,15 @@ test('author a Command + Control workflow, run it, and watch both steps go green
   // homedir. getHomedir() returns the {success,data} IPC envelope (the renderer
   // unwraps it via lib/homedir), so unwrap it to the raw path string here. Trust
   // it through the app's own IPC so both the trust-store write and the
-  // workflow:run trust check normalize the same string — no path drift.
+  // workflow:run trust check normalize the same string â€” no path drift.
   const home = await page.evaluate(() => window.termpolis.getHomedir())
   const cwd = home && home.success && home.data ? home.data : ''
   expect(typeof cwd).toBe('string')
   expect(cwd).toBeTruthy()
   await page.evaluate(c => window.termpolis.workspaceTrust(c), cwd)
 
-  // 1. Open the permanent Workflows sidebar section → New Workflow.
-  await page.locator('button[title="New Workflow"]').click()
-  // "+" opens a create menu; "Blank workflow" opens the author overlay.
-  await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
+  // 1. Open the permanent Workflows sidebar section â†’ New Workflow.
+  await page.locator('button[title="Start Workflow"]').click()
   const dialog = page.locator('[role="dialog"][aria-label="Workflow"]')
   await expect(dialog).toBeVisible()
   await dialog.getByLabel('Workflow name').fill(WF_NAME)
@@ -118,7 +116,7 @@ test('author a Command + Control workflow, run it, and watch both steps go green
   await dialog.getByLabel('Control action').selectOption('notify')
   await dialog.getByLabel('Notify message').fill('workflow complete')
 
-  // 4. Save → persists YAML under <cwd>/.termpolis/workflows so Run can load it.
+  // 4. Save â†’ persists YAML under <cwd>/.termpolis/workflows so Run can load it.
   await dialog.getByRole('button', { name: 'Save', exact: true }).click()
 
   // 5. Confirm persistence deterministically and capture the id for cleanup.
@@ -146,7 +144,7 @@ test('author a Command + Control workflow, run it, and watch both steps go green
   ).toHaveCount(2, { timeout: 30_000 })
 
   // 8. The run bar reflects overall completion. The run-status <span> is the
-  //    only node whose text is `succeeded` — step nodes encode status via CSS
-  //    class, not text — so this uniquely targets the run bar.
+  //    only node whose text is `succeeded` â€” step nodes encode status via CSS
+  //    class, not text â€” so this uniquely targets the run bar.
   await expect(dialog.getByText('succeeded')).toBeVisible({ timeout: 10_000 })
 })

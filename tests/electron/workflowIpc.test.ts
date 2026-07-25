@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { registerWorkflowIpc } from '../../src/main/workflow/ipc'
+import { registerWorkflowIpc, resolveInputs } from '../../src/main/workflow/ipc'
+
+const USER_DATA = '/userdata'
 
 function harness({ trusted = true, engine: engineOver }: { trusted?: boolean; engine?: any } = {}) {
   const handlers = new Map<string, Function>()
@@ -7,25 +9,35 @@ function harness({ trusted = true, engine: engineOver }: { trusted?: boolean; en
   const sent: any[] = []
   const win = { webContents: { send: (ch: string, e: any) => sent.push({ ch, e }) } }
   const files = new Map<string, string>()
+  // Dir-AWARE fake fs. A `readdirSync` that ignores its argument would make the
+  // project and global stores indistinguishable and silently double every list.
+  const dirs = new Set<string>()
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+  const under = (p: string) => norm(p) + '/'
   const fs = {
-    existsSync: (p: string) => files.has(p) || p.endsWith('workflows') || p.endsWith('runs'),
-    mkdirSync: () => {}, readdirSync: () => [...files.keys()].map(k => k.split(/[\\/]/).pop()!),
+    existsSync: (p: string) => files.has(p) || dirs.has(norm(p)) || [...files.keys()].some(k => norm(k).startsWith(under(p))),
+    mkdirSync: (p: string) => { dirs.add(norm(p)) },
+    readdirSync: (d: string) => [...files.keys()]
+      .filter(k => norm(k).startsWith(under(d)) && !norm(k).slice(under(d).length).includes('/'))
+      .map(k => norm(k).split('/').pop()!),
     readFileSync: (p: string) => files.get(p)!, writeFileSync: (p: string, d: string) => files.set(p, d),
     appendFileSync: (p: string, d: string) => files.set(p, (files.get(p) || '') + d),
     rmSync: (p: string) => files.delete(p),
   }
   const engine = engineOver ?? { runWorkflow: vi.fn(async (wf: any, deps: any) => { deps.emit({ type: 'run:finished', runId: 'r', status: 'succeeded', at: 1 }); return { runId: 'r', status: 'succeeded', workflowId: wf.id, steps: [], startedAt: 0 } }), cancelRun: vi.fn() }
   const changed: string[] = []
+  const changedScopes: string[] = []
   const watched: string[] = []
   const api = registerWorkflowIpc(ipcMain as any, () => win as any, {
     fs: fs as any, engine,
     isTrusted: () => trusted,
     newRunId: () => 'r',
+    userDataDir: USER_DATA,
     makeDeps: (emit) => ({ emit }) as any,
-    onWorkflowsChanged: (cwd: string) => changed.push(cwd),
+    onWorkflowsChanged: (cwd: string, scope: string) => { changed.push(cwd); changedScopes.push(scope) },
     onWatchProject: (cwd: string) => watched.push(cwd),
   })
-  return { call: (ch: string, arg: any) => handlers.get(ch)!(null, arg), sent, files, changed, watched, handlers, api, engine }
+  return { call: (ch: string, arg: any) => handlers.get(ch)!(null, arg), sent, files, changed, changedScopes, watched, handlers, api, engine }
 }
 
 describe('workflow IPC', () => {
@@ -33,7 +45,7 @@ describe('workflow IPC', () => {
     const h = harness()
     const wf = { id: 'x', name: 'X', version: 1, trigger: { type: 'manual' }, steps: [] }
     expect((await h.call('workflow:save', { cwd: '/r', workflow: wf })).success).toBe(true)
-    expect((await h.call('workflow:list', { cwd: '/r' })).data).toEqual([{ id: 'x', name: 'X' }])
+    expect((await h.call('workflow:list', { cwd: '/r' })).data).toEqual([{ id: 'x', name: 'X', scope: 'project' }])
     expect((await h.call('workflow:read', { cwd: '/r', id: 'x' })).data.id).toBe('x')
   })
   it('run returns the runId and forwards emitted events to the window', async () => {
@@ -159,6 +171,7 @@ describe('workflow IPC — trigger wiring', () => {
       engine: { runWorkflow: vi.fn(), cancelRun: vi.fn() },
       isTrusted: () => true,
       newRunId: () => 'r',
+      userDataDir: USER_DATA,
       makeDeps: (emit) => ({ emit }) as any,
       onWatchProject: () => { throw new Error('supervisor exploded') },
     })

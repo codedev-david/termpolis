@@ -1,5 +1,5 @@
-/**
- * Chrome smoke test — click every visible button in the app chrome
+﻿/**
+ * Chrome smoke test â€” click every visible button in the app chrome
  * (sidebar icons, modal open/close, pane header buttons) and assert
  * that no React / window errors fire. This is the net that would have
  * caught the Apr 2026 PaneRenderer Split Right bug (silent breakage
@@ -37,7 +37,7 @@ test.beforeAll(async () => {
       `--user-data-dir=${isolatedUserData}`,
       // Ubuntu 24.04 GHA runners ship chrome-sandbox without SUID root,
       // which crashes Electron at startup. App code sets no-sandbox later
-      // via app.commandLine, but that's too late — the chromium runtime
+      // via app.commandLine, but that's too late â€” the chromium runtime
       // checks before JS runs. Pass it up-front on Linux.
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
@@ -63,7 +63,7 @@ test.beforeAll(async () => {
 
   // Pre-dismiss the first-run onboarding modal so it doesn't block clicks.
   // The modal reads localStorage on mount, so a late write doesn't unmount it
-  // — we have to actively click "Skip tour" if it's already up.
+  // â€” we have to actively click "Skip tour" if it's already up.
   await page.evaluate(() => {
     try {
       localStorage.setItem('termpolis.onboarding.seen.v1', '1')
@@ -99,7 +99,7 @@ function isFatal(s: string): boolean {
     /autofill\.setAddresses/i,
   ]
   if (ignorable.some(r => r.test(s))) return false
-  // These are the canary patterns — any of these = test failure.
+  // These are the canary patterns â€” any of these = test failure.
   return /Rendered (more|fewer) hooks|order of Hooks|Cannot read (properties|property) of (undefined|null)|Minified React error|Uncaught|unhandledrejection|Invariant failed/i.test(s)
 }
 
@@ -115,7 +115,7 @@ async function createTerminalIfNeeded(name: string) {
 }
 
 async function closeAnyOpenModal() {
-  // Step 0: belt-and-suspenders — if the onboarding modal (z-[200]) is still
+  // Step 0: belt-and-suspenders â€” if the onboarding modal (z-[200]) is still
   // up after beforeAll's dismissal raced the modal's mount, force-click
   // Skip tour. Its backdrop class is `z-[200]`, not `z-50`, so the steps
   // below don't catch it.
@@ -144,7 +144,7 @@ async function closeAnyOpenModal() {
       await page.waitForTimeout(250)
     }
   }
-  // Step 3: final safety net — if a backdrop is STILL visible, click it
+  // Step 3: final safety net â€” if a backdrop is STILL visible, click it
   // directly via the locator API at its top-left corner. Scoped to when a
   // backdrop still exists so we don't accidentally click a sidebar button
   // when no modal is open.
@@ -178,7 +178,7 @@ async function clickAndReturn(selector: string, closeMethod: 'escape' | 'backdro
         await xBtn.click({ force: true }).catch(() => {})
       } else {
         // Click-through on the backdrop at top-left corner of its bounding
-        // box — bubbles to the backdrop's onClick={onClose} handler.
+        // box â€” bubbles to the backdrop's onClick={onClose} handler.
         await backdrop.click({ position: { x: 10, y: 10 }, force: true }).catch(() => {})
       }
     }
@@ -215,9 +215,7 @@ test.describe.serial('Chrome smoke', () => {
     // closes via the overlay's X (title="Close workflow"). The full-screen
     // overlay has no backdrop-dismiss, so drive open/close explicitly.
     await closeAnyOpenModal()
-    await page.locator('button[title="New Workflow"]').first().click()
-    // "+" opens a create menu; "Blank workflow" opens the author overlay.
-    await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
+    await page.locator('button[title="Start Workflow"]').first().click()
     const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
     await expect(dlg).toBeVisible()
     await page.locator('button[title="Close workflow"]').first().click()
@@ -307,12 +305,12 @@ test.describe.serial('Chrome smoke', () => {
   test('10. Settings pane tabs all render', async () => {
     await closeAnyOpenModal()
     const gear = page.locator('button[title="Settings"]').first()
-    // force: true — on macOS CI after the split-pane tests (7-9), an
+    // force: true â€” on macOS CI after the split-pane tests (7-9), an
     // invisible layout ancestor occasionally intercepts pointer events on
     // the sidebar Settings gear even though the button itself is visible,
     // enabled, and stable. The gear is a direct sibling of the splitter so
     // the resize overlay can briefly shadow it. Test 2 already proves the
-    // normal click path works — this test is about tab contents, not click
+    // normal click path works â€” this test is about tab contents, not click
     // receptiveness, so forcing is OK here.
     await gear.click({ force: true })
     await page.waitForTimeout(600)
@@ -325,7 +323,7 @@ test.describe.serial('Chrome smoke', () => {
       const btn = settingsPane.locator('button').nth(i)
       // Tab-button clicks swap the pane's content mid-loop, so nth(i) may no
       // longer exist. Every probe must be bounded: an unbounded isEnabled()
-      // on a missing index silently waits the full 30s default — four of
+      // on a missing index silently waits the full 30s default â€” four of
       // those eat the whole 120s test budget (seen on Linux CI once the
       // Settings pane grew past 20 buttons).
       const visible = await btn.isVisible().catch(() => false)

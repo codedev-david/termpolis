@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Documentation Screenshot Harness
  * --------------------------------
  * Drives every major UI state and writes a single screenshot per state to
@@ -7,12 +7,12 @@
  *
  * Design rules learned the hard way:
  *  - Never click TitleBar buttons (aria-label="Close" matches the app close).
- *  - Never press Escape when no modal is open — risks app confirm-close.
+ *  - Never press Escape when no modal is open â€” risks app confirm-close.
  *  - Every step waits for a visible signal that the target panel actually
  *    opened (or closed) before screenshotting, so we don't capture an
  *    unchanged frame.
  *  - If a state can't be opened for any reason, capture whatever is on screen
- *    but log and move on — later states shouldn't cascade-fail.
+ *    but log and move on â€” later states shouldn't cascade-fail.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -94,7 +94,7 @@ async function waitForHidden(selector: string, timeout = 3000): Promise<boolean>
   }
 }
 
-// Dismiss overlay modals by clicking the top-left pixel — outside the modal,
+// Dismiss overlay modals by clicking the top-left pixel â€” outside the modal,
 // safely inside the renderer viewport, not on any TitleBar button.
 async function clickBackdrop() {
   if (!appAlive) return
@@ -112,9 +112,9 @@ async function scrollToText(text: string) {
 }
 
 // Reliably close ANY open modal. All app modals render a full-screen
-// `div.fixed.inset-0` backdrop whose onClick calls onClose — so clicking the
+// `div.fixed.inset-0` backdrop whose onClick calls onClose â€” so clicking the
 // backdrop element itself dismisses them (Escape is unreliable: some modals
-// have no Escape handler, and one modal's text — e.g. "Prompt Templates" — also
+// have no Escape handler, and one modal's text â€” e.g. "Prompt Templates" â€” also
 // lives in the StatusBar, breaking text-based waitForHidden). Loops to peel off
 // nested modals (wizard-over-dashboard), with an Escape fallback per pass.
 async function closeModals() {
@@ -128,7 +128,7 @@ async function closeModals() {
       const vis = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 20 }
       const overlays = Array.from(document.querySelectorAll<HTMLElement>('div.fixed.inset-0')).filter(vis)
       // The Quick Start Guide / Help modal has NO backdrop-onClose and ignores
-      // Escape — close it via its visible "Close"/"Skip tour" button. Matching
+      // Escape â€” close it via its visible "Close"/"Skip tour" button. Matching
       // button TEXT is safe; the TitleBar app-close uses an aria-label, not text.
       const textClose = Array.from(document.querySelectorAll<HTMLElement>('button')).filter(vis)
         .find(b => { const t = (b.textContent || '').trim(); return t === 'Close' || t === 'Skip tour' })
@@ -137,7 +137,7 @@ async function closeModals() {
       const aria = top && top.querySelector<HTMLElement>('button[aria-label*="lose"], button[aria-label*="workflows"]')
       if (aria) aria.click()
       else if (textClose) textClose.click()
-      else if (top) top.click() // backdrop-click → onClose
+      else if (top) top.click() // backdrop-click â†’ onClose
       return false
     }).catch(() => true)
     await safeWait(250)
@@ -215,7 +215,7 @@ test('capture all docs screenshots', async () => {
   test.setTimeout(600000)
   await expect(page.locator('text=Termpolis').first()).toBeVisible({ timeout: 15000 })
 
-  // 01 — Welcome screen, fresh app (capture BEFORE dismissing onboarding so
+  // 01 â€” Welcome screen, fresh app (capture BEFORE dismissing onboarding so
   // screenshot 01 shows the Welcome-to-Termpolis dialog as new users see it).
   await safeWait(800)
   await ss('01-welcome-screen')
@@ -231,24 +231,24 @@ test('capture all docs screenshots', async () => {
     await safeWait(400)
   }
 
-  // 02 — Sidebar default: open the Launch AI Agent dropdown to show the
+  // 02 â€” Sidebar default: open the Launch AI Agent dropdown to show the
   // agent picker state (visually distinct from the plain Welcome in 01).
   await clickIf('button:has(span:text-is("Launch AI Agent"))', 2000)
   await safeWait(500)
   await ss('02-sidebar-default')
-  // Close picker by clicking in the dark header strip (x=700, y=50) —
+  // Close picker by clicking in the dark header strip (x=700, y=50) â€”
   // below TitleBar, above Welcome content, well clear of sidebar items.
   try { await page.mouse.click(700, 50) } catch {}
   await safeWait(300)
 
-  // 03 — New terminal modal — opened via the Welcome screen button.
+  // 03 â€” New terminal modal â€” opened via the Welcome screen button.
   // Capture it in its default state (Dark theme selected).
   await clickIf('button:has(span:text-is("New Terminal"))', 3000)
   await waitForText('New Terminal', 2500)
   await safeWait(500)
   await ss('03-new-terminal-modal')
 
-  // 08 — Themes picker: click a different theme pill so the selection
+  // 08 â€” Themes picker: click a different theme pill so the selection
   // indicator and preview differ from 03.
   await clickIf('button:has-text("Dracula")', 1500)
   await safeWait(300)
@@ -260,7 +260,7 @@ test('capture all docs screenshots', async () => {
   await safeWait(400)
   await ss('08-themes-picker')
 
-  // Confirm — click Create in the modal. The Create button is visible inside
+  // Confirm â€” click Create in the modal. The Create button is visible inside
   // the AddTerminalModal; clicking it calls handleCreateTerminal which in turn
   // spawns a PTY and closes the modal.
   const createBtn = page.locator('button.bg-\\[\\#0078d4\\]:has-text("Create")').first()
@@ -288,7 +288,7 @@ test('capture all docs screenshots', async () => {
   await safeWait(1500)
   await ss('04-terminal-running')
 
-  // 05 — Multiple terminals: spawn a second one via the sidebar's
+  // 05 â€” Multiple terminals: spawn a second one via the sidebar's
   // "+ Add Terminal" button (more reliable than a keyboard shortcut in test).
   await clickIf('button:has-text("Add Terminal")', 2000)
   await page.locator('h2:text-is("New Terminal")').first()
@@ -301,7 +301,7 @@ test('capture all docs screenshots', async () => {
   await safeWait(1400)
   await ss('05-tab-view-multiple')
 
-  // 06 — Split view via sidebar toggle. Confirm the toggle actually applied by
+  // 06 â€” Split view via sidebar toggle. Confirm the toggle actually applied by
   // waiting for the button title to flip to "Tab View" before capturing.
   await clickIf('button[title="Split View"]', 2500)
   await page.locator('button[title="Tab View"]').first()
@@ -312,7 +312,7 @@ test('capture all docs screenshots', async () => {
   await clickIf('button[title="Tab View"]', 1500)
   await safeWait(300)
 
-  // 07 — Settings panel (top — default shell + autocomplete visible)
+  // 07 â€” Settings panel (top â€” default shell + autocomplete visible)
   await clickIf('button[title="Settings"]', 2000)
   await waitForText('Settings', 2000)
   // Ensure we're at the top
@@ -325,14 +325,14 @@ test('capture all docs screenshots', async () => {
   await safeWait(500)
   await ss('07-settings-panel')
 
-  // 09 — Keybindings TAB. Settings is now tabbed (settings-tab-*), so switch
+  // 09 â€” Keybindings TAB. Settings is now tabbed (settings-tab-*), so switch
   // tabs by click; scrolling to the section does nothing (it's a different tab).
   await clickIf('[data-testid="settings-tab-keybindings"]', 2500)
   await waitForText('Keyboard Shortcuts', 2500)
   await safeWait(400)
   await ss('09-keybindings')
 
-  // 10 — Agent Ratings TAB
+  // 10 â€” Agent Ratings TAB
   await clickIf('[data-testid="settings-tab-agents"]', 2500)
   await waitForText('Agent Capability Ratings', 2500)
   await safeWait(400)
@@ -342,7 +342,7 @@ test('capture all docs screenshots', async () => {
   await clickIf('button[title="Settings"]', 1500)
   await safeWait(400)
 
-  // 11 — Command palette. App listens for `e.key === 'k'` (lowercase); Playwright
+  // 11 â€” Command palette. App listens for `e.key === 'k'` (lowercase); Playwright
   // would send 'K' for 'Control+K', so pass the key lowercase explicitly.
   await pressIf('Control+k')
   await page.locator('input[placeholder="Type a command..."]').first()
@@ -350,7 +350,7 @@ test('capture all docs screenshots', async () => {
   await safeWait(400)
   await ss('11-command-palette')
 
-  // 11b — Filter the palette
+  // 11b â€” Filter the palette
   try { await page.keyboard.type('launch', { delay: 40 }) } catch {}
   await safeWait(400)
   await ss('11b-command-palette-filtered')
@@ -358,7 +358,7 @@ test('capture all docs screenshots', async () => {
   await waitForHidden('input[placeholder="Type a command..."]', 2000)
   await safeWait(300)
 
-  // 12 — Prompt templates (Ctrl+Shift+P). Scope the wait to the modal H2 — the
+  // 12 â€” Prompt templates (Ctrl+Shift+P). Scope the wait to the modal H2 â€” the
   // StatusBar also renders the text "Prompt Templates", which broke text waits.
   await pressIf('Control+Shift+P')
   await page.locator('h2:text-is("Prompt Templates")').first()
@@ -367,17 +367,15 @@ test('capture all docs screenshots', async () => {
   await ss('12-prompt-templates')
   await closeModals() // must fully close, or it blocks the Workflows button (13/13b)
 
-  // 13 — Workflow designer (the New Workflow overlay opens from the permanent
+  // 13 â€” Workflow designer (the New Workflow overlay opens from the permanent
   // Workflows sidebar section; the old toolbar icon + templates modal are gone).
-  await clickIf('button[title="New Workflow"]', 2500)
-  // "+" opens a create menu; choose "Blank workflow" to open the overlay.
-  await page.getByRole('menuitem', { name: 'Blank workflow' }).click().catch(() => {})
+  await clickIf('button[title="Start Workflow"]', 2500)
   await page.locator('[role="dialog"][aria-label="Workflow"]')
     .waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
   await safeWait(500)
   await ss('13-workflow-templates')
 
-  // 13b — Create-workflow form (the Design tab where steps are authored)
+  // 13b â€” Create-workflow form (the Design tab where steps are authored)
   await clickIf('button[aria-label="Design tab"]', 1500)
   await safeWait(500)
   await ss('13b-workflow-create')
@@ -385,28 +383,28 @@ test('capture all docs screenshots', async () => {
   await safeWait(300)
   await closeModals()
 
-  // 14 — Context panel (right-hand file tree)
+  // 14 â€” Context panel (right-hand file tree)
   await pressIf('Control+Shift+E')
   await safeWait(700)
   await ss('14-context-panel')
   await pressIf('Control+Shift+E')
   await safeWait(300)
 
-  // 15 — History search
+  // 15 â€” History search
   await pressIf('Control+Shift+H')
   await safeWait(600)
   await ss('15-history-search')
   await pressIf('Escape')
   await safeWait(300)
 
-  // 16 — Conversation search
+  // 16 â€” Conversation search
   await pressIf('Control+Shift+I')
   await safeWait(600)
   await ss('16-conversation-search')
   await pressIf('Escape')
   await safeWait(300)
 
-  // 17 — Git panel. Same story as Workflows — sidebar button only opens; close
+  // 17 â€” Git panel. Same story as Workflows â€” sidebar button only opens; close
   // via Escape (GitPanel has its own Escape handler).
   await clickIf('button[title="Git Panel"]', 2000)
   await safeWait(800)
@@ -414,9 +412,9 @@ test('capture all docs screenshots', async () => {
   await pressIf('Escape')
   await safeWait(300)
 
-  // 18 — Swarm Dashboard with "Clear Swarm" confirmation modal open. This gives
+  // 18 â€” Swarm Dashboard with "Clear Swarm" confirmation modal open. This gives
   // a visually distinct first dashboard capture (showing a documentable
-  // feature — stopping a swarm) before we switch tabs.
+  // feature â€” stopping a swarm) before we switch tabs.
   await pressIf('Control+Shift+S')
   await page.locator('h2:text-is("Swarm Dashboard")').first()
     .waitFor({ state: 'visible', timeout: 4000 }).catch(() => {})
@@ -432,7 +430,7 @@ test('capture all docs screenshots', async () => {
   await waitForHidden('h3:text-is("Clear Swarm")', 2000)
   await safeWait(300)
 
-  // 19 — Tasks tab active (plain dashboard with no modal overlay)
+  // 19 â€” Tasks tab active (plain dashboard with no modal overlay)
   await clickIf('button:has-text("Messages")', 1500)
   await safeWait(300)
   await clickIf('button:has-text("Tasks")', 1500)
@@ -441,17 +439,17 @@ test('capture all docs screenshots', async () => {
   await safeWait(200)
   await ss('19-swarm-tasks-tab')
 
-  // 20 — Messages tab
+  // 20 â€” Messages tab
   await clickIf('button:has-text("Messages")', 1500)
   await safeWait(500)
   await ss('20-swarm-messages-tab')
 
-  // 21 — Trace tab
+  // 21 â€” Trace tab
   await clickIf('button:has-text("Trace")', 1500)
   await safeWait(500)
   await ss('21-swarm-trace-tab')
 
-  // 22 — Start Swarm wizard. Back on Tasks tab first, then click the
+  // 22 â€” Start Swarm wizard. Back on Tasks tab first, then click the
   // dashboard's own Start Swarm button. pickDirectory() returns the
   // TERMPOLIS_TEST_PROJECT_CWD path, which opens the wizard overlay.
   await clickIf('button:has-text("Tasks")', 1500)
@@ -467,22 +465,22 @@ test('capture all docs screenshots', async () => {
   await ss('22-start-swarm-wizard')
 
   // Close the wizard AND the dashboard reliably. Escape is gated while the
-  // wizard shows, and the dashboard only closes via its X / backdrop — so peel
+  // wizard shows, and the dashboard only closes via its X / backdrop â€” so peel
   // both off with closeModals() (it loops for nested modals). This was the cause
-  // of the 28–31 cascade: a lingering dashboard blocked the Settings panel.
+  // of the 28â€“31 cascade: a lingering dashboard blocked the Settings panel.
   await closeModals()
   await waitForHidden('h2:text-is("Swarm Dashboard")', 3000)
   await safeWait(500)
 
-  // 23 — Activity feed (Ctrl+Shift+A per App.tsx registration)
+  // 23 â€” Activity feed (Ctrl+Shift+A per App.tsx registration)
   await pressIf('Control+Shift+A')
   await safeWait(800)
   await ss('23-activity-feed')
   await pressIf('Control+Shift+A')
   await safeWait(300)
 
-  // 24 — Status bar: a full-window shot is indistinguishable from the plain tab
-  // view (05), so CLIP to the bottom strip — that's what the caption describes.
+  // 24 â€” Status bar: a full-window shot is indistinguishable from the plain tab
+  // view (05), so CLIP to the bottom strip â€” that's what the caption describes.
   await clickIf('.xterm', 1500)
   await safeWait(300)
   try {
@@ -491,13 +489,13 @@ test('capture all docs screenshots', async () => {
       await page.mouse.move(vp.width / 2, vp.height - 12)
       await safeWait(400)
       await page.screenshot({ path: path.join(OUT, '24-status-bar.png'), clip: { x: 0, y: vp.height - 32, width: vp.width, height: 32 }, timeout: 6000 })
-      console.log('[docs-ss] 24-status-bar (clipped) ✓')
+      console.log('[docs-ss] 24-status-bar (clipped) âœ“')
     } else {
       await ss('24-status-bar')
     }
   } catch { await ss('24-status-bar') }
 
-  // 25 — Final state: collapse the sidebar via Ctrl+B (if bound) for a
+  // 25 â€” Final state: collapse the sidebar via Ctrl+B (if bound) for a
   // clean zoomed-out terminal frame that differs from 24's status-bar hover.
   try { await page.mouse.move(400, 400) } catch {}
   await pressIf('Control+B')
@@ -508,14 +506,14 @@ test('capture all docs screenshots', async () => {
   await safeWait(200)
 
   // ---------------------------------------------------------------------
-  // v1.11.43+ additions — Help / Past Sessions / AI Security Center /
+  // v1.11.43+ additions â€” Help / Past Sessions / AI Security Center /
   // Live Observability panels. These shots back the new sections in
   // termpolis-web/docs.html so the marketing site stops being two months
   // out of date.
   // ---------------------------------------------------------------------
 
-  // 26 — Help modal opens via the StatusBar "Help / Support" button (the
-  // Ctrl+/ shortcut routes to Settings→Keybindings instead). Click that
+  // 26 â€” Help modal opens via the StatusBar "Help / Support" button (the
+  // Ctrl+/ shortcut routes to Settingsâ†’Keybindings instead). Click that
   // button and screenshot the modal showing keyboard-shortcuts + Show-tour-again
   // affordance + observability + security sections.
   await clickIf('button:has-text("Help / Support")', 3000)
@@ -523,7 +521,7 @@ test('capture all docs screenshots', async () => {
   await ss('26-help-modal')
   // Scroll the Help modal body down so this second shot differs from 26 and
   // reveals the lower sections (Security / Observability). Scroll every scroll
-  // container that's actually scrollable — the help modal's body is the only
+  // container that's actually scrollable â€” the help modal's body is the only
   // one open at this point.
   await page.evaluate(() => {
     document.querySelectorAll<HTMLElement>('.overflow-y-auto').forEach(p => {
@@ -535,7 +533,7 @@ test('capture all docs screenshots', async () => {
   await pressIf('Escape')
   await safeWait(400)
 
-  // 28 — AI Security Center (Settings → AI Security TAB, top of panel).
+  // 28 â€” AI Security Center (Settings â†’ AI Security TAB, top of panel).
   await closeModals()
   await clickIf('button[title="Settings"]', 2500)
   await page.locator('[data-testid="settings-tabs"]').first()
@@ -553,7 +551,7 @@ test('capture all docs screenshots', async () => {
     await safeWait(300)
     await ss('28-security-center-top')
 
-    // 29 — Background watchers card (sensitive-file + per-agent egress).
+    // 29 â€” Background watchers card (sensitive-file + per-agent egress).
     await page.evaluate(() => {
       const card = document.querySelector<HTMLElement>('[data-testid="security-watchers"]')
       if (card) card.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
@@ -561,7 +559,7 @@ test('capture all docs screenshots', async () => {
     await safeWait(400)
     await ss('29-security-watchers')
 
-    // 30 — Manual pre-paste scanner with a hit. Paste a fake-shape AWS key
+    // 30 â€” Manual pre-paste scanner with a hit. Paste a fake-shape AWS key
     // (a-repeat fails entropy heuristic locally, but the panel scan accepts
     // any input and runs the regex set in main; we want a positive hit.)
     await page.evaluate(() => {
@@ -588,28 +586,28 @@ test('capture all docs screenshots', async () => {
   await clickIf('button[title="Settings"]', 1500)
   await safeWait(400)
 
-  // 31 — Past AI Sessions browser (button lives inside the terminal pane).
+  // 31 â€” Past AI Sessions browser (button lives inside the terminal pane).
   await clickIf('[data-testid="past-ai-sessions-btn"]', 2500)
   await safeWait(900)
   await ss('31-past-ai-sessions')
   await pressIf('Escape')
   await safeWait(300)
 
-  // 32 — Live observability: Context Pins (Ctrl+Shift+B per Help modal).
+  // 32 â€” Live observability: Context Pins (Ctrl+Shift+B per Help modal).
   await pressIf('Control+Shift+B')
   await safeWait(700)
   await ss('32-context-pins')
   await pressIf('Control+Shift+B')
   await safeWait(300)
 
-  // 33 — Live observability: Redundancy (Ctrl+Shift+D).
+  // 33 â€” Live observability: Redundancy (Ctrl+Shift+D).
   await pressIf('Control+Shift+D')
   await safeWait(700)
   await ss('33-redundancy')
   await pressIf('Control+Shift+D')
   await safeWait(300)
 
-  // 34 — Live observability: Efficiency (Ctrl+Shift+Y).
+  // 34 â€” Live observability: Efficiency (Ctrl+Shift+Y).
   await pressIf('Control+Shift+Y')
   await safeWait(700)
   await ss('34-efficiency')

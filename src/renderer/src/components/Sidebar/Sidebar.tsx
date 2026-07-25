@@ -65,12 +65,13 @@ export function Sidebar() {
   // Load the current project's saved workflows into the store so the sidebar
   // section lists them; re-runs when the project changes or after a save.
   useEffect(() => {
-    if (!workflowCwd) return
     let alive = true
     // Register the project with main so its schedule/git/file triggers arm for
     // the directory the user is actually working in, not just the home store.
-    window.termpolis.watchWorkflowProject?.(workflowCwd)
-    window.termpolis.listWorkflows(workflowCwd).then(res => {
+    if (workflowCwd) window.termpolis.watchWorkflowProject?.(workflowCwd)
+    // Without a cwd the list still runs: global workflows are offered in every
+    // project, so they must show before any terminal has resolved a directory.
+    window.termpolis.listWorkflows(workflowCwd ?? '').then(res => {
       if (alive && res.success && res.data) setWorkflows(res.data)
     })
     return () => {
@@ -170,8 +171,8 @@ export function Sidebar() {
       <WorkspaceList />
       <div className="border-t border-[#3c3c3c]"></div>
       <WorkflowSidebarSection
-        onCreate={seed => setWorkflowView({ mode: 'new', seed })}
-        onOpen={id => setWorkflowView({ mode: 'edit', id })}
+        onCreate={() => setWorkflowView({ mode: 'new' })}
+        onOpen={(id, scope) => setWorkflowView({ mode: 'edit', id, scope })}
       />
       <div className="px-3 py-1.5 flex items-center justify-between">
         <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]">

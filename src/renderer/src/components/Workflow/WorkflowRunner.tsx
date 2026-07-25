@@ -1,6 +1,23 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
-import type { Workflow, StepStatus, StepResult } from '../../types'
+import type { Workflow, WorkflowInput, StepStatus, StepResult } from '../../types'
+
+/** Seed the run form from each input's default so Run works in one click when
+ *  every input has one. Mirrors main's `resolveInputs` fallback exactly. */
+export function initialInputValues(inputs: WorkflowInput[] | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const i of inputs ?? []) out[i.name] = i.default ?? ''
+  return out
+}
+
+/** Required inputs left blank. Run is disabled while this is non-empty so the
+ *  user fixes it here rather than getting main's rejection after the fact. */
+export function missingRequired(
+  inputs: WorkflowInput[] | undefined,
+  values: Record<string, string>
+): string[] {
+  return (inputs ?? []).filter(i => i.required && !(values[i.name] ?? '').trim()).map(i => i.name)
+}
 
 // ---------------------------------------------------------------------------
 // The live Run view: a vertical progress timeline (one node per workflow step)
@@ -42,6 +59,7 @@ export function WorkflowRunner({
 }) {
   const applyRunEvent = useTerminalStore(s => s.applyRunEvent)
   const run = useTerminalStore(s => (runId ? s.activeRuns[runId] : undefined))
+  const [values, setValues] = useState<Record<string, string>>(() => initialInputValues(workflow.inputs))
 
   // Subscribe once to the main-process run-event stream; the store reducer
   // turns each event into timeline state. Unsubscribe on unmount.
@@ -55,8 +73,11 @@ export function WorkflowRunner({
   const resultFor = (id: string): StepResult | undefined => run?.steps.find(s => s.stepId === id)
   const running = run?.status === 'running'
 
+  const inputs = workflow.inputs ?? []
+  const missing = missingRequired(inputs, values)
+
   const onRun = (): void => {
-    void window.termpolis?.runWorkflow?.(cwd, workflow.id)
+    void window.termpolis?.runWorkflow?.(cwd, workflow.id, workflow.scope ?? 'project', values)
   }
   const onCancel = (): void => {
     if (runId) void window.termpolis?.cancelWorkflow?.(runId)
@@ -64,10 +85,39 @@ export function WorkflowRunner({
 
   return (
     <div className="flex flex-col gap-3 p-4 max-w-xl mx-auto w-full">
+      {/* Inputs make the same workflow reusable across projects: values are
+          collected here and interpolated as `${inputs.NAME}` by the engine. */}
+      {inputs.length > 0 && (
+        <div className="rounded border border-[#3c3c3c] bg-[#252526] p-3 flex flex-col gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-[#9ca3af]">Inputs</span>
+          {inputs.map(inp => (
+            <label key={inp.name} className="flex flex-col gap-1">
+              <span className="text-xs text-[#9ca3af]">
+                {inp.label?.trim() || inp.name}
+                {inp.required && <span className="text-[#f87171]"> *</span>}
+              </span>
+              <input
+                aria-label={inp.label?.trim() || inp.name}
+                disabled={running}
+                placeholder={inp.description ?? ''}
+                className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE] disabled:opacity-50"
+                value={values[inp.name] ?? ''}
+                onChange={e => setValues(v => ({ ...v, [inp.name]: e.target.value }))}
+              />
+            </label>
+          ))}
+          {missing.length > 0 && (
+            <span className="text-xs text-[#f87171]" data-testid="workflow-missing-inputs">
+              Required: {missing.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <button
           onClick={onRun}
-          disabled={running}
+          title={missing.length ? `Fill in required input(s): ${missing.join(', ')}` : 'Run this workflow'}
+          disabled={running || missing.length > 0}
           className="px-4 py-1.5 rounded text-sm bg-[#22c55e] text-[#0b0b0b] font-medium hover:bg-[#4ade80] disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <i className="fa-solid fa-play mr-1.5"></i>Run

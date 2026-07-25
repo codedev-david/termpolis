@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+﻿import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { WorkflowOverlayBody } from './WorkflowOverlayBody'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -29,38 +29,29 @@ describe('WorkflowOverlayBody', () => {
     expect((window as any).termpolis.readWorkflow).not.toHaveBeenCalled()
   })
 
-  it('new mode seeds the Designer from a starter template instead of a blank', () => {
-    render(
-      <WorkflowOverlayBody
-        view={{
-          mode: 'new',
-          seed: {
-            id: 'claude-dev',
-            name: 'Claude Code + Shell',
-            version: 1,
-            trigger: { type: 'manual' },
-            steps: [{ id: 'claude', type: 'command', name: 'Claude Code', source: 'inline', command: 'claude', visible: true }],
-          },
-        }}
-        cwd="/p"
-        onSaved={vi.fn()}
-      />,
+  it('new mode defaults to project scope so a new workflow belongs to this repo', () => {
+    render(<WorkflowOverlayBody view={{ mode: 'new' }} cwd="/p" onSaved={vi.fn()} />)
+    expect(screen.getByTitle(/Saved in this repo/).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTitle(/offered in every project/).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('edit mode reads from the store the row came from (global vs project)', async () => {
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'global' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    await waitFor(() =>
+      expect((window as any).termpolis.readWorkflow).toHaveBeenCalledWith('/p', 'wf1', 'global'),
     )
-    // The name comes from the seed (not the blank "New workflow"), proving the seed was used.
-    expect((screen.getByLabelText('Workflow name') as HTMLInputElement).value).toBe('Claude Code + Shell')
-    expect((window as any).termpolis.readWorkflow).not.toHaveBeenCalled()
   })
 
   it('edit mode loads the workflow by id and shows its name in the Designer', async () => {
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
-    expect((window as any).termpolis.readWorkflow).toHaveBeenCalledWith('/p', 'wf1')
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    expect((window as any).termpolis.readWorkflow).toHaveBeenCalledWith('/p', 'wf1', 'project')
     await waitFor(() =>
       expect((screen.getByLabelText('Workflow name') as HTMLInputElement).value).toBe('Deploy'),
     )
   })
 
   it('switching to the Run tab mounts the Runner timeline', async () => {
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
     await waitFor(() => screen.getByLabelText('Workflow name'))
     expect(screen.queryByTestId('step-node-a')).toBeNull()
     fireEvent.click(screen.getByLabelText('Run tab'))
@@ -68,7 +59,7 @@ describe('WorkflowOverlayBody', () => {
   })
 
   it('shows a hint (and does not read from disk) when there is no project directory', () => {
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd={null} onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd={null} onSaved={vi.fn()} />)
     expect(screen.getByText(/open a terminal/i)).toBeTruthy()
     expect((window as any).termpolis.readWorkflow).not.toHaveBeenCalled()
   })
@@ -77,7 +68,7 @@ describe('WorkflowOverlayBody', () => {
     ;(window as any).termpolis.readWorkflow = vi
       .fn()
       .mockResolvedValue({ success: false, error: 'Workflow not found' })
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'missing' }} cwd="/p" onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'missing' }} cwd="/p" onSaved={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('Workflow not found')).toBeTruthy())
   })
 
@@ -87,7 +78,7 @@ describe('WorkflowOverlayBody', () => {
         r9: { runId: 'r9', workflowId: 'wf1', status: 'running', steps: [], startedAt: 1 },
       } as any,
     })
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
     await waitFor(() => screen.getByLabelText('Workflow name'))
     fireEvent.click(screen.getByLabelText('Run tab'))
     // The Runner only renders Cancel when its bound run is 'running'.
@@ -105,7 +96,7 @@ describe('WorkflowOverlayBody', () => {
         rNew: { runId: 'rNew', workflowId: 'wf1', status: 'running', steps: [], startedAt: 99 },
       } as any,
     })
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
     await waitFor(() => screen.getByLabelText('Workflow name'))
     fireEvent.click(screen.getByLabelText('Run tab'))
     expect(screen.getByText('Cancel')).toBeTruthy()
@@ -113,14 +104,14 @@ describe('WorkflowOverlayBody', () => {
 
   it('propagates Designer Save through onSaved', async () => {
     const onSaved = vi.fn()
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={onSaved} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={onSaved} />)
     await waitFor(() => screen.getByLabelText('Workflow name'))
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
   })
 
   it('preserves unsaved Designer edits when toggling to the Run tab and back', async () => {
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
     await waitFor(() => screen.getByLabelText('Workflow name'))
     fireEvent.change(screen.getByLabelText('Workflow name'), { target: { value: 'Renamed' } })
     fireEvent.click(screen.getByLabelText('Run tab'))
@@ -148,13 +139,13 @@ describe('WorkflowOverlayBody', () => {
       .fn()
       .mockResolvedValueOnce({ success: true, data: oneStep }) // initial mount load
       .mockResolvedValue({ success: true, data: twoStep }) // every read after Save
-    render(<WorkflowOverlayBody view={{ mode: 'edit', id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
+    render(<WorkflowOverlayBody view={{ mode: 'edit' as const, scope: 'project' as const, id: 'wf1' }} cwd="/p" onSaved={vi.fn()} />)
     await waitFor(() => screen.getByLabelText('Workflow name'))
     // Run tab before saving shows only the single mounted step.
     fireEvent.click(screen.getByLabelText('Run tab'))
     expect(screen.getByTestId('step-node-a')).toBeTruthy()
     expect(screen.queryByTestId('step-node-b')).toBeNull()
-    // Save (from the Designer) triggers the disk re-read → wf gains step b.
+    // Save (from the Designer) triggers the disk re-read â†’ wf gains step b.
     fireEvent.click(screen.getByLabelText('Design tab'))
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect((window as any).termpolis.readWorkflow).toHaveBeenCalledTimes(2))

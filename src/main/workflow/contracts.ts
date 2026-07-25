@@ -1,6 +1,8 @@
 // contracts.ts — WorkflowRunEvent lives in renderer/src/types (single source); re-export for main-side ergonomics.
 import type { WorkflowRunEvent } from '../../renderer/src/types'
+import type { ExprScope } from './workflowExpr'
 export type { WorkflowRunEvent }
+export type { ExprScope }
 
 export interface CommandRunSpec { stepId: string; command: string; shell: string; cwd: string; timeoutMs: number; visible: boolean }
 export interface CommandRunResult { exitCode: number; output: string; timedOut?: boolean }
@@ -16,4 +18,8 @@ export interface Timer { sleep(ms: number): Promise<void> }
 export interface EngineDeps {
   terminal: TerminalRunner; agent: AgentRunner; tools: ToolInvoker; timer: Timer
   now: () => number; newRunId: () => string; emit: (e: WorkflowRunEvent) => void
+  /** Per-run `${inputs.*}` / `${project.*}` values. Lives on the deps rather than
+   *  a threaded parameter because it is constant for the whole run, exactly like
+   *  the runners and the clock. Absent = step results are the only references. */
+  scope?: ExprScope
 }

@@ -1,6 +1,32 @@
 import { useState } from 'react'
-import type { Workflow, WorkflowStep, WorkflowStepType, WorkflowTriggerType } from '../../types'
+import type {
+  Workflow,
+  WorkflowInput,
+  WorkflowScope,
+  WorkflowStep,
+  WorkflowStepType,
+  WorkflowTriggerType,
+} from '../../types'
 import { StepEditor } from './stepEditors'
+
+// Where the YAML lives. Global workflows are offered in every project; project
+// workflows travel with the repo under .termpolis/workflows.
+const SCOPE_CHOICES: { scope: WorkflowScope; label: string; icon: string; title: string }[] = [
+  { scope: 'project', label: 'This project', icon: 'fa-solid fa-diagram-project', title: 'Saved in this repo under .termpolis/workflows — travels with the code' },
+  { scope: 'global', label: 'Global', icon: 'fa-solid fa-earth-americas', title: 'Saved once and offered in every project you open' },
+]
+
+/** Input names become `${inputs.NAME}` refs, so they follow identifier rules. */
+export const INPUT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** A fresh, valid-but-empty input row. Named `input1`, `input2`, … so a row
+ *  added with one click already has a usable (unique) reference name. */
+export function nextInput(existing: WorkflowInput[]): WorkflowInput {
+  const taken = new Set(existing.map(i => i.name))
+  let n = existing.length + 1
+  while (taken.has(`input${n}`)) n++
+  return { name: `input${n}`, label: '', default: '', required: false }
+}
 
 // The trigger palette. Every type here is live: picking one arms the workflow
 // in the main-process supervisor the next time it's saved.
@@ -100,9 +126,14 @@ export function WorkflowDesigner({
 }: {
   workflow: Workflow
   cwd: string
-  onSaved: () => void
+  /** Receives the workflow exactly as persisted, so the caller can follow a
+   *  scope change (the file has moved stores by the time this fires). */
+  onSaved: (saved: Workflow) => void
 }) {
   const [wf, setWf] = useState<Workflow>(workflow)
+  // Where the file was loaded from. Save sends this as `fromScope` so flipping
+  // the scope MOVES the workflow instead of leaving a copy in the old store.
+  const [fromScope] = useState<WorkflowScope>(workflow.scope ?? 'project')
   const [pickerGap, setPickerGap] = useState<number | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<string | null>(null)
@@ -136,12 +167,26 @@ export function WorkflowDesigner({
 
   const toggleCollapse = (id: string): void => setCollapsed(c => ({ ...c, [id]: !c[id] }))
 
+  const inputs = wf.inputs ?? []
+
+  const updateInput = (index: number, patch: Partial<WorkflowInput>): void =>
+    setWf(w => ({
+      ...w,
+      inputs: (w.inputs ?? []).map((inp, i) => (i === index ? { ...inp, ...patch } : inp)),
+    }))
+
+  const removeInput = (index: number): void =>
+    setWf(w => ({ ...w, inputs: (w.inputs ?? []).filter((_, i) => i !== index) }))
+
+  const addInput = (): void =>
+    setWf(w => ({ ...w, inputs: [...(w.inputs ?? []), nextInput(w.inputs ?? [])] }))
+
   const onSave = async (): Promise<void> => {
     setSaving(true)
     setError(null)
-    const res = await window.termpolis.saveWorkflow(cwd, wf)
+    const res = await window.termpolis.saveWorkflow(cwd, wf, fromScope)
     setSaving(false)
-    if (res.success) onSaved()
+    if (res.success) onSaved(wf)
     else setError(res.error ?? 'Failed to save workflow')
   }
 
@@ -185,6 +230,112 @@ export function WorkflowDesigner({
           value={wf.name}
           onChange={e => setWf(w => ({ ...w, name: e.target.value }))}
         />
+      </div>
+
+      {/* Where it lives + how it files in the sidebar. Scope decides which store
+          the YAML is written to; category is only a sidebar folder label. */}
+      <div className="mb-3 rounded border border-[#3c3c3c] bg-[#252526] p-3">
+        <span className="block text-[10px] uppercase tracking-wider text-[#9ca3af] mb-2">Availability</span>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {SCOPE_CHOICES.map(s => (
+            <button
+              key={s.scope}
+              type="button"
+              title={s.title}
+              aria-pressed={(wf.scope ?? 'project') === s.scope}
+              onClick={() => setWf(w => ({ ...w, scope: s.scope }))}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border ${
+                (wf.scope ?? 'project') === s.scope
+                  ? 'border-[#22D3EE] text-[#22D3EE] bg-[#22d3ee1a]'
+                  : 'border-[#3c3c3c] text-[#9ca3af] hover:text-[#d4d4d4]'
+              }`}
+            >
+              <i className={s.icon}></i>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <span className="block text-[10px] uppercase tracking-wider text-[#9ca3af] mb-1">Category</span>
+        <input
+          aria-label="Category"
+          placeholder="Optional — groups this workflow into a sidebar folder"
+          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+          value={wf.category ?? ''}
+          onChange={e => setWf(w => ({ ...w, category: e.target.value }))}
+        />
+      </div>
+
+      {/* Inputs make one workflow reusable: each becomes a `${inputs.NAME}`
+          reference usable in any step field, prompted for at run time. */}
+      <div className="mb-3 rounded border border-[#3c3c3c] bg-[#252526] p-3">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-wider text-[#9ca3af]">Inputs</span>
+          <button
+            type="button"
+            onClick={addInput}
+            title="Add an input"
+            className="text-[#22D3EE] text-xs hover:underline"
+          >
+            <i className="fa-solid fa-plus mr-1"></i>Add input
+          </button>
+        </div>
+        {inputs.length === 0 ? (
+          <p className="text-xs text-[#6b7280]">
+            No inputs. Add one to reuse this workflow with different values — reference it as{' '}
+            <code className="text-[#9ca3af]">{'${inputs.name}'}</code> in any step, alongside{' '}
+            <code className="text-[#9ca3af]">{'${project.cwd}'}</code>,{' '}
+            <code className="text-[#9ca3af]">{'${project.name}'}</code> and{' '}
+            <code className="text-[#9ca3af]">{'${project.branch}'}</code>.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {inputs.map((inp, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2">
+                <input
+                  aria-label={`Input ${i + 1} name`}
+                  placeholder="name"
+                  className={`w-28 bg-[#2d2d2d] border rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE] ${
+                    INPUT_NAME_RE.test(inp.name) ? 'border-[#3c3c3c]' : 'border-[#ef4444]'
+                  }`}
+                  value={inp.name}
+                  onChange={e => updateInput(i, { name: e.target.value })}
+                />
+                <input
+                  aria-label={`Input ${i + 1} label`}
+                  placeholder="Prompt shown at run time"
+                  className="flex-1 min-w-[8rem] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+                  value={inp.label ?? ''}
+                  onChange={e => updateInput(i, { label: e.target.value })}
+                />
+                <input
+                  aria-label={`Input ${i + 1} default`}
+                  placeholder="default"
+                  className="w-28 bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+                  value={inp.default ?? ''}
+                  onChange={e => updateInput(i, { default: e.target.value })}
+                />
+                <label className="flex items-center gap-1 text-xs text-[#9ca3af]">
+                  <input
+                    type="checkbox"
+                    aria-label={`Input ${i + 1} required`}
+                    checked={!!inp.required}
+                    onChange={e => updateInput(i, { required: e.target.checked })}
+                  />
+                  Required
+                </label>
+                <button
+                  type="button"
+                  aria-label={`Remove input ${i + 1}`}
+                  title="Remove input"
+                  onClick={() => removeInput(i)}
+                  className="text-[#9ca3af] hover:text-[#ef4444] text-xs px-1"
+                >
+                  <i className="fa-solid fa-trash"></i>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Trigger card — picking anything but Manual reveals that trigger's

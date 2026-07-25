@@ -1,4 +1,4 @@
-import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+﻿import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
 
@@ -26,7 +26,7 @@ test.afterAll(async () => {
   if (app) await app.close()
 })
 
-// ── App Launch ──────────────────────────────────────
+// â”€â”€ App Launch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('app launches and shows title bar', async () => {
   const titleBar = page.locator('text=Termpolis')
@@ -41,13 +41,13 @@ test('welcome screen shows when no terminals are open', async () => {
   if (isVisible) {
     await expect(welcome).toBeVisible()
   } else {
-    // Terminals were restored from session — that's also valid
+    // Terminals were restored from session â€” that's also valid
     const sidebar = page.locator('text=TERMINALS')
     await expect(sidebar.first()).toBeVisible()
   }
 })
 
-// ── Sidebar ─────────────────────────────────────────
+// â”€â”€ Sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('sidebar shows icon bar with all buttons', async () => {
   // Settings gear icon
@@ -62,8 +62,8 @@ test('sidebar shows icon bar with all buttons', async () => {
   const git = page.locator('button[title="Git Panel"]')
   await expect(git).toBeVisible()
 
-  // Workflows sidebar section — New Workflow create button
-  const workflows = page.locator('button[title="New Workflow"]')
+  // Workflows sidebar section â€” New Workflow create button
+  const workflows = page.locator('button[title="Start Workflow"]')
   await expect(workflows).toBeVisible()
 
   // Swarm button
@@ -79,7 +79,7 @@ test('sidebar shows AI Agents section', async () => {
   const aiAgents = page.locator('text=AI Agents').first()
   const isVisible = await aiAgents.isVisible().catch(() => false)
   if (!isVisible) {
-    // May be collapsed — look for the chevron
+    // May be collapsed â€” look for the chevron
     const chevron = page.locator('button:has-text("AI Agents")')
     if (await chevron.isVisible()) {
       await chevron.click()
@@ -105,7 +105,7 @@ test('sidebar shows Add Terminal button', async () => {
   await expect(addBtn).toBeVisible()
 })
 
-// ── Sidebar Collapse ────────────────────────────────
+// â”€â”€ Sidebar Collapse â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('sidebar collapses and expands', async () => {
   const collapse = page.locator('button[title="Collapse sidebar"]')
@@ -125,7 +125,7 @@ test('sidebar collapses and expands', async () => {
   await expect(settings).toBeVisible()
 })
 
-// ── Terminal Creation ───────────────────────────────
+// â”€â”€ Terminal Creation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Add Terminal modal opens and has all fields', async () => {
   const addBtn = page.locator('button:has-text("+ Add Terminal")').first()
@@ -174,7 +174,7 @@ test('can create a new terminal', async () => {
   await expect(terminalTab).toBeVisible()
 })
 
-// ── Settings ────────────────────────────────────────
+// â”€â”€ Settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Settings panel opens and shows keybindings', async () => {
   const settings = page.locator('button[title="Settings"]')
@@ -202,7 +202,7 @@ test('Settings panel opens and shows keybindings', async () => {
   await page.waitForTimeout(500)
 })
 
-// ── Command Palette ─────────────────────────────────
+// â”€â”€ Command Palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Command Palette opens with Ctrl+K', async () => {
   await page.keyboard.press('Control+k')
@@ -221,7 +221,7 @@ test('Command Palette opens with Ctrl+K', async () => {
   await page.waitForTimeout(300)
 })
 
-// ── Git Panel ──────────────────────────────────────
+// â”€â”€ Git Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Git Panel opens from sidebar', async () => {
   const git = page.locator('button[title="Git Panel"]')
@@ -244,17 +244,15 @@ test('Git Panel opens from sidebar', async () => {
   await page.waitForTimeout(300)
 })
 
-// ── Workflows overlay ───────────────────────────────
+// â”€â”€ Workflows overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Workflow overlay opens and closes', async () => {
   // The retired toolbar Workflows icon was replaced by the permanent sidebar
   // section. New Workflow opens the author/run overlay; the X button
-  // (title="Close workflow") closes it — the full-screen overlay has no
+  // (title="Close workflow") closes it â€” the full-screen overlay has no
   // Escape/backdrop dismiss.
-  const newWf = page.locator('button[title="New Workflow"]').first()
+  const newWf = page.locator('button[title="Start Workflow"]').first()
   await newWf.click()
-  // "+" now opens a create menu; pick "Blank workflow" to open the overlay.
-  await page.getByRole('menuitem', { name: 'Blank workflow' }).click()
   await page.waitForTimeout(500)
 
   const dlg = page.locator('[role="dialog"][aria-label="Workflow"]')
@@ -264,7 +262,7 @@ test('Workflow overlay opens and closes', async () => {
   await expect(dlg).toBeHidden()
 })
 
-// ── Swarm Dashboard ─────────────────────────────────
+// â”€â”€ Swarm Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.skip('Swarm Dashboard modal opens', async () => {
   // Ensure no modals are blocking and sidebar is expanded
@@ -285,7 +283,7 @@ test.skip('Swarm Dashboard modal opens', async () => {
   await page.waitForTimeout(300)
 })
 
-// ── Status Bar ──────────────────────────────────────
+// â”€â”€ Status Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('status bar shows MCP indicator', async () => {
   const mcp = page.locator('text=MCP: localhost:9315')
@@ -302,7 +300,7 @@ test('status bar shows Sponsor link', async () => {
   await expect(sponsor).toBeVisible()
 })
 
-// ── Help Modal ──────────────────────────────────────
+// â”€â”€ Help Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Help modal opens and shows all sections', async () => {
   // Dismiss any open modals/overlays
@@ -346,7 +344,7 @@ test('Help modal opens and shows all sections', async () => {
   await page.waitForTimeout(300)
 })
 
-// ── MCP Server ──────────────────────────────────────
+// â”€â”€ MCP Server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('MCP server is running and responds to health check', async () => {
   const { execSync } = await import('child_process')
@@ -356,12 +354,12 @@ test('MCP server is running and responds to health check', async () => {
     expect(health.status).toBe('ok')
     expect(health.tools).toBe(14)
   } catch {
-    // MCP server might not be running in test environment — skip
+    // MCP server might not be running in test environment â€” skip
     test.skip()
   }
 })
 
-// ── Terminal Status Bar ─────────────────────────────
+// â”€â”€ Terminal Status Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('terminal has a blue status bar', async () => {
   // If there's a terminal open, check for status bar
@@ -372,7 +370,7 @@ test('terminal has a blue status bar', async () => {
   }
 })
 
-// ── Right-click Context Menu ────────────────────────
+// â”€â”€ Right-click Context Menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('right-click in terminal shows context menu', async () => {
   // Find the terminal container

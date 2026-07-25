@@ -168,11 +168,14 @@ export interface ProxyTotalsView {
 export interface TermpolisAPI {
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
-  listWorkflows: (cwd: string) => Promise<IpcResponse<{ id: string; name: string }[]>>
-  readWorkflow: (cwd: string, id: string) => Promise<IpcResponse<Workflow>>
-  saveWorkflow: (cwd: string, workflow: Workflow) => Promise<IpcResponse<void>>
-  deleteWorkflow: (cwd: string, id: string) => Promise<IpcResponse<void>>
-  runWorkflow: (cwd: string, id: string) => Promise<IpcResponse<{ runId: string }>>
+  /** Both stores in one call — global workflows first, then this project's. */
+  listWorkflows: (cwd: string) => Promise<IpcResponse<WorkflowListItem[]>>
+  readWorkflow: (cwd: string, id: string, scope?: WorkflowScope) => Promise<IpcResponse<Workflow>>
+  /** `fromScope` is the scope the workflow was loaded with; passing it lets the
+   *  main process MOVE the file when the user changes scope in the designer. */
+  saveWorkflow: (cwd: string, workflow: Workflow, fromScope?: WorkflowScope) => Promise<IpcResponse<void>>
+  deleteWorkflow: (cwd: string, id: string, scope?: WorkflowScope) => Promise<IpcResponse<void>>
+  runWorkflow: (cwd: string, id: string, scope?: WorkflowScope, inputs?: Record<string, string>) => Promise<IpcResponse<{ runId: string }>>
   cancelWorkflow: (runId: string) => Promise<IpcResponse<void>>
   /** Tell main which project the sidebar is showing so its automatic triggers arm. */
   watchWorkflowProject: (cwd: string) => Promise<IpcResponse<void>>
@@ -607,9 +610,34 @@ export interface ControlStep {
 }
 export type WorkflowStep = CommandStep | AgentStep | SkillStep | ControlStep
 
+/** Where a workflow is stored — and therefore where it shows up.
+ *  'project' lives in <cwd>/.termpolis/workflows and belongs to that repo.
+ *  'global'  lives in the user-data dir and is offered in every project. */
+export type WorkflowScope = 'project' | 'global'
+
+/** A value the user supplies when the workflow runs, so one workflow can be
+ *  reused with different arguments. Referenced as `${inputs.<name>}` in any
+ *  step field, and in `when` / branch / loop conditions. */
+export interface WorkflowInput {
+  name: string
+  label?: string
+  description?: string
+  default?: string
+  required?: boolean
+}
+
+/** Sidebar row: enough to group and label without reading every file. */
+export interface WorkflowListItem { id: string; name: string; category?: string; scope?: WorkflowScope }
+
 export interface Workflow {
   id: string; name: string; description?: string; version: 1
   trigger: WorkflowTrigger; steps: WorkflowStep[]
+  /** Free-text grouping label for the sidebar, e.g. 'Build' or 'Release/Nightly'. */
+  category?: string
+  inputs?: WorkflowInput[]
+  /** Derived from the store the workflow was read out of — never persisted in
+   *  the YAML, so moving a file between stores changes its scope. */
+  scope?: WorkflowScope
 }
 
 export interface StepResult {
@@ -619,6 +647,11 @@ export interface StepResult {
 export interface WorkflowRun {
   runId: string; workflowId: string; status: RunStatus
   steps: StepResult[]; startedAt: number; endedAt?: number
+  /** Which project this run happened in. A global workflow keeps one shared
+   *  history, so each entry has to say where it ran. */
+  cwd?: string
+  /** The `${inputs.*}` values this run was given, so history is reproducible. */
+  inputs?: Record<string, string>
 }
 
 export type WorkflowRunEvent =

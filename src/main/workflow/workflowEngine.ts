@@ -32,7 +32,7 @@ export async function runWorkflow(wf: Workflow, deps: EngineDeps): Promise<Workf
     if (overBudget()) { record({ stepId: '__runaway__', status: 'failed', output: `aborted after ${MAX_STEP_EXECUTIONS} step executions (possible infinite loop)` }); hardFailed = true; break }
     if (cancelled.has(runId)) { record({ stepId: wf.steps[i].id, status: 'cancelled', output: '' }); i++; continue }
     const step = wf.steps[i]
-    const gated = step.when !== undefined ? !evalCondition(step.when, results) : hardFailed
+    const gated = step.when !== undefined ? !evalCondition(step.when, results, deps.scope) : hardFailed
     if (gated) { record({ stepId: step.id, status: 'skipped', output: '' }); i++; continue }
 
     deps.emit({ type: 'step:started', runId, stepId: step.id, at: deps.now() })
@@ -42,11 +42,11 @@ export async function runWorkflow(wf: Workflow, deps: EngineDeps): Promise<Workf
 
     let result: StepResult
     let jumpTo: string | undefined
-    if (step.type === 'command') result = await executeCommandStep(step, results, deps.terminal, onChunk)
-    else if (step.type === 'agent') result = await executeAgentStep(step, results, deps.agent, onChunk)
-    else if (step.type === 'skill') result = await executeSkillStep(step, results, deps.tools)
+    if (step.type === 'command') result = await executeCommandStep(step, results, deps.terminal, onChunk, deps.scope)
+    else if (step.type === 'agent') result = await executeAgentStep(step, results, deps.agent, onChunk, deps.scope)
+    else if (step.type === 'skill') result = await executeSkillStep(step, results, deps.tools, deps.scope)
     else {
-      const c = await executeControlStep(step, results, deps.timer, (e) => deps.emit({ type: 'step:output', runId, stepId: step.id, chunk: e.chunk || '' }))
+      const c = await executeControlStep(step, results, deps.timer, (e) => deps.emit({ type: 'step:output', runId, stepId: step.id, chunk: e.chunk || '' }), deps.scope)
       result = { stepId: step.id, status: c.status, output: c.output }
       jumpTo = c.goto
       if (c.loop) { record(result); i = await runLoop(wf, i, c.loop, results, deps, runId, overBudget); continue }
@@ -74,12 +74,12 @@ async function runLoop(
   const prev = wf.steps[loopIdx - 1] as WorkflowStep | undefined
   if (!prev) return loopIdx + 1
   for (let n = 1; n < loop.maxIterations; n++) {
-    if (loop.until && evalCondition(loop.until, results)) break
+    if (loop.until && evalCondition(loop.until, results, deps.scope)) break
     if (overBudget()) break // share the run-wide budget so a nested loop can't hang either
     const r = await runOne(prev, results, deps, runId, n)
     results[prev.id] = r
     run_push(deps, runId, r)
-    if (loop.until && evalCondition(loop.until, results)) break
+    if (loop.until && evalCondition(loop.until, results, deps.scope)) break
   }
   return loopIdx + 1
 }
@@ -91,10 +91,10 @@ function run_push(deps: EngineDeps, runId: string, r: StepResult) {
 async function runOne(step: WorkflowStep, results: Record<string, StepResult>, deps: EngineDeps, runId: string, iteration: number): Promise<StepResult> {
   const onChunk = (chunk: string) => deps.emit({ type: 'step:output', runId, stepId: step.id, chunk })
   let r: StepResult
-  if (step.type === 'command') r = await executeCommandStep(step, results, deps.terminal, onChunk)
-  else if (step.type === 'agent') r = await executeAgentStep(step, results, deps.agent, onChunk)
-  else if (step.type === 'skill') r = await executeSkillStep(step, results, deps.tools)
-  else { const c = await executeControlStep(step, results, deps.timer, () => {}); r = { stepId: step.id, status: c.status, output: c.output } }
+  if (step.type === 'command') r = await executeCommandStep(step, results, deps.terminal, onChunk, deps.scope)
+  else if (step.type === 'agent') r = await executeAgentStep(step, results, deps.agent, onChunk, deps.scope)
+  else if (step.type === 'skill') r = await executeSkillStep(step, results, deps.tools, deps.scope)
+  else { const c = await executeControlStep(step, results, deps.timer, () => {}, deps.scope); r = { stepId: step.id, status: c.status, output: c.output } }
   r.iteration = iteration
   return r
 }

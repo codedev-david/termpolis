@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useTerminalStore } from '../../store/terminalStore'
-import type { Workflow } from '../../types'
+import type { Workflow, WorkflowScope } from '../../types'
 import { WorkflowDesigner } from './WorkflowDesigner'
 import { WorkflowRunner } from './WorkflowRunner'
 
@@ -15,12 +15,23 @@ import { WorkflowRunner } from './WorkflowRunner'
 // is never a second subscriber duplicating streamed output.
 // ---------------------------------------------------------------------------
 
-export type WorkflowOverlayView = { mode: 'new'; seed?: Workflow } | { mode: 'edit'; id: string }
+export type WorkflowOverlayView =
+  | { mode: 'new' }
+  | { mode: 'edit'; id: string; scope: WorkflowScope }
 
 /** A blank manual-trigger workflow for the "new" path. `crypto.randomUUID` is a
- *  renderer-only id mint — the deterministic engine never sees this call. */
+ *  renderer-only id mint — the deterministic engine never sees this call.
+ *  Defaults to project scope: a new workflow belongs to the repo you're in
+ *  until you deliberately promote it to global in the designer. */
 function freshWorkflow(): Workflow {
-  return { id: crypto.randomUUID(), name: 'New workflow', version: 1, trigger: { type: 'manual' }, steps: [] }
+  return {
+    id: crypto.randomUUID(),
+    name: 'New workflow',
+    version: 1,
+    trigger: { type: 'manual' },
+    steps: [],
+    scope: 'project',
+  }
 }
 
 const tabCls = (active: boolean): string =>
@@ -39,11 +50,8 @@ export function WorkflowOverlayBody({
   cwd: string | null
   onSaved: () => void
 }) {
-  // New mode seeds a workflow: a starter template (re-id'd to a fresh instance so
-  // saving never overwrites another) when one is supplied, otherwise a blank one.
-  const [wf, setWf] = useState<Workflow | null>(() =>
-    view.mode === 'new' ? (view.seed ? { ...view.seed, id: crypto.randomUUID() } : freshWorkflow()) : null,
-  )
+  // New mode starts from a blank workflow; edit mode loads from disk below.
+  const [wf, setWf] = useState<Workflow | null>(() => (view.mode === 'new' ? freshWorkflow() : null))
   const [tab, setTab] = useState<'design' | 'run'>('design')
   const [loadError, setLoadError] = useState<string | null>(null)
   const activeRuns = useTerminalStore(useShallow(s => s.activeRuns))
@@ -56,7 +64,7 @@ export function WorkflowOverlayBody({
     let alive = true
     setWf(null)
     setLoadError(null)
-    void window.termpolis.readWorkflow(cwd, view.id).then(res => {
+    void window.termpolis.readWorkflow(cwd, view.id, view.scope).then(res => {
       if (!alive) return
       if (res.success && res.data) setWf(res.data)
       else setLoadError(res.error ?? 'Workflow not found')
@@ -95,9 +103,11 @@ export function WorkflowOverlayBody({
   // execute (workflow:run loads the saved YAML by id). Without this, a freshly
   // authored workflow's Run tab would show an empty timeline even though the
   // saved workflow ran, and later edits would drift from what actually runs.
-  const handleSaved = (): void => {
+  // `saved` comes from the Designer, so re-reading follows a scope change (the
+  // file has already moved stores by the time this runs).
+  const handleSaved = (saved: Workflow): void => {
     onSaved()
-    void window.termpolis.readWorkflow(cwd, wf.id).then(res => {
+    void window.termpolis.readWorkflow(cwd, saved.id, saved.scope ?? 'project').then(res => {
       if (res.success && res.data) setWf(res.data)
     })
   }

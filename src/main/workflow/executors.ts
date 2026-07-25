@@ -1,5 +1,6 @@
 import type { AgentStep, CommandStep, ControlStep, SkillStep, StepResult, StepStatus } from '../../renderer/src/types'
 import type { AgentRunner, TerminalRunner, ToolInvoker, Timer } from './contracts'
+import type { ExprScope } from './workflowExpr'
 import { interpolate, evalCondition } from './workflowExpr'
 
 type Emit = (e: { chunk: string }) => void
@@ -10,7 +11,7 @@ type Results = Record<string, StepResult>
 export const MAX_LOOP_ITERATIONS = 1000
 
 export async function executeControlStep(
-  step: ControlStep, results: Results, timer: Timer, emit: Emit,
+  step: ControlStep, results: Results, timer: Timer, emit: Emit, scope?: ExprScope,
 ): Promise<{ status: StepStatus; output: string; goto?: string; loop?: { maxIterations: number; until?: string } }> {
   const c = step.config
   switch (step.action) {
@@ -19,7 +20,7 @@ export async function executeControlStep(
       return { status: 'succeeded', output: '' }
     }
     case 'branch': {
-      const hit = evalCondition(String(c.condition ?? ''), results)
+      const hit = evalCondition(String(c.condition ?? ''), results, scope)
       return { status: 'succeeded', output: hit ? 'branch taken' : 'branch skipped', goto: hit ? String(c.goto) : undefined }
     }
     case 'loop': {
@@ -28,7 +29,7 @@ export async function executeControlStep(
       return { status: 'succeeded', output: '', loop: { maxIterations, until: c.until ? String(c.until) : undefined } }
     }
     case 'notify': {
-      const msg = interpolate(String(c.message ?? ''), results)
+      const msg = interpolate(String(c.message ?? ''), results, scope)
       emit({ chunk: msg })
       return { status: 'succeeded', output: msg }
     }
@@ -47,15 +48,23 @@ function fileCommand(scriptPath: string, shell?: string): string {
   return `${shell || 'bash'} ${scriptPath}`
 }
 
+// A step with no explicit cwd runs in the project the run belongs to. That is
+// what makes a global workflow reusable: the definition is shared, the working
+// directory comes from wherever you launched it.
+function stepCwd(raw: string | undefined, results: Results, scope?: ExprScope): string {
+  const explicit = interpolate(raw || '', results, scope).trim()
+  return explicit || scope?.project?.cwd || ''
+}
+
 export async function executeCommandStep(
-  step: CommandStep, results: Results, terminal: TerminalRunner, onChunk?: (s: string) => void,
+  step: CommandStep, results: Results, terminal: TerminalRunner, onChunk?: (s: string) => void, scope?: ExprScope,
 ): Promise<StepResult> {
   const shell = step.shell || 'bash'
   const command = step.source === 'file'
-    ? fileCommand(step.scriptPath || '', step.shell)
-    : interpolate(step.command || '', results)
+    ? fileCommand(interpolate(step.scriptPath || '', results, scope), step.shell)
+    : interpolate(step.command || '', results, scope)
   const res = await terminal.run(
-    { stepId: step.id, command, shell, cwd: step.cwd || '', timeoutMs: step.timeoutMs ?? 600_000, visible: step.visible ?? true },
+    { stepId: step.id, command, shell, cwd: stepCwd(step.cwd, results, scope), timeoutMs: step.timeoutMs ?? 600_000, visible: step.visible ?? true },
     onChunk,
   )
   return {
@@ -68,20 +77,20 @@ export async function executeCommandStep(
 }
 
 export async function executeAgentStep(
-  step: AgentStep, results: Results, agent: AgentRunner, onChunk?: (s: string) => void,
+  step: AgentStep, results: Results, agent: AgentRunner, onChunk?: (s: string) => void, scope?: ExprScope,
 ): Promise<StepResult> {
   const res = await agent.run({
-    stepId: step.id, agent: step.agent, prompt: interpolate(step.prompt, results),
-    cwd: step.cwd || '', idleMs: step.idleMs ?? 8_000, timeoutMs: step.timeoutMs ?? 900_000,
+    stepId: step.id, agent: step.agent, prompt: interpolate(step.prompt, results, scope),
+    cwd: stepCwd(step.cwd, results, scope), idleMs: step.idleMs ?? 8_000, timeoutMs: step.timeoutMs ?? 900_000,
     doneMarker: step.doneMarker,
   }, onChunk)
   return { stepId: step.id, status: res.ok ? 'succeeded' : 'failed', output: tail(res.output), error: res.error }
 }
 
-export async function executeSkillStep(step: SkillStep, results: Results, tools: ToolInvoker): Promise<StepResult> {
+export async function executeSkillStep(step: SkillStep, results: Results, tools: ToolInvoker, scope?: ExprScope): Promise<StepResult> {
   const args: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(step.args || {})) {
-    args[k] = typeof v === 'string' ? interpolate(v, results) : v
+    args[k] = typeof v === 'string' ? interpolate(v, results, scope) : v
   }
   const res = await tools.invoke(step.tool, args, step.timeoutMs ?? 120_000)
   return { stepId: step.id, status: res.ok ? 'succeeded' : 'failed', output: tail(res.output), error: res.error }

@@ -20,8 +20,8 @@
 import { join } from 'path'
 import { readFileSync } from 'fs'
 import { forEachBufferLine } from '../fileLines'
-import type { Workflow } from '../../renderer/src/types'
-import { workflowsDir, listWorkflowsFull, type FsLike } from './workflowStore'
+import type { Workflow, WorkflowScope } from '../../renderer/src/types'
+import { workflowsDir, globalWorkflowsDir, listWorkflowsFull, type FsLike } from './workflowStore'
 import { parseCron, dueSince, MAX_CATCHUP_MS, type CronFields } from './cron'
 
 export interface WatchHandle {
@@ -41,8 +41,13 @@ export interface TriggerDeps {
   /** Workspace-trust gate â€” an untrusted project never auto-runs anything. */
   isTrusted(cwd: string): boolean
   /** Start a run. Returns a promise when the caller has one, so the supervisor
-   *  can hold the in-flight guard until the run actually finishes. */
-  fire(cwd: string, workflowId: string, reason: string): unknown
+   *  can hold the in-flight guard until the run actually finishes. `scope` says
+   *  which store the definition lives in; the run still happens in `cwd`. */
+  fire(cwd: string, workflowId: string, reason: string, scope?: WorkflowScope): unknown
+  /** Root of the global store (`app.getPath('userData')`). When set, every
+   *  watched project ALSO arms the global workflows — per project, so catch-up
+   *  and the re-fire cooldown stay independent per (project, workflow). */
+  globalDir?: string
   log?: (msg: string) => void
   tickMs?: number
   defaultDebounceMs?: number
@@ -271,16 +276,33 @@ export class TriggerSupervisor {
     p.debounceTimer = null
   }
 
+  /** Re-arm every watched project. A GLOBAL workflow is armed in all of them,
+   *  so saving one has to touch more than the project you saved it from. */
+  rearmAll(): void {
+    for (const cwd of [...this.projects.keys()]) this.rearm(cwd)
+  }
+
   /** Re-read a project's workflows from disk and arm the non-manual ones. */
   rearm(cwd: string): void {
     const p = this.projects.get(cwd)
     if (!p) return
     let workflows: Workflow[] = []
     try {
-      workflows = listWorkflowsFull(workflowsDir(cwd), this.d.fs)
+      workflows = listWorkflowsFull(workflowsDir(cwd), this.d.fs, 'project')
     } catch (e) {
       this.log(`could not list workflows in ${cwd}: ${(e as Error)?.message}`)
       return
+    }
+    // Global workflows arm in EVERY watched project. Their trigger state is
+    // keyed per project, so the same nightly cron fires once per repo you have
+    // open rather than once globally — which is what "reusable" has to mean for
+    // a workflow whose whole point is to act on the project it runs in.
+    if (this.d.globalDir) {
+      try {
+        workflows = [...workflows, ...listWorkflowsFull(globalWorkflowsDir(this.d.globalDir), this.d.fs, 'global')]
+      } catch (e) {
+        this.log(`could not list global workflows: ${(e as Error)?.message}`)
+      }
     }
     p.state = this.loadState(cwd)
     p.armed.clear()
@@ -459,7 +481,7 @@ export class TriggerSupervisor {
     this.log(`firing "${wf.name}" (${reason})`)
     let result: unknown
     try {
-      result = this.d.fire(p.cwd, wf.id, reason)
+      result = this.d.fire(p.cwd, wf.id, reason, wf.scope)
     } catch (e) {
       this.inFlight.delete(key)
       this.log(`run of "${wf.name}" failed to start: ${(e as Error)?.message}`)

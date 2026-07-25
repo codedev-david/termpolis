@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+﻿import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { WorkflowRunner } from './WorkflowRunner'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -64,7 +64,7 @@ describe('WorkflowRunner', () => {
   it('Run starts the workflow via IPC when idle', () => {
     render(<WorkflowRunner workflow={twoStep()} runId={null} cwd="/r" />)
     fireEvent.click(screen.getByText('Run'))
-    expect((window as any).termpolis.runWorkflow).toHaveBeenCalledWith('/r', 'x')
+    expect((window as any).termpolis.runWorkflow).toHaveBeenCalledWith('/r', 'x', 'project', {})
   })
 
   it('shows Cancel while running and cancels via IPC', () => {
@@ -77,14 +77,14 @@ describe('WorkflowRunner', () => {
   it('Run button invokes runWorkflow with the cwd and workflow id', () => {
     render(<WorkflowRunner workflow={twoStep()} runId={null} cwd="/proj" />)
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-    expect((window as any).termpolis.runWorkflow).toHaveBeenCalledWith('/proj', 'x')
+    expect((window as any).termpolis.runWorkflow).toHaveBeenCalledWith('/proj', 'x', 'project', {})
   })
 
   it('Run button is disabled while a run is in progress', () => {
     ev({ type: 'run:started', runId: 'r', workflowId: 'x', at: 1 })
     render(<WorkflowRunner workflow={twoStep()} runId="r" cwd="/proj" />)
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-    // disabled → onRun never fires
+    // disabled â†’ onRun never fires
     expect((window as any).termpolis.runWorkflow).not.toHaveBeenCalled()
   })
 
