@@ -52,9 +52,45 @@ function git(...args: string[]): string {
   }).toString()
 }
 
+/**
+ * The version `loadSession()` compares against, asked of the app itself.
+ *
+ * `app.getVersion()` reads the package.json next to the app path. Launched
+ * unpackaged the way Playwright does it, the app path is `out/main` — which has
+ * no package.json — so Electron falls back to reporting its OWN version
+ * (30.5.1), NOT the 1.32.1 in the repo's package.json. Guessing the version
+ * from package.json therefore writes a session the app throws away, and the
+ * spec fails for a reason that has nothing to do with triggers.
+ *
+ * So: a short throwaway launch that just asks. Its own user-data dir, so the
+ * session it writes on quit can never touch the fixture.
+ */
+async function probeAppVersion(): Promise<string> {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-probe-'))
+  const probe = await electron.launch({
+    args: [
+      path.resolve('out/main/index.js'),
+      `--user-data-dir=${ud}`,
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+    ],
+    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_SMOKE_SKIP_PICKERS: '1' },
+  })
+  try {
+    return await probe.evaluate(({ app: a }) => a.getVersion())
+  } finally {
+    try { await probe.close() } catch { /* already gone */ }
+    try { fs.rmSync(ud, { recursive: true, force: true }) } catch { /* temp dir */ }
+  }
+}
+
 test.beforeAll(async () => {
+  // A build plus two Electron launches does not fit the config's 120s hook budget
+  // on a cold runner.
+  test.setTimeout(300_000)
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+
+  const appVersion = await probeAppVersion()
 
   // ── a real repository ─────────────────────────────────────────────────────
   repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-')))
@@ -91,10 +127,9 @@ test.beforeAll(async () => {
   isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-ud-'))
   // A saved terminal in the repo is the ONLY thing that arms it: nothing in this
   // test ever opens the project in the UI. This is the boot fan-out under test.
-  // `appVersion` MUST match the running build — loadSession drops every restored
-  // terminal when the version differs (an upgrade's shells no longer exist), and
-  // a dropped terminal here would silently arm nothing.
-  const appVersion = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8')).version
+  // `appVersion` MUST match what the running build reports — loadSession drops
+  // every restored terminal when the version differs (an upgrade's shells no
+  // longer exist), and a dropped terminal here would silently arm nothing.
   fs.writeFileSync(
     path.join(isolatedUserData, 'session.json'),
     JSON.stringify({
