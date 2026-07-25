@@ -464,6 +464,13 @@ function loadWindowIcon() {
   }
 }
 
+/**
+ * The crash-watch "the OS is ending the session" handler, once installCleanExitGuards has produced
+ * it. Held here because `session-end` is a BrowserWindow event and the window is recreated (macOS
+ * 'activate'), so every new window has to pick it up again.
+ */
+let onSessionEnd: (() => void) | null = null
+
 function createWindow() {
   // If the icon fails to load we leave `icon` undefined so the OS uses the
   // executable's embedded icon, never a blank one.
@@ -537,6 +544,11 @@ function createWindow() {
     forceClose = true
     mainWindow?.close()
   })
+
+  // A Windows session end (force shutdown / restart / log off) is a BrowserWindow event, and the
+  // window outlives neither a close nor a macOS re-activate — so it re-attaches on every creation.
+  // Without it the marker stays uncleared and the next launch reports a phantom crash (#20).
+  if (onSessionEnd) mainWindow.on('session-end', onSessionEnd)
 
   mainWindow.on('closed', () => { mainWindow = null })
 }
@@ -3364,7 +3376,10 @@ if (!gotTheLock) {
   // termination signal — and each of those would otherwise be filed as a phantom native crash
   // (Sentry ELECTRON-D / #20). Neither is one.
   installCleanExitGuards({
-    onAppEvent: (event, handler) => { app.on(event as 'before-quit', handler) },
+    onSessionEnd: (handler) => {
+      onSessionEnd = handler
+      mainWindow?.on('session-end', handler)
+    },
     onSignal: (signal, handler) => { process.on(signal as NodeJS.Signals, handler) },
     quit: () => app.quit(),
   })

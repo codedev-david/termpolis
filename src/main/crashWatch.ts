@@ -115,8 +115,12 @@ export function markCleanExit(): void {
 export const TERMINATION_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const
 
 export interface CleanExitGuardDeps {
-  /** `app.on` — Electron's OS session-end event. */
-  onAppEvent: (event: 'session-end', handler: () => void) => void
+  /**
+   * Subscribe to the OS ending the desktop session. In Electron this is the BrowserWindow
+   * `session-end` event (win32) — NOT an `app` event, which is why the caller passes a subscriber
+   * rather than the emitter: the window can be recreated, the handler has to follow it.
+   */
+  onSessionEnd: (handler: () => void) => void
   /** `process.on` — POSIX-style termination signals. */
   onSignal: (signal: string, handler: () => void) => void
   /** `app.quit` — see below; registering a signal listener disables Node's default terminate. */
@@ -141,7 +145,7 @@ export function installCleanExitGuards(d: CleanExitGuardDeps): void {
   const clean = (): void => {
     try { markCleanExit() } catch { /* best effort — shutdown must never throw */ }
   }
-  try { d.onAppEvent('session-end', clean) } catch { /* best effort */ }
+  try { d.onSessionEnd(clean) } catch { /* best effort */ }
   for (const sig of TERMINATION_SIGNALS) {
     try {
       d.onSignal(sig, () => {

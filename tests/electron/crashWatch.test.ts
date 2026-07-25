@@ -180,21 +180,27 @@ describe('heartbeat / markCleanExit', () => {
 // them as native crashes is what filed the phantom Sentry ELECTRON-D / #20.
 describe('installCleanExitGuards — the exits that never reach before-quit', () => {
   function guardHarness() {
-    const appEvents: Record<string, () => void> = {}
+    let sessionEnd: (() => void) | null = null
     const signals: Record<string, () => void> = {}
     const quit = vi.fn()
     installCleanExitGuards({
-      onAppEvent: (event, handler) => { appEvents[event] = handler },
+      onSessionEnd: (handler) => { sessionEnd = handler },
       onSignal: (signal, handler) => { signals[signal] = handler },
       quit,
     })
-    return { appEvents, signals, quit }
+    return { sessionEnd: () => (sessionEnd as (() => void) | null)?.(), signals, quit }
   }
 
   it('registers session-end and every termination signal', () => {
-    const g = guardHarness()
-    expect(Object.keys(g.appEvents)).toEqual(['session-end'])
-    expect(Object.keys(g.signals)).toEqual([...TERMINATION_SIGNALS])
+    let subscribed = false
+    const signals: string[] = []
+    installCleanExitGuards({
+      onSessionEnd: () => { subscribed = true },
+      onSignal: (signal) => { signals.push(signal) },
+      quit: vi.fn(),
+    })
+    expect(subscribed).toBe(true)
+    expect(signals).toEqual([...TERMINATION_SIGNALS])
   })
 
   it('an OS session end (Windows shutdown/logoff) is a CLEAN exit, not a crash', () => {
@@ -204,7 +210,7 @@ describe('installCleanExitGuards — the exits that never reach before-quit', ()
 
     h.tick(480_000) // ~8 minutes of healthy uptime — #20's shape exactly
     heartbeat()
-    g.appEvents['session-end']()
+    g.sessionEnd()
     _resetCrashWatchForTests()
 
     // Next boot: silence.
@@ -245,7 +251,7 @@ describe('installCleanExitGuards — the exits that never reach before-quit', ()
     const signals: Record<string, () => void> = {}
     expect(() =>
       installCleanExitGuards({
-        onAppEvent: () => { throw new Error('no session-end on this platform') },
+        onSessionEnd: () => { throw new Error('no window to attach session-end to yet') },
         onSignal: (signal, handler) => {
           if (signal === 'SIGHUP') throw new Error('unsupported signal')
           signals[signal] = handler
@@ -260,7 +266,7 @@ describe('installCleanExitGuards — the exits that never reach before-quit', ()
 
   it('the guards are safe before initCrashWatch — nothing to mark, nothing thrown', () => {
     const g = guardHarness()
-    expect(() => g.appEvents['session-end']()).not.toThrow()
+    expect(() => g.sessionEnd()).not.toThrow()
     expect(() => g.signals['SIGINT']()).not.toThrow()
     expect(g.quit).toHaveBeenCalledTimes(1)
   })
