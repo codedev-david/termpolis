@@ -23,18 +23,28 @@ let app: ElectronApplication
 let token: string
 let port: number
 
+/**
+ * Throwaway userData for this run. It has to be a real directory before launch
+ * because we hand it to the app as --user-data-dir and then read the mcp-port /
+ * mcp-token it writes there (src/main/index.ts:3157,3166 — both derive from
+ * app.getPath('userData'), so the switch redirects them).
+ *
+ * This used to be hardcoded to the production %APPDATA%\termpolis, which meant
+ * the spec was unrunnable on any machine with Termpolis open (the single-instance
+ * lock is keyed on userData, so the launch took `!gotTheLock -> app.quit()`) and,
+ * with Termpolis closed, wrote its test fact into the developer's real brain.
+ */
+const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-xagent-e2e-'))
+
 function termpolisDataDir(): string {
-  if (process.platform === 'win32') return path.join(process.env.APPDATA || '', 'termpolis')
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-  return path.join(os.homedir(), '.config', 'termpolis')
+  return userDataDir
 }
 
 function readPort(): number {
-  try {
-    const p = parseInt(fs.readFileSync(path.join(termpolisDataDir(), 'mcp-port'), 'utf-8').trim(), 10)
-    if (p > 0 && p < 65536) return p
-  } catch { /* fall back */ }
-  return 9315
+  const portFile = path.join(termpolisDataDir(), 'mcp-port')
+  const p = parseInt(fs.readFileSync(portFile, 'utf-8').trim(), 10)
+  if (p > 0 && p < 65536) return p
+  throw new Error(`unusable MCP port in ${portFile}: ${JSON.stringify(p)}`)
 }
 
 function httpRequest(options: http.RequestOptions, body?: string): Promise<{ statusCode: number; body: string }> {
@@ -82,6 +92,7 @@ test.beforeAll(async () => {
   app = await electron.launch({
     args: [
       path.resolve('out/main/index.js'),
+      `--user-data-dir=${userDataDir}`,
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
     env: { ...process.env, NODE_ENV: 'test' },
