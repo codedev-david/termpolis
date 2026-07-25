@@ -31,12 +31,14 @@ test.beforeAll(async () => {
   // Force a first-run-like session: no terminals, no workspaces. The
   // onboarding modal is keyed on a localStorage flag we don't touch, so
   // it may or may not appear — the tests tolerate either.
-  const userDataDir =
-    process.platform === 'win32'
-      ? path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis')
-      : process.platform === 'darwin'
-        ? path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-        : path.join(os.homedir(), '.config', 'termpolis')
+  // A throwaway userData dir, not the production one. Two reasons: seeding the
+  // real %APPDATA%\termpolis\session.json would destroy whatever the developer
+  // running this actually had open, and — because the single-instance lock is
+  // keyed on the userData path — a Termpolis already running on this machine
+  // would take the lock, send this launch straight down the `!gotTheLock →
+  // app.quit()` path, and fail the spec with "Target page, context or browser
+  // has been closed" before a window ever exists.
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-first-run-e2e-'))
   const sessionPath = path.join(userDataDir, 'session.json')
   const cleanSession = JSON.stringify({
     terminals: [],
@@ -44,12 +46,10 @@ test.beforeAll(async () => {
     defaultShell: process.platform === 'win32' ? 'powershell' : 'bash',
     viewMode: 'tabs',
   })
-  if (fs.existsSync(sessionPath)) {
-    fs.writeFileSync(sessionPath, cleanSession)
-  }
+  fs.writeFileSync(sessionPath, cleanSession)
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: [path.resolve('out/main/index.js'), `--user-data-dir=${userDataDir}`],
     env: {
       ...process.env,
       NODE_ENV: 'test',

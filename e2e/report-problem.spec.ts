@@ -18,6 +18,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 
 let app: ElectronApplication
 let page: Page
@@ -30,9 +31,17 @@ test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
+  // Isolated userData: the single-instance lock is keyed on this path, so
+  // without it a Termpolis already running on the developer's machine owns the
+  // lock, this launch takes the `!gotTheLock → app.quit()` branch, and the spec
+  // dies with "Target page, context or browser has been closed" before any
+  // window exists. CI never noticed because CI has no app running.
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-report-problem-e2e-'))
+
   app = await electron.launch({
     args: [
       path.resolve('out/main/index.js'),
+      `--user-data-dir=${userDataDir}`,
       // Linux CI (xvfb) rejects chrome-sandbox because the binary isn't
       // SUID-owned by root. App code later sets --no-sandbox, but by then
       // chromium has already aborted. Mirror the pattern used by chrome-smoke.
