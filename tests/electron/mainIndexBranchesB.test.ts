@@ -34,6 +34,8 @@ const M = vi.hoisted(() => ({
   // redirected roots (set by boot(), read lazily by the electron/os mocks)
   home: '',
   userData: '',
+  // when set, the secureFile passthrough reports the ACL as refused with this reason
+  aclError: '',
   // child_process
   execSync: vi.fn(),
   execFileSync: vi.fn(),
@@ -175,6 +177,23 @@ vi.mock('../../src/main/completionService', () => ({
 vi.mock('../../src/main/aiSecurity', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/main/aiSecurity')>()
   return { ...actual, appendAudit: M.appendAudit }
+})
+
+// The ACL is a WINDOWS-only concern: writeSecureFile returns `aclApplied: true` unconditionally on
+// every other platform (secureFile.ts:51), so TERMPOLIS_SKIP_ACL — or any other way of making the
+// real code refuse the ACL — is unreachable on the Linux and macOS runners. index.ts's reaction to
+// that verdict is NOT platform-specific though, so the verdict is what we drive: a passthrough that
+// still writes the real file (the sibling test reads the token back off disk) and only rewrites the
+// aclApplied/aclError fields when a test asks for it.
+vi.mock('../../src/main/secureFile', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/secureFile')>()
+  return {
+    ...actual,
+    writeSecureFile: (...args: Parameters<typeof actual.writeSecureFile>) => {
+      const result = actual.writeSecureFile(...args)
+      return M.aclError ? { ...result, aclApplied: false, aclError: M.aclError } : result
+    },
+  }
 })
 
 // The watcher itself is covered elsewhere; here we only need the callback index.ts registers.
@@ -462,6 +481,7 @@ beforeEach(() => {
   M.appendAudit.mockClear()
   mockWebContents.send.mockClear()
   M.execFileSync.mockReset()
+  M.aclError = ''
   delete process.env.TERMPOLIS_SKIP_ACL
 })
 
@@ -536,13 +556,15 @@ describe('MCP token file', () => {
   it('warns with the underlying reason when the restrictive ACL could not be applied', async () => {
     // The token grants full MCP access. If the NTFS ACL does not stick, any other local user can
     // read it — that is a downgrade the user deserves to see in the log, with the reason attached.
-    process.env.TERMPOLIS_SKIP_ACL = '1'
+    M.aclError = 'skipped (TERMPOLIS_SKIP_ACL)'
     await boot()
 
     const warn = warns.find((w) => w.includes('[mcp-token] ACL not applied'))
     expect(warn).toBeDefined()
     expect(warn).toContain(join(M.userData, 'mcp-token'))
     expect(warn).toContain('skipped (TERMPOLIS_SKIP_ACL)')
+    // The reason is passed through verbatim, not summarised — a different refusal reads differently.
+    expect(warns.some((w) => w.includes('[mcp-token] ACL not applied') && w.includes('No USERNAME env var'))).toBe(false)
   })
 
   it('stays quiet when the ACL was applied', async () => {
