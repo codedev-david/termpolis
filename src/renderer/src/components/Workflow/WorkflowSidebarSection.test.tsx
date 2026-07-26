@@ -107,6 +107,15 @@ describe('WorkflowSidebarSection', () => {
     expect(screen.queryByText('Code Review')).toBeNull()
   })
 
+  it('puts info LAST and + before it, so info lines up with the Workspaces info above', () => {
+    render(<WorkflowSidebarSection onOpen={vi.fn()} onCreate={vi.fn()} />)
+    const info = screen.getByTestId('workflow-info')
+    const controls = Array.from(info.parentElement?.children ?? [])
+    expect(controls).toHaveLength(2)
+    expect(controls[0].getAttribute('title')).toBe('Start Workflow')
+    expect(controls[1]).toBe(info)
+  })
+
   it('lists global and project workflows under separate scope groups', () => {
     seed([
       { id: 'g', name: 'Everywhere', scope: 'global' },

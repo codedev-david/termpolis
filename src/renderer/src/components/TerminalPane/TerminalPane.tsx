@@ -1277,10 +1277,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       className="absolute inset-0 flex flex-col"
       style={{ visibility: isVisible ? 'visible' : 'hidden' }}
     >
+      {/* No padding here on purpose: the 4px inset lives on `.xterm` itself
+          (index.css). FitAddon sizes the grid from getComputedStyle(parent).width,
+          which under `box-sizing: border-box` reports the parent's BORDER box —
+          padding on this element would be counted as usable space, so the rows
+          overflowed to the right and painted over the scrollbar. */}
       <div
         ref={containerRef}
         className="flex-1 relative min-h-0 overflow-hidden"
-        style={{ padding: 4 }}
         onMouseDownCapture={handleMouseDownCapture}
         onContextMenu={handleContextMenu}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}

@@ -73,18 +73,20 @@ export function WorkflowSidebarSection({ onOpen, onCreate }: WorkflowSidebarSect
           Workflows
           <span className="text-[10px] normal-case tracking-normal">({workflows.length})</span>
         </button>
-        <div className="flex items-center gap-1">
+        {/* Info sits LAST so it lines up vertically with the Workspaces info
+            button above, which is the right-most control in its own header. */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onCreate}
+            title="Start Workflow"
+            className="text-[#9ca3af] hover:text-white text-xs"
+          ><i className="fa-solid fa-plus"></i></button>
           <button
             onClick={() => setShowInfo(true)}
             title="What are workflows?"
             className="text-[#9ca3af] hover:text-[#22D3EE]"
             data-testid="workflow-info"
           ><i className="fa-solid fa-circle-info text-xs"></i></button>
-          <button
-            onClick={onCreate}
-            title="Start Workflow"
-            className="text-[#9ca3af] hover:text-white text-xs px-1"
-          ><i className="fa-solid fa-plus"></i></button>
         </div>
       </div>
       {showInfo && (
