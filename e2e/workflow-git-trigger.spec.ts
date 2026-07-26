@@ -1,14 +1,21 @@
 /**
- * gitCommit trigger — end-to-end proof against a REAL git repository.
+ * gitCommit + gitPush triggers — end-to-end proof against a REAL git repository.
  *
  * Everything the unit suites prove about triggers, they prove against a fake
  * filesystem: a `.git/HEAD` we wrote ourselves and a sha we changed by hand.
  * That leaves the one thing that actually matters unproven — that a real
  * `git commit`, in a real repo, made by a real user, reaches the engine.
  *
+ * The two git triggers watch different refs (`HEAD`'s branch vs.
+ * `refs/remotes/<remote>/<branch>`), and the only way to tell them apart is to
+ * commit without pushing and then push: the commit must move one and not the
+ * other. Both are asserted here, in that order, on one repo.
+ *
  * So this spec does the whole thing for real:
- *   1. `git init` a throwaway repo in the OS temp dir and make a first commit.
- *   2. Drop a gitCommit-triggered workflow in that repo's `.termpolis/workflows`.
+ *   1. `git init` a throwaway repo in the OS temp dir, make a first commit, and
+ *      push it to a bare repo standing in for `origin` (same disk, no network).
+ *   2. Drop a gitCommit- and a gitPush-triggered workflow in that repo's
+ *      `.termpolis/workflows`.
  *   3. Point the app's saved session at the repo, so the BOOT FAN-OUT is what
  *      arms it (nobody clicks into the project during this test).
  *   4. Launch the app, then `git commit` again from outside it entirely.
@@ -31,9 +38,13 @@ let app: ElectronApplication | null = null
 let page: Page | null = null
 let isolatedUserData = ''
 let repo = ''
+/** A bare repo on the same disk, standing in for `origin`. No network involved. */
+let remoteRepo = ''
 
 const WF_ID = 'e2egitcommit'
-const RUNS_FILE = () => path.join(repo, '.termpolis', 'workflows', 'runs', `${WF_ID}.jsonl`)
+const WF_PUSH_ID = 'e2egitpush'
+const runsFile = (id: string): string => path.join(repo, '.termpolis', 'workflows', 'runs', `${id}.jsonl`)
+const RUNS_FILE = () => runsFile(WF_ID)
 
 /** git, in the throwaway repo, with an identity so `commit` never prompts. */
 function git(...args: string[]): string {
@@ -99,6 +110,19 @@ test.beforeAll(async () => {
   git('add', '.')
   git('commit', '-qm', 'first')
 
+  // ── and a real remote for it ──────────────────────────────────────────────
+  // gitPush watches `refs/remotes/<remote>/<branch>`, which only moves when a
+  // push succeeds — so proving it needs an actual push, not a commit. A bare
+  // repo beside the working one is a genuine remote as far as git is concerned,
+  // and it keeps the spec entirely offline. The ref has to exist BEFORE the app
+  // launches: the supervisor seeds whatever sha it sees when it arms, so a
+  // remote branch created later would look like a first-ever push and the
+  // seeded-vs-observed distinction under test would be lost.
+  remoteRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-remote-')))
+  execFileSync('git', ['init', '-q', '--bare'], { cwd: remoteRepo, encoding: 'utf8' })
+  git('remote', 'add', 'origin', remoteRepo)
+  git('push', '-q', '-u', 'origin', 'HEAD')
+
   // ── the workflow, written straight to disk ────────────────────────────────
   // Authoring it through the UI is already covered by workflow-orchestrator;
   // what is under test here is the trigger, so the definition is a fixture.
@@ -119,6 +143,26 @@ test.beforeAll(async () => {
       '    action: notify',
       '    config:',
       "      message: 'commit observed in ${project.name}'",
+      '',
+    ].join('\n'),
+  )
+  // Same shape, the other git trigger. `remote` is left unset on purpose so the
+  // 'origin' default is what gets exercised.
+  fs.writeFileSync(
+    path.join(wfDir, `${WF_PUSH_ID}.yml`),
+    [
+      `id: ${WF_PUSH_ID}`,
+      'name: E2E Git Push',
+      'version: 1',
+      'trigger:',
+      '  type: gitPush',
+      'steps:',
+      '  - id: note',
+      '    type: control',
+      '    name: Note',
+      '    action: notify',
+      '    config:',
+      "      message: 'push observed in ${project.name}'",
       '',
     ].join('\n'),
   )
@@ -169,7 +213,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   try { await app?.close() } catch { /* already gone */ }
-  for (const d of [repo, isolatedUserData]) {
+  for (const d of [repo, remoteRepo, isolatedUserData]) {
     try { if (d) fs.rmSync(d, { recursive: true, force: true }) } catch { /* temp dir */ }
   }
 })
@@ -216,6 +260,49 @@ test('a real git commit fires the workflow and the run lands in history', async 
 
   // And the supervisor recorded the sha it fired on, so it won't fire again for
   // the same commit on the next tick.
+  const state = JSON.parse(fs.readFileSync(path.join(repo, '.termpolis', 'workflows', '.triggers.json'), 'utf8'))
+  expect(JSON.stringify(state)).toContain(sha)
+
+  // The gitPush workflow is armed on the same repo and has now watched a commit
+  // go by without a push. It must have stayed quiet — the two triggers are only
+  // useful if they are actually different.
+  expect(fs.existsSync(runsFile(WF_PUSH_ID))).toBe(false)
+})
+
+test('a real git push fires the gitPush workflow, and only the push does', async () => {
+  test.setTimeout(180_000)
+
+  // The previous test's commit is still unpushed, so nothing here depends on
+  // making another one: the remote-tracking ref is already behind HEAD, and the
+  // push alone is the transition under test.
+  expect(fs.existsSync(runsFile(WF_PUSH_ID))).toBe(false)
+  const sha = git('rev-parse', 'HEAD').trim()
+  // Exactly the ref `targetRef()` builds: refs/remotes/<remote>/<branch>, with
+  // the remote defaulting to origin.
+  const remoteRef = `refs/remotes/origin/${git('rev-parse', '--abbrev-ref', 'HEAD').trim()}`
+  expect(git('rev-parse', remoteRef).trim()).not.toBe(sha)
+
+  git('push', '-q', 'origin', 'HEAD')
+  // Sanity: the ref the supervisor polls really did move.
+  expect(git('rev-parse', remoteRef).trim()).toBe(sha)
+
+  await expect
+    .poll(() => fs.existsSync(runsFile(WF_PUSH_ID)), {
+      // One 15s supervisor tick, plus generous slack for a loaded runner.
+      timeout: 120_000,
+      intervals: [1000],
+      message: 'the push never reached the engine — refs/remotes/origin/<branch> is not being polled',
+    })
+    .toBe(true)
+
+  const lines = fs.readFileSync(runsFile(WF_PUSH_ID), 'utf8').trim().split('\n').filter(Boolean)
+  const run = JSON.parse(lines[0])
+  expect(run.workflowId).toBe(WF_PUSH_ID)
+  expect(fs.realpathSync(run.cwd)).toBe(repo)
+  expect(run.status).toBe('succeeded')
+
+  // The pushed sha is what got recorded, so a second tick over the same remote
+  // state cannot re-fire it.
   const state = JSON.parse(fs.readFileSync(path.join(repo, '.termpolis', 'workflows', '.triggers.json'), 'utf8'))
   expect(JSON.stringify(state)).toContain(sha)
 })

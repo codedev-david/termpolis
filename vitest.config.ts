@@ -96,9 +96,16 @@ export default defineConfig({
         // RAISED AGAIN in v1.25.7 to 96/93/96/97. Coverage is now 97.59 / 94.53 / 97.10 / 98.56. The
         // holes that remain are genuinely hard, not laziness: require('fs') paths that vi.mock cannot
         // reach, platform-gated arms that only run on the other OS, and provably dead defensive code.
+        //
+        // BRANCHES RAISED to 95 in v1.32.3. Branches was the laggard of the four and the floor with
+        // the least meaning — 93 had drifted to ~2.5 points of dead slack. ~460 new tests went in
+        // against the defensive arms that dominate a v8 branch count (`??`/`?.`/`||` fallbacks, catch
+        // blocks, the implicit else of an if), taking branches from 93.46% to over 95%. The other
+        // three floors are unchanged: they were already tight, and moving four numbers at once makes
+        // a future failure ambiguous.
         lines: 97,
         functions: 96,
-        branches: 93,
+        branches: 95,
         statements: 96,
       },
     },

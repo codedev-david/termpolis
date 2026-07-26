@@ -42,6 +42,49 @@ describe('groupWorkflows', () => {
   })
 })
 
+describe('WorkflowSidebarSection — "What are workflows?" explainer', () => {
+  it('is closed until the info button is clicked', () => {
+    seed([])
+    render(<WorkflowSidebarSection onOpen={vi.fn()} onCreate={vi.fn()} />)
+    expect(screen.queryByText(/save a sequence of steps/i)).toBeNull()
+    expect(screen.getByTestId('workflow-info').getAttribute('title')).toBe('What are workflows?')
+  })
+
+  it('explains steps, triggers and availability when opened', () => {
+    seed([])
+    render(<WorkflowSidebarSection onOpen={vi.fn()} onCreate={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('workflow-info'))
+    expect(screen.getByText(/save a sequence of steps/i)).toBeTruthy()
+    expect(screen.getByText('Steps')).toBeTruthy()
+    expect(screen.getByText('Triggers')).toBeTruthy()
+    expect(screen.getByText('Availability')).toBeTruthy()
+  })
+
+  it('opening the explainer does not start a workflow', () => {
+    const onCreate = vi.fn()
+    seed([])
+    render(<WorkflowSidebarSection onOpen={vi.fn()} onCreate={onCreate} />)
+    fireEvent.click(screen.getByTestId('workflow-info'))
+    expect(onCreate).not.toHaveBeenCalled()
+  })
+
+  it('closes on "Got it"', () => {
+    seed([])
+    render(<WorkflowSidebarSection onOpen={vi.fn()} onCreate={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('workflow-info'))
+    fireEvent.click(screen.getByText('Got it'))
+    expect(screen.queryByText(/save a sequence of steps/i)).toBeNull()
+  })
+
+  it('closes on the × button', () => {
+    seed([])
+    render(<WorkflowSidebarSection onOpen={vi.fn()} onCreate={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('workflow-info'))
+    fireEvent.click(screen.getByText('×'))
+    expect(screen.queryByText(/save a sequence of steps/i)).toBeNull()
+  })
+})
+
 describe('WorkflowSidebarSection', () => {
   it('shows the workflow count in the header', () => {
     seed([

@@ -36,6 +36,7 @@ export function WorkflowSidebarSection({ onOpen, onCreate }: WorkflowSidebarSect
     useShallow(s => ({ workflows: s.workflows, activeRuns: s.activeRuns }))
   )
   const [collapsed, setCollapsed] = useState(false)
+  const [showInfo, setShowInfo] = useState(false)
   const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>({})
 
   const isRunning = (id: string) =>
@@ -72,12 +73,62 @@ export function WorkflowSidebarSection({ onOpen, onCreate }: WorkflowSidebarSect
           Workflows
           <span className="text-[10px] normal-case tracking-normal">({workflows.length})</span>
         </button>
-        <button
-          onClick={onCreate}
-          title="Start Workflow"
-          className="text-[#9ca3af] hover:text-white text-xs px-1"
-        ><i className="fa-solid fa-plus"></i></button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowInfo(true)}
+            title="What are workflows?"
+            className="text-[#9ca3af] hover:text-[#22D3EE]"
+            data-testid="workflow-info"
+          ><i className="fa-solid fa-circle-info text-xs"></i></button>
+          <button
+            onClick={onCreate}
+            title="Start Workflow"
+            className="text-[#9ca3af] hover:text-white text-xs px-1"
+          ><i className="fa-solid fa-plus"></i></button>
+        </div>
       </div>
+      {showInfo && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
+          <div className="bg-[#252526] rounded-lg p-6 w-96 shadow-xl flex flex-col gap-4 border border-[#3c3c3c]">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <i className="fa-solid fa-diagram-project text-[#22D3EE]"></i>
+                Workflows
+              </h2>
+              <button
+                onClick={() => setShowInfo(false)}
+                className="text-[#9ca3af] hover:text-white text-lg px-1"
+              >&times;</button>
+            </div>
+            <p className="text-sm text-[#d4d4d4] leading-relaxed">
+              Workflows let you <strong>save a sequence of steps and replay it on demand</strong> —
+              or automatically. Build them on a visual canvas; each step feeds its output to the next.
+            </p>
+            <div className="text-sm text-[#999] flex flex-col gap-2">
+              <div className="flex items-start gap-2">
+                <i className="fa-solid fa-cube text-[#A5D6A7] mt-0.5"></i>
+                <span><strong>Steps</strong> — run a <em>command</em>, hand work to an <em>agent</em>, invoke a <em>skill</em>, or branch with <em>control</em> logic.</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <i className="fa-solid fa-bolt text-[#FFE082] mt-0.5"></i>
+                <span><strong>Triggers</strong> — run manually, on a <em>schedule</em>, or when you <em>commit</em>, <em>push</em>, or <em>change a file</em>.</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <i className="fa-solid fa-globe text-[#22D3EE] mt-0.5"></i>
+                <span><strong>Availability</strong> — keep a workflow to this project, or make it global so it is offered everywhere.</span>
+              </div>
+            </div>
+            <p className="text-xs text-[#9ca3af]">
+              Great for the routines you repeat — e.g. a "Pre-commit" workflow that lints and runs
+              tests on every commit, or a nightly scheduled dependency audit.
+            </p>
+            <button
+              onClick={() => setShowInfo(false)}
+              className="self-end px-4 py-1.5 text-sm rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
+            >Got it</button>
+          </div>
+        </div>
+      )}
       {!collapsed && scopes.map(({ scope, label, hint }) => {
         const mine = workflows.filter(w => (w.scope ?? 'project') === scope)
         if (!mine.length) return null

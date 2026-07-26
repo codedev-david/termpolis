@@ -260,9 +260,24 @@ jobs:
       # only by the boot session fan-out, must land a run in the repo's history.
       # Ubuntu-only — the unit suites drive triggers against a fake filesystem,
       # so this is the one place real git plumbing is exercised.
-      - name: gitCommit trigger against a real repo
+      - name: gitCommit + gitPush triggers against a real repo
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/workflow-git-trigger.spec.ts
+      # schedule + fileWatch gate: the other two automatic triggers, against the
+      # real ticker and a real recursive fs.watch. The unit suites inject a clock
+      # and a watcher, so every one of them would still pass if the ticker never
+      # started or `fs.watch(recursive)` threw on this platform — this is the only
+      # place those two are exercised for real.
+      - name: schedule + fileWatch triggers against a real clock and filesystem
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npx playwright test e2e/workflow-schedule-filewatch-trigger.spec.ts
+      # Swarm Dashboard gate: tabs, and the load-bearing ordering rule that the
+      # directory picker runs BEFORE the wizard — dismiss the picker and nothing
+      # launches. Takes no dependency on an agent CLI, so it is cheap enough to
+      # gate every push (the full conductor pipeline lives in swarm-end-to-end).
+      - name: Swarm Dashboard + directory-first launch gate
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npx playwright test e2e/swarm-dashboard.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

@@ -348,6 +348,9 @@ describe('StatusBar', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.getByTestId('help-docs')).toBeInTheDocument()
+    // Docs is the last link in the row, so the row must hold itself clear of the
+    // Close button on the far right — otherwise the two crowd each other.
+    expect(screen.getByTestId('help-docs').parentElement?.className).toContain('mr-10')
     expect(screen.queryByTestId('help-show-tour')).not.toBeInTheDocument()
   })
 
