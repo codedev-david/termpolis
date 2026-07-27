@@ -144,6 +144,12 @@ test.afterAll(async () => {
 // ════════════════════════════════════════════════════════════
 
 test.describe.serial('Session Restore', () => {
+  // Every test here tears down and relaunches Electron at least once — a full app boot,
+  // node-pty spawn and session rehydrate, not a page reload. Under the sharded run four of
+  // these compete for one runner and the 120s default is genuinely tight: test 11 hit it,
+  // then passed on retry, i.e. flaky for want of headroom rather than broken. `test.slow()`
+  // triples the budget for the file instead of hiding it behind `retries`.
+  test.slow()
 
   test('1. create terminal, restart app: terminal is restored', async () => {
     await createTerminal('Restore-1')

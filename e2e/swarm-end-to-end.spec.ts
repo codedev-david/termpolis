@@ -357,19 +357,35 @@ test.describe.serial('Swarm End-to-End', () => {
   })
 
   test('10. All tasks reach completed status (conductor → swarm_update_task)', async () => {
-    const completed: any[] = await page.waitForFunction(
-      async () => {
-        const res = await (window as any).swarmAPI.getTasks()
-        if (!res.success || !res.data || res.data.length < 2) return null
-        const allDone = res.data.every((t: any) => t.status === 'completed' || t.status === 'failed')
-        return allDone ? res.data : null
-      },
-      null,
-      { timeout: 60000 },
-    ).then((h) => h.jsonValue())
+    // Poll with the same explicit evaluate loop test 8 uses. The previous version passed an
+    // ASYNC predicate to page.waitForFunction, which resolved on the first poll against the
+    // pending Promise rather than the tasks — so this arrived as `null` in ~30ms and blew up
+    // as "Cannot read properties of null (reading 'every')", naming the assertion instead of
+    // the wait. It only surfaced now: this spec is serial and used to stop at test 3, so
+    // everything from 4 down had never actually executed on a runner.
+    let completed: any[] | null = null
+    let last = ''
+    for (let i = 0; i < 60; i++) {
+      const res = await page.evaluate(async () => {
+        try {
+          const r = await (window as any).swarmAPI.getTasks()
+          return { ok: true, r }
+        } catch (e: any) {
+          return { ok: false, err: String(e?.message || e) }
+        }
+      })
+      const data = res.ok && res.r?.success && Array.isArray(res.r.data) ? res.r.data : null
+      if (data && data.length >= 2 && data.every((t: any) => t.status === 'completed' || t.status === 'failed')) {
+        completed = data
+        break
+      }
+      last = res.ok ? JSON.stringify(res.r).slice(0, 300) : res.err
+      await page.waitForTimeout(1000)
+    }
 
-    expect(completed.every((t: any) => t.status === 'completed')).toBeTruthy()
-    for (const t of completed) expect(t.result).toBeTruthy()
+    expect(completed, `tasks never reached a terminal status within 60s. last=${last}`).not.toBeNull()
+    expect(completed!.every((t: any) => t.status === 'completed')).toBeTruthy()
+    for (const t of completed!) expect(t.result).toBeTruthy()
   })
 
   test('11. SWARM COMPLETE message is posted to the swarm bus', async () => {

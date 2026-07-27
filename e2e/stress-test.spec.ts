@@ -311,9 +311,18 @@ test.describe.serial('Stress Tests', () => {
       const modalTitle = page.locator('h2:has-text("New Terminal")')
       await expect(modalTitle).toBeVisible({ timeout: 2000 })
 
-      // Close modal by pressing Escape
+      // Close the modal. Escape is the documented path, but on a loaded runner the
+      // keypress can land while focus is still settling into the auto-focused name input
+      // and the modal stays up — then the NEXT iteration's "+ Add Terminal" click hits its
+      // backdrop and reports a 30s timeout against the button, which is how this test read
+      // as "Add Terminal is broken" when the real fault was one missed Escape. Confirm it
+      // actually closed, fall back to the modal's own Cancel, and wait on state rather
+      // than on a fixed 200ms.
       await page.keyboard.press('Escape')
-      await page.waitForTimeout(200)
+      if (await modalTitle.isVisible({ timeout: 1000 }).catch(() => false)) {
+        await page.getByRole('button', { name: 'Cancel' }).first().click().catch(() => {})
+      }
+      await modalTitle.waitFor({ state: 'hidden', timeout: 5000 })
     }
 
     // After all cycles, no modal should remain
