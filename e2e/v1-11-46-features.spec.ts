@@ -12,7 +12,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, dismissOverlays } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -67,6 +67,15 @@ test.afterAll(async () => {
  * the word is exactly the "an AI CLI the user started by hand in a plain shell" case.
  */
 async function ensureOneTerminal() {
+  // Test 5 opens Settings with Ctrl+/ and test 6's sidebar click doesn't reliably close it
+  // on a slow runner. Settings replaces the terminal view, so the `.xterm` click below
+  // times out against whatever is on top — the failure names the terminal, not the panel.
+  await dismissOverlays(page)
+  if (await page.locator('h1:has-text("Settings")').isVisible().catch(() => false)) {
+    await page.locator('button[title="Settings"]').click().catch(() => {})
+    await page.waitForTimeout(400)
+  }
+
   const xtermCount = await page.locator('.xterm').count()
   if (xtermCount === 0) {
     const addBtn = page.locator('button:has-text("+ Add Terminal")').first()

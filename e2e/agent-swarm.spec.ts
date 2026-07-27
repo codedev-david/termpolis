@@ -58,7 +58,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_PROJECT_CWD: path.resolve('.'),
       // Without a `claude` on PATH the wizard renders "Claude Code Required" instead of
       // Preparing/Describe, and tests 5-15 assert against a wizard that never appears.
-      ...e2eShimEnv(),
+      ...e2eShimEnv('agent-swarm'),
     },
   })
   page = await app.firstWindow()
@@ -153,8 +153,10 @@ test.describe.serial('Agent Swarm', () => {
     // a "Describe what you want built" heading above the fields.
     const goalLabel = page.locator('label:has-text("Goal")').first()
     await expect(goalLabel).toBeVisible()
-    // The overall describe step prompt should also be visible
-    await expect(page.locator('text=Describe what you want built')).toBeVisible()
+    // The overall describe step prompt should also be visible. It appears twice — as the
+    // step heading and as the textarea's placeholder — so pin it to the first match rather
+    // than tripping strict mode.
+    await expect(page.locator('text=Describe what you want built').first()).toBeVisible()
     await ss('07-goal-field')
   })
 

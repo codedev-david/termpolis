@@ -66,14 +66,56 @@ export function e2eLaunchArgs(label = 'e2e'): string[] {
  * "Claude Code Required" and every swarm spec sat waiting for a Describe step that was
  * never going to come. Prepending the shim dir to PATH satisfies the detector too.
  */
-export function e2eShimEnv(): { TERMPOLIS_TEST_SHIM_DIR: string; PATH: string } {
+export function e2eShimEnv(label = 'e2e'): {
+  TERMPOLIS_TEST_SHIM_DIR: string
+  TERMPOLIS_TEST_USER_DATA_DIR: string
+  PATH: string
+} {
   const shimDir = path.resolve('e2e', 'test-shims')
   // The Unix shim loses its +x bit through some npm/git paths.
   try { fs.chmodSync(path.join(shimDir, 'claude'), 0o755) } catch { /* windows / already set */ }
   const sep = process.platform === 'win32' ? ';' : ':'
   return {
     TERMPOLIS_TEST_SHIM_DIR: shimDir,
+    // The mocks talk to the app's MCP server, whose token the app writes into its
+    // userData dir. That used to be the OS default path, so `mock-claude.cjs` hardcoded
+    // it; now every spec runs under its own `--user-data-dir`, and the mock died with
+    // ENOENT on `~/.config/termpolis/mcp-token`. `label` MUST match the one passed to
+    // `e2eLaunchArgs`, or the mock reads a profile the app never wrote to.
+    TERMPOLIS_TEST_USER_DATA_DIR: e2eUserDataDir(label),
     PATH: `${shimDir}${sep}${process.env.PATH ?? ''}`,
+  }
+}
+
+/**
+ * Clear any full-screen overlay a previous test left up.
+ *
+ * `test.describe.serial` specs share one window, so a modal that one test leaves open
+ * becomes the NEXT test's `locator.click: Timeout 30000ms exceeded` — the click lands on
+ * a `fixed inset-0` backdrop instead of the button underneath, and the error names the
+ * innocent button rather than the modal. Escape alone is not enough: InstallHint and the
+ * close-confirm have no key handler and only close via their own control or a backdrop
+ * click, so try the explicit dismiss button first and fall back to Escape, then the
+ * backdrop corner. `pointer-events-none` overlays are decorative and never intercept.
+ */
+export async function dismissOverlays(page: Page, attempts = 4): Promise<void> {
+  const overlay = page.locator('div.fixed.inset-0:not(.pointer-events-none)').first()
+  for (let i = 0; i < attempts; i++) {
+    if (!(await overlay.isVisible({ timeout: 500 }).catch(() => false))) return
+    const dismiss = page
+      .locator('div.fixed.inset-0 button')
+      .filter({ hasText: /^(Cancel|Close|Dismiss|Not now|Skip tour)$/ })
+      .first()
+    if (await dismiss.isVisible({ timeout: 500 }).catch(() => false)) {
+      await dismiss.click({ timeout: 2000 }).catch(() => {})
+    } else {
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(200)
+      if (await overlay.isVisible({ timeout: 500 }).catch(() => false)) {
+        await overlay.click({ position: { x: 5, y: 5 }, timeout: 2000 }).catch(() => {})
+      }
+    }
+    await page.waitForTimeout(300)
   }
 }
 

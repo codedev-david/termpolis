@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, dismissOverlays } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -296,13 +296,10 @@ test.describe.serial('Stress Tests', () => {
 
   test('6. modal spam: open and close Add Terminal modal 10 times', async () => {
     // Test 5 can leave a modal backdrop up (its terminal close is confirmed via a dialog
-    // on a slow runner). `fixed inset-0 … z-50` then eats the very first click below.
-    for (let i = 0; i < 3; i++) {
-      const backdrop = page.locator('div.fixed.inset-0.z-50').first()
-      if (!(await backdrop.isVisible().catch(() => false))) break
-      await page.keyboard.press('Escape')
-      await page.waitForTimeout(300)
-    }
+    // on a slow runner) and it then eats the very first click below. Escape alone was not
+    // enough — the confirm has no key handler — so use the shared drain, which also tries
+    // the modal's own Cancel button and the backdrop.
+    await dismissOverlays(page)
 
     for (let i = 0; i < 10; i++) {
       // Open modal

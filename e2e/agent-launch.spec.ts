@@ -319,7 +319,8 @@ test.describe.serial('4. InstallHint Modal', () => {
   test('4.2 InstallHint modal shows install steps', async () => {
     // 4.1 leaves the InstallHint modal open (these are serial), and on a runner with no
     // agent CLIs installed it stays up and intercepts the Welcome-screen click below.
-    await esc()
+    // Escape does not close it — InstallHint has no key handler, only a backdrop onClick.
+    await dismissInstallHint()
     await page.waitForTimeout(300)
 
     // Try triggering from Welcome screen if visible

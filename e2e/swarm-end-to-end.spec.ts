@@ -136,7 +136,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
-      ...e2eShimEnv(),
+      ...e2eShimEnv('swarm-end-to-end'),
     },
   })
 

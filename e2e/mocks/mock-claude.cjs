@@ -259,6 +259,13 @@ function readMcpCredentials() {
 }
 
 function userDataDir() {
+  // Every spec now launches Electron with its own `--user-data-dir`, so the app writes
+  // `mcp-token` into a temp profile rather than the OS default below. The spec passes
+  // that dir through as TERMPOLIS_TEST_USER_DATA_DIR (see e2eShimEnv); without it this
+  // mock read the default path and died with ENOENT before it could drive the swarm.
+  if (process.env.TERMPOLIS_TEST_USER_DATA_DIR) {
+    return process.env.TERMPOLIS_TEST_USER_DATA_DIR;
+  }
   if (process.platform === 'win32') {
     return path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis');
   }

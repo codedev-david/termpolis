@@ -77,7 +77,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
-      ...e2eShimEnv(),
+      ...e2eShimEnv('swarm-mcp-unavailable'),
       // This is the magic env var: mock-claude.cjs will print the
       // MCP-unavailable message and exit instead of driving the swarm.
       MOCK_CLAUDE_BYPASS_MCP: '1',
