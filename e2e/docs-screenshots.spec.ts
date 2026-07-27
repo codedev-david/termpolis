@@ -19,7 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir } from './helpers/launch'
 
 const PROJECT_ROOT = path.resolve('.')
 const OUT = path.join(PROJECT_ROOT, 'e2e', 'screenshots', 'docs')
@@ -162,7 +162,7 @@ test.beforeAll(async () => {
   catch { execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' }) }
 
   const dirs = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis'),
+    e2eUserDataDir('docs-screenshots'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
     path.join(os.homedir(), '.config', 'termpolis'),
     path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),

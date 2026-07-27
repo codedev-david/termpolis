@@ -24,7 +24,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -37,7 +37,7 @@ const SCREENSHOTS = 'e2e/screenshots/swarm-end-to-end'
 const TASK_FILE = path.join(os.homedir(), '.termpolis-conductor-task.md')
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis')
+  if (process.platform === 'win32') return e2eUserDataDir('swarm-end-to-end')
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
   return path.join(os.homedir(), '.config', 'termpolis')
 }
@@ -118,7 +118,7 @@ test.beforeAll(async () => {
 
   // Wipe session.json + any lockfile so we start fresh
   const candidates = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis'),
+    e2eUserDataDir('swarm-end-to-end'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
     path.join(os.homedir(), '.config', 'termpolis'),
     path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),
@@ -147,6 +147,7 @@ test.beforeAll(async () => {
   })
 
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
 
   // Give the MCP server time to bind and write its token/port files

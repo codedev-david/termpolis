@@ -18,6 +18,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
+import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
 
 let app: ElectronApplication
 let token: string
@@ -98,6 +99,7 @@ test.beforeAll(async () => {
     env: { ...process.env, NODE_ENV: 'test' },
   })
   const page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(5000) // let the MCP server bind + write token/port
 

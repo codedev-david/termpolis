@@ -23,7 +23,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -33,7 +33,7 @@ const SCREENSHOTS = 'e2e/screenshots/observability-full-flow'
 const TEST_CWD = path.join(os.tmpdir(), `termpolis-obs-e2e-${Date.now()}`)
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis')
+  if (process.platform === 'win32') return e2eUserDataDir('observability-full-flow')
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
   return path.join(os.homedir(), '.config', 'termpolis')
 }
@@ -66,6 +66,7 @@ test.beforeAll(async () => {
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(3000)
 })

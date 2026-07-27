@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -24,7 +24,7 @@ test.beforeAll(async () => {
 
   // Clear session so we start fresh
   const os = await import('os')
-  const sessionPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'session.json')
+  const sessionPath = path.join(e2eUserDataDir('comprehensive'), 'session.json')
   if (fs.existsSync(sessionPath)) {
     fs.writeFileSync(sessionPath, JSON.stringify({
       terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs'
@@ -36,6 +36,7 @@ test.beforeAll(async () => {
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(3000)
 })
@@ -588,7 +589,7 @@ test.describe.serial('12. MCP Server', () => {
 
   test('12.3 token file exists', async () => {
     const os = await import('os')
-    const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+    const tokenPath = path.join(e2eUserDataDir('comprehensive'), 'mcp-token')
     expect(fs.existsSync(tokenPath)).toBeTruthy()
     const token = fs.readFileSync(tokenPath, 'utf-8').trim()
     expect(token.length).toBe(64) // 256-bit hex
@@ -597,7 +598,7 @@ test.describe.serial('12. MCP Server', () => {
   test('12.4 returns 14 tools with auth', async () => {
     const { execSync } = await import('child_process')
     const os = await import('os')
-    const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+    const tokenPath = path.join(e2eUserDataDir('comprehensive'), 'mcp-token')
     const token = fs.readFileSync(tokenPath, 'utf-8').trim()
     const result = execSync(
       `curl -s -H "Authorization: Bearer ${token}" http://127.0.0.1:9315/mcp -d "{\\"jsonrpc\\":\\"2.0\\",\\"method\\":\\"tools/list\\",\\"id\\":1}"`,
@@ -610,7 +611,7 @@ test.describe.serial('12. MCP Server', () => {
   test('12.5 can list terminals via MCP', async () => {
     const http = await import('http')
     const os = await import('os')
-    const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+    const tokenPath = path.join(e2eUserDataDir('comprehensive'), 'mcp-token')
     const token = fs.readFileSync(tokenPath, 'utf-8').trim()
     // Use Node http instead of curl to avoid escaping issues
     const result: string = await new Promise((resolve, reject) => {

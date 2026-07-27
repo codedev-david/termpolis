@@ -8,7 +8,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let token: string
@@ -72,12 +72,13 @@ test.beforeAll(async () => {
   })
 
   const page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   // Wait for MCP server to be fully ready
   await page.waitForTimeout(5000)
 
   // Read auth token
-  const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+  const tokenPath = path.join(e2eUserDataDir('mcp-swarm-tools'), 'mcp-token')
   token = fs.readFileSync(tokenPath, 'utf-8').trim()
 })
 

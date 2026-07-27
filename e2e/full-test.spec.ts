@@ -1,7 +1,7 @@
 ﻿import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -16,6 +16,7 @@ test.beforeAll(async () => {
   })
 
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(2000)
 })
@@ -426,7 +427,7 @@ test('33 - MCP server returns tools with auth', async () => {
   const fs = await import('fs')
   const os = await import('os')
   try {
-    const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+    const tokenPath = path.join(e2eUserDataDir('full-test'), 'mcp-token')
     const token = fs.readFileSync(tokenPath, 'utf-8').trim()
     const result = execSync(
       `curl -s -H "Authorization: Bearer ${token}" http://127.0.0.1:9315/mcp -d "{\\"jsonrpc\\":\\"2.0\\",\\"method\\":\\"tools/list\\",\\"id\\":1}"`,

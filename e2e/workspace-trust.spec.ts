@@ -14,7 +14,7 @@ import { execFileSync, execSync } from 'child_process'
 import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -30,6 +30,7 @@ test.beforeAll(async () => {
     env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_TRUST: 'deny' },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   // Main process needs a beat to finish initWorkspaceTrust + MCP server bind
   await page.waitForTimeout(2500)

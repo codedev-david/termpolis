@@ -7,7 +7,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 
@@ -21,6 +21,7 @@ test.beforeAll(async () => {
   })
 
   const page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   // Wait for all auto-registration to complete
   await page.waitForTimeout(5000)
@@ -35,7 +36,7 @@ test.afterAll(async () => {
 // ══════════════════════════════════════════════════════
 
 test('MCP token file exists and is 64-char hex', () => {
-  const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+  const tokenPath = path.join(e2eUserDataDir('mcp-registration'), 'mcp-token')
   expect(fs.existsSync(tokenPath)).toBeTruthy()
   const token = fs.readFileSync(tokenPath, 'utf-8').trim()
   expect(token.length).toBe(64)
@@ -75,7 +76,7 @@ test('MCP server rejects unauthenticated requests', async () => {
 
 test('MCP server returns 14 tools with valid auth', async () => {
   const http = await import('http')
-  const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+  const tokenPath = path.join(e2eUserDataDir('mcp-registration'), 'mcp-token')
   const token = fs.readFileSync(tokenPath, 'utf-8').trim()
 
   try {
@@ -116,7 +117,7 @@ test('MCP server returns 14 tools with valid auth', async () => {
 test('MCP server handles notifications without error', async () => {
   try {
   const http = await import('http')
-  const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+  const tokenPath = path.join(e2eUserDataDir('mcp-registration'), 'mcp-token')
   const token = fs.readFileSync(tokenPath, 'utf-8').trim()
 
   const result: string = await new Promise((resolve, reject) => {
@@ -246,7 +247,7 @@ test('Gemini CLI: settings.json has termpolis MCP server', () => {
 test('Swarm: can create and list tasks via MCP', async () => {
   try {
   const http = await import('http')
-  const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+  const tokenPath = path.join(e2eUserDataDir('mcp-registration'), 'mcp-token')
   const token = fs.readFileSync(tokenPath, 'utf-8').trim()
 
   async function mcpCall(method: string, params: any = {}) {
@@ -288,7 +289,7 @@ test('Swarm: can create and list tasks via MCP', async () => {
 test('Swarm: can list agents via MCP', async () => {
   try {
   const http = await import('http')
-  const tokenPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'mcp-token')
+  const tokenPath = path.join(e2eUserDataDir('mcp-registration'), 'mcp-token')
   const token = fs.readFileSync(tokenPath, 'utf-8').trim()
 
   const result: string = await new Promise((resolve, reject) => {

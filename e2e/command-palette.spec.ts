@@ -6,7 +6,7 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -21,6 +21,7 @@ test.beforeAll(async () => {
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(2000)
 })

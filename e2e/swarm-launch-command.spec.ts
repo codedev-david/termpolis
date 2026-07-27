@@ -21,7 +21,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -35,7 +35,7 @@ const RUN_SH = path.join(os.homedir(), '.termpolis-conductor-run.sh')
 const RUN_CMD = path.join(os.homedir(), '.termpolis-conductor-run.cmd')
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis')
+  if (process.platform === 'win32') return e2eUserDataDir('swarm-launch-command')
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
   return path.join(os.homedir(), '.config', 'termpolis')
 }
@@ -59,7 +59,7 @@ test.beforeAll(async () => {
   }
 
   const candidates = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis'),
+    e2eUserDataDir('swarm-launch-command'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
     path.join(os.homedir(), '.config', 'termpolis'),
     path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),
@@ -89,6 +89,7 @@ test.beforeAll(async () => {
   })
 
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(3000)
 

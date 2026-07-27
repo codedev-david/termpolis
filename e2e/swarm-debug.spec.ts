@@ -11,7 +11,7 @@ import os from 'os'
 // alternative (dynamic import from page.evaluate) doesn't work because the
 // renderer bundle doesn't ship source files at those paths.
 import { buildConductorPrompt } from '../src/renderer/src/lib/conductorPrompt'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -23,7 +23,7 @@ test.beforeAll(async () => {
 
   // Clean session
   const appDataDirs = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis'),
+    e2eUserDataDir('swarm-debug'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
   ]
   for (const dir of appDataDirs) {
@@ -48,6 +48,7 @@ test.beforeAll(async () => {
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(3000)
 })

@@ -28,7 +28,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -38,7 +38,7 @@ const SHIM_DIR = path.join(PROJECT_ROOT, 'e2e', 'test-shims')
 const SCREENSHOTS = 'e2e/screenshots/swarm-mcp-unavailable'
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis')
+  if (process.platform === 'win32') return e2eUserDataDir('swarm-mcp-unavailable')
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
   return path.join(os.homedir(), '.config', 'termpolis')
 }
@@ -57,7 +57,7 @@ test.beforeAll(async () => {
   }
 
   const candidates = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis'),
+    e2eUserDataDir('swarm-mcp-unavailable'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
     path.join(os.homedir(), '.config', 'termpolis'),
     path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),
@@ -90,6 +90,7 @@ test.beforeAll(async () => {
   })
 
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(3000)
 

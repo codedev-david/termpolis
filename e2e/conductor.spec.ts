@@ -11,7 +11,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -33,7 +33,7 @@ test.beforeAll(async () => {
   // Clear session so we start fresh on the Welcome screen
   const os = await import('os')
   const appDataDirs = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis'),
+    e2eUserDataDir('conductor'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
   ]
   const cleanSession = JSON.stringify({
@@ -65,6 +65,7 @@ test.beforeAll(async () => {
     },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(2000)
 })

@@ -35,6 +35,7 @@ import fs from 'fs'
 import os from 'os'
 import http from 'http'
 import net from 'net'
+import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
 
 const REAL_CLAUDE_ENABLED = process.env.TERMPOLIS_TEST_REAL_CLAUDE === '1'
 
@@ -122,6 +123,7 @@ test.beforeAll(async () => {
   })
 
   const page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   // All four plugin writes + MCP server listen happen in app.whenReady.
   // Give them a comfortable buffer before we start probing.

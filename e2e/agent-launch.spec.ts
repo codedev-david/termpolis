@@ -6,7 +6,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -23,7 +23,7 @@ test.beforeAll(async () => {
 
   // Clear session so we start fresh on the Welcome screen
   const os = await import('os')
-  const sessionPath = path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'session.json')
+  const sessionPath = path.join(e2eUserDataDir('agent-launch'), 'session.json')
   if (fs.existsSync(sessionPath)) {
     fs.writeFileSync(sessionPath, JSON.stringify({
       terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs'
@@ -40,6 +40,7 @@ test.beforeAll(async () => {
     },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(2000)
 })

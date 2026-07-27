@@ -7,11 +7,13 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
+import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 
-const launchArgs = [path.resolve('out/main/index.js')]
+// Same profile on every relaunch — this spec's whole point is that state survives a restart.
+const launchArgs = e2eLaunchArgs('session-restore')
 const launchEnv = {
   ...process.env,
   NODE_ENV: 'test',
@@ -23,6 +25,7 @@ const launchEnv = {
 async function launchApp() {
   app = await electron.launch({ args: launchArgs, env: launchEnv })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(3000) // wait for restore + agent init
 }
@@ -117,19 +120,16 @@ test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
-  // Clear session so we start fresh on the Welcome screen
-  const os = await import('os')
-  const sessionPaths = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'session.json'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron', 'session.json'),
-  ]
+  // Start fresh on the Welcome screen. Seeded into this spec's own profile — the old code
+  // wrote into ~/AppData/Roaming/termpolis, i.e. the developer's REAL session layout.
+  const sessionPaths = [path.join(e2eUserDataDir('session-restore'), 'session.json')]
   const cleanSession = JSON.stringify({
-    terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs'
+    terminals: [], workspaces: [],
+    defaultShell: process.platform === 'win32' ? 'powershell' : 'bash',
+    viewMode: 'tabs',
   })
   for (const sessionPath of sessionPaths) {
-    if (fs.existsSync(sessionPath)) {
-      fs.writeFileSync(sessionPath, cleanSession)
-    }
+    fs.writeFileSync(sessionPath, cleanSession)
   }
 
   await launchApp()

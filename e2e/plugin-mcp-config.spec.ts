@@ -29,6 +29,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
 
 let app: ElectronApplication
 let scratchHome: string
@@ -66,6 +67,7 @@ test.beforeAll(async () => {
   })
 
   const page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   // All four plugin writes happen synchronously in app.whenReady, but they
   // run after the window loads. Give them a comfortable buffer.

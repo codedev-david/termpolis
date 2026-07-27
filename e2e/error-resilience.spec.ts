@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -20,7 +20,7 @@ test.beforeAll(async () => {
   // Clear session so we start fresh on the Welcome screen
   const os = await import('os')
   const sessionPaths = [
-    path.join(os.homedir(), 'AppData', 'Roaming', 'termpolis', 'session.json'),
+    path.join(e2eUserDataDir('error-resilience'), 'session.json'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Electron', 'session.json'),
   ]
   const cleanSession = JSON.stringify({
@@ -42,6 +42,7 @@ test.beforeAll(async () => {
     },
   })
   page = await app.firstWindow()
+  await dismissOnboarding(page)
   await page.waitForLoadState('domcontentloaded')
   await page.waitForTimeout(2000)
 })
@@ -101,6 +102,7 @@ test.describe.serial('Error Resilience', () => {
   test('1. app launches without crashing (smoke test)', async () => {
     // The app should be running and showing either the Welcome screen or main UI
     const window = await app.firstWindow()
+    await dismissOnboarding(window)
     expect(window).toBeTruthy()
 
     // The page should have loaded content — check for the app root or a known element
