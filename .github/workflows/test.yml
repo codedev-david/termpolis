@@ -5,6 +5,11 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Callable so release.yml gates on the REAL suite. Before this, a tag ran
+  # `npx vitest run` and nothing else — no lint, no typecheck, no coverage
+  # threshold, no e2e — so the only thing standing between a red commit and
+  # published installers was remembering to watch Tests before tagging.
+  workflow_call:
 
 jobs:
   # Fast static checks — run on every push/PR.
@@ -278,11 +283,60 @@ jobs:
       - name: Swarm Dashboard + directory-first launch gate
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npx playwright test e2e/swarm-dashboard.spec.ts
+      # Terminal LAYOUT gate: measures the real box model in the running renderer —
+      # rows must stop before the scrollbar at every pane width, the styled gutter must
+      # exist, and `scrollbar-width`/`-color` must stay unset (either one makes Chromium
+      # drop the whole ::-webkit-scrollbar block). v1.32.4 shipped rows painting over the
+      # bar; jsdom has no layout engine, so no unit test could have seen it.
+      - name: Terminal layout — rows never paint over the scrollbar
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npx playwright test e2e/terminal-layout.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces
+          path: test-results/
+          retention-days: 7
+
+  # TRIAGE (temporary, non-blocking): runs the WHOLE e2e directory, not just the
+  # named gates above. 34 of the 52 specs on disk had never been executed by CI —
+  # they cannot fail, so they rot silently (v1.30.3 removed a feature and two specs'
+  # assertions went stale, invisible until someone ran them by hand). This job
+  # reports which of them still pass so they can be promoted to real gates or
+  # deleted; it is continue-on-error until that classification is done, then this
+  # job replaces the named steps above.
+  e2e-full-triage:
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Build
+        run: npm run build
+      - name: Whole e2e suite (non-blocking triage)
+        continue-on-error: true
+        run: xvfb-run --auto-servernum npx playwright test --reporter=list
+      - name: Upload triage traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces-triage
           path: test-results/
           retention-days: 7
 
