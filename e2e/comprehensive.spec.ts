@@ -91,9 +91,12 @@ test.describe.serial('1. Fresh Launch', () => {
 
 test.describe.serial('2. Sidebar', () => {
   test('2.1 all icon buttons present', async () => {
-    for (const title of ['Settings', 'Workflows', 'Git Panel', 'Swarm Dashboard (Ctrl+Shift+S)', 'Collapse sidebar']) {
+    for (const title of ['Settings', 'Git Panel', 'Swarm Dashboard (Ctrl+Shift+S)', 'Collapse sidebar']) {
       await expect(page.locator(`button[title="${title}"]`)).toBeVisible()
     }
+    // The Workflow Orchestrator (v1.31) replaced the old `title="Workflows"` icon button
+    // with a collapsible sidebar SECTION, so assert the section header instead.
+    await expect(page.locator('button:has-text("Workflows")').first()).toBeVisible()
     await ss('2.1-sidebar-icons')
   })
 
@@ -308,6 +311,9 @@ test.describe.serial('4. Context Menu', () => {
 // SECTION 5: SETTINGS
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+const settingsTab = (label: string) =>
+  page.locator(`[data-testid="settings-tabs"] button:has-text("${label}")`)
+
 test.describe.serial('5. Settings', () => {
   test('5.1 open settings', async () => {
     await esc()
@@ -323,11 +329,12 @@ test.describe.serial('5. Settings', () => {
     await expect(select).toBeVisible()
   })
 
-  test('5.3 autocomplete toggle', async () => {
-    await expect(page.locator('text=Enable Autocomplete')).toBeVisible()
-  })
+  // 5.3 ("autocomplete toggle") is gone: no "Enable Autocomplete" control exists anywhere
+  // in the renderer any more — autocomplete is driven from the status bar.
 
   test('5.4 keyboard shortcuts table', async () => {
+    // Settings is tabbed now; each section only exists in the DOM while its tab is open.
+    await settingsTab('Keybindings').click()
     await expect(page.locator('text=Keyboard Shortcuts')).toBeVisible()
     await expect(page.locator('text=ACTION').first()).toBeVisible()
     await expect(page.locator('text=SHORTCUT').first()).toBeVisible()
@@ -341,6 +348,7 @@ test.describe.serial('5. Settings', () => {
   })
 
   test('5.6 shell config files section', async () => {
+    await settingsTab('Shell Config').click()
     const config = page.locator('text=Shell Config Files')
     if (await config.isVisible().catch(() => false)) {
       await expect(config).toBeVisible()

@@ -187,17 +187,23 @@ test('Settings panel opens and shows keybindings', async () => {
   const heading = page.locator('h1:has-text("Settings")')
   await expect(heading).toBeVisible()
 
-  // Should see Keyboard Shortcuts
-  const shortcuts = page.locator('text=Keyboard Shortcuts')
-  await expect(shortcuts).toBeVisible()
+  // Settings is tabbed now (it used to be one long scroll), so each section has to be
+  // opened before its controls exist in the DOM.
+  await expect(page.locator('[data-testid="settings-tabs"]')).toBeVisible()
 
-  // Should see Default Shell
+  // General tab (the default) owns the shell + autocomplete controls.
   const shell = page.locator('text=Default Shell')
   await expect(shell).toBeVisible()
 
-  // Should see Enable Autocomplete
-  const autocomplete = page.locator('text=Enable Autocomplete')
-  await expect(autocomplete).toBeVisible()
+  // (An "Enable Autocomplete" toggle used to sit here. It no longer exists anywhere in the
+  // renderer — autocomplete is surfaced from the status bar now — so asserting on it was
+  // testing a control the app removed.)
+
+  // Keybindings tab owns the shortcut editor.
+  await page.locator('[data-testid="settings-tabs"] button:has-text("Keybindings")').click()
+  const shortcuts = page.locator('text=Keyboard Shortcuts')
+  await expect(shortcuts).toBeVisible()
+  await page.locator('[data-testid="settings-tabs"] button:has-text("General")').click()
 
   // Close settings
   await settings.click()

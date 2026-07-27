@@ -218,7 +218,13 @@ test('14 - settings panel opens', async () => {
   await screenshot('14-settings-panel')
 })
 
+// Settings became a tabbed pane; each section only exists in the DOM while its tab is
+// selected. These three were written against the old single-scroll layout.
+const settingsTab = (label: string) =>
+  page.locator(`[data-testid="settings-tabs"] button:has-text("${label}")`)
+
 test('15 - keybindings visible in settings', async () => {
+  await settingsTab('Keybindings').click()
   await expect(page.locator('text=Keyboard Shortcuts')).toBeVisible()
   await expect(page.locator('text=Copy').first()).toBeVisible()
   await expect(page.locator('text=Paste').first()).toBeVisible()
@@ -226,19 +232,19 @@ test('15 - keybindings visible in settings', async () => {
 })
 
 test('16 - default shell selector visible', async () => {
+  await settingsTab('General').click()
   await expect(page.locator('text=Default Shell')).toBeVisible()
 })
 
-test('17 - autocomplete toggle visible', async () => {
-  await expect(page.locator('text=Enable Autocomplete')).toBeVisible()
-})
+// 17 ("autocomplete toggle visible") is gone: no "Enable Autocomplete" control exists
+// anywhere in the renderer any more — autocomplete is driven from the status bar.
 
 test('18 - shell config editor visible', async () => {
-  const configFiles = page.locator('text=Shell Config Files')
-  if (await configFiles.isVisible().catch(() => false)) {
-    await expect(configFiles).toBeVisible()
-    await screenshot('18-shell-config-editor')
-  }
+  // Was wrapped in `if (visible)`, so under the tabbed layout it asserted nothing at all.
+  await settingsTab('Shell Config').click()
+  await expect(page.locator('text=Shell Config Files')).toBeVisible()
+  await screenshot('18-shell-config-editor')
+  await settingsTab('General').click()
 })
 
 test('19 - close settings returns to terminal', async () => {
