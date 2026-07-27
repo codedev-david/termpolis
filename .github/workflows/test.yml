@@ -309,7 +309,11 @@ jobs:
   e2e-full-triage:
     needs: static
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -329,14 +333,17 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Build
         run: npm run build
+      # Sharded: Electron forces workers=1 inside a job, and once the 34 specs
+      # actually launched, the whole directory ran past the 90-minute cap and was
+      # cancelled mid-suite. Separate runners are the only parallelism available.
       - name: Whole e2e suite (non-blocking triage)
         continue-on-error: true
-        run: xvfb-run --auto-servernum npx playwright test --reporter=list
+        run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
       - name: Upload triage traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-traces-triage
+          name: playwright-traces-triage-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
 
