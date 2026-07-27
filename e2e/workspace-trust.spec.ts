@@ -14,6 +14,7 @@ import { execFileSync, execSync } from 'child_process'
 import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
+import { e2eLaunchArgs } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -25,7 +26,7 @@ test.beforeAll(async () => {
   // the gate without a visible modal. Individual tests override via
   // workspace:trust IPC calls.
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: e2eLaunchArgs('workspace-trust'),
     env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_TRUST: 'deny' },
   })
   page = await app.firstWindow()

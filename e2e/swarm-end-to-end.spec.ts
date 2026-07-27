@@ -24,6 +24,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
+import { e2eLaunchArgs } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -134,7 +135,7 @@ test.beforeAll(async () => {
   }
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: e2eLaunchArgs('swarm-end-to-end'),
     env: {
       ...process.env,
       NODE_ENV: 'test',

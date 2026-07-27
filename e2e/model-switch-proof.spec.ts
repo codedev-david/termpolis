@@ -2,6 +2,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
+import { e2eLaunchArgs } from './helpers/launch'
 
 // Proves live model switching works MID-SESSION for a HEURISTICALLY-detected Claude
 // terminal (no authoritative launch command — Termpolis can't safely interrupt a session
@@ -30,7 +31,7 @@ async function createTerminal(name: string): Promise<string> {
 
 test.beforeAll(async () => {
   fs.mkdirSync(SHOT_DIR, { recursive: true })
-  app = await electron.launch({ args: [path.resolve('out/main/index.js')], env: { ...process.env, NODE_ENV: 'test' } })
+  app = await electron.launch({ args: e2eLaunchArgs('model-switch-proof'), env: { ...process.env, NODE_ENV: 'test' } })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   await page.setViewportSize({ width: 1440, height: 1024 }).catch(() => {})

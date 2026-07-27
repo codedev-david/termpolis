@@ -51,7 +51,11 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
       viewMode: 'tabs',
     }))
     app = await electron.launch({
-      args: [path.resolve('out/main/index.js'), `--user-data-dir=${ud}`],
+      args: [
+      path.resolve('out/main/index.js'),
+      `--user-data-dir=${ud}`,
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+    ],
       env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1' },
     })
     page = await app.firstWindow()

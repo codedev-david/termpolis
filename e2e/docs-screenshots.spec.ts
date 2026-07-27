@@ -19,6 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { e2eLaunchArgs } from './helpers/launch'
 
 const PROJECT_ROOT = path.resolve('.')
 const OUT = path.join(PROJECT_ROOT, 'e2e', 'screenshots', 'docs')
@@ -178,7 +179,7 @@ test.beforeAll(async () => {
   }
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: e2eLaunchArgs('docs-screenshots'),
     env: {
       ...process.env,
       NODE_ENV: 'test',

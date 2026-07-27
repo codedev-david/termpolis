@@ -7,6 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
+import { e2eLaunchArgs } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -31,7 +32,7 @@ test.beforeAll(async () => {
   }
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: e2eLaunchArgs('comprehensive'),
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()

@@ -11,6 +11,7 @@ import os from 'os'
 // alternative (dynamic import from page.evaluate) doesn't work because the
 // renderer bundle doesn't ship source files at those paths.
 import { buildConductorPrompt } from '../src/renderer/src/lib/conductorPrompt'
+import { e2eLaunchArgs } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -43,7 +44,7 @@ test.beforeAll(async () => {
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: e2eLaunchArgs('swarm-debug'),
     env: { ...process.env, NODE_ENV: 'test' },
   })
   page = await app.firstWindow()

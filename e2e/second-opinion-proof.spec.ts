@@ -1,6 +1,7 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
+import { e2eLaunchArgs } from './helpers/launch'
 
 // Proves the Second Opinion REVIEW pipeline works end-to-end with REAL agents — Claude,
 // Codex, and Gemini — through the real IPC (`agent:second-opinion`) → headless invoke →
@@ -13,7 +14,7 @@ let app: ElectronApplication
 let page: Page
 
 test.beforeAll(async () => {
-  app = await electron.launch({ args: [path.resolve('out/main/index.js')], env: { ...process.env, NODE_ENV: 'test' } })
+  app = await electron.launch({ args: e2eLaunchArgs('second-opinion-proof'), env: { ...process.env, NODE_ENV: 'test' } })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
 })

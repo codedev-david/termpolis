@@ -8,6 +8,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
+import { e2eLaunchArgs } from './helpers/launch'
 
 let app: ElectronApplication
 let token: string
@@ -66,7 +67,7 @@ test.beforeAll(async () => {
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js')],
+    args: e2eLaunchArgs('mcp-swarm-tools'),
     env: { ...process.env, NODE_ENV: 'test' },
   })
 

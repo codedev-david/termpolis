@@ -49,7 +49,11 @@ test.beforeAll(async () => {
   fs.writeFileSync(sessionPath, cleanSession)
 
   app = await electron.launch({
-    args: [path.resolve('out/main/index.js'), `--user-data-dir=${userDataDir}`],
+    args: [
+      path.resolve('out/main/index.js'),
+      `--user-data-dir=${userDataDir}`,
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+    ],
     env: {
       ...process.env,
       NODE_ENV: 'test',
