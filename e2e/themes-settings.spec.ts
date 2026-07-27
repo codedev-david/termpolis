@@ -100,27 +100,20 @@ test.describe.serial('Themes & Settings', () => {
     await expect(shellSelect).toBeVisible()
   })
 
-  test('3. settings panel shows Autocomplete toggle', async () => {
-    // Re-open settings if it closed after earlier tests (the panel can be
-    // dismissed by some clicks/keys, so don't assume it's still open).
+  // 3 ("settings panel shows Autocomplete toggle") is gone: no "Enable Autocomplete"
+  // control exists anywhere in the renderer any more — autocomplete is driven from the
+  // status bar.
+
+  test('4. settings panel has keybindings section', async () => {
+    // Re-open settings if it closed after earlier tests (the panel can be dismissed by
+    // some clicks/keys, so don't assume it's still open).
     const heading = page.locator('h1:has-text("Settings")')
     if (!(await heading.isVisible().catch(() => false))) {
       await page.locator('button[title="Settings"]').click()
       await page.waitForTimeout(500)
     }
-    // "Enable Autocomplete" is rendered as plain text (not a <label>), so
-    // we match on text content instead of the label element.
-    const autocompleteLabel = page.getByText('Enable Autocomplete', { exact: true }).first()
-    await expect(autocompleteLabel).toBeVisible({ timeout: 5000 })
-
-    // A toggle button sits in the same row as the label. We don't require a
-    // specific Tailwind class — just verify there's a button next to it.
-    const toggleRow = autocompleteLabel.locator('..')
-    const toggleBtn = toggleRow.locator('button').first()
-    await expect(toggleBtn).toBeVisible()
-  })
-
-  test('4. settings panel has keybindings section', async () => {
+    // Settings is tabbed now; the shortcut editor only mounts with its tab selected.
+    await page.locator('[data-testid="settings-tabs"] button:has-text("Keybindings")').click()
     const keybindingsLabel = page.locator('label:has-text("Keyboard Shortcuts")')
     await expect(keybindingsLabel).toBeVisible()
 

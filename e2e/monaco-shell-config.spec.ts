@@ -28,7 +28,6 @@ test.beforeAll(async () => {
   const os = await import('os')
   const sessionPaths = [
     path.join(e2eUserDataDir('monaco-shell-config'), 'session.json'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron', 'session.json'),
   ]
   const cleanSession = JSON.stringify({
     terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs'

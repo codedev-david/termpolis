@@ -163,9 +163,6 @@ test.beforeAll(async () => {
 
   const dirs = [
     e2eUserDataDir('docs-screenshots'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
-    path.join(os.homedir(), '.config', 'termpolis'),
-    path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),
   ]
   const cleanSession = JSON.stringify({
     terminals: [], workspaces: [],

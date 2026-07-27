@@ -33,9 +33,9 @@ const SCREENSHOTS = 'e2e/screenshots/observability-full-flow'
 const TEST_CWD = path.join(os.tmpdir(), `termpolis-obs-e2e-${Date.now()}`)
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return e2eUserDataDir('observability-full-flow')
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-  return path.join(os.homedir(), '.config', 'termpolis')
+  // `--user-data-dir=X` makes X the app's userData path on win32, darwin AND linux —
+  // the old per-platform switch pointed the non-Windows branches at the real profile.
+  return e2eUserDataDir('observability-full-flow')
 }
 
 test.beforeAll(async () => {
@@ -157,11 +157,13 @@ test.describe.serial('2. Activity Feed', () => {
     ]))
   })
 
-  test('2.4 Agent filter has all 4 supported agent types', async () => {
+  test('2.4 Agent filter offers exactly the supported agent roster', async () => {
     const feed = page.getByTestId('activity-feed')
     const agentSelect = feed.locator('select[aria-label="Filter by agent"]')
     const opts = await agentSelect.locator('option').allTextContents()
-    expect(opts).toEqual(expect.arrayContaining(['claude', 'codex', 'gemini', 'aider']))
+    // Exact, not arrayContaining: the roster has changed twice (aider dropped, then Qwen
+    // in v1.30.3) and a "contains" assertion let the filter drift out of sync silently.
+    expect(opts).toEqual(['all agents', 'claude', 'codex', 'gemini'])
   })
 
   test('2.5 Search input accepts and retains user input', async () => {

@@ -37,9 +37,9 @@ const SCREENSHOTS = 'e2e/screenshots/swarm-end-to-end'
 const TASK_FILE = path.join(os.homedir(), '.termpolis-conductor-task.md')
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return e2eUserDataDir('swarm-end-to-end')
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-  return path.join(os.homedir(), '.config', 'termpolis')
+  // `--user-data-dir=X` makes X the app's userData path on win32, darwin AND linux —
+  // the old per-platform switch pointed the non-Windows branches at the real profile.
+  return e2eUserDataDir('swarm-end-to-end')
 }
 
 async function httpRequest(
@@ -119,9 +119,6 @@ test.beforeAll(async () => {
   // Wipe session.json + any lockfile so we start fresh
   const candidates = [
     e2eUserDataDir('swarm-end-to-end'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
-    path.join(os.homedir(), '.config', 'termpolis'),
-    path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),
   ]
   const cleanSession = JSON.stringify({
     terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs',

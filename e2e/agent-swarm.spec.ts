@@ -31,7 +31,6 @@ test.beforeAll(async () => {
   const os = await import('os')
   const appDataDirs = [
     e2eUserDataDir('agent-swarm'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
   ]
   const cleanSession = JSON.stringify({
     terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs'

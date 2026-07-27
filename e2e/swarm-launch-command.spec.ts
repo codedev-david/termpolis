@@ -35,9 +35,9 @@ const RUN_SH = path.join(os.homedir(), '.termpolis-conductor-run.sh')
 const RUN_CMD = path.join(os.homedir(), '.termpolis-conductor-run.cmd')
 
 function userDataDir(): string {
-  if (process.platform === 'win32') return e2eUserDataDir('swarm-launch-command')
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'termpolis')
-  return path.join(os.homedir(), '.config', 'termpolis')
+  // `--user-data-dir=X` makes X the app's userData path on win32, darwin AND linux —
+  // the old per-platform switch pointed the non-Windows branches at the real profile.
+  return e2eUserDataDir('swarm-launch-command')
 }
 
 test.beforeAll(async () => {
@@ -60,9 +60,6 @@ test.beforeAll(async () => {
 
   const candidates = [
     e2eUserDataDir('swarm-launch-command'),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'Electron'),
-    path.join(os.homedir(), '.config', 'termpolis'),
-    path.join(os.homedir(), 'Library', 'Application Support', 'termpolis'),
   ]
   const cleanSession = JSON.stringify({
     terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs',

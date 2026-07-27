@@ -168,13 +168,15 @@ test.describe.serial('Terminal Features', () => {
     await expect(contextMenu).toBeVisible()
   })
 
-  test('6. context menu has Copy, Paste, Export options', async () => {
+  test('6. context menu has Paste + Export, and Copy only as a shortcut hint', async () => {
     // Context menu should already be visible from previous test
     const contextMenu = page.locator('.fixed.z-50.bg-\\[\\#2d2d2d\\]')
 
-    // Check for Copy, Paste, and Export options
-    const copyBtn = contextMenu.locator('button:has-text("Copy")')
-    await expect(copyBtn).toBeVisible()
+    // v1.30.3 made Copy hotkey-only: a right-click can't reliably carry the xterm
+    // selection, so the greyed Copy BUTTONS were replaced by a "Copy shortcuts" hint row.
+    // Asserting a clickable Copy here is asserting a control that was deliberately removed.
+    await expect(contextMenu.locator('button:has-text("Copy")')).toHaveCount(0)
+    await expect(contextMenu.getByText('Copy shortcuts')).toBeVisible()
 
     const pasteBtn = contextMenu.locator('button:has-text("Paste")')
     await expect(pasteBtn).toBeVisible()
