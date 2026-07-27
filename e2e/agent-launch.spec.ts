@@ -58,6 +58,23 @@ async function esc() {
   await page.waitForTimeout(300)
 }
 
+/**
+ * InstallHint has NO Escape handler — it closes on a backdrop click only
+ * (InstallHint.tsx: `onClick={onClose}` on the backdrop, and the inner card
+ * stops propagation). Pressing Escape at it, which is what these tests used to
+ * do, left a `fixed inset-0` backdrop up that swallowed every later click in
+ * this serial file. Click the backdrop where it actually listens: the far edge,
+ * outside the w-96 card.
+ */
+async function dismissInstallHint() {
+  const backdrop = page.locator('[data-testid="install-hint-backdrop"]')
+  for (let i = 0; i < 3; i++) {
+    if (!(await backdrop.isVisible({ timeout: 500 }).catch(() => false))) return
+    await backdrop.click({ position: { x: 5, y: 5 } }).catch(() => {})
+    await page.waitForTimeout(300)
+  }
+}
+
 // Ensure the AI Agents section is expanded in the sidebar
 async function ensureAgentsExpanded() {
   const agentEntry = page.locator('text=Claude Code').first()
@@ -177,9 +194,10 @@ test.describe.serial('2. Sidebar AI Agents', () => {
     // Either way, a terminal was NOT created immediately — that is the key assertion.
     await ss('2.10-after-agent-click')
 
-    // Dismiss any modal/dialog that may have appeared
+    // Dismiss any modal/dialog that may have appeared. Clicking an agent that isn't
+    // installed raises InstallHint, which ignores Escape — hence both.
     await esc()
-    await page.waitForTimeout(300)
+    await dismissInstallHint()
   })
 })
 
@@ -189,6 +207,8 @@ test.describe.serial('2. Sidebar AI Agents', () => {
 
 test.describe.serial('3. Custom AI Profile', () => {
   test('3.1 Add custom AI profile: modal appears with name, command, shell, color fields', async () => {
+    // Separate describe block, same page — section 2 may have left InstallHint up.
+    await dismissInstallHint()
     const addBtn = page.locator('button[title="Add custom AI profile"]')
     await addBtn.click()
     await page.waitForTimeout(500)

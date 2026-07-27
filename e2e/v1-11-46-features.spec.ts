@@ -55,15 +55,33 @@ test.afterAll(async () => {
   if (app) await app.close()
 })
 
+/**
+ * Past AI Sessions / Model / Second Opinion render only when `badgeAgent` is set
+ * (TerminalPane.tsx) — they are meaningless in a plain shell. A bare terminal used to be
+ * enough here; it stopped being enough the moment those buttons were gated, and this spec
+ * has been asserting a button that cannot render ever since.
+ *
+ * `badgeAgent` = agentFromCommand(launch command) ?? detectedAgent. Launching a real agent
+ * needs the real binary, which CI does not have, so this drives the OTHER documented path:
+ * output detection (agentDetector.ts scans the first ~2KB for /claude|anthropic/i). Echoing
+ * the word is exactly the "an AI CLI the user started by hand in a plain shell" case.
+ */
 async function ensureOneTerminal() {
   const xtermCount = await page.locator('.xterm').count()
-  if (xtermCount > 0) return
-  const addBtn = page.locator('button:has-text("+ Add Terminal")').first()
-  await addBtn.click()
-  await page.waitForTimeout(500)
-  const create = page.getByRole('button', { name: 'Create', exact: true })
-  await create.click()
-  await page.waitForTimeout(2500)
+  if (xtermCount === 0) {
+    const addBtn = page.locator('button:has-text("+ Add Terminal")').first()
+    await addBtn.click()
+    await page.waitForTimeout(500)
+    const create = page.getByRole('button', { name: 'Create', exact: true })
+    await create.click()
+    await page.waitForTimeout(2500)
+  }
+  if (await page.locator('[data-testid="past-ai-sessions-btn"]').first().isVisible().catch(() => false)) return
+  await page.locator('.xterm').first().click()
+  await page.keyboard.type('echo claude')
+  await page.keyboard.press('Enter')
+  await page.locator('[data-testid="past-ai-sessions-btn"]').first()
+    .waitFor({ state: 'visible', timeout: 10000 })
 }
 
 test.describe.serial('v1.11.46 UX features', () => {

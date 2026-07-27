@@ -87,12 +87,25 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     // deliberately short enough to fit the viewport (marker + 25 lines) so the marker stays on
     // row 0 and never scrolls — while the rate of rewriting still buries the selection.
     await term.click()
-    const esc = '$([char]27)'
-    await page.keyboard.type(
-      `Write-Host -NoNewline "${esc}[?1002h${esc}[?1006h"; ` +
-      `while($true){ Write-Host -NoNewline "${esc}[2J${esc}[H"; Write-Host "${MARKER} keep me"; ` +
-      `1..25 | %{ Write-Host ("x" * 100) }; Start-Sleep -Milliseconds 25 }`,
-    )
+    // The shell is powershell on Windows and bash everywhere else (see session.json above) — this
+    // used to type PowerShell unconditionally, so on Linux CI `Write-Host` was just an unknown
+    // command, no repaint loop ever started, and the drag below selected the bash prompt instead of
+    // the marker. Same frame, written twice.
+    if (process.platform === 'win32') {
+      const esc = '$([char]27)'
+      await page.keyboard.type(
+        `Write-Host -NoNewline "${esc}[?1002h${esc}[?1006h"; ` +
+        `while($true){ Write-Host -NoNewline "${esc}[2J${esc}[H"; Write-Host "${MARKER} keep me"; ` +
+        `1..25 | %{ Write-Host ("x" * 100) }; Start-Sleep -Milliseconds 25 }`,
+      )
+    } else {
+      const esc = '\\033'
+      await page.keyboard.type(
+        `printf '${esc}[?1002h${esc}[?1006h'; ` +
+        `while :; do printf '${esc}[2J${esc}[H'; echo "${MARKER} keep me"; ` +
+        `for i in $(seq 25); do printf 'x%.0s' $(seq 100); echo; done; sleep 0.025; done`,
+      )
+    }
     await page.keyboard.press('Enter')
     await page.waitForTimeout(2500)
 

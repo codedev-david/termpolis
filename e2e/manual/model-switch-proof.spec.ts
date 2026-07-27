@@ -2,7 +2,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs } from '../helpers/launch'
 
 // Proves live model switching works MID-SESSION for a HEURISTICALLY-detected Claude
 // terminal (no authoritative launch command — Termpolis can't safely interrupt a session

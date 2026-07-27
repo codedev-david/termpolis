@@ -157,156 +157,16 @@ jobs:
           path: dist-electron-builder/linux-unpacked/
           retention-days: 3
 
-  # E2E smoke — Linux is the primary runner (xvfb keeps it cheap and
-  # deterministic). macOS piggybacks on chrome-smoke only (see e2e-smoke-macos
-  # below) so we can catch Darwin-specific regressions — node-pty native
-  # build drift, shell-detection path mismatches, Electron-on-arm64 quirks
-  # — without blowing CI minutes on the full suite.
-  e2e-smoke:
-    needs: static
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npm install && break
-            echo "npm install failed (attempt $i), cleaning cache and retrying..."
-            npm cache clean --force || true
-            sleep 10
-          done
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-      - name: Build
-        run: npm run build
-      - name: Smoke-click every sidebar button
-        run: xvfb-run --auto-servernum npx playwright test e2e/chrome-smoke.spec.ts
-      # Screens-show-results gate: regression guard against "screen opens
-      # but shows nothing" (the v1.11.5 / v1.11.6 silent-spinner symptom).
-      # Seeds real data into store + IPC, asserts visible text renders.
-      - name: UI screens show visible results
-        run: xvfb-run --auto-servernum npx playwright test e2e/ui-screens-show-results.spec.ts
-      # Plugin .mcp.json variant: guards the plugin-discovery path that
-      # Claude Code uses when NO --mcp-config flag is passed. Catches
-      # the v1.11.5 class of bug (adapter args[0] points at a missing file)
-      # and ensures the mcpServers wrapper shape is preserved.
-      - name: Plugin .mcp.json shape and adapter path
-        run: xvfb-run --auto-servernum npx playwright test e2e/plugin-mcp-config.spec.ts
-      # Context-pressure gate: proves the live status-bar pill renders, escalates
-      # (warn -> critical), and hides — driven through the REAL agent-event bus in the
-      # running app (publish -> IPC push -> hook -> computePressure -> component), not
-      # just unit mocks. Closes the "does it actually show up live" gap.
-      - name: Context-pressure indicator renders + escalates
-        run: xvfb-run --auto-servernum npx playwright test e2e/context-pressure.spec.ts
-      # Compaction re-primer gate: proves the FULL flow in the running app — a
-      # "Compacting conversation" marker in terminal output triggers a real
-      # bracketed-paste re-prime carrying seeded memory back into the terminal, and
-      # the cooldown prevents a second paste. Covers the TerminalPane wiring + real
-      # injectAutoPrimer that unit tests can't reach.
-      - name: Compaction re-primer pastes recalled memory
-        run: xvfb-run --auto-servernum npx playwright test e2e/compaction-reprime.spec.ts
-      # Report-a-Problem gate: proves the Help-modal entry point, the
-      # diagnostics IPC round-trip, and the openExternal handler are all
-      # wired. Stubs shell.openExternal so no real browser launches.
-      - name: Report-a-Problem flow
-        run: xvfb-run --auto-servernum npx playwright test e2e/report-problem.spec.ts
-      # Memory panel gate: proves the persistent-memory UI opens (Ctrl+Shift+M),
-      # exposes its controls, is discoverable via the Command Palette, and the
-      # inject-primer path responds — in the real Electron app.
-      - name: Memory panel flow
-        run: xvfb-run --auto-servernum npx playwright test e2e/memory-panel.spec.ts
-      # Cross-agent recall gate: proves one agent's memory_write is retrievable
-      # by another agent via memory_search over the REAL MCP wire (HTTP + auth +
-      # dispatch + shared store) in the running app.
-      - name: Cross-agent memory recall over MCP
-        run: xvfb-run --auto-servernum npx playwright test e2e/memory-cross-agent-recall.spec.ts
-      # Voice capture gate: proves the REAL getUserMedia -> AudioContext capture
-      # path works in the running app, using Chromium's fake audio device and a
-      # network-stubbed cloud STT engine (no model load). Closes the "does the
-      # mic actually work end-to-end" gap the jsdom unit suite can't reach.
-      - name: Voice capture from fake audio device
-        run: xvfb-run --auto-servernum npx playwright test e2e/voice-capture.spec.ts
-      # Voice DEAD-ZONE gate: feed steady background hum (the exact audio that made
-      # Whisper emit "the"/" you") as the mic and prove the app GATES it — shows a
-      # notice and injects NOTHING. Uses a committed noise fixture; needs no model
-      # (the speech/noise gate runs in the renderer first). The in-app proof of the fix.
-      - name: Voice gates steady background noise (no phantom transcript)
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/voice-noise-gate.spec.ts
-      # Clipboard gate: proves the terminal right-click menu actually COPIES the
-      # selection to the REAL OS clipboard (plain + code-block) and PASTES from it
-      # (the recurring "copy/paste does nothing" report) — end-to-end in real Electron.
-      - name: Terminal right-click copy + paste (real clipboard)
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/clipboard-paste.spec.ts
-      # Terminal-focus gate: proves switching terminals (Alt+<n> / clicking a tab),
-      # incl. re-selecting the already-active one, lands the caret on that
-      # terminal's xterm input — the "input is always ready" promise (focusNonce).
-      - name: Terminal switch focuses the input line
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/terminal-focus.spec.ts
-      # In-terminal find gate: Ctrl+Shift+F opens the find bar and the real
-      # SearchAddon finds a keyword that has scrolled into the scrollback.
-      - name: In-terminal find bar searches scrollback
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/terminal-search.spec.ts
-      # Workflow Orchestrator gate: author a Command + Control workflow through
-      # the real Designer UI, run it, and assert both steps reach `succeeded`
-      # on the live timeline — the whole author→save→run→events→timeline pipe.
-      - name: Workflow Orchestrator author→run→green
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/workflow-orchestrator.spec.ts
-      # gitCommit trigger gate: a REAL `git commit` in a real temp repo, armed
-      # only by the boot session fan-out, must land a run in the repo's history.
-      # Ubuntu-only — the unit suites drive triggers against a fake filesystem,
-      # so this is the one place real git plumbing is exercised.
-      - name: gitCommit + gitPush triggers against a real repo
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/workflow-git-trigger.spec.ts
-      # schedule + fileWatch gate: the other two automatic triggers, against the
-      # real ticker and a real recursive fs.watch. The unit suites inject a clock
-      # and a watcher, so every one of them would still pass if the ticker never
-      # started or `fs.watch(recursive)` threw on this platform — this is the only
-      # place those two are exercised for real.
-      - name: schedule + fileWatch triggers against a real clock and filesystem
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/workflow-schedule-filewatch-trigger.spec.ts
-      # Swarm Dashboard gate: tabs, and the load-bearing ordering rule that the
-      # directory picker runs BEFORE the wizard — dismiss the picker and nothing
-      # launches. Takes no dependency on an agent CLI, so it is cheap enough to
-      # gate every push (the full conductor pipeline lives in swarm-end-to-end).
-      - name: Swarm Dashboard + directory-first launch gate
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/swarm-dashboard.spec.ts
-      # Terminal LAYOUT gate: measures the real box model in the running renderer —
-      # rows must stop before the scrollbar at every pane width, the styled gutter must
-      # exist, and `scrollbar-width`/`-color` must stay unset (either one makes Chromium
-      # drop the whole ::-webkit-scrollbar block). v1.32.4 shipped rows painting over the
-      # bar; jsdom has no layout engine, so no unit test could have seen it.
-      - name: Terminal layout — rows never paint over the scrollbar
-        if: ${{ !cancelled() }}
-        run: xvfb-run --auto-servernum npx playwright test e2e/terminal-layout.spec.ts
-      - name: Upload failure traces
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-traces
-          path: test-results/
-          retention-days: 7
-
-  # TRIAGE (temporary, non-blocking): runs the WHOLE e2e directory, not just the
-  # named gates above. 34 of the 52 specs on disk had never been executed by CI —
-  # they cannot fail, so they rot silently (v1.30.3 removed a feature and two specs'
-  # assertions went stale, invisible until someone ran them by hand). This job
-  # reports which of them still pass so they can be promoted to real gates or
-  # deleted; it is continue-on-error until that classification is done, then this
-  # job replaces the named steps above.
-  e2e-full-triage:
+  # THE Linux e2e gate: the WHOLE e2e directory, blocking, sharded 4 ways.
+  #
+  # Until v1.32.5 CI ran 18 named specs and 34 of the 52 on disk had never been
+  # executed at all. A spec that cannot fail rots silently: v1.30.3 removed a
+  # feature and the specs asserting it went stale with nothing to say so, and
+  # swarm-integration spent releases red on a mock file that had been deleted.
+  # Anything that genuinely cannot run on a hosted runner lives in e2e/manual/
+  # (see its README) and is excluded by playwright.config.ts's testIgnore — so
+  # "not in the gate" is now a decision written down somewhere, not an accident.
+  e2e-full:
     needs: static
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -336,19 +196,21 @@ jobs:
       # Sharded: Electron forces workers=1 inside a job, and once the 34 specs
       # actually launched, the whole directory ran past the 90-minute cap and was
       # cancelled mid-suite. Separate runners are the only parallelism available.
-      - name: Whole e2e suite (non-blocking triage)
-        continue-on-error: true
+      - name: Whole e2e suite
         run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
-      - name: Upload triage traces
+      - name: Upload failure traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-traces-triage-${{ matrix.shard }}
+          name: playwright-traces-full-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
 
   # macOS e2e smoke: Darwin runner exercising the core boot + first-run
-  # flows. Two specs intentionally:
+  # flows. e2e-full above is Linux-only, so this is the sole Darwin coverage —
+  # a handful of specs intentionally, not the whole suite, because what it is
+  # here to catch is platform drift (node-pty rebuilds, shell detection,
+  # Electron-on-arm64), not app logic:
   #   - chrome-smoke: clicks every sidebar button, catches hooks/render
   #     regressions and node-pty rebuild drift.
   #   - first-run-zero-agents: proves a brand-new macOS user — no Claude,

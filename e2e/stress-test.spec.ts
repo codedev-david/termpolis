@@ -295,6 +295,15 @@ test.describe.serial('Stress Tests', () => {
   })
 
   test('6. modal spam: open and close Add Terminal modal 10 times', async () => {
+    // Test 5 can leave a modal backdrop up (its terminal close is confirmed via a dialog
+    // on a slow runner). `fixed inset-0 … z-50` then eats the very first click below.
+    for (let i = 0; i < 3; i++) {
+      const backdrop = page.locator('div.fixed.inset-0.z-50').first()
+      if (!(await backdrop.isVisible().catch(() => false))) break
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(300)
+    }
+
     for (let i = 0; i < 10; i++) {
       // Open modal
       const addBtn = page.locator('button:has-text("+ Add Terminal")').first()

@@ -84,6 +84,10 @@ test.describe.serial('Shell Config Files Monaco editor', () => {
       await page.waitForTimeout(500)
     }
 
+    // Settings is tabbed now; the editor only mounts while its own tab is selected.
+    await page.locator('[data-testid="settings-tabs"] button:has-text("Shell Config")').click()
+    await page.waitForTimeout(300)
+
     // Scroll the Shell Config Files section into view.
     const sectionLabel = page.locator('label:has-text("Shell Config Files")')
     await sectionLabel.scrollIntoViewIfNeeded()

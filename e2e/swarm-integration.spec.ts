@@ -15,7 +15,7 @@ const SCREENSHOTS = 'e2e/screenshots/swarm-integration'
 const PROJECT_DIR = path.resolve('.')
 const MOCK_CLAUDE = path.join(PROJECT_DIR, 'e2e/mocks/mock-claude.cjs').replace(/\\/g, '/')
 const MOCK_CODEX = path.join(PROJECT_DIR, 'e2e/mocks/mock-codex.cjs').replace(/\\/g, '/')
-const MOCK_AIDER = path.join(PROJECT_DIR, 'e2e/mocks/mock-aider.cjs').replace(/\\/g, '/')
+const MOCK_GEMINI = path.join(PROJECT_DIR, 'e2e/mocks/mock-gemini.cjs').replace(/\\/g, '/')
 
 test.beforeAll(async () => {
   // Clean screenshots dir
@@ -492,30 +492,33 @@ test.describe.serial('Swarm Integration', () => {
     await ss('13-split-view')
   })
 
-  test('14. Mock Aider produces "done" signal after swarm prompt', async () => {
-    // Switch back to tab view for terminal creation
+  test('14. A third agent picks up its swarm role from the prompt', async () => {
+    // Was "Mock Aider produces a done signal" until v1.32.5. Aider left the roster
+    // (AGENT_OPTIONS is claude/codex/gemini) and e2e/mocks/mock-aider.cjs went with
+    // it, so the test spent an unknown number of releases failing on MODULE_NOT_FOUND
+    // inside a suite CI never ran. Same coverage, against a mock that exists.
     await toggleView()
     await page.waitForTimeout(500)
 
-    await createTerminal('Aider Agent')
-    await activateTerminal('Aider Agent')
+    await createTerminal('Gemini Agent')
+    await activateTerminal('Gemini Agent')
     await page.waitForTimeout(500)
 
-    // Launch mock aider directly
-    await writeToTerminal(`node "${MOCK_AIDER}"`)
+    // Launch mock gemini directly
+    await writeToTerminal(`node "${MOCK_GEMINI}"`)
     await page.waitForTimeout(3000)
 
-    // Aider has no trust prompt, it starts immediately
+    // Gemini has no trust prompt, it starts immediately
     const startupContent = await readActiveTerminalContent()
-    expect(startupContent).toContain('Aider v0.86.2 (mock)')
+    expect(startupContent).toContain('Gemini CLI v0.1 (mock)')
 
     // Send swarm prompt
     await writeToTerminal('You are part of a swarm. Your role: code review.')
     await page.waitForTimeout(3000)
 
     const afterPrompt = await readActiveTerminalContent()
-    expect(afterPrompt).toContain('done')
-    await ss('14-aider-done-signal')
+    expect(afterPrompt).toContain('Working on assigned task')
+    await ss('14-swarm-role-accepted')
   })
 
   test('15. Clear swarm -- tasks and messages are emptied', async () => {
