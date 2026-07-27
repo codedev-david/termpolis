@@ -373,6 +373,10 @@ test.describe.serial('5. Settings', () => {
 test.describe.serial('6. Command Palette', () => {
   test('6.1 opens with Ctrl+K', async () => {
     await esc()
+    // A focused terminal eats Ctrl+K — xterm claims it (readline kill-to-end-of-line)
+    // and TerminalPane does not forward it the way it forwards Ctrl+Shift+F. The palette
+    // hotkey is a window-level binding, so blur before pressing it. See app.spec.ts.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
     await page.keyboard.press('Control+k')
     await page.waitForTimeout(500)
     const input = page.locator('input[placeholder*="command"]').first()

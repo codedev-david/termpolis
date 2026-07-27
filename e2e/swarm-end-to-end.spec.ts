@@ -24,7 +24,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -32,7 +32,6 @@ let mcpToken: string
 let mcpPort: number
 
 const PROJECT_ROOT = path.resolve('.')
-const SHIM_DIR = path.join(PROJECT_ROOT, 'e2e', 'test-shims')
 const SCREENSHOTS = 'e2e/screenshots/swarm-end-to-end'
 const TASK_FILE = path.join(os.homedir(), '.termpolis-conductor-task.md')
 
@@ -105,8 +104,6 @@ test.beforeAll(async () => {
   // Reset conductor task file from any prior run
   try { if (fs.existsSync(TASK_FILE)) fs.unlinkSync(TASK_FILE) } catch {}
 
-  // Ensure the Unix shim is executable (no-op on Windows, but harmless)
-  try { fs.chmodSync(path.join(SHIM_DIR, 'claude'), 0o755) } catch {}
 
   // Build the app (retry once — electron-vite can flake on Windows)
   const { execSync } = await import('child_process')
@@ -139,7 +136,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
-      TERMPOLIS_TEST_SHIM_DIR: SHIM_DIR,
+      ...e2eShimEnv(),
     },
   })
 

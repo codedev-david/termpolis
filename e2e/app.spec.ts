@@ -213,6 +213,12 @@ test('Settings panel opens and shows keybindings', async () => {
 // â”€â”€ Command Palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('Command Palette opens with Ctrl+K', async () => {
+  // Ctrl+K reaches App's window keydown only when the terminal does NOT have focus.
+  // xterm's own key handling claims it (Ctrl+K is readline's kill-to-end-of-line) and
+  // stops it propagating — TerminalPane forwards Ctrl+Shift+F and Ctrl+1..4 but not
+  // this one. Whether the terminal happened to be focused is what made this test pass
+  // or fail depending on which test ran before it; blur explicitly instead.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
   await page.keyboard.press('Control+k')
   await page.waitForTimeout(500)
 

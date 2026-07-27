@@ -57,6 +57,27 @@ export function e2eLaunchArgs(label = 'e2e'): string[] {
 }
 
 /**
+ * Make `e2e/test-shims/claude` look like an installed Claude Code to BOTH consumers.
+ *
+ * `TERMPOLIS_TEST_SHIM_DIR` alone is not enough: terminalManager.ts prepends it to the
+ * PATH of spawned PTYs only, while the Start Swarm wizard gates on `agents:detect`, which
+ * runs `which claude` in the MAIN process against `getExtendedPath()` — built from
+ * `process.env.PATH`. So on a runner with no real binary the wizard rendered
+ * "Claude Code Required" and every swarm spec sat waiting for a Describe step that was
+ * never going to come. Prepending the shim dir to PATH satisfies the detector too.
+ */
+export function e2eShimEnv(): { TERMPOLIS_TEST_SHIM_DIR: string; PATH: string } {
+  const shimDir = path.resolve('e2e', 'test-shims')
+  // The Unix shim loses its +x bit through some npm/git paths.
+  try { fs.chmodSync(path.join(shimDir, 'claude'), 0o755) } catch { /* windows / already set */ }
+  const sep = process.platform === 'win32' ? ';' : ':'
+  return {
+    TERMPOLIS_TEST_SHIM_DIR: shimDir,
+    PATH: `${shimDir}${sep}${process.env.PATH ?? ''}`,
+  }
+}
+
+/**
  * Clear the first-run onboarding tour before a spec touches the UI.
  *
  * `OnboardingModal` renders `fixed inset-0 z-[200] bg-black/80` whenever

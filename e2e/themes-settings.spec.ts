@@ -260,6 +260,10 @@ test.describe.serial('Themes & Settings', () => {
     await gearBtn.click()
     await page.waitForTimeout(500)
 
+    // Settings is tabbed; the keybindings editor only mounts while its tab is selected.
+    await page.locator('[data-testid="settings-tabs"] button:has-text("Keybindings")').click()
+    await page.waitForTimeout(300)
+
     // Look for the "Reset All" button in the keybindings section
     const resetBtn = page.locator('button:has-text("Reset All")')
     await expect(resetBtn).toBeVisible()

@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -17,9 +17,6 @@ test.beforeAll(async () => {
   // Clean screenshots dir
   if (fs.existsSync(SCREENSHOTS)) fs.rmSync(SCREENSHOTS, { recursive: true })
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
-
-  // The Unix shim loses its +x bit through npm/git on some runners.
-  try { fs.chmodSync(path.join(path.resolve('.'), 'e2e', 'test-shims', 'claude'), 0o755) } catch { /* windows */ }
 
   // Build (with retry for flaky Electron issues)
   const { execSync } = await import('child_process')
@@ -61,8 +58,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_PROJECT_CWD: path.resolve('.'),
       // Without a `claude` on PATH the wizard renders "Claude Code Required" instead of
       // Preparing/Describe, and tests 5-15 assert against a wizard that never appears.
-      // Same shim swarm-end-to-end.spec.ts uses: it routes to e2e/mocks/mock-claude.cjs.
-      TERMPOLIS_TEST_SHIM_DIR: path.join(path.resolve('.'), 'e2e', 'test-shims'),
+      ...e2eShimEnv(),
     },
   })
   page = await app.firstWindow()

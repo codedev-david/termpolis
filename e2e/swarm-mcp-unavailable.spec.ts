@@ -28,13 +28,12 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 
 const PROJECT_ROOT = path.resolve('.')
-const SHIM_DIR = path.join(PROJECT_ROOT, 'e2e', 'test-shims')
 const SCREENSHOTS = 'e2e/screenshots/swarm-mcp-unavailable'
 
 function userDataDir(): string {
@@ -47,7 +46,6 @@ test.beforeAll(async () => {
   if (fs.existsSync(SCREENSHOTS)) fs.rmSync(SCREENSHOTS, { recursive: true })
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
-  try { fs.chmodSync(path.join(SHIM_DIR, 'claude'), 0o755) } catch {}
 
   const { execSync } = await import('child_process')
   try {
@@ -79,7 +77,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
-      TERMPOLIS_TEST_SHIM_DIR: SHIM_DIR,
+      ...e2eShimEnv(),
       // This is the magic env var: mock-claude.cjs will print the
       // MCP-unavailable message and exit instead of driving the swarm.
       MOCK_CLAUDE_BYPASS_MCP: '1',
