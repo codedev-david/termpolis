@@ -1,7 +1,7 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
-import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding } from '../helpers/launch'
 
 // Proves the Second Opinion REVIEW pipeline works end-to-end with REAL agents — Claude,
 // Codex, and Gemini — through the real IPC (`agent:second-opinion`) → headless invoke →

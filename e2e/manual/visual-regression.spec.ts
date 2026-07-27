@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from '../helpers/launch'
 
 let app: ElectronApplication
 let page: Page

@@ -35,7 +35,7 @@ import fs from 'fs'
 import os from 'os'
 import http from 'http'
 import net from 'net'
-import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding } from '../helpers/launch'
 
 const REAL_CLAUDE_ENABLED = process.env.TERMPOLIS_TEST_REAL_CLAUDE === '1'
 
