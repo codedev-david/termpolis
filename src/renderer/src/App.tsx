@@ -42,7 +42,8 @@ import { getHomedir } from './lib/homedir'
 import { getTerminalDefaults, agentTerminalName } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from './types'
-import { resolveAgentCommand, testDelay, isClaudeCommand } from './lib/testAgents'
+import { testDelay, isClaudeCommand } from './lib/testAgents'
+import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { detectAgentStatus } from './lib/agentStatusDetector'
 import { detectDismissChar, tailSlice } from './lib/promptAutoDismiss'
@@ -132,65 +133,12 @@ export default function App() {
           agentRatingOverrides: aro ?? {},
           paneTree: resolvedVm === 'split' ? buildPaneTree(saved.filter(t => !t.hidden).map(t => t.id)) : null,
         })
-        // Infer agent commands from terminal names for sessions saved before agentCommand existed
-        const KNOWN_AGENTS: Record<string, string> = {
-          'Claude Code': 'claude',
-          'OpenAI Codex': 'codex',
-          'Gemini CLI': 'gemini',
-        }
-        const resolvedSaved = saved.map(t => ({
-          ...t,
-          agentCommand: t.agentCommand || KNOWN_AGENTS[t.name] || undefined,
-        }))
-        // Update store with resolved agentCommands so they persist on next save
-        useTerminalStore.setState({ terminals: resolvedSaved })
-
-        // Loose terminals are no longer restored at launch — `session:load` answers
-        // with loadRestoreSession(), whose terminal list is always empty, because
-        // saving a group of terminals is a WORKSPACE's job now. Take the fast path
-        // instead of waiting out the shell-settle delay for an empty restore.
-        if (resolvedSaved.length === 0) {
-          setRestoring(false)
-          loaded.current = true
-          return
-        }
-
-        // Spawn all terminals in parallel for faster startup
-        const agentTerminals = resolvedSaved.filter(t => t.agentCommand)
-        if (agentTerminals.length > 0) {
-          setLaunchingAgent(agentTerminals[0].name)
-        }
-        Promise.all(resolvedSaved.map(t => window.termpolis.createTerminal(t.id, t.shellType, t.cwd, undefined, isClaudeCommand(t.agentCommand)))).then(() => {
-          // Re-launch agent commands after shells initialize
-          // Send a no-op newline to flush shell init, then the real command
-          if (agentTerminals.length > 0) {
-            setTimeout(() => {
-              for (const t of agentTerminals) {
-                window.termpolis.writeToTerminal(t.id, '\r')
-              }
-              setTimeout(() => {
-                for (const t of agentTerminals) {
-                  window.termpolis.writeToTerminal(t.id, resolveAgentCommand(t.agentCommand!) + '\r')
-                }
-                setRestoring(false)
-              }, 500)
-            }, testDelay(4000))
-            // Auto-trust for Claude/Codex terminals on restore (agent sent at 4.5s, trust prompt ~5s later)
-            const claudeTerminals = agentTerminals.filter(t => t.agentCommand?.startsWith('claude'))
-            for (const t of claudeTerminals) {
-              setTimeout(() => window.termpolis.writeToTerminal(t.id, '\r'), testDelay(10000))
-            }
-            const codexTerminals = agentTerminals.filter(t => t.agentCommand?.startsWith('codex'))
-            for (const t of codexTerminals) {
-              setTimeout(() => window.termpolis.writeToTerminal(t.id, '1\r'), testDelay(10000))
-            }
-            const hasSlowAgent = agentTerminals.some(t => t.agentCommand === 'gemini')
-            setTimeout(() => setLaunchingAgent(null), testDelay(hasSlowAgent ? 15000 : 8000))
-          } else {
-            // No agent terminals — just show terminals after a brief shell init
-            setTimeout(() => setRestoring(false), testDelay(1500))
-          }
-        })
+        // Loose terminals are never restored at launch: `session:load` answers with
+        // loadRestoreSession(), whose terminal list is always empty, because saving a
+        // group of terminals is a WORKSPACE's job now. So there is nothing to spawn
+        // and no agent to re-launch here — activating a workspace is what brings
+        // terminals and their agents back (see WorkspaceList).
+        setRestoring(false)
       } else {
         setRestoring(false)
       }
@@ -823,16 +771,7 @@ export default function App() {
         const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
-          setTimeout(() => {
-            window.termpolis.writeToTerminal(pId, '\r')
-            setTimeout(() => window.termpolis.writeToTerminal(pId, resolveAgentCommand(prof.command) + '\r'), 500)
-          }, testDelay(4000))
-          if (prof.command === 'claude') {
-            setTimeout(() => window.termpolis.writeToTerminal(pId, '\r'), testDelay(10000))
-          }
-          if (prof.command === 'codex') {
-            setTimeout(() => window.termpolis.writeToTerminal(pId, '1\r'), testDelay(10000))
-          }
+          launchAgents([{ id: pId, agentCommand: prof.command }])
         }
         break
       }
@@ -871,18 +810,7 @@ export default function App() {
     const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
-      setTimeout(() => {
-        window.termpolis.writeToTerminal(id, '\r')
-        setTimeout(() => window.termpolis.writeToTerminal(id, resolveAgentCommand(config.command) + '\r'), 500)
-      }, testDelay(4000))
-      if (config.command.startsWith('claude')) {
-        setTimeout(() => window.termpolis.writeToTerminal(id, '\r'), testDelay(10000))
-      }
-      if (config.command.startsWith('codex')) {
-        setTimeout(() => window.termpolis.writeToTerminal(id, '1\r'), testDelay(10000))
-      }
-      const dismissMs = agentId === 'gemini' ? 15000 : 8000
-      setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
+      launchAgents([{ id, agentCommand: config.command }], { onSettled: () => setLaunchingAgent(null) })
     } else {
       setLaunchingAgent(null)
     }

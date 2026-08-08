@@ -49,3 +49,28 @@ describe('testDelay', () => {
     expect(testDelay(10)).toBe(50) // floor at 50
   })
 })
+
+describe('preload bridge (renderer has no process.env of its own)', () => {
+  afterEach(() => {
+    delete (globalThis as any).termpolisTestFlags
+  })
+
+  it('reads the mock-agent switch off window.termpolisTestFlags', () => {
+    ;(globalThis as any).termpolisTestFlags = { agents: true, timing: false }
+    expect(resolveAgentCommand('claude')).toContain('mock-claude')
+    expect(testDelay(1000)).toBe(1000)
+  })
+
+  it('reads the fast-timing switch off window.termpolisTestFlags', () => {
+    ;(globalThis as any).termpolisTestFlags = { agents: false, timing: true }
+    expect(testDelay(1000)).toBe(100)
+    expect(resolveAgentCommand('claude')).toBe('claude')
+  })
+
+  it('takes the bridge over process.env when both are present', () => {
+    process.env.TERMPOLIS_TEST_AGENTS = '1'
+    ;(globalThis as any).termpolisTestFlags = { agents: false, timing: false }
+    expect(resolveAgentCommand('claude')).toBe('claude')
+    delete process.env.TERMPOLIS_TEST_AGENTS
+  })
+})

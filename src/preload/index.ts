@@ -234,6 +234,15 @@ const api: TermpolisAPI = {
 
 contextBridge.exposeInMainWorld('termpolis', api)
 
+// E2E switches. The renderer has no `process` of its own (contextIsolation on,
+// nodeIntegration off), so lib/testAgents.ts could never see these and every UI-driven
+// agent launch under test quietly ran the REAL claude/codex at full delays. Ferried here
+// as plain booleans — they are read-only and mean nothing outside a test run.
+contextBridge.exposeInMainWorld('termpolisTestFlags', {
+  agents: process.env.TERMPOLIS_TEST_AGENTS === '1',
+  timing: process.env.TERMPOLIS_TEST_TIMING === '1',
+})
+
 contextBridge.exposeInMainWorld('windowControls', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),

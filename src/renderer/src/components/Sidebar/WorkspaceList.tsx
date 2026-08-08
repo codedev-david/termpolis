@@ -2,10 +2,11 @@ import React, { useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
 import { isClaudeCommand } from '../../lib/testAgents'
+import { agentTargets, launchAgents } from '../../lib/agentLaunch'
 import { v4 as uuid } from 'uuid'
 
 export function WorkspaceList() {
-  const { workspaces, addWorkspace, renameWorkspace, updateWorkspace, removeWorkspace, terminals } = useTerminalStore()
+  const { workspaces, addWorkspace, renameWorkspace, updateWorkspace, removeWorkspace, terminals, setLaunchingAgent } = useTerminalStore()
   const [saving, setSaving] = useState(false)
   const [wsName, setWsName] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -33,13 +34,25 @@ export function WorkspaceList() {
       // Gate the compression proxy on the workspace's persisted agentCommand — a saved Claude terminal
       // gets ANTHROPIC_BASE_URL so a manual `claude` in it is compressed too (matches session-restore).
       await window.termpolis.createTerminal(id, t.shellType as any, cwd, undefined, isClaudeCommand(t.agentCommand))
-      newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily })
+      // agentCommand has to be carried across: it is what makes this an AI terminal
+      // rather than a bare shell, it is what gets re-launched below, and dropping it
+      // here also lost it from the workspace on the next save.
+      newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily, agentCommand: t.agentCommand })
     }
     useTerminalStore.setState({
       terminals: newTerminals,
       activeTerminalId: newTerminals[0]?.id ?? null,
       showSettings: false,
     })
+
+    // A workspace records WHICH agent each terminal was running; restoring only the
+    // shell left you at an empty prompt in the right repo. Now that loose terminals
+    // are no longer restored at boot, this is the only path that brings agents back.
+    const agents = agentTargets(newTerminals)
+    if (agents.length > 0) {
+      setLaunchingAgent(agents[0].name)
+      launchAgents(agents, { onSettled: () => setLaunchingAgent(null) })
+    }
   }
 
   const startRename = (e: React.MouseEvent, ws: { id: string; name: string }) => {

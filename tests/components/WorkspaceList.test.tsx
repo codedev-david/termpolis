@@ -6,6 +6,7 @@ const mockAddWorkspace = vi.fn()
 const mockRemoveWorkspace = vi.fn()
 const mockRenameWorkspace = vi.fn()
 const mockUpdateWorkspace = vi.fn()
+const mockSetLaunchingAgent = vi.fn()
 
 let mockStoreState: Record<string, any> = {}
 
@@ -26,6 +27,14 @@ vi.mock('../../src/renderer/src/lib/homedir', () => ({
   getHomedir: vi.fn().mockResolvedValue('/home/user'),
 }))
 
+// The launch TIMING is covered by tests/renderer/agentLaunch.test.ts; here we only
+// care that workspace activation hands the right terminals to it.
+const mockLaunchAgents = vi.fn()
+vi.mock('../../src/renderer/src/lib/agentLaunch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/lib/agentLaunch')>()),
+  launchAgents: (...args: any[]) => mockLaunchAgents(...args),
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockStoreState = {
@@ -37,6 +46,7 @@ beforeEach(() => {
     removeWorkspace: mockRemoveWorkspace,
     renameWorkspace: mockRenameWorkspace,
     updateWorkspace: mockUpdateWorkspace,
+    setLaunchingAgent: mockSetLaunchingAgent,
   }
   ;(window as any).termpolis = {
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
@@ -243,6 +253,82 @@ describe('WorkspaceList', () => {
           true, // agentCommand 'claude' → gate ON so a manual `claude` in the restored terminal compresses
         )
       })
+    })
+
+    it('carries agentCommand onto the restored terminal so it survives the next save', async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Agent WS',
+            terminals: [
+              { name: 'Claude Code — repo', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'claude' },
+              { name: 'Plain', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+            ],
+          },
+        ],
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Agent WS'))
+
+      await waitFor(() => expect(useTerminalStore.setState).toHaveBeenCalled())
+      const restored = (useTerminalStore.setState as any).mock.calls.at(-1)[0].terminals
+      expect(restored[0]).toMatchObject({ name: 'Claude Code — repo', cwd: '/work', agentCommand: 'claude' })
+      expect(restored[1].agentCommand).toBeUndefined()
+    })
+
+    it('re-launches the saved agent and shows the launching overlay', async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Agent WS',
+            terminals: [
+              { name: 'Plain', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+              { name: 'Claude Code — repo', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'claude' },
+            ],
+          },
+        ],
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Agent WS'))
+
+      await waitFor(() => expect(mockLaunchAgents).toHaveBeenCalled())
+      // Only the agent terminal is handed over, and the overlay names it.
+      const [targets] = mockLaunchAgents.mock.calls[0]
+      expect(targets).toHaveLength(1)
+      expect(targets[0]).toMatchObject({ agentCommand: 'claude' })
+      expect(mockSetLaunchingAgent).toHaveBeenCalledWith('Claude Code — repo')
+
+      // ...and the overlay is dismissed once the launch settles.
+      mockLaunchAgents.mock.calls[0][1].onSettled()
+      expect(mockSetLaunchingAgent).toHaveBeenLastCalledWith(null)
+    })
+
+    it('does not launch anything for a workspace of plain shells', async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Shells WS',
+            terminals: [
+              { name: 'Plain', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+            ],
+          },
+        ],
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Shells WS'))
+
+      await waitFor(() => expect((window as any).termpolis.createTerminal).toHaveBeenCalled())
+      expect(mockLaunchAgents).not.toHaveBeenCalled()
+      expect(mockSetLaunchingAgent).not.toHaveBeenCalled()
     })
   })
 

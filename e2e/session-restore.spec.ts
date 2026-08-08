@@ -438,4 +438,47 @@ test.describe.serial('Session Restore', () => {
     await expect(restoredProfile).toBeVisible({ timeout: 10000 })
   })
 
+  test('13. a workspace restores the AI AGENT, not just its shell', async () => {
+    // Workspaces are the only restore path now, so "restores an AI terminal" has to
+    // mean the agent is running again — not an empty prompt in the right directory.
+    // The workspace is seeded straight into the session file because launching a real
+    // agent from the sidebar needs a native directory picker.
+    if (app) await app.close()
+    const sessionPath = path.join(e2eUserDataDir('session-restore'), 'session.json')
+    const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'))
+    session.terminals = []
+    session.workspaces = [
+      ...(session.workspaces ?? []),
+      {
+        id: 'ws-agent',
+        name: 'Agent-WS',
+        terminals: [{
+          name: 'Claude Agent', color: '#D97706', shellType: 'powershell',
+          cwd: process.cwd(), fontSize: 14, theme: 'dark', fontFamily: 'monospace',
+          agentCommand: 'claude',
+        }],
+      },
+    ]
+    fs.writeFileSync(sessionPath, JSON.stringify(session))
+    await launchApp()
+    await ensureSidebarExpanded()
+
+    const ws = page.locator('aside').locator('text=Agent-WS').first()
+    await expect(ws).toBeVisible({ timeout: 10000 })
+    await ws.click()
+    await expect(page.locator('text=Claude Agent').first()).toBeVisible({ timeout: 15000 })
+    expect(await getSidebarTerminalCount()).toBe(1)
+
+    // The mock Claude only prints its trust prompt once it has actually been typed into
+    // the restored shell, so seeing it in the PTY buffer proves the relaunch happened.
+    // Read the buffer over IPC rather than off the xterm DOM: the canvas renderer keeps
+    // no .xterm-rows to scrape.
+    await expect(async () => {
+      const id = JSON.parse(fs.readFileSync(sessionPath, 'utf8')).terminals?.[0]?.id
+      expect(id, 'restored terminal not persisted yet').toBeTruthy()
+      const res = await page.evaluate((tid: string) => window.termpolis.readTerminalBuffer(tid), id)
+      expect((res as any)?.data?.output ?? '').toContain('Quick safety check')
+    }).toPass({ timeout: 30000 })
+  })
+
 })

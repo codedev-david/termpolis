@@ -298,7 +298,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Tab View** — single terminal at a time, switch via sidebar
 - **Split View** — split any terminal horizontally or vertically with draggable dividers
 - **Nested splits** — split panes recursively for complex layouts (like VS Code or iTerm2)
-- **Workspaces** — save and restore terminal configurations including names, shells, themes, and working directories
+- **Workspaces** — save and restore terminal configurations including names, shells, themes, and working directories. An AI terminal is saved *as* an AI terminal: reopening the workspace re-launches the agent it was running, in the repo it was running in
 - **Session persistence** — workspaces and settings survive a relaunch; loose terminals deliberately do not, so every launch starts clean (restoring a saved group of terminals is a workspace's job)
 - **Single-instance lock** — only one Termpolis window runs at a time to prevent session conflicts
 - **Drag and drop** — drag files onto a terminal to paste their quoted file paths

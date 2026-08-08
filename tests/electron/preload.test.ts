@@ -214,6 +214,14 @@ describe('preload: termpolis API', () => {
   })
 })
 
+describe('preload: termpolisTestFlags', () => {
+  it('ferries the E2E switches across, since the renderer has no process of its own', () => {
+    expect(exposed.termpolisTestFlags).toBeDefined()
+    // Plain booleans, both off in a normal (non-E2E) run.
+    expect(exposed.termpolisTestFlags).toEqual({ agents: false, timing: false })
+  })
+})
+
 describe('preload: windowControls API', () => {
   it('exposes windowControls on the window', () => {
     expect(exposed.windowControls).toBeDefined()
