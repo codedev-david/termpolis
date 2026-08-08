@@ -55,7 +55,7 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
   if (gpu.disableHardwareAcceleration) app.disableHardwareAcceleration()
   if (gpu.disableGpuSwitch) app.commandLine.appendSwitch('disable-gpu')
 }
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { homedir, release } from 'os'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
 import { execSync, spawn } from 'child_process'
@@ -104,7 +104,7 @@ import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (resolveNodeCommand is already imported above for the MCP registration.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
-import { loadSession, saveSession } from './sessionStore'
+import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
@@ -402,7 +402,7 @@ async function reflectOnTask(
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
 const sessionCursors = new Map<string, SessionCursor>()
-import { buildContextPrimer } from './contextPrimer'
+import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
@@ -445,6 +445,7 @@ import {
   registerInGemini,
   resolveNodeCommand,
 } from './agentMcpRegistry'
+import { repairWindowsShortcuts, defaultShortcutPaths } from './windowsShortcutRepair'
 
 // Load the window/taskbar icon from a Buffer. We previously used
 // nativeImage.createFromPath, but the assets/ dir lives INSIDE app.asar and
@@ -912,8 +913,12 @@ ipcMain.handle('fs:mcp-config-path', () =>
   ok(join(app.getPath('userData'), 'claude-mcp-config.json')),
 )
 
+// The one caller that must NOT see the stored terminals: this is the boot restore,
+// and every launch starts with a clean terminal list (workspaces own "which
+// terminals are open"). Everything else in main still reads loadSession() so it can
+// see what the session actually holds.
 ipcMain.handle('session:load', async () => {
-  try { return ok(loadSession()) }
+  try { return ok(loadRestoreSession()) }
   catch (e: any) { return err(e.message) }
 })
 
@@ -1941,6 +1946,22 @@ ipcMain.handle('brain:import', async () => {
   } catch (e: any) { return err(e.message) }
 })
 
+// Freshness lane for every primer: a newest-first listing, scoped to the same repo the
+// digest is about. Relevance ranking answers "most similar to the query"; a session-start
+// digest also has to answer "where did we leave off", and only a time-ordered read can.
+// Measured before this existed: a live primer for the termpolis repo returned hits aged
+// 12 days to 1 month and nothing from that same day, while the store held that day's work.
+const primerRecent: PrimerRecent = async (o) =>
+  (await memoryList({ limit: o.limit, project: o.project, since: o.since })).map(e => ({
+    content: e.content,
+    source: e.source,
+    kind: e.kind,
+    score: 0, // not a scored hit — the lane is ordered by time, on purpose
+    id: e.id,
+    project: e.project,
+    ts: e.ts,
+  }))
+
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's
 // first input — the agent starts already knowing the context instead of the
@@ -1950,7 +1971,7 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     // Current-directory precedence: context for the cwd's project leads the
     // primer; unrelated global hits are labeled "may NOT apply".
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined })
+    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     // Economics SLI: a built primer that gets returned is context injected on the
     // agent's behalf — record the (estimated) tokens so "tokens injected" is real.
     try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
@@ -2016,7 +2037,7 @@ ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean })
 ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string }) => {
   try {
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined })
+    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
     try { recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(digest.length / 4) }) } catch { /* best effort */ }
     const dir = join(app.getPath('userData'), 'primers')
@@ -2488,6 +2509,29 @@ if (!gotTheLock) {
     installApplicationMenu(Menu, process.platform)
     createWindow()
 
+    // Repair Windows shortcuts whose ICON_LOCATION was corrupted by the over-long
+    // package.json description (see windowsShortcutRepair.ts). Shortening the
+    // description fixes shortcuts the installer writes from here on, but the PINNED
+    // TASKBAR shortcut lives in the user's profile and no installer ever rewrites
+    // it — without this, existing users keep a generic taskbar icon forever.
+    // Best-effort and fully guarded: an icon must never be able to break startup.
+    if (process.platform === 'win32' && app.isPackaged) {
+      try {
+        repairWindowsShortcuts({
+          platform: process.platform,
+          exePath: process.execPath,
+          exeDir: dirname(process.execPath),
+          appUserModelId: 'com.termpolis.app',
+          description: 'Secure AI-assisted development terminal.',
+          candidatePaths: defaultShortcutPaths(process.env, join),
+          fileExists: existsSync,
+          readShortcutLink: (p) => shell.readShortcutLink(p),
+          writeShortcutLink: (p, op, details) => shell.writeShortcutLink(p, op, details),
+          log: (m) => console.log(m),
+        })
+      } catch { /* never block startup on shortcut cosmetics */ }
+    }
+
     // Move ALL embedding onto a worker_thread so the memory brain's one-time model
     // load + per-chunk forward passes never peg the MAIN thread that also pumps PTY
     // echo. This is the fix for "typing lags for the first few minutes after opening
@@ -2646,6 +2690,7 @@ if (!gotTheLock) {
         agentId: opts.agentId,
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
+        project: opts.project,
       }),
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
@@ -2662,6 +2707,7 @@ if (!gotTheLock) {
           maxSnippetChars: 600,
           project: project || undefined,
           projectPath: opts.cwd || undefined, // F19: scope precisely by the full cwd (projectKey)
+          recent: primerRecent,
         })
         // Metacognition + curiosity + identity (P1c/P5): augment the primer with the
         // brain's self-assessed weak spots, open questions worth exploring, and its

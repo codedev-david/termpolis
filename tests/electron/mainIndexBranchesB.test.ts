@@ -164,7 +164,7 @@ vi.mock('../../src/main/shellDetector', () => ({
   resolveShellExecutable: vi.fn((exe: string) => exe),
 }))
 vi.mock('../../src/main/sessionStore', () => ({
-  loadSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
+  loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
 vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))

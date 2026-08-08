@@ -39,7 +39,7 @@ const {
   mockSpawnTerminal, mockKillTerminal, mockWriteToTerminal, mockResizeTerminal,
   mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty,
   mockDetectAvailableShells,
-  mockLoadSession, mockSaveSession,
+  mockLoadSession, mockLoadRestoreSession, mockSaveSession,
   mockAppendCommand, mockSearchHistory,
   mockReadConfigFile, mockWriteConfigFile,
   mockListPathEntries, mockListPathCommands, mockListEnvVars,
@@ -71,6 +71,7 @@ const {
   mockComputeWindowsPty: vi.fn(() => ({ backend: 'conpty', buildNumber: 22631 })),
   mockDetectAvailableShells: vi.fn(async () => [] as Array<{ type: string; executable: string; name?: string }>),
   mockLoadSession: vi.fn(() => ({ terminals: [] })),
+  mockLoadRestoreSession: vi.fn(() => ({ terminals: [] })),
   mockSaveSession: vi.fn(),
   mockAppendCommand: vi.fn(),
   mockSearchHistory: vi.fn(() => [] as unknown[]),
@@ -174,7 +175,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   computeWindowsPty: mockComputeWindowsPty,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
-vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, saveSession: mockSaveSession }))
+vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, loadRestoreSession: mockLoadRestoreSession, saveSession: mockSaveSession }))
 vi.mock('../../src/main/historyStore', () => ({ appendCommand: mockAppendCommand, searchHistory: mockSearchHistory }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: mockReadConfigFile, writeConfigFile: mockWriteConfigFile }))
 vi.mock('../../src/main/completionService', () => ({
@@ -1062,13 +1063,16 @@ describe('shell IPC', () => {
 // SESSION / CONFIG / HISTORY / COMPLETION / FS
 // ===========================================================================
 describe('session IPC', () => {
-  it('session:load returns the persisted session', async () => {
-    mockLoadSession.mockReturnValue({ terminals: [{ id: 'a', name: 'A' }] } as any)
-    expect(await invoke('session:load')).toEqual({ success: true, data: { terminals: [{ id: 'a', name: 'A' }] } })
+  it('session:load returns the RESTORE session, not the raw stored one', async () => {
+    // The boot restore reads loadRestoreSession — the variant that drops loose
+    // terminals — while loadSession keeps reporting what the file holds.
+    mockLoadRestoreSession.mockReturnValue({ terminals: [], viewMode: 'tabs' } as any)
+    expect(await invoke('session:load')).toEqual({ success: true, data: { terminals: [], viewMode: 'tabs' } })
+    expect(mockLoadSession).not.toHaveBeenCalled()
   })
 
   it('session:load reports a corrupt store rather than crashing the window', async () => {
-    mockLoadSession.mockImplementationOnce(() => { throw new Error('Unexpected token in JSON') })
+    mockLoadRestoreSession.mockImplementationOnce(() => { throw new Error('Unexpected token in JSON') })
     expect(await invoke('session:load')).toEqual({ success: false, error: 'Unexpected token in JSON' })
   })
 

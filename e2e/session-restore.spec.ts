@@ -1,7 +1,10 @@
 /**
  * Termpolis Session Restore E2E Test Suite
- * Tests session persistence and restore across app restarts: terminals, view mode,
- * workspaces, settings, and AI profiles survive close/relaunch cycles.
+ * Tests session persistence and restore across app restarts: view mode, workspaces,
+ * settings, and AI profiles survive close/relaunch cycles.
+ *
+ * Loose terminals deliberately do NOT. Every launch starts on a clean slate; restoring a
+ * saved group of terminals is a WORKSPACE's job and happens only when the user asks for it.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -151,7 +154,12 @@ test.describe.serial('Session Restore', () => {
   // triples the budget for the file instead of hiding it behind `retries`.
   test.slow()
 
-  test('1. create terminal, restart app: terminal is restored', async () => {
+  // Loose terminals are deliberately NOT restored. Auto-restore resurrected shells whose
+  // processes were long dead and competed with WORKSPACES for ownership of "which terminals
+  // are open". Saving a group of terminals for a project is a workspace's job, and a
+  // workspace is restored explicitly by the user — never silently at boot. Everything else
+  // in this file (view mode, settings, workspaces, AI profiles) still persists.
+  test('1. create terminal, restart app: terminal is NOT restored', async () => {
     await createTerminal('Restore-1')
 
     // Verify terminal exists before restart
@@ -160,22 +168,26 @@ test.describe.serial('Session Restore', () => {
 
     await restart()
 
-    // After restart, the terminal should be restored in the sidebar
-    const restored = page.locator('text=Restore-1').first()
-    await expect(restored).toBeVisible({ timeout: 10000 })
+    // After restart the terminal is gone — every launch starts clean
+    const restored = page.locator('text=Restore-1')
+    await expect(restored).toHaveCount(0, { timeout: 10000 })
   })
 
-  test('2. restored terminal has the correct name in sidebar', async () => {
-    // After restart from test 1, verify the name is exactly what we created
-    const sidebarEntry = page.locator('aside').locator('text=Restore-1').first()
-    await expect(sidebarEntry).toBeVisible()
-    const text = await sidebarEntry.textContent()
-    expect(text).toContain('Restore-1')
+  test('2. a clean-slate launch has an empty sidebar and the Welcome screen', async () => {
+    await ensureSidebarExpanded()
+    const count = await getSidebarTerminalCount()
+    expect(count).toBe(0)
+
+    const welcome = page.locator('text=Welcome to Termpolis')
+    await expect(welcome).toBeVisible({ timeout: 10000 })
   })
 
-  test('3. restored terminal has correct shell type shown in status bar', async () => {
-    // Click the restored terminal to make it active
-    const termTab = page.locator('text=Restore-1').first()
+  test('3. a terminal created after launch shows its shell type in the status bar', async () => {
+    // Nothing is restored any more, so the shell-label check has to run against a
+    // freshly created terminal rather than a resurrected one.
+    await createTerminal('Shell-Check')
+
+    const termTab = page.locator('text=Shell-Check').first()
     await termTab.click()
     await page.waitForTimeout(1000)
 
@@ -187,17 +199,18 @@ test.describe.serial('Session Restore', () => {
     expect(shellText).toMatch(/PowerShell|Bash|CMD|Zsh|Git Bash/)
   })
 
-  test('4. create 2 terminals, restart: both restored', async () => {
+  test('4. create 2 terminals, restart: neither comes back', async () => {
     await createTerminal('Multi-A')
     await createTerminal('Multi-B')
 
     await restart()
+    await ensureSidebarExpanded()
 
-    // Both terminals should be restored
-    const multiA = page.locator('text=Multi-A').first()
-    const multiB = page.locator('text=Multi-B').first()
-    await expect(multiA).toBeVisible({ timeout: 10000 })
-    await expect(multiB).toBeVisible({ timeout: 10000 })
+    // Neither terminal — nor the one left over from test 3 — survives the relaunch
+    await expect(page.locator('text=Multi-A')).toHaveCount(0, { timeout: 10000 })
+    await expect(page.locator('text=Multi-B')).toHaveCount(0)
+    await expect(page.locator('text=Shell-Check')).toHaveCount(0)
+    expect(await getSidebarTerminalCount()).toBe(0)
   })
 
   test('5. restore preserves tab view mode', async () => {
@@ -216,6 +229,9 @@ test.describe.serial('Session Restore', () => {
     // Force a session save by triggering a store change that's in the save dependency list.
     // The save effect depends on terminals/workspaces/keybindings/aiProfiles/promptTemplates,
     // NOT viewMode directly. Saving a workspace triggers the save which captures current viewMode.
+    // A terminal has to exist first: "+ Save Workspace" is disabled at zero terminals, and the
+    // previous test's restart left the app with none.
+    await createTerminal('Split-WS-Seed')
     await saveWorkspace('Split-Check-WS')
     await page.waitForTimeout(2000) // wait for debounced save (1s) to flush
 
@@ -226,20 +242,24 @@ test.describe.serial('Session Restore', () => {
     expect(titleAfter).toBe('Tab View') // still in split mode
   })
 
-  test('7. session with no terminals: shows Welcome screen on launch', async () => {
-    // Close all terminals
+  test('7. closing every terminal by hand also lands on the Welcome screen', async () => {
+    // Switch back to tab view first (easier to close terminals)
+    const viewTitle = await getViewToggleTitle()
+    if (viewTitle === 'Tab View') {
+      await toggleView() // go back to tabs
+    }
+
+    // Seed the terminals to close — the previous test's restart left none behind.
+    await createTerminal('Close-A')
+    await createTerminal('Close-B')
+
     const terminalNames = await page.evaluate(() => {
       const aside = document.querySelector('aside')
       if (!aside) return []
       const buttons = aside.querySelectorAll('button[aria-label^="Close "]')
       return Array.from(buttons).map(b => b.getAttribute('aria-label')?.replace('Close ', ''))
     })
-
-    // Switch back to tab view first (easier to close terminals)
-    const viewTitle = await getViewToggleTitle()
-    if (viewTitle === 'Tab View') {
-      await toggleView() // go back to tabs
-    }
+    expect(terminalNames.length).toBeGreaterThan(0)
 
     for (const name of terminalNames) {
       if (name) await closeTerminalByName(name)
@@ -257,7 +277,7 @@ test.describe.serial('Session Restore', () => {
     await expect(welcome).toBeVisible({ timeout: 10000 })
   })
 
-  test('8. terminal sidebar count matches after restore', async () => {
+  test('8. sidebar terminal count drops to zero across a restart', async () => {
     // Ensure we are in tab view for consistent behavior
     const viewTitle = await getViewToggleTitle()
     if (viewTitle === 'Tab View') {
@@ -273,25 +293,39 @@ test.describe.serial('Session Restore', () => {
     expect(countBefore).toBe(3)
 
     await restart()
+    await ensureSidebarExpanded()
 
-    // Wait for terminals to fully restore
+    // Give a would-be restore every chance to run before asserting it didn't
     await page.waitForTimeout(2000)
 
     const countAfter = await getSidebarTerminalCount()
-    expect(countAfter).toBe(3)
+    expect(countAfter).toBe(0)
   })
 
-  test('9. closing all restored terminals shows Welcome screen', async () => {
-    // We have 3 terminals from test 8: Count-A, Count-B, Count-C
-    await closeTerminalByName('Count-A')
-    await closeTerminalByName('Count-B')
-    await closeTerminalByName('Count-C')
+  test('9. a WORKSPACE keeps its terminals across a restart and restores on demand', async () => {
+    // The positive half of the contract: loose terminals vanish, but the terminals saved
+    // INTO a workspace survive the relaunch and come back when the user clicks it.
+    await createTerminal('WS-Term-A')
+    await createTerminal('WS-Term-B')
+    await saveWorkspace('Restore-WS')
+    await page.waitForTimeout(2000) // let the debounced save flush
 
-    const count = await getSidebarTerminalCount()
-    expect(count).toBe(0)
+    await restart()
+    await ensureSidebarExpanded()
 
-    const welcome = page.locator('text=Welcome to Termpolis')
-    await expect(welcome).toBeVisible({ timeout: 5000 })
+    // Nothing loose came back...
+    expect(await getSidebarTerminalCount()).toBe(0)
+
+    // ...but the workspace did, with its terminals intact
+    const ws = page.locator('aside').locator('text=Restore-WS').first()
+    await expect(ws).toBeVisible({ timeout: 10000 })
+
+    await ws.click()
+    await page.waitForTimeout(3000) // spawning two shells
+
+    await expect(page.locator('text=WS-Term-A').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=WS-Term-B').first()).toBeVisible({ timeout: 10000 })
+    expect(await getSidebarTerminalCount()).toBe(2)
   })
 
   test('10. settings persist: change default shell, restart, verify preserved', async () => {

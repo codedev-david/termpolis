@@ -194,7 +194,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''),
   getTerminalPid: vi.fn(), computeWindowsPty: vi.fn(),
 }))
-vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => null), saveSession: vi.fn() }))
+vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => null), loadRestoreSession: vi.fn(() => null), saveSession: vi.fn() }))
 vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({

@@ -22,6 +22,7 @@ import {
   memoryStats,
   memoryPatchProjects,
   normalizeProjectSlug,
+  projectKeyOf,
   _resetForTests,
   persistMemoryIndex,
   _setEmbeddingsAvailable,
@@ -599,6 +600,48 @@ describe('memoryList', () => {
 
   it('returns empty list when no entries', () => {
     expect(memoryList()).toEqual([])
+  })
+
+  it('filters by project slug', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'in termpolis', project: 'C:/repos/termpolis' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'in elsewhere', project: 'C:/repos/elsewhere' })
+    expect(memoryList({ project: 'termpolis' }).map((e) => e.content)).toEqual(['in termpolis'])
+  })
+
+  it('accepts a raw cwd path and normalizes it to the slug', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'path scoped', project: 'C:/repos/termpolis' })
+    expect(memoryList({ project: 'C:\\repos\\termpolis' }).map((e) => e.content)).toEqual(['path scoped'])
+  })
+
+  it('disambiguates two repos that share a basename via projectKey', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'from work copy', project: 'C:/work/app' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'from home copy', project: 'C:/home/app' })
+    // Same slug ('app'), different full paths — the key keeps them apart.
+    expect(memoryList({ project: 'C:/work/app' }).map((e) => e.content)).toEqual(['from work copy'])
+    expect(memoryList({ project: 'C:/home/app' }).map((e) => e.content)).toEqual(['from home copy'])
+  })
+
+  it('honours an explicitly supplied projectKey over the one derived from project', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'work entry', project: 'C:/work/app' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'home entry', project: 'C:/home/app' })
+    const homeKey = projectKeyOf('C:/home/app')
+    expect(memoryList({ project: 'C:/work/app', projectKey: homeKey }).map((e) => e.content)).toEqual(['home entry'])
+  })
+
+  it('returns nothing for a project that normalizes away (e.g. the home directory)', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'unscoped' })
+    expect(memoryList({ project: os.homedir() })).toEqual([])
+  })
+
+  it('combines the project filter with since and limit', async () => {
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'old one', project: 'C:/repos/termpolis' })
+    await new Promise((r) => setTimeout(r, 5))
+    const cutoff = Date.now()
+    await new Promise((r) => setTimeout(r, 5))
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'new one', project: 'C:/repos/termpolis' })
+    await memoryWrite({ agentId: 'a', kind: 'note', content: 'new other', project: 'C:/repos/elsewhere' })
+    expect(memoryList({ project: 'termpolis', since: cutoff }).map((e) => e.content)).toEqual(['new one'])
+    expect(memoryList({ project: 'termpolis', limit: 1 }).map((e) => e.content)).toEqual(['new one'])
   })
 })
 

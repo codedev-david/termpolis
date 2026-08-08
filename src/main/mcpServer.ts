@@ -295,7 +295,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_list',
-    description: 'List the most recent entries from Termpolis shared persistent memory (shared across all your AI agents and past sessions) without semantic scoring. Useful for scanning the last N writes.',
+    description: 'List the most recent entries from Termpolis shared persistent memory (shared across all your AI agents and past sessions) without semantic scoring. Useful for scanning the last N writes — pass `project` (your cwd) to see what was done most recently in THIS repo, which relevance-ranked search cannot guarantee.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -303,6 +303,7 @@ const TOOLS: McpTool[] = [
         agentId: { type: 'string', description: 'Filter to a single agent (optional)' },
         kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Filter by kind (optional)' },
         since: { type: 'number', description: 'Only entries at or after this timestamp (optional)' },
+        project: { type: 'string', description: 'Scope to one project — pass your working directory or repo name to list only that project’s most recent entries. The fastest way to answer "what did we do here last?" (optional)' },
       },
       required: [],
     },
@@ -504,7 +505,7 @@ export interface McpToolHandlers {
   swarmListAgents: () => any
   memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string; project?: string }) => Promise<any>
   memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean; fuseGraph?: boolean }) => Promise<any>
-  memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number }) => any
+  memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number; project?: string }) => any
   memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
@@ -591,6 +592,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         agentId: args.agentId,
         kind: args.kind,
         since: args.since,
+        project: args.project,
       })
     case 'memory_primer': {
       const res = await handlers.memoryPrimer({

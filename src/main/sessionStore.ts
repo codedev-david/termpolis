@@ -61,27 +61,42 @@ export function loadSession(): SessionData {
     // Migrate old 'grid' viewMode to 'split'
     if (parsed.viewMode === 'grid') parsed.viewMode = 'split'
 
-    // If the app version changed (new install/upgrade), don't restore terminals —
-    // old shell processes no longer exist. Keep settings (viewMode, keybindings, etc.).
-    const currentVersion = getAppVersion()
-    if (parsed.appVersion !== currentVersion) {
-      console.log(`App version changed (${parsed.appVersion ?? 'none'} → ${currentVersion}), skipping terminal restore`)
-      parsed.terminals = []
-      parsed.workspaces = parsed.workspaces.map((w: any) => ({ ...w, terminals: [] }))
-    } else {
-      parsed.terminals = parsed.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
-      parsed.workspaces = parsed.workspaces.map((w: any) => ({
-        ...w,
-        terminals: w.terminals.map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
-      }))
-    }
-    // Always normalize custom keybindings to a clean, bounded array (settings
-    // survive a version change, so this runs on both branches above).
+    // The stored terminal list is returned FAITHFULLY here. It is not "what to
+    // reopen" — it's the record of what the last session had, and non-UI callers
+    // depend on it: the MCP `list_terminals`/`swarm_list_agents` tools read it to
+    // answer what is open right now, and the workflow trigger supervisor arms a
+    // project from each terminal's cwd at boot. Dropping terminals in this reader
+    // silently blanked all three. The boot restore path calls
+    // `loadRestoreSession()` instead — that is where "start clean" belongs.
+    parsed.terminals = (parsed.terminals ?? []).map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t }))
+
+    // Workspaces keep their terminals — that is the entire point of a workspace.
+    // This used to be wiped whenever the app version changed, which silently emptied
+    // every saved workspace on each auto-update.
+    parsed.workspaces = (parsed.workspaces ?? []).map((w: any) => ({
+      ...w,
+      terminals: (w.terminals ?? []).map((t: any) => ({ ...TERMINAL_DEFAULTS, ...t })),
+    }))
+    // Always normalize custom keybindings to a clean, bounded array.
     parsed.customKeybindings = sanitizeCustomKeybindings(parsed.customKeybindings)
     return parsed
   } catch {
     return { ...DEFAULT_SESSION }
   }
+}
+
+/**
+ * The session the RENDERER restores at boot: everything `loadSession()` returns,
+ * minus the loose terminals.
+ *
+ * Auto-restore resurrected shells whose processes were long gone, and it competed
+ * with WORKSPACES for ownership of "which terminals are open". Saving a group of
+ * terminals for a project is a workspace's job, and a workspace is restored
+ * explicitly by the user — never silently at boot. So every launch starts with an
+ * empty terminal list while settings and saved workspaces survive intact.
+ */
+export function loadRestoreSession(): SessionData {
+  return { ...loadSession(), terminals: [] }
 }
 
 export function saveSession(data: SessionData): void {

@@ -12,6 +12,32 @@ import { join } from 'path'
 const root = join(__dirname, '../..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
+describe('packaging: shortcut description stays inside the Shell Link string limit', () => {
+  // THE root cause of the recurring "generic taskbar icon" bug. electron-builder
+  // passes package.json `description` to NSIS as the shortcut's description, which
+  // lands in the .lnk StringData block. Each StringData field is bounded at MAX_PATH
+  // (260 chars); an over-long description overruns it and CORRUPTS the fields written
+  // straight after it — WORKING_DIR and, fatally, ICON_LOCATION.
+  //
+  // Measured with a 288-char description: IconLocation read back as "xe?,0" — an
+  // unresolvable path, so Windows fell back to a generic icon. At 40 chars it read
+  // back intact. Because the app also declares a matching AppUserModelID, Windows
+  // resolves the taskbar icon from the SHORTCUT, so a corrupt IconLocation beats the
+  // window icon set in main — which is why setting an AUMID + window icon (v1.15.10)
+  // and refreshing the icon cache (v1.16.2) both failed to fix it.
+  const MAX_LNK_STRING = 260
+
+  it('keeps package.json description under the 260-char .lnk StringData limit', () => {
+    expect(pkg.description.length).toBeLessThan(MAX_LNK_STRING)
+  })
+
+  it('leaves real headroom rather than sitting on the boundary', () => {
+    // A description that creeps back to ~259 would be one word away from silently
+    // corrupting every shortcut again, with no test failure to warn us.
+    expect(pkg.description.length).toBeLessThanOrEqual(220)
+  })
+})
+
 describe('packaging: NSIS installer refreshes the Windows icon cache', () => {
   it('references the custom NSIS include script from build.nsis.include', () => {
     expect(pkg.build.nsis.include).toBe('build/installer.nsh')

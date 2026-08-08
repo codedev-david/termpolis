@@ -132,6 +132,8 @@ The result: stop re-explaining context every session, and stop paying to reload 
 
 **Controls** — open the **Memory panel** (`Ctrl+Shift+M`, or the Command Palette → "Memory") to see what's remembered (chunk count), search it, feed it on demand ("Index past conversations" / "Index this repo's code"), **inject the most relevant context into the active agent** with one click, and **turn on cross-machine sync** (point it at a synced folder). Launched agents are also auto-primed with the project's relevant context (toggle in Settings): a **one-line note** in the agent's input points it at the `memory_primer` MCP tool, so the digest loads **behind the scenes** — no giant dump on the terminal — and the agent **holds it as background** instead of acting on it or resuming old work uninvited. Context from the **current directory's project comes first** (its past conversations, then its code/notes), and anything recalled from other projects is clearly labeled as possibly not applying.
 
+> **The digest reserves slots for what happened *most recently* (v1.33.0).** Relevance ranking answers "what is most similar to this query"; a session-start digest also has to answer "where did we leave off", and only a time-ordered read can. Recency used to be a *nudge* inside the score — with a 30-day half-life and a 0.25 weight, an hour-old memory outranked a 22-day-old one by under 9%, which semantic similarity routinely swamped. The result was a primer for an active repo that carried five-day and three-week-old items and skipped that same morning's work entirely. Now up to **3 of the digest's slots are filled newest-first**, scoped to the same repo, deduped against whatever relevance already picked — spent from the **same** budget, so the digest gets fresher, not bigger. The ranking weights themselves are untouched, so global recall is unchanged.
+
 ---
 
 ### 🕸 The Weave — one fabric across memory, code, and every repo (v1.23)
@@ -297,7 +299,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Split View** — split any terminal horizontally or vertically with draggable dividers
 - **Nested splits** — split panes recursively for complex layouts (like VS Code or iTerm2)
 - **Workspaces** — save and restore terminal configurations including names, shells, themes, and working directories
-- **Session persistence** — terminals, workspaces, and settings auto-restore on relaunch
+- **Session persistence** — workspaces and settings survive a relaunch; loose terminals deliberately do not, so every launch starts clean (restoring a saved group of terminals is a workspace's job)
 - **Single-instance lock** — only one Termpolis window runs at a time to prevent session conflicts
 - **Drag and drop** — drag files onto a terminal to paste their quoted file paths
 
@@ -501,8 +503,8 @@ Termpolis **auto-registers** with Claude Code on launch — it adds itself to `~
 |------|-------------|
 | `memory_search` | Semantic + keyword search across the shared memory brain |
 | `memory_write` | Persist a fact, decision, or note for every agent to recall |
-| `memory_list` | List recent memory entries with filters |
-| `memory_primer` | Load a ranked background-memory digest for the current project |
+| `memory_list` | List recent memory entries with filters — pass `project` (your cwd) for "what did we do here last?" |
+| `memory_primer` | Load a background-memory digest for the current project: relevance-ranked, with reserved newest-first slots |
 | `memory_related` | 1-hop traversal from a memory entry (or query) to its neighbours |
 | `memory_link` | Record a typed edge between two memories (knowledge graph) |
 | `memory_graph` | Multi-hop walk of the knowledge graph from a seed memory |
@@ -755,7 +757,9 @@ Session data is stored as JSON in the Electron `userData` directory:
 - **macOS:** `~/Library/Application Support/termpolis/session.json`
 - **Linux:** `~/.config/termpolis/session.json`
 
-Saved state includes: terminals, workspaces with working directories, default shell, view mode, keybindings, AI profiles, and prompt templates.
+Saved state includes: workspaces with working directories, default shell, view mode, keybindings, AI profiles, and prompt templates.
+
+**Loose terminals are deliberately not restored.** Every launch starts on a clean slate. Auto-restore resurrected shells whose processes were long dead and competed with workspaces for ownership of "which terminals are open" — saving a group of terminals for a project is a **workspace's** job, and a workspace is restored when *you* open it, never silently at boot.
 
 Old sessions are automatically migrated — missing fields receive defaults on load.
 

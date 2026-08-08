@@ -64,7 +64,8 @@ function git(...args: string[]): string {
 }
 
 /**
- * The version `loadSession()` compares against, asked of the app itself.
+ * The version the running build reports, asked of the app itself, so the seeded
+ * `session.json` is a faithful fixture rather than an invented one.
  *
  * `app.getVersion()` reads the package.json next to the app path. Launched
  * unpackaged the way Playwright does it, the app path is `out/main` — which has
@@ -171,9 +172,9 @@ test.beforeAll(async () => {
   isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-ud-'))
   // A saved terminal in the repo is the ONLY thing that arms it: nothing in this
   // test ever opens the project in the UI. This is the boot fan-out under test.
-  // `appVersion` MUST match what the running build reports — loadSession drops
-  // every restored terminal when the version differs (an upgrade's shells no
-  // longer exist), and a dropped terminal here would silently arm nothing.
+  // The terminal here is never REOPENED — every launch starts with a clean
+  // terminal list. It is seeded so the trigger supervisor can arm the repo from
+  // its cwd at boot, which is what the session's terminal list is for now.
   fs.writeFileSync(
     path.join(isolatedUserData, 'session.json'),
     JSON.stringify({

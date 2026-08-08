@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildContextPrimer, getLastPrimerCost, type PrimerHit } from '../../src/main/contextPrimer'
+import { buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
 
 const hits: PrimerHit[] = [
   { content: 'auth uses JWT middleware\nvalidated per request', source: 'claude', kind: 'message', score: 0.9 },
@@ -243,5 +243,181 @@ describe('buildContextPrimer — current-project precedence', () => {
     expect(out).toContain('content p1')
     expect(out).toContain('content p2')
     expect((out!.match(/content g/g) || []).length).toBe(1) // only one global slot left
+  })
+})
+
+// ── Freshness lane ──────────────────────────────────────────────────────────
+// Regression cover for "the primer never carries today's work". Relevance ranking
+// fuses in recency as a nudge only (alpha 0.25, 30-day half-life), so an hour-old
+// memory outranks a 22-day-old one by under 9% — noise against a generic query.
+// Measured on a live brain: a primer for this repo returned hits aged 12d–1mo and
+// nothing from that same day, while the store held that day's work the whole time.
+// The fix is structural: slots RESERVED for a newest-first read, not a bigger nudge.
+describe('buildContextPrimer — freshness lane', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const ago = (ms: number) => NOW - ms
+  const HOUR = 3_600_000
+  const DAY = 86_400_000
+
+  // Long enough to clear MIN_RECENT_CHARS — short chunks never earn a slot.
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const WORDS = ('installer shortcut taskbar icon overflow description clamp registry sidebar workspace terminal relaunch ' +
+    'digest recency window slot budget lister scope repo session boot restore welcome pane shell profile agent memory brain').split(' ')
+
+  const staleSearch = vi.fn(async () => [
+    { id: 'old1', content: long('a decision from three weeks ago'), source: 'claude', kind: 'message', score: 0.9, project: proj, ts: ago(22 * DAY) },
+    { id: 'old2', content: long('a note from five days ago'), source: 'code', kind: 'note', score: 0.85, project: proj, ts: ago(5 * DAY) },
+  ] as PrimerHit[])
+
+  const freshOne = (over: Partial<PrimerHit> = {}): PrimerHit => ({
+    id: 'fresh1', content: long('shipped the shortcut icon fix an hour ago'), source: 'claude', kind: 'message', score: 0, project: proj, ts: ago(HOUR), ...over,
+  })
+
+  it('injects an hour-old memory that relevance ranking alone would have dropped', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne()])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('shipped the shortcut icon fix an hour ago')
+    expect(out).toContain(`Most recent activity here (${proj}, newest first)`)
+    expect(out).toContain('1h ago')
+    // ...without evicting the relevant older context
+    expect(out).toContain('a decision from three weeks ago')
+  })
+
+  it('is a pure no-op when no lister is supplied — the old digest, byte for byte', async () => {
+    const withLane = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent: vi.fn().mockResolvedValue([]), now: NOW })
+    const without = await buildContextPrimer(staleSearch, { query: 'q', project: proj, now: NOW })
+    expect(without).toBe(withLane)
+    expect(without).not.toContain('Most recent activity here')
+  })
+
+  it('scopes the lane to this repo and bounds it to the freshness window', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne()])
+    await buildContextPrimer(staleSearch, { query: 'q', project: proj, projectPath: 'C:/repos/termpolis', recent, now: NOW })
+    const arg = recent.mock.calls[0][0]
+    expect(arg.project).toBe('C:/repos/termpolis') // the precise path, not the ambiguous slug
+    expect(arg.since).toBe(NOW - 7 * DAY)
+    expect(arg.limit).toBeGreaterThan(3) // over-fetches: most recent chunks are too short to use
+  })
+
+  it('drops anything older than the window even if the lister ignores `since`', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne({ id: 'ancient', content: long('a year-old chat'), ts: ago(400 * DAY) })])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).not.toContain('a year-old chat')
+    expect(out).not.toContain('Most recent activity here')
+  })
+
+  it('skips trivially short chunks rather than spending a slot on them', async () => {
+    const recent = vi.fn().mockResolvedValue([
+      freshOne({ id: 'tiny', content: 'assistant: Now tests 8 and 9:', ts: ago(HOUR) }),
+      freshOne({ id: 'real', content: long('the substantive one'), ts: ago(2 * HOUR) }),
+    ])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).not.toContain('Now tests 8 and 9')
+    expect(out).toContain('the substantive one')
+  })
+
+  it('never shows the same memory twice when relevance already picked it', async () => {
+    const shared = long('a decision from three weeks ago')
+    const recent = vi.fn().mockResolvedValue([{ id: 'old1', content: shared, source: 'claude', kind: 'message', score: 0, project: proj, ts: ago(DAY) }])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out!.match(/a decision from three weeks ago/g)).toHaveLength(1)
+  })
+
+  // Fully disjoint wording per hit — overlapping filler gets collapsed by the diversity
+  // pass and the budget assertion would end up measuring THAT instead of the budget.
+  const distinct = (i: number) => `relevant hit ${i} ` + Array.from({ length: 12 }, (_, j) => `tok${i}x${j}`).join(' ')
+
+  it('spends from the SAME budget — the digest gets fresher, not bigger', async () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({
+      id: `s${i}`, content: distinct(i), source: 'claude', kind: 'message', score: 0.9 - i * 0.01, project: proj, ts: ago(10 * DAY),
+    })) as PrimerHit[]
+    const recent = vi.fn().mockResolvedValue(
+      Array.from({ length: 5 }, (_, i) => ({ id: `r${i}`, content: long(`fresh hit ${i}`), source: 'claude', kind: 'message', score: 0, project: proj, ts: ago(HOUR) })),
+    )
+    const search = vi.fn(async () => many)
+    const withLane = await buildContextPrimer(search, { query: 'q', limit: 6, project: proj, recent, now: NOW })
+    const without = await buildContextPrimer(search, { query: 'q', limit: 6, project: proj, now: NOW })
+    const count = (s: string | null) => (s!.match(/^- \[/gm) || []).length
+    expect(count(withLane)).toBe(count(without))
+    expect((withLane!.match(/fresh hit/g) || []).length).toBe(2) // round(6 * 0.3)
+  })
+
+  it('caps the lane so a huge digest is not swamped by raw recency', async () => {
+    const recent = vi.fn().mockResolvedValue(
+      Array.from({ length: 20 }, (_, i) => ({ id: `r${i}`, content: long(`fresh hit ${i}`), source: 'claude', kind: 'message', score: 0, project: proj, ts: ago(HOUR) })),
+    )
+    const out = await buildContextPrimer(staleSearch, { query: 'q', limit: 50, project: proj, recent, now: NOW })
+    expect((out!.match(/fresh hit/g) || []).length).toBe(3) // RECENT_MAX_SLOTS
+  })
+
+  it('leaves a one-line digest entirely to relevance', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne()])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', limit: 1, project: proj, recent, now: NOW })
+    expect(out).not.toContain('Most recent activity here')
+    expect(recent).not.toHaveBeenCalled()
+  })
+
+  it('survives a lister that throws — a broken lane is not a broken primer', async () => {
+    const recent = vi.fn().mockRejectedValue(new Error('memory host down'))
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('a decision from three weeks ago')
+    expect(out).not.toContain('Most recent activity here')
+  })
+
+  it('tolerates a lister that returns nothing at all', async () => {
+    const recent = vi.fn().mockResolvedValue(null)
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('a decision from three weeks ago')
+  })
+
+  it('tolerates a lister that answers with something that is not a list', async () => {
+    const recent = vi.fn().mockResolvedValue({ oops: true } as any)
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('a decision from three weeks ago')
+    expect(out).not.toContain('Most recent activity')
+  })
+
+  it('also fills the lane on the flat (no-project) digest, and labels both blocks', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne()])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', recent, now: NOW })
+    // Unscoped: the lane spans every repo, so the title must NOT say "here".
+    expect(out).toContain('Most recent activity (newest first)')
+    expect(out).not.toContain('Most recent activity here')
+    expect(out).toContain('Other relevant context:')
+    expect(out).toContain('shipped the shortcut icon fix an hour ago')
+    // The header must stop claiming a pure relevance ordering once the lane leads.
+    expect(out).not.toContain('most relevant first')
+  })
+
+  it('renders a lane-only digest when relevance finds nothing', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne()])
+    const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('shipped the shortcut icon fix an hour ago')
+    expect(out).not.toContain('This project')
+  })
+
+  it('keeps an undated recent entry rather than assuming it is stale', async () => {
+    const recent = vi.fn().mockResolvedValue([freshOne({ id: 'nots', ts: undefined, content: long('an entry with no timestamp') })])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('an entry with no timestamp')
+  })
+})
+
+describe('recentSlotCount', () => {
+  it('reserves ~30% of the digest, floored at 1 and capped at 3', () => {
+    expect(recentSlotCount(10)).toBe(3)
+    expect(recentSlotCount(6)).toBe(2)
+    expect(recentSlotCount(3)).toBe(1)
+    expect(recentSlotCount(2)).toBe(1)
+  })
+
+  it('gives a one-line digest no lane at all — relevance owns the single slot', () => {
+    expect(recentSlotCount(1)).toBe(0)
+    expect(recentSlotCount(0)).toBe(0)
+  })
+
+  it('never takes the last slot from relevance', () => {
+    expect(recentSlotCount(2)).toBeLessThan(2)
   })
 })

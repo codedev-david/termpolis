@@ -104,7 +104,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''), getTerminalPid: vi.fn(),
   computeWindowsPty: vi.fn(() => ({})),
 }))
-vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
+vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
 vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
@@ -1096,14 +1096,18 @@ describe('memory:build-primer', () => {
     const r = await invoke('memory:build-primer', { query: 'what were we doing', cwd: 'C:/repos/Termpolis' })
     expect(r).toEqual({ success: true, data: '- [claude] did a thing' })
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+      // projectPath carries the FULL cwd so the digest scopes by projectKey, not just the
+      // basename slug; `recent` is the newest-first lane that guarantees a session-start
+      // digest can answer "where did we leave off" and not only "what is most similar".
       query: 'what were we doing', limit: 10, project: 'termpolis',
+      projectPath: 'C:/repos/Termpolis', recent: expect.any(Function),
     })
   })
 
   it('passes project: undefined (not "") when there is no cwd', async () => {
     await invoke('memory:build-primer', { query: 'q' })
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
-      query: 'q', limit: 10, project: undefined,
+      query: 'q', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
     })
   })
 
@@ -1196,7 +1200,7 @@ describe('memory:prepare-primer-file', () => {
   it('coerces a missing query to "" rather than passing undefined to the builder', async () => {
     const r = await invoke('memory:prepare-primer-file', {})
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
-      query: '', limit: 10, project: undefined,
+      query: '', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
     })
     expect(r.data).toEqual({ file: null, count: 0 })
   })
@@ -1491,9 +1495,9 @@ describe('MCP memory tools', () => {
     vi.mocked(isEmbedderReady).mockReturnValue(true)
   })
 
-  it('memory_list forwards its filters', () => {
-    expect(mcp.memoryList({ limit: 2, agentId: 'a', kind: 'note', since: 5 })).toEqual([{ id: 'l1' }])
-    expect(mem.memoryList).toHaveBeenCalledWith({ limit: 2, agentId: 'a', kind: 'note', since: 5 })
+  it('memory_list forwards its filters, project scope included', () => {
+    expect(mcp.memoryList({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })).toEqual([{ id: 'l1' }])
+    expect(mem.memoryList).toHaveBeenCalledWith({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })
   })
 
   it('memory_related and memory_graph forward their queries', () => {
@@ -1520,6 +1524,7 @@ describe('MCP memory_primer', () => {
     expect(out).toEqual({ project: 'termpolis', primer: '- [claude] digest' })
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
       query: 'what now', limit: 6, maxSnippetChars: 600, project: 'termpolis', projectPath: 'C:/repos/Termpolis',
+      recent: expect.any(Function), // the newest-first freshness lane
     })
   })
 

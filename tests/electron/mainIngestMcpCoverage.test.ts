@@ -692,9 +692,16 @@ describe('executeTool — memory tool dispatch and the audit trail it emits', ()
   it('memory_list forwards every filter verbatim and returns the handler result', async () => {
     const h = makeHandlers()
     h.memoryList.mockReturnValue([{ id: 'm1' }])
-    const out = await executeTool('memory_list', { limit: 5, agentId: 'a', kind: 'note', since: 123 }, h)
-    expect(h.memoryList).toHaveBeenCalledWith({ limit: 5, agentId: 'a', kind: 'note', since: 123 })
+    const out = await executeTool('memory_list', { limit: 5, agentId: 'a', kind: 'note', since: 123, project: 'C:/repos/termpolis' }, h)
+    expect(h.memoryList).toHaveBeenCalledWith({ limit: 5, agentId: 'a', kind: 'note', since: 123, project: 'C:/repos/termpolis' })
     expect(out).toEqual([{ id: 'm1' }])
+  })
+
+  it('memory_list leaves project undefined when the caller omits it', async () => {
+    const h = makeHandlers()
+    h.memoryList.mockReturnValue([])
+    await executeTool('memory_list', { limit: 5 }, h)
+    expect(h.memoryList).toHaveBeenCalledWith({ limit: 5, agentId: undefined, kind: undefined, since: undefined, project: undefined })
   })
 
   it('memory_search: diversify defaults ON, fuseGraph defaults OFF, and only the TOP-5 ids are audited', async () => {

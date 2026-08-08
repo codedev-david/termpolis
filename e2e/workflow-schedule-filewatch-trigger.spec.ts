@@ -59,9 +59,9 @@ function lastRun(id: string): Record<string, unknown> {
 /**
  * The version the RUNNING BUILD reports. `app.getVersion()` is Electron's own
  * version when Playwright launches `out/main/index.js` (there's no package.json
- * at that path), so this has to be asked of the app rather than read from disk —
- * and it has to match `session.json`, because `loadSession()` drops every
- * restored terminal when the versions differ, and a dropped terminal arms nothing.
+ * at that path), so this has to be asked of the app rather than read from disk,
+ * keeping the seeded `session.json` a faithful fixture. The terminal it seeds is
+ * never reopened — the supervisor only arms the project at its cwd.
  */
 async function probeAppVersion(): Promise<string> {
   const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-trigwf-probe-'))

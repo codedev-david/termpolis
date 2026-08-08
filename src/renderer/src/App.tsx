@@ -145,6 +145,16 @@ export default function App() {
         // Update store with resolved agentCommands so they persist on next save
         useTerminalStore.setState({ terminals: resolvedSaved })
 
+        // Loose terminals are no longer restored at launch — `session:load` answers
+        // with loadRestoreSession(), whose terminal list is always empty, because
+        // saving a group of terminals is a WORKSPACE's job now. Take the fast path
+        // instead of waiting out the shell-settle delay for an empty restore.
+        if (resolvedSaved.length === 0) {
+          setRestoring(false)
+          loaded.current = true
+          return
+        }
+
         // Spawn all terminals in parallel for faster startup
         const agentTerminals = resolvedSaved.filter(t => t.agentCommand)
         if (agentTerminals.length > 0) {

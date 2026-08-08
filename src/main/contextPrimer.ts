@@ -37,6 +37,12 @@ export interface PrimerHit {
 
 export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>
 
+/**
+ * Newest-first listing, NOT semantic search. Powers the freshness lane below: the one
+ * thing pure relevance ranking can never guarantee is "and here is what we did last".
+ */
+export type PrimerRecent = (opts: { limit: number; project?: string; since?: number }) => Promise<PrimerHit[]>
+
 export interface PrimerOptions {
   query: string
   limit?: number
@@ -50,6 +56,11 @@ export interface PrimerOptions {
    *  staleness guard: a code memory whose source file is gone is flagged so the
    *  agent treats it as history, not a live path to recommend. */
   fileExists?: (path: string) => boolean
+  /** Newest-first listing used for the freshness lane. Omit to disable the lane
+   *  entirely (the digest then behaves exactly as it did before). */
+  recent?: PrimerRecent
+  /** Injectable clock, for deterministic tests. Defaults to Date.now(). */
+  now?: number
 }
 
 // Ingested transcript chunks — the "past conversations" the project bucket leads with.
@@ -73,6 +84,35 @@ const RELEVANCE_REL_FRAC = 0.6
 // Token-Jaccard similarity above which two hits are near-duplicates — one is
 // dropped so the same decision/paraphrase doesn't occupy several inject slots.
 const DIVERSITY_THRESHOLD = 0.7
+
+// ---- Freshness lane (the "why isn't today's work in here?" fix) ----
+//
+// The digest used to be ranked on fused relevance alone. Recency is only a nudge in that
+// fusion — alpha 0.25 over a 30-day half-life — so an hour-old memory outranks a 22-day-old
+// one by under 9%, which any wording difference against the generic primer query swamps.
+// Measured on a live brain: a primer for this repo returned hits aged 12d–1mo and NOTHING
+// from the same day, while the store held that day's work the whole time.
+//
+// Relevance ranking structurally cannot fix this — "most similar" and "most recent" are
+// different questions. So a few slots are RESERVED and filled newest-first, independent of
+// score, and labeled as such.
+
+/** Fraction of the digest's slots reserved for newest-first hits. */
+export const RECENT_SLOT_FRAC = 0.3
+/** Never spend more than this many slots on the freshness lane, however big the digest. */
+export const RECENT_MAX_SLOTS = 3
+/** How far back the lane will reach. Older than this isn't "what we were just doing". */
+export const RECENT_WINDOW_MS = 7 * 86_400_000
+/** Skip trivially short chunks ("assistant: Now tests 8 and 9:") — they'd waste a slot. */
+export const MIN_RECENT_CHARS = 120
+/** Over-fetch factor: most recent chunks are too short to be worth a slot. */
+const RECENT_CANDIDATE_FACTOR = 8
+
+/** How many slots the freshness lane gets for a digest of `limit` memories. */
+export function recentSlotCount(limit: number): number {
+  if (limit <= 1) return 0 // a one-line digest belongs to relevance
+  return Math.max(1, Math.min(RECENT_MAX_SLOTS, Math.round(limit * RECENT_SLOT_FRAC), limit - 1))
+}
 
 // Estimated cost of the last primer built — the measurable "how much did we inject"
 // number the Memory panel / accounting reads. Zero until the first successful build.
@@ -106,6 +146,43 @@ function relativeAge(ts: number, now: number): string {
   return min >= 1 ? `${min}m ago` : 'just now'
 }
 
+/**
+ * Fill the reserved freshness slots newest-first, skipping anything already chosen by
+ * relevance and anything too short to be worth a slot. Never throws: a brain that can't
+ * list is a digest without a freshness lane, not a failed primer.
+ */
+async function collectRecent(
+  recent: PrimerRecent | undefined,
+  o: { slots: number; project?: string; now: number; exclude: Set<string> },
+): Promise<PrimerHit[]> {
+  if (!recent || o.slots <= 0) return []
+  let hits: PrimerHit[]
+  try {
+    hits = (await recent({
+      limit: Math.max(o.slots * RECENT_CANDIDATE_FACTOR, o.slots),
+      project: o.project,
+      since: o.now - RECENT_WINDOW_MS,
+    })) || []
+  } catch { return [] }
+  // A lister that answers with something other than a list must not take the primer
+  // down with it — the lane is an enhancement, never a dependency.
+  if (!Array.isArray(hits)) return []
+
+  const cutoff = o.now - RECENT_WINDOW_MS
+  const out: PrimerHit[] = []
+  for (const h of hits) {
+    if (out.length >= o.slots) break
+    // Enforce the window here too — an injected lister may ignore `since`.
+    if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) continue
+    if ((h.content || '').replace(/\s+/g, ' ').trim().length < MIN_RECENT_CHARS) continue
+    const key = hitKey(h)
+    if (o.exclude.has(key)) continue
+    o.exclude.add(key)
+    out.push(h)
+  }
+  return out
+}
+
 function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => boolean, now: number): string | null {
   const snip = truncateContent((h.content || '').replace(/\s+/g, ' ').trim(), maxSnip)
   if (!snip) return null
@@ -129,7 +206,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const maxSnip = opts.maxSnippetChars ?? 400
   const project = (opts.project || '').trim().toLowerCase()
   const fileExists = opts.fileExists ?? existsSync
-  const now = Date.now()
+  const now = opts.now ?? Date.now()
 
   // Over-fetch candidates (capped at the hot-window practical max), then keep only
   // the relevant ones (with a floor so a thin recall never starves the agent) and
@@ -158,12 +235,50 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     if (projectHits.length === 0) return null
   }
 
+  // Freshness lane: reserved slots filled newest-first, excluding whatever relevance
+  // already picked. Scored ranking alone kept answering "most similar to the query" when
+  // the question a session-start digest has to answer is "where did we leave off".
+  const excludeFromRecent = new Set<string>([...projectHits, ...globalHits].map(hitKey))
+  const recentHits = await collectRecent(opts.recent, {
+    slots: recentSlotCount(limit),
+    project: searchScope || undefined,
+    now,
+    exclude: excludeFromRecent,
+  })
+  const recentLines: string[] = []
+  for (const h of recentHits) {
+    const line = renderLine(h, maxSnip, fileExists, now)
+    if (line) recentLines.push(line)
+  }
+  // The lane spends from the SAME budget — the digest gets fresher, not bigger.
+  const relevanceBudget = Math.max(0, limit - recentLines.length)
+
   const body: string[] = []
+  // Blank-line separator only between sections that actually have content.
+  const section = (title: string, lines: string[]): void => {
+    if (lines.length === 0) return
+    if (body.length > 0) body.push('')
+    body.push(title, ...lines)
+  }
+  // "here" only when the lane is actually scoped to a project — an unscoped lane spans
+  // every repo and must not claim otherwise.
+  section(
+    project
+      ? `Most recent activity here (${project}, newest first) — where things actually stand:`
+      : 'Most recent activity (newest first) — where things actually stand:',
+    recentLines,
+  )
   if (!project) {
+    const globalLines: string[] = []
     for (const h of globalHits) {
+      if (globalLines.length >= relevanceBudget) break
       const line = renderLine(h, maxSnip, fileExists, now)
-      if (line) body.push(line)
+      if (line) globalLines.push(line)
     }
+    // Without a freshness lane the flat digest is byte-identical to before: bare lines,
+    // no sub-header. With one, the relevance block needs a label to stay legible.
+    if (recentLines.length > 0) section('Other relevant context:', globalLines)
+    else body.push(...globalLines)
   } else {
     const seen = new Set(projectHits.map(hitKey))
     // Legacy entries carry no project metadata — promote global hits that are
@@ -189,27 +304,24 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
 
     const projLines: string[] = []
     for (const h of bucket) {
-      if (projLines.length >= limit) break
+      if (projLines.length >= relevanceBudget) break
       const line = renderLine(h, maxSnip, fileExists, now)
       if (line) projLines.push(line)
     }
     const otherLines: string[] = []
     for (const h of others) {
-      if (projLines.length + otherLines.length >= limit) break
+      if (projLines.length + otherLines.length >= relevanceBudget) break
       const line = renderLine(h, maxSnip, fileExists, now)
       if (line) otherLines.push(line)
     }
-    if (projLines.length > 0) body.push(`This project (${project}) — past conversations first:`, ...projLines)
-    if (otherLines.length > 0) {
-      if (body.length > 0) body.push('')
-      body.push('Other saved context (may NOT apply to this project):', ...otherLines)
-    }
+    section(`This project (${project}) — past conversations first:`, projLines)
+    section('Other saved context (may NOT apply to this project):', otherLines)
   }
   if (body.length === 0) return null
 
   // F24: only the flat (score-sorted) path is truly "most relevant first"; the project
   // path leads with conversations under its own sub-headers, so don't claim it up top.
-  const header = project
+  const header = (project || recentLines.length > 0)
     ? 'Relevant context from your memory — background only:'
     : 'Relevant context from your memory (most relevant first) — background only:'
   const result = [

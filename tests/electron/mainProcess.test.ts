@@ -104,9 +104,11 @@ vi.mock('../../src/main/shellDetector', () => ({
 }))
 
 const mockLoadSession = vi.fn()
+const mockLoadRestoreSession = vi.fn()
 const mockSaveSession = vi.fn()
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: (...args: any[]) => mockLoadSession(...args),
+  loadRestoreSession: (...args: any[]) => mockLoadRestoreSession(...args),
   saveSession: (...args: any[]) => mockSaveSession(...args),
 }))
 
@@ -731,21 +733,21 @@ describe('fs:homedir', () => {
 // session:load
 // =========================================================================
 describe('session:load', () => {
-  it('loads session data', async () => {
+  it('loads the restore session — terminals stay out of the boot payload', async () => {
     const session = {
-      terminals: [{ id: 't1', name: 'Main', color: '#fff', shellType: 'bash', cwd: '/', fontSize: 14, theme: 'dracula', fontFamily: 'mono' }],
-      workspaces: [],
+      terminals: [],
+      workspaces: [{ id: 'w', name: 'Dev', terminals: [{ id: 't1', name: 'Main', color: '#fff', shellType: 'bash', cwd: '/', fontSize: 14, theme: 'dracula', fontFamily: 'mono' }] }],
       defaultShell: 'bash',
       viewMode: 'tabs',
     }
-    mockLoadSession.mockReturnValue(session)
+    mockLoadRestoreSession.mockReturnValue(session)
 
     const result = await invokeHandler('session:load')
     expect(result).toEqual({ success: true, data: session })
   })
 
   it('returns error when session file is corrupted', async () => {
-    mockLoadSession.mockImplementation(() => {
+    mockLoadRestoreSession.mockImplementation(() => {
       throw new Error('JSON parse error')
     })
 
