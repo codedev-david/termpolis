@@ -4,6 +4,8 @@ import { compactWeb, looksLikeHtml } from '../headroom/compactWeb'
 import { thresholdsFor, type Mode } from '../headroom/config'
 import { applyPrefixDecay } from './prefixDecay'
 import { bestDiff, makeCandidate, type DiffCandidate } from '../headroom/diffEncode'
+import { compactJson } from './jsonCompact'
+import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
 
 export interface WireStats {
   trBlocks: number
@@ -96,29 +98,129 @@ export function clampThinkingBudget(obj: { thinking?: unknown }): boolean {
 }
 
 /**
- * Deterministically compact one tool_result text: line-dedup + head/tail window (wireWindow).
- * When it elides content it appends a footer with a CONTENT-HASH token (so re-compression is
- * byte-identical → cache-safe) and returns the original to stash for retrieve_full.
+ * What the wire already told us about a block's content. Derived only from the request body — the
+ * enclosing tool_use's name and the path it names — so it stays a pure function of the input and
+ * cannot make compression vary between turns.
  */
-export function compactToolText(text: string): { text: string; stash?: { token: string; original: string } } {
+export interface ContentHint { path?: string; toolName?: string }
+
+/** Input keys that name the file a tool acted on. First match wins; all are in TOOL_USE_SKIP. */
+const PATH_KEYS = ['file_path', 'notebook_path', 'path', 'filePath', 'file']
+
+/** Pull the content hint out of a tool_use input object. */
+export function hintFromInput(input: unknown, name?: unknown): ContentHint {
+  const hint: ContentHint = {}
+  if (typeof name === 'string') hint.toolName = name
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const rec = input as Record<string, unknown>
+    for (const k of PATH_KEYS) {
+      const v = rec[k]
+      if (typeof v === 'string' && v.length > 0) { hint.path = v; break }
+    }
+  }
+  return hint
+}
+
+/**
+ * Index tool_use blocks by id so a tool_result can be told which file it came from. Built in one
+ * pass over the whole body before any rewriting, so it is complete regardless of block order and
+ * unaffected by anything the rewrite later does to those inputs.
+ */
+export function collectToolUseHints(messages: Array<{ content?: unknown }>): Map<string, ContentHint> {
+  const map = new Map<string, ContentHint>()
+  for (const m of messages) {
+    if (!m || !Array.isArray(m.content)) continue
+    for (const b of m.content as Array<Record<string, unknown>>) {
+      if (!b || typeof b !== 'object' || b.type !== 'tool_use' || typeof b.id !== 'string') continue
+      map.set(b.id, hintFromInput(b.input, b.name))
+    }
+  }
+  return map
+}
+
+/**
+ * A structural pass has already thrown away the bodies, so what remains is nearly all signal —
+ * spending the raw window on it would undo the fidelity the pass just bought. This multiplies the
+ * budget instead. It stays a MULTIPLE of the user's mode, so 'max' is still tighter than
+ * 'aggressive', and the block is still hard-bounded: an outline that overruns is windowed like
+ * anything else, and the full original remains one retrieve_full away.
+ */
+export const STRUCT_WINDOW_SCALE = 3
+
+function scaleWindow(w: WireWindow, k: number): WireWindow {
+  return { headLines: w.headLines * k, tailLines: w.tailLines * k, maxChars: w.maxChars * k }
+}
+
+/**
+ * Bound an already-structured block by lines and then by chars. The char clamp is what compactText
+ * cannot do: minified JSON is a single line, so a line window either never fires or (with head and
+ * tail both covering that one line) emits it TWICE.
+ */
+export function windowStructured(s: string, win: WireWindow): { text: string; elided: boolean } {
+  let out = s
+  let elided = false
+  const lines = s.split('\n')
+  if (lines.length > win.headLines + win.tailLines) {
+    const head = lines.slice(0, win.headLines)
+    const tail = lines.slice(lines.length - win.tailLines)
+    out = [...head, `… [${lines.length - head.length - tail.length} lines elided] …`, ...tail].join('\n')
+    elided = true
+  }
+  if (out.length > win.maxChars) {
+    out = `${out.slice(0, win.maxChars)}\n… [${out.length - win.maxChars} chars elided] …`
+    elided = true
+  }
+  return { text: out, elided }
+}
+
+/**
+ * Deterministically compact one tool_result text: content router (HTML / JSON / code) then a
+ * head/tail window (wireWindow). When it elides content it appends a footer with a CONTENT-HASH
+ * token (so re-compression is byte-identical → cache-safe) and returns the original to stash.
+ */
+export function compactToolText(text: string, hint?: ContentHint): { text: string; stash?: { token: string; original: string } } {
   if (text.length < 400) return { text }
-  // Content-aware pre-pass: reduce HTML/web dumps (WebFetch, curl'd pages, MCP HTML)
-  // to their readable text BEFORE the head/tail window — a line window barely helps
-  // markup-dense, few-newline HTML. Shrink-only + deterministic; original still stashed.
+  // Content-aware pre-pass, one branch per shape. Each reduces the block to its meaningful
+  // structure BEFORE the window, so the surviving bytes are chosen rather than sliced:
+  //   HTML  → readable text          (a line window barely helps markup-dense, few-newline HTML)
+  //   JSON  → sampled + minified     (a minified payload is ONE line, so the window never fires)
+  //   code  → signatures, no bodies  (a head/tail window keeps imports and throws away the API)
+  // The branches are exclusive — the three shapes don't overlap — and every one is shrink-only
+  // and deterministic, with the original still stashed for retrieve_full.
   let body = text
-  let webReduced = false
+  let hidden = false      // content was removed, so the block needs a retrieve token
+  let structured = false  // the branch already chose what matters; see STRUCT_WINDOW_SCALE
   if (looksLikeHtml(text)) {
     const w = compactWeb(text)
     if (w.length < text.length) {
       body = w
-      webReduced = true
+      hidden = true
+    }
+  } else {
+    const j = compactJson(text)
+    if (j && j.text.length < text.length) {
+      body = j.text
+      hidden = j.elided // a whitespace-only win hides nothing, so it needs no token
+      structured = true
+    } else {
+      const fam = familyForPath(hint?.path)
+      if (fam !== null || looksLikeCode(text)) {
+        const o = outlineCode(text, fam)
+        if (o.length < text.length) {
+          body = o
+          hidden = true
+          structured = true
+        }
+      }
     }
   }
-  const r = compactText(body, wireWindow)
+  const r = structured
+    ? windowStructured(body, scaleWindow(wireWindow, STRUCT_WINDOW_SCALE))
+    : compactText(body, wireWindow)
   if (r.text.length >= text.length) return { text } // net no shrink → forward original
   // No retrieve token needed only when nothing was hidden: pure consecutive-line
-  // dedup is self-describing, whereas an elision OR an HTML reduction hides content.
-  if (!r.elided && !webReduced) return { text: r.text }
+  // dedup is self-describing, whereas an elision or a structural reduction hides content.
+  if (!r.elided && !hidden) return { text: r.text }
   const token = detToken(text) // key on the ORIGINAL so retrieve_full returns the true original
   return {
     text: `${r.text}\n\n[headroom] Full result cached — call the retrieve_full tool with token "${token}" to expand it.`,
@@ -148,6 +250,7 @@ function compactOrDedup(
   stats: WireStats,
   stashes: Array<{ token: string; original: string }>,
   bucket: StatBucket = 'tr',
+  hint?: ContentHint,
 ): { text: string; changed: boolean } {
   const origKey = bucket === 'tu' ? 'tuOrigChars' : 'trOrigChars'
   const compKey = bucket === 'tu' ? 'tuCompChars' : 'trCompChars'
@@ -165,7 +268,7 @@ function compactOrDedup(
     stats[blockKey]++
     stashes.push({ token: key, original: text })
   } else {
-    const c = compactToolText(text)
+    const c = compactToolText(text, hint)
     let best = c.text
     let stash = c.stash
     if (text.length >= 400) {
@@ -232,13 +335,16 @@ function compressToolUseInput(
   if (!input || typeof input !== 'object' || Array.isArray(input)) return false
   const rec = input as Record<string, unknown>
   let changed = false
+  // The block names its own file (Write's file_path sits beside its content), so the router can
+  // outline what the agent wrote just as it outlines what the agent read.
+  const hint = hintFromInput(rec, (block as { name?: unknown }).name)
   // Object.keys order is insertion order, and the body is re-parsed from identical JSON each
   // turn, so the traversal — and therefore the output — is deterministic.
   for (const k of Object.keys(rec)) {
     if (TOOL_USE_SKIP.has(k)) continue
     const v = rec[k]
     if (typeof v !== 'string' || v.length < TOOL_USE_MIN_CHARS) continue
-    const r = compactOrDedup(v, seen, stats, stashes, 'tu')
+    const r = compactOrDedup(v, seen, stats, stashes, 'tu', hint)
     if (r.changed) { rec[k] = r.text; changed = true }
   }
   return changed
@@ -269,6 +375,9 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   try { reserialized = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats, stashes } }
   if (reserialized !== raw) return { body: raw, changed: false, stats, stashes }
   let changed = clampThinkingBudget(obj)
+  // Built once, up front: a tool_result's file hint lives in the tool_use it answers, which sits
+  // in an EARLIER message, and the lookup must not depend on how far the walk has got.
+  const hints = collectToolUseHints(obj.messages as Array<{ content?: unknown }>)
   try {
     // Decay runs BEFORE the main walk so aged-out blocks never enter the dedup/diff index — a
     // later block must not be encoded as a patch against something no longer on the wire.
@@ -286,13 +395,16 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
       for (const b of m.content as Array<Record<string, unknown>>) {
         if (!b || typeof b !== 'object') continue
         if (b.type === 'tool_result') {
+          // The result carries no file name of its own — it is the tool_use it answers, in an
+          // earlier message, that knows which file this is. hints was built before the walk.
+          const hint = typeof b.tool_use_id === 'string' ? hints.get(b.tool_use_id) : undefined
           if (typeof b.content === 'string') {
-            const r = compactOrDedup(b.content, seen, stats, stashes)
+            const r = compactOrDedup(b.content, seen, stats, stashes, 'tr', hint)
             if (r.changed) { b.content = r.text; changed = true }
           } else if (Array.isArray(b.content)) {
             for (const item of b.content as Array<Record<string, unknown>>) {
               if (item && item.type === 'text' && typeof item.text === 'string') {
-                const r = compactOrDedup(item.text, seen, stats, stashes)
+                const r = compactOrDedup(item.text, seen, stats, stashes, 'tr', hint)
                 if (r.changed) { item.text = r.text; changed = true }
               } else if (item && item.type === 'image' && opts.compressImage) {
                 changed = compressImageBlock(item as { source?: { type?: string; media_type?: string; data?: string } }, opts.compressImage, stats) || changed
