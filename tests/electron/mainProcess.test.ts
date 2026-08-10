@@ -2357,10 +2357,77 @@ describe('App lifecycle events', () => {
     expect(mockStopMcpServer).toHaveBeenCalled()
   })
 
+  /**
+   * Fire a quit callback WITHOUT leaving its real `setTimeout(() => process.exit(0), 500)` armed.
+   * That timer is correct in production and lethal in a test worker: it lands half a second later,
+   * in whatever test happens to be running by then, and kills the whole file. Fake timers absorb it
+   * and are discarded on the way out.
+   */
+  function fireQuitCallback(name: string): void {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    vi.useFakeTimers()
+    try { capturedAppCallbacks[name]() } finally { vi.useRealTimers(); exit.mockRestore() }
+  }
+
   it('window-all-closed kills all terminals', async () => {
     const { killAll } = await import('../../src/main/terminalManager') as any
-    capturedAppCallbacks['window-all-closed']()
+    fireQuitCallback('window-all-closed')
     expect(killAll).toHaveBeenCalled()
+  })
+
+  // A main process with no windows and no way out is invisible — the user closed the window, so it
+  // looks shut — and it hangs e2e teardown on app.close() for the full hook timeout. Nothing in the
+  // teardown may stand between the handler and the quit.
+  it('window-all-closed still quits when stopping the MCP server throws', async () => {
+    const { app } = await import('electron') as any
+    mockStopMcpServer.mockImplementationOnce(() => { throw new Error('ERR_SERVER_NOT_RUNNING') })
+    app.quit.mockClear()
+    expect(() => fireQuitCallback('window-all-closed')).not.toThrow()
+    if (process.platform !== 'darwin') expect(app.quit).toHaveBeenCalled()
+  })
+
+  it('window-all-closed still quits when killing the terminals throws', async () => {
+    const { app } = await import('electron') as any
+    const { killAll } = await import('../../src/main/terminalManager') as any
+    killAll.mockImplementationOnce(() => { throw new Error('pty already gone') })
+    app.quit.mockClear()
+    expect(() => fireQuitCallback('window-all-closed')).not.toThrow()
+    if (process.platform !== 'darwin') expect(app.quit).toHaveBeenCalled()
+  })
+
+  it('forces the process out when the shutdown stalls, naming the stage it stalled at', () => {
+    // The guarantee of last resort. Whatever hangs or throws, the process leaves — and it says
+    // where it got stuck, so the next occurrence names a line instead of costing an investigation.
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.useFakeTimers()
+    try {
+      capturedAppCallbacks['window-all-closed']()
+      vi.advanceTimersByTime(5000)
+      if (process.platform !== 'darwin') {
+        expect(err.mock.calls.flat().join(' ')).toContain('[shutdown] stalled after')
+        expect(exit).toHaveBeenCalledWith(0)
+      }
+    } finally {
+      vi.useRealTimers()
+      err.mockRestore()
+      exit.mockRestore()
+    }
+  })
+
+  it('before-quit finishes its teardown even when an early step throws', async () => {
+    const { globalShortcut } = await import('electron') as any
+    const { killAll } = await import('../../src/main/terminalManager') as any
+    const mc = await import('../../src/main/memoryClient') as any
+    await ensureMemoryStore()
+    expect(mc.memoryHostMode()).toBe('inproc')
+    globalShortcut.unregisterAll.mockImplementationOnce(() => { throw new Error('no display') })
+    killAll.mockClear()
+    expect(() => capturedAppCallbacks['before-quit']()).not.toThrow()
+    expect(killAll).toHaveBeenCalled()
+    // stopMemoryHost() sits near the END of the handler, so reaching it proves the throw did not
+    // abort the teardown and leave the PTYs, the memory host and the proxy child running.
+    expect(mc.memoryHostMode()).not.toBe('inproc')
   })
 
   it('activate handler does not throw', () => {

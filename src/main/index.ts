@@ -3445,8 +3445,8 @@ if (!gotTheLock) {
     // FIRST: this is a clean shutdown, so the next boot must not report it as a crash. Everything
     // below can throw; the marker must be cleared regardless.
     try { markCleanExit() } catch { /* best effort */ }
-    globalShortcut.unregisterAll()
-    killAll()
+    try { globalShortcut.unregisterAll() } catch { /* best effort */ }
+    try { killAll() } catch { /* best effort */ }
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { stopRepoWatches() } catch {}
@@ -3457,7 +3457,10 @@ if (!gotTheLock) {
     try { stopMemoryHost() } catch {}
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
-    if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
+    if (mcpServer) {
+      try { stopMcpServer(mcpServer) } catch { /* already down */ }
+      mcpServer = null
+    }
   })
   // `before-quit` above misses the shutdowns we don't initiate — an OS session end and a
   // termination signal — and each of those would otherwise be filed as a phantom native crash
@@ -3471,11 +3474,35 @@ if (!gotTheLock) {
     quit: () => app.quit(),
   })
   app.on('window-all-closed', () => {
-    killAll()
+    // Arm the last-resort exit BEFORE any teardown. Every line below is a chance to throw, and all
+    // of them sit between here and the `app.quit()` that actually ends the process — so one throw
+    // strands a main process with no windows and no way out, which is invisible to a user (they
+    // closed the window; it looks shut) and hangs e2e teardown on app.close() for its full timeout.
+    // 5s is far clear of a normal shutdown, which exits ~500ms after the app.quit() below.
+    let stage = 'start'
+    if (process.platform !== 'darwin') {
+      const watchdog = setTimeout(() => {
+        console.error(`[shutdown] stalled after "${stage}" — forcing exit`)
+        // A forced exit is still a deliberate one: without this the next boot files it as a crash.
+        try { markCleanExit() } catch { /* best effort */ }
+        process.exit(0)
+      }, 5000)
+      // unref so the watchdog itself never delays a shutdown that is going fine.
+      watchdog.unref?.()
+    }
+    try { killAll() } catch { /* shutting down anyway */ }
+    stage = 'terminals'
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
-    if (mcpServer) { stopMcpServer(mcpServer); mcpServer = null }
+    stage = 'watchers'
+    // close() on an already-stopped server throws ERR_SERVER_NOT_RUNNING, and this used to be the
+    // one unguarded call standing in front of the exit path.
+    if (mcpServer) {
+      try { stopMcpServer(mcpServer) } catch { /* already down */ }
+      mcpServer = null
+    }
+    stage = 'mcp'
     if (process.platform !== 'darwin') {
       app.quit()
       // Force exit — MCP server or PTY processes may keep event loop alive
