@@ -163,6 +163,57 @@ export interface ProxyTotalsView {
   cacheCreationTokens: number
   inputTokens: number
   outputTokens: number
+  retrieves: number
+  givebackTokens: number
+  toolUseOrigTokens: number
+  toolUseSavedTokens: number
+  worstSavedPct: number
+  belowFloorRequests: number
+  floorEligibleRequests: number
+}
+
+export interface HeadroomSettingsView {
+  enabled: boolean
+  mode: 'conservative' | 'balanced' | 'aggressive' | 'max'
+  steering: boolean
+  /** Ceiling on extended-thinking budget, in tokens. 0 = off (default). */
+  thinkingCap: number
+  /** Let launch-time steering strength follow measured output volume. */
+  adaptiveSteering: boolean
+  /** Let the launch-time wire tier escalate when the measured 50% savings floor isn't holding. */
+  floorControl: boolean
+  /** Age the oldest half of a long conversation down to retrievable stubs. Off by default. */
+  prefixDecay: boolean
+}
+
+/** Both Token Headroom layers summed, with retrieve_full give-backs subtracted exactly once. */
+export interface UnifiedTotalsView {
+  requests: number
+  wireOrigTokens: number
+  wireSavedTokens: number
+  images: number
+  imageOrigBytes: number
+  imageSavedBytes: number
+  toolOrigTokens: number
+  toolSavedTokens: number
+  toolEvents: number
+  byTool: Record<string, number>
+  retrieves: number
+  givebackTokens: number
+  grossSavedTokens: number
+  netSavedTokens: number
+  savedPct: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  inputTokens: number
+  outputTokens: number
+  /** The tool_use (agent's own output, re-read from the prefix) half of the wire figures. */
+  toolUseOrigTokens: number
+  toolUseSavedTokens: number
+  /** Per-request floor evidence: the worst single request, and how many missed the 50% floor. */
+  worstSavedPct: number
+  belowFloorRequests: number
+  floorEligibleRequests: number
 }
 
 export interface TermpolisAPI {
@@ -270,10 +321,12 @@ export interface TermpolisAPI {
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Token Headroom: compression settings + measured savings receipt. */
-  tokenSavingsGetSettings: () => Promise<IpcResponse<{ enabled: boolean; mode: 'conservative' | 'balanced' | 'aggressive'; steering: boolean }>>
-  tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean }) => Promise<IpcResponse<{ enabled: boolean; mode: 'conservative' | 'balanced' | 'aggressive'; steering: boolean }>>
+  tokenSavingsGetSettings: () => Promise<IpcResponse<HeadroomSettingsView>>
+  tokenSavingsSetSettings: (p: Partial<HeadroomSettingsView>) => Promise<IpcResponse<HeadroomSettingsView>>
   tokenSavingsGetReceipt: () => Promise<IpcResponse<{ session: { netSaved: number; events: number; byTool: Record<string, number> }; cumulative: { netSaved: number; events: number; byTool: Record<string, number> } }>>
   tokenSavingsGetProxyReceipt: () => Promise<IpcResponse<{ session: ProxyTotalsView; cumulative: ProxyTotalsView }>>
+  /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
+  tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
   memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'inproc' | 'unstarted'; pid: number | null }>>

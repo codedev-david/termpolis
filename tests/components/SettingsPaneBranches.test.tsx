@@ -161,6 +161,14 @@ describe('AuditLogModal — the paths where the bridge or the data is missing', 
 const proxyTotals = (over: Record<string, number> = {}) => ({
   requests: 40, textOrigTokens: 200000, textSavedTokens: 100000, savedPct: 50,
   images: 3, imageOrigBytes: 0, imageSavedBytes: 0,
+  cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000, retrieves: 0, givebackTokens: 0, ...over,
+})
+
+const unifiedTotals = (over: Record<string, number> = {}) => ({
+  requests: 40, wireOrigTokens: 200000, wireSavedTokens: 100000,
+  images: 3, imageOrigBytes: 0, imageSavedBytes: 0,
+  toolOrigTokens: 0, toolSavedTokens: 0, toolEvents: 0, byTool: {},
+  retrieves: 0, givebackTokens: 0, grossSavedTokens: 100000, netSavedTokens: 100000, savedPct: 50,
   cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000, ...over,
 })
 
@@ -177,10 +185,11 @@ const withProxy = (session: Record<string, number>, cumulative: Record<string, n
 describe('TokenSavingsSettings — failed reads and totals that are not the happy path', () => {
   beforeEach(() => {
     ;(window as unknown as { termpolis: Record<string, Fn> }).termpolis = {
-      tokenSavingsGetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: true, mode: 'balanced', steering: true } }),
-      tokenSavingsSetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: false, mode: 'balanced', steering: true } }),
+      tokenSavingsGetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: true, mode: 'balanced', steering: true, thinkingCap: 0, adaptiveSteering: true } }),
+      tokenSavingsSetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: false, mode: 'balanced', steering: true, thinkingCap: 0, adaptiveSteering: true } }),
       tokenSavingsGetReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: { netSaved: 12345, events: 3, byTool: {} }, cumulative: { netSaved: 99999, events: 40, byTool: {} } } }),
       tokenSavingsGetProxyReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: proxyTotals(), cumulative: proxyTotals() } }),
+      tokenSavingsGetUnifiedReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: unifiedTotals(), cumulative: unifiedTotals() } }),
     }
   })
 
@@ -190,6 +199,7 @@ describe('TokenSavingsSettings — failed reads and totals that are not the happ
     tp().tokenSavingsGetSettings = vi.fn().mockResolvedValue({ success: false, error: 'no handler' })
     tp().tokenSavingsGetReceipt = vi.fn().mockResolvedValue({ success: false, error: 'no handler' })
     tp().tokenSavingsGetProxyReceipt = vi.fn().mockResolvedValue({ success: false, error: 'no handler' })
+    tp().tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({ success: false, error: 'no handler' })
 
     render(<TokenSavingsSettings />)
 

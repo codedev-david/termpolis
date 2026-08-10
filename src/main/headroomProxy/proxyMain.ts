@@ -1,8 +1,16 @@
 import * as http from 'http'
 import * as https from 'https'
-import { rewriteMessagesBody, setWireWindow, windowForMode, type WireStats } from './wireCompress'
+import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, type WireStats } from './wireCompress'
 import { parseUsageFromSse, decodeBody, type Usage } from './usageParse'
 import { compressImage } from './imageCodec'
+
+/**
+ * Prefix decay, opt-in. Module scope rather than a closure because the HTTP server is built once
+ * and the flag arrives later on the config channel; `=== true` means an absent or garbled field
+ * leaves it OFF rather than flipping the transform on a partially-formed message.
+ */
+let decayEnabled = false
+export function setPrefixDecay(on: unknown): void { decayEnabled = on === true }
 
 export interface ProxyResult {
   changed: boolean
@@ -48,7 +56,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
       let rewritten: { changed: boolean; stats: WireStats; stashes: Array<{ token: string; original: string }> } | null = null
       if (isMessages) {
         try {
-          const r = rewriteMessagesBody(body.toString('utf8'), { compressImage })
+          const r = rewriteMessagesBody(body.toString('utf8'), { compressImage, decay: decayEnabled })
           if (r.changed) body = Buffer.from(r.body, 'utf8')
           rewritten = { changed: r.changed, stats: r.stats, stashes: r.stashes }
         } catch { /* fail-open: forward original */ }
@@ -103,12 +111,15 @@ if (parentPort) {
   // Translate a mode string → wire window. Unknown/garbled → windowForMode returns null →
   // setWireWindow no-ops, so the aggressive default holds (never downgrades on a bad message).
   const applyMode = (mode: unknown): void => { if (typeof mode === 'string') setWireWindow(windowForMode(mode)) }
+  // The thinking cap rides the same message as the mode; setThinkingCap validates, so a garbled
+  // or absent value simply leaves the current ceiling in place.
+  const applyConfig = (msg: { mode?: unknown; thinkingCap?: unknown; decay?: unknown }): void => { applyMode(msg.mode); setThinkingCap(msg.thinkingCap); setPrefixDecay(msg.decay) }
   parentPort.on('message', (e) => {
-    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string; mode?: unknown })
+    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string; mode?: unknown; thinkingCap?: unknown; decay?: unknown })
     if (!msg) return
-    if (msg.kind === 'config') { applyMode(msg.mode); return } // live mode change (Settings → supervisor)
+    if (msg.kind === 'config') { applyConfig(msg); return } // live mode/cap change (Settings → supervisor)
     if (msg.kind !== 'init' || server) return
-    applyMode(msg.mode) // honor the mode carried on init — and re-applied on every respawn
+    applyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {

@@ -122,8 +122,11 @@ import type { WorkflowScope } from '../renderer/src/types'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
-import type { SteeringMode } from './headroom/outputSteering'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode } from './headroomProxy/proxySupervisor'
+import { adaptSteeringMode, type SteeringMode } from './headroom/outputSteering'
+import { resolveWireMode } from './headroom/savingsFloor'
+import { setCcrDir } from './headroom/ccrStore'
+import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay } from './headroomProxy/proxySupervisor'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
@@ -2057,7 +2060,21 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
     // prompt cache survives. Steering settings are best-effort (optional feature).
     let steering = false
     let steeringMode: SteeringMode | undefined
-    try { const hs = getHeadroomSettings(); steering = hs.steering; steeringMode = hs.mode as SteeringMode } catch { /* steering optional */ }
+    try {
+      const hs = getHeadroomSettings()
+      steering = hs.steering
+      // No cast: SteeringMode and the config Mode must stay the same union. The cast that used to
+      // sit here hid the 'max' tier from steering entirely — it fell through to the BALANCED
+      // directive, so picking the hardest compression silently bought the weakest output nudge.
+      steeringMode = hs.mode
+      // Adaptive strength, resolved HERE (launch) and frozen for the session — the directive is
+      // part of the re-sent system prompt, so a mid-conversation change would bust the prompt
+      // cache. Measured lifetime output volume decides; too little history leaves the mode alone.
+      if (hs.adaptiveSteering) {
+        const cum = summarizeProxySavings().cumulative
+        steeringMode = adaptSteeringMode(steeringMode, cum.outputTokens, cum.requests)
+      }
+    } catch { /* steering optional */ }
     const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode })
     const file = join(dir, `primer-${uuidv4()}.txt`)
     writeFileSync(file, instruction, 'utf8')
@@ -2802,6 +2819,11 @@ if (!gotTheLock) {
       const hrDir = join(app.getPath('userData'), 'headroom')
       loadSettingsFromDisk(hrDir)
       loadLedgerBaseFromDisk(hrDir)
+      // Compressed originals live on DISK from v1.34.0 on. The store used to be memory-only and
+      // 192 entries deep, so a busy session evicted its own stashes within minutes and
+      // retrieve_full answered "expired" for content that was never actually gone — and a restart
+      // took every token with it. Disk-backed + size-capped, they survive both.
+      setCcrDir(join(hrDir, 'ccr'))
       let hrFlushTimer: ReturnType<typeof setTimeout> | null = null
       setLedgerFlush(() => { // debounced, async, best-effort — never on the hot path
         if (hrFlushTimer) return
@@ -2812,9 +2834,14 @@ if (!gotTheLock) {
         const next = setHeadroomSettings(p || {})
         try { saveSettingsToDisk(hrDir) } catch { /* best effort */ }
         try { setProxyMode(next.mode) } catch { /* proxy honors the new mode live; aggressive default holds if this fails */ }
+        try { setProxyDecay(next.prefixDecay) } catch { /* decay stays where it was → never silently turns itself on */ }
+        try { setProxyThinkingCap(next.thinkingCap) } catch { /* cap stays where it was → never silently tightens */ }
         return ok(next)
       })
       ipcMain.handle('tokenSavings:get-receipt', () => ok(summarizeHeadroomSavings()))
+      // The one honest number: wire proxy + MCP tool compressor, minus retrieve_full give-backs,
+      // counted once. The two legacy per-layer handlers stay for back-compat.
+      ipcMain.handle('tokenSavings:get-unified-receipt', () => ok(summarizeUnifiedSavings()))
     } catch { /* headroom persistence is best-effort */ }
 
     // ── Headroom compression proxy: ALWAYS-ON for Claude Code ───────────────────────────────────
@@ -2843,8 +2870,22 @@ if (!gotTheLock) {
       ipcMain.handle('tokenSavings:get-proxy-receipt', () => ok(summarizeProxySavings()))
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
-      // Carry the user's mode into the proxy child from its very first init (default 'aggressive').
-      try { setProxyMode(getHeadroomSettings().mode) } catch { /* aggressive default holds */ }
+      // Carry the user's mode + thinking cap into the proxy child from its very first init
+      // (defaults: mode 'aggressive', cap 0 = off). When floor control is on, the ledger — not
+      // the selector alone — decides the tier: it escalates if the measured 50% floor isn't
+      // holding. Resolved HERE, before the first request, and frozen for the session, because a
+      // mid-conversation re-tier would rewrite already-cached history and bust the prompt cache.
+      try {
+        const hs = getHeadroomSettings()
+        let wireMode = hs.mode
+        if (hs.floorControl) {
+          const cum = summarizeProxySavings().cumulative
+          wireMode = resolveWireMode(wireMode, cum)
+        }
+        setProxyMode(wireMode)
+        setProxyThinkingCap(hs.thinkingCap)
+        setProxyDecay(hs.prefixDecay)
+      } catch { /* defaults hold */ }
       void pickFreePort().then((port) => { if (port > 0) startProxy({ port }) })
     } catch { /* headroom proxy is best-effort; Claude launches direct */ }
 

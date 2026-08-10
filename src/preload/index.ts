@@ -168,9 +168,11 @@ const api: TermpolisAPI = {
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
-  tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
+  tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
   tokenSavingsGetProxyReceipt: () => ipcRenderer.invoke('tokenSavings:get-proxy-receipt'),
+  /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
+  tokenSavingsGetUnifiedReceipt: () => ipcRenderer.invoke('tokenSavings:get-unified-receipt'),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
    *  it carries no process health and must never be put on a timer. */
   memoryHostStatus: () => ipcRenderer.invoke('memory:host-status'),

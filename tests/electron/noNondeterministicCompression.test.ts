@@ -44,4 +44,14 @@ describe('compression path is clock/RNG-free (deterministic → cache-safe)', ()
     }
     expect(offenders).toEqual([])
   })
+
+  it('actually covers the v1.34.0 transform modules, and none of them is exempt', () => {
+    // A guard that silently stops scanning a file is worse than no guard. diffEncode emits wire
+    // bytes and ccrStore mints the tokens embedded in them — both must stay in the swept set.
+    const scanned = new Set(ROOTS.flatMap((r) => tsFiles(r)).map((f) => f.split(/[\\/]/).pop() as string))
+    for (const f of ['diffEncode.ts', 'ccrStore.ts', 'wireCompress.ts', 'unifiedReceipt.ts', 'savingsLedger.ts']) {
+      expect(scanned.has(f)).toBe(true)
+      expect(EXEMPT.has(f)).toBe(false)
+    }
+  })
 })

@@ -23,3 +23,23 @@ describe('output steering', () => {
     expect(steeringDirective('balanced')).toContain('preamble') // full base retained
   })
 })
+
+describe('the max tier — the one an unhandled mode silently downgraded', () => {
+  it('is strictly stronger than aggressive, never weaker', () => {
+    // Before this existed, steeringDirective('max') fell through to the BALANCED text: choosing the
+    // hardest compression tier bought the WEAKEST output directive. Superset, and longer.
+    const aggressive = steeringDirective('aggressive')
+    const max = steeringDirective('max')
+    expect(max).not.toBe(aggressive)
+    expect(max.length).toBeGreaterThan(aggressive.length)
+    for (const s of aggressive.split(' ')) expect(max).toContain(s)
+  })
+
+  it('is never the balanced directive by accident', () => {
+    expect(steeringDirective('max')).not.toBe(steeringDirective('balanced'))
+  })
+
+  it('stays deterministic — the directive rides in the cached system prompt', () => {
+    expect(steeringDirective('max')).toBe(steeringDirective('max'))
+  })
+})

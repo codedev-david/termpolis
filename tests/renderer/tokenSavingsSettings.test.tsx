@@ -7,15 +7,24 @@ import { TokenSavingsSettings } from '../../src/renderer/src/components/Settings
 const proxyTotals = (over: Record<string, number> = {}) => ({
   requests: 40, textOrigTokens: 200000, textSavedTokens: 100000, savedPct: 50,
   images: 3, imageOrigBytes: 0, imageSavedBytes: 0,
+  cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000, retrieves: 0, givebackTokens: 0, ...over,
+})
+
+const unifiedTotals = (over: Record<string, number> = {}) => ({
+  requests: 40, wireOrigTokens: 200000, wireSavedTokens: 100000,
+  images: 3, imageOrigBytes: 0, imageSavedBytes: 0,
+  toolOrigTokens: 0, toolSavedTokens: 0, toolEvents: 0, byTool: {},
+  retrieves: 0, givebackTokens: 0, grossSavedTokens: 100000, netSavedTokens: 100000, savedPct: 50,
   cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000, ...over,
 })
 
 beforeEach(() => {
   ;(window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis = {
-    tokenSavingsGetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: true, mode: 'balanced', steering: true } }),
-    tokenSavingsSetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: false, mode: 'balanced', steering: true } }),
+    tokenSavingsGetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: true, mode: 'balanced', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false } }),
+    tokenSavingsSetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: false, mode: 'balanced', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false } }),
     tokenSavingsGetReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: { netSaved: 12345, events: 3, byTool: {} }, cumulative: { netSaved: 99999, events: 40, byTool: {} } } }),
     tokenSavingsGetProxyReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: proxyTotals({ savedPct: 50, textSavedTokens: 100000 }), cumulative: proxyTotals({ savedPct: 47, textSavedTokens: 2500000 }) } }),
+    tokenSavingsGetUnifiedReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: unifiedTotals({ netSavedTokens: 100000 }), cumulative: unifiedTotals({ netSavedTokens: 2400000, grossSavedTokens: 2500000, givebackTokens: 100000, retrieves: 12, savedPct: 47 }) } }),
   }
 })
 
@@ -32,7 +41,7 @@ describe('TokenSavingsSettings', () => {
     render(<TokenSavingsSettings />)
     // The big % is explicitly captioned as tool-output shrink, NOT total spend.
     await waitFor(() => expect(screen.getByTestId('hr-proxy-session-pct')).toHaveTextContent('50%'))
-    expect(screen.getByTestId('hr-proxy-session-pct').parentElement).toHaveTextContent('of tool output · this session')
+    expect(screen.getByTestId('hr-proxy-session-pct').parentElement).toHaveTextContent('of compressible wire text · this session')
     // Honest denominator: session textSaved 100000 over ingested (500 + 900000 + 20000 + 100000) ≈ 10%;
     // cumulative textSaved 2500000 over (500 + 900000 + 20000 + 2500000) ≈ 73%. Far below the 50% headline.
     const share = screen.getByTestId('hr-proxy-share-total')
@@ -77,5 +86,89 @@ describe('TokenSavingsSettings', () => {
     expect(sel.className).toContain('text-[#d4d4d4]')
     // Options carry the dark bg too so the OPEN dropdown list stays legible on Electron/Windows.
     sel.querySelectorAll('option').forEach((o) => expect(o.className).toContain('bg-[#2d2d2d]'))
+  })
+})
+
+/**
+ * The receipt's job is to be believed, which means it has to be checkable. A single percentage —
+ * whichever one flatters most — is what turned this dashboard into a claim rather than a
+ * measurement. These tests pin the three denominators, the per-surface split, and the per-request
+ * floor evidence, because each one is a different way for the headline to be quietly wrong.
+ */
+describe('TokenSavingsSettings — honest reporting', () => {
+  const withData = (proxyOver: Record<string, number> = {}, unifiedOver: Record<string, number> = {}) => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    api.tokenSavingsGetProxyReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: { session: proxyTotals(proxyOver), cumulative: proxyTotals(proxyOver) },
+    })
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: { session: unifiedTotals(unifiedOver), cumulative: unifiedTotals(unifiedOver) },
+    })
+  }
+
+  it('states all three denominators, not just the flattering one', async () => {
+    withData()
+    render(<TokenSavingsSettings />)
+    const d = await screen.findByTestId('hr-denominators')
+    expect(d).toHaveTextContent('50%') // of compressible text
+    // Each number is captioned with what it is a fraction OF, so none of them can be read as "my
+    // bill dropped by half".
+    expect(d).toHaveTextContent('of every input token you sent')
+    expect(d).toHaveTextContent('of what the conversation actually cost')
+  })
+
+  it('reports the effective-cost share as the SMALLEST of the three', async () => {
+    // Headroom removes tokens from the input side, and most input arrives as cache reads billed at
+    // a tenth of rate. If this figure ever came out largest, the weighting would be inverted.
+    withData()
+    render(<TokenSavingsSettings />)
+    const cost = Number((await screen.findByTestId('hr-denom-cost')).textContent!.replace('%', ''))
+    const wire = Number(screen.getByTestId('hr-denom-wire').textContent!.replace('%', ''))
+    const input = Number(screen.getByTestId('hr-denom-input').textContent!.replace('%', ''))
+    expect(cost).toBeLessThanOrEqual(input)
+    expect(input).toBeLessThanOrEqual(wire)
+  })
+
+  it('shows the worst single request, not just the average', async () => {
+    withData({}, { worstSavedPct: 18, belowFloorRequests: 7, floorEligibleRequests: 400 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-floor-worst')).toHaveTextContent('18%')
+    expect(screen.getByTestId('hr-floor-below')).toHaveTextContent('7')
+    expect(screen.getByTestId('hr-floor-evidence')).toHaveTextContent('of 400 substantial requests')
+  })
+
+  it('hides the floor evidence entirely rather than claiming a perfect 100% on no data', async () => {
+    withData({}, { floorEligibleRequests: 0 })
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-denominators')
+    expect(screen.queryByTestId('hr-floor-evidence')).toBeNull()
+  })
+
+  it('breaks the two wire surfaces apart so neither can hide behind the other', async () => {
+    withData({ textOrigTokens: 200000, textSavedTokens: 100000, toolUseOrigTokens: 80000, toolUseSavedTokens: 60000 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-surface-tr')).toHaveTextContent('100,000')
+    expect(screen.getByTestId('hr-surface-tu')).toHaveTextContent('60,000')
+  })
+
+  it('offers the max tier the floor controller escalates into', async () => {
+    render(<TokenSavingsSettings />)
+    const sel = await screen.findByTestId('hr-mode')
+    expect([...sel.querySelectorAll('option')].map((o) => o.getAttribute('value')))
+      .toEqual(['conservative', 'balanced', 'aggressive', 'max'])
+  })
+
+  it('exposes floor control ON and prefix decay OFF, and can toggle each', async () => {
+    render(<TokenSavingsSettings />)
+    const floor = await screen.findByTestId('hr-toggle-floor') as HTMLInputElement
+    const decay = screen.getByTestId('hr-toggle-decay') as HTMLInputElement
+    expect(floor.checked).toBe(true)
+    expect(decay.checked).toBe(false) // the one control that can cost money is not on by default
+    fireEvent.click(decay)
+    await waitFor(() => expect(
+      (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis.tokenSavingsSetSettings,
+    ).toHaveBeenCalledWith({ prefixDecay: true }))
   })
 })

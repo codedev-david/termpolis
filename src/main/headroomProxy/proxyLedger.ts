@@ -14,14 +14,42 @@ export interface ProxyTotals {
   cacheCreationTokens: number
   inputTokens: number
   outputTokens: number
+  /** Reversal cost: `retrieve_full` calls redeeming tokens THIS layer issued, and what they cost. */
+  retrieves: number
+  givebackTokens: number
+  /**
+   * tool_use input — the agent's OWN output riding in the prefix — tracked apart from
+   * tool_result. Generation is billed at output rates and nothing here can change that; what
+   * these counters measure is the RE-READ cost, which used to be paid at full size on every
+   * later turn because the wire compressor walked straight past tool_use blocks.
+   */
+  toolUseOrigTokens: number
+  toolUseSavedTokens: number
+  /**
+   * Per-request floor evidence. A lifetime AVERAGE of 50% says nothing about whether any single
+   * turn held 50% — roughly half the mass sits below the mean. These two make the claim falsifiable:
+   * `worstSavedPct` is the least-compressed request that carried real content, and
+   * `belowFloorRequests` counts how many of `floorEligibleRequests` came in under FLOOR_PCT.
+   */
+  worstSavedPct: number
+  belowFloorRequests: number
+  floorEligibleRequests: number
 }
+
+/** The floor this release is held to, as a percentage of compressible wire text. */
+export const FLOOR_PCT = 50
+/** Requests carrying less than this much compressible text are excluded from floor stats: a turn
+ *  with one 200-char tool result can't reach 50% and would smear the evidence without informing it. */
+const FLOOR_MIN_ORIG_TOKENS = 250
 export interface ProxyReceipt {
   session: ProxyTotals & { savedPct: number }
   cumulative: ProxyTotals & { savedPct: number }
 }
 
 function empty(): ProxyTotals {
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0 }
+  // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
+  // a floor breach it never saw.
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0 }
 }
 
 let session = empty()
@@ -31,6 +59,19 @@ let flush: (() => void) | null = null
 export function setProxyLedgerFlush(fn: (() => void) | null): void { flush = fn }
 export function loadProxyBase(b: Partial<ProxyTotals>): void { base = { ...empty(), ...b } }
 
+/**
+ * Fold one request into the floor evidence. Requests with too little compressible text to reach
+ * the floor at all are counted in neither numerator nor denominator — a turn whose only content
+ * is a 200-char tool result is not a floor breach, it is a turn with nothing to compress.
+ */
+function recordFloorSample(origTokens: number, savedTokens: number): void {
+  if (origTokens < FLOOR_MIN_ORIG_TOKENS) return
+  const pct = Math.round((savedTokens / origTokens) * 100)
+  session.floorEligibleRequests += 1
+  if (pct < FLOOR_PCT) session.belowFloorRequests += 1
+  if (pct < session.worstSavedPct) session.worstSavedPct = pct
+}
+
 /** Record one proxy /v1/messages result: accumulate real savings + usage, and make
  *  compressed originals retrievable via the retrieve_full MCP tool. Best-effort. */
 export function recordProxyResult(r: ProxyResultMsg): void {
@@ -39,6 +80,12 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   session.requests += 1
   session.textOrigTokens += Math.ceil((s.trOrigChars || 0) / 4)
   session.textSavedTokens += Math.max(0, Math.ceil(((s.trOrigChars || 0) - (s.trCompChars || 0)) / 4))
+  session.toolUseOrigTokens += Math.ceil((s.tuOrigChars || 0) / 4)
+  session.toolUseSavedTokens += Math.max(0, Math.ceil(((s.tuOrigChars || 0) - (s.tuCompChars || 0)) / 4))
+  recordFloorSample(
+    Math.ceil(((s.trOrigChars || 0) + (s.tuOrigChars || 0)) / 4),
+    Math.max(0, Math.ceil((((s.trOrigChars || 0) - (s.trCompChars || 0)) + ((s.tuOrigChars || 0) - (s.tuCompChars || 0))) / 4)),
+  )
   session.images += s.images || 0
   session.imageOrigBytes += s.imgOrigBytes || 0
   session.imageSavedBytes += Math.max(0, (s.imgOrigBytes || 0) - (s.imgCompBytes || 0))
@@ -46,17 +93,32 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   session.cacheCreationTokens += u.cache_creation_input_tokens || 0
   session.inputTokens += u.input_tokens || 0
   session.outputTokens += u.output_tokens || 0
-  if (Array.isArray(r.stashes)) for (const st of r.stashes) { try { ccrPut(st.token, st.original) } catch { /* best effort */ } }
+  if (Array.isArray(r.stashes)) for (const st of r.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } }
+  try { flush?.() } catch { /* best effort */ }
+}
+
+/** Charge one `retrieve_full` give-back to THIS layer — the wire proxy issues the vast majority
+ *  of tokens agents actually redeem, and before v1.34.0 every one of them was billed to the
+ *  tool-layer ledger instead, which is what made the receipt read negative. */
+export function recordProxyGiveback(tokens: number): void {
+  session.retrieves += 1
+  session.givebackTokens += Math.max(0, tokens)
   try { flush?.() } catch { /* best effort */ }
 }
 
 function withPct(t: ProxyTotals): ProxyTotals & { savedPct: number } {
-  const pct = t.textOrigTokens > 0 ? Math.round((t.textSavedTokens / t.textOrigTokens) * 100) : 0
+  // Both compressible surfaces share one denominator: quoting tool_result alone was accurate
+  // about a slice while implying it described the wire.
+  const orig = t.textOrigTokens + t.toolUseOrigTokens
+  const saved = t.textSavedTokens + t.toolUseSavedTokens
+  const pct = orig > 0 ? Math.round((saved / orig) * 100) : 0
   return { ...t, savedPct: pct }
 }
 function sumWithBase(): ProxyTotals {
   const cum = empty()
   for (const k of Object.keys(cum) as (keyof ProxyTotals)[]) cum[k] = base[k] + session[k]
+  // worstSavedPct is a floor over all requests, not a quantity: summing two 100s would report 200%.
+  cum.worstSavedPct = Math.min(base.worstSavedPct, session.worstSavedPct)
   return cum
 }
 

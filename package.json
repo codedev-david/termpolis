@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.33.1",
+  "version": "1.34.0",
   "description": "Secure AI-assisted development. Local-first multi-agent terminal for Claude, Codex, and Gemini with a built-in AI Security Center, MCP server, split panes, and live observability.",
   "author": "Termpolis",
   "license": "Apache-2.0",
@@ -155,6 +155,7 @@
     "@xterm/xterm": "5.5.0",
     "autoprefixer": "10.4.27",
     "electron-updater": "6.8.3",
+    "jpeg-js": "^0.4.4",
     "monaco-editor": "^0.55.1",
     "node-pty": "1.1.0",
     "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",

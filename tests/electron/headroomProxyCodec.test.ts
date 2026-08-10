@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { PNG } from 'pngjs'
+import { decode as decodeJpeg } from 'jpeg-js'
 const { compressImage, _resetImageCodec, _imageMemoSize } = await import('../../src/main/headroomProxy/imageCodec')
+
+/** The codec now emits PNG or JPEG, whichever is smaller — decode by what it says it produced. */
+function decodeAny(r: { data: string; mediaType: string }): { width: number; height: number } {
+  const buf = Buffer.from(r.data, 'base64')
+  return r.mediaType === 'image/jpeg' ? decodeJpeg(buf) : PNG.sync.read(buf)
+}
 
 function makePng(w: number, h: number): string {
   const png = new PNG({ width: w, height: h })
@@ -32,10 +39,35 @@ describe('imageCodec (pure-JS, child-safe)', () => {
     const big = makePng(2000, 200)
     const r = compressImage(big, 'image/png', 1280)
     expect(r.changed).toBe(true)
-    const out = PNG.sync.read(Buffer.from(r.data, 'base64'))
+    const out = decodeAny(r)
     expect(Math.max(out.width, out.height)).toBeLessThanOrEqual(1280)
     expect(r.data.length).toBeLessThan(big.length)
+    expect(['image/png', 'image/jpeg']).toContain(r.mediaType)
+  })
+
+  it('picks JPEG for an opaque raster when it beats PNG, and says so in mediaType (v1.34.0)', () => {
+    // Anthropic prices an image on PIXELS, so the token saving was already banked by the
+    // downscale — this arm is about BYTES on the wire (4-8x on photographic content).
+    const big = makePng(2000, 900) // noisy + fully opaque: PNG's worst case, JPEG's best
+    const r = compressImage(big, 'image/png', 1280)
+    expect(r.changed).toBe(true)
+    expect(r.mediaType).toBe('image/jpeg')
+    const out = decodeAny(r)
+    expect(Math.max(out.width, out.height)).toBeLessThanOrEqual(1280)
+  })
+
+  it('keeps PNG when any pixel is transparent — JPEG has no alpha to lose it to', () => {
+    const png = new PNG({ width: 2000, height: 900 })
+    for (let i = 0; i < 2000 * 900; i++) {
+      png.data[i * 4] = (i * 7) % 256
+      png.data[i * 4 + 1] = (i * 13) % 256
+      png.data[i * 4 + 2] = (i * 29) % 256
+      png.data[i * 4 + 3] = i === 0 ? 254 : 255 // ONE almost-opaque pixel is enough
+    }
+    const r = compressImage(PNG.sync.write(png).toString('base64'), 'image/png', 1280)
+    expect(r.changed).toBe(true)
     expect(r.mediaType).toBe('image/png')
+    expect(() => PNG.sync.read(Buffer.from(r.data, 'base64'))).not.toThrow()
   })
 
   it('is DETERMINISTIC across a fresh recompute — same image → identical bytes (cache safety)', () => {
@@ -76,6 +108,30 @@ describe('imageCodec (pure-JS, child-safe)', () => {
     const r = compressImage(notPng, 'image/png', 1280)
     expect(r.changed).toBe(false)
     expect(r.data).toBe(notPng)
+  })
+
+  it('passes through when the re-encode would be BIGGER than the original, and does not cache it', () => {
+    // A grayscale PNG stores one channel; our re-encoder always emits RGBA (or JPEG). On flat
+    // content that inversion makes the "compressed" output larger, so the guard must forward the
+    // original untouched — compression that inflates is worse than none.
+    const flat = new PNG({ width: 2000, height: 200 })
+    flat.data.fill(128)
+    for (let i = 3; i < flat.data.length; i += 4) flat.data[i] = 255
+    const gray = PNG.sync.write(flat, { colorType: 0 }).toString('base64')
+    const r = compressImage(gray, 'image/png', 1280)
+    expect(r.changed).toBe(false)
+    expect(r.data).toBe(gray)
+    expect(_imageMemoSize()).toBe(0)
+  })
+
+  it('fails open when a header-valid PNG has no decodable pixel data', () => {
+    // Signature + IHDR pass and the raster is under the bomb cap, so this reaches the decoder and
+    // throws there. A live request must survive it: return the original, cache nothing.
+    const truncated = makeIhdrOnly(2000, 200)
+    const r = compressImage(truncated, 'image/png', 1280)
+    expect(r.changed).toBe(false)
+    expect(r.data).toBe(truncated)
+    expect(_imageMemoSize()).toBe(0)
   })
 
   it('does NOT memoize pass-throughs, but DOES cache the compressed result', () => {

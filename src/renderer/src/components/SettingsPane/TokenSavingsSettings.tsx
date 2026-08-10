@@ -1,13 +1,24 @@
 import { useEffect, useState } from 'react'
-import type { ProxyTotalsView } from '../../types'
+import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView } from '../../types'
 
-type Mode = 'conservative' | 'balanced' | 'aggressive'
-interface Settings { enabled: boolean; mode: Mode; steering: boolean }
+type Mode = 'conservative' | 'balanced' | 'aggressive' | 'max'
+type Settings = HeadroomSettingsView
 interface Totals { netSaved: number; events: number; byTool: Record<string, number> }
 interface Receipt { session: Totals; cumulative: Totals }
 interface ProxyReceipt { session: ProxyTotalsView; cumulative: ProxyTotalsView }
+interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView }
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
+
+// Thinking-budget ceilings offered in the UI. 0 = off (the default). Anthropic's own floor is
+// 1024, so nothing lower is worth listing — the wire clamp raises anything under it anyway.
+const THINKING_CAPS: Array<{ value: number; label: string }> = [
+  { value: 0, label: 'Off — use the full budget Claude asks for' },
+  { value: 16000, label: '16,000 tokens' },
+  { value: 8000, label: '8,000 tokens' },
+  { value: 4000, label: '4,000 tokens' },
+  { value: 2000, label: '2,000 tokens' },
+]
 
 // Honest "share of your TOTAL input" — textSavedTokens over the full ingested
 // prompt volume (uncached + cache-read + cache-create), pre-compression. This is
@@ -19,14 +30,53 @@ const shareOfTotalInput = (t?: ProxyTotalsView): number | null => {
   if (!t) return null
   const ingestedPost = (t.inputTokens || 0) + (t.cacheReadTokens || 0) + (t.cacheCreationTokens || 0)
   if (ingestedPost <= 0) return null
-  const original = ingestedPost + (t.textSavedTokens || 0)
-  return original > 0 ? Math.round((t.textSavedTokens / original) * 100) : 0
+  const saved = (t.textSavedTokens || 0) + (t.toolUseSavedTokens || 0)
+  const original = ingestedPost + saved
+  return original > 0 ? Math.round((saved / original) * 100) : 0
+}
+
+/**
+ * The third — and only spendable — denominator: saved tokens as a share of what the whole
+ * conversation WOULD have cost, at Anthropic's published multipliers (cache read 0.1×,
+ * cache write 1.25×, fresh input 1×, output 5×).
+ *
+ * This is always the smallest of the three, and deliberately so. Headroom removes tokens from
+ * the input side, and the overwhelming majority of input arrives as cache reads billed at a
+ * tenth of rate — so a token removed is worth far less than a token generated. Compressing a
+ * cheap slice hard is still the right move (it is the slice we can reach), but quoting the
+ * 50%-of-tool-output figure as though it were a 50% bill reduction would be false, and this
+ * number exists so the receipt can't be read that way.
+ *
+ * Removed tokens are valued at the OBSERVED blended input rate rather than any single weight,
+ * because we cannot know which of the three input buckets each one would have landed in.
+ */
+const effectiveCostShare = (t?: UnifiedTotalsView): number | null => {
+  if (!t) return null
+  const ingested = (t.inputTokens || 0) + (t.cacheReadTokens || 0) + (t.cacheCreationTokens || 0)
+  if (ingested <= 0) return null
+  const inEff = (t.inputTokens || 0) + (t.cacheReadTokens || 0) * 0.1 + (t.cacheCreationTokens || 0) * 1.25
+  const blended = inEff / ingested
+  const savedEff = Math.max(0, t.netSavedTokens || 0) * blended
+  const total = inEff + (t.outputTokens || 0) * 5 + savedEff
+  return total > 0 ? Math.round((savedEff / total) * 100) : null
+}
+
+// Output's share of what a request actually costs, at Anthropic's published multipliers
+// (cache read 0.1x input, cache write 1.25x, output 5x). Surfaced because it is the one slice
+// inbound compression cannot touch — and on real lifetime numbers it is the largest one left.
+const outputCostShare = (t?: UnifiedTotalsView): number | null => {
+  if (!t) return null
+  const inEff = (t.inputTokens || 0) + (t.cacheReadTokens || 0) * 0.1 + (t.cacheCreationTokens || 0) * 1.25
+  const outEff = (t.outputTokens || 0) * 5
+  const total = inEff + outEff
+  return total > 0 ? Math.round((outEff / total) * 100) : null
 }
 
 export function TokenSavingsSettings() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [proxy, setProxy] = useState<ProxyReceipt | null>(null)
+  const [unified, setUnified] = useState<UnifiedReceipt | null>(null)
 
   const refresh = async (): Promise<void> => {
     const s = await window.termpolis.tokenSavingsGetSettings()
@@ -35,6 +85,8 @@ export function TokenSavingsSettings() {
     if (r.success) setReceipt(r.data)
     const p = await window.termpolis.tokenSavingsGetProxyReceipt()
     if (p.success) setProxy(p.data)
+    const u = await window.termpolis.tokenSavingsGetUnifiedReceipt()
+    if (u.success) setUnified(u.data)
   }
   useEffect(() => { void refresh() }, [])
 
@@ -44,37 +96,114 @@ export function TokenSavingsSettings() {
   }
 
   const cacheHealthy = (proxy?.cumulative.cacheReadTokens ?? 0) >= (proxy?.cumulative.cacheCreationTokens ?? 0)
+  const outShare = outputCostShare(unified?.cumulative)
 
   return (
     <div className="settings-section">
       <h3>Token Savings <span style={{ fontWeight: 400, opacity: 0.7 }}>(Headroom)</span></h3>
 
+      {/* ONE number, both layers. Before v1.34.0 the wire proxy and the MCP tool compressor each
+          kept a separate ledger, every retrieve_full was charged to the tool ledger regardless of
+          which layer issued the token, and the receipt could read deeply negative while the proxy
+          beside it had genuinely saved hundreds of millions. This block is the merged total. */}
+      <div className="hr-unified-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
+        <h4 style={{ margin: '0 0 6px' }}>Net tokens saved <span style={{ fontWeight: 400, opacity: 0.65 }}>— everything Headroom does, counted once</span></h4>
+        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'baseline' }}>
+          <div>
+            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-unified-net">{fmt(unified?.cumulative.netSavedTokens ?? 0)}</div>
+            <div style={{ opacity: 0.7 }}>tokens saved · all-time</div>
+            <div style={{ opacity: 0.7, fontSize: 13 }}>
+              <span data-testid="hr-unified-gross">{fmt(unified?.cumulative.grossSavedTokens ?? 0)}</span> removed
+              {' '}− <span data-testid="hr-unified-giveback">{fmt(unified?.cumulative.givebackTokens ?? 0)}</span> given back by{' '}
+              {fmt(unified?.cumulative.retrieves ?? 0)} <code>retrieve_full</code> calls
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-unified-pct">{unified?.cumulative.savedPct ?? 0}%</div>
+            <div style={{ opacity: 0.7 }}>of compressible volume</div>
+            <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-unified-session">
+              this session: {fmt(unified?.session.netSavedTokens ?? 0)} tokens
+            </div>
+          </div>
+        </div>
+
+        {/* THREE denominators, not one.
+            The same saving is a different percentage depending on what you divide by, and each
+            of the three is the honest answer to a different question. Publishing only the first
+            — the flattering one — is how a compression feature ends up quoted as a bill cut it
+            never delivered, so all three are stated here, largest to smallest, side by side. */}
+        <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }} data-testid="hr-denominators">
+          <div style={{ fontWeight: 600, opacity: 0.8, marginBottom: 4 }}>The same saving, measured three ways:</div>
+          <div><b data-testid="hr-denom-wire">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch (tool results + the agent&rsquo;s own tool inputs) — how well compression works.</div>
+          <div><b data-testid="hr-denom-input">{shareOfTotalInput(proxy?.cumulative) ?? 0}%</b> of every input token you sent — the rest is system prompt, tool schemas and conversation history.</div>
+          <div><b data-testid="hr-denom-cost">{effectiveCostShare(unified?.cumulative) ?? 0}%</b> of what the conversation actually cost, at Anthropic&rsquo;s rates — the smallest figure, and the only spendable one.</div>
+        </div>
+
+        {/* Floor evidence. A lifetime average of 50% is compatible with half of all requests
+            sitting under it; only the worst single request can settle whether a floor holds. */}
+        {(unified?.cumulative.floorEligibleRequests ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-floor-evidence">
+            Floor check: worst single request kept <b data-testid="hr-floor-worst">{unified?.cumulative.worstSavedPct ?? 0}%</b>
+            {' '}· <span data-testid="hr-floor-below">{fmt(unified?.cumulative.belowFloorRequests ?? 0)}</span> of{' '}
+            {fmt(unified?.cumulative.floorEligibleRequests ?? 0)} substantial requests came in under 50%.
+          </div>
+        )}
+
+        {outShare != null && (
+          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }} data-testid="hr-output-share">
+            What Headroom can’t reach: about {outShare}% of your effective spend is OUTPUT tokens (billed 5× input).
+            Inbound compression never touches those — the thinking-budget cap and steering below are the controls that do.
+          </div>
+        )}
+      </div>
+
       <div className="hr-proxy-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
         <h4 style={{ margin: '0 0 6px' }}>Claude Code compression <span style={{ fontWeight: 400, opacity: 0.65 }}>— always on</span></h4>
         <p style={{ opacity: 0.8, marginTop: 0 }}>
           Every Claude Code session runs through a local, off-thread compression proxy that shrinks the tool-result
-          text (large Read/Bash output, search dumps, MCP results) and pasted images it sends to Anthropic — trimming
-          the input-token volume of those blocks while keeping the prompt cache intact. Fully reversible via
+          text (large Read/Bash output, search dumps, MCP results), the agent&rsquo;s own tool <i>inputs</i> (file bodies it
+          wrote, both sides of every edit) and pasted images it sends to Anthropic — trimming the input-token volume of
+          those blocks while keeping the prompt cache intact. Repeat results collapse to a
+          reference, near-identical ones (re-read an edited file) are sent as a patch. Fully reversible via
           <code>retrieve_full</code>; your memory/brain is never touched.
         </p>
         <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'baseline' }}>
           <div>
             <div style={{ fontSize: 30, fontWeight: 700 }} data-testid="hr-proxy-session-pct">{proxy?.session.savedPct ?? 0}%</div>
-            <div style={{ opacity: 0.7 }}>of tool output · this session</div>
+            <div style={{ opacity: 0.7 }}>of compressible wire text · this session</div>
             <div style={{ opacity: 0.7, fontSize: 13 }}><span data-testid="hr-proxy-session-saved">{fmt(proxy?.session.textSavedTokens ?? 0)}</span> tokens removed · {fmt(proxy?.session.requests ?? 0)} requests</div>
           </div>
           <div>
             <div style={{ fontSize: 30, fontWeight: 700 }} data-testid="hr-proxy-cumulative-pct">{proxy?.cumulative.savedPct ?? 0}%</div>
-            <div style={{ opacity: 0.7 }}>of tool output · all-time</div>
+            <div style={{ opacity: 0.7 }}>of compressible wire text · all-time</div>
             <div style={{ opacity: 0.7, fontSize: 13 }}><span data-testid="hr-proxy-cumulative-saved">{fmt(proxy?.cumulative.textSavedTokens ?? 0)}</span> tokens removed</div>
           </div>
           {(proxy?.cumulative.images ?? 0) > 0 && (
             <div>
               <div style={{ fontSize: 30, fontWeight: 700 }}>{fmt(proxy?.cumulative.images ?? 0)}</div>
               <div style={{ opacity: 0.7 }}>images compressed</div>
+              <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-image-bytes">{fmt(Math.round((proxy?.cumulative.imageSavedBytes ?? 0) / 1024))} KB of upload saved</div>
             </div>
           )}
         </div>
+
+        {/* The two wire surfaces, kept apart. They behave nothing alike: tool_result is content
+            arriving once, while tool_use is the agent's OWN output sitting in the cached prefix
+            and re-read on every subsequent turn — so a token removed there is a token not paid
+            for again and again. Blending them into one figure would hide which half is working. */}
+        {((proxy?.cumulative.textOrigTokens ?? 0) + (proxy?.cumulative.toolUseOrigTokens ?? 0)) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }} data-testid="hr-surface-split">
+            <div>
+              Tool results (what came back): <b data-testid="hr-surface-tr">{fmt(proxy?.cumulative.textSavedTokens ?? 0)}</b> of{' '}
+              {fmt(proxy?.cumulative.textOrigTokens ?? 0)} tokens removed
+            </div>
+            <div>
+              Tool inputs (what the agent wrote, re-read every turn): <b data-testid="hr-surface-tu">{fmt(proxy?.cumulative.toolUseSavedTokens ?? 0)}</b> of{' '}
+              {fmt(proxy?.cumulative.toolUseOrigTokens ?? 0)} tokens removed
+            </div>
+          </div>
+        )}
+
         {(() => {
           const s = shareOfTotalInput(proxy?.session)
           const c = shareOfTotalInput(proxy?.cumulative)
@@ -112,11 +241,44 @@ export function TokenSavingsSettings() {
               <option value="conservative" className="bg-[#2d2d2d] text-[#d4d4d4]">Conservative</option>
               <option value="balanced" className="bg-[#2d2d2d] text-[#d4d4d4]">Balanced</option>
               <option value="aggressive" className="bg-[#2d2d2d] text-[#d4d4d4]">Aggressive</option>
+              <option value="max" className="bg-[#2d2d2d] text-[#d4d4d4]">Maximum</option>
             </select>
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>
+            <input data-testid="hr-toggle-floor" type="checkbox" checked={settings.floorControl} onChange={() => update({ floorControl: !settings.floorControl })} />
+            {' '}Hold a 50% savings floor — raise the tier automatically if the ledger shows it slipping{' '}
+            <span style={{ opacity: 0.6 }}>— only ever compresses harder than the setting above, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
+          </label>
+          <label style={{ display: 'block', margin: '8px 0' }}>
+            <input data-testid="hr-toggle-decay" type="checkbox" checked={settings.prefixDecay} onChange={() => update({ prefixDecay: !settings.prefixDecay })} />
+            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— off by default. Everything else here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn, so it only comes out ahead if the conversation keeps going for tens more turns. Aged blocks stay recoverable with <code>retrieve_full</code>.</span>
+          </label>
+
+          <h4 style={{ margin: '18px 0 6px' }}>Output tokens <span style={{ fontWeight: 400, opacity: 0.65 }}>— what Claude writes back (billed 5× input)</span></h4>
+          <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-steering" type="checkbox" checked={settings.steering} onChange={() => update({ steering: !settings.steering })} />
             {' '}Output-token steering (terser agent replies) <span style={{ opacity: 0.6 }}>— estimated</span>
+          </label>
+          <label style={{ display: 'block', margin: '8px 0' }}>
+            <input data-testid="hr-toggle-adaptive" type="checkbox" checked={settings.adaptiveSteering} disabled={!settings.steering} onChange={() => update({ adaptiveSteering: !settings.adaptiveSteering })} />
+            {' '}Adapt steering strength to measured output volume <span style={{ opacity: 0.6 }}>— decided at launch, frozen for the session (changing it mid-conversation would break the prompt cache)</span>
+          </label>
+          <label style={{ display: 'block', margin: '8px 0' }}>
+            Extended-thinking budget cap:{' '}
+            <select
+              data-testid="hr-thinking-cap"
+              value={String(settings.thinkingCap)}
+              onChange={(e) => update({ thinkingCap: Number(e.target.value) })}
+              className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+            >
+              {THINKING_CAPS.map((c) => (
+                <option key={c.value} value={String(c.value)} className="bg-[#2d2d2d] text-[#d4d4d4]">{c.label}</option>
+              ))}
+            </select>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+              Thinking tokens are billed as output. This only ever LOWERS the budget Claude asks for, never raises it —
+              and unlike everything else here it trades reasoning depth, not inline context, so it is off by default.
+            </div>
           </label>
           <div style={{ fontSize: 13, opacity: 0.8, marginTop: 8 }}>
             Tool-output savings — session <span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens

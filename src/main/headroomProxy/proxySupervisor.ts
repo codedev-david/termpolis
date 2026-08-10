@@ -29,6 +29,8 @@ let transport: ProxyTransport | null = null
 let healthy = false
 let port = 0
 let proxyMode = 'aggressive' // wire compression mode pushed to the child; default = max savings
+let proxyThinkingCap = 0 // extended-thinking budget ceiling pushed to the child; 0 = off (default)
+let proxyDecay = false // prefix decay; OFF by default — see prefixDecay.ts for why the bet only pays in long sessions
 let upstream = 'api.anthropic.com'
 let restartTimes: number[] = []
 let stopped = false
@@ -42,7 +44,19 @@ export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { 
  *  holds in the child, so savings never silently drop. */
 export function setProxyMode(m: string): void {
   proxyMode = m
-  try { transport?.postMessage({ kind: 'config', mode: m }) } catch { /* best effort */ }
+  try { transport?.postMessage({ kind: 'config', mode: m, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { /* best effort */ }
+}
+/** Push the extended-thinking budget ceiling (0 = off) on the same channel as the mode, so a
+ *  respawned child re-adopts it from init and can't quietly revert to the user's full budget. */
+export function setProxyThinkingCap(n: number): void {
+  proxyThinkingCap = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+  try { transport?.postMessage({ kind: 'config', mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { /* best effort */ }
+}
+/** Push the prefix-decay flag on the same channel, so a respawned child re-adopts it from init
+ *  rather than reverting to the default and silently changing the transform mid-conversation. */
+export function setProxyDecay(on: boolean): void {
+  proxyDecay = on === true
+  try { transport?.postMessage({ kind: 'config', mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { /* best effort */ }
 }
 export function isProxyHealthy(): boolean { return healthy && port > 0 }
 export function getProxyPort(): number { return port }
@@ -78,7 +92,7 @@ function spawnOnce(): void {
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
   })
   transport.onExit(() => { healthy = false; transport = null; maybeRestart() })
-  try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode }) } catch { healthy = false }
+  try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { healthy = false }
 }
 
 function maybeRestart(): void {
