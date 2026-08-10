@@ -278,6 +278,126 @@ describe('cache safety', () => {
     expect(r.body).toBe(raw)
   })
 
+  it('issues no retrieve token when the win was pure whitespace, because nothing was hidden', () => {
+    // Minifying a pretty-printed payload drops indentation, not content — the result IS the whole
+    // payload, so there is nothing to retrieve and no token to spend bytes on. Every value here
+    // stays under the sampling limits (arrays ≤ 3, strings ≤ 200, depth ≤ 6) so the compactor has
+    // nothing to elide and `elided` comes back false.
+    const obj: Record<string, string> = {}
+    for (let i = 0; i < 30; i++) obj[`setting_number_${i}`] = `value-${i}`
+    const pretty = JSON.stringify(obj, null, 2)
+    expect(pretty.length).toBeGreaterThan(400)
+    const r = rewriteMessagesBody(bodyFor(pretty, { file_path: 'config.json' }))
+    expect(r.changed).toBe(true)
+    expect(resultOf(r.body)).toBe(JSON.stringify(obj)) // same data, no indentation, no footer
+    expect(resultOf(r.body).length).toBeLessThan(pretty.length)
+    expect(r.stashes).toHaveLength(0)
+    expect(resultOf(r.body)).not.toContain('[headroom]')
+  })
+
+  it('leaves a tool_use field alone when compression would not shrink it', () => {
+    // Past the 400-char floor but incompressible: one line, no duplicates, not code or JSON.
+    const incompressible = Array.from({ length: 500 }, (_, i) => String.fromCharCode(97 + (i * 7) % 26)).join('')
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'tu0', name: 'Bash', input: { note: incompressible } }] }],
+    })
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(false)
+    expect(r.body).toBe(raw)
+  })
+
+  it('reports no change when decay is on but nothing is old enough to decay', () => {
+    const r = rewriteMessagesBody(bodyFor(tsFile(8), { file_path: 'src/handlers.ts' }), { decay: true })
+    // The code block still routes and shrinks; the decay pass simply contributes nothing.
+    expect(r.changed).toBe(true)
+    expect(r.stats.decayedBlocks ?? 0).toBe(0)
+  })
+
+  it('leaves a tool_result whose content is neither a string nor an array untouched', () => {
+    // Anthropic's schema says string-or-array, but the proxy sits on someone else's wire and must
+    // forward a shape it does not recognise rather than guess at it.
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu0', content: { unexpected: 'shape' } }] }],
+    })
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(false)
+    expect(r.body).toBe(raw)
+  })
+
+  it('compresses the text parts of a content array and passes unknown block types through', () => {
+    const src = tsFile(8)
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu0', name: 'Read', input: { file_path: 'src/handlers.ts' } }] },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu0',
+            content: [{ type: 'text', text: src }, { type: 'some_future_block', payload: 'left alone' }],
+          }],
+        },
+      ],
+    })
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(true)
+    const parts = (JSON.parse(r.body) as { messages: Array<{ content: Array<{ content: Array<Record<string, string>> }> }> })
+      .messages[1].content[0].content
+    expect(parts[0].text.length).toBeLessThan(src.length)
+    expect(parts[1]).toEqual({ type: 'some_future_block', payload: 'left alone' })
+  })
+
+  it('defaults a source with no media_type to PNG and keeps an earlier win when the image will not shrink', () => {
+    const calls: Array<[string, string]> = []
+    const compressImage = (data: string, mediaType: string): { data: string; mediaType: string; changed: boolean } => {
+      calls.push([data, mediaType])
+      return { data, mediaType, changed: false } // already optimal — nothing to gain
+    }
+    const src = tsFile(8)
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu0', name: 'Read', input: { file_path: 'src/handlers.ts' } }] },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu0',
+            content: [
+              { type: 'text', text: src },
+              { type: 'image', source: { type: 'base64', data: 'AAAA' } }, // no media_type on the wire
+            ],
+          }],
+        },
+      ],
+    })
+    const r = rewriteMessagesBody(raw, { compressImage })
+    expect(calls).toEqual([['AAAA', 'image/png']])
+    // The image contributed nothing, but the text block before it did — a no-op image must not
+    // erase a change already recorded.
+    expect(r.changed).toBe(true)
+    expect(r.stats.images).toBe(0)
+  })
+
+  it('compresses a tool_result whose tool_use_id is not a string, just without the path hint', () => {
+    // Nothing on the wire guarantees the field's type. A non-string id must skip the hint lookup
+    // and fall back to shape detection rather than throw or bail out of compression entirely.
+    const src = tsFile(8)
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu0', name: 'Read', input: { file_path: 'src/handlers.ts' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 7, content: src }] },
+      ],
+    })
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(true)
+    expect(resultOf(r.body).length).toBeLessThan(src.length)
+  })
+
   it('never grows a block: every routed path is shrink-only', () => {
     const cases = [
       'short',

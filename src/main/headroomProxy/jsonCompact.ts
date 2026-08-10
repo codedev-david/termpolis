@@ -78,15 +78,14 @@ function walk(v: unknown, depth: number, c: Counts): unknown {
     const kept = v.slice(0, JSON_ARRAY_KEEP).map((x) => walk(x, depth + 1, c))
     return [...kept, `… (${v.length - JSON_ARRAY_KEEP} more items elided)`]
   }
-  if (typeof v === 'object') {
-    const src = v as Record<string, unknown>
-    const out: Record<string, unknown> = {}
-    // Object.keys preserves insertion order for string keys, and JSON.parse inserts in source
-    // order — so the output key order is a pure function of the input bytes.
-    for (const k of Object.keys(src)) out[k] = walk(src[k], depth + 1, c)
-    return out
-  }
-  return v
+  // Whatever is left is a plain object: null, number, boolean, string and array are all handled
+  // above, and JSON.parse yields nothing else.
+  const src = v as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  // Object.keys preserves insertion order for string keys, and JSON.parse inserts in source
+  // order — so the output key order is a pure function of the input bytes.
+  for (const k of Object.keys(src)) out[k] = walk(src[k], depth + 1, c)
+  return out
 }
 
 /**
@@ -106,6 +105,8 @@ export function compactJson(text: string): { text: string; elided: boolean } | n
   const counts: Counts = { arrays: 0, strings: 0, depth: 0 }
   const reduced = walk(parsed, 0, counts)
   let out: string
+  /* v8 ignore next -- the catch is unreachable: `reduced` is built from JSON.parse output, so it
+     holds only serialisable values. Kept so a future walk() change cannot crash the proxy. */
   try { out = JSON.stringify(reduced) } catch { return null }
   if (out.length >= text.length) return null
   return { text: out, elided: counts.arrays > 0 || counts.strings > 0 || counts.depth > 0 }

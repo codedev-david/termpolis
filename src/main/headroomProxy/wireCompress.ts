@@ -192,6 +192,9 @@ export function compactToolText(text: string, hint?: ContentHint): { text: strin
   let structured = false  // the branch already chose what matters; see STRUCT_WINDOW_SCALE
   if (looksLikeHtml(text)) {
     const w = compactWeb(text)
+    /* v8 ignore next -- the false arm is unreachable: compactWeb only ever deletes markup, expands
+       entities to something shorter and collapses whitespace, so it cannot grow the input, and
+       looksLikeHtml only fires when there are tags to delete. Kept as a shrink-only assertion. */
     if (w.length < text.length) {
       body = w
       hidden = true
@@ -372,6 +375,8 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   // UNTOUCHED field — an integer > 2^53, unusual escaping, etc. — so fail open. This makes every
   // non-tool_result byte identical to the client's original, and keeps the prompt cache intact.
   let reserialized: string
+  /* v8 ignore next -- the catch is unreachable here: `obj` is the untouched JSON.parse result and
+     nothing has mutated it yet, so stringify cannot throw. Kept as a fail-open guard. */
   try { reserialized = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats, stashes } }
   if (reserialized !== raw) return { body: raw, changed: false, stats, stashes }
   let changed = clampThinkingBudget(obj)

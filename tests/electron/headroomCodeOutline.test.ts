@@ -233,6 +233,17 @@ describe('outlineCode — indent family', () => {
     expect(outline.length).toBeLessThan(PY_SRC.length * (1 - OUTLINE_MIN_GAIN))
     expect(outlineCode(PY_SRC, 'indent')).toBe(outline)
   })
+
+  it('measures TAB indentation, so tab-indented source outlines like space-indented source', () => {
+    // Tabs are ordinary in real Python. If a tab did not count as depth, every body line would
+    // read as column 0 — top level — and the outline would keep the whole file.
+    const tabbed = PY_SRC.replace(/^ {4}/gm, '\t').replace(/^\t {4}/gm, '\t\t')
+    const tabOutline = outlineCode(tabbed, 'indent')
+    expect(tabOutline).toContain('class Loader:')
+    expect(tabOutline).toContain('\tdef __init__(self, root: str) -> None:')
+    expect(tabOutline).not.toContain('self.cache[name] = data')
+    expect(tabOutline.length).toBeLessThan(tabbed.length * (1 - OUTLINE_MIN_GAIN))
+  })
 })
 
 describe('outlineCode — line-numbered Read output', () => {
