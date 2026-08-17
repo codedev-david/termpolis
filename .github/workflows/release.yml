@@ -20,8 +20,32 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
 
-  build:
+  # The three build jobs run in parallel and each used to upload straight to the tag, which
+  # meant each one also tried to CREATE the release if it could not see one yet. GitHub's
+  # read-your-writes lag across that API turned it into a race: on v1.36.0 the mac/linux jobs
+  # created release 371780057, the Windows job could not find it by tag through three retries,
+  # created its own, and got `already_exists` — so a fully built and signed Windows installer
+  # was thrown away and the release published with no .exe and, worse, no `latest.yml`, the
+  # manifest every Windows client polls to discover an update. Creating the release exactly
+  # once, before the fan-out, removes the race instead of retrying harder inside it.
+  create-release:
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the release for this tag (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing it."
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+
+  build:
+    needs: [test, create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -361,7 +385,8 @@ jobs:
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2.6.1
         with:
-          generate_release_notes: true
+          # Notes are generated once by create-release. Asking for them here too would have
+          # all three jobs PATCH the same release body concurrently for no benefit.
           files: |
             dist-electron-builder/*.exe
             dist-electron-builder/*.dmg
