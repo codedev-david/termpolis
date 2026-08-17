@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView } from '../../types'
+import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView, DepthAdviceView } from '../../types'
 
 type Mode = 'conservative' | 'balanced' | 'aggressive' | 'max'
 type Settings = HeadroomSettingsView
 interface Totals { netSaved: number; events: number; byTool: Record<string, number> }
 interface Receipt { session: Totals; cumulative: Totals }
 interface ProxyReceipt { session: ProxyTotalsView; cumulative: ProxyTotalsView }
-interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView }
+interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
 
@@ -153,6 +153,19 @@ export function TokenSavingsSettings() {
           </div>
         )}
 
+        {unified?.depth && (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-session-depth">
+            Session depth: this conversation is {fmt(unified.depth.messages)} messages deep and costs about{' '}
+            <b data-testid="hr-depth-now">{fmt(unified.depth.unitsPerTurnNow)}</b> effective units per turn.
+            Your own shallow sessions average <b data-testid="hr-depth-fresh">{fmt(unified.depth.unitsPerTurnFresh)}</b>,
+            so starting fresh here would save roughly {fmt(unified.depth.savingPerTurn)} per turn
+            (<span data-testid="hr-depth-pct">{unified.depth.savingPct}</span>%).
+            That figure already includes the cost of writing a new prefix. It assumes the work
+            splits — the memory brain is what makes it split — and it is a correlation across your
+            own sessions, not a controlled comparison.
+          </div>
+        )}
+
         {/* Steering, measured. Two means side by side — observational, so it is never called a saving. */}
         {(unified?.cumulative.steeredRequests ?? 0) > 0 && (unified?.cumulative.unsteeredRequests ?? 0) > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-steering-observed">
@@ -233,7 +246,7 @@ export function TokenSavingsSettings() {
           if (s == null && c == null) return null
           return (
             <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }} data-testid="hr-proxy-share-total">
-              That’s ≈{s ?? 0}% of all input tokens you sent this session{c != null ? ` · ≈${c}% all-time` : ''}. The rest — system prompt, tools, conversation history and cached context — is left untouched, and repeated context is already billed at ~10% through the prompt cache.
+              That’s ≈{s ?? 0}% of all input tokens you sent this session{c != null ? ` · ≈${c}% all-time` : ''}. Compression reaches tool output and tool inputs — about 86% of message bytes, measured on real transcripts. What it never touches: the system prompt, the tool schemas, your own words, and the model’s own replies. Repeated context is billed at ~10% through the prompt cache, so a token removed here is removed from every later re-read of it too.
             </div>
           )
         })()}
@@ -274,7 +287,7 @@ export function TokenSavingsSettings() {
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-decay" type="checkbox" checked={settings.prefixDecay} onChange={() => update({ prefixDecay: !settings.prefixDecay })} />
-            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— off by default. Everything else here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn, so it only comes out ahead if the conversation keeps going for tens more turns. Aged blocks stay recoverable with <code>retrieve_full</code>.</span>
+            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— on by default. Everything else here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn. It waits for 128 messages before the first cut, about 3x the ~44-turn break-even, and aged blocks stay recoverable with <code>retrieve_full</code>.</span>
           </label>
 
           <h4 style={{ margin: '18px 0 6px' }}>Output tokens <span style={{ fontWeight: 400, opacity: 0.65 }}>— what Claude writes back (billed 5× input)</span></h4>

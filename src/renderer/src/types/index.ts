@@ -186,6 +186,20 @@ export interface HeadroomSettingsView {
   prefixDecay: boolean
 }
 
+/** What a conversation costs per turn at its current depth, against what the same user's own
+ *  shallow sessions cost. Mirrors main's `DepthAdvice`; null until both bands have enough
+ *  samples to be this user's curve rather than one session's accident. */
+export interface DepthAdviceView {
+  messages: number
+  bandIndex: number
+  unitsPerTurnNow: number
+  unitsPerTurnFresh: number
+  savingPerTurn: number
+  savingPct: number
+  requestsNow: number
+  requestsFresh: number
+}
+
 /** Both Token Headroom layers summed, with retrieve_full give-backs subtracted exactly once. */
 export interface UnifiedTotalsView {
   requests: number
@@ -362,7 +376,7 @@ export interface TermpolisAPI {
   tokenSavingsGetReceipt: () => Promise<IpcResponse<{ session: { netSaved: number; events: number; byTool: Record<string, number> }; cumulative: { netSaved: number; events: number; byTool: Record<string, number> } }>>
   tokenSavingsGetProxyReceipt: () => Promise<IpcResponse<{ session: ProxyTotalsView; cumulative: ProxyTotalsView }>>
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
-  tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView }>>
+  tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
   memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'inproc' | 'unstarted'; pid: number | null }>>

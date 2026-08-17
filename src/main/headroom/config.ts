@@ -28,12 +28,14 @@ export interface HeadroomSettings {
   /**
    * Prefix decay: age the oldest half of a long conversation down to retrievable stubs.
    *
-   * OFF by default, and deliberately so. Every other control here is free — it leaves the cached
-   * prefix byte-identical. This one pays a real cache break (~1.15x the prefix, ~78,000 effective
+   * ON by default since v1.36.0 — and it is the one control here that is a BET, so the reasoning
+   * has to stay written down. Every other control is free: it leaves the cached prefix
+   * byte-identical. This one deliberately breaks the cache (~1.15x the prefix, ~78,000 effective
    * units on measured traffic) to buy a smaller prefix on every later turn, so it only comes out
-   * ahead if the session keeps going for tens more turns. That is a bet, and a bet does not
-   * belong in the default path of a feature whose whole promise is that it never costs money.
-   * See headroomProxy/prefixDecay.ts for the arithmetic.
+   * ahead if the session keeps going. Break-even is ~44 turns; the first cut waits for 128
+   * messages, which is ~3x that margin, and retrieve_full now works, so a decayed stub is
+   * recoverable rather than lost. Those two facts are what turned the bet into the default —
+   * if either regresses, flip this back to false. See headroomProxy/prefixDecay.ts.
    */
   prefixDecay: boolean
 }

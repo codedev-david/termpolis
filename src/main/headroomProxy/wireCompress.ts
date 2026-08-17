@@ -34,6 +34,10 @@ export interface WireStats {
   toolsChars: number
   toolCount: number
   tpToolsChars: number
+  /** How many messages this request carried. The prefix head is what a conversation costs to
+   *  START; this is what it costs to have KEPT GOING, and it is the only field here the
+   *  compressor cannot act on — see headroom/sessionDepth.ts. */
+  msgCount: number
   /** Whether this request carried the output-steering directive. Output is 5x input and the
    *  largest single bucket on the bill; steering is the only lever aimed at it, and until now
    *  nothing recorded whether it was even present, let alone what it earned. */
@@ -53,7 +57,7 @@ function emptyStats(): WireStats {
   return {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
-    sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, steered: false,
+    sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, steered: false,
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -443,6 +447,9 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
   }
   stats.sysChars = sysText.length
   stats.steered = sysText.includes(STEERING_MARK)
+  // Before the `tools` early return on purpose: a request without a tools array still has a
+  // depth, and dropping it would bias the curve toward tool-using turns only.
+  stats.msgCount = Array.isArray(obj.messages) ? obj.messages.length : 0
   const tools = obj.tools
   if (!Array.isArray(tools)) return
   stats.toolCount = tools.length

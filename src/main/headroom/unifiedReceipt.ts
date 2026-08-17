@@ -2,6 +2,7 @@ import { summarizeSavings, type SavingsTotals } from './savingsLedger'
 import { summarizeProxySavings, type ProxyTotals } from '../headroomProxy/proxyLedger'
 import { billBreakdown, type BillBreakdown } from './effectiveUnits'
 import { ccrStats } from './ccrStore'
+import { depthAdvice, type DepthAdvice } from './sessionDepth'
 
 /**
  * ONE honest savings number.
@@ -72,7 +73,11 @@ export interface UnifiedTotals {
   unsteeredAvgOutput: number
 }
 
-export interface UnifiedReceipt { session: UnifiedTotals; cumulative: UnifiedTotals }
+/** `depth` is a sibling of the two totals rather than a field on them, deliberately: it is
+ *  neither a session sum nor a lifetime sum. The curve behind it is lifetime, but the reading is
+ *  about the conversation happening right now, and folding it into either bucket would invite
+ *  someone to add it to something. */
+export interface UnifiedReceipt { session: UnifiedTotals; cumulative: UnifiedTotals; depth: DepthAdvice | null }
 
 /** Chars summed over N requests → tokens on a typical one. The ~4 chars/token ratio is the same
  *  estimate the rest of the wire layer uses; consistency matters more here than precision. */
@@ -142,5 +147,5 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
 export function summarizeUnifiedSavings(): UnifiedReceipt {
   const p = summarizeProxySavings()
   const t = summarizeSavings()
-  return { session: merge(p.session, t.session), cumulative: merge(p.cumulative, t.cumulative) }
+  return { session: merge(p.session, t.session), cumulative: merge(p.cumulative, t.cumulative), depth: depthAdvice() }
 }

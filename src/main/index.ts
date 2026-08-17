@@ -130,6 +130,7 @@ import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay } from './headroomProxy/proxySupervisor'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
+import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
 import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
@@ -2890,6 +2891,10 @@ if (!gotTheLock) {
     try {
       const hrProxyDir = join(app.getPath('userData'), 'headroom')
       loadProxyBaseFromDisk(hrProxyDir)
+      // The depth curve is fitted to this user's own traffic, so it has to survive relaunches —
+      // a curve rebuilt from scratch every launch would sit below MIN_BAND_SAMPLES forever and
+      // the advisory would never say anything.
+      loadDepthCurveFromDisk(hrProxyDir)
       // One-shot lifetime-meter reset: a `.reset-proxy-totals` file in the headroom dir zeroes the
       // cumulative baseline once on next launch (e.g. after a compression-methodology change), so the
       // reported savedPct reflects the NEW rate instead of a stale blended lifetime average.
@@ -2900,7 +2905,7 @@ if (!gotTheLock) {
       let hrProxyFlushTimer: ReturnType<typeof setTimeout> | null = null
       setProxyLedgerFlush(() => {
         if (hrProxyFlushTimer) return
-        hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir) }, 3000)
+        hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir); saveDepthCurveToDisk(hrProxyDir) }, 3000)
       })
       onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
       // The result only lands once the upstream response ends, but Claude can call retrieve_full
@@ -3529,6 +3534,7 @@ if (!gotTheLock) {
     try { stopMemoryHost() } catch {}
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
+    try { saveDepthCurveToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
     if (mcpServer) {
       try { stopMcpServer(mcpServer) } catch { /* already down */ }
       mcpServer = null

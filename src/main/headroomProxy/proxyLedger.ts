@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { ccrPut } from '../headroom/ccrStore'
+import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
 
 export interface ProxyTotals {
@@ -117,6 +118,9 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   session.cacheCreationTokens += u.cache_creation_input_tokens || 0
   session.inputTokens += u.input_tokens || 0
   session.outputTokens += u.output_tokens || 0
+  // Depth curve. Recorded here rather than at the caller so the two meters cannot drift: every
+  // request that moves the token ledger moves the curve, or neither does.
+  recordDepthSample(s.msgCount || 0, u.cache_read_input_tokens || 0, u.cache_creation_input_tokens || 0)
   // Prefix head. Chars, summed per request, so the cache-write bucket finally has a denominator
   // that can be attributed rather than just observed as a total on the invoice.
   session.sysChars += s.sysChars || 0

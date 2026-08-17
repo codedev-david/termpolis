@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 const { recordProxyResult, summarizeProxySavings, loadProxyBase, resetProxyLedger, resetProxyCounters } =
   await import('../../src/main/headroomProxy/proxyLedger')
 const { ccrRetrieve, resetCcr } = await import('../../src/main/headroom/ccrStore')
+const { currentDepthCurve, resetDepthCurveAll } = await import('../../src/main/headroom/sessionDepth')
 
 function result(over: Record<string, unknown> = {}) {
   return {
@@ -101,3 +102,29 @@ describe('proxy ledger', () => {
     expect(post.session.textSavedTokens).toBe(1500)
   })
 })
+
+/**
+ * The depth curve and the token ledger are fed from the SAME record call on purpose: two meters
+ * updated from two places drift, and a drifted curve gives cost advice about a conversation that
+ * is not the one being billed.
+ */
+describe('proxy ledger feeds the depth curve', () => {
+  beforeEach(() => { resetProxyLedger(); resetCcr(); resetDepthCurveAll() })
+
+  it('records one depth sample per recorded request, from the same usage block', () => {
+    const head = { trBlocks: 1, trOrigChars: 8000, trCompChars: 2000, images: 0, imgOrigBytes: 0, imgCompBytes: 0, msgCount: 300 }
+    recordProxyResult(result({ stats: head }) as never)
+    const c = currentDepthCurve()
+    expect(c.lastMessages).toBe(300)
+    expect(c.bands[5].requests).toBe(1)
+    expect(c.bands[5].readTokens).toBe(78824)
+    expect(c.bands[5].writeTokens).toBe(500)
+  })
+
+  it('skips the curve, not the ledger, when a request carried no message count', () => {
+    recordProxyResult(result() as never)
+    expect(summarizeProxySavings().session.requests).toBe(1)
+    expect(currentDepthCurve().bands.every((b) => b.requests === 0)).toBe(true)
+  })
+})
+

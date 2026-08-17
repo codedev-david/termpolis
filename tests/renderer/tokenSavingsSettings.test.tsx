@@ -217,10 +217,50 @@ describe('TokenSavingsSettings — honest reporting', () => {
     const floor = await screen.findByTestId('hr-toggle-floor') as HTMLInputElement
     const decay = screen.getByTestId('hr-toggle-decay') as HTMLInputElement
     expect(floor.checked).toBe(true)
-    expect(decay.checked).toBe(false) // the one control that can cost money is not on by default
+    // Driven by the mocked settings above, not by the shipped default — which is ON as of
+    // v1.36.0. What is pinned here is that the box mirrors settings and sends the inverse.
+    expect(decay.checked).toBe(false)
     fireEvent.click(decay)
     await waitFor(() => expect(
       (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis.tokenSavingsSetSettings,
     ).toHaveBeenCalledWith({ prefixDecay: true }))
   })
 })
+
+/**
+ * Session depth is the one figure on this receipt that is about the conversation rather than
+ * about the bytes, so it has to be legible on its own terms: what a turn costs now, what the
+ * same user shallow sessions cost, and the caveat that makes the comparison honest.
+ */
+describe('TokenSavingsSettings - session depth advisory', () => {
+  const withDepth = (depth: unknown) => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: { session: unifiedTotals(), cumulative: unifiedTotals(), depth },
+    })
+  }
+
+  it('prices the turn at both depths and keeps the caveat next to the number', async () => {
+    withDepth({ messages: 412, bandIndex: 6, unitsPerTurnNow: 41375, unitsPerTurnFresh: 19200, savingPerTurn: 22175, savingPct: 54, requestsNow: 900, requestsFresh: 120 })
+    render(<TokenSavingsSettings />)
+    const el = await screen.findByTestId('hr-session-depth')
+    expect(el).toHaveTextContent('412 messages deep')
+    expect(screen.getByTestId('hr-depth-now')).toHaveTextContent('41,375')
+    expect(screen.getByTestId('hr-depth-fresh')).toHaveTextContent('19,200')
+    expect(screen.getByTestId('hr-depth-pct')).toHaveTextContent('54')
+    expect(el).toHaveTextContent('22,175')
+    // The write is inside the fresh figure - without that line the number reads as free money.
+    expect(el).toHaveTextContent('already includes the cost of writing a new prefix')
+    expect(el).toHaveTextContent('not a controlled comparison')
+  })
+
+
+  it('shows nothing at all rather than a placeholder when the curve cannot support advice', async () => {
+    withDepth(null)
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-session-pct')).toBeTruthy())
+    expect(screen.queryByTestId('hr-session-depth')).toBeNull()
+  })
+})
+

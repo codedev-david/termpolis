@@ -78,3 +78,27 @@ describe('prefix head measurement', () => {
   })
 })
 
+
+/**
+ * Depth is the only prefix figure no compressor can act on, so it has to be measured on the same
+ * pass and under the same conditions as the rest of the head - including the requests that make
+ * the head measurement return early.
+ */
+describe('conversation depth measurement', () => {
+  it('counts the messages the request actually carried', () => {
+    const msgs = [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]
+    expect(rewriteMessagesBody(body({ messages: msgs })).stats.msgCount).toBe(3)
+    expect(rewriteMessagesBody(body()).stats.msgCount).toBe(1)
+  })
+
+  it('still counts depth on a request with no tools array, which returns early', () => {
+    const s = rewriteMessagesBody(body({ tools: undefined, messages: [{ role: 'user', content: 'a' }, { role: 'user', content: 'b' }] })).stats
+    expect(s.toolCount).toBe(0)
+    expect(s.msgCount).toBe(2)
+  })
+
+  it('reports zero rather than guessing when messages is not an array', () => {
+    expect(rewriteMessagesBody(body({ messages: 'nope' })).stats.msgCount).toBe(0)
+  })
+})
+
