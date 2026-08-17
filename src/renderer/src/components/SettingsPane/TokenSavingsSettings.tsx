@@ -47,30 +47,22 @@ const shareOfTotalInput = (t?: ProxyTotalsView): number | null => {
  * 50%-of-tool-output figure as though it were a 50% bill reduction would be false, and this
  * number exists so the receipt can't be read that way.
  *
- * Removed tokens are valued at the OBSERVED blended input rate rather than any single weight,
- * because we cannot know which of the three input buckets each one would have landed in.
+ * Removed tokens are valued at the OBSERVED blended prefix rate rather than any single weight,
+ * because we cannot know which side of the cache each one would have landed on.
+ *
+ * The arithmetic itself now lives in the main process, next to the counters that feed it
+ * (src/main/headroom/effectiveUnits.ts). It used to be re-derived here, and the two copies had
+ * already drifted: the renderer blended removed tokens across all three input buckets, the spec
+ * across the two prefix buckets. Neither test could see the other, so neither failed.
  */
-const effectiveCostShare = (t?: UnifiedTotalsView): number | null => {
-  if (!t) return null
-  const ingested = (t.inputTokens || 0) + (t.cacheReadTokens || 0) + (t.cacheCreationTokens || 0)
-  if (ingested <= 0) return null
-  const inEff = (t.inputTokens || 0) + (t.cacheReadTokens || 0) * 0.1 + (t.cacheCreationTokens || 0) * 1.25
-  const blended = inEff / ingested
-  const savedEff = Math.max(0, t.netSavedTokens || 0) * blended
-  const total = inEff + (t.outputTokens || 0) * 5 + savedEff
-  return total > 0 ? Math.round((savedEff / total) * 100) : null
-}
+const effectiveCostShare = (t?: UnifiedTotalsView): number | null =>
+  t?.bill && t.bill.total > 0 ? Math.round(t.bill.totalBillSavedPct) : null
 
 // Output's share of what a request actually costs, at Anthropic's published multipliers
 // (cache read 0.1x input, cache write 1.25x, output 5x). Surfaced because it is the one slice
 // inbound compression cannot touch — and on real lifetime numbers it is the largest one left.
-const outputCostShare = (t?: UnifiedTotalsView): number | null => {
-  if (!t) return null
-  const inEff = (t.inputTokens || 0) + (t.cacheReadTokens || 0) * 0.1 + (t.cacheCreationTokens || 0) * 1.25
-  const outEff = (t.outputTokens || 0) * 5
-  const total = inEff + outEff
-  return total > 0 ? Math.round((outEff / total) * 100) : null
-}
+const outputCostShare = (t?: UnifiedTotalsView): number | null =>
+  t?.bill && t.bill.total > 0 ? Math.round(t.bill.outputPct) : null
 
 export function TokenSavingsSettings() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -146,6 +138,37 @@ export function TokenSavingsSettings() {
             Floor check: worst single request kept <b data-testid="hr-floor-worst">{unified?.cumulative.worstSavedPct ?? 0}%</b>
             {' '}· <span data-testid="hr-floor-below">{fmt(unified?.cumulative.belowFloorRequests ?? 0)}</span> of{' '}
             {fmt(unified?.cumulative.floorEligibleRequests ?? 0)} substantial requests came in under 50%.
+          </div>
+        )}
+
+        {/* What Headroom does NOT reach, stated on the same receipt as what it does. The system
+            prompt and tool schemas sit in front of every request, are re-sent every turn, and are
+            what a cache WRITE is billed 1.25x for. Only the Termpolis slice is ours to shrink. */}
+        {(unified?.cumulative.toolsTokensPerRequest ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-prefix-head">
+            Untouched prefix: about {fmt(unified?.cumulative.sysTokensPerRequest ?? 0)} tokens of system prompt and{' '}
+            {fmt(unified?.cumulative.toolsTokensPerRequest ?? 0)} tokens of tool schemas ride in front of every request
+            ({fmt(unified?.cumulative.toolCount ?? 0)} tools, <span data-testid="hr-prefix-tp">{fmt(unified?.cumulative.tpToolsTokensPerRequest ?? 0)}</span> tokens of them Termpolis&rsquo;s own).
+            Compression never touches this; it is what cache writes are billed for.
+          </div>
+        )}
+
+        {/* Steering, measured. Two means side by side — observational, so it is never called a saving. */}
+        {(unified?.cumulative.steeredRequests ?? 0) > 0 && (unified?.cumulative.unsteeredRequests ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-steering-observed">
+            Output steering: steered requests averaged <b data-testid="hr-steer-on">{fmt(unified?.cumulative.steeredAvgOutput ?? 0)}</b> output tokens
+            across {fmt(unified?.cumulative.steeredRequests ?? 0)}; unsteered averaged{' '}
+            <b data-testid="hr-steer-off">{fmt(unified?.cumulative.unsteeredAvgOutput ?? 0)}</b> across {fmt(unified?.cumulative.unsteeredRequests ?? 0)}.
+            Observed, not a controlled comparison — different sessions ask different questions.
+          </div>
+        )}
+
+        {/* The falsifier. Every elision promises the original can be brought back; a miss is that
+            promise broken. It is never rolled into a percentage — one is worth seeing. */}
+        {(unified?.cumulative.retrieveMisses ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 13, color: '#f87171' }} data-testid="hr-retrieve-misses">
+            <b>{fmt(unified?.cumulative.retrieveMisses ?? 0)}</b> retrieve_full {(unified?.cumulative.retrieveMisses ?? 0) === 1 ? 'call' : 'calls'} found nothing —
+            compressed content could not be restored. Report this; it should never happen.
           </div>
         )}
 

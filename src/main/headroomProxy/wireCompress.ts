@@ -6,6 +6,8 @@ import { applyPrefixDecay } from './prefixDecay'
 import { bestDiff, makeCandidate, type DiffCandidate } from '../headroom/diffEncode'
 import { compactJson } from './jsonCompact'
 import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
+import { isExempt } from '../headroom/router'
+import { STEERING_MARK } from '../headroom/outputSteering'
 
 export interface WireStats {
   trBlocks: number
@@ -20,6 +22,22 @@ export interface WireStats {
   images: number
   imgOrigBytes: number
   imgCompBytes: number
+  /** The PREFIX HEAD — `system` and `tools` — measured, never rewritten.
+   *
+   *  Every compression this file performs happens inside `messages`. The system prompt and the
+   *  tool schemas sit in front of it, are re-sent on every single request, and are what a cache
+   *  WRITE actually pays for at 1.25x. On this install that bucket was 258M tokens, ~27% of
+   *  effective input spend, and no layer could see it at all. Measuring is the whole point:
+   *  `tpToolsChars` isolates the slice Termpolis itself emits, which is the only slice we are
+   *  entitled to shrink. */
+  sysChars: number
+  toolsChars: number
+  toolCount: number
+  tpToolsChars: number
+  /** Whether this request carried the output-steering directive. Output is 5x input and the
+   *  largest single bucket on the bill; steering is the only lever aimed at it, and until now
+   *  nothing recorded whether it was even present, let alone what it earned. */
+  steered: boolean
 }
 /** Which counter pair a compacted block is billed to. */
 export type StatBucket = 'tr' | 'tu'
@@ -31,36 +49,69 @@ export interface WireResult {
 }
 export type ImageCompressor = (dataB64: string, mediaType: string) => { data: string; mediaType: string; changed: boolean }
 
-function emptyStats(): WireStats { return { trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0, images: 0, imgOrigBytes: 0, imgCompBytes: 0 } }
+function emptyStats(): WireStats {
+  return {
+    trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
+    images: 0, imgOrigBytes: 0, imgCompBytes: 0,
+    sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, steered: false,
+  }
+}
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
 
-export interface WireWindow { headLines: number; tailLines: number; maxChars: number }
+export interface WireWindow { headLines: number; tailLines: number; maxChars: number; floorChars: number }
 
 /**
- * Mode → wire window, mirroring the config profiles (maxChars ← maxFieldChars). Exposed so the
- * proxy child can translate a mode message without importing config's mutable settings state.
+ * `Thresholds.floorTokens` counts tokens; every gate on the wire counts chars. Four chars per
+ * token is the ratio config.ts's own comments already use to gloss that column ("150 (~600
+ * chars)"), so converting here beats adding a second table that could drift away from the first.
+ */
+export const FLOOR_CHARS_PER_TOKEN = 4
+
+/**
+ * Mode → wire window, mirroring the config profiles (maxChars ← maxFieldChars, floorChars ←
+ * floorTokens). Exposed so the proxy child can translate a mode message without importing
+ * config's mutable settings state.
  * Unknown mode → null, so a garbled message can never silently DOWNGRADE the active window.
  */
 export function windowForMode(mode: string): WireWindow | null {
   if (mode !== 'conservative' && mode !== 'balanced' && mode !== 'aggressive' && mode !== 'max') return null
   const t = thresholdsFor(mode as Mode)
-  return { headLines: t.headLines, tailLines: t.tailLines, maxChars: t.maxFieldChars }
+  return { headLines: t.headLines, tailLines: t.tailLines, maxChars: t.maxFieldChars, floorChars: t.floorTokens * FLOOR_CHARS_PER_TOKEN }
 }
 
 /**
  * The active tool-output window for the LIVE proxy wire — the SOLE driver of the reported
- * savedPct. Defaults to the 'aggressive' profile (12/6/1000): keep the head (command + first
- * output) and tail (result/errors) an agent needs inline; the full original is always stashed,
- * so retrieve_full recovers the middle on demand (empirically rare). setWireWindow() lets the
- * proxy child honor the user's mode live (proxySupervisor pushes it on init + on change); the
+ * savedPct. Defaults to the 'aggressive' profile (12/6/1000, floor 1600): keep the head (command
+ * + first output) and tail (result/errors) an agent needs inline; the full original is always
+ * stashed, so retrieve_full recovers the middle on demand (empirically rare). setWireWindow() lets
+ * the proxy child honor the user's mode live (proxySupervisor pushes it on init + on change); the
  * aggressive default is the fail-safe, so a missing/garbled mode keeps savings high, never drops
  * them. The validated setter also guarantees a bad payload can neither break nor downgrade it.
  */
-let wireWindow: WireWindow = { headLines: 12, tailLines: 6, maxChars: 1000 }
+let wireWindow: WireWindow = { headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 }
+
+/**
+ * The floor is the one part of the window that moves ONCE per launch and then never again.
+ *
+ * headLines/tailLines/maxChars only change how a block that is already being compacted gets cut;
+ * the floor changes WHICH blocks are compacted at all. Lower it mid-session and every short block
+ * already sitting in the cached prefix comes back compacted on the next turn — the prefix is
+ * rewritten, the Anthropic prompt cache is lost, and one bust costs far more than any floor change
+ * earns. Same arithmetic, same answer as savingsFloor.ts: resolve before the first request, then
+ * freeze. A push carrying no usable floor (an old-shaped window, a garbled zero) leaves the one
+ * resolution unspent for a later push rather than locking in the fail-safe default.
+ */
+let floorResolved = false
+
 export function setWireWindow(w: WireWindow | null | undefined): void {
   if (w && Number.isFinite(w.headLines) && Number.isFinite(w.tailLines) && Number.isFinite(w.maxChars)
       && w.headLines >= 0 && w.tailLines >= 0 && w.maxChars > 0) {
-    wireWindow = { headLines: Math.floor(w.headLines), tailLines: Math.floor(w.tailLines), maxChars: Math.floor(w.maxChars) }
+    const takesFloor = !floorResolved && Number.isFinite(w.floorChars) && w.floorChars > 0
+    if (takesFloor) floorResolved = true
+    wireWindow = {
+      headLines: Math.floor(w.headLines), tailLines: Math.floor(w.tailLines), maxChars: Math.floor(w.maxChars),
+      floorChars: takesFloor ? Math.floor(w.floorChars) : wireWindow.floorChars,
+    }
   }
 }
 
@@ -148,7 +199,9 @@ export function collectToolUseHints(messages: Array<{ content?: unknown }>): Map
 export const STRUCT_WINDOW_SCALE = 3
 
 function scaleWindow(w: WireWindow, k: number): WireWindow {
-  return { headLines: w.headLines * k, tailLines: w.tailLines * k, maxChars: w.maxChars * k }
+  // floorChars is deliberately NOT scaled: the block is already past the floor by the time this
+  // runs, and a scaled copy would be a second, contradictory answer to "is this worth compacting".
+  return { ...w, headLines: w.headLines * k, tailLines: w.tailLines * k, maxChars: w.maxChars * k }
 }
 
 /**
@@ -179,7 +232,7 @@ export function windowStructured(s: string, win: WireWindow): { text: string; el
  * token (so re-compression is byte-identical → cache-safe) and returns the original to stash.
  */
 export function compactToolText(text: string, hint?: ContentHint): { text: string; stash?: { token: string; original: string } } {
-  if (text.length < 400) return { text }
+  if (text.length < wireWindow.floorChars) return { text }
   // Content-aware pre-pass, one branch per shape. Each reduces the block to its meaningful
   // structure BEFORE the window, so the surviving bytes are chosen rather than sliced:
   //   HTML  → readable text          (a line window barely helps markup-dense, few-newline HTML)
@@ -225,10 +278,14 @@ export function compactToolText(text: string, hint?: ContentHint): { text: strin
   // dedup is self-describing, whereas an elision or a structural reduction hides content.
   if (!r.elided && !hidden) return { text: r.text }
   const token = detToken(text) // key on the ORIGINAL so retrieve_full returns the true original
-  return {
-    text: `${r.text}\n\n[headroom] Full result cached — call the retrieve_full tool with token "${token}" to expand it.`,
-    stash: { token, original: text },
-  }
+  const withNotice = `${r.text}\n\n[headroom] Full result cached — call the retrieve_full tool with token "${token}" to expand it.`
+  // Never hand back more than we were given. The retrieval notice is ~110 chars, and on a
+  // markup-light block the pre-pass can save less than that — leaving a "compressed" block
+  // LARGER than the original, which then rides the cached prefix and is re-read at that inflated
+  // size on every later turn. Shrink-only is the invariant the cache math depends on, and it has
+  // to hold after the notice is added, not before.
+  if (withNotice.length >= text.length) return { text }
+  return { text: withNotice, stash: { token, original: text } }
 }
 
 /** Blocks already met in THIS body: hashes for exact-duplicate collapse, texts as diff bases. */
@@ -262,10 +319,10 @@ function compactOrDedup(
   let out = text
   let changed = false
   const key = detToken(text)
-  if (text.length >= 400 && seen.keys.has(key)) {
-    // A 400+ char block already seen earlier in THIS body → collapse to a one-line
-    // reference stub (always far shorter than a ≥400 original). Reversible: the
-    // original is stashed under its content-hash token for retrieve_full.
+  if (text.length >= wireWindow.floorChars && seen.keys.has(key)) {
+    // A block at or above the floor already seen earlier in THIS body → collapse to a one-line
+    // reference stub (always far shorter than the original, since the floor is well past the
+    // stub's own length). Reversible: the original is stashed under its content-hash token.
     out = `[headroom] Identical to an earlier tool result in this conversation — call the retrieve_full tool with token "${key}" to expand it.`
     changed = true
     stats[blockKey]++
@@ -274,7 +331,7 @@ function compactOrDedup(
     const c = compactToolText(text, hint)
     let best = c.text
     let stash = c.stash
-    if (text.length >= 400) {
+    if (text.length >= wireWindow.floorChars) {
       const cand = makeCandidate(text)
       // Diff BEFORE recording this block, so it can never be its own base.
       const p = bestDiff(seen.blocks, cand.lines, text.length, key)
@@ -306,14 +363,10 @@ function compressImageBlock(block: { source?: { type?: string; media_type?: stri
 
 /**
  * Keys in a tool_use input that name a thing rather than carry content. All are short enough that
- * TOOL_USE_MIN_CHARS already excludes them; the explicit skip is defense-in-depth, because a
+ * the compaction floor already excludes them; the explicit skip is defense-in-depth, because a
  * truncated path or glob would be actively misleading rather than merely elided.
  */
 const TOOL_USE_SKIP = new Set(['file_path', 'path', 'notebook_path', 'url', 'pattern', 'glob'])
-
-/** Only fields at/above the compaction floor are candidates — below it compactToolText is a
- *  provable no-op, so counting them would just dilute the ratio with incompressible tare. */
-const TOOL_USE_MIN_CHARS = 400
 
 /**
  * Compress the bulk string fields of a historical `tool_use` block — the agent's OWN output:
@@ -341,12 +394,20 @@ function compressToolUseInput(
   // The block names its own file (Write's file_path sits beside its content), so the router can
   // outline what the agent wrote just as it outlines what the agent read.
   const hint = hintFromInput(rec, (block as { name?: unknown }).name)
+  // The memory/swarm exemption is a product invariant, not an MCP-layer detail: what the model
+  // SEES when it recalls has to be what the brain stored. The MCP layer already refuses these
+  // tools; the wire used to compress them anyway, because the wire's name is namespaced
+  // (`mcp__termpolis__memory_write`) and the exemption list holds bare names. isExempt strips
+  // the namespace now, so one list governs both layers.
+  if (hint.toolName && isExempt(hint.toolName)) return false
   // Object.keys order is insertion order, and the body is re-parsed from identical JSON each
   // turn, so the traversal — and therefore the output — is deterministic.
   for (const k of Object.keys(rec)) {
     if (TOOL_USE_SKIP.has(k)) continue
     const v = rec[k]
-    if (typeof v !== 'string' || v.length < TOOL_USE_MIN_CHARS) continue
+    // Only fields at/above the compaction floor are candidates — below it compactOrDedup is a
+    // provable no-op, so counting them would just dilute the ratio with incompressible tare.
+    if (typeof v !== 'string' || v.length < wireWindow.floorChars) continue
     const r = compactOrDedup(v, seen, stats, stashes, 'tu', hint)
     if (r.changed) { rec[k] = r.text; changed = true }
   }
@@ -361,6 +422,39 @@ function compressToolUseInput(
  * Anthropic validates, so any edit would be rejected outright.
  * Deterministic and FAIL-OPEN: any parse error / unknown shape / anomaly returns the original body.
  */
+/** Tool names Termpolis itself registers, as Claude Code presents them over MCP. */
+const TP_TOOL_PREFIX = 'mcp__termpolis__'
+/* STEERING_MARK is imported, not restated — see its definition for why. */
+
+/**
+ * Measure the prefix head. Read-only by construction: it takes the parsed body and writes only
+ * into `stats`, so no future edit here can change a byte on the wire. `system` may be a string or
+ * an array of blocks; both shapes are summed rather than one being silently scored as zero.
+ */
+function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void {
+  const sys = obj.system
+  let sysText = ''
+  if (typeof sys === 'string') sysText = sys
+  else if (Array.isArray(sys)) {
+    for (const b of sys) {
+      const t = (b as { text?: unknown })?.text
+      if (typeof t === 'string') sysText += t
+    }
+  }
+  stats.sysChars = sysText.length
+  stats.steered = sysText.includes(STEERING_MARK)
+  const tools = obj.tools
+  if (!Array.isArray(tools)) return
+  stats.toolCount = tools.length
+  for (const t of tools) {
+    let size: number
+    try { size = JSON.stringify(t)?.length ?? 0 } catch { continue } // a cyclic tool is not ours to count
+    stats.toolsChars += size
+    const name = (t as { name?: unknown })?.name
+    if (typeof name === 'string' && name.startsWith(TP_TOOL_PREFIX)) stats.tpToolsChars += size
+  }
+}
+
 export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean } = {}): WireResult {
   const stats = emptyStats()
   const stashes: Array<{ token: string; original: string }> = []
@@ -370,6 +464,10 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   let obj: { messages?: unknown[]; thinking?: unknown }
   try { obj = JSON.parse(raw) } catch { return { body: raw, changed: false, stats, stashes } }
   if (!obj || !Array.isArray(obj.messages)) return { body: raw, changed: false, stats, stashes }
+  // Measured here, BEFORE the round-trip guard below can fail us open: the prefix head is an
+  // observation of what the client sent, not a claim about what we compressed, so it stays true
+  // on requests we decline to touch. Those are exactly the requests whose cost was invisible.
+  measurePrefixHead(obj as Record<string, unknown>, stats)
   // Corruption + cache safety: only proceed when the body round-trips LOSSLESSLY (the Anthropic
   // V8 SDK emits canonical JSON). Otherwise a whole-object reserialize could silently alter an
   // UNTOUCHED field — an integer > 2^53, unusual escaping, etc. — so fail open. This makes every
@@ -403,6 +501,10 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
           // The result carries no file name of its own — it is the tool_use it answers, in an
           // earlier message, that knows which file this is. hints was built before the walk.
           const hint = typeof b.tool_use_id === 'string' ? hints.get(b.tool_use_id) : undefined
+          // Same exemption as the tool_use path: a recalled memory reaches the model whole or the
+          // brain may as well not have stored it. The tool_use this result answers is what knows
+          // the name, which is exactly what `hints` was built to carry.
+          if (hint?.toolName && isExempt(hint.toolName)) continue
           if (typeof b.content === 'string') {
             const r = compactOrDedup(b.content, seen, stats, stashes, 'tr', hint)
             if (r.changed) { b.content = r.text; changed = true }

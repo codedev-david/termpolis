@@ -116,17 +116,19 @@ import { runWorkflow as wfRun, cancelRun as wfCancel } from './workflow/workflow
 import { registerWorkflowIpc } from './workflow/ipc'
 import { TriggerSupervisor } from './workflow/triggers'
 import { sessionProjectCwds, type SessionLike } from './workflow/sessionProjects'
+import { startLearningSignals, stopLearningSignals } from './learningSignals'
 import { cleanupDemoWorkflows, oncePerVersion } from './workflow/demoCleanup'
 import type { FsLike as WorkflowFsLike } from './workflow/workflowStore'
 import type { WorkflowScope } from '../renderer/src/types'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
+import { writeAgentsMd, ensureCodexMemoryAutoApproved } from './codexParity'
 import { adaptSteeringMode, type SteeringMode } from './headroom/outputSteering'
 import { resolveWireMode } from './headroom/savingsFloor'
-import { setCcrDir } from './headroom/ccrStore'
+import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay } from './headroomProxy/proxySupervisor'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
@@ -187,7 +189,7 @@ import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
-import { runWeave, WEAVE_NEIGHBOUR_K } from './mnemeWeave'
+import { runWeave, WEAVE_NEIGHBOUR_K, type WeaveStats } from './mnemeWeave'
 import { auditMemory } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
@@ -1658,7 +1660,11 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 // gone". An un-awaited memoryClear() would also return success before the store had cleared.
 ipcMain.handle('memory:count', async () => { try { return ok(await memoryCount()) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('memory:clear', async () => { try { await memoryClear(); return ok() } catch (e: any) { return err(e.message) } })
-ipcMain.handle('memory:stats', async () => { try { return ok(await memoryStats()) } catch (e: any) { return err(e.message) } })
+/** What the last Weave pass drew. Null until the indexer has run one — which is itself the
+ *  signal worth surfacing, because "the Weave has never run" and "the Weave runs and mints
+ *  nothing" used to look identical from outside. */
+let lastWeaveStats: WeaveStats | null = null
+ipcMain.handle('memory:stats', async () => { try { return ok({ ...(await memoryStats()), weave: lastWeaveStats }) } catch (e: any) { return err(e.message) } })
 // Memory & Learning dashboard: the proof numbers, computed locally and offline.
 // Store-derived composition + graph connections are always real; the ledger adds
 // live reliability/receipt SLIs (sparse until the brain has been used a while).
@@ -2086,6 +2092,32 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
   } catch (e: any) { return err(e.message) }
 })
 
+// Codex parity. Codex has no `--append-system-prompt-file`, so the same instruction Claude gets
+// invisibly at launch is delivered through the file Codex reads natively: `<cwd>/AGENTS.md`. The
+// bytes come from the SAME builder, so the two agents cannot drift apart. Also clears any
+// per-tool approval prompt on the memory tools — Codex writes `approval_mode = "approve"` the
+// first time a user approves once, and a dialog on `memory_primer` is the difference between
+// having the context and having it behind a click nobody sees.
+ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string }) => {
+  try {
+    if (!opts?.cwd) return err('cwd required')
+    let steering = false
+    let steeringMode: SteeringMode | undefined
+    try {
+      const hs = getHeadroomSettings()
+      steering = hs.enabled && hs.steering
+      steeringMode = hs.mode
+      if (hs.adaptiveSteering) {
+        const cum = summarizeProxySavings().cumulative
+        steeringMode = adaptSteeringMode(steeringMode, cum.outputTokens, cum.requests)
+      }
+    } catch { /* steering optional */ }
+    const agents = writeAgentsMd(opts.cwd, { cwd: opts.cwd, steering, mode: steeringMode })
+    const approvals = ensureCodexMemoryAutoApproved(join(homedir(), '.codex', 'config.toml'))
+    return ok({ file: agents.path, changed: agents.changed, approvals: approvals.tools.length })
+  } catch (e: any) { return err(e.message) }
+})
+
 // Solo-session learning: reflect on a solo agent terminal's transcript delta so the
 // learning brain (self-competence, distilled lessons, cross-agent pooling) grows from
 // individual Claude / Codex / Gemini sessions — not only completed swarm tasks. Called
@@ -2404,6 +2436,10 @@ ipcMain.handle('swarm:update-task', async (_, { taskId, status, result }) => {
   try {
     const task = updateTask(taskId, status, result)
     if (!task) return err('Task not found')
+    // Same Mneme reflex the MCP path has always had (see swarmUpdateTask below). Without it a task
+    // finished from the dashboard or the auto-completion bridge taught the brain nothing, and the
+    // two routes to the identical state change learned differently.
+    if (status === 'completed' || status === 'failed') void reflectOnTask(task, status, result)
     return ok(task)
   } catch (e: any) { return err(e.message) }
 })
@@ -2867,6 +2903,9 @@ if (!gotTheLock) {
         hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir) }, 3000)
       })
       onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
+      // The result only lands once the upstream response ends, but Claude can call retrieve_full
+      // the moment the token streams back — so the originals are committed on the request path too.
+      onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } } })
       ipcMain.handle('tokenSavings:get-proxy-receipt', () => ok(summarizeProxySavings()))
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
@@ -3055,7 +3094,7 @@ if (!gotTheLock) {
           const nbrs = await weaveNeighboursBatch(wcands.map((c) => c.id), WEAVE_NEIGHBOUR_K)
           const weaveEdges = collectEdges('weave')
           const backfills: Array<{ id: string; refs: CodeRef[] }> = []
-          runWeave(
+          const weaveStats = runWeave(
             {
               candidates: () => wcands,
               neighbours: (id) => nbrs[id] ?? [], // sync closure over the pre-fetched neighbourhood
@@ -3066,6 +3105,14 @@ if (!gotTheLock) {
             },
             { maxPerPass: 200, neighbourK: WEAVE_NEIGHBOUR_K },
           )
+          // B2: the Weave used to run silently, so "is the graph actually being drawn?" had no
+          // answer short of dumping the store. `considered` without `minted` is the shape that
+          // matters — it means the miner spent its whole 200-edge budget re-proposing edges that
+          // already exist, which is exactly the failure the novelty check in addMemoryEdge fixes.
+          lastWeaveStats = weaveStats
+          if (weaveStats.minted > 0 || weaveStats.considered > 0) {
+            console.log(`[mneme] weave: considered ${weaveStats.considered}, minted ${weaveStats.minted} (bridge ${weaveStats.bridged}, code ${weaveStats.codeAnalogies}, knowledge ${weaveStats.knowledgeAnalogies}, explains ${weaveStats.explains})`)
+          }
           // Deferring the backfill is behaviour-identical: weaveCandidates returns a fresh
           // PROJECTION, so a codeRefs write never reached the objects this pass reasons over anyway
           // (the explains miner reads e.codeRefs off the projection), and weaveNeighbours ranks by
@@ -3235,6 +3282,31 @@ if (!gotTheLock) {
       wfTriggers.start()
       app.on('before-quit', () => { try { wfTriggers.stop() } catch { /* shutting down anyway */ } })
       console.log(`[workflow] orchestrator IPC registered (${wfTriggers.armedCount} trigger(s) armed)`)
+
+      // Learning signals. deriveOutcome has graded 'git-commit' and 'test-run' since the
+      // competence layer shipped, but nothing emitted them for ordinary work done in a
+      // terminal, so every domain sat at attempts:0 forever. Started here because this is
+      // where the session + git plumbing the two watchers need is already resolved.
+      //
+      // A commit made through the app's own git UI is credited twice: once inline at the
+      // ipcMain 'git:commit' handler and once when the poller sees HEAD move. Both are
+      // ok:true, so the overlap inflates a positive count and can never flip a verdict —
+      // not worth cross-module suppression state. Terminal commits, the case this exists
+      // for, are credited exactly once.
+      try {
+        startLearningSignals({
+          openProjects: () => { try { return sessionProjectCwds(loadSession(), homedir()) } catch { return [] } },
+          cwdForTerminal: (id) => { try { return loadSession().terminals.find((t) => t.id === id)?.cwd ?? null } catch { return null } },
+          normalizeProject: normalizeProjectSlug,
+          emit: recordWorkOutcome,
+          subscribe: subscribeEvents,
+          fs: { existsSync, readFileSync },
+          readBytes: (rp: string) => readFileSync(rp),
+        })
+        app.on('before-quit', () => { try { stopLearningSignals() } catch { /* shutting down anyway */ } })
+      } catch (e) {
+        console.warn('[learning] signal watchers could not start:', (e as Error)?.message)
+      }
     } catch (wfErr) {
       console.error('[workflow] failed to register orchestrator IPC', wfErr)
     }

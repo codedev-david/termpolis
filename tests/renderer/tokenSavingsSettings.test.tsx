@@ -3,6 +3,7 @@ import React from 'react'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { TokenSavingsSettings } from '../../src/renderer/src/components/SettingsPane/TokenSavingsSettings'
+import { billBreakdown } from '../../src/main/headroom/effectiveUnits'
 
 const proxyTotals = (over: Record<string, number> = {}) => ({
   requests: 40, textOrigTokens: 200000, textSavedTokens: 100000, savedPct: 50,
@@ -10,13 +11,22 @@ const proxyTotals = (over: Record<string, number> = {}) => ({
   cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000, retrieves: 0, givebackTokens: 0, ...over,
 })
 
-const unifiedTotals = (over: Record<string, number> = {}) => ({
-  requests: 40, wireOrigTokens: 200000, wireSavedTokens: 100000,
-  images: 3, imageOrigBytes: 0, imageSavedBytes: 0,
-  toolOrigTokens: 0, toolSavedTokens: 0, toolEvents: 0, byTool: {},
-  retrieves: 0, givebackTokens: 0, grossSavedTokens: 100000, netSavedTokens: 100000, savedPct: 50,
-  cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000, ...over,
-})
+const unifiedTotals = (over: Record<string, number> = {}) => {
+  const t = {
+    requests: 40, wireOrigTokens: 200000, wireSavedTokens: 100000,
+    images: 3, imageOrigBytes: 0, imageSavedBytes: 0,
+    toolOrigTokens: 0, toolSavedTokens: 0, toolEvents: 0, byTool: {},
+    retrieves: 0, givebackTokens: 0, grossSavedTokens: 100000, netSavedTokens: 100000, savedPct: 50,
+    cacheReadTokens: 900000, cacheCreationTokens: 20000, inputTokens: 500, outputTokens: 8000,
+    retrieveMisses: 0,
+    sysTokensPerRequest: 0, toolsTokensPerRequest: 0, tpToolsTokensPerRequest: 0, toolCount: 0,
+    steeredRequests: 0, unsteeredRequests: 0, steeredAvgOutput: 0, unsteeredAvgOutput: 0,
+    ...over,
+  }
+  // Derived, not hand-written: an override that moves a token counter has to move the bill too,
+  // or the fixture would assert against a breakdown the counters never could have produced.
+  return { ...t, bill: billBreakdown(t, t.netSavedTokens) }
+}
 
 beforeEach(() => {
   ;(window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis = {
@@ -137,6 +147,48 @@ describe('TokenSavingsSettings — honest reporting', () => {
     expect(await screen.findByTestId('hr-floor-worst')).toHaveTextContent('18%')
     expect(screen.getByTestId('hr-floor-below')).toHaveTextContent('7')
     expect(screen.getByTestId('hr-floor-evidence')).toHaveTextContent('of 400 substantial requests')
+  })
+
+  it('states the prefix it cannot reach, and how much of it is our own', async () => {
+    withData({}, { sysTokensPerRequest: 3100, toolsTokensPerRequest: 9400, tpToolsTokensPerRequest: 2200, toolCount: 38 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-prefix-head')).toHaveTextContent('3,100 tokens of system prompt')
+    expect(screen.getByTestId('hr-prefix-tp')).toHaveTextContent('2,200')
+  })
+
+  it('stays silent about the prefix head until a request has actually been measured', async () => {
+    withData({}, {})
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-denominators')
+    expect(screen.queryByTestId('hr-prefix-head')).toBeNull()
+  })
+
+  it('reports steering as two observed means rather than a saving', async () => {
+    withData({}, { steeredRequests: 900, unsteeredRequests: 120, steeredAvgOutput: 640, unsteeredAvgOutput: 1180 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-steer-on')).toHaveTextContent('640')
+    expect(screen.getByTestId('hr-steer-off')).toHaveTextContent('1,180')
+    expect(screen.getByTestId('hr-steering-observed')).toHaveTextContent('not a controlled comparison')
+  })
+
+  it('will not compare steering against an arm with no requests in it', async () => {
+    withData({}, { steeredRequests: 900, unsteeredRequests: 0, steeredAvgOutput: 640 })
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-denominators')
+    expect(screen.queryByTestId('hr-steering-observed')).toBeNull()
+  })
+
+  it('raises an alarm when a retrieve_full found nothing', async () => {
+    withData({}, { retrieveMisses: 3 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-retrieve-misses')).toHaveTextContent('3 retrieve_full calls found nothing')
+  })
+
+  it('says nothing about retrieval when every token resolved', async () => {
+    withData({}, {})
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-denominators')
+    expect(screen.queryByTestId('hr-retrieve-misses')).toBeNull()
   })
 
   it('hides the floor evidence entirely rather than claiming a perfect 100% on no data', async () => {

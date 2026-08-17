@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import * as http from 'http'
 import * as zlib from 'zlib'
 import { PNG } from 'pngjs'
@@ -41,9 +41,9 @@ beforeAll(async () => {
 })
 afterAll(() => { stub.close(); proxy.close() })
 
-function post(path: string, body: string): Promise<{ status: number; body: string }> {
+function post(path: string, body: string, port: number = proxyPort): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: proxyPort, path, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'accept-encoding': 'gzip' } }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'accept-encoding': 'gzip' } }, (res) => {
       const cs: Buffer[] = []
       res.on('data', (c) => cs.push(c))
       res.on('end', () => { const raw = Buffer.concat(cs); const txt = res.headers['content-encoding'] === 'gzip' ? zlib.gunzipSync(raw).toString() : raw.toString(); resolve({ status: res.statusCode || 0, body: txt }) })
@@ -97,5 +97,72 @@ describe('headroom proxy server (mock upstream)', () => {
     await post('/v1/messages', body)
     expect(received[0].body.length).toBeLessThan(body.length) // image downscaled → smaller forwarded body
     expect(received[0].body).not.toContain(img) // original full-size image not forwarded
+  })
+})
+
+/* The retrieve_full escape hatch is only honest if the original is committed BEFORE the token
+ * reaches the model. Claude launches with fine-grained tool streaming, so it can call retrieve_full
+ * while the response the token rides in is still open — a stash that waits for onResult loses that
+ * race outright on the first turn, and every miss makes the model re-read the original for more
+ * tokens than the compression saved. So these assert ORDER: a test that only proved a stash
+ * eventually lands would pass against the broken build too. */
+describe('headroom proxy server — originals are stashed on the REQUEST path', () => {
+  let heldStub: http.Server, gatedProxy: http.Server, gatedPort: number
+  let seen: string[] = []
+  let posted: Array<{ kind: string; stashes: Array<{ token: string; original: string }> }> = []
+  let arrived: Promise<void> // resolves once the upstream is holding the rewritten body
+  let release: () => void = () => {} // lets the held upstream finally answer
+
+  beforeEach(async () => {
+    seen = []; posted = []
+    let onArrival: () => void = () => {}
+    arrived = new Promise<void>((r) => { onArrival = r })
+    const gate = new Promise<void>((r) => { release = r })
+    heldStub = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        seen.push('upstream-request')
+        onArrival()
+        void gate.then(() => {
+          seen.push('upstream-response')
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          res.end(SSE)
+        })
+      })
+    })
+    await new Promise<void>((r) => heldStub.listen(0, '127.0.0.1', () => r()))
+    gatedProxy = createProxyServer({
+      upstreamHost: '127.0.0.1',
+      upstreamPort: (heldStub.address() as { port: number }).port,
+      useHttps: false,
+      // Records exactly the frame the utilityProcess child posts to the supervisor.
+      onStash: (stashes) => { seen.push('stash'); posted.push({ kind: 'stash', stashes }) },
+      onResult: () => { seen.push('result') },
+    })
+    await new Promise<void>((r) => gatedProxy.listen(0, '127.0.0.1', () => r()))
+    gatedPort = (gatedProxy.address() as { port: number }).port
+  })
+  afterEach(() => { heldStub.close(); gatedProxy.close() })
+
+  it('posts the stash before the upstream response is allowed to complete', async () => {
+    const done = post('/v1/messages', messagesBody, gatedPort)
+    await arrived // the token is on the wire now; the response is still open
+    expect(seen).toEqual(['stash', 'upstream-request']) // stash FIRST — not after the response ends
+    expect(posted).toHaveLength(1)
+    expect(posted[0].kind).toBe('stash')
+    expect(posted[0].stashes[0].token).toMatch(/^hr_[0-9a-f]+$/)
+    expect(posted[0].stashes[0].original).toBe(BIG) // byte-for-byte what retrieve_full must hand back
+
+    release()
+    await done
+    expect(seen).toEqual(['stash', 'upstream-request', 'upstream-response', 'result'])
+  })
+
+  it('posts nothing when the body had no block worth eliding', async () => {
+    release() // nothing to hold for — there is no token to lose the race with
+    const small = JSON.stringify({ messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'short' }] }] })
+    await post('/v1/messages', small, gatedPort)
+    expect(posted).toEqual([]) // an empty stash frame is pure IPC noise on every single request
+    expect(seen).toEqual(['upstream-request', 'upstream-response', 'result'])
   })
 })

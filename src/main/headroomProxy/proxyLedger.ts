@@ -34,6 +34,30 @@ export interface ProxyTotals {
   worstSavedPct: number
   belowFloorRequests: number
   floorEligibleRequests: number
+  /**
+   * The prefix head — `system` and `tools` — which no compression layer touches and which every
+   * request re-sends. It is what a cache WRITE pays 1.25x for. Summed as chars, not tokens,
+   * because that is what the wire actually sees; divide by ~4 for a token estimate.
+   * `tpToolsChars` is the slice Termpolis emits and is therefore the only slice we may shrink.
+   * `maxToolCount` is a high-water mark rather than a sum — tool count is a property of a
+   * session, and adding it up across requests would produce a number that means nothing.
+   */
+  sysChars: number
+  toolsChars: number
+  tpToolsChars: number
+  maxToolCount: number
+  /**
+   * Output steering, measured instead of assumed. Output bills at 5x input and is the single
+   * largest slice of this install's effective spend; steering is the only lever pointed at it,
+   * and it shipped with nothing recording what it earned. Splitting requests by whether the
+   * directive was present turns the claim into an observation: mean output tokens, steered vs
+   * not. It is observational, not a controlled trial — a user who turns steering on may also be
+   * asking different questions — so it is reported as a comparison, never as a saving.
+   */
+  steeredRequests: number
+  steeredOutputTokens: number
+  unsteeredRequests: number
+  unsteeredOutputTokens: number
 }
 
 /** The floor this release is held to, as a percentage of compressible wire text. */
@@ -49,7 +73,7 @@ export interface ProxyReceipt {
 function empty(): ProxyTotals {
   // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
   // a floor breach it never saw.
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0 }
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0 }
 }
 
 let session = empty()
@@ -93,6 +117,16 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   session.cacheCreationTokens += u.cache_creation_input_tokens || 0
   session.inputTokens += u.input_tokens || 0
   session.outputTokens += u.output_tokens || 0
+  // Prefix head. Chars, summed per request, so the cache-write bucket finally has a denominator
+  // that can be attributed rather than just observed as a total on the invoice.
+  session.sysChars += s.sysChars || 0
+  session.toolsChars += s.toolsChars || 0
+  session.tpToolsChars += s.tpToolsChars || 0
+  if ((s.toolCount || 0) > session.maxToolCount) session.maxToolCount = s.toolCount || 0
+  // Split BEFORE the output tokens are added anywhere else, so the two arms always sum to
+  // `outputTokens` and a drift between them is immediately visible as a bug rather than noise.
+  if (s.steered) { session.steeredRequests += 1; session.steeredOutputTokens += u.output_tokens || 0 }
+  else { session.unsteeredRequests += 1; session.unsteeredOutputTokens += u.output_tokens || 0 }
   if (Array.isArray(r.stashes)) for (const st of r.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } }
   try { flush?.() } catch { /* best effort */ }
 }
@@ -119,6 +153,9 @@ function sumWithBase(): ProxyTotals {
   for (const k of Object.keys(cum) as (keyof ProxyTotals)[]) cum[k] = base[k] + session[k]
   // worstSavedPct is a floor over all requests, not a quantity: summing two 100s would report 200%.
   cum.worstSavedPct = Math.min(base.worstSavedPct, session.worstSavedPct)
+  // Same class of mistake in the other direction: maxToolCount is a high-water mark. Two sessions
+  // that each saw 30 tools saw 30 tools, not 60.
+  cum.maxToolCount = Math.max(base.maxToolCount, session.maxToolCount)
   return cum
 }
 

@@ -167,6 +167,7 @@ const api: TermpolisAPI = {
   brainImport: () => ipcRenderer.invoke('brain:import'),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
+  memoryPrepareCodexContext: (cwd: string) => ipcRenderer.invoke('memory:prepare-codex-context', { cwd }),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
   tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),

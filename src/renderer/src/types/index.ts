@@ -214,6 +214,39 @@ export interface UnifiedTotalsView {
   worstSavedPct: number
   belowFloorRequests: number
   floorEligibleRequests: number
+  bill: BillBreakdownView
+  /** `retrieve_full` calls that found nothing. Any value above 0 means an elision was not
+   *  reversible after all — surfaced as an alarm, never rounded away. */
+  retrieveMisses: number
+  /** Prefix head (system prompt + tool schemas), per request, in tokens — the slice no
+   *  compression layer touches. Shown so the receipt states its own limits. */
+  sysTokensPerRequest: number
+  toolsTokensPerRequest: number
+  tpToolsTokensPerRequest: number
+  toolCount: number
+  /** Output steering, observed. Two means, never presented as a saving. */
+  steeredRequests: number
+  unsteeredRequests: number
+  steeredAvgOutput: number
+  unsteeredAvgOutput: number
+}
+
+/** Mirror of the main-process `BillBreakdown` — the same activity priced in effective units
+ *  (cache-read 0.1x, cache-write 1.25x, input 1x, output 5x) so the dashboard can quote a share
+ *  of the invoice rather than a share of the text the compressor was allowed to touch. */
+export interface BillBreakdownView {
+  cacheRead: number
+  cacheCreation: number
+  input: number
+  output: number
+  total: number
+  cacheReadPct: number
+  cacheCreationPct: number
+  inputPct: number
+  outputPct: number
+  prefixTokenWeight: number
+  avoided: number
+  totalBillSavedPct: number
 }
 
 export interface TermpolisAPI {
@@ -320,6 +353,9 @@ export interface TermpolisAPI {
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
+  /** Codex parity: Codex takes no system-prompt flag, so the same instruction lands in the file
+   *  it reads natively (`<cwd>/AGENTS.md`), and the memory tools are cleared of approval prompts. */
+  memoryPrepareCodexContext: (cwd: string) => Promise<IpcResponse<{ file: string; changed: boolean; approvals: number }>>
   /** Token Headroom: compression settings + measured savings receipt. */
   tokenSavingsGetSettings: () => Promise<IpcResponse<HeadroomSettingsView>>
   tokenSavingsSetSettings: (p: Partial<HeadroomSettingsView>) => Promise<IpcResponse<HeadroomSettingsView>>

@@ -519,7 +519,10 @@ describe('MCP adapter + memory-primer hook preflight', () => {
       if (original) Object.defineProperty(process, 'resourcesPath', original)
       else delete (process as unknown as Record<string, unknown>).resourcesPath
     }
-  })
+    // 90s, not the 30s default: this drives a full packaged `boot()` and it timed out once in a
+    // saturated `--coverage` run while passing in ~5s standalone. The work is real, so the honest
+    // fix is a timeout sized for a loaded CI box rather than a retry that hides a genuine hang.
+  }, 90_000)
 
   it('finds both files next to the sources in dev, so neither alarm fires', async () => {
     // The dev path is the one every contributor runs; if this ever regressed, every local session

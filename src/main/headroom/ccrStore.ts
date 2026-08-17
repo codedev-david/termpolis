@@ -38,9 +38,16 @@ export const CCR_MAX_BYTES = 200 * 1024 * 1024
 export const CCR_MAX_ENTRY_BYTES = 8 * 1024 * 1024
 /** Tokens are ours and always match this; anything else is refused so a token can't walk the path. */
 const TOKEN_RE = /^hr_[A-Za-z0-9]+$/
+/** The content-hash shape specifically — the only token form that PROVES what an indexed file
+ *  holds. The fallback (hr_x<counter>) and caller-supplied tokens carry no such guarantee. */
+const HASH_TOKEN_RE = /^hr_[0-9a-f]{16}$/
 
 const store = new Map<string, CcrRecord>()
 const diskIndex = new Map<string, { bytes: number; seq: number }>()
+// Tokens whose give-back has already been billed. A give-back reverses ONE compression event, but
+// an agent re-reads a token freely — a retry after a failed turn, a second reference to the same
+// result — and billing every redemption made the receipt read pessimistically low.
+const redeemed = new Set<string>()
 // Live caps. Constant in production; overridable only by the test hook at the bottom of this file,
 // so eviction can be exercised without actually writing 200 MB to a temp directory.
 let diskCapBytes = CCR_MAX_BYTES
@@ -49,6 +56,12 @@ let dir: string | null = null
 let diskBytes = 0
 let seq = 0
 let fallbackCounter = 0
+// Redemption outcomes. A miss is a broken promise — content was elided and the token that was
+// supposed to bring it back found nothing. Counting them is what turns "reversible" from a
+// design intention into a checkable claim.
+let memHits = 0
+let diskHits = 0
+let misses = 0
 
 function memPut(token: string, rec: CcrRecord): void {
   if (store.has(token)) store.delete(token) // re-insert at end → LRU
@@ -82,6 +95,11 @@ function evictDisk(): void {
 function diskPut(token: string, rec: CcrRecord): void {
   const f = fileFor(token)
   if (!f) return
+  // Already on disk, byte-for-byte: a hash token IS the sha1 of the content, so an indexed one
+  // cannot name a file holding anything else. Re-stashing what was already there cost 65
+  // synchronous writeFileSync calls and ~101 KB per API request on the MAIN thread, and grew with
+  // the conversation. Only the hash shape carries that guarantee — the rest must still be written.
+  if (diskIndex.has(token) && HASH_TOKEN_RE.test(token)) return
   let payload: string
   try { payload = JSON.stringify(rec) } catch { return } // non-serializable → memory-only
   const bytes = Buffer.byteLength(payload, 'utf8')
@@ -162,9 +180,10 @@ export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy
 /** Full record (value + issuing layer), memory first then disk. */
 export function ccrRetrieveRecord(token: string): CcrRecord | undefined {
   const hit = store.get(token)
-  if (hit) { memPut(token, hit); return hit } // touch → stays hot
+  if (hit) { memHits++; memPut(token, hit); return hit } // touch → stays hot
   const fromDisk = diskGet(token)
-  if (fromDisk) { memPut(token, fromDisk); return fromDisk }
+  if (fromDisk) { diskHits++; memPut(token, fromDisk); return fromDisk }
+  misses++
   return undefined
 }
 
@@ -173,14 +192,38 @@ export function ccrRetrieve(token: string): unknown {
   return rec === undefined ? undefined : rec.value
 }
 
-/** Test/diagnostic view of the durable tier. */
-export function ccrStats(): { memEntries: number; diskEntries: number; diskBytes: number; dir: string | null } {
-  return { memEntries: store.size, diskEntries: diskIndex.size, diskBytes, dir }
+/** True the FIRST time a token is redeemed and false ever after, so the give-back that reverses
+ *  its compression event is charged exactly once no matter how often the agent re-reads it. */
+export function ccrMarkRedeemed(token: string): boolean {
+  if (redeemed.has(token)) return false
+  redeemed.add(token)
+  return true
+}
+
+export interface CcrStats {
+  memEntries: number
+  diskEntries: number
+  diskBytes: number
+  dir: string | null
+  memHits: number
+  diskHits: number
+  misses: number
+}
+
+/**
+ * Test/diagnostic view of the durable tier, plus the only number that can falsify the whole
+ * compression scheme: `misses`. Every elision this app makes is a promise that `retrieve_full`
+ * can give the bytes back. A miss is that promise broken — content removed from the wire and
+ * then unrecoverable — and before this counter existed it was invisible. It should stay at 0.
+ */
+export function ccrStats(): CcrStats {
+  return { memEntries: store.size, diskEntries: diskIndex.size, diskBytes, dir, memHits, diskHits, misses }
 }
 
 export function resetCcr(): void {
-  store.clear(); diskIndex.clear(); diskBytes = 0; seq = 0; fallbackCounter = 0; dir = null
+  store.clear(); diskIndex.clear(); redeemed.clear(); diskBytes = 0; seq = 0; fallbackCounter = 0; dir = null
   diskCapBytes = CCR_MAX_BYTES; entryCapBytes = CCR_MAX_ENTRY_BYTES
+  memHits = 0; diskHits = 0; misses = 0
 }
 
 /** Test-only: shrink the disk caps so eviction is exercisable without writing 200 MB. */

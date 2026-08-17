@@ -486,6 +486,12 @@ export const memoryGraphSample = (opts: { limit?: number } = {}): Promise<GraphS
 // set); only the tallies — or, for export, the JSONL — cross the wire.
 export const graphStats = (): Promise<{ edges: number; nodes: number }> => call('graphStats', [])
 export const graphRelationStats = (): Promise<Record<string, number>> => call('graphRelationStats', [])
+// B2: WHO drew the edges, not just what they are. The Weave mines on the idle tick and its stats were
+// thrown away, so a miner re-drawing the same edges forever looked exactly like a healthy one.
+export const graphCreatorStats = (): Promise<Record<string, number>> => call('graphCreatorStats', [])
+// B2: the pre-pass snapshot the Weave checks pairs against. It runs in main with SYNC deps, so it
+// cannot ask per pair — one bounded call hands it the keys already drawn around this pass's window.
+export const edgeKeysIncident = (ids: string[]): Promise<string[]> => call('edgeKeysIncident', [ids])
 export const exportGraphEdges = (): Promise<string> => call('exportGraphEdges', [])
 export const importGraphEdges = (jsonl: string): Promise<number> => call('importGraphEdges', [jsonl])
 export const memoryRecentActivity = (limit = 14): Promise<ActivityRow[]> => call('memoryRecentActivity', [limit])

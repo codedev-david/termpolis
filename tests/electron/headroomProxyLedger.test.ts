@@ -15,8 +15,42 @@ function result(over: Record<string, unknown> = {}) {
   }
 }
 
+const head = { sysChars: 4000, toolsChars: 18000, tpToolsChars: 9000, toolCount: 34 }
+
 describe('proxy ledger', () => {
   beforeEach(() => { resetProxyLedger(); resetCcr() })
+
+  it('accumulates the prefix head and keeps tool count as a high-water mark', () => {
+    recordProxyResult(result({ stats: { ...head } }) as never)
+    recordProxyResult(result({ stats: { ...head, toolCount: 12 } }) as never)
+    const c = summarizeProxySavings().cumulative
+    expect(c.sysChars).toBe(8000)
+    expect(c.toolsChars).toBe(36000)
+    expect(c.tpToolsChars).toBe(18000)
+    // Summing would say 46 tools. Two requests that each saw 34 saw 34.
+    expect(c.maxToolCount).toBe(34)
+  })
+
+  it('splits output tokens by whether the request was steered', () => {
+    recordProxyResult(result({ stats: { ...head, steered: true }, usage: { output_tokens: 600 } }) as never)
+    recordProxyResult(result({ stats: { ...head, steered: true }, usage: { output_tokens: 800 } }) as never)
+    recordProxyResult(result({ stats: { ...head }, usage: { output_tokens: 2000 } }) as never)
+    const c = summarizeProxySavings().cumulative
+    expect(c.steeredRequests).toBe(2)
+    expect(c.steeredOutputTokens).toBe(1400)
+    expect(c.unsteeredRequests).toBe(1)
+    // The two arms must reconstruct the total exactly, or one of them is lying.
+    expect(c.steeredOutputTokens + c.unsteeredOutputTokens).toBe(c.outputTokens)
+  })
+
+  it('folds the new counters into the cumulative baseline without summing the high-water mark', () => {
+    loadProxyBase({ sysChars: 1000, toolsChars: 5000, maxToolCount: 40, steeredRequests: 3 })
+    recordProxyResult(result({ stats: { ...head, steered: true } }) as never)
+    const c = summarizeProxySavings().cumulative
+    expect(c.sysChars).toBe(5000)
+    expect(c.maxToolCount).toBe(40)
+    expect(c.steeredRequests).toBe(4)
+  })
 
   it('accumulates real savings + usage and computes % saved', () => {
     recordProxyResult(result())

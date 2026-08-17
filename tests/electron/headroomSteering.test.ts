@@ -43,3 +43,34 @@ describe('the max tier — the one an unhandled mode silently downgraded', () =>
     expect(steeringDirective('max')).toBe(steeringDirective('max'))
   })
 })
+
+/**
+ * v1.36.0 promoted the anti-restatement line out of the `max` tier and into BASE. Output is the
+ * second-largest slice of the bill and restating tool output is its largest avoidable sink, so the
+ * one directive that targets it must not be gated behind the tier almost nobody selects.
+ */
+describe('output steering — the anti-restatement directive is universal', () => {
+  const MODES = ['conservative', 'balanced', 'aggressive', 'max'] as const
+  const NEVER_REPEAT = 'Never repeat content already visible in tool output'
+
+  it('reaches every mode, not just max', () => {
+    for (const m of MODES) expect(steeringDirective(m)).toContain(NEVER_REPEAT)
+    expect(steeringDirective()).toContain(NEVER_REPEAT)
+  })
+
+  it('says it exactly once — a promoted line must be MOVED, not copied', () => {
+    // A stray duplicate in MAX_EXTRA would spend tokens repeating an instruction about not
+    // repeating things, and would only show up on the one tier hardest to eyeball.
+    for (const m of MODES) {
+      expect(steeringDirective(m).split(NEVER_REPEAT).length - 1).toBe(1)
+    }
+  })
+
+  it('still leaves max strictly stronger than the tiers below it', () => {
+    // Promoting a line out of MAX_EXTRA must not flatten the ladder.
+    const max = steeringDirective('max')
+    for (const m of ['conservative', 'balanced', 'aggressive'] as const) {
+      expect(max.length).toBeGreaterThan(steeringDirective(m).length)
+    }
+  })
+})

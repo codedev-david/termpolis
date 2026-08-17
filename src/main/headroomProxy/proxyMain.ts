@@ -24,6 +24,7 @@ export interface ProxyOpts {
   upstreamPort?: number
   useHttps?: boolean
   onResult?: (r: ProxyResult) => void
+  onStash?: (stashes: Array<{ token: string; original: string }>) => void
 }
 
 /**
@@ -60,6 +61,13 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
           if (r.changed) body = Buffer.from(r.body, 'utf8')
           rewritten = { changed: r.changed, stats: r.stats, stashes: r.stashes }
         } catch { /* fail-open: forward original */ }
+      }
+      // Commit the originals BEFORE the rewritten body leaves: the retrieve_full token is already
+      // IN that body, and with fine-grained tool streaming Claude calls the tool while the response
+      // is still open — so committing on onResult loses the race outright on the first turn and
+      // every miss costs more than the elision saved.
+      if (rewritten && rewritten.stashes.length > 0 && opts.onStash) {
+        try { opts.onStash(rewritten.stashes) } catch { /* best effort — a bad consumer must not fail the request */ }
       }
       const headers: http.OutgoingHttpHeaders = { ...req.headers, host: opts.upstreamHost }
       headers['content-length'] = Buffer.byteLength(body)
@@ -123,7 +131,16 @@ if (parentPort) {
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {
-      const s = createProxyServer({ upstreamHost: msg.upstreamHost || 'api.anthropic.com', useHttps: true, onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } } })
+      const s = createProxyServer({
+        upstreamHost: msg.upstreamHost || 'api.anthropic.com',
+        useHttps: true,
+        // Request-path commit — the main process must be able to answer retrieve_full for a token
+        // that is already on the wire, not only once the response has finished streaming.
+        onStash: (stashes) => { try { parentPort.postMessage({ kind: 'stash', stashes }) } catch { /* ignore */ } },
+        // Still carried on the result as an idempotent backstop: ccrPut is content-hash keyed, so
+        // a re-put of the same original is a no-op.
+        onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } },
+      })
       server = s
       s.on('error', () => {
         // Port not yet released during a fast restart — retry a few times, else exit so the

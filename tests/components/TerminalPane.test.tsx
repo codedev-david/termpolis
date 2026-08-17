@@ -423,13 +423,93 @@ describe('TerminalPane', () => {
     mocks.mockTerminal.dispose = vi.fn(() => {
       throw new TypeError("Cannot read properties of undefined (reading '_isDisposed')")
     })
+    vi.useFakeTimers()
     try {
       const { unmount } = render(<TerminalPane {...defaultProps} />)
       expect(() => unmount()).not.toThrow()
+      // dispose() is deferred a macrotask past the cleanup now (issue #24 below), so the
+      // throw surfaces from a timer callback — it has to be contained there instead.
+      expect(() => act(() => { vi.advanceTimersByTime(200) })).not.toThrow()
       expect(mocks.mockTerminal.dispose).toHaveBeenCalled()
     } finally {
+      vi.useRealTimers()
       mocks.mockTerminal.dispose = original
     }
+  })
+
+  // Regression for Sentry issue #24: "Cannot read properties of undefined (reading
+  // 'dimensions')". xterm's Viewport constructor queues an UNCANCELLED
+  // `setTimeout(() => this.syncScrollArea())` during term.open(), and syncScrollArea reads
+  // RenderService.dimensions — a getter that dereferences a MutableDisposable that
+  // term.dispose() empties. A short-lived pane disposed the terminal before that macrotask
+  // ran, and the TypeError landed in a bare timer callback where neither the cleanup's
+  // try/catch nor the ErrorBoundary could see it. Only the ORDERING proves the fix.
+  describe('deferred terminal disposal (issue #24)', () => {
+    it('lets the open()-queued macrotask run before the terminal is disposed', () => {
+      const originalOpen = mocks.mockTerminal.open
+      let terminalWasDisposedAtSync: boolean | null = null
+      // Stand in for xterm's Viewport: open() queues a callback that reads state which is
+      // only valid while the terminal is alive.
+      mocks.mockTerminal.open = vi.fn(() => {
+        setTimeout(() => {
+          terminalWasDisposedAtSync = mocks.mockTerminal.dispose.mock.calls.length > 0
+        })
+      })
+      vi.useFakeTimers()
+      try {
+        const { unmount } = render(<TerminalPane {...defaultProps} />)
+        unmount()
+
+        // The queued callback fires first and must still see a LIVE terminal.
+        act(() => { vi.advanceTimersByTime(1) })
+        expect(terminalWasDisposedAtSync).toBe(false)
+        expect(mocks.mockTerminal.dispose).not.toHaveBeenCalled()
+
+        // The terminal is still torn down once the defer elapses — no leak.
+        act(() => { vi.advanceTimersByTime(200) })
+        expect(mocks.mockTerminal.dispose).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+        mocks.mockTerminal.open = originalOpen
+      }
+    })
+
+    it('leaves the terminal alone when a remount adopts it inside the defer window', () => {
+      vi.useFakeTimers()
+      try {
+        const first = render(<TerminalPane {...defaultProps} />)
+        first.unmount()
+        // The xterm mock hands back one Terminal instance, so the second pane adopts the
+        // very object the first pane's deferred dispose is aimed at.
+        const second = render(<TerminalPane {...defaultProps} />)
+
+        act(() => { vi.advanceTimersByTime(200) })
+        expect(mocks.mockTerminal.dispose).not.toHaveBeenCalled()
+
+        second.unmount()
+        act(() => { vi.advanceTimersByTime(200) })
+        expect(mocks.mockTerminal.dispose).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('disposes exactly once when unmount happens twice in quick succession', () => {
+      vi.useFakeTimers()
+      try {
+        const first = render(<TerminalPane {...defaultProps} />)
+        first.unmount()
+        const second = render(<TerminalPane {...defaultProps} />)
+        second.unmount()
+        second.unmount()
+
+        // Two cleanups are now racing for one instance; both defers must not double-dispose.
+        act(() => { vi.advanceTimersByTime(200) })
+        expect(mocks.mockTerminal.dispose).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   describe('app mouse-control (mouse-tracking suppression)', () => {
@@ -1648,9 +1728,16 @@ describe('TerminalPane', () => {
   // =====================================================
   describe('cleanup', () => {
     it('disposes terminal on unmount', () => {
-      const { unmount } = render(<TerminalPane {...defaultProps} />)
-      unmount()
-      expect(mocks.mockTerminal.dispose).toHaveBeenCalled()
+      vi.useFakeTimers()
+      try {
+        const { unmount } = render(<TerminalPane {...defaultProps} />)
+        unmount()
+        // Disposal is deferred one macrotask past the cleanup (issue #24).
+        act(() => { vi.advanceTimersByTime(200) })
+        expect(mocks.mockTerminal.dispose).toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

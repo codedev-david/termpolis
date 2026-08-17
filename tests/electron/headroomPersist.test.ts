@@ -16,7 +16,7 @@ describe('headroom persist', () => {
     saveSettingsToDisk(dir)
     resetSettings()
     loadSettingsFromDisk(dir)
-    expect(getSettings()).toEqual({ enabled: true, mode: 'aggressive', steering: false, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false })
+    expect(getSettings()).toEqual({ enabled: true, mode: 'aggressive', steering: false, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
   })
 
   it('round-trips the cumulative ledger baseline through disk', () => {

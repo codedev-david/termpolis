@@ -598,8 +598,10 @@ describe('memory:count / memory:clear / memory:stats', () => {
     expect(r).toEqual({ success: true, data: undefined })
   })
 
-  it('stats returns the store stats', async () => {
-    expect(await invoke('memory:stats')).toEqual({ success: true, data: { total: 7 } })
+  it('stats returns the store stats, plus what the last Weave pass drew', async () => {
+    // `weave: null` is the honest answer before the indexer has run a pass, and it is a distinct
+    // answer from "ran and minted nothing" — which is the whole reason B2 surfaces it.
+    expect(await invoke('memory:stats')).toEqual({ success: true, data: { total: 7, weave: null } })
   })
 })
 

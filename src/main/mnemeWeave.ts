@@ -69,6 +69,10 @@ export interface WeaveDeps {
    *  from the code graph instead of the projection. Raw values are fine: they are normalized
    *  exactly like the built-in ones. Defaults to `weaveAnchors(entry)`. */
   anchorsOf?: (e: WeaveEntry) => string[]
+  /** Is this edge ALREADY on the graph? Answered from a snapshot taken BEFORE the pass (the graph
+   *  lives in another process and this dep is sync), so within-pass duplicates remain the `seen`
+   *  set's job. Omitted, every candidate pair is treated as new — the pre-B2 behaviour. */
+  hasEdge?: (from: string, to: string, relation: string) => boolean
 }
 
 export interface WeaveOptions {
@@ -90,6 +94,12 @@ export interface WeaveStats {
   knowledgeAnalogies: number
   explains: number
   minted: number
+}
+
+/** The identity of a woven edge: `from\0to\0relation`. Also the wire format the host answers
+ *  `hasEdge` in (memoryGraph.edgeKeysIncident builds the same string). */
+export function weaveEdgeKey(from: string, to: string, relation: string): string {
+  return `${from}\0${to}\0${relation}`
 }
 
 export const WEAVE_REL_CODE = 'analogous-code'
@@ -215,9 +225,17 @@ export function runWeave(deps: WeaveDeps, opts: WeaveOptions = {}): WeaveStats {
   // the graph write failed, so the caller never counts an edge it did not draw.
   const seen = new Set<string>()
   const mint = (from: string, to: string, relation: string, weight: number): boolean => {
-    const dedup = `${from}\0${to}\0${relation}`
+    const dedup = weaveEdgeKey(from, to, relation)
     if (seen.has(dedup)) return false
     seen.add(dedup)
+    // B2 — the pass budget is for NEW work. weaveCandidates hands back the newest ~300 memories,
+    // which barely move between 30-min ticks, so without this the miner spends every one of its 200
+    // mints re-drawing edges it already drew (297,013 log lines for ~9,959 distinct edges) and
+    // `stats.minted` reports churn as discovery. A snapshot hiccup must not cost the pass an edge,
+    // so a throwing host falls through to minting — the graph upsert is idempotent anyway.
+    let known = false
+    try { known = deps.hasEdge?.(from, to, relation) === true } catch { known = false }
+    if (known) return false
     try {
       deps.link(from, to, relation, weight)
     } catch {

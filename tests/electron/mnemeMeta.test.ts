@@ -195,11 +195,11 @@ describe('mnemeMeta — metacognition / self-competence', () => {
     it('orders weakest first: confidence ascending, then attempts descending on a tie', () => {
       const out = summarizeCompetence([
         rec('sql', 0.3, 4, 1), // same confidence as docker, fewer attempts → later
-        rec('rust', 0.1, 2, 0), // lowest confidence → first
+        rec('rust', 0.1, 3, 0), // lowest confidence → first
         rec('docker', 0.3, 8, 2), // tie on confidence, more attempts → before sql
       ])
       expect(out.split('\n')).toEqual([
-        '⚠ low competence in rust (0/2 succeeded)',
+        '⚠ low competence in rust (0/3 succeeded)',
         '⚠ low competence in docker (2/8 succeeded)',
         '⚠ low competence in sql (1/4 succeeded)',
       ])
@@ -211,6 +211,35 @@ describe('mnemeMeta — metacognition / self-competence', () => {
         rec('rust', 0.1, 4, 0), // weak → kept
       ])
       expect(out).toBe('⚠ low competence in rust (0/4 succeeded)')
+    })
+
+    it('never warns off a thin record — a 1/1 domain is too new to call weak', () => {
+      // The bug this gate closes: the Wilson bound is deliberately conservative, so a
+      // domain that has succeeded every time it was ever tried (1/1 → ~0.21) tripped the
+      // <0.5 threshold and the primer opened with "⚠ low competence in termpolis
+      // (1/1 succeeded)" — condemning a domain that had never once failed.
+      expect(summarizeCompetence([rec('termpolis', confidenceScore(1, 1), 1, 1)])).toBe('')
+      expect(summarizeCompetence([rec('termpolis', 0, 1, 0)])).toBe('') // one failure is just as thin
+      expect(summarizeCompetence([rec('termpolis', 0.1, 2, 0)])).toBe('') // 2 < MIN_EVIDENCE
+    })
+
+    it('still warns once weakness is actually evidenced (3/10)', () => {
+      expect(summarizeCompetence([rec('termpolis', confidenceScore(3, 10), 10, 3)])).toBe(
+        '⚠ low competence in termpolis (3/10 succeeded)',
+      )
+    })
+
+    it('warns at exactly MIN_EVIDENCE attempts (3, inclusive — same gate as assessDomain)', () => {
+      expect(summarizeCompetence([rec('deploy', 0.1, 3, 0)])).toBe(
+        '⚠ low competence in deploy (0/3 succeeded)',
+      )
+    })
+
+    it('a thin record never displaces a well-evidenced one, however low its bound', () => {
+      // Ordering is weakest-first, so an ungated 0-confidence single-attempt record would
+      // sort ABOVE a genuinely weak domain and eat the only slot at limit 1.
+      const out = summarizeCompetence([rec('new-thing', 0, 1, 0), rec('rust', 0.1, 9, 1)], 1)
+      expect(out).toBe('⚠ low competence in rust (1/9 succeeded)')
     })
 
     it('respects a custom limit, keeping the WEAKEST domains', () => {

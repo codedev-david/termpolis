@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 const { rewriteMessagesBody, compactToolText, setWireWindow, windowForMode } = await import('../../src/main/headroomProxy/wireCompress')
 
 const BIG = Array.from({ length: 120 }, (_, i) => `line number ${i} with some content to make it long enough`).join('\n')
@@ -98,7 +98,7 @@ describe('rewriteMessagesBody — HTML reduction + per-body dedup', () => {
   const HTML =
     '<!doctype html><html><head><title>T</title><style>.a{b:c}</style><script>evil()</script></head><body>' +
     '<nav><a href="/">Home</a></nav><h1>Main Heading Here</h1>' +
-    '<p>Paragraph with enough real words to be meaningful body content worth keeping.</p>'.repeat(6) +
+    '<p>Paragraph with enough real words to be meaningful body content worth keeping.</p>'.repeat(24) +
     '<footer>Foot</footer></body></html>'
 
   function bodyWith(contents: string[]): string {
@@ -129,7 +129,7 @@ describe('rewriteMessagesBody — HTML reduction + per-body dedup', () => {
   })
 
   it('collapses an identical repeated tool_result to a one-line reference stub', () => {
-    const dup = 'HEADER\n' + Array.from({ length: 30 }, (_, i) => `data row ${i} value here`).join('\n')
+    const dup = 'HEADER\n' + Array.from({ length: 120 }, (_, i) => `data row ${i} value here`).join('\n')
     const r = rewriteMessagesBody(bodyWith([dup, dup]))
     const after = JSON.parse(r.body)
     const first = after.messages[0].content[0].content as string
@@ -142,14 +142,14 @@ describe('rewriteMessagesBody — HTML reduction + per-body dedup', () => {
   })
 
   it('per-body dedup is deterministic across turns', () => {
-    const dup = Array.from({ length: 40 }, (_, i) => `line ${i} with content`).join('\n')
+    const dup = Array.from({ length: 120 }, (_, i) => `line ${i} with content`).join('\n')
     const b = bodyWith([dup, dup, dup])
     expect(rewriteMessagesBody(b).body).toBe(rewriteMessagesBody(b).body)
   })
 
   it('does NOT dedup distinct tool_results', () => {
-    const a = Array.from({ length: 40 }, (_, i) => `alpha row ${i} with padding text`).join('\n')
-    const b = Array.from({ length: 40 }, (_, i) => `beta row ${i} with padding text`).join('\n')
+    const a = Array.from({ length: 120 }, (_, i) => `alpha row ${i} with padding text`).join('\n')
+    const b = Array.from({ length: 120 }, (_, i) => `beta row ${i} with padding text`).join('\n')
     const after = JSON.parse(rewriteMessagesBody(bodyWith([a, b])).body)
     expect(after.messages[1].content[0].content as string).not.toContain('Identical to an earlier')
   })
@@ -190,9 +190,10 @@ describe('wire window — mode-driven, validated, fail-safe (v1.30)', () => {
   afterEach(() => setWireWindow(windowForMode('aggressive')))
 
   it('windowForMode mirrors the config profiles and rejects unknown modes (no silent downgrade)', () => {
-    expect(windowForMode('aggressive')).toEqual({ headLines: 12, tailLines: 6, maxChars: 1000 })
-    expect(windowForMode('balanced')).toEqual({ headLines: 24, tailLines: 12, maxChars: 2000 })
-    expect(windowForMode('conservative')).toEqual({ headLines: 40, tailLines: 20, maxChars: 4000 })
+    expect(windowForMode('aggressive')).toEqual({ headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 })
+    expect(windowForMode('balanced')).toEqual({ headLines: 24, tailLines: 12, maxChars: 2000, floorChars: 3200 })
+    expect(windowForMode('conservative')).toEqual({ headLines: 40, tailLines: 20, maxChars: 4000, floorChars: 6000 })
+    expect(windowForMode('max')).toEqual({ headLines: 6, tailLines: 3, maxChars: 500, floorChars: 600 })
     expect(windowForMode('nonsense')).toBeNull()
     expect(windowForMode('')).toBeNull()
     expect(windowForMode('AGGRESSIVE')).toBeNull() // case-sensitive
@@ -235,7 +236,7 @@ describe('wire window — mode-driven, validated, fail-safe (v1.30)', () => {
   })
 
   it('floors fractional window values without breaking output', () => {
-    setWireWindow({ headLines: 12.9, tailLines: 6.9, maxChars: 1000.9 })
+    setWireWindow({ headLines: 12.9, tailLines: 6.9, maxChars: 1000.9, floorChars: 1600.9 })
     const r = compactToolText(BIG)
     expect(r.text.length).toBeLessThan(BIG.length)
     expect(r.text).toContain('lines elided')
@@ -245,5 +246,58 @@ describe('wire window — mode-driven, validated, fail-safe (v1.30)', () => {
     setWireWindow(windowForMode('balanced'))
     expect(rewriteMessagesBody(realisticBody()).body).toBe(rewriteMessagesBody(realisticBody()).body)
     expect(compactToolText(BIG).text).toBe(compactToolText(BIG).text)
+  })
+})
+
+const WIRE = '../../src/main/headroomProxy/wireCompress'
+
+/** A fresh module = a fresh launch, since the compaction floor is resolved once per process. */
+async function launch(mode: string) {
+  vi.resetModules()
+  const m = await import(WIRE)
+  m.setWireWindow(m.windowForMode(mode))
+  return m
+}
+
+/** ~2.6k chars over 80 lines: past aggressive's 1600 floor, short of conservative's 6000, and
+ *  long enough that even the roomy conservative 40/20 window still has lines to elide. */
+const MID = Array.from({ length: 80 }, (_, i) => `mid row ${i} with a little padding`).join('\n')
+
+/** ~900 chars over 40 lines: past max's 600 floor but short of aggressive's 1600. */
+const SMALL = Array.from({ length: 40 }, (_, i) => `small row ${i} of output`).join('\n')
+
+describe('wire compaction floor — mode-driven, resolved once per launch (v1.36)', () => {
+  it('each mode carries its own floor rather than one shared constant', () => {
+    const modes = ['conservative', 'balanced', 'aggressive', 'max']
+    const floors = modes.map((m) => windowForMode(m)!.floorChars)
+    expect(floors).toEqual([6000, 3200, 1600, 600]) // floorTokens × FLOOR_CHARS_PER_TOKEN
+    expect(new Set(floors).size).toBe(modes.length)
+  })
+
+  it('compacts a body between the old 400 gate and the mode floor in aggressive, not in conservative', async () => {
+    const agg = await launch('aggressive')
+    expect(agg.compactToolText(MID).text.length).toBeLessThan(MID.length)
+    // Same block, same window arithmetic — only the floor differs, and 2.6k is under 6000.
+    const con = await launch('conservative')
+    expect(con.compactToolText(MID).text).toBe(MID)
+  })
+
+  it('freezes the floor at launch, so a later mode push cannot re-cut the cached prefix', async () => {
+    const m = await launch('aggressive')
+    m.setWireWindow(m.windowForMode('conservative')) // 6000 would stop compacting MID
+    expect(m.compactToolText(MID).text.length).toBeLessThan(MID.length)
+    m.setWireWindow(m.windowForMode('max')) // 600 would start compacting SMALL
+    expect(m.compactToolText(SMALL).text).toBe(SMALL)
+  })
+
+  it('does not spend the one resolution on a push that carries no usable floor', async () => {
+    vi.resetModules()
+    const m = await import(WIRE)
+    m.setWireWindow({ headLines: 6, tailLines: 3, maxChars: 500 } as never) // old-shaped: no floor
+    expect(m.compactToolText(SMALL).text).toBe(SMALL)
+    m.setWireWindow({ headLines: 6, tailLines: 3, maxChars: 500, floorChars: 0 })
+    expect(m.compactToolText(SMALL).text).toBe(SMALL)
+    m.setWireWindow(m.windowForMode('max')) // first usable floor — 600 resolves here
+    expect(m.compactToolText(SMALL).text.length).toBeLessThan(SMALL.length)
   })
 })

@@ -51,7 +51,7 @@ const MODES: Mode[] = ['conservative', 'balanced', 'aggressive', 'max']
 // compresses the tool-output slice as hard as the profile allows (keeps the head + tail an
 // agent needs; the rest is recoverable via retrieve_full). Users who want more inline context
 // can dial to balanced/conservative — the selector now drives the live wire (see proxySupervisor).
-const DEFAULTS: HeadroomSettings = { enabled: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false }
+const DEFAULTS: HeadroomSettings = { enabled: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true }
 
 let current: HeadroomSettings = { ...DEFAULTS }
 

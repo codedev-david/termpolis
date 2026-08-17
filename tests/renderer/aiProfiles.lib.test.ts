@@ -39,6 +39,7 @@ beforeEach(() => {
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
     memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
+    memoryPrepareCodexContext: vi.fn().mockResolvedValue({ success: true, data: { file: 'AGENTS.md', changed: true, approvals: 13 } }),
   }
   useTerminalStore.getState().setMemoryNotice(null)
 })
@@ -76,6 +77,7 @@ describe('resolveShellType', () => {
 
 describe('launchAgentProfile', () => {
   const claude = DEFAULT_AI_PROFILES[0]
+  const codex = DEFAULT_AI_PROFILES[1]
 
   it('picks a directory, creates a terminal, and registers it', async () => {
     await launchAgentProfile(claude, deps())
@@ -110,6 +112,19 @@ describe('launchAgentProfile', () => {
     expect(setLaunchingAgent).toHaveBeenCalledWith(null)
     expect(addTerminal).not.toHaveBeenCalled()
     alertSpy.mockRestore()
+  })
+
+  it('gives Codex the same context via AGENTS.md, and never a system-prompt flag', async () => {
+    await launchAgentProfile(codex, deps())
+    const api = (window as any).termpolis
+    expect(api.memoryPrepareCodexContext).toHaveBeenCalledWith('/test/project')
+    // Codex has no --append-system-prompt-file; passing one would abort the launch outright.
+    expect(api.writeToTerminal.mock.calls.flat().join(' ')).not.toContain('append-system-prompt')
+  })
+
+  it('does not touch AGENTS.md when launching Claude', async () => {
+    await launchAgentProfile(claude, deps())
+    expect((window as any).termpolis.memoryPrepareCodexContext).not.toHaveBeenCalled()
   })
 
   it('seeds the Claude launch with --append-system-prompt-file when memory exists', async () => {

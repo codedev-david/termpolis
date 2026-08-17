@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-const { setProxySpawner, onProxyResult, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest } =
+const { setProxySpawner, onProxyResult, onProxyStash, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest } =
   await import('../../src/main/headroomProxy/proxySupervisor')
 
-interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
+interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; fireStash: (stashes: Array<{ token: string; original: string }>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
 let fakes: Fake[] = []
 
 function fakeSpawner(): unknown {
@@ -18,6 +18,7 @@ function fakeSpawner(): unknown {
     },
     fireExit: () => exitCb(1),
     fireResult: (r: Record<string, unknown>) => msgCb({ kind: 'result', ...r }),
+    fireStash: (stashes: Array<{ token: string; original: string }>) => msgCb({ kind: 'stash', stashes }),
     killed: false,
     posted: [],
   }
@@ -46,6 +47,24 @@ describe('proxy supervisor', () => {
     fakes[0].fireResult({ changed: true, stats: { trBlocks: 2 }, usage: { input_tokens: 5 }, stashes: [] })
     expect(got).toHaveLength(1)
     expect((got[0].stats as { trBlocks: number }).trBlocks).toBe(2)
+  })
+
+  it('forwards stash messages to the registered consumer', () => {
+    const got: Array<{ token: string; original: string }> = []
+    onProxyStash((s) => got.push(...s.stashes))
+    startProxy({ port: 9999 })
+    fakes[0].fireStash([{ token: 'hr_abc', original: 'the original' }])
+    expect(got).toEqual([{ token: 'hr_abc', original: 'the original' }])
+  })
+
+  it('drops stash messages once the consumer is cleared, rather than calling a stale one', () => {
+    const got: Array<{ token: string; original: string }> = []
+    onProxyStash((s) => got.push(...s.stashes))
+    _resetProxyForTest() // e.g. the app tore the proxy down and rebuilt it
+    setProxySpawner(fakeSpawner)
+    startProxy({ port: 9999 })
+    expect(() => fakes[0].fireStash([{ token: 'hr_abc', original: 'the original' }])).not.toThrow()
+    expect(got).toEqual([])
   })
 
   it('auto-restarts on child crash and recovers health', () => {

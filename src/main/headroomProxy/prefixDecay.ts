@@ -32,14 +32,27 @@
  * which is exactly the payoff period the break-even calculation needs. A 256-message session pays
  * for three cache breaks, not two hundred.
  *
- * Even so this ships OFF by default. The payoff is a bet that the session keeps going, and a
- * session that ends right after a threshold pays the break and collects nothing.
+ * ## Why this now ships ON (v1.36.0)
+ *
+ * It shipped OFF for two releases, and the stated reason was that the payoff is a bet the session
+ * keeps going: a session ending right after a threshold pays the break and collects nothing. That
+ * reason was real but it was not the binding one. The binding one was that `retrieve_full` was
+ * broken — the wire minted a stub token on the REQUEST path but only committed the original after
+ * the response completed, so every redemption raced and lost. Decaying history to stubs nobody can
+ * expand is not compression, it is data loss, and no threshold makes that trade good.
+ *
+ * v1.36.0 commits the stash before the upstream request is released, so a decayed block is now
+ * genuinely recoverable. With a working escape hatch the only remaining question is the wager, and
+ * the wager is priced: a pass costs ~1.15x prefixTokens (~87,000 effective units at this install's
+ * measured 76,010 cached tokens/request) and returns ~0.1x the tokens it removed on every later
+ * turn, so it repays in ~44 turns. Starting at 128 rather than 64 means the next boundary is 128
+ * turns away — a ~3x margin — so the pass is ahead well before it could be stranded.
  */
 
 import crypto from 'crypto'
 
 /** Messages before which decay starts applying at all. Below this a break can't repay itself. */
-export const DECAY_FIRST_THRESHOLD = 64
+export const DECAY_FIRST_THRESHOLD = 128
 /** Blocks smaller than this are left alone: the stub itself costs ~30 tokens. */
 export const DECAY_MIN_CHARS = 600
 /**

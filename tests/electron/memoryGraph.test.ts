@@ -6,6 +6,7 @@ import {
   normalizeRelation, upsertEdge, bfsTraverse,
   initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, graphStats, _resetGraphForTests,
   effectiveWeight, EDGE_HALF_LIFE, invertRelation, neighboursOf, expandWithGraph,
+  graphCreatorStats, edgeKeysIncident, removeNodeEdges,
   type MemoryEdge,
 } from '../../src/main/memoryGraph'
 
@@ -234,5 +235,103 @@ describe('memoryGraph — stateful store + persistence', () => {
     initMemoryGraph(tmp)
     expect(graphStats().edges).toBe(1)
     expect(edgesFrom('a')[0].weight).toBe(0.8)
+  })
+
+  // B2 — the append-log grew ~30x faster than the graph did: 297,013 weave lines for ~9,959
+  // distinct edges, because addMemoryEdge appended even when upsertEdge deduped and the Weave
+  // re-mints the same pairs on every 30-min tick. The file is read synchronously at launch, so
+  // that redundancy is paid on the UI thread forever. These pin the append gate in both directions.
+  describe('the append gate — a re-mint that changes nothing must not grow the log', () => {
+    /** The raw append-log. The graph can look perfect while this file quietly runs away. */
+    const logLines = (): string[] => {
+      const p = path.join(tmp, 'memory-graph.jsonl')
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean) : []
+    }
+
+    it('does NOT re-append an edge the graph already has, at the same or a weaker weight', () => {
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.5, createdBy: 'weave' })
+      expect(logLines()).toHaveLength(1)
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.5, createdBy: 'weave' }) // identical re-mint
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.4, createdBy: 'weave' }) // weaker — upsert keeps 0.5
+      expect(logLines()).toHaveLength(1)
+      expect(graphStats().edges).toBe(1)
+    })
+
+    it('DOES append a stronger weight — the in-memory upsert keeps the max, so the log must too', () => {
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.5 })
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.8 })
+      expect(logLines()).toHaveLength(2) // dropping this line would silently downgrade the edge on reload
+    })
+
+    it('does NOT append for a fresher ts alone — that is the flood, not a change', () => {
+      // Every re-mint stamps Date.now(), so `ts` moves on literally every duplicate. Widening the
+      // gate to cover it puts all 297,013 lines straight back. Pinned so a later "but the decay
+      // clock" fix cannot quietly undo the whole thing.
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.5, ts: 1_000 })
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves', weight: 0.5, ts: 9_000 })
+      expect(logLines()).toHaveLength(1)
+      expect(edgesFrom('a')[0].ts).toBe(9_000) // in memory it still refreshes; only the log skips it
+    })
+
+    it('re-appends an edge re-minted AFTER a {removeNode} marker — replay must not delete it again', () => {
+      // The load path applies markers IN APPEND ORDER. If the re-mint is skipped as a "duplicate",
+      // the marker is the last word about this pair and the edge is gone at the next launch —
+      // the correctness trap in gating the append on dedup alone.
+      addMemoryEdge({ from: 'a', to: 'x', relation: 'solves', weight: 0.5 })
+      removeNodeEdges('x')                                                   // appends {removeNode:'x'}
+      addMemoryEdge({ from: 'a', to: 'x', relation: 'solves', weight: 0.5 }) // same triple, same weight
+      expect(logLines()).toHaveLength(3)
+      _resetGraphForTests()
+      initMemoryGraph(tmp)
+      expect(graphStats().edges).toBe(1)
+      expect(edgesFrom('a')[0].to).toBe('x')
+    })
+  })
+
+  // B2 — graphRelationStats says WHAT the edges are; this says WHO drew them. Without it a Weave
+  // that has been re-drawing the same edges for months and a Weave that died look identical.
+  describe('graphCreatorStats — provenance breakdown', () => {
+    it('tallies edges by creator and sums to the edge count', () => {
+      addMemoryEdge({ from: 'a', to: 'b', createdBy: 'weave' })
+      addMemoryEdge({ from: 'a', to: 'c', createdBy: 'weave' })
+      addMemoryEdge({ from: 'a', to: 'd', createdBy: 'auto' })
+      addMemoryEdge({ from: 'a', to: 'e' }) // no provenance supplied → stamped 'system'
+      const counts = graphCreatorStats()
+      expect(counts).toEqual({ weave: 2, auto: 1, system: 1 })
+      // A dashboard that under-reports the graph is worse than no dashboard.
+      expect(Object.values(counts).reduce((s, n) => s + n, 0)).toBe(graphStats().edges)
+    })
+
+    it('counts a pre-provenance edge from the log as system (createdBy postdates those lines)', () => {
+      fs.writeFileSync(
+        path.join(tmp, 'memory-graph.jsonl'),
+        JSON.stringify({ from: 'old', to: 'edge', relation: 'relates-to', weight: 1, ts: 0 }) + '\n',
+      )
+      _resetGraphForTests()
+      initMemoryGraph(tmp)
+      expect(graphCreatorStats()).toEqual({ system: 1 })
+    })
+
+    it('is {} for an empty graph', () => {
+      expect(graphCreatorStats()).toEqual({})
+    })
+  })
+
+  // B2 — the Weave runs in MAIN, the graph lives here, and its link/hasEdge deps are SYNC. The only
+  // way it can ask "have I drawn this already?" without 200 round-trips is to be handed the keys up front.
+  describe('edgeKeysIncident — the pre-pass snapshot the Weave checks against', () => {
+    it('returns every edge touching an id, in BOTH directions', () => {
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves' })
+      addMemoryEdge({ from: 'c', to: 'a', relation: 'refers-to' }) // incoming — the miner canonicalizes
+      addMemoryEdge({ from: 'x', to: 'y', relation: 'solves' })    // nowhere near 'a'
+      expect(edgeKeysIncident(['a']).sort()).toEqual(['a\0b\0solves', 'c\0a\0refers-to'].sort())
+    })
+
+    it('dedups across ids, and is empty for an unknown id or no ids', () => {
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves' })
+      expect(edgeKeysIncident(['a', 'b'])).toEqual(['a\0b\0solves']) // one edge, seen from both ends
+      expect(edgeKeysIncident(['nobody'])).toEqual([])
+      expect(edgeKeysIncident([])).toEqual([])
+    })
   })
 })

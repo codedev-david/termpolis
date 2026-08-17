@@ -11,6 +11,13 @@ export interface ProxyResultMsg {
   status: number
 }
 
+/** Originals committed on the REQUEST path, ahead of the response the token rides back in — the
+ *  result message carries them too, but by then Claude may already have called retrieve_full. */
+export interface ProxyStashMsg {
+  kind: 'stash'
+  stashes: Array<{ token: string; original: string }>
+}
+
 /** Minimal transport over the child — abstracted so the supervisor is unit-testable without Electron. */
 export interface ProxyTransport {
   postMessage: (m: unknown) => void
@@ -30,15 +37,20 @@ let healthy = false
 let port = 0
 let proxyMode = 'aggressive' // wire compression mode pushed to the child; default = max savings
 let proxyThinkingCap = 0 // extended-thinking budget ceiling pushed to the child; 0 = off (default)
-let proxyDecay = false // prefix decay; OFF by default — see prefixDecay.ts for why the bet only pays in long sessions
+// Prefix decay. The SETTING ships on as of v1.36.0, but this local seed stays false on purpose: it
+// is the value the child runs with if reading settings throws, and a failure to read config must
+// never be what turns a cache-breaking transform on. index.ts pushes the real value at boot.
+let proxyDecay = false
 let upstream = 'api.anthropic.com'
 let restartTimes: number[] = []
 let stopped = false
 let cooldownTimer: ReturnType<typeof setTimeout> | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
+let stashCb: ((s: ProxyStashMsg) => void) | null = null
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
 export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { resultCb = cb }
+export function onProxyStash(cb: ((s: ProxyStashMsg) => void) | null): void { stashCb = cb }
 /** Push the wire compression mode to the child: applied live if a transport is up, and re-sent
  *  on the next (re)spawn's init. Best-effort — a failed post just means the aggressive default
  *  holds in the child, so savings never silently drop. */
@@ -90,6 +102,7 @@ function spawnOnce(): void {
     if (msg.kind === 'ready') { healthy = true; if (msg.port) port = msg.port }
     else if (msg.kind === 'error') { healthy = false }
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
+    else if (msg.kind === 'stash' && stashCb) { try { stashCb(m as ProxyStashMsg) } catch { /* best effort */ } }
   })
   transport.onExit(() => { healthy = false; transport = null; maybeRestart() })
   try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { healthy = false }
@@ -149,5 +162,5 @@ export function pickFreePort(): Promise<number> {
 
 export function _resetProxyForTest(): void {
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
-  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'
 }

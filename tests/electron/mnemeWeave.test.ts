@@ -1,7 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
+import {
+  initMemoryGraph, addMemoryEdge, graphStats, graphCreatorStats, edgeKeysIncident, _resetGraphForTests,
+} from '../../src/main/memoryGraph'
 import {
   runWeave,
   weaveAnchors,
+  weaveEdgeKey,
   WEAVE_REL_CODE,
   WEAVE_REL_KNOWLEDGE,
   WEAVE_REL_EXPLAINS,
@@ -437,6 +444,132 @@ describe('runWeave — the `explains` miner ("what is this code FOR?")', () => {
       { from: 'k9', to: 'c9', relation: WEAVE_REL_EXPLAINS, weight: 0.9 },
     ])
     expect(stats.explains).toBe(1)
+  })
+})
+
+// B2 — the miner's real defect was never "it draws nothing". It drew 297,013 log lines for ~9,959
+// distinct edges: `weaveCandidates` hands back the newest ~300 memories, which barely move between
+// 30-min ticks, so the whole 200-edge budget went on pairs that were already on the graph. `hasEdge`
+// makes the budget mean NEW work, and makes `stats.minted` mean discovery instead of churn.
+describe('runWeave — hasEdge: the per-pass budget is for NEW edges', () => {
+  const PAIR: WeaveEntry[] = [
+    { id: 'a', source: 'code', projectKey: 'repoA' },
+    { id: 'b', source: 'code', projectKey: 'repoA' },
+  ]
+  const NEAR = { a: [{ id: 'b', score: 0.9, projectKey: 'repoA' }] }
+
+  it('skips a pair the graph already has, and does not count it as minted', () => {
+    const { deps, edges } = harness(PAIR, NEAR, { hasEdge: () => true })
+    const stats = runWeave(deps)
+    expect(edges).toEqual([])
+    expect(stats.minted).toBe(0)
+    expect(stats.codeAnalogies).toBe(0)
+    expect(stats.considered).toBe(2) // the pass RAN — this is not a dead miner
+  })
+
+  it('is asked with the canonical from/to/relation the edge would be minted under', () => {
+    const asked: string[] = []
+    const { deps } = harness(PAIR, NEAR, {
+      hasEdge: (from, to, relation) => { asked.push(weaveEdgeKey(from, to, relation)); return false },
+    })
+    runWeave(deps)
+    expect(asked).toEqual([weaveEdgeKey('a', 'b', WEAVE_REL_CODE)])
+  })
+
+  it('still mints when hasEdge says the pair is new', () => {
+    const { deps, edges } = harness(PAIR, NEAR, { hasEdge: () => false })
+    expect(runWeave(deps).minted).toBe(1)
+    expect(edges).toHaveLength(1)
+  })
+
+  it('mints when hasEdge throws — a snapshot hiccup never costs the pass an edge', () => {
+    const { deps, edges } = harness(PAIR, NEAR, { hasEdge: () => { throw new Error('host down') } })
+    expect(() => runWeave(deps)).not.toThrow()
+    expect(edges).toHaveLength(1)
+  })
+
+  it('spends the budget on the NEW pairs instead of the head of the window', () => {
+    // Four mutually-near chunks, budget 2, and the first pairs the pass reaches already exist.
+    // Before hasEdge the budget was consumed re-minting those and the new pairs were never reached.
+    const cands: WeaveEntry[] = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, source: 'code', projectKey: 'repoA' }))
+    const nmap: Record<string, WeaveNeighbour[]> = {}
+    for (const c of cands) nmap[c.id] = cands.filter((o) => o.id !== c.id).map((o) => ({ id: o.id, score: 0.9, projectKey: 'repoA' }))
+    const known = new Set([weaveEdgeKey('s0', 's1', WEAVE_REL_CODE), weaveEdgeKey('s0', 's2', WEAVE_REL_CODE)])
+    const { deps, edges } = harness(cands, nmap, {
+      neighbours: (id) => nmap[id] ?? [],
+      hasEdge: (from, to, relation) => known.has(weaveEdgeKey(from, to, relation)),
+    })
+    const stats = runWeave(deps, { maxPerPass: 2, neighbourK: 3 })
+    expect(stats.minted).toBe(2)
+    expect(edges.map((e) => `${e.from}-${e.to}`)).toEqual(['s0-s3', 's1-s2'])
+  })
+
+  it('checks hasEdge at most once per pair — the in-pass `seen` set still short-circuits', () => {
+    let calls = 0
+    const { deps } = harness(PAIR, {
+      a: [{ id: 'b', score: 0.9, projectKey: 'repoA' }, { id: 'b', score: 0.9, projectKey: 'repoA' }],
+      b: [{ id: 'a', score: 0.9, projectKey: 'repoA' }],
+    }, { hasEdge: () => { calls++; return false } })
+    runWeave(deps)
+    expect(calls).toBe(1)
+  })
+})
+
+// B2 ACCEPTANCE — everything above is a fake `link`. This wires the miner to the REAL graph module,
+// exactly the way index.ts does (a pre-pass key snapshot + addMemoryEdge), and asserts the two things
+// the roadmap actually asks for: the graph is NOT empty after a pass, and a second pass over an
+// unchanged window neither mints nor grows the append-log.
+describe('runWeave against the REAL graph (B2 acceptance)', () => {
+  let tmp: string
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'weave-real-')); _resetGraphForTests(); initMemoryGraph(tmp) })
+  afterEach(() => { _resetGraphForTests(); try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ } })
+
+  const logLines = (): string[] => {
+    const p = path.join(tmp, 'memory-graph.jsonl')
+    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean) : []
+  }
+
+  /** The candidate window the indexer would hand the miner — deliberately IDENTICAL every pass. */
+  const cands: WeaveEntry[] = Array.from({ length: 6 }, (_, i) => ({ id: `m${i}`, source: 'code', projectKey: 'repoA' }))
+  const nmap: Record<string, WeaveNeighbour[]> = {}
+  for (const c of cands) nmap[c.id] = cands.filter((o) => o.id !== c.id).map((o) => ({ id: o.id, score: 0.9, projectKey: 'repoA' }))
+
+  /** One indexer tick: snapshot the keys around the window, mine, write through addMemoryEdge. */
+  const pass = (withSnapshot: boolean): number => {
+    const known = withSnapshot ? new Set(edgeKeysIncident(cands.map((c) => c.id))) : undefined
+    return runWeave({
+      candidates: () => cands,
+      neighbours: (id) => nmap[id] ?? [],
+      link: (from, to, relation, weight) => { addMemoryEdge({ from, to, relation, weight, createdBy: 'weave' }) },
+      ...(known ? { hasEdge: (f: string, t: string, r: string) => known.has(weaveEdgeKey(f, t, r)) } : {}),
+    }, { neighbourK: 5 }).minted
+  }
+
+  it('draws a non-empty graph, then stops re-drawing it', () => {
+    const minted = pass(true)
+    expect(minted).toBe(15) // C(6,2) canonical pairs
+    // THE acceptance criterion: the miner produced a graph, and it is not empty.
+    expect(graphStats().edges).toBe(15)
+    expect(graphStats().edges).toBeGreaterThan(0)
+    expect(graphCreatorStats()).toEqual({ weave: 15 })
+    const afterFirst = logLines().length
+    expect(afterFirst).toBe(15)
+
+    // Pass 2, same window: every pair is already on the graph, so nothing is minted and nothing
+    // is written — but the graph must still be there. An empty graph here is the regression.
+    expect(pass(true)).toBe(0)
+    expect(logLines()).toHaveLength(afterFirst)
+    expect(graphStats().edges).toBe(15)
+    expect(graphCreatorStats()).toEqual({ weave: 15 })
+  })
+
+  it('the append gate holds even for a miner that does NOT check hasEdge', () => {
+    pass(true)
+    const afterFirst = logLines().length
+    // An older/unwired caller re-mints all 15 pairs. They dedup in memory, so the log must not grow.
+    expect(pass(false)).toBe(15)
+    expect(logLines()).toHaveLength(afterFirst)
+    expect(graphStats().edges).toBe(15)
   })
 })
 

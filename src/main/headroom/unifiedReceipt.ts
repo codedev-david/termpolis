@@ -1,5 +1,7 @@
 import { summarizeSavings, type SavingsTotals } from './savingsLedger'
 import { summarizeProxySavings, type ProxyTotals } from '../headroomProxy/proxyLedger'
+import { billBreakdown, type BillBreakdown } from './effectiveUnits'
+import { ccrStats } from './ccrStore'
 
 /**
  * ONE honest savings number.
@@ -46,8 +48,41 @@ export interface UnifiedTotals {
   worstSavedPct: number
   belowFloorRequests: number
   floorEligibleRequests: number
+  /** The same activity priced in effective units. `savedPct` answers "how much of the text we were
+   *  allowed to touch did we remove?"; this answers "how much of the invoice did that avoid?" —
+   *  a much smaller number, and the only one that survives contact with a bill. */
+  bill: BillBreakdown
+  /** `retrieve_full` calls that found nothing. Must stay 0 — every elision is a promise that the
+   *  original can be brought back, and a non-zero value here means content was destroyed. */
+  retrieveMisses: number
+  /** The prefix head, per request, in tokens: the system prompt and the tool schemas that sit in
+   *  front of `messages` and are re-sent every turn. No compression layer touches them, which is
+   *  precisely why they belong on the receipt — this is the part of the bill Headroom does NOT
+   *  earn against, and hiding it would make every other number here look better than it is.
+   *  `tpToolsTokensPerRequest` is the share Termpolis itself puts there. */
+  sysTokensPerRequest: number
+  toolsTokensPerRequest: number
+  tpToolsTokensPerRequest: number
+  toolCount: number
+  /** Output steering, observed rather than asserted. Reported as two means so the reader can
+   *  draw their own conclusion; it is not a controlled comparison and is never labelled a saving. */
+  steeredRequests: number
+  unsteeredRequests: number
+  steeredAvgOutput: number
+  unsteeredAvgOutput: number
 }
+
 export interface UnifiedReceipt { session: UnifiedTotals; cumulative: UnifiedTotals }
+
+/** Chars summed over N requests → tokens on a typical one. The ~4 chars/token ratio is the same
+ *  estimate the rest of the wire layer uses; consistency matters more here than precision. */
+function perRequestTokens(chars: number, requests: number): number {
+  if (!(requests > 0)) return 0
+  return Math.round(chars / requests / 4)
+}
+function mean(total: number, n: number): number {
+  return n > 0 ? Math.round(total / n) : 0
+}
 
 function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
   // The wire has TWO compressible surfaces: tool_result (what came back) and tool_use (what the
@@ -87,6 +122,20 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     cacheCreationTokens: proxy.cacheCreationTokens,
     inputTokens: proxy.inputTokens,
     outputTokens: proxy.outputTokens,
+    // Net, not gross: tokens handed back through retrieve_full were re-billed, and a savings
+    // figure that ignores its own giveback is the same species of lie as a compressible-only
+    // denominator. Only the proxy counters are priced here — the tool-layer ledger never touches
+    // the wire, so its savings show up as prefix tokens that were never sent.
+    bill: billBreakdown(proxy, netSavedTokens),
+    retrieveMisses: ccrStats().misses,
+    sysTokensPerRequest: perRequestTokens(proxy.sysChars, proxy.requests),
+    toolsTokensPerRequest: perRequestTokens(proxy.toolsChars, proxy.requests),
+    tpToolsTokensPerRequest: perRequestTokens(proxy.tpToolsChars, proxy.requests),
+    toolCount: proxy.maxToolCount,
+    steeredRequests: proxy.steeredRequests,
+    unsteeredRequests: proxy.unsteeredRequests,
+    steeredAvgOutput: mean(proxy.steeredOutputTokens, proxy.steeredRequests),
+    unsteeredAvgOutput: mean(proxy.unsteeredOutputTokens, proxy.unsteeredRequests),
   }
 }
 

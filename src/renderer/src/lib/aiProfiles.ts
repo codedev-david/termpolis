@@ -53,6 +53,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // Claude Code launches through the always-on Headroom compression proxy: signal main
   // to inject ANTHROPIC_BASE_URL (main owns the proxy env; returns direct if unhealthy).
   const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
+  const isCodex = profile.id === 'codex' || profile.command.trim().toLowerCase().startsWith('codex')
   const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude)
   if (!res.success) {
     setLaunchingAgent(null)
@@ -92,6 +93,12 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
       // The recall call threw — surface it rather than silently dropping recall (#1).
       useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
     }
+  }
+  // Codex parity. Codex takes no system-prompt flag, so the same instruction is written into the
+  // file it reads by itself at session start — `<cwd>/AGENTS.md`. Byte-stable, so this only ever
+  // writes once per project and never dirties a tracked file twice.
+  if (isCodex && isAutoPrimerEnabled()) {
+    try { await window.termpolis.memoryPrepareCodexContext(cwd) } catch { /* launch bare */ }
   }
   // Per-profile model selection: append a validated --model for Claude launches.
   if (isClaude) launchCommand = launchCommand + claudeModelArg(profile.model)

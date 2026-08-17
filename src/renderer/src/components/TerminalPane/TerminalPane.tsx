@@ -149,6 +149,23 @@ function toXtermSearchOptions(o: TerminalSearchOptions, incremental: boolean) {
   }
 }
 
+// How long a Terminal outlives the pane that owned it. xterm's Viewport constructor queues
+// `setTimeout(() => this.syncScrollArea())` during term.open() and never cancels it, and
+// syncScrollArea reads RenderService.dimensions — a getter that dereferences the renderer's
+// MutableDisposable, which dispose() empties. A pane that mounted and unmounted inside that
+// window destroyed the terminal out from under a timer we do not own, and the TypeError ran
+// with no app frame on the stack: past the cleanup's try/catch AND past the ErrorBoundary,
+// straight to the global handler (Sentry issue #24, "Cannot read properties of undefined
+// (reading 'dimensions')"). Deferring OUR dispose lets xterm's callback run first.
+// Deliberately not 0: open() often runs at a timer nesting depth where the browser clamps a
+// 0 ms timeout to 4 ms, so a 0 ms defer scheduled afterwards can still win the race.
+const TERMINAL_DISPOSE_DELAY_MS = 50
+// Which mount is allowed to destroy a given Terminal. Ownership has to outlive the component
+// because the dispose above is deferred: a remount inside the delay re-claims the instance,
+// and the earlier mount's timer must then bow out rather than tear down a live pane. Keyed
+// weakly so a forgotten entry can never pin a Terminal (and its DOM) in memory.
+const terminalOwners = new WeakMap<Terminal, object>()
+
 function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -587,6 +604,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   useEffect(() => {
     if (!containerRef.current) return
     let disposed = false
+    // Identity for THIS mount, so the deferred dispose in the cleanup can tell whether it
+    // still owns the Terminal it was scheduled for.
+    const mountToken = {}
 
     // 1. Create Terminal instance
     // Swarm agent terminals use reduced scrollback to save memory
@@ -741,6 +761,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     termRef.current = term
     fitRef.current = fitAddon
+    // Claim the instance so a deferred dispose left over from an earlier mount can see that
+    // a live pane has taken it over.
+    terminalOwners.set(term, mountToken)
 
     onTerminalReady?.(term)
 
@@ -1213,15 +1236,25 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)
       ro.disconnect()
-      // xterm's WebGL addon can throw during teardown: when a terminal is created
-      // and disposed in quick succession its renderer is briefly undefined, so the
-      // addon's dispose() reads `_isDisposed` off it and throws. This happens
-      // deterministically under React StrictMode's dev double-mount, and
-      // intermittently in production on a close/context-loss race (Sentry issue #16:
-      // "Cannot read properties of undefined (reading '_isDisposed')"). The terminal
-      // is going away regardless, so contain the throw instead of letting it escape
-      // the effect cleanup and trip the app-level ErrorBoundary.
-      try { term.dispose() } catch { /* addon teardown race — nothing to recover */ }
+      // Everything above is synchronous, so `disposed` is already true and every pending
+      // callback in this effect is a no-op — but the Terminal itself has to outlive the
+      // cleanup by TERMINAL_DISPOSE_DELAY_MS (see the constant) so xterm's own uncancelled
+      // open() timer still finds a live renderer.
+      setTimeout(() => {
+        // A remount inside the delay hands the instance to a live pane, and two cleanups can
+        // race for one instance; only the mount that still owns it may destroy it.
+        if (terminalOwners.get(term) !== mountToken) return
+        terminalOwners.delete(term)
+        // xterm's WebGL addon can throw during teardown: when a terminal is created
+        // and disposed in quick succession its renderer is briefly undefined, so the
+        // addon's dispose() reads `_isDisposed` off it and throws. This happens
+        // deterministically under React StrictMode's dev double-mount, and
+        // intermittently in production on a close/context-loss race (Sentry issue #16:
+        // "Cannot read properties of undefined (reading '_isDisposed')"). The terminal
+        // is going away regardless, so contain the throw instead of letting it escape
+        // into a bare timer callback, where nothing above it can catch it at all.
+        try { term.dispose() } catch { /* addon teardown race — nothing to recover */ }
+      }, TERMINAL_DISPOSE_DELAY_MS)
     }
   }, [terminalId])
 

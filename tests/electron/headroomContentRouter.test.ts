@@ -6,7 +6,7 @@ const {
 const { compactText } = await import('../../src/main/headroom/compactText')
 
 /** The shipped default wire window (aggressive), restored before every test. */
-const DEFAULT_WINDOW = { headLines: 12, tailLines: 6, maxChars: 1000 }
+const DEFAULT_WINDOW = { headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 }
 beforeEach(() => setWireWindow(DEFAULT_WINDOW))
 
 /** A source file big enough that the raw window would keep imports and nothing else. */
@@ -97,7 +97,7 @@ describe('content router — source code', () => {
   })
 
   it('honours the user mode — max stays tighter than aggressive', () => {
-    setWireWindow({ headLines: 6, tailLines: 3, maxChars: 700 })
+    setWireWindow({ headLines: 6, tailLines: 3, maxChars: 700, floorChars: 600 })
     const tight = compactToolText(src, { path: 'a.ts' }).text
     setWireWindow(DEFAULT_WINDOW)
     const loose = compactToolText(src, { path: 'a.ts' }).text
@@ -120,7 +120,7 @@ describe('content router — JSON', () => {
   it('compacts a MINIFIED payload the line window could never touch', () => {
     // One line in, so head/tail never fires: before the router this block went out whole.
     expect(minified.split('\n')).toHaveLength(1)
-    const plain = { headLines: 12, tailLines: 6, maxChars: 1000 }
+    const plain = { headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 }
     expect(plain).toEqual(DEFAULT_WINDOW)
     const r = compactToolText(minified)
     expect(r.text.length).toBeLessThan(minified.length / 10)
@@ -284,9 +284,9 @@ describe('cache safety', () => {
     // stays under the sampling limits (arrays ≤ 3, strings ≤ 200, depth ≤ 6) so the compactor has
     // nothing to elide and `elided` comes back false.
     const obj: Record<string, string> = {}
-    for (let i = 0; i < 30; i++) obj[`setting_number_${i}`] = `value-${i}`
+    for (let i = 0; i < 60; i++) obj[`setting_number_${i}`] = `value-${i}`
     const pretty = JSON.stringify(obj, null, 2)
-    expect(pretty.length).toBeGreaterThan(400)
+    expect(pretty.length).toBeGreaterThan(DEFAULT_WINDOW.floorChars)
     const r = rewriteMessagesBody(bodyFor(pretty, { file_path: 'config.json' }))
     expect(r.changed).toBe(true)
     expect(resultOf(r.body)).toBe(JSON.stringify(obj)) // same data, no indentation, no footer
@@ -418,9 +418,9 @@ describe('cache safety', () => {
   it('exposes the structured budget as a multiple of the user mode, not a constant', () => {
     expect(STRUCT_WINDOW_SCALE).toBeGreaterThan(1)
     const src = tsFile(60) // big enough that the outline itself overruns the budget
-    setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 })
+    setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 })
     const at1x = compactToolText(src, { path: 'a.ts' }).text.length
-    setWireWindow({ headLines: 24, tailLines: 12, maxChars: 2000 })
+    setWireWindow({ headLines: 24, tailLines: 12, maxChars: 2000, floorChars: 3200 })
     const at2x = compactToolText(src, { path: 'a.ts' }).text.length
     expect(at2x).toBeGreaterThan(at1x)
   })

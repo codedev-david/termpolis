@@ -535,8 +535,12 @@ describe('claudeCodeWatcher — malformed transcript entries', () => {
 import {
   compactToolText,
   rewriteMessagesBody,
+  windowForMode,
   type ImageCompressor,
 } from '../../src/main/headroomProxy/wireCompress'
+
+/** The default (aggressive) compaction floor — a block has to clear it to reach the pre-pass. */
+const FLOOR = windowForMode('aggressive')!.floorChars
 
 /** A body that round-trips byte-identically through JSON — rewriteMessagesBody requires it. */
 function messagesBody(content: unknown[]): string {
@@ -545,10 +549,10 @@ function messagesBody(content: unknown[]): string {
 
 describe('wireCompress — HTML pre-pass and odd content blocks', () => {
   it('forwards markup-looking text unchanged when the HTML pre-pass cannot shrink it', () => {
-    // 40 unclosed "<div …" tokens: looksLikeHtml says yes, but there is not a single ">" for
+    // 120 unclosed "<div …" tokens: looksLikeHtml says yes, but there is not a single ">" for
     // compactWeb to strip and no whitespace to collapse, so the reduction is a no-op.
-    const text = Array.from({ length: 40 }, (_, i) => `<div data-row-${i}`).join(' ')
-    expect(text.length).toBeGreaterThan(400)
+    const text = Array.from({ length: 120 }, (_, i) => `<div data-row-${i}`).join(' ')
+    expect(text.length).toBeGreaterThan(FLOOR)
 
     const res = compactToolText(text)
     expect(res.text).toBe(text)
@@ -558,12 +562,20 @@ describe('wireCompress — HTML pre-pass and odd content blocks', () => {
   it('stashes the original when HTML was reduced even though nothing was elided', () => {
     const text =
       '<!doctype html><html><head><title>Docs</title></head><body>' +
+      // Long paragraphs rather than many: the block has to clear the floor without handing the
+      // head/tail window more than 18 lines, or it would elide and stop testing the !elided arm.
+      // Markup-DENSE on purpose. compactToolText refuses to hand back a block bigger than it was
+      // given, and the retrieve_full notice costs ~110 chars, so a fixture whose only markup is
+      // a bare <p> saves less than the notice and is legitimately returned untouched — which
+      // would test the opposite branch from the one this case is named for.
       Array.from(
-        { length: 8 },
-        (_, i) => `<p>Paragraph number ${i} with several readable words in it.</p>`,
+        { length: 12 },
+        (_, i) => `<div class="doc-section"><p><span class="lead">Paragraph number ${i}</span>` +
+          ' with several readable words in it, padded out far' +
+          ' enough that the whole document clears the compaction floor on its own.</p></div>',
       ).join('') +
       '</body></html>'
-    expect(text.length).toBeGreaterThan(400)
+    expect(text.length).toBeGreaterThan(FLOOR)
 
     const res = compactToolText(text)
     expect(res.text.length).toBeLessThan(text.length)
@@ -573,6 +585,26 @@ describe('wireCompress — HTML pre-pass and odd content blocks', () => {
     expect(res.text).toContain('retrieve_full')
     expect(res.stash?.original).toBe(text)
     expect(res.text).toContain(res.stash!.token)
+  })
+
+  it('returns the original untouched when the retrieve notice would cost more than the pre-pass saved', () => {
+    // Markup-light: twelve bare <p> wrappers strip to roughly what the ~110-char retrieve_full
+    // notice costs. Handing back the "compressed" block anyway would put a LARGER block into the
+    // cached prefix and re-read it at that size every later turn — a pure loss, and the exact
+    // inverse of what this layer is for. Shrink-only has to hold after the notice, not before.
+    const text =
+      '<!doctype html><html><head><title>Docs</title></head><body>' +
+      Array.from(
+        { length: 12 },
+        (_, i) => `<p>Paragraph number ${i} with several readable words in it, padded out far` +
+          ' enough that the whole document clears the compaction floor on its own.</p>',
+      ).join('') +
+      '</body></html>'
+    expect(text.length).toBeGreaterThan(FLOOR)
+
+    const res = compactToolText(text)
+    expect(res.text).toBe(text)
+    expect(res.stash).toBeUndefined()
   })
 
   it('leaves a tool_result whose content is neither string nor array untouched', () => {

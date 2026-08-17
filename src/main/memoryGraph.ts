@@ -234,9 +234,27 @@ export function initMemoryGraph(dir: string): void {
   } catch { /* best effort — a missing/locked file just means an empty graph */ }
 }
 
-function indexEdge(e: MemoryEdge, sort = true): void {
+/**
+ * Index one edge into both directions. Returns whether the append-LOG needs this line: true for a
+ * brand-new triple, or for one whose weight this call strengthened.
+ *
+ * B2: addMemoryEdge used to append unconditionally, even when upsertEdge deduped. The Weave re-mints
+ * the same pairs on every 30-min tick, so the log grew ~30x faster than the graph — 297,013 weave
+ * lines for ~9,959 distinct edges — on a file that is read synchronously at launch. A re-mint that
+ * changes NOTHING must not be written. A stronger weight still must: the in-memory upsert keeps the
+ * max, so dropping that line would silently downgrade the edge at the next load.
+ *
+ * A fresher `ts` deliberately does NOT count. Every re-mint stamps Date.now(), so ts moves on every
+ * duplicate — widening the gate to cover it writes all 297,013 lines again. The cost is that a
+ * re-affirmed edge's decay clock (effectiveWeight) refreshes in memory but resets at the next load,
+ * which is the cheap side of the trade: the weight, the part fusion ranks on, is still persisted.
+ */
+function indexEdge(e: MemoryEdge, sort = true): boolean {
   const list = adjacency.get(e.from) || []
   const before = list.length
+  // Only the incremental path asks. The bulk loader (sort=false) discards the answer, and a second
+  // O(degree) scan per line is the kind of per-insert cost the v1.25.17 rewrite exists to keep out.
+  const prior = sort ? list.find(x => x.to === e.to && x.relation === e.relation) : undefined
   upsertEdge(list, e, sort)
   adjacency.set(e.from, list)
   edgeCount += list.length - before // +1 for a new edge, +0 when it dedups
@@ -245,6 +263,7 @@ function indexEdge(e: MemoryEdge, sort = true): void {
   const rlist = reverseAdjacency.get(e.to) || []
   upsertEdge(rlist, e, sort)
   reverseAdjacency.set(e.to, rlist)
+  return list.length !== before || (prior !== undefined && e.weight > prior.weight)
 }
 
 export interface AddEdgeInput { from: string; to: string; relation?: string; weight?: number; createdBy?: string; ts?: number; validFrom?: number; validTo?: number }
@@ -265,8 +284,11 @@ export function addMemoryEdge(input: AddEdgeInput): MemoryEdge | null {
     ...(typeof input.validFrom === 'number' && { validFrom: input.validFrom }),
     ...(typeof input.validTo === 'number' && { validTo: input.validTo }),
   }
-  indexEdge(edge)
-  if (graphPath) {
+  const needsLog = indexEdge(edge)
+  // Append only what the log does not already say. The marker-replay contract survives this: an
+  // edge pruned by a {removeNode} marker is GONE from adjacency, so a later re-mint reads as new
+  // and is written again — which is exactly what stops the marker deleting it at the next load.
+  if (graphPath && needsLog) {
     try { fs.appendFileSync(graphPath, JSON.stringify(edge) + '\n') } catch { /* best effort */ }
   }
   return edge
@@ -396,6 +418,43 @@ export function graphRelationStats(): Record<string, number> {
     for (const e of list) counts[e.relation] = (counts[e.relation] ?? 0) + 1
   }
   return counts
+}
+
+// B2 — provenance breakdown. graphRelationStats says WHAT the edges are; this says WHO drew them
+// ('weave', 'auto', 'reflect', 'consolidate', an agent id...). The Weave mines on the idle tick with
+// no telemetry at all, so "the miner has been re-drawing the same 10k edges for months" and "the
+// miner died" look identical from outside. Counted in place — only the tallies cross the wire.
+export function graphCreatorStats(): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const list of adjacency.values()) {
+    for (const e of list) {
+      // Pre-provenance log lines carry no createdBy; count them as 'system', the same default
+      // addMemoryEdge stamps, so the tallies always sum to graphStats().edges.
+      const by = e.createdBy ?? 'system'
+      counts[by] = (counts[by] ?? 0) + 1
+    }
+  }
+  return counts
+}
+
+/**
+ * B2 — the keys of every edge touching any of `ids`, in EITHER direction.
+ *
+ * The Weave runs in MAIN, the graph lives in the memory process, and its `link` dep is SYNC — so the
+ * only way the miner can ask "have I drawn this already?" without one round-trip per candidate pair
+ * is to be handed the answer up front. Keys only, never the edges. Both directions, because the
+ * miner canonicalizes a symmetric pair to `min(id) -> max(id)`: the end it walks FROM is a candidate,
+ * but the end the edge is stored under may not be.
+ */
+export function edgeKeysIncident(ids: string[]): string[] {
+  const keys = new Set<string>()
+  for (const id of ids) {
+    // Same shape as mnemeWeave's weaveEdgeKey. The two modules cannot import each other (the miner
+    // is a pure planner, this is brain state), so the format is pinned by a test instead.
+    for (const e of adjacency.get(id) ?? []) keys.add(`${e.from}\0${e.to}\0${e.relation}`)
+    for (const e of reverseAdjacency.get(id) ?? []) keys.add(`${e.from}\0${e.to}\0${e.relation}`)
+  }
+  return [...keys]
 }
 
 /** All forward edges as a flat list — for consumers that need the whole edge set

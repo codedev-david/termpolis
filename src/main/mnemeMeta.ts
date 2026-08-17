@@ -116,17 +116,22 @@ export function assessDomain(records: CompetenceRecord[], domain: string): Domai
  * One-line-per-domain digest of the WEAKEST domains, for injection into the memory
  * primer so the agent starts a session already knowing where it hasn't earned trust.
  * Surfaces only genuinely low-competence domains (Wilson bound < 0.5 — a mastered
- * domain has no business in a "low competence" warning), weakest first: confidence
- * ascending, then attempts descending (more evidence of weakness ranks higher on a
- * tie). Capped at `limit` (default 3, negatives coerced to 0). Empty or all-competent
- * input → '' (nothing to warn about). Pure and deterministic.
+ * domain has no business in a "low competence" warning) that ALSO clear MIN_EVIDENCE,
+ * the very gate {@link assessDomain} applies before it will say 'caution'. Without the
+ * evidence half the conservatism of the bound backfires: a domain tried once and
+ * succeeded scores ~0.21, so the primer opened with "⚠ low competence in termpolis
+ * (1/1 succeeded)" — condemning a domain that had never once failed. Weakest first:
+ * confidence ascending, then attempts descending (more evidence of weakness ranks
+ * higher on a tie). Capped at `limit` (default 3, negatives coerced to 0). Empty,
+ * all-competent or all-too-thin input → '' (nothing to warn about). Pure and
+ * deterministic.
  */
 export function summarizeCompetence(
   records: CompetenceRecord[],
   limit: number = DEFAULT_SUMMARY_LIMIT,
 ): string {
   return records
-    .filter((r) => r.confidence < LOW_COMPETENCE)
+    .filter((r) => r.attempts >= MIN_EVIDENCE && r.confidence < LOW_COMPETENCE)
     .sort((a, b) => a.confidence - b.confidence || b.attempts - a.attempts)
     .slice(0, Math.max(0, limit))
     .map((r) => `⚠ low competence in ${r.domain} (${r.successes}/${r.attempts} succeeded)`)

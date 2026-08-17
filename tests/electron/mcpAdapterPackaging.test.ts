@@ -62,4 +62,25 @@ describe('MCP stdio adapter packaging', () => {
     expect(adapter).toContain("'mcp-token'")
     expect(adapter).toContain("'mcp-port'")
   })
+
+  it('termpolis-cli.cjs resolves the port the same way the adapter does', () => {
+    // The CLI used to hardcode 9315 while the server falls back through 9316-9319, so every
+    // command silently talked to the wrong port whenever a second Termpolis held 9315.
+    const cli = readFileSync(resolve(REPO_ROOT, 'src/mcp-adapter/termpolis-cli.cjs'), 'utf-8')
+    expect(cli).toContain("dataFile('mcp-port')")
+    expect(cli).toContain('const PORT = findPort()')
+    expect(cli).not.toMatch(/port:\s*9315/)
+  })
+
+  it('termpolis-cli.cjs exposes the shared-memory verbs a shell or CI job needs', () => {
+    const cli = readFileSync(resolve(REPO_ROOT, 'src/mcp-adapter/termpolis-cli.cjs'), 'utf-8')
+    for (const [verb, tool] of [
+      ['primer', 'memory_primer'],
+      ['recall', 'memory_search'],
+      ['remember', 'memory_write'],
+    ]) {
+      expect(cli).toContain(`case '${verb}':`)
+      expect(cli).toContain(`toolCall('${tool}'`)
+    }
+  })
 })

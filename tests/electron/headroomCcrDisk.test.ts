@@ -182,4 +182,55 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().diskBytes).toBe(after1)
     expect(ccrStats().diskEntries).toBe(1)
   })
+
+  it('performs NO second write when the same hash token is already on disk', () => {
+    // v1.36.0 — every API request re-stashed originals that were already there: 65 synchronous
+    // writeFileSync calls and ~101 KB per request on the Electron MAIN thread, growing with the
+    // conversation. A sentinel in the file is the only honest proof that no write happened.
+    const token = ccrStash({ same: 'x'.repeat(2000) })
+    const f = path.join(dir, `${token}.json`)
+    fs.writeFileSync(f, 'SENTINEL', 'utf8')
+    const before = ccrStats()
+    expect(ccrStash({ same: 'x'.repeat(2000) })).toBe(token)
+    expect(fs.readFileSync(f, 'utf8')).toBe('SENTINEL')
+    expect(ccrStats().diskBytes).toBe(before.diskBytes)   // accounting untouched by the skip
+    expect(ccrStats().diskEntries).toBe(before.diskEntries)
+  })
+
+  it('still re-writes a caller-supplied token that is not a content hash', () => {
+    // Only a sha1 token guarantees the file already holds these exact bytes. The proxy may hand
+    // us any token shape, so the skip must never apply to one — it would pin stale content.
+    ccrPut('hr_manual', { v: 1 }, 'proxy')
+    const after1 = ccrStats().diskBytes
+    ccrPut('hr_manual', { v: 2, pad: 'p'.repeat(200) }, 'proxy')
+    expect(ccrStats().diskEntries).toBe(1)
+    expect(ccrStats().diskBytes).toBeGreaterThan(after1) // re-indexed, old bytes subtracted once
+    resetCcr(); setCcrDir(dir)                           // force the read to come off disk
+    expect(ccrRetrieve('hr_manual')).toEqual({ v: 2, pad: 'p'.repeat(200) })
+  })
+
+  it('keeps the index and the directory in step when a repeat stash is skipped', () => {
+    _setCcrLimits(4000, 8 * 1024 * 1024)
+    const first = ccrStash({ i: 0, pad: '0'.repeat(1200) })
+    ccrStash({ i: 0, pad: '0'.repeat(1200) }) // skipped — must not inflate diskBytes or re-seq
+    for (let i = 1; i < 8; i++) ccrStash({ i, pad: `${i}`.repeat(1200) })
+    expect(ccrStats().diskBytes).toBeLessThanOrEqual(4000)
+    expect(fs.readdirSync(dir).length).toBe(ccrStats().diskEntries)
+    expect(fs.existsSync(path.join(dir, `${first}.json`))).toBe(false) // still evicted oldest-first
+  })
+
+  it('counts a memory hit, a disk hit, and a miss separately', () => {
+    const t = ccrStash({ v: 'hot' })
+    ccrRetrieve(t)
+    expect(ccrStats().memHits).toBe(1)
+    expect(ccrStats().misses).toBe(0)
+  })
+
+  it('records a miss when a token redeems nothing', () => {
+    // The number that can falsify the whole scheme. An elision the store cannot reverse is
+    // content destroyed, and without this counter it would be destroyed silently.
+    ccrRetrieve('hr_never_issued')
+    expect(ccrStats().misses).toBe(1)
+    expect(ccrStats().memHits + ccrStats().diskHits).toBe(0)
+  })
 })
