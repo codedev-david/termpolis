@@ -7,8 +7,9 @@
  * that re-read is the largest line on the bill. Cache-read bills at 0.1x, which reads as free
  * right up until you notice a 320,000-token prefix being read three hundred more times.
  *
- * Measured over 24,163 real requests across 89 sessions. The app refits this from the user's own
- * traffic and never uses these numbers directly — they are here to justify the feature existing:
+ * Measured across 89 real sessions — the 24,163 requests in them whose depth could be
+ * reconstructed. The app refits this from the user's own traffic and never uses these numbers
+ * directly; they are here to justify the feature existing:
  *
  *     depth    reqs   meanRead   meanWrite   units/turn
  *      <10      777     33,463      17,862       25,674
@@ -20,6 +21,13 @@
  * what removes the need for a fudged "cost of restarting" constant: the price of establishing a
  * fresh prefix is already inside the shallow band's own figure, because those are exactly the
  * requests that paid it. Whether a restart is worth it becomes subtraction.
+ *
+ * How big is the prize? Re-pricing all 56,763 requests in that corpus at what their ordinal
+ * ACTUALLY costs — again with no fudged restart constant, because ordinal 0 empirically carries
+ * the fresh-prefix write — a 50-turn cap models to 19.2% of the whole bill and a 25-turn cap to
+ * 23.9%. The number to check before believing any of that: at a 50-turn cap each restart can
+ * absorb about 12 extra requests of re-orientation before the saving is entirely gone; at a
+ * 25-turn cap, about 7. That is the budget the memory brain has to fit inside.
  *
  * Two limits worth stating on the same page as the number:
  *
