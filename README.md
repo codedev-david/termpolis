@@ -341,7 +341,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with 33 tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, the `memory_audit` self-inspection tool, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`)
 - **Auto-registers with Claude Code** — on launch, Termpolis injects itself into `~/.claude/settings.json` so Claude Code can use it as an MCP server immediately. Zero configuration needed.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
-- **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`)
+- **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`) and reach the shared memory brain from a plain shell, CI job, or git hook (`primer`, `recall`, `remember`)
 - **Auth Token** — 256-bit random token per launch, required on all endpoints. Localhost only, CORS restricted.
 
 ### Context Handoff
@@ -548,6 +548,12 @@ termpolis-cli read <id> 20              # Read last 20 lines of output
 termpolis-cli close <id>                # Close a terminal
 termpolis-cli files ~/projects          # List files at a path
 termpolis-cli git ~/projects/myapp      # Get git status
+
+# Shared memory — the same brain every Termpolis agent reads and writes.
+# Reachable from a plain shell, so a CI job, a git hook, or a script can use it too.
+termpolis-cli primer                    # Print the project primer for the current directory
+termpolis-cli recall "auth retry bug"   # Search the shared memory brain
+termpolis-cli remember "Deploys need VPN"   # Write one memory to the shared brain
 ```
 
 ### Authentication
