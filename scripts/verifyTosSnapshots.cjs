@@ -72,17 +72,30 @@ const UPDATE = args.has('--update')
 const JSON_OUT = args.has('--json')
 
 // Normalize HTML to a stable plain-text representation.
-//   1. Strip <script>, <style>, <noscript>, <svg>, <head>.
-//   2. Drop HTML comments.
-//   3. Replace tags with spaces.
-//   4. Decode the handful of HTML entities we actually see in ToS pages.
-//   5. Collapse runs of whitespace to single spaces.
+//   1. Drop HTML comments.
+//   2. Strip <script>, <style>, <noscript>, <svg>, <head>.
+//   3. Strip <nav> and <footer> — site chrome, never terms. See below.
+//   4. Replace tags with spaces.
+//   5. Decode the handful of HTML entities we actually see in ToS pages.
+//   6. Collapse runs of whitespace to single spaces.
 // This is intentionally not a full DOM parser — providers change markup
 // often enough that fancy extraction breaks more than it helps.
 function normalizeHtml(html) {
   let s = html
   s = s.replace(/<!--[\s\S]*?-->/g, ' ')
-  s = s.replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, ' ')
+  s = s.replace(/<(script|style|noscript|svg|head)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+  // Site chrome is re-themed on a MARKETING cadence, not a legal one, and hashing it
+  // manufactures false alarms on a security watcher — which is exactly how a watcher stops
+  // being read. Anthropic adding a "Leadership" link to its top nav on 2026-08-24 failed this
+  // job with `missingKeywords: []` and not one word of prose changed, the fourth such refresh
+  // in the git log ("markup churn, not material drift"). A footer's copyright year guarantees
+  // the same false alarm every January. Neither element can carry a term of service.
+  //
+  // <header> is deliberately NOT stripped: on this very page it holds "Commercial Terms of
+  // Service — Effective June 17, 2025", which is the single most valuable line to notice
+  // changing. Dropping the two elements that cannot state a term, while keeping the one that
+  // dates it, is what makes the remaining alarms worth reading.
+  s = s.replace(/<(nav|footer)\b[\s\S]*?<\/\1\s*>/gi, ' ')
   s = s.replace(/<[^>]+>/g, ' ')
   s = s
     .replace(/&nbsp;/g, ' ')

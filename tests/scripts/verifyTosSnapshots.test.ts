@@ -82,3 +82,50 @@ describe('verifyTosSnapshots — PROVIDERS config', () => {
     }
   })
 })
+
+describe('verifyTosSnapshots — site chrome is not part of the terms', () => {
+  // Anthropic added a "Leadership" link to its top nav on 2026-08-24 and the watcher
+  // called it a terms change: `status: drift`, `missingKeywords: []`, not one word of
+  // prose different. That was the fourth such refresh in the git log. A security alarm
+  // that cries wolf on marketing copy stops being read, so nav and footer are stripped.
+  it('strips <nav> — a masthead menu cannot state a term of service', () => {
+    const before = `<nav>Research Policy Learn News</nav><p>may not train models</p>`
+    const after = `<nav>Research Policy Leadership Learn News</nav><p>may not train models</p>`
+    expect(normalizeHtml(before)).toBe('may not train models')
+    expect(hash(normalizeHtml(before))).toBe(hash(normalizeHtml(after)))
+  })
+
+  it('strips <footer> — whose copyright year is guaranteed to churn every January', () => {
+    const y2026 = `<p>Inputs are not used to train.</p><footer>Privacy policy © 2026 Anthropic PBC</footer>`
+    const y2027 = `<p>Inputs are not used to train.</p><footer>Privacy policy © 2027 Anthropic PBC</footer>`
+    expect(normalizeHtml(y2026)).toBe('Inputs are not used to train.')
+    expect(hash(normalizeHtml(y2026))).toBe(hash(normalizeHtml(y2027)))
+  })
+
+  it('KEEPS <header> — it carries the effective date, the most valuable line to watch', () => {
+    const html = `<header>Commercial Terms of Service Effective June 17, 2025</header><p>body</p>`
+    expect(normalizeHtml(html)).toBe('Commercial Terms of Service Effective June 17, 2025 body')
+  })
+
+  it('a new effective date still drifts the hash even though chrome no longer does', () => {
+    const jun = `<nav>a</nav><header>Effective June 17, 2025</header><p>x</p><footer>c</footer>`
+    const sep = `<nav>b</nav><header>Effective September 1, 2026</header><p>x</p><footer>d</footer>`
+    expect(hash(normalizeHtml(jun))).not.toBe(hash(normalizeHtml(sep)))
+  })
+
+  it('drops a <nav> nested inside <header> without taking the header prose with it', () => {
+    // anthropic.com nests its menu inside the masthead; the effective date sits in a
+    // second <header>. Stripping must reach the inner nav and stop there.
+    const html = `<header><nav>Research Leadership</nav>Skip to main content</header><p>prose</p>`
+    const out = normalizeHtml(html)
+    expect(out).not.toContain('Leadership')
+    expect(out).toContain('Skip to main content')
+    expect(out).toContain('prose')
+  })
+
+  it('still fails loudly when real prose changes — chrome stripping is not a mute button', () => {
+    const ok = `<nav>x</nav><p>Anthropic may not train models on Customer Content.</p>`
+    const bad = `<nav>x</nav><p>Anthropic may train models on Customer Content.</p>`
+    expect(hash(normalizeHtml(ok))).not.toBe(hash(normalizeHtml(bad)))
+  })
+})

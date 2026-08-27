@@ -23,6 +23,11 @@ on:
   schedule:
     - cron: '0 13 * * 1'
   workflow_dispatch:
+    inputs:
+      reseed:
+        description: Rewrite snapshots from the live pages and upload them as an artifact instead of failing
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'scripts/verifyTosSnapshots.cjs'
@@ -43,9 +48,13 @@ jobs:
           node-version: 22
       - name: Verify ToS snapshots
         id: verify
+        env:
+          RESEED: ${{ inputs.reseed }}
         run: |
           set +e
-          node scripts/verifyTosSnapshots.cjs --json > tos-report.json
+          FLAGS="--json"
+          [ "$RESEED" = "true" ] && FLAGS="--update --json"
+          node scripts/verifyTosSnapshots.cjs $FLAGS > tos-report.json
           echo "exit=$?" >> $GITHUB_OUTPUT
           cat tos-report.json
         continue-on-error: true
@@ -56,6 +65,13 @@ jobs:
           name: tos-drift-report
           path: tos-report.json
           retention-days: 90
+      - name: Upload reseeded snapshots
+        if: inputs.reseed
+        uses: actions/upload-artifact@v4
+        with:
+          name: tos-snapshots-reseeded
+          path: docs/security-snapshots/
+          retention-days: 7
       - name: Open / update drift issue
         if: github.event_name == 'schedule' && steps.verify.outputs.exit != '0'
         uses: actions/github-script@v8
@@ -108,7 +124,7 @@ jobs:
               })
             }
       - name: Fail the job on drift (so PRs see it)
-        if: steps.verify.outputs.exit != '0'
+        if: steps.verify.outputs.exit != '0' && !inputs.reseed
         run: |
           echo "::error::ToS drift detected — see tos-report.json artifact"
           exit 1
