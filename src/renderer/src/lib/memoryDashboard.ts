@@ -154,9 +154,18 @@ export function competenceRows(m: MemoryMetrics): CompetenceRow[] {
     .sort((a, b) => b.confidence - a.confidence)
 }
 
-/** True when nothing has been stored yet — the dashboard shows an onboarding note. */
+/** F31: the last reload hit shard files it could not read. Everything in `store` is then a floor,
+ *  not the truth, and the "your brain is empty" onboarding copy would be an outright lie — that is
+ *  precisely how a 2.27 GB store spent a day presenting itself as a brand-new install with zero
+ *  lessons. Checked BEFORE isBrainEmpty, and it suppresses it. */
+export function hasUnreadableShards(m: MemoryMetrics): boolean {
+  return (m.store.unreadableShards ?? 0) > 0
+}
+
+/** True when nothing has been stored yet — the dashboard shows an onboarding note. Never true
+ *  while a shard failed to load: "empty" and "couldn't be read" are different facts. */
 export function isBrainEmpty(m: MemoryMetrics): boolean {
-  return m.store.total === 0
+  return m.store.total === 0 && !hasUnreadableShards(m)
 }
 
 /** SVG polyline + closed-area paths for a series in a `w`×`h` box (with `pad` inset).

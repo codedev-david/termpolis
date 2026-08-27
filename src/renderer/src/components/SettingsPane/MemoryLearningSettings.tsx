@@ -10,6 +10,7 @@ import {
   portabilityRows,
   svgLine,
   isBrainEmpty,
+  hasUnreadableShards,
   compactNumber,
   pct,
   typeColor,
@@ -152,6 +153,17 @@ export function MemoryLearningSettings() {
 
       {err && <div data-testid="ml-error" className="text-xs text-[#f48771] p-3 border border-[#f48771]/40 rounded bg-[#f48771]/10">{err}</div>}
       {!m && !err && <div data-testid="ml-loading" className="text-xs text-[#9ca3af] p-3">Reading your brain&hellip;</div>}
+
+      {m && hasUnreadableShards(m) && (
+        <div data-testid="ml-unreadable" className="text-xs text-[#f48771] p-4 border border-[#f48771]/40 rounded bg-[#f48771]/10 leading-relaxed">
+          <span className="font-medium">
+            {m.store.unreadableShards} memory shard{(m.store.unreadableShards ?? 0) === 1 ? '' : 's'} could not be read.
+          </span>{' '}
+          Your brain is <em>not</em> empty &mdash; the numbers below only cover what did load, so treat them as a
+          floor. Nothing has been deleted: compaction and clearing both refuse to rewrite a shard they
+          can&rsquo;t read, so the file on disk is intact. Restart Termpolis to retry the load.
+        </div>
+      )}
 
       {m && isBrainEmpty(m) && (
         <div data-testid="ml-empty" className="text-xs text-[#9ca3af] p-4 border border-[#3c3c3c] rounded bg-[#252526] leading-relaxed">

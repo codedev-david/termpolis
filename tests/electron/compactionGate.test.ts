@@ -34,6 +34,10 @@ import { join } from 'node:path'
 // Mock the module it actually imports, and COUNT reads of our shard: "it never even read the file"
 // is the entire claim under test. Everything else delegates to the real fs, because this suite
 // writes real stores to a real temp dir.
+//
+// Both entry points are counted. Since F31 a shard is STREAMED (openSync + chunked readSync) rather
+// than slurped with readFileSync — counting only the latter would score every forced compaction as
+// "never read the file" and quietly invert this suite's central assertion.
 const shardReads = { count: 0 }
 vi.mock('fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('fs')>()
@@ -43,6 +47,10 @@ vi.mock('fs', async (importOriginal) => {
     readFileSync: (p: never, ...rest: never[]) => {
       if (String(p).includes('swarm-memory.jsonl')) shardReads.count++
       return (real.readFileSync as (...a: never[]) => unknown)(p, ...rest)
+    },
+    openSync: (p: never, ...rest: never[]) => {
+      if (String(p).includes('swarm-memory.jsonl')) shardReads.count++
+      return (real.openSync as (...a: never[]) => number)(p, ...rest)
     },
   }
 })

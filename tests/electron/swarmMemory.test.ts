@@ -698,7 +698,7 @@ describe('ring buffer cap', () => {
     }
     expect(memoryCount()).toBe(5)
     expect(memoryList({ limit: 1 })[0].content).toBe('e6') // newest kept
-    expect(memoryStats()).toEqual({ count: 5, capacity: 5, corruptLinesSkipped: 0 })
+    expect(memoryStats()).toEqual({ count: 5, capacity: 5, corruptLinesSkipped: 0, unreadableShards: [] })
   })
 
   it("remembers an evicted hash for re-ingest, yet still allows an explicit re-write (Wave2)", async () => {

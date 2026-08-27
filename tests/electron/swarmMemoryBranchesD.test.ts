@@ -3,8 +3,10 @@
 //
 // Four situations dominate this file:
 //
-//   * A SHARD THAT WILL NOT READ. Every JSONL loader streams through forEachShardLine, which is
-//     one `fs.readFileSync`. When that throws (locked file, offline sync folder, EIO) the callers
+//   * A SHARD THAT WILL NOT READ. Every JSONL loader streams through forEachShardLine, which since
+//     F31 is `fs.openSync` plus chunked `fs.readSync` — never a whole-file read, because
+//     readFileSync caps at 2 GiB and a real 2.27 GB store hit it. When the open throws (locked
+//     file, offline sync folder, EIO) the callers
 //     each have a bare `catch` whose whole job is "don't take the app down, and don't destroy the
 //     file you failed to read". Those catches are invisible to every happy-path suite, and the
 //     thing they protect is the user's entire brain — so what is asserted below is always the
@@ -32,6 +34,7 @@ vi.mock('../../src/main/telemetry', () => ({ recordSwarmError: tele.recordSwarmE
 // store and the audit log too, and the whole point is to prove ONE broken file is survivable.
 const failIO = vi.hoisted(() => ({
   readFileSync: null as null | ((p: string) => boolean),
+  openSync: null as null | ((p: string) => boolean),
   renameSync: null as null | ((from: string, to: string) => boolean),
 }))
 vi.mock('fs', async (importOriginal) => {
@@ -39,6 +42,12 @@ vi.mock('fs', async (importOriginal) => {
   const call = (fn: unknown, args: unknown[]): unknown => (fn as (...a: unknown[]) => unknown)(...args)
   const api = {
     ...actual,
+    openSync: (...args: unknown[]): unknown => {
+      if (typeof args[0] === 'string' && failIO.openSync?.(args[0])) {
+        throw new Error('EIO: i/o error, open')
+      }
+      return call(actual.openSync, args)
+    },
     readFileSync: (...args: unknown[]): unknown => {
       if (typeof args[0] === 'string' && failIO.readFileSync?.(args[0])) {
         throw new Error('EIO: i/o error, read')
@@ -205,10 +214,10 @@ describe('a shard that will not read', () => {
     await memoryWrite({ agentId: 'a', kind: 'note', content: 'the second durable memory of the run' })
     const before = fs.readFileSync(shardFile(), 'utf8')
 
-    failIO.readFileSync = (p) => p === shardFile()
+    failIO.openSync = (p) => p === shardFile()
     // force skips the cheap gate, so this is the real pass failing on its own first read.
     expect(compactSelfShard({ force: true })).toEqual({ compacted: false, before: 0, after: 0 })
-    failIO.readFileSync = null
+    failIO.openSync = null
 
     // The shard is untouched — a compaction that cannot read must never write.
     expect(fs.readFileSync(shardFile(), 'utf8')).toBe(before)
@@ -224,13 +233,16 @@ describe('a shard that will not read', () => {
     fs.writeFileSync(memPath, JSON.stringify({ id: 'plain-1', ts: Date.now(), agentId: 'a', kind: 'note', content: 'a plaintext line nobody could read back' }) + '\n')
     const before = fs.readFileSync(memPath, 'utf8')
 
-    failIO.readFileSync = (p) => p.endsWith('.jsonl') && p.startsWith(syncDir)
+    failIO.openSync = (p) => p.endsWith('.jsonl') && p.startsWith(syncDir)
     const status = setSyncPassphrase('correct horse battery staple')
-    failIO.readFileSync = null
+    failIO.openSync = null
 
     expect(status.encrypted).toBe(true)          // the key was still adopted
     expect(fs.readFileSync(memPath, 'utf8')).toBe(before) // ...but the shard was left verbatim
-    expect(tele.recordSwarmError).not.toHaveBeenCalled()
+    // F31: the degradation is survivable, NOT benign. Before this, a shard the OS refused to hand
+    // over was indistinguishable from an empty one all the way up to the dashboard — which is how a
+    // 2.27 GB brain spent a day reporting zero memories. It is reported, and nothing else is.
+    expect(tele.recordSwarmError.mock.calls.map((c) => c[0])).toEqual(['swarmMemory.shard.unreadable'])
   })
 
   it('refuses to mint a replacement salt when the existing one cannot be read', () => {

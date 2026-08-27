@@ -8,6 +8,7 @@ import {
   teachingRows,
   competenceRows,
   isBrainEmpty,
+  hasUnreadableShards,
   svgLine,
   portabilityRows,
   codeGraphReceipt,
@@ -140,6 +141,23 @@ describe('memoryDashboard — transforms', () => {
       { domain: 'weak', attempts: 3, confidence: 0.4 },
     ] }))
     expect(rows[0].status).toBe('bad') // three attempts is enough to actually call it
+  })
+
+  // F31: total === 0 is NOT proof of an empty brain. A shard the OS refused to hand over loads as
+  // zero entries, and the onboarding copy ("your brain is empty — it fills as you work") then lies
+  // over a 2.27 GB store. "Empty" and "couldn't be read" have to stay distinguishable.
+  it('hasUnreadableShards reports a failed load, and suppresses the empty-brain note', () => {
+    const healthy = mm()
+    expect(hasUnreadableShards(healthy)).toBe(false)
+    expect(isBrainEmpty(healthy)).toBe(true)
+
+    const broken = mm({ store: { total: 0, capacity: 1, byType: {}, bySource: {}, lessons: 0, timeline: [], unreadableShards: 1 } })
+    expect(hasUnreadableShards(broken)).toBe(true)
+    expect(isBrainEmpty(broken)).toBe(false) // never "your brain is empty" over a store that failed to load
+
+    // Absent (an older main process) reads as zero, not as a failure.
+    const legacy = mm({ store: { total: 0, capacity: 1, byType: {}, bySource: {}, lessons: 0, timeline: [] } })
+    expect(hasUnreadableShards(legacy)).toBe(false)
   })
 
   it('isBrainEmpty is true only when nothing is stored', () => {

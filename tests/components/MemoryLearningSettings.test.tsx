@@ -57,6 +57,24 @@ describe('MemoryLearningSettings', () => {
     expect(within(ticker).getByText('index.ts:1-40', { exact: false })).toBeInTheDocument()
   })
 
+  it('warns that shards could not be read INSTEAD of claiming the brain is empty', async () => {
+    stub(metrics({ store: { total: 0, capacity: 500000, byType: {}, bySource: {}, lessons: 0, timeline: [], unreadableShards: 2 } }))
+    render(<MemoryLearningSettings />)
+    const banner = await screen.findByTestId('ml-unreadable')
+    expect(within(banner).getByText('2 memory shards could not be read.')).toBeInTheDocument()
+    // The lie this replaces: "Your brain is empty right now" over a store that just failed to load.
+    expect(screen.queryByTestId('ml-empty')).not.toBeInTheDocument()
+  })
+
+  it('pluralises the unreadable-shard warning for a single shard', async () => {
+    stub(metrics({ store: { total: 4, capacity: 500000, byType: { episodic: 4 }, bySource: { claude: 4 }, lessons: 0, timeline: [], unreadableShards: 1 } }))
+    render(<MemoryLearningSettings />)
+    const banner = await screen.findByTestId('ml-unreadable')
+    expect(within(banner).getByText('1 memory shard could not be read.')).toBeInTheDocument()
+    // Partial load: the warning sits ABOVE the real numbers rather than replacing them.
+    expect(screen.getByTestId('ml-receipts')).toBeInTheDocument()
+  })
+
   it('shows the empty-brain onboarding note when nothing is stored', async () => {
     stub(metrics())
     render(<MemoryLearningSettings />)

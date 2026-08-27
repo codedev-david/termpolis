@@ -476,7 +476,8 @@ export const memoryList = (opts: ListOptions = {}): Promise<MemoryEntry[]> => ca
 export const memoryCount = (): Promise<number> => call('memoryCount', [])
 export const memoryClear = (): Promise<void> => call('memoryClear', [])
 export const memoryHasHash = (hash: string): Promise<boolean> => call('memoryHasHash', [hash])
-export const memoryStats = (): Promise<{ count: number; capacity: number; corruptLinesSkipped: number }> => call('memoryStats', [])
+export const memoryStats = (): Promise<{ count: number; capacity: number; corruptLinesSkipped: number; unreadableShards: string[] }> =>
+  call('memoryStats', [])
 export const memoryDashboardStats = (): Promise<MemoryDashboardStats> => call('memoryDashboardStats', [])
 export const memoryGraphSample = (opts: { limit?: number } = {}): Promise<GraphSample> => call('memoryGraphSample', [opts])
 // The knowledge graph is IN the memory process — it is loaded by initSwarmMemory, which runs there.

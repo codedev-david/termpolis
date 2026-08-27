@@ -168,6 +168,8 @@ let lockedShards = false              // encrypted shards present that we couldn
 let initDegraded = false              // F5: init failed and fell back to a local writable store (writes still persist)
 let corruptLinesSkipped = 0           // F28: unparseable shard lines dropped on the last reload (surfaced, not silent)
 let lockedLinesSkipped = 0            // F28: encrypted-but-undecryptable lines on the last reload
+let unreadableShards: string[] = []   // F31: shards the OS refused to hand us at all on the last reload
+let activeShardBytes = -1             // F31: cached size of the active shard (-1 = unknown, stat once)
 let fsyncCount = 0                    // F26: observable count of durable (fsync'd) appends — for tests
 // Packed vector index: real (EMBED_DIM) embeddings live in one Float32Array
 // instead of per-entry number[] (the memory win), with bidirectional maps to the
@@ -309,11 +311,94 @@ function writeSyncConfig(dir: string, syncTo: string | null): void {
 
 // Every shard this device should read in sync mode: all *.jsonl in the folder
 // (own shard + peers'). In local-only mode it's just the single store file.
+// F31: shard ROTATION. `fs.readFileSync` refuses any file over kIoMaxLength (2 GiB) with
+// ERR_FS_FILE_TOO_LARGE, and while forEachShardLine no longer reads whole files, an append-only
+// store that only ever grows is a ratchet with no release — and plenty of adjacent tooling
+// (backups, editors, one-off scripts) still chokes at that size. So the active shard is capped
+// well under the ceiling and rolled over to `<base>.<n>.jsonl`, which reloadFrom then reads like
+// any other shard. Rotated shards are strictly read-only history: never `isOwn`, never compacted,
+// never counted as sync "devices".
+const MAX_SHARD_BYTES = 1_500_000_000
+let maxShardBytes = MAX_SHARD_BYTES
+
+/** Test seam. Production rotates at 1.5 GB, which no test can afford to write; pass a small cap to
+ *  exercise the rollover, or 0 to restore the real one. */
+export function _setMaxShardBytesForTests(n: number): void {
+  maxShardBytes = n > 0 ? n : MAX_SHARD_BYTES
+}
+
+/** The `<base>.` prefix that a shard's rotated generations share (`swarm-memory.jsonl` → `swarm-memory.`). */
+function rotationPrefix(active: string): string {
+  return path.basename(active).replace(/\.jsonl$/, '') + '.'
+}
+
+/** Generation number if `file` is a rotated shard of `prefix`, else null. Digits ONLY, so a
+ *  sibling like `swarm-memory.archive.jsonl` is never mistaken for a generation. */
+function rotationGen(file: string, prefix: string): number | null {
+  const b = path.basename(file)
+  if (!b.startsWith(prefix) || !b.endsWith('.jsonl')) return null
+  const mid = b.slice(prefix.length, b.length - '.jsonl'.length)
+  return /^\d+$/.test(mid) ? Number(mid) : null
+}
+
+/** Rotated generations of the active shard, oldest first — read-only history. */
+function rotatedShardFiles(active: string): string[] {
+  const prefix = rotationPrefix(active)
+  const dir = path.dirname(active)
+  try {
+    return fs
+      .readdirSync(dir)
+      .map((f) => ({ f, g: rotationGen(f, prefix) }))
+      .filter((x) => x.g !== null)
+      .sort((a, b) => (a.g as number) - (b.g as number))
+      .map((x) => path.join(dir, x.f))
+  } catch { return [] }
+}
+
 function shardFiles(): string[] {
-  if (!syncDir) return memPath ? [memPath] : []
+  if (!syncDir) return memPath ? [memPath, ...rotatedShardFiles(memPath)] : []
   try {
     return fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(syncDir as string, f))
-  } catch { return memPath ? [memPath] : [] }
+  } catch { return memPath ? [memPath, ...rotatedShardFiles(memPath)] : [] }
+}
+
+/** Roll the active shard over before `incoming` bytes would push it past the cap. This sits on the
+ *  append path, so it must cost nothing in steady state: the size is cached and incremented per
+ *  write, and only stat'd once per process (or after a rewrite invalidates it). */
+function rotateShardIfNeeded(incoming: number): void {
+  if (!memPath) return
+  if (activeShardBytes < 0) {
+    try { activeShardBytes = fs.statSync(memPath).size } catch { activeShardBytes = 0 }
+  }
+  if (activeShardBytes + incoming <= maxShardBytes) return
+  const prefix = rotationPrefix(memPath)
+  let next = 1
+  for (const f of rotatedShardFiles(memPath)) {
+    const g = rotationGen(f, prefix)
+    if (g !== null) next = Math.max(next, g + 1)
+  }
+  const target = memPath.replace(/\.jsonl$/, `.${next}.jsonl`)
+  try {
+    fs.renameSync(memPath, target)
+    fs.writeFileSync(memPath, '') // recreate at once, so init's existsSync(memPath) gate still holds
+  } catch (err) {
+    // Couldn't roll over — keep appending to the active shard rather than dropping the write. It
+    // stays readable (forEachShardLine streams it), it just keeps growing.
+    recordSwarmError('swarmMemory.shard.rotateFailed', err, { memPath, target })
+    activeShardBytes = -1
+    return
+  }
+  activeShardBytes = 0
+  // The rolled-off generation is history now: it is no longer `isOwn`, so the compaction gate has
+  // to stop counting it or compaction would try to rewrite lines that live in another file.
+  ownShardLines = 0
+  ownShardAddIds.clear()
+  recordAnomaly('shard-rotated', `active shard rolled over to ${path.basename(target)} at ${activeShardBytesAtRotation(target)} bytes`)
+}
+
+/** Size of the generation we just sealed — read back for the anomaly log, best effort. */
+function activeShardBytesAtRotation(target: string): number {
+  try { return fs.statSync(target).size } catch { return maxShardBytes }
 }
 
 // The byte-safe line readers (forEachShardLine / forEachBufferLine) and the V8 max-string constant
@@ -401,6 +486,7 @@ function reloadFromImpl(paths: string[]): void {
   tombstonedHashes.clear()
   for (const h of floor.tombstonedHashes) tombstonedHashes.add(h)
   lockedShards = false
+  unreadableShards = []
   corruptLinesSkipped = 0
   lockedLinesSkipped = 0
   pendingReinforce = []
@@ -461,7 +547,18 @@ function reloadFromImpl(paths: string[]): void {
           break
       }
     }
-    try { forEachShardLine(p, onLine) } catch { continue } // unreadable shard → skip it, exactly as before
+    try {
+      forEachShardLine(p, onLine)
+    } catch (err) {
+      // F31: a shard the OS won't hand us is NOT an empty shard. Swallowing this is exactly how a
+      // 2.27 GB store came up reporting zero memories and zero lessons — reloadFrom returned
+      // "success" having loaded nothing, and the dashboard's "your brain is empty" copy was
+      // indistinguishable from a brand-new install. Record it and keep the flag so the UI can say
+      // what actually happened instead of inventing a fresh brain.
+      unreadableShards.push(p)
+      recordSwarmError('swarmMemory.shard.unreadable', err, { shard: p })
+      continue
+    }
   }
   // Publish what we learned about our own shard, so compaction can be gated from memory
   // instead of by re-reading and re-decrypting the entire thing.
@@ -543,6 +640,7 @@ function reloadFromImpl(paths: string[]): void {
     if (toEmit.length > 0) appendShardLine(JSON.stringify({ clearedIds: toEmit }), 'replicate-tombstones')
   }
   if (corruptLinesSkipped > 0) recordAnomaly('corrupt-lines', `${corruptLinesSkipped} unparseable shard line(s) skipped on reload`)
+  if (unreadableShards.length > 0) recordAnomaly('unreadable-shard', `${unreadableShards.length} shard file(s) could not be read on reload — their memories are NOT loaded`)
   bumpSearchGen() // Wave2: a reload can add/drop entries (peer sync) — don't serve stale cached results
 }
 
@@ -589,6 +687,8 @@ export function initSwarmMemory(
   tombstones.clear()
   clearEpoch = 0
   lockedShards = false
+  unreadableShards = []
+  activeShardBytes = -1
   initDegraded = false
   encKey = null
   seq = 0
@@ -632,7 +732,7 @@ export function initSwarmMemory(
       // WP-F: load a device key created on a prior launch BEFORE reading, so local ciphertext
       // decrypts (otherwise encrypted lines would be skipped and the store would look empty).
       encKey = injectedKey ?? loadCachedKey()
-      if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
+      if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom(shardFiles()) }
       else fs.writeFileSync(memPath, '')
     }
   } catch (err) {
@@ -647,7 +747,7 @@ export function initSwarmMemory(
       memPath = legacyPath
       if (!encKey) encKey = injectedKey ?? loadCachedKey() // WP-F: decrypt local ciphertext on the fallback path too
       if (memPath) {
-        if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom([memPath]) }
+        if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom(shardFiles()) }
         else fs.writeFileSync(memPath, '')
       }
     } catch (err2) {
@@ -676,6 +776,9 @@ export function _resetForTests(): void {
   clearEpoch = 0
   encKey = null
   lockedShards = false
+  unreadableShards = []
+  activeShardBytes = -1
+  maxShardBytes = MAX_SHARD_BYTES
   ownShardLines = 0
   ownShardAddIds.clear()
   quantizeVectors = false
@@ -845,8 +948,14 @@ export function memoryPatchProjects(patches: Array<{ hash: string; project: stri
 /** Store stats for observability / UI: current count + the hot-window capacity, plus
  *  how many corrupt shard lines the last reload skipped (F28 — a shrinking store is no
  *  longer indistinguishable from "nothing was there"). */
-export function memoryStats(): { count: number; capacity: number; corruptLinesSkipped: number } {
-  return { count: entries.length, capacity: maxEntries, corruptLinesSkipped }
+export function memoryStats(): {
+  count: number
+  capacity: number
+  corruptLinesSkipped: number
+  /** F31: shard files the last reload could not read AT ALL (every memory in them is missing). */
+  unreadableShards: string[]
+} {
+  return { count: entries.length, capacity: maxEntries, corruptLinesSkipped, unreadableShards: [...unreadableShards] }
 }
 
 /** What the packed vector store is actually costing, and what the other mode would cost. */
@@ -915,6 +1024,9 @@ export interface MemoryDashboardStats {
   bySource: Record<string, number> // claude / codex / gemini / code / mneme / …
   lessons: number                  // semantic + procedural (the distilled, reusable knowledge)
   timeline: TimeBucket[]           // cumulative store growth over the last 12 weeks
+  /** F31: shard files the last reload could not read at all. NON-ZERO means every number above is a
+   *  floor, not the truth — the UI must say "couldn't load your brain", never "your brain is empty". */
+  unreadableShards: number
 }
 
 /** One row of the dashboard's live activity ticker. */
@@ -941,7 +1053,15 @@ export function memoryDashboardStats(): MemoryDashboardStats {
     items.push({ ts: e.ts, lesson })
   }
   const timeline = weeklyGrowth(items, Date.now(), 12)
-  return { total: entries.length, capacity: maxEntries, byType, bySource, lessons, timeline }
+  return {
+    total: entries.length,
+    capacity: maxEntries,
+    byType,
+    bySource,
+    lessons,
+    timeline,
+    unreadableShards: unreadableShards.length,
+  }
 }
 
 /** The most recent memory operations, newest first — the dashboard's live ticker. Reads
@@ -1299,6 +1419,8 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {}): boolean {
   if (!memPath) return false
   const line = (encKey ? encryptLine(encKey, raw) : raw) + '\n'
+  const bytes = Buffer.byteLength(line)
+  rotateShardIfNeeded(bytes) // F31: roll over BEFORE the write, so this line's id belongs to the new shard
   try {
     if (opts.fsync) {
       const fd = fs.openSync(memPath, 'a')
@@ -1307,6 +1429,7 @@ function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {
       fs.appendFileSync(memPath, line)
     }
     ownShardLines++ // keep the compaction gate answerable without reading the file back
+    if (activeShardBytes >= 0) activeShardBytes += bytes
     return true
   } catch (err) {
     // Append failure means this swarm fact never reaches disk — agents would lose
@@ -2666,6 +2789,7 @@ export interface SyncStatus {
   locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
   degraded: boolean  // F5: init failed and fell back to a local writable store (sync unavailable)
   corruptLinesSkipped: number // F28: unparseable shard lines dropped on the last reload
+  unreadableShards: number    // F31: shard files the last reload couldn't open/read at all
   embeddings: EmbeddingsStatus // honest tri-state — must not imply healthy before the first embed
 }
 
@@ -2703,7 +2827,8 @@ export function reloadMemoryFromSync(): void {
 export function getSyncStatus(): SyncStatus {
   let devices = 0
   if (syncDir) {
-    try { devices = fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).length } catch { devices = 0 }
+    // F31: `<device>.<n>.jsonl` are rotated generations of ONE device's shard, not extra machines.
+    try { devices = fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl') && !/\.\d+\.jsonl$/.test(f)).length } catch { devices = 0 }
   }
   return {
     syncing: !!syncDir,
@@ -2715,6 +2840,7 @@ export function getSyncStatus(): SyncStatus {
     locked: lockedShards,
     degraded: initDegraded,
     corruptLinesSkipped,
+    unreadableShards: unreadableShards.length,
     embeddings: embeddingsStatus(),
   }
 }
@@ -3030,6 +3156,7 @@ function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean;
     recordSwarmError('swarmMemory.compact.failed', err, { memPath })
     return { compacted: false, before, after: before }
   }
+  activeShardBytes = -1 // the shard was rewritten from scratch — re-stat on the next append
   reloadFrom(shardFiles())
   return { compacted: true, before, after }
 }

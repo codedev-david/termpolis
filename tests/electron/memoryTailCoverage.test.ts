@@ -25,6 +25,9 @@ vi.mock('../../src/main/telemetry', () => ({ recordSwarmError: tele.recordSwarmE
 const failIO = vi.hoisted(() => ({
   appendFileSync: null as null | ((p: unknown) => boolean),
   readFileSync: null as null | ((p: unknown) => boolean),
+  // F31: JSONL stores are STREAMED (openSync + chunked readSync), so breaking a shard/archive read
+  // means refusing the open — readFileSync is no longer on that path at all.
+  openSync: null as null | ((p: unknown) => boolean),
   writeFileSync: null as null | ((p: unknown) => boolean),
   renameSync: null as null | ((from: unknown, to: unknown) => boolean),
   rmSync: null as null | ((p: unknown) => boolean),
@@ -40,6 +43,10 @@ vi.mock('fs', async (importOriginal) => {
     appendFileSync: (...args: unknown[]): unknown => {
       if (failIO.appendFileSync?.(args[0])) throw new Error('ENOSPC: no space left on device')
       return call(actual.appendFileSync, args)
+    },
+    openSync: (...args: unknown[]): unknown => {
+      if (failIO.openSync?.(args[0])) throw new Error('EIO: file is offline / not materialized')
+      return call(actual.openSync, args)
     },
     readFileSync: (...args: unknown[]): unknown => {
       if (failIO.readFileSync?.(args[0])) throw new Error('EIO: file is offline / not materialized')
@@ -165,6 +172,7 @@ beforeEach(() => {
   tele.recordSwarmError.mockClear()
   failIO.appendFileSync = null
   failIO.readFileSync = null
+  failIO.openSync = null
   failIO.writeFileSync = null
   failIO.renameSync = null
   failIO.rmSync = null
@@ -180,6 +188,7 @@ beforeEach(() => {
 afterEach(() => {
   failIO.appendFileSync = null
   failIO.readFileSync = null
+  failIO.openSync = null
   failIO.writeFileSync = null
   failIO.renameSync = null
   failIO.rmSync = null
@@ -954,9 +963,9 @@ describe('swarmMemory — init and archive degrade instead of dying', () => {
     _resetForTests()
     _setEmbedFnForTests(bagEmbed)
     initSwarmMemory(userDir)
-    failIO.readFileSync = (p) => typeof p === 'string' && p === archiveFile()
+    failIO.openSync = (p) => typeof p === 'string' && p === archiveFile()
     expect(searchArchive('rollback gateways')).toEqual([])
-    failIO.readFileSync = null
+    failIO.openSync = null
   })
 })
 

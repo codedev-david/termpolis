@@ -555,6 +555,11 @@ export interface MemoryMetrics {
     bySource: Record<string, number>
     lessons: number
     timeline: Array<{ t: number; total: number; lessons: number }>
+    /** F31: shard files the last reload could not read AT ALL. Non-zero means every number in
+     *  `store` is a FLOOR, not the truth — memories exist on disk that never made it into RAM.
+     *  Optional so a main process that predates the field (stale utility process mid-upgrade)
+     *  still deserialises; absent is read as 0. */
+    unreadableShards?: number
   }
   graph: { nodes: number; edges: number; byRelation: Record<string, number> }
   competence: Array<{ domain: string; attempts: number; confidence: number }>
