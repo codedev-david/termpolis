@@ -1,7 +1,6 @@
 import { summarizeSavings, type SavingsTotals } from './savingsLedger'
 import { summarizeProxySavings, type ProxyTotals } from '../headroomProxy/proxyLedger'
 import { billBreakdown, type BillBreakdown } from './effectiveUnits'
-import { ccrStats } from './ccrStore'
 import { depthAdvice, type DepthAdvice } from './sessionDepth'
 
 /**
@@ -56,6 +55,9 @@ export interface UnifiedTotals {
   /** `retrieve_full` calls that found nothing. Must stay 0 — every elision is a promise that the
    *  original can be brought back, and a non-zero value here means content was destroyed. */
   retrieveMisses: number
+  /** `retrieve_full` calls for a token shape this app never mints — a mistyped or invented handle.
+   *  Kept apart from `retrieveMisses` because it says nothing about whether content survived. */
+  retrieveBadTokens: number
   /** The prefix head, per request, in tokens: the system prompt and the tool schemas that sit in
    *  front of `messages` and are re-sent every turn. No compression layer touches them, which is
    *  precisely why they belong on the receipt — this is the part of the bill Headroom does NOT
@@ -132,7 +134,8 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     // denominator. Only the proxy counters are priced here — the tool-layer ledger never touches
     // the wire, so its savings show up as prefix tokens that were never sent.
     bill: billBreakdown(proxy, netSavedTokens),
-    retrieveMisses: ccrStats().misses,
+    retrieveMisses: tool.retrieveMisses,
+    retrieveBadTokens: tool.retrieveBadTokens,
     sysTokensPerRequest: perRequestTokens(proxy.sysChars, proxy.requests),
     toolsTokensPerRequest: perRequestTokens(proxy.toolsChars, proxy.requests),
     tpToolsTokensPerRequest: perRequestTokens(proxy.tpToolsChars, proxy.requests),

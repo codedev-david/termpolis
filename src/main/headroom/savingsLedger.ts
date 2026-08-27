@@ -23,11 +23,15 @@ export interface SavingsTotals {
   origTokens: number
   givebackTokens: number
   retrieves: number
+  /** retrieve_full calls that resolved nothing — an elision we could not honour. Must stay 0. */
+  retrieveMisses: number
+  /** retrieve_full calls for a token shape we never mint. Not lost content; a prompting artefact. */
+  retrieveBadTokens: number
 }
 export interface SavingsReceipt { session: SavingsTotals; cumulative: SavingsTotals }
 
 function emptyTotals(): SavingsTotals {
-  return { netSaved: 0, events: 0, byTool: {}, origTokens: 0, givebackTokens: 0, retrieves: 0 }
+  return { netSaved: 0, events: 0, byTool: {}, origTokens: 0, givebackTokens: 0, retrieves: 0, retrieveMisses: 0, retrieveBadTokens: 0 }
 }
 
 let session: SavingsTotals = emptyTotals()
@@ -73,6 +77,18 @@ export function recordEvent(ev: LedgerEvent): void {
   try { flush?.() } catch { /* best effort */ }
 }
 
+/**
+ * Record a retrieve_full that came back empty, split by whether the token was one we could have
+ * issued. Kept in the ledger rather than read live off `ccrStats()` so the receipt's session and
+ * cumulative columns mean what they say: a process-lifetime counter shown under "all time" made
+ * every restart look like a clean slate, and every miss look like it had just happened.
+ */
+export function recordRetrieveFailure(kind: 'miss' | 'badToken'): void {
+  if (kind === 'miss') session.retrieveMisses += 1
+  else session.retrieveBadTokens += 1
+  try { flush?.() } catch { /* best effort */ }
+}
+
 export function summarizeSavings(): SavingsReceipt {
   const cumulative: SavingsTotals = {
     netSaved: cumulativeBase.netSaved + session.netSaved,
@@ -81,6 +97,8 @@ export function summarizeSavings(): SavingsReceipt {
     origTokens: cumulativeBase.origTokens + session.origTokens,
     givebackTokens: cumulativeBase.givebackTokens + session.givebackTokens,
     retrieves: cumulativeBase.retrieves + session.retrieves,
+    retrieveMisses: cumulativeBase.retrieveMisses + session.retrieveMisses,
+    retrieveBadTokens: cumulativeBase.retrieveBadTokens + session.retrieveBadTokens,
   }
   for (const [k, v] of Object.entries(session.byTool)) {
     cumulative.byTool[k] = (cumulative.byTool[k] ?? 0) + v

@@ -139,7 +139,9 @@ describe('ccr store — byte cap', () => {
 
   it('ships with caps sized for a real working history, not a toy', () => {
     expect(CCR_MAX_BYTES).toBe(200 * 1024 * 1024)
-    expect(CCR_MAX_ENTRY_BYTES).toBe(8 * 1024 * 1024)
+    // 64 MB, not 8: an entry over the cap is memory-only, and memory-only is the ONLY state in
+    // which this store can lose content. The cap must sit above anything we realistically elide.
+    expect(CCR_MAX_ENTRY_BYTES).toBe(64 * 1024 * 1024)
     expect(CCR_MAX_ENTRIES).toBe(512)
   })
 
@@ -229,8 +231,31 @@ describe('ccr store — byte cap', () => {
   it('records a miss when a token redeems nothing', () => {
     // The number that can falsify the whole scheme. An elision the store cannot reverse is
     // content destroyed, and without this counter it would be destroyed silently.
-    ccrRetrieve('hr_never_issued')
+    ccrRetrieve('hr_0123456789abcdef')
     expect(ccrStats().misses).toBe(1)
     expect(ccrStats().memHits + ccrStats().diskHits).toBe(0)
+  })
+
+  it('does NOT count a token shape it never mints as a miss', () => {
+    ccrRetrieve('hr_NotAShapeWeMint')
+    expect(ccrStats().badTokens).toBe(1)
+    expect(ccrStats().misses).toBe(0)
+  })
+
+  it('still resolves a caller-supplied token of an odd shape', () => {
+    ccrPut('hr_legacyCallerToken', { v: 1 })
+    expect(ccrRetrieve('hr_legacyCallerToken')).toEqual({ v: 1 })
+    expect(ccrStats().badTokens).toBe(0)
+  })
+
+  it('pins an entry the disk refused, so the LRU cannot drop the only copy', () => {
+    _setCcrLimits(CCR_MAX_BYTES, 8) // 8-byte entry cap: everything is now memory-only
+    const t = ccrStash({ v: 'too big for the disk cap' })
+    expect(ccrStats().memoryOnlyEntries).toBe(1)
+    expect(ccrStats().diskEntries).toBe(0)
+    _setCcrLimits(CCR_MAX_BYTES, CCR_MAX_ENTRY_BYTES) // everything after this IS durable
+    for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_${i.toString(16).padStart(16, '0')}`, i)
+    expect(ccrRetrieve(t)).toEqual({ v: 'too big for the disk cap' })
+    expect(ccrStats().unbackedEvictions).toBe(0)
   })
 })

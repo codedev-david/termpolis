@@ -49,7 +49,7 @@ describe('savingsLedger — pre-1.34 baseline migration', () => {
   it('tolerates a file missing every new field', () => {
     loadCumulativeBase({ netSaved: 42 })
     const c = summarizeSavings().cumulative
-    expect(c).toEqual({ netSaved: 42, events: 0, byTool: {}, origTokens: 0, givebackTokens: 0, retrieves: 0 })
+    expect(c).toEqual({ netSaved: 42, events: 0, byTool: {}, origTokens: 0, givebackTokens: 0, retrieves: 0, retrieveMisses: 0, retrieveBadTokens: 0 })
   })
 
   it("does not alias the caller's byTool object", () => {

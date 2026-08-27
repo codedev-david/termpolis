@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 const { summarizeUnifiedSavings } = await import('../../src/main/headroom/unifiedReceipt')
-import { recordEvent, resetLedger, loadCumulativeBase } from '../../src/main/headroom/savingsLedger'
+import { recordEvent, resetLedger, loadCumulativeBase, recordRetrieveFailure } from '../../src/main/headroom/savingsLedger'
 import { resetProxyLedger, loadProxyBase, recordProxyGiveback, recordProxyResult } from '../../src/main/headroomProxy/proxyLedger'
 import type { ProxyResultMsg } from '../../src/main/headroomProxy/proxySupervisor'
 
@@ -129,5 +129,17 @@ describe('unified receipt — both wire surfaces', () => {
     expect(cumulative.grossSavedTokens).toBe(2250)
     expect(cumulative.netSavedTokens).toBe(2000)
     expect(cumulative.retrieves).toBe(1)
+  })
+
+  it('reports retrieve misses per-session AND all-time, which were once the same number', () => {
+    // The count came off a module-global that resets with the process, and it was injected into
+    // BOTH columns — so "all time" silently meant "since launch" and every restart read clean.
+    loadCumulativeBase({ retrieveMisses: 3 })
+    recordRetrieveFailure('miss')
+    recordRetrieveFailure('badToken')
+    const r = summarizeUnifiedSavings()
+    expect(r.session.retrieveMisses).toBe(1)
+    expect(r.cumulative.retrieveMisses).toBe(4)
+    expect(r.session.retrieveBadTokens).toBe(1)
   })
 })

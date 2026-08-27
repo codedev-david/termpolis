@@ -354,6 +354,27 @@ function compactOrDedup(
   return { text: out, changed }
 }
 
+/**
+ * Record a block in `seen` WITHOUT rewriting it — the index half of compactOrDedup, split out for
+ * the fields that must ride the wire verbatim (TOOL_USE_VERBATIM).
+ *
+ * A file body the agent wrote has to arrive byte-for-byte, but it is still the best possible dedup
+ * key and diff base for the tool_result that re-reads that same file a few turns later — and a
+ * tool_result IS safe to compress. Indexing it here keeps the "wrote it, then read it — paid for
+ * once, not twice" collapse working, which simply skipping the field would have silently lost.
+ *
+ * The key and candidate are derived from the ORIGINAL text at the same point in the left-to-right
+ * walk where compactOrDedup would have added them, so the index state — and therefore every later
+ * block's output — is byte-identical to before. Determinism and cache-stability are unaffected.
+ */
+function noteSeen(text: string, seen: SeenIndex): void {
+  if (text.length < wireWindow.floorChars) return
+  const key = detToken(text)
+  if (seen.keys.has(key)) return // already indexed by an earlier identical block
+  seen.keys.add(key)
+  seen.blocks.push(makeCandidate(text))
+}
+
 function compressImageBlock(block: { source?: { type?: string; media_type?: string; data?: string } }, compressImage: ImageCompressor, stats: WireStats): boolean {
   const src = block.source
   if (!src || src.type !== 'base64' || typeof src.data !== 'string') return false
@@ -373,17 +394,62 @@ function compressImageBlock(block: { source?: { type?: string; media_type?: stri
 const TOOL_USE_SKIP = new Set(['file_path', 'path', 'notebook_path', 'url', 'pattern', 'glob'])
 
 /**
- * Compress the bulk string fields of a historical `tool_use` block — the agent's OWN output:
- * every file body it wrote, every Edit's old_string/new_string, every heredoc it ran.
+ * Fields whose bytes the agent COPIES FORWARD into the real world, and which therefore must survive
+ * byte-for-byte no matter how large they get.
  *
- * This was the largest untouched slice on the wire. Output tokens are billed once at generation
- * (5x, and nothing here can change that), but they then live in the prefix and are re-read as
- * cache-read tokens on EVERY later turn. Those re-reads were paying full freight.
+ * The distinction that makes tool_result compression safe does not hold here. A tool_result is
+ * OBSERVED DATA: the model knows it did not author it, and calls retrieve_full when it needs the
+ * exact bytes back. A tool_use input is AUTHORED INTENT: the model treats its own prior Write/Edit/
+ * Bash input as the record of what it meant, reproduces it verbatim on a later turn, and has no
+ * reason to suspect the bytes were rewritten underneath it.
  *
- * Cache-safe by the same argument as tool_result: deterministic, shrink-only, and byte-stable
- * across turns, so the re-sent prefix keeps hashing the same. Reversible via retrieve_full.
- * Every tool_use in a request body is by definition a PRIOR action (the current turn's has not
- * been generated yet), so this never touches an in-flight call.
+ * So eliding these does not shrink history — it REWRITES it, and the elision marker becomes a real
+ * artifact. Both of these are from one live session (2026-08-25):
+ *
+ *     /usr/bin/bash: line 37: [headroom]: command not found
+ *     File "apex3.py", line 8: SyntaxError: invalid character '…' (U+2026)
+ *
+ * The model had re-emitted "… [20 lines elided] …" and the "[headroom] Full result cached" footer
+ * into a real Python file and a real shell command. Each such turn is a red tool error, a retry off
+ * the same poisoned history, and a retrieve_full round-trip — which is why the give-back ledger ran
+ * NET NEGATIVE (-7,970,560 tokens) instead of paying for itself.
+ *
+ * Keeping them whole costs ~1.7% of measured savings (tool_use was 22.5M of 1.34B saved tokens) and
+ * removes the entire failure class. The remaining tool_use fields — descriptions, prompts, MCP tool
+ * bodies — are still compressed, and identifiers are still skipped above.
+ */
+const TOOL_USE_VERBATIM = new Set([
+  'content',      // Write — the file body, replayed onto disk
+  'command',      // Bash — replayed into a shell, heredocs and all
+  'old_string',   // Edit — must match the file EXACTLY or the edit fails
+  'new_string',   // Edit — replayed into the file
+  'new_source',   // NotebookEdit — replayed into the cell
+  'old_source',
+  'replace_all',
+  'edits',        // MultiEdit — an array today, a string if ever serialized
+  // Anthropic's built-in text_editor tool and Codex's apply_patch reach the same files through
+  // different field names. Same replay, same consequence — the set is keyed on behaviour, not on
+  // which client happens to be in front of the proxy.
+  'file_text',    // text_editor create — the whole file body
+  'old_str',      // text_editor str_replace — must match the file EXACTLY
+  'new_str',      // text_editor str_replace — replayed into the file
+  'patch',        // apply_patch — a unified diff applied verbatim
+])
+
+/**
+ * Compress the bulk string fields of a historical `tool_use` block — the agent's OWN output —
+ * EXCEPT the artifact-bearing fields listed in TOOL_USE_VERBATIM, which are copied forward into
+ * real files and real shell commands and must therefore arrive byte-for-byte.
+ *
+ * Output tokens are billed once at generation (5x, and nothing here can change that), but they then
+ * live in the prefix and are re-read as cache-read tokens on EVERY later turn. Those re-reads were
+ * paying full freight.
+ *
+ * Cache-safe: deterministic, shrink-only, and byte-stable across turns, so the re-sent prefix keeps
+ * hashing the same. Reversible via retrieve_full. Every tool_use in a request body is by definition
+ * a PRIOR action (the current turn's has not been generated yet), so this never touches an in-flight
+ * call — but "prior" is NOT the same as "finished with", which is what TOOL_USE_VERBATIM exists to
+ * say: the agent re-reads and replays its own prior inputs.
  */
 function compressToolUseInput(
   block: { input?: unknown },
@@ -409,6 +475,12 @@ function compressToolUseInput(
   for (const k of Object.keys(rec)) {
     if (TOOL_USE_SKIP.has(k)) continue
     const v = rec[k]
+    // Artifact-bearing field: index it as a dedup key / diff base for the tool_results that follow,
+    // but hand the bytes on untouched. Never counted as compressible material — it isn't.
+    if (TOOL_USE_VERBATIM.has(k)) {
+      if (typeof v === 'string') noteSeen(v, seen)
+      continue
+    }
     // Only fields at/above the compaction floor are candidates — below it compactOrDedup is a
     // provable no-op, so counting them would just dilute the ratio with incompressible tare.
     if (typeof v !== 'string' || v.length < wireWindow.floorChars) continue

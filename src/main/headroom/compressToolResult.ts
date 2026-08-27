@@ -2,8 +2,8 @@ import { estimateTokens } from '../memoryEconomy'
 import { getSettings, thresholdsFor, MAX_COMPRESS_BYTES } from './config'
 import { route } from './router'
 import { compressArray, compressObject, type Compressed } from './compressors'
-import { ccrStash, ccrRetrieveRecord, ccrMarkRedeemed } from './ccrStore'
-import { recordEvent } from './savingsLedger'
+import { ccrStash, ccrRetrieveRecord, ccrMarkRedeemed, ccrIsIssuableToken } from './ccrStore'
+import { recordEvent, recordRetrieveFailure } from './savingsLedger'
 import { recordProxyGiveback } from '../headroomProxy/proxyLedger'
 
 function footer(token: string): string {
@@ -62,7 +62,10 @@ export function compressToolResult(name: string, result: unknown): string {
  */
 export function retrieveFull(token: string): unknown {
   const rec = ccrRetrieveRecord(token)
-  if (rec === undefined) return { error: 'expired', message: 'This result has expired — re-run the original tool.' }
+  if (rec === undefined) {
+    recordRetrieveFailure(ccrIsIssuableToken(token) ? 'miss' : 'badToken')
+    return { error: 'expired', message: 'This result has expired — re-run the original tool.' }
+  }
   // Billed on the FIRST redemption only. One token stands for one compression event, so its
   // give-back can only be given back once — but an agent re-reads a token freely (a retry after a
   // failed turn, a second reference to the same result), and charging each of those reversed

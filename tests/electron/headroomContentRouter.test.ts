@@ -229,7 +229,10 @@ describe('hint plumbing', () => {
     expect(withPath).not.toBe(noPath)
   })
 
-  it('outlines what the agent WROTE, using the Write block\'s own file_path', () => {
+  it('refuses to outline what the agent WROTE — that body gets replayed onto disk', () => {
+    // The router is happy to outline this content, and for a tool_RESULT it does. A Write's own
+    // `content` is different in kind: the agent copies it forward, so an outline of it becomes the
+    // file. See TOOL_USE_VERBATIM in wireCompress.ts for the field report this comes from.
     const src = tsFile(8)
     const body = JSON.stringify({
       model: 'claude-x',
@@ -239,14 +242,13 @@ describe('hint plumbing', () => {
       }],
     })
     const r = rewriteMessagesBody(body)
-    expect(r.changed).toBe(true)
+    expect(r.changed).toBe(false)
     const written = (JSON.parse(r.body) as {
       messages: Array<{ content: Array<{ input: { content: string; file_path: string } }> }>
     }).messages[0].content[0].input
-    expect(written.file_path).toBe('src/out.ts') // the path itself is never touched
-    expect(written.content).toContain('export async function handler7')
-    expect(written.content).not.toContain('const step7 = await readFile')
-    expect(r.stats.tuOrigChars).toBe(src.length)
+    expect(written.file_path).toBe('src/out.ts')
+    expect(written.content).toBe(src) // byte for byte — bodies, not outlines, reach the disk
+    expect(r.stats.tuOrigChars).toBe(0) // and it is not counted as compressible material
   })
 })
 

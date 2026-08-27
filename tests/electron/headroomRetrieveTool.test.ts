@@ -77,4 +77,16 @@ describe('retrieve_full tool', () => {
     expect(summarizeProxySavings().session.givebackTokens).toBe(once)
     expect(summarizeProxySavings().session.retrieves).toBe(1)
   })
+
+  it('books a real miss on the LEDGER, not on a process-lifetime counter', () => {
+    retrieveFull('hr_0123456789abcdef') // our own shape, never stashed → a broken promise
+    expect(summarizeSavings().session.retrieveMisses).toBe(1)
+    expect(summarizeSavings().session.retrieveBadTokens).toBe(0)
+  })
+
+  it('does not raise the alarm for a token shape it never issued', () => {
+    retrieveFull('hr_madeUpByTheModel')
+    expect(summarizeSavings().session.retrieveMisses).toBe(0)
+    expect(summarizeSavings().session.retrieveBadTokens).toBe(1)
+  })
 })

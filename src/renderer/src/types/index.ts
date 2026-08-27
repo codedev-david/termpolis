@@ -232,6 +232,9 @@ export interface UnifiedTotalsView {
   /** `retrieve_full` calls that found nothing. Any value above 0 means an elision was not
    *  reversible after all — surfaced as an alarm, never rounded away. */
   retrieveMisses: number
+  /** `retrieve_full` calls for a token shape the app never mints — a mistyped or invented handle.
+   *  Separate from `retrieveMisses`: it says nothing about whether content survived. */
+  retrieveBadTokens: number
   /** Prefix head (system prompt + tool schemas), per request, in tokens — the slice no
    *  compression layer touches. Shown so the receipt states its own limits. */
   sysTokensPerRequest: number

@@ -180,8 +180,15 @@ export function TokenSavingsSettings() {
             promise broken. It is never rolled into a percentage — one is worth seeing. */}
         {(unified?.cumulative.retrieveMisses ?? 0) > 0 && (
           <div style={{ marginTop: 10, fontSize: 13, color: '#f87171' }} data-testid="hr-retrieve-misses">
-            <b>{fmt(unified?.cumulative.retrieveMisses ?? 0)}</b> retrieve_full {(unified?.cumulative.retrieveMisses ?? 0) === 1 ? 'call' : 'calls'} found nothing —
-            compressed content could not be restored. Report this; it should never happen.
+            <b>{fmt(unified?.cumulative.retrieveMisses ?? 0)}</b> retrieve_full {(unified?.cumulative.retrieveMisses ?? 0) === 1 ? 'call' : 'calls'} found nothing, all time
+            ({fmt(unified?.session.retrieveMisses ?? 0)} this session) — compressed content could not be restored. Report this; it should never happen.
+          </div>
+        )}
+
+        {(unified?.cumulative.retrieveBadTokens ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }} data-testid="hr-retrieve-bad-tokens">
+            {fmt(unified?.cumulative.retrieveBadTokens ?? 0)} <code>retrieve_full</code> calls used a token this app never issued — a
+            mistyped or invented handle, not lost content. Nothing to report.
           </div>
         )}
 
