@@ -245,9 +245,17 @@ test('17. Verify MCP server tools via HTTP', async () => {
   }
   const token = fs.readFileSync(tokenPath, 'utf-8').trim()
 
+  // Read the port the app actually bound rather than assuming the base one. When an earlier
+  // Electron instance in the same run still holds 9315 the server steps to 9316 and says so
+  // ("MCP port 9315 in use, trying 9316"), and a hardcoded 9315 then talks to the wrong app
+  // — or to nothing — and gets a response with no `result`. The app writes the real port
+  // next to the token for exactly this reason.
+  const portPath = path.join(e2eUserDataDir('swarm-e2e'), 'mcp-port')
+  const port = fs.existsSync(portPath) ? fs.readFileSync(portPath, 'utf-8').trim() : '9315'
+
   // Call list_terminals via MCP
-  const result = await page.evaluate(async (authToken: string) => {
-    const res = await fetch('http://127.0.0.1:9315/mcp', {
+  const result = await page.evaluate(async ([authToken, mcpPort]: [string, string]) => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -261,7 +269,7 @@ test('17. Verify MCP server tools via HTTP', async () => {
       }),
     })
     return res.json()
-  }, token)
+  }, [token, port] as [string, string])
 
   console.log('[MCP list_terminals]', JSON.stringify(result))
   expect(result.result).toBeDefined()

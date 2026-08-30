@@ -314,7 +314,15 @@ export interface TermpolisAPI {
   getTerminalStatus: (terminalId: string, fallbackCwd: string) => Promise<IpcResponse<{ cwd: string; gitBranch: string }>>
   getGitInfo: (cwd: string) => Promise<IpcResponse<{ status: string; recentCommits: string }>>
   getGitDiff: (cwd: string) => Promise<IpcResponse<string>>
-  readTerminalBuffer: (terminalId: string, fromOffset?: number) => Promise<IpcResponse<{ output: string; length: number }>>
+  /** Reads forward from an absolute offset in the terminal's output stream. Pass
+   *  `nextOffset` back on the following call; `missed` is how many chars were evicted
+   *  before this read reached them. */
+  readTerminalBuffer: (
+    terminalId: string,
+    fromOffset?: number,
+  ) => Promise<
+    IpcResponse<{ output: string; length: number; nextOffset: number; missed: number }>
+  >
 
   // Git operations
   gitFindRoot: (cwd: string) => Promise<IpcResponse<string | null>>

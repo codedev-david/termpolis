@@ -72,6 +72,21 @@ async function createTerminal(name: string) {
   await page.waitForTimeout(1500)
 }
 
+/** Read a terminal's text out of xterm's own buffer via the renderer's read-only test hook.
+ *
+ *  NOT `.textContent`: xterm only fills the DOM when it falls back to the DOM renderer, which
+ *  is what happens on GPU-less CI runners. With hardware WebGL — i.e. on any developer's
+ *  actual machine — the addon paints to a canvas and `.xterm` holds no text, so textContent
+ *  assertions passed in CI and failed locally. The buffer is identical under both renderers. */
+async function terminalText(page: Page, terminalId?: string): Promise<string> {
+  return await page.evaluate(
+    (id) =>
+      (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+        .__termpolis_terminal_text?.(id) ?? '',
+    terminalId,
+  )
+}
+
 test.describe.serial('In-terminal find bar', () => {
   // Proves MY integration end-to-end against a REAL xterm: the rebindable keybinding
   // opens the find bar, the component mounts + auto-focuses, the input + nav/option
@@ -89,7 +104,9 @@ test.describe.serial('In-terminal find bar', () => {
     await xterm.focus()
     await page.keyboard.type('echo hello-from-search-terminal')
     await page.keyboard.press('Enter')
-    await expect(page.locator('.xterm').first()).toContainText('hello-from-search-terminal', { timeout: 20000 })
+    await expect
+      .poll(() => terminalText(page), { timeout: 20_000 })
+      .toContain('hello-from-search-terminal')
 
     // The keybinding opens the find bar (the TerminalPane wiring).
     await xterm.focus()

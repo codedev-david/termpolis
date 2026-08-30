@@ -32,6 +32,23 @@ let isolatedUserData: string
 
 const MARKER = 'termpolis_paste_e2e_marker_42'
 
+/** Read the visible terminal's text out of xterm's own buffer via the renderer's read-only
+ *  test hook.
+ *
+ *  NOT `.xterm-rows`: that element is created by xterm's DOM renderer, which only runs when
+ *  there is no hardware WebGL — i.e. on CI's GPU-less runners. On a real GPU the WebGL addon
+ *  paints to a canvas, `.xterm-rows` does not exist at all, and these assertions failed with
+ *  "element(s) not found" on every developer machine while passing in CI. The buffer is
+ *  identical under both renderers — and it is the same model `term.getSelection()` reads, so
+ *  asserting against it is closer to what Copy actually copies. */
+async function terminalText(): Promise<string> {
+  return await page.evaluate(
+    () =>
+      (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+        .__termpolis_terminal_text?.() ?? '',
+  )
+}
+
 test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
   test.setTimeout(120_000)
 
@@ -101,7 +118,7 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     await menu.locator('button:has-text("Paste")').click()
 
     // The marker is echoed by the shell on the input line.
-    await expect(page.locator('.xterm-rows')).toContainText(MARKER, { timeout: 15000 })
+    await expect.poll(terminalText, { timeout: 15000 }).toContain(MARKER)
   })
 
   // --- COPY: select terminal text, press a RESERVED Copy hotkey, read the REAL OS
@@ -123,7 +140,7 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     await page.keyboard.press('Enter')
     await page.waitForTimeout(500)
     await page.keyboard.type(marker)     // lands on the (now top) input line
-    await expect(page.locator('.xterm-rows')).toContainText(marker, { timeout: 8000 })
+    await expect.poll(terminalText, { timeout: 8000 }).toContain(marker)
     const box = await page.locator('.xterm-screen').first().boundingBox()
     if (!box) throw new Error('no .xterm-screen bounding box')
     const pt = { x: box.x + 40, y: box.y + 8 } // first text row

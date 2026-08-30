@@ -166,6 +166,55 @@ const TERMINAL_DISPOSE_DELAY_MS = 50
 // weakly so a forgotten entry can never pin a Terminal (and its DOM) in memory.
 const terminalOwners = new WeakMap<Terminal, object>()
 
+// Live terminals by id, plus a read-only window hook that reads their text out of xterm's
+// own buffer.
+//
+// WHY THIS EXISTS: e2e tests used to assert on `.xterm`'s textContent, which only works when
+// xterm falls back to the DOM renderer — i.e. only on GPU-less CI runners. On any machine
+// with hardware WebGL the addon paints to a canvas and that element has no text at all, so
+// those assertions passed in CI and failed on every developer's desktop. The buffer is the
+// same on both renderers, so ask it instead of asking the DOM.
+interface LiveTerminal {
+  term: Terminal
+  container: HTMLElement | null
+}
+const liveTerminals = new Map<string, LiveTerminal>()
+
+/** With no id, answer for the terminal the user is actually looking at. In tab mode the
+ *  inactive panes stay mounted with `visibility: hidden`, so "the first one" and "the one on
+ *  screen" are different terminals and only the second is the one a test means. */
+function activeTerminal(): LiveTerminal | undefined {
+  const live = [...liveTerminals.values()]
+  const visible = live.find(({ container }) =>
+    typeof container?.checkVisibility === 'function'
+      ? container.checkVisibility({ visibilityProperty: true })
+      : false,
+  )
+  return visible ?? live[0]
+}
+
+/** Read a terminal's visible text from xterm's buffer, independent of which renderer is
+ *  painting it. Trailing whitespace is trimmed per line and trailing blank lines dropped, so
+ *  a mostly-empty 80x24 grid does not read as thousands of spaces. */
+function readTerminalText(terminalId?: string): string {
+  const entry = terminalId ? liveTerminals.get(terminalId) : activeTerminal()
+  const term = entry?.term
+  if (!term) return ''
+  const buf = term.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buf.length; i++) {
+    lines.push(buf.getLine(i)?.translateToString(true) ?? '')
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines.join('\n')
+}
+
+if (typeof window !== 'undefined') {
+  // Read-only test inspection hook — used by e2e terminal tests.
+  ;(window as unknown as { __termpolis_terminal_text?: typeof readTerminalText }).__termpolis_terminal_text =
+    readTerminalText
+}
+
 function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -764,6 +813,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // Claim the instance so a deferred dispose left over from an earlier mount can see that
     // a live pane has taken it over.
     terminalOwners.set(term, mountToken)
+    liveTerminals.set(terminalId, { term, container: containerRef.current })
 
     onTerminalReady?.(term)
 
@@ -1243,6 +1293,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       setTimeout(() => {
         // A remount inside the delay hands the instance to a live pane, and two cleanups can
         // race for one instance; only the mount that still owns it may destroy it.
+        if (liveTerminals.get(terminalId)?.term === term) liveTerminals.delete(terminalId)
         if (terminalOwners.get(term) !== mountToken) return
         terminalOwners.delete(term)
         // xterm's WebGL addon can throw during teardown: when a terminal is created

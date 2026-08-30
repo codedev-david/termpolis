@@ -115,61 +115,22 @@ async function writeToTerminal(text: string) {
   await page.keyboard.press('Enter')
 }
 
-/**
- * Read the terminal buffer output via IPC readTerminalBuffer for a given terminal name.
- * Finds the terminal ID from the sidebar close buttons' aria-labels, then reads the buffer.
- * Falls back to reading .xterm-rows text content if IPC fails.
- */
-async function getTerminalOutput(terminalName: string): Promise<string> {
-  // Try reading via the IPC readTerminalBuffer (returns clean text without CSS)
-  const output = await page.evaluate(async (name: string) => {
-    // Find terminal ID from the sidebar DOM -- each close button has aria-label="Close {name}"
-    // and the terminal row has a data attribute or we can match via the store
-    // Strategy: iterate all aside buttons to find the terminal, then get its ID from the store
-    // We don't have direct store access, but we can use termpolis API to read buffers
-    // So we need the terminal ID. Let's find it from the sidebar row structure.
-    const aside = document.querySelector('aside')
-    if (!aside) return ''
-    const closeBtn = aside.querySelector(`button[aria-label="Close ${name}"]`)
-    if (!closeBtn) return ''
-    // The terminal row is the parent container. The terminal ID is embedded in the store.
-    // We need another approach: read all terminal buffers and match.
-    // Actually, let's just get terminal IDs from the store via a different method.
-    return ''
-  }, terminalName)
-
-  // If IPC approach didn't work, fall back to reading xterm-rows text content
-  // The .xterm-rows div contains just the rendered text rows, not the CSS styles
-  const rowsText = await page.locator('.xterm-rows').first().textContent() ?? ''
-  return rowsText
-}
-
-/**
- * Read terminal content from the visible .xterm-rows element.
- * In tab mode, inactive terminals have visibility:hidden on their parent.
- * We find the .xterm-rows whose ancestor is visible.
- */
+/** Read a terminal's text out of xterm's own buffer via the renderer's read-only test hook.
+ *
+ *  NOT `.xterm-rows`: that element is created by xterm's DOM renderer, which only runs when
+ *  there is no hardware WebGL — i.e. on CI's GPU-less runners. On a real GPU the WebGL addon
+ *  paints to a canvas and `.xterm-rows` does not exist at all, so these reads returned '' (or
+ *  timed out on "element(s) not found") on every developer machine while passing in CI. The
+ *  buffer is identical under both renderers.
+ *
+ *  With no id the hook answers for the VISIBLE terminal, which is what this suite means: in
+ *  tab mode the inactive panes stay mounted with `visibility: hidden`. */
 async function readActiveTerminalContent(): Promise<string> {
-  return await page.evaluate(() => {
-    const allRows = document.querySelectorAll('.xterm-rows')
-    for (const rows of allRows) {
-      // Walk up to find the terminal pane container with visibility style
-      let el: HTMLElement | null = rows as HTMLElement
-      let isVisible = true
-      while (el) {
-        if (el.style.visibility === 'hidden') {
-          isVisible = false
-          break
-        }
-        el = el.parentElement
-      }
-      if (isVisible) {
-        return rows.textContent ?? ''
-      }
-    }
-    // Fallback: return first match
-    return allRows[0]?.textContent ?? ''
-  })
+  return await page.evaluate(
+    () =>
+      (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+        .__termpolis_terminal_text?.() ?? '',
+  )
 }
 
 /** Focus the active (visible) terminal's xterm textarea */
@@ -263,7 +224,6 @@ test.describe.serial('Swarm Integration', () => {
     await writeToTerminal(`node "${MOCK_CLAUDE}"`)
     await page.waitForTimeout(3000)
 
-    // Read from .xterm-rows which has just the rendered text, not CSS
     const termContent = await readActiveTerminalContent()
     expect(termContent).toContain('trust')
     await ss('01-claude-trust-prompt')

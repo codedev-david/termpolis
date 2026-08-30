@@ -382,9 +382,18 @@ test.describe.serial('View Switching', () => {
     await fooTab.click()
     await page.waitForTimeout(500)
 
-    // The typed text should still be visible in the terminal buffer
-    const termContent = page.locator('.xterm')
-    const text = await termContent.first().textContent() ?? ''
+    // The typed text should still be in the terminal buffer.
+    //
+    // Read the BUFFER, not `.xterm`'s textContent: xterm only fills the DOM when it falls
+    // back to the DOM renderer, which is what happens on GPU-less CI runners. With hardware
+    // WebGL the addon paints to a canvas and that element holds no text, so this passed in
+    // CI and failed on every developer machine. The hook answers for the VISIBLE pane, which
+    // is the point of this test — the inactive tabs stay mounted under `visibility: hidden`.
+    const text = await page.evaluate(
+      () =>
+        (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+          .__termpolis_terminal_text?.() ?? '',
+    )
     expect(text).toContain('VIEWTEST123')
   })
 

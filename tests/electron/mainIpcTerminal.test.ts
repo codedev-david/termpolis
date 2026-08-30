@@ -493,7 +493,7 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'world')
     expect(await invoke('terminal:read-buffer', { terminalId: id })).toEqual({
       success: true,
-      data: { output: 'hello world', length: 11 },
+      data: { output: 'hello world', length: 11, nextOffset: 11, missed: 0 },
     })
   })
 
@@ -502,7 +502,7 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     const onData = await spawnWithPump(id)
     onData('abcdef')
     expect(await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 3 })).toEqual({
-      success: true, data: { output: 'def', length: 3 },
+      success: true, data: { output: 'def', length: 3, nextOffset: 6, missed: 0 },
     })
   })
 
@@ -517,9 +517,27 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     expect(data.output.startsWith('x')).toBe(true)
   })
 
+  it('keeps offsets absolute once the window starts evicting, and reports what was lost', async () => {
+    // Regression: offsets used to index the retained window, so a poller past 32 KB sliced
+    // off the end of it and read '' from then on — the swarm bridge went permanently blind.
+    const id = 'buf-4'
+    const onData = await spawnWithPump(id)
+    onData('x'.repeat(32768))
+    onData('NEW-OUTPUT')
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 32768 })
+    expect(data.output).toBe('NEW-OUTPUT')
+    expect(data.nextOffset).toBe(32778)
+    expect(data.missed).toBe(0)
+
+    // A caller that never kept up is told how much it lost rather than silently resuming.
+    const stale = await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 0 })
+    expect(stale.data.missed).toBe(10)
+    expect(stale.data.nextOffset).toBe(32778)
+  })
+
   it('returns an empty buffer for a terminal that never existed', async () => {
     expect(await invoke('terminal:read-buffer', { terminalId: 'never-spawned' })).toEqual({
-      success: true, data: { output: '', length: 0 },
+      success: true, data: { output: '', length: 0, nextOffset: 0, missed: 0 },
     })
   })
 })

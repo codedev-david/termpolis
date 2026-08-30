@@ -19,7 +19,7 @@ beforeEach(() => {
   ;(window as any).termpolis = {
     readTerminalBuffer: vi.fn().mockResolvedValue({
       success: true,
-      data: { output: '', length: 0 },
+      data: { output: '', length: 0, nextOffset: 0, missed: 0 },
     }),
   }
   ;(window as any).swarmAPI = {
@@ -53,8 +53,8 @@ describe('startBridgeForAgent', () => {
 
   it('tracks output offset across ticks', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ success: true, data: { output: 'hello', length: 5 } })
-      .mockResolvedValue({ success: true, data: { output: '', length: 0 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'hello', length: 5, nextOffset: 5, missed: 0 } })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 5, missed: 0 } })
 
     startBridgeForAgent('t1', 'Claude')
     await vi.advanceTimersByTimeAsync(5000)
@@ -62,9 +62,26 @@ describe('startBridgeForAgent', () => {
     expect(window.termpolis.readTerminalBuffer).toHaveBeenNthCalledWith(2, 't1', 5)
   })
 
+  it('follows the offset the main process reports, not its own char count', async () => {
+    // The buffer only retains the last 32 KB, so once it starts evicting, `offset + length`
+    // no longer names a real position in it — the bridge must adopt `nextOffset` instead or
+    // it walks off the end of the window and reads '' forever.
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        success: true,
+        data: { output: 'tail', length: 4, nextOffset: 900_000, missed: 100 },
+      })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 900_000, missed: 0 } })
+
+    startBridgeForAgent('t1', 'Claude')
+    await vi.advanceTimersByTimeAsync(5000)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(window.termpolis.readTerminalBuffer).toHaveBeenNthCalledWith(2, 't1', 900_000)
+  })
+
   it('does NOT post a message when output has no meaningful signal', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({ success: true, data: { output: 'just some random text abc', length: 25 } })
+      .mockResolvedValue({ success: true, data: { output: 'just some random text abc', length: 25, nextOffset: 25, missed: 0 } })
 
     startBridgeForAgent('t1', 'Claude')
     await vi.advanceTimersByTimeAsync(5000)
@@ -75,7 +92,7 @@ describe('startBridgeForAgent', () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockResolvedValue({
         success: true,
-        data: { output: 'Task is now complete and done.', length: 30 },
+        data: { output: 'Task is now complete and done.', length: 30, nextOffset: 30, missed: 0 },
       })
 
     startBridgeForAgent('t1', 'Gemini')
@@ -92,7 +109,7 @@ describe('startBridgeForAgent', () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockResolvedValue({
         success: true,
-        data: { output: 'All done — work is finished successfully', length: 40 },
+        data: { output: 'All done — work is finished successfully', length: 40, nextOffset: 40, missed: 0 },
       })
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
       success: true,
@@ -113,7 +130,7 @@ describe('startBridgeForAgent', () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockResolvedValue({
         success: true,
-        data: { output: 'All done — work is finished', length: 27 },
+        data: { output: 'All done — work is finished', length: 27, nextOffset: 27, missed: 0 },
       })
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
       success: true,
@@ -195,7 +212,7 @@ describe('stopBridgeForAgent', () => {
 
   it('resets the output offset so a restarted bridge starts from 0', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({ success: true, data: { output: 'abc', length: 3 } })
+      .mockResolvedValue({ success: true, data: { output: 'abc', length: 3, nextOffset: 3, missed: 0 } })
 
     startBridgeForAgent('t1', 'Claude')
     await vi.advanceTimersByTimeAsync(5000)

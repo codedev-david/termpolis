@@ -35,7 +35,11 @@ export function startBridgeForAgent(terminalId: string, agentName: string): void
       const bufRes = await window.termpolis.readTerminalBuffer(terminalId, offset)
       if (bufRes.success && bufRes.data) {
         const signal = detectSwarmSignals(bufRes.data.output, 0)
-        outputOffsets.set(terminalId, offset + bufRes.data.length)
+        // Echo back the offset the main process reports. Offsets index the whole output
+        // stream while the buffer only retains the last 32 KB, so `offset + length` drifts
+        // as soon as eviction starts — and once it ran past the window the bridge read the
+        // empty string forever, going permanently blind to this agent's signals.
+        outputOffsets.set(terminalId, bufRes.data.nextOffset)
 
         // Post detected signals to the swarm bus
         if (signal.type) {

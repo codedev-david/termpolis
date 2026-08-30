@@ -92,6 +92,21 @@ async function getSidebarTerminalCount(): Promise<number> {
 // ALL TESTS
 // ════════════════════════════════════════════════════════════
 
+/** Read a terminal's text out of xterm's own buffer via the renderer's read-only test hook.
+ *
+ *  NOT `.textContent`: xterm only fills the DOM when it falls back to the DOM renderer, which
+ *  is what happens on GPU-less CI runners. With hardware WebGL — i.e. on any developer's
+ *  actual machine — the addon paints to a canvas and `.xterm` holds no text, so textContent
+ *  assertions passed in CI and failed locally. The buffer is identical under both renderers. */
+async function terminalText(page: Page, terminalId?: string): Promise<string> {
+  return await page.evaluate(
+    (id) =>
+      (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+        .__termpolis_terminal_text?.(id) ?? '',
+    terminalId,
+  )
+}
+
 test.describe.serial('Terminal Features', () => {
 
   test('1. add terminal modal has shell dropdown, name input, and theme picker', async () => {
@@ -135,10 +150,8 @@ test.describe.serial('Terminal Features', () => {
     // Wait for the terminal to show some output (shell prompt)
     await page.waitForTimeout(2000)
 
-    const xtermContent = page.locator('.xterm').first()
-    const text = await xtermContent.textContent() ?? ''
     // Shell prompt should contain something (PS prompt, $, >, etc.)
-    expect(text.length).toBeGreaterThan(0)
+    await expect.poll(() => terminalText(page), { timeout: 20_000 }).not.toBe('')
   })
 
   test('4. type a command in terminal, verify output appears', async () => {
@@ -151,10 +164,8 @@ test.describe.serial('Terminal Features', () => {
     await page.keyboard.press('Enter')
     await page.waitForTimeout(2000)
 
-    // Verify the output appears in the terminal
-    const termContent = page.locator('.xterm').first()
-    const text = await termContent.textContent() ?? ''
-    expect(text).toContain('TESTOUTPUT789')
+    // Read through the buffer hook, not the DOM — see terminalText() above.
+    await expect.poll(() => terminalText(page), { timeout: 15000 }).toContain('TESTOUTPUT789')
   })
 
   test('5. right-click terminal area shows context menu', async () => {

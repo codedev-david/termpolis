@@ -61,7 +61,12 @@ import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSy
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
-import { appendOutput, readOutput, readOutputTail, type OutputBuffers } from './terminalOutputBuffer'
+import {
+  appendOutput,
+  readOutputFrom,
+  readOutputTail,
+  type OutputBuffers,
+} from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -2392,9 +2397,13 @@ ipcMain.handle('agents:detect', async () => {
 
 // Swarm IPC handlers for the dashboard
 // Read terminal output buffer from renderer (used by swarm bridge for non-MCP agents)
+// `fromOffset` is a position in the terminal's WHOLE output stream, not in the retained
+// window — pollers must echo back `nextOffset` rather than adding `length` themselves, or
+// they drift the moment the 32 KB window starts evicting. `missed` reports output that was
+// evicted before the caller read it, so falling behind is visible instead of silent.
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
-  const sliced = readOutput(terminalOutputBuffers, terminalId).slice(fromOffset || 0)
-  return ok({ output: sliced, length: sliced.length })
+  const slice = readOutputFrom(terminalOutputBuffers, terminalId, fromOffset || 0)
+  return ok({ ...slice, length: slice.output.length })
 })
 
 // Second Opinion: run a chosen agent headless over captured terminal output and return its

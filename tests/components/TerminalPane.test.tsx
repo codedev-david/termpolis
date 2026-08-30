@@ -413,6 +413,107 @@ describe('TerminalPane', () => {
     mocks.mockTerminal.buffer.active.type = 'normal'
   })
 
+  // The e2e terminal tests read terminal text through this hook rather than through
+  // `.xterm`'s textContent, which is only populated when xterm falls back to the DOM
+  // renderer — true on GPU-less CI runners, false on any machine with hardware WebGL.
+  describe('__termpolis_terminal_text test hook', () => {
+    const readHook = (id?: string): string =>
+      (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+        .__termpolis_terminal_text?.(id) ?? 'HOOK-MISSING'
+
+    // The hook reads a MODULE-level registry, so a pane left mounted by one test is still
+    // visible to the next one. Every pane mounted here is therefore torn down here, with the
+    // deferred dispose flushed, and the shared buffer mock put back the way it was found.
+    const mounted: Array<() => void> = []
+    const mountPane = (props: Partial<typeof defaultProps> = {}): void => {
+      mounted.push(render(<TerminalPane {...defaultProps} {...props} />).unmount)
+    }
+
+    afterEach(() => {
+      vi.useFakeTimers()
+      try {
+        for (const unmount of mounted.splice(0)) unmount()
+        act(() => { vi.advanceTimersByTime(200) })
+      } finally {
+        vi.useRealTimers()
+      }
+      const lines = mocks.mockBufferLines
+      mocks.mockTerminal.buffer.active.length = lines.length
+      mocks.mockTerminal.buffer.active.getLine.mockImplementation((i: number) =>
+        i < lines.length ? { translateToString: () => lines[i] } : null,
+      )
+    })
+
+    it("reads the mounted terminal's text out of the xterm buffer, by id", () => {
+      mountPane()
+      expect(readHook('term-1')).toBe(mocks.mockBufferLines.join('\n'))
+    })
+
+    it('falls back to the only live terminal when no id is given', () => {
+      mountPane()
+      expect(readHook()).toBe(mocks.mockBufferLines.join('\n'))
+    })
+
+    it('answers for the VISIBLE terminal when no id is given', () => {
+      // In tab mode every pane stays mounted and the inactive ones are hidden, so "the first
+      // one mounted" and "the one on screen" are different terminals — and only the second is
+      // the one a test that says "the terminal" means.
+      const first = render(<TerminalPane {...defaultProps} />)
+      mounted.push(first.unmount)
+      mountPane({ terminalId: 'term-2', terminalName: 'Terminal 2' })
+
+      // jsdom implements no checkVisibility, so supply one: only term-2's pane is on screen.
+      for (const el of document.querySelectorAll('div')) {
+        ;(el as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility = () =>
+          !first.container.contains(el)
+      }
+      mocks.mockTerminal.buffer.active.getLine.mockImplementation(() => ({
+        translateToString: () => 'from the visible pane',
+      }))
+      mocks.mockTerminal.buffer.active.length = 1
+
+      expect(readHook()).toBe('from the visible pane')
+    })
+
+    it('returns empty for an id that is not mounted', () => {
+      mountPane()
+      expect(readHook('no-such-terminal')).toBe('')
+    })
+
+    it('returns empty when nothing is mounted at all', () => {
+      mountPane()
+      // Tear down here rather than leaving it to afterEach: the claim under test is that an
+      // unmounted pane deregisters itself.
+      vi.useFakeTimers()
+      try {
+        for (const unmount of mounted.splice(0)) unmount()
+        act(() => { vi.advanceTimersByTime(200) })
+      } finally {
+        vi.useRealTimers()
+      }
+      expect(readHook()).toBe('')
+      expect(readHook('term-1')).toBe('')
+    })
+
+    it('trims trailing blank rows so an empty 80x24 grid does not read as whitespace', () => {
+      const rows = ['prompt>', '', '   ', '']
+      mocks.mockTerminal.buffer.active.length = rows.length
+      mocks.mockTerminal.buffer.active.getLine.mockImplementation((i: number) =>
+        i < rows.length ? { translateToString: () => rows[i].trimEnd() } : null,
+      )
+      mountPane()
+      expect(readHook('term-1')).toBe('prompt>')
+    })
+
+    it('tolerates a row xterm reports but cannot return', () => {
+      mocks.mockTerminal.buffer.active.getLine.mockImplementation((i: number) =>
+        i === 0 ? { translateToString: () => 'first' } : null,
+      )
+      mountPane()
+      expect(readHook('term-1')).toBe('first')
+    })
+  })
+
   // Regression for Sentry issue #16: xterm's WebGL addon throws
   // "Cannot read properties of undefined (reading '_isDisposed')" during
   // term.dispose() when a terminal is created and torn down in quick succession

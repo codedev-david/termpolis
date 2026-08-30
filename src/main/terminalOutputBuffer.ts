@@ -35,6 +35,10 @@ export const MAX_TERMINAL_BUFFER_CHARS = 32_768
 export interface OutputWindow {
   chunks: string[]
   bytes: number
+  /** Every char ever appended for this terminal, including what has been evicted.
+   *  This is what makes an offset MEAN something: the window slides, so a position
+   *  inside it is not stable, but a position in the total stream is. */
+  total: number
 }
 
 export type OutputBuffers = Map<string, OutputWindow>
@@ -54,11 +58,12 @@ export function appendOutput(
   if (data === '') return
   let win = buffers.get(id)
   if (!win) {
-    win = { chunks: [], bytes: 0 }
+    win = { chunks: [], bytes: 0, total: 0 }
     buffers.set(id, win)
   }
   win.chunks.push(data)
   win.bytes += data.length
+  win.total += data.length
   if (win.bytes <= cap) return
 
   // Whole-chunk eviction: stop as soon as dropping the head would take us under.
@@ -86,6 +91,47 @@ export function readOutput(buffers: OutputBuffers, id: string): string {
     win.bytes = joined.length
   }
   return win.chunks[0]
+}
+
+export interface OutputSlice {
+  output: string
+  /** Absolute offset to pass on the NEXT poll. Always the end of the stream, so a
+   *  caller that echoes it back can never drift. */
+  nextOffset: number
+  /** Chars that were evicted before this caller got to them. Non-zero means the
+   *  terminal outran the poller and this much output is gone for good. */
+  missed: number
+}
+
+/** Read forward from an ABSOLUTE offset in the terminal's output stream.
+ *
+ *  WHY ABSOLUTE, AND WHY THIS EXISTS AT ALL: the swarm bridge polls a non-MCP agent's
+ *  terminal by keeping a running offset and asking for everything after it. That offset
+ *  counts total output, but the buffer is a sliding 32 KB window — so the two agreed
+ *  only until the first eviction. Past 32 KB of output the caller's offset ran off the
+ *  end of the window, `slice` returned the empty string, and it did so FOREVER: the
+ *  bridge went permanently blind and every swarm signal after that point was silently
+ *  dropped. It failed silently, stayed broken, and looked like an agent that had simply
+ *  stopped talking.
+ *
+ *  Offsets are therefore positions in the whole stream, not in the window. An offset
+ *  older than the window is clamped forward to the oldest surviving char and the gap is
+ *  reported in `missed` rather than hidden — a poller that fell behind should know it
+ *  lost output, not silently resume mid-sentence. */
+export function readOutputFrom(buffers: OutputBuffers, id: string, fromOffset = 0): OutputSlice {
+  const win = buffers.get(id)
+  if (!win) return { output: '', nextOffset: 0, missed: 0 }
+  const total = win.total
+  const dropped = total - win.bytes
+  // Clamp into [dropped, total]: below is evicted, above is a caller ahead of reality
+  // (a restarted terminal reusing an id), and both must resolve to a valid slice.
+  const requested = Math.max(0, Number.isFinite(fromOffset) ? Math.floor(fromOffset) : 0)
+  const start = Math.min(Math.max(requested, dropped), total)
+  return {
+    output: readOutput(buffers, id).slice(start - dropped),
+    nextOffset: total,
+    missed: Math.max(0, dropped - requested),
+  }
 }
 
 /** The last `lines` lines of the retained tail, clamped to [1, 1000].
