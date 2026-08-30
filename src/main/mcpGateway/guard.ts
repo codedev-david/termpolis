@@ -119,6 +119,73 @@ export function inspectResult(text: string, maxChars = MAX_RESULT_CHARS): Result
   return { level: report.level, findings: report.findings, truncated, text: capped }
 }
 
+/** A tool's own metadata is capped harder than a result. A description is a blurb, not
+ *  a payload: anything past this is either broken or an attempt to stuff the context
+ *  window on every single `tools/list`, which the model pays for whether it calls the
+ *  tool or not. */
+export const MAX_METADATA_CHARS = 8_000
+
+export interface MetadataVerdict {
+  description?: string
+  inputSchema?: unknown
+  level: RiskLevel
+  /** Injection rules that fired, deduped. Empty when the metadata was merely oversized. */
+  rules: string[]
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Inspect an upstream tool's DESCRIPTION and INPUT SCHEMA before the model ever sees them.
+ *
+ *  WHY THIS IS SEPARATE FROM `riskBanner`, AND STRICTER: this is the classic MCP
+ *  tool-poisoning surface, and it is a worse one than a poisoned result. A description
+ *  arrives on every `tools/list`, before the model has decided to call anything; the
+ *  user never asked for its content; and the model reads it precisely to work out what
+ *  it is allowed to do. Schema field descriptions are read the same way, so the schema
+ *  is scanned with the description rather than trusted for being structured.
+ *
+ *  So the handling inverts the result rule. A result is banner-wrapped and passed
+ *  through, because a result may legitimately QUOTE an injection phrase — a diff, a
+ *  security report, a code review. A capability blurb has no such excuse, so the
+ *  upstream text is WITHHELD and replaced with a statement of what happened.
+ *
+ *  The tool stays listed and callable. Hiding it outright would make a poisoned server
+ *  indistinguishable from a broken one, and blocking belongs to the policy, which the
+ *  human controls. */
+export function sanitizeToolMetadata(
+  server: string,
+  tool: string,
+  description: string | undefined,
+  inputSchema: unknown,
+): MetadataVerdict {
+  const combined = [description ?? '', inputSchema === undefined ? '' : safeStringify(inputSchema)].join('\n')
+  const risk = inspectResult(combined, MAX_METADATA_CHARS)
+  if (risk.level === 'green' && !risk.truncated) {
+    return { description, inputSchema, level: 'green', rules: [] }
+  }
+
+  const rules = [...new Set(risk.findings.map(f => f.rule))]
+  // Oversized-but-clean is still not green: paying for 8 KB of blurb on every listing is
+  // the attack even when no injection rule fires.
+  const level: RiskLevel = risk.level === 'green' ? 'yellow' : risk.level
+  const why = rules.length > 0 ? `(${rules.join(', ')})` : '(oversized metadata)'
+  return {
+    description:
+      `[termpolis-gateway] metadata WITHHELD from ${server}/${tool} — scanned ${level.toUpperCase()} ${why}. ` +
+      'A tool description is metadata you did not ask for, so the upstream text is not shown. ' +
+      'The tool is still callable if policy allows it.',
+    inputSchema: { type: 'object' },
+    level,
+    rules,
+  }
+}
+
 /** The banner prepended to a result that scanned yellow or red.
  *
  *  WHY A BANNER AND NOT A BLOCK: blocking a red result is the wrong default because

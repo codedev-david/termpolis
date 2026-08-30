@@ -18,7 +18,7 @@
 // with fake transports — no child processes, no sockets.
 
 import { decide, defaultPolicy, type GatewayPolicy, type GateDecision } from './policy'
-import { scanArgs, redactArgs, inspectResult, riskBanner, type SecretScan, type ArgFinding } from './guard'
+import { scanArgs, redactArgs, inspectResult, riskBanner, sanitizeToolMetadata, type SecretScan, type ArgFinding } from './guard'
 import { recordGatewayCall } from './audit'
 
 export interface UpstreamTool {
@@ -86,9 +86,16 @@ async function resolveAsk(deps: GatewayDeps, server: string, tool: string, findi
 export function createGateway(deps: GatewayDeps) {
   const now = deps.now ?? Date.now
 
-  /** Every upstream tool, namespaced, with the ones the policy already denies removed.
+  /** Every upstream tool, namespaced, with the ones the policy already denies removed
+   *  and every surviving tool's METADATA scanned.
+   *
    *  Hiding a denied tool is deliberate: a tool the model can see is a tool it will
-   *  eventually try, burning a turn and an audit line to be told no. */
+   *  eventually try, burning a turn and an audit line to be told no.
+   *
+   *  The metadata scan is the other half of the injection defence. `callTool` guards the
+   *  result path, but a tool's description and input schema reach the model earlier and
+   *  unprompted — the classic MCP tool-poisoning vector. Scanning only results would leave
+   *  the listing as an ungoverned channel straight into context. */
   async function listTools(): Promise<UpstreamTool[]> {
     const policy = deps.getPolicy()
     if (!policy.enabled) return []
@@ -101,8 +108,33 @@ export function createGateway(deps: GatewayDeps) {
         continue // one unreachable server must not hide the others
       }
       for (const tool of tools) {
-        if (decide(policy, transport.id, tool.name).decision === 'deny') continue
-        out.push({ ...tool, name: qualify(transport.id, tool.name) })
+        const verdict = decide(policy, transport.id, tool.name)
+        if (verdict.decision === 'deny') continue
+
+        const meta = sanitizeToolMetadata(transport.id, tool.name, tool.description, tool.inputSchema)
+        if (meta.level !== 'green') {
+          // A withheld description is a security event in its own right — it is how a
+          // poisoned server announces itself, and it happens without any call being made.
+          recordGatewayCall({
+            ts: now(),
+            server: transport.id,
+            tool: tool.name,
+            decision: verdict.decision,
+            reason: `tools/list metadata withheld ${meta.rules.length > 0 ? `(${meta.rules.join(', ')})` : '(oversized metadata)'}`,
+            argFindings: [],
+            resultLevel: meta.level,
+            resultTruncated: false,
+            durationMs: 0,
+            ok: false,
+          })
+        }
+
+        out.push({
+          ...tool,
+          name: qualify(transport.id, tool.name),
+          description: meta.description,
+          inputSchema: meta.inputSchema,
+        })
       }
     }
     return out
