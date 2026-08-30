@@ -66,8 +66,25 @@ describe('resolveShellType', () => {
     }
   })
 
+  it('on Windows without Git Bash installed, still resolves plain bash', () => {
+    const orig = navigator.platform
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true })
+    try {
+      const noGitBash = shells.filter(sh => sh.type !== 'gitbash')
+      expect(resolveShellType('bash', noGitBash)).toBe('bash')
+    } finally {
+      Object.defineProperty(navigator, 'platform', { value: orig, configurable: true })
+    }
+  })
+
   it('falls back to the first available shell when the requested one is missing', () => {
     expect(resolveShellType('zsh', shells)).toBe('bash')
+  })
+
+  it('falls through to whatever IS available when a bash profile finds no bash at all', () => {
+    // A bash-shelled agent on a machine offering only PowerShell: neither the gitbash nor the plain
+    // bash preference can be honoured, so the generic fallback has to take over.
+    expect(resolveShellType('bash', [{ type: 'powershell', label: 'PowerShell', executable: 'powershell.exe' }])).toBe('powershell')
   })
 
   it('falls back to bash when no shells are available', () => {
@@ -162,5 +179,29 @@ describe('launchAgentProfile', () => {
     ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockRejectedValue(new Error('ipc boom'))
     await launchAgentProfile(claude, deps())
     expect(useTerminalStore.getState().memoryNotice).toContain('Memory recall unavailable')
+  })
+})
+
+describe('launchAgentProfile — memory notice wording', () => {
+  const claude = DEFAULT_AI_PROFILES[0]
+
+  it('says "1 memory", not "1 memories", when exactly one was recalled', async () => {
+    ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
+      success: true, data: { file: 'C:/p/primer.md', count: 1 },
+    })
+    await launchAgentProfile(claude, deps())
+    expect(useTerminalStore.getState().memoryNotice).toContain('Loaded 1 memory for')
+  })
+
+  it('falls back to "this project" when the chosen folder has no nameable leaf', async () => {
+    ;(window as any).termpolis.pickDirectory = vi.fn().mockResolvedValue({ success: true, data: '/' })
+    ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
+      success: true, data: { file: 'C:/p/primer.md', count: 2 },
+    })
+    await launchAgentProfile(claude, deps())
+    expect(useTerminalStore.getState().memoryNotice).toContain('"this project"')
+    // ...and the recall query drops the project clause rather than interpolating an empty name.
+    const query = (window as any).termpolis.memoryPreparePrimerFile.mock.calls[0][0]
+    expect(query).toBe('recent work, key decisions, and conventions')
   })
 })

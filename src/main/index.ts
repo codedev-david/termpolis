@@ -496,6 +496,15 @@ function createWindow() {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // A terminal is not a web page: its content arrives from a PTY on its own schedule and has to
+      // keep flowing whether or not anyone is looking at the window. Chromium's default is to
+      // throttle timers and stop requestAnimationFrame outright once a window is hidden or
+      // OCCLUDED — and on Windows a window with anything sitting on top of it is occluded, not
+      // merely unfocused. That froze every terminal for as long as something covered Termpolis:
+      // agent output stopped rendering, keystroke echo went dark, and the backlog dumped in one
+      // burst on refocus. See outputThrottle.ts, which pairs a timer watchdog with rAF so the
+      // buffer drains even if a frame never comes.
+      backgroundThrottling: false,
     },
   })
 

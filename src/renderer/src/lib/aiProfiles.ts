@@ -6,6 +6,9 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
+import {
+  waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
+} from './launchSequence'
 
 /**
  * The three built-in AI agents. Always rendered first in the sidebar and always
@@ -67,41 +70,68 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // The other agents get the slim typed pointer via useAutoPrimer on detection.
   let launchCommand = resolveAgentCommand(profile.command)
   let launchPrimed = false
-  if (isClaude && isAutoPrimerEnabled()) {
-    const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
-    const label = project || 'this project'
-    try {
-      const query = project
-        ? `recent work, decisions, conventions, and context for ${project}`
-        : 'recent work, key decisions, and conventions'
-      const primerRes = await window.termpolis.memoryPreparePrimerFile(query, cwd)
-      if (primerRes?.success && primerRes.data?.file) {
-        const fileArg = primerRes.data.file.replace(/\\/g, '/')
-        launchCommand = `${launchCommand} --append-system-prompt-file "${fileArg}"`
-        launchPrimed = true
-        // Claude's priming is invisible (system-prompt file + SessionStart hook),
-        // so surface HOW MUCH recall was injected — otherwise a working memory load
-        // looks like nothing happened (#1 observable recall). Auto-dismisses (App.tsx).
-        const n = primerRes.data.count
-        useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
-      } else if (primerRes && !primerRes.success) {
-        // The recall call FAILED (brain unreachable / error) — make the silent
-        // failure visible instead of pretending nothing was available (#1).
-        useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
-      }
-    } catch {
-      // The recall call threw — surface it rather than silently dropping recall (#1).
-      useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
-    }
-  }
+  const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+  const label = project || 'this project'
+
+  // START the recall now; do NOT await it yet. It used to sit in front of the shell wait, so its
+  // whole duration was added to the launch — usually ~275 ms, but the tail is long (a 24 s recall
+  // sits in this machine's own metrics). Running it alongside the shell wait costs nothing and
+  // removes that tail from the critical path entirely.
+  type PrimerOutcome = { file: string; count: number } | 'failed' | null
+  const primerPromise: Promise<PrimerOutcome> = isClaude && isAutoPrimerEnabled()
+    ? (async () => {
+        try {
+          const query = project
+            ? `recent work, decisions, conventions, and context for ${project}`
+            : 'recent work, key decisions, and conventions'
+          const primerRes = await window.termpolis.memoryPreparePrimerFile(query, cwd)
+          if (primerRes?.success && primerRes.data?.file) {
+            return { file: primerRes.data.file, count: primerRes.data.count }
+          }
+          // The recall call FAILED (brain unreachable / error) — make the silent
+          // failure visible instead of pretending nothing was available (#1).
+          if (primerRes && !primerRes.success) return 'failed'
+          return null // succeeded, nothing relevant — launch bare, no notice
+        } catch {
+          return 'failed' // the recall call threw — surface it rather than dropping recall (#1)
+        }
+      })()
+    : Promise.resolve(null)
+
   // Codex parity. Codex takes no system-prompt flag, so the same instruction is written into the
   // file it reads by itself at session start — `<cwd>/AGENTS.md`. Byte-stable, so this only ever
-  // writes once per project and never dirties a tracked file twice.
-  if (isCodex && isAutoPrimerEnabled()) {
-    try { await window.termpolis.memoryPrepareCodexContext(cwd) } catch { /* launch bare */ }
+  // writes once per project and never dirties a tracked file twice. Overlapped for the same reason.
+  const codexPromise: Promise<void> = isCodex && isAutoPrimerEnabled()
+    ? (async () => { try { await window.termpolis.memoryPrepareCodexContext(cwd) } catch { /* launch bare */ } })()
+    : Promise.resolve()
+
+  // Started HERE, next to the recall, so the two overlap. Replaces a blind 4 s sleep with the
+  // condition it stood for — the shell has spoken and gone quiet — keeping that 4 s as a ceiling.
+  const shellReady = waitForShellReady({
+    terminalId: id,
+    subscribe: (cb) => window.termpolis.onTerminalData(cb),
+    quietMs: testDelay(SHELL_QUIET_MS),
+    ceilingMs: testDelay(SHELL_READY_CEILING_MS),
+  })
+
+  const primer = await primerPromise
+  await codexPromise
+  if (primer === 'failed') {
+    useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
+  } else if (primer) {
+    const fileArg = primer.file.replace(/\\/g, '/')
+    launchCommand = `${launchCommand} --append-system-prompt-file "${fileArg}"`
+    launchPrimed = true
+    // Claude's priming is invisible (system-prompt file + SessionStart hook),
+    // so surface HOW MUCH recall was injected — otherwise a working memory load
+    // looks like nothing happened (#1 observable recall). Auto-dismisses (App.tsx).
+    const n = primer.count
+    useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
   }
   // Per-profile model selection: append a validated --model for Claude launches.
   if (isClaude) launchCommand = launchCommand + claudeModelArg(profile.model)
+  // Registered as soon as the recall lands — exactly as before — so the pane appears while the
+  // shell is still coming up rather than waiting on it.
   addTerminal({
     id,
     name: agentTerminalName(profile.name, cwd),
@@ -123,24 +153,23 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
     window.termpolis.writeToTerminal(id, data)
   }
-  // Wait for shell to fully initialize before sending command
-  // Git Bash on Windows can take 3-5 seconds to show the prompt
-  // Send a no-op newline first to flush any partial shell init, then the real command
-  setTimeout(() => {
-    writeIfAlive('\r')
-    setTimeout(() => {
-      writeIfAlive(launchCommand + '\r')
-    }, 500)
-  }, testDelay(4000))
-  // Auto-trust: Claude/Codex show trust prompts ~5s after launch.
-  // Send Enter to confirm the pre-selected trust option.
+  // The no-op newline that used to precede the command existed to "flush any partial shell init".
+  // Waiting for the shell to actually go quiet is that same guarantee, obtained rather than assumed,
+  // so the command is now the first thing typed.
+  await shellReady
+  writeIfAlive(launchCommand + '\r')
+  // Auto-trust: Claude/Codex show trust prompts a few seconds after the command. These are BLIND —
+  // sent on a timer whether or not a prompt is showing — so they are measured from the command, not
+  // from the launch click. Typing the command earlier without this would stretch the gap they were
+  // tuned for (4.5 s) to as much as 8.5 s, widening the window for a stray Enter to land somewhere
+  // it was never meant to.
   if (profile.command.startsWith('claude')) {
-    setTimeout(() => writeIfAlive('\r'), testDelay(9000))
+    setTimeout(() => writeIfAlive('\r'), testDelay(afterCommandDelay(9000)))
   }
   if (profile.command.startsWith('codex')) {
     // Codex requires '1' to trust the directory
-    setTimeout(() => writeIfAlive('1\r'), testDelay(9000))
+    setTimeout(() => writeIfAlive('1\r'), testDelay(afterCommandDelay(9000)))
   }
   const dismissMs = profile.id === 'gemini' ? 15000 : 8000
-  setTimeout(() => setLaunchingAgent(null), testDelay(dismissMs))
+  setTimeout(() => setLaunchingAgent(null), testDelay(afterCommandDelay(dismissMs)))
 }

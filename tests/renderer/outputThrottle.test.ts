@@ -136,3 +136,86 @@ describe('createOutputThrottle', () => {
     expect(writeFn.mock.calls[2][0].length).toBe(150 * 1024 - 65536 * 2)
   })
 })
+
+/**
+ * REGRESSION (2026-08-25, field report): "the termpolis window is not in focus or something, it
+ * stops working."
+ *
+ * Chromium stops firing requestAnimationFrame entirely when a page is hidden or OCCLUDED — and on
+ * Windows a Termpolis window with anything covering it is occluded, not merely unfocused. The
+ * throttle scheduled every non-trivial write through rAF alone, so once frames stopped:
+ *   - the pending flush never ran,
+ *   - `scheduled` stayed true forever, which also routes the small-write bypass into the buffer,
+ *     so even keystroke echo went dark,
+ *   - and the buffer grew without bound until the window came back, then dumped at 64KB/frame.
+ * The terminal was dead for as long as something sat on top of the window.
+ *
+ * rAF stays the fast path — it is the right clock while frames are being produced. A timer
+ * watchdog runs beside it so the buffer always drains, whether or not the compositor is awake.
+ */
+describe('createOutputThrottle — drains when the window is hidden/occluded (no frames)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // A window Chromium considers hidden: rAF is registered and NEVER invoked.
+    vi.stubGlobal('requestAnimationFrame', () => 1)
+  })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  it('writes a buffered burst even though no frame ever fires', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    const big = 'x'.repeat(20000) // over the small-write bypass → buffered
+    throttled(big)
+    expect(writeFn).not.toHaveBeenCalled() // nothing yet: no frame has run
+    vi.advanceTimersByTime(200)
+    expect(writeFn).toHaveBeenCalledWith(big) // the watchdog drained it
+  })
+
+  it('does not wedge the small-write bypass — typing still echoes with no frames', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    throttled('y'.repeat(20000)) // arms the buffer
+    vi.advanceTimersByTime(200)
+    writeFn.mockClear()
+    throttled('a') // a keystroke echo AFTER the burst drained
+    expect(writeFn).toHaveBeenCalledWith('a') // instant, not queued behind a dead frame
+  })
+
+  it('keeps ordering: buffered burst first, then later writes', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    throttled('A'.repeat(20000))
+    throttled('B') // small, but a burst is in flight → must queue behind it
+    vi.advanceTimersByTime(200)
+    expect(writeFn.mock.calls.map((c) => c[0]).join('')).toBe('A'.repeat(20000) + 'B')
+  })
+})
+
+describe('createOutputThrottle — environments with no animation frames at all', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // Not "frames have stopped" but "this environment has no rAF" — a renderer teardown, a non-DOM
+    // host. The watchdog is then the ONLY clock, and it still has to deliver the output.
+    vi.stubGlobal('requestAnimationFrame', undefined)
+    vi.stubGlobal('cancelAnimationFrame', undefined)
+  })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  it('still delivers a buffered burst with no rAF to schedule against', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    const big = 'z'.repeat(20000)
+    throttled(big)
+    vi.advanceTimersByTime(200)
+    expect(writeFn).toHaveBeenCalledWith(big)
+  })
+
+  it('does not try to cancel a frame it never scheduled', () => {
+    const writeFn = vi.fn()
+    const throttled = createOutputThrottle(writeFn)
+    throttled('q'.repeat(20000))
+    expect(() => vi.advanceTimersByTime(200)).not.toThrow()
+    throttled('a') // and the throttle is left in a usable state afterwards
+    expect(writeFn).toHaveBeenLastCalledWith('a')
+  })
+})
