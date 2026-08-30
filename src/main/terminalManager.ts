@@ -5,9 +5,13 @@ import { join } from 'path'
 import { execSync, exec } from 'child_process'
 import { app } from 'electron'
 import type { ShellType } from './types'
+import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 
 interface PtyProcess {
   pty: pty.IPty
+  /** Batches this terminal's output before it crosses to the renderer. Disposed on
+   *  exit and on kill so trailing output is delivered, never dropped. */
+  coalescer: OutputCoalescer
 }
 
 const processes = new Map<string, PtyProcess>()
@@ -133,14 +137,22 @@ export function spawnTerminal(
     throw new Error(`Failed to open terminal: ${msg}`)
   }
 
-  proc.onData(onData)
-  proc.onExit((e: { exitCode: number }) => { try { onExit?.(e.exitCode) } finally { processes.delete(id) } })
-  processes.set(id, { pty: proc })
+  const coalescer = createOutputCoalescer(onData)
+  proc.onData((chunk) => coalescer.push(chunk))
+  proc.onExit((e: { exitCode: number }) => {
+    // Flush BEFORE the exit callback: a shell's last line (a prompt, an error, an exit
+    // banner) is usually still inside the window when the process ends, and delivering
+    // it after the terminal is torn down is the same as losing it.
+    try { coalescer.dispose() } catch {}
+    try { onExit?.(e.exitCode) } finally { processes.delete(id) }
+  })
+  processes.set(id, { pty: proc, coalescer })
 }
 
 export function killTerminal(id: string): void {
   const proc = processes.get(id)
   if (proc) {
+    try { proc.coalescer.dispose() } catch {}
     try { proc.pty.kill() } catch {}
     try { proc.pty.pid && process.kill(proc.pty.pid) } catch {}
     processes.delete(id)

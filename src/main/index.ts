@@ -61,6 +61,7 @@ import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSy
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
+import { appendOutput, readOutput, readOutputTail, type OutputBuffers } from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -433,7 +434,7 @@ let quittingForUpdate = false
 let mainWindow: BrowserWindow | null = null
 
 // Buffer terminal output for MCP read_output (capped at 32KB per terminal)
-const terminalOutputBuffers = new Map<string, string>()
+const terminalOutputBuffers: OutputBuffers = new Map()
 
 // Track terminals created via MCP (swarm) so we can enforce agent commands
 const mcpCreatedTerminals = new Set<string>()
@@ -612,10 +613,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
         spawnTerminal(id, shell.executable, cwd, (data) => {
           mainWindow?.webContents.send('terminal:data', id, data)
-          // Buffer output for MCP read_output
-          const existing = terminalOutputBuffers.get(id) || ''
-          const updated = existing + data
-          terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
+          appendOutput(terminalOutputBuffers, id, data)
         }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
         resolve()
       } catch (e) {
@@ -2395,8 +2393,7 @@ ipcMain.handle('agents:detect', async () => {
 // Swarm IPC handlers for the dashboard
 // Read terminal output buffer from renderer (used by swarm bridge for non-MCP agents)
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
-  const buffer = terminalOutputBuffers.get(terminalId) || ''
-  const sliced = buffer.slice(fromOffset || 0)
+  const sliced = readOutput(terminalOutputBuffers, terminalId).slice(fromOffset || 0)
   return ok({ output: sliced, length: sliced.length })
 })
 
@@ -2648,10 +2645,7 @@ if (!gotTheLock) {
         if (shellInfo) {
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             mainWindow?.webContents.send('terminal:data', id, data)
-            // Buffer output for MCP read_output
-            const existing = terminalOutputBuffers.get(id) || ''
-            const updated = existing + data
-            terminalOutputBuffers.set(id, updated.length > 32768 ? updated.slice(-32768) : updated)
+            appendOutput(terminalOutputBuffers, id, data)
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
@@ -2673,10 +2667,7 @@ if (!gotTheLock) {
         writeToTerminal(terminalId, safeCommand + '\r')
       },
       readOutput: (terminalId, lines) => {
-        const buffer = terminalOutputBuffers.get(terminalId) || ''
-        const allLines = buffer.split('\n')
-        const clampedLines = Math.max(1, Math.min(Math.floor(lines) || 50, 1000))
-        return allLines.slice(-clampedLines).join('\n')
+        return readOutputTail(terminalOutputBuffers, terminalId, lines)
       },
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
