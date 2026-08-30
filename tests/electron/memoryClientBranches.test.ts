@@ -410,3 +410,62 @@ describe('memoryClient — whitelist drift between client and host', () => {
     }
   })
 })
+
+describe('memoryClient — starting is not failing', () => {
+  it('reports "starting" for the whole window between kickoff and ready', async () => {
+    // v1.38.2. A child that is alive and parsing a multi-gigabyte shard set used to be
+    // indistinguishable from one that never launched: both read 'unstarted'. The Memory tab renders
+    // that as "the memory store could not start in a separate process", so every launch of a big
+    // brain produced a confident, false failure report while the host worked perfectly.
+    const host = makeManualHost({ onInit: 'silent' })
+    setMemoryHostSpawner(() => host.transport)
+    const started = startMemoryHost({ userDataPath: tmp })
+    await flush()
+
+    expect(memoryHostMode()).toBe('starting')
+    expect(memoryHostPid()).toBe(7777) // there IS a child; it just hasn't finished loading
+
+    host.push({ kind: 'ready', pid: 7777, entries: 0 })
+    expect(await started).toBe('host')
+    expect(memoryHostMode()).toBe('host')
+  })
+
+  it('still reads "unstarted" before anything has asked it to start', () => {
+    // The new state must not swallow the genuinely-not-started case: that is the one where a caller
+    // reaching for the store is a bug, and call() throws on it.
+    expect(memoryHostMode()).toBe('unstarted')
+  })
+
+  it('does not park on "starting" when the child never comes up', async () => {
+    // The optimistic state is only honest if it always resolves. A child that dies on every spawn
+    // must still end at the loud, degraded truth rather than an indefinite "starting…".
+    const host = makeManualHost({ onInit: 'exit' })
+    setMemoryHostSpawner(() => host.transport)
+    expect(await startMemoryHost({ userDataPath: tmp })).toBe('inproc')
+    expect(memoryHostMode()).toBe('inproc')
+  })
+
+  it('holds an early call until the verdict, then routes it to the child', async () => {
+    // The optimistic mode must not change routing. call() awaits readyPromise BEFORE it reads the
+    // mode, so a call issued during startup neither races onto the main thread nor fails — it waits
+    // and then goes to the host. That ordering is the reason 'starting' was safe to add at all.
+    const host = makeManualHost({
+      onInit: 'silent',
+      answer: (c) => ({ kind: 'result', id: c.id, ok: true, result: 42 }),
+    })
+    setMemoryHostSpawner(() => host.transport)
+    const started = startMemoryHost({ userDataPath: tmp })
+    await flush()
+    expect(memoryHostMode()).toBe('starting')
+
+    let settled = false
+    const early = memoryCount().then((n) => { settled = true; return n })
+    await flush()
+    expect(settled).toBe(false)
+
+    host.push({ kind: 'ready', pid: 7777, entries: 0 })
+    await started
+    expect(await early).toBe(42)
+    expect(host.posted.some((m) => m.kind === 'call' && m.fn === 'memoryCount')).toBe(true)
+  })
+})

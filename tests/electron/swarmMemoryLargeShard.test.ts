@@ -50,6 +50,7 @@ import {
   initSwarmMemory,
   memoryWrite,
   memoryCount,
+  memoryDelete,
   memoryList,
   memoryStats,
   memoryDashboardStats,
@@ -57,6 +58,7 @@ import {
   _resetForTests,
   _setEmbeddingsAvailable,
   _setMaxShardBytesForTests,
+  compactSelfShard,
 } from '../../src/main/swarmMemory'
 import { forEachBufferLine, forEachShardLine } from '../../src/main/fileLines'
 
@@ -418,3 +420,97 @@ function writeShardWithSentinel(dir: string, fillerLine: string, fillerCount: nu
     fs.closeSync(fd)
   }
 }
+
+// v1.38.2 — compaction owns the WHOLE own set, not just the file it happens to be appending to.
+//
+// Rotation zeroed the own-shard counters as it rolled, which meant a rotated generation was never
+// counted, never estimated, and never rewritten again. In the field that was a 3.23 GB / 383k-line
+// generation of which a quarter was dead adds, permanently out of reach of a compactor that was
+// running successfully every 30 minutes on the 33 MB file beside it.
+describe('compaction across the whole own set', () => {
+  const gens = (): string[] =>
+    fs.readdirSync(tmpDir).filter((f) => /^swarm-memory\.\d+\.jsonl$/.test(f)).sort()
+  const active = (): string => path.join(tmpDir, 'swarm-memory.jsonl')
+  const reloadCold = (): string[] => {
+    _resetForTests()
+    initSwarmMemory(tmpDir)
+    _setEmbeddingsAvailable(false)
+    return memoryList({ limit: 1000 }).map((e) => e.content).sort()
+  }
+
+  it('rewrites the ROTATED generations too, and folds the set back down', async () => {
+    _setMaxShardBytesForTests(600)
+    const ids: string[] = []
+    for (let i = 0; i < 30; i++) {
+      ids.push((await memoryWrite({ agentId: 'a', kind: 'fact', content: `generational fact ${i}` })).id)
+    }
+    expect(gens().length).toBeGreaterThan(1) // the dead weight is spread across generations
+    for (const id of ids.slice(0, 25)) memoryDelete(id)
+
+    const live = memoryList({ limit: 1000 }).map((e) => e.content).sort()
+    expect(live).toHaveLength(5)
+
+    _setMaxShardBytesForTests(1024 * 1024) // what survives fits in one file now
+    expect(compactSelfShard({ force: true }).compacted).toBe(true)
+
+    // The generations are GONE, not merely ignored — before this they were the whole store's bulk.
+    expect(gens()).toEqual([])
+    expect(fs.existsSync(active())).toBe(true)
+    expect(reloadCold()).toEqual(live) // and not one survivor went with them
+  })
+
+  it('splits its own output at the cap rather than writing one file past it', async () => {
+    _setMaxShardBytesForTests(600)
+    for (let i = 0; i < 30; i++) {
+      await memoryWrite({ agentId: 'a', kind: 'fact', content: `splitting fact ${i}` })
+    }
+    const live = memoryList({ limit: 1000 }).map((e) => e.content).sort()
+
+    expect(compactSelfShard({ force: true }).compacted).toBe(true)
+
+    // Compaction that ignored the cap would rebuild the exact file the cap exists to prevent.
+    for (const f of [active(), ...gens().map((g) => path.join(tmpDir, g))]) {
+      expect(fs.statSync(f).size).toBeLessThanOrEqual(600)
+    }
+    expect(reloadCold()).toEqual(live)
+  })
+
+  it('leaves ordinary output in the active shard — no phantom generation', async () => {
+    // The overwhelmingly common case: everything fits. It must produce exactly one file, keeping the
+    // name it already had, so compaction stays invisible to every store but the huge ones — and so
+    // the next append still lands in the file holding the newest entries.
+    for (let i = 0; i < 8; i++) {
+      await memoryWrite({ agentId: 'a', kind: 'fact', content: `ordinary fact ${i}` })
+    }
+    const live = memoryList({ limit: 1000 }).map((e) => e.content).sort()
+
+    expect(compactSelfShard({ force: true }).compacted).toBe(true)
+
+    expect(gens()).toEqual([])
+    expect(reloadCold()).toEqual(live)
+  })
+
+  it('a failed rewrite leaves the ORIGINAL set complete', async () => {
+    // There is no atomic multi-file swap, so the only thing standing between a mid-write failure and
+    // a shredded store is the ordering. Nothing pre-existing may be touched until every new file is
+    // durable — and the active shard must never be deleted on the hope that a retry will land.
+    _setMaxShardBytesForTests(600)
+    for (let i = 0; i < 20; i++) {
+      await memoryWrite({ agentId: 'a', kind: 'fact', content: `precious fact ${i}` })
+    }
+    const live = memoryList({ limit: 1000 }).map((e) => e.content).sort()
+    const before = fs.readdirSync(tmpDir).sort()
+
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('EPERM') })
+    let res: { compacted: boolean }
+    try {
+      res = compactSelfShard({ force: true })
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(res.compacted).toBe(false) // it reports the failure rather than claiming success
+    expect(fs.readdirSync(tmpDir).sort()).toEqual(before) // no survivors, no debris
+    expect(reloadCold()).toEqual(live)
+  })
+})

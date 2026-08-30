@@ -67,6 +67,7 @@ import {
   _setEmbedFnForTests,
   _compactionMayBeWorthwhileForTests,
   _ownShardStateForTests,
+  _setMaxShardBytesForTests,
 } from '../../src/main/swarmMemory'
 
 vi.mock('electron', () => ({ app: { getPath: () => dir }, safeStorage: undefined }))
@@ -200,5 +201,55 @@ describe('the counters stay honest across restarts', () => {
     } finally {
       try { rmSync(other, { recursive: true, force: true }) } catch { /* ignore */ }
     }
+  })
+})
+
+// v1.38.2 — the gate was measuring the wrong thing on exactly the stores that needed it.
+//
+// The comment above ("deletes cannot get you there ... the dead ratio asymptotes at 0.5") is
+// correct, and it is also the bug. LINES are the wrong unit once entries get big: an add carries the
+// whole entry (kilobytes), the tombstone that kills it is ~60 bytes. Delete a quarter of a store and
+// the line count barely moves while hundreds of megabytes of dead adds sit on disk forever.
+//
+// David's store, measured: 84k of 388k entries deleted, 3.2 GB on disk, estimated dead ratio ~0.
+// The gate had never once said yes, and by design never would have.
+describe('the gate weighs dead ADDS, not just dead lines', () => {
+  it('says YES to a store that is a quarter dead, which the line ratio scores at nearly zero', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 200; i++) ids.push((await write(`entry ${i}`)).id)
+    expect(_compactionMayBeWorthwhileForTests()).toBe(false) // all live
+
+    for (const id of ids.slice(0, 60)) memoryDelete(id) // 30% of the adds are dead
+
+    // Deleting did not remove a single line — it ADDED one per delete. That is why the line-shaped
+    // estimate is blind here, and why this assertion is the proof rather than decoration.
+    const st = _ownShardStateForTests()
+    expect(st.addIds).toBe(200)
+    expect(st.lines).toBeGreaterThan(200)
+
+    expect(_compactionMayBeWorthwhileForTests()).toBe(true)
+    const res = compactSelfShard()
+    expect(res.compacted).toBe(true)
+    expect(res.after).toBeLessThan(res.before)
+    expect(memoryList({ limit: 1000 })).toHaveLength(140) // and nothing live was taken with them
+  }, 30_000)
+
+  it('still declines the ordinary churn of a healthy store', async () => {
+    // The new trigger must not turn back into the 4.4-second freeze it was added beside. A store
+    // that has deleted a handful of things is not worth rewriting.
+    const ids: string[] = []
+    for (let i = 0; i < 250; i++) ids.push((await write(`entry ${i}`)).id)
+    for (const id of ids.slice(0, 20)) memoryDelete(id) // 8%, under the threshold
+    expect(_compactionMayBeWorthwhileForTests()).toBe(false)
+  }, 30_000)
+
+  it('fires on an over-cap file whatever the ratios say', async () => {
+    for (let i = 0; i < 10; i++) await write(`live ${i}`)
+    expect(_compactionMayBeWorthwhileForTests()).toBe(false) // small, all live, nothing to do
+
+    _setMaxShardBytesForTests(100) // ...and now the shard is over the rotation cap
+    // A file past the cap is a correctness problem, not an untidiness one — the readers have a hard
+    // ceiling and a shard that grows through it stops being loadable at all. Ratios don't get a vote.
+    expect(_compactionMayBeWorthwhileForTests()).toBe(true)
   })
 })

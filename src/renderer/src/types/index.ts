@@ -388,9 +388,12 @@ export interface TermpolisAPI {
   tokenSavingsGetProxyReceipt: () => Promise<IpcResponse<{ session: ProxyTotalsView; cumulative: ProxyTotalsView }>>
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }>>
+  /** Where the memory store is running. Two in-memory reads in main — no work, no disk. Read on tab
+   *  open and on Refresh; the ONLY timer allowed against it is the bounded re-probe that leaves the
+   *  transitional 'starting' state, which stops itself as soon as the mode settles. */
+  memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'starting' | 'inproc' | 'unstarted'; pid: number | null }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
-  memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'inproc' | 'unstarted'; pid: number | null }>>
   memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>
   /** Flip int8 quantization and rebuild the packed store. Lossless both ways. */
   memorySetVectorQuantize: (value: boolean) => Promise<IpcResponse<VectorRamInfo>>

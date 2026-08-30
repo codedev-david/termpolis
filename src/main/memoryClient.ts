@@ -90,7 +90,7 @@ const CALL_TIMEOUT_MS = 60_000
 const MAX_RESTARTS = 3           // within RESTART_WINDOW_MS, then we stop flapping and go in-process
 const RESTART_WINDOW_MS = 60_000
 
-type Mode = 'unstarted' | 'host' | 'inproc'
+type Mode = 'unstarted' | 'starting' | 'host' | 'inproc'
 
 interface Pending {
   fn: string
@@ -269,6 +269,14 @@ function onChildExit(code: number): void {
 async function spawnAndInit(): Promise<void> {
   if (!initParams) throw new Error('memory client: no init params')
   if (!spawner) throw new Error('memory client: no spawner set')
+  // v1.38.2 — 'starting' is NOT cosmetic. The child can take a minute to come up on a large store
+  // (a 3.2 GB shard set is decrypted and parsed before it reports ready), and for that whole window
+  // the mode used to read 'unstarted' — which the Memory & Learning panel renders with the copy
+  // written for a REAL failure: "could not start in a separate process... fell back to the main
+  // thread". That is a lie told at exactly the moment a user opens the tab after launch, and the
+  // panel never re-reads, so the lie sticks for the rest of the session. Startup and failure are
+  // different states, so they get different names.
+  mode = 'starting'
   const t = spawner()
   if (!t) throw new Error('memory client: spawner returned null')
   transport = t

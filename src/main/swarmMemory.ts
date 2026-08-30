@@ -355,11 +355,19 @@ function rotatedShardFiles(active: string): string[] {
   } catch { return [] }
 }
 
+/** Every file that is THIS device's own append-only log: the active shard plus its rotated
+ *  generations. A generation is not a peer's shard and it is not foreign history — it is our own
+ *  writes that happen to have rolled over, and treating it as somebody else's is what let 3.2 GB of
+ *  our own entries sit outside compaction's reach forever. */
+function ownShardSet(): string[] {
+  return memPath ? [memPath, ...rotatedShardFiles(memPath)] : []
+}
+
 function shardFiles(): string[] {
-  if (!syncDir) return memPath ? [memPath, ...rotatedShardFiles(memPath)] : []
+  if (!syncDir) return ownShardSet()
   try {
     return fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(syncDir as string, f))
-  } catch { return memPath ? [memPath, ...rotatedShardFiles(memPath)] : [] }
+  } catch { return ownShardSet() }
 }
 
 /** Roll the active shard over before `incoming` bytes would push it past the cap. This sits on the
@@ -389,10 +397,10 @@ function rotateShardIfNeeded(incoming: number): void {
     return
   }
   activeShardBytes = 0
-  // The rolled-off generation is history now: it is no longer `isOwn`, so the compaction gate has
-  // to stop counting it or compaction would try to rewrite lines that live in another file.
-  ownShardLines = 0
-  ownShardAddIds.clear()
+  // These counters describe the OWN SET, not the active file, so a rotation must not clear them:
+  // the lines did not go anywhere, they moved into a generation that compaction still owns and
+  // still rewrites. Zeroing them here is what made the gate believe a freshly rotated store had
+  // nothing to compact, so a 3.2 GB generation could roll off and never be looked at again.
   recordAnomaly('shard-rotated', `active shard rolled over to ${path.basename(target)} at ${activeShardBytesAtRotation(target)} bytes`)
 }
 
@@ -498,8 +506,13 @@ function reloadFromImpl(paths: string[]): void {
   let ownLineCount = 0 // lines physically in OUR shard, counted as we already walk them
   const ownVulnerable = new Set<string>()  // own adds appearing BEFORE an own clear line (pre-clear → epoch-droppable)
   const ownTombstoned = new Set<string>()  // ids the own shard already records (delete/clearIds) — re-emission dedup
+  // Resolved once, not per file: `isOwn` is asked for every shard and each answer used to cost a
+  // path.resolve. It now covers the rotated generations too (see ownShardSet) — they are this
+  // device's own writes, so its entries must get the same causal exemption from a peer's clear
+  // epoch that the active shard's do, and compaction must be able to see them.
+  const ownSet = new Set(ownShardSet().map((f) => path.resolve(f)))
   for (const p of paths) {
-    const isOwn = !!memPath && path.resolve(p) === path.resolve(memPath)
+    const isOwn = ownSet.has(path.resolve(p))
     const shardAdds: string[] = [] // own-shard add ids seen so far — marked vulnerable when a clear line follows
     // Classify ONE LINE AT A TIME straight from the shard's bytes; never decode the whole file into a
     // single string, which fatals V8 uncatchably past ~512 MiB (see forEachShardLine / the v1.27.4 fix).
@@ -3025,6 +3038,18 @@ function rewriteSelfShard(xform: (plain: string) => string): void {
 // Shard compaction thresholds — only worth rewriting a large shard that's mostly dead lines.
 const COMPACT_MIN_LINES = 200
 const COMPACT_DEAD_RATIO = 0.5
+// ...except that "dead LINES" is the wrong unit once a store gets big, and being wrong about the
+// unit is how a 3.2 GB generation sat uncompacted forever.
+//
+// Compaction replaces a deleted entry's add line with a tombstone line. In LINES that is a wash —
+// one line out, one line in — so a store with 84k deleted entries out of 388k scored a dead ratio
+// of roughly ZERO and was judged healthy. In BYTES it is nothing of the sort: the add carried ~8 KB
+// of content and embedding, the tombstone is ~60 bytes. That store was ~700 MB of pure dead weight,
+// re-read and re-decrypted at every launch, sitting behind a gate that said "nothing to do here".
+//
+// So: a second trigger, on the fraction of our own ADDS that are dead. Adds are where the bytes
+// are, which makes this a byte estimate that costs no I/O.
+const COMPACT_DEAD_ADD_RATIO = 0.15
 
 /**
  * Compact THIS device's append-only shard (shard-never-compacted). The log accumulates a line
@@ -3061,6 +3086,10 @@ const COMPACT_DEAD_RATIO = 0.5
  * time; it cannot cost correctness.
  */
 function compactionMayBeWorthwhile(): boolean {
+  // An over-cap file is its own reason, independent of how live it is: a generation past the cap is
+  // one nothing else will ever split, and splitting it is the only way the read cost comes down.
+  // A handful of stats once per 30 minutes.
+  if (ownSetHasOversizedFile()) return true
   if (ownShardLines < COMPACT_MIN_LINES) return false
   if (ownShardAddIds.size === 0) return true // we know nothing about our shard -> go and look properly
   const liveIds = new Set<string>(entries.map((e) => e.id))
@@ -3069,7 +3098,28 @@ function compactionMayBeWorthwhile(): boolean {
   // Under-counts the real `after` (ignores patch/reinforce/clear lines) -> OVER-states dead weight.
   const estimatedAfter = liveOwn + tombstones.size + tombstonedHashes.size
   const estimatedDeadRatio = (ownShardLines - estimatedAfter) / ownShardLines
-  return estimatedDeadRatio >= COMPACT_DEAD_RATIO
+  if (estimatedDeadRatio >= COMPACT_DEAD_RATIO) return true
+  // The byte-shaped trigger (see COMPACT_DEAD_ADD_RATIO). Counted over ADDS only, so the small
+  // bookkeeping lines can't inflate it into firing on a healthy store.
+  return (ownShardAddIds.size - liveOwn) / ownShardAddIds.size >= COMPACT_DEAD_ADD_RATIO
+}
+
+/** Is any file in our own set past the rotation cap? True for a generation sealed before rotation
+ *  existed, which is precisely the file that most needs splitting and that nothing else will. */
+function ownSetHasOversizedFile(): boolean {
+  for (const f of ownShardSet()) {
+    try { if (fs.statSync(f).size > maxShardBytes) return true } catch { /* gone / unreadable */ }
+  }
+  return false
+}
+
+/** The same two triggers, decided on the REAL numbers once the output shape is known. Kept beside
+ *  the estimate so the two can't drift into disagreeing about what "worth it" means. */
+function worthRewriting(before: number, after: number, liveOwn: number, ownAdds: number): boolean {
+  if (ownSetHasOversizedFile()) return true
+  if (before < COMPACT_MIN_LINES) return false
+  if ((before - after) / before >= COMPACT_DEAD_RATIO) return true
+  return ownAdds > 0 && (ownAdds - liveOwn) / ownAdds >= COMPACT_DEAD_ADD_RATIO
 }
 
 /** @internal test-only */
@@ -3098,12 +3148,13 @@ function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean;
   }
   // Stream the shard from its bytes (see forEachShardLine): a >512 MiB shard read as one 'utf8'
   // string fatals V8 uncatchably, and compaction runs on a timer, so it must be safe at any size.
-  const rawLines: string[] = []
-  try { forEachShardLine(memPath, (line) => { if (line.trim()) rawLines.push(line) }) }
-  catch { return { compacted: false, before: 0, after: 0 } }
-  const before = rawLines.length
-  if (before === 0) return { compacted: false, before: 0, after: 0 }
-
+  //
+  // v1.38.2 — read the whole OWN SET (active + rotated generations), not just the active file. A
+  // rotated generation was previously unreachable by every compaction path there is, so a store
+  // that rolled over kept its dead weight permanently and re-decrypted it on every single launch.
+  // Counting lines instead of holding them: `rawLines` for a 3.2 GB set is millions of strings and
+  // roughly the file's own size in RAM, on top of the hot window we already hold.
+  const files = ownShardSet()
   const ownAddIds = new Set<string>()
   const shardTombstones = new Set<string>()
   const shardDeletedHashes = new Set<string>()
@@ -3111,47 +3162,83 @@ function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean;
   let shardClearEpoch = 0
   const shardReinforce = new Map<string, number>()
   const patchLines: string[] = []
-  for (const line of rawLines) {
-    const c = classifyShardLine(line)
-    switch (c.t) {
-      case 'add': ownAddIds.add(c.entry.id); break
-      case 'delete': shardTombstones.add(c.id); break
-      case 'deleteHash': shardDeletedHashes.add(c.hash); break
-      case 'clear': shardClearEpoch = Math.max(shardClearEpoch, c.before); break
-      case 'clearIds': for (const id of c.ids) shardClearedIds.add(id); break
-      case 'reinforce': for (const d of c.deltas) shardReinforce.set(d.id, (shardReinforce.get(d.id) ?? 0) + d.used); break
-      case 'patch': patchLines.push(JSON.stringify({ patch: { hash: c.hash, project: c.project, ...(c.projectKey && { projectKey: c.projectKey }) } })); break
-      case 'locked':
-      case 'corrupt':
-        return { compacted: false, before, after: before } // never rewrite over data we can't read
-      case 'skip':
-        break
+  let before = 0
+  let unreadable = false
+  let unaccountable = false // a locked or corrupt line — bytes we cannot rewrite over
+  for (const f of files) {
+    if (unaccountable) break
+    try {
+      forEachShardLine(f, (line) => {
+        if (unaccountable || !line.trim()) return
+        before++
+        // Accumulate as we stream and retain NOTHING per line. The old shape collected the shard's
+        // raw lines first and classified afterwards, which for a 3.2 GB set means millions of live
+        // strings — the file's own size in RAM, on top of the hot window this process already holds,
+        // inside the very process whose memory footprint is the reason the store moved out of main.
+        const c = classifyShardLine(line)
+        switch (c.t) {
+          case 'add': ownAddIds.add(c.entry.id); break
+          case 'delete': shardTombstones.add(c.id); break
+          case 'deleteHash': shardDeletedHashes.add(c.hash); break
+          case 'clear': shardClearEpoch = Math.max(shardClearEpoch, c.before); break
+          case 'clearIds': for (const id of c.ids) shardClearedIds.add(id); break
+          case 'reinforce': for (const d of c.deltas) shardReinforce.set(d.id, (shardReinforce.get(d.id) ?? 0) + d.used); break
+          case 'patch': patchLines.push(JSON.stringify({ patch: { hash: c.hash, project: c.project, ...(c.projectKey && { projectKey: c.projectKey }) } })); break
+          case 'locked':
+          case 'corrupt':
+            unaccountable = true // never rewrite over data we can't read
+            break
+          case 'skip':
+            break
+        }
+      })
+    } catch {
+      // An unreadable generation is not an empty one (F31). Rewriting the set now would silently
+      // drop everything that file holds, so do nothing at all and leave the bytes for a later run.
+      unreadable = true
+      break
     }
   }
+  if (unreadable) return { compacted: false, before: 0, after: 0 }
+  if (unaccountable) return { compacted: false, before, after: before }
+  if (before === 0) return { compacted: false, before: 0, after: 0 }
 
   // Live own entries = own add-ids still present in the merged hot window (all tombstones / clears
   // / dedup already applied), re-emitted in their CURRENT form.
   const liveById = new Map<string, MemoryEntry>(entries.map((e) => [e.id, e] as [string, MemoryEntry]))
-  const liveOwn: MemoryEntry[] = []
-  for (const id of ownAddIds) { const e = liveById.get(id); if (e) liveOwn.push(e) }
+  let liveOwnCount = 0
+  for (const id of ownAddIds) if (liveById.has(id)) liveOwnCount++
 
   const emit = (plain: string): string => (encKey ? encryptLine(encKey, plain) : plain)
-  const out: string[] = []
-  if (shardClearEpoch > 0) out.push(emit(JSON.stringify({ clearedBefore: shardClearEpoch })))
-  if (shardClearedIds.size > 0) out.push(emit(JSON.stringify({ clearedIds: [...shardClearedIds] })))
-  for (const e of liveOwn) out.push(emit(serializeEntry(e)))
   const reinforce = [...shardReinforce.entries()].filter(([id, u]) => u !== 0 && liveById.has(id)).map(([id, used]) => ({ id, used, ts: Date.now() }))
-  if (reinforce.length > 0) out.push(emit(JSON.stringify({ reinforce })))
-  for (const id of shardTombstones) out.push(emit(JSON.stringify({ deleted: id })))
-  for (const hash of shardDeletedHashes) out.push(emit(JSON.stringify({ deletedHash: hash })))
-  for (const p of patchLines) out.push(emit(p))
 
-  const after = out.length
-  if (!opts?.force && (before < COMPACT_MIN_LINES || (before - after) / before < COMPACT_DEAD_RATIO)) {
+  // The compacted set, YIELDED rather than collected. Materialising it was fine for one 450 MB
+  // shard; for a whole set it is the re-encrypted text of every live entry — ~2.5 GB of strings in
+  // the field — held all at once, in the same 4 GB heap that already holds the parsed hot window.
+  // The writer below consumes this lazily, so peak cost is one line plus a 4 MB buffer.
+  //
+  // Clear lines lead, exactly as before: reloadFrom only marks an own add as epoch-vulnerable when
+  // it appears BEFORE a clear line in the same file, so emitting clears first means nothing this
+  // device wrote can be retro-cleared by a peer's wall clock.
+  function* compacted(): Generator<string> {
+    if (shardClearEpoch > 0) yield emit(JSON.stringify({ clearedBefore: shardClearEpoch }))
+    if (shardClearedIds.size > 0) yield emit(JSON.stringify({ clearedIds: [...shardClearedIds] }))
+    for (const id of ownAddIds) { const e = liveById.get(id); if (e) yield emit(serializeEntry(e)) }
+    if (reinforce.length > 0) yield emit(JSON.stringify({ reinforce }))
+    for (const id of shardTombstones) yield emit(JSON.stringify({ deleted: id }))
+    for (const hash of shardDeletedHashes) yield emit(JSON.stringify({ deletedHash: hash }))
+    for (const p of patchLines) yield emit(p)
+  }
+
+  // The line count the output WILL have — known without generating it, so the gate stays in front
+  // of the work.
+  const after = (shardClearEpoch > 0 ? 1 : 0) + (shardClearedIds.size > 0 ? 1 : 0) + liveOwnCount +
+    (reinforce.length > 0 ? 1 : 0) + shardTombstones.size + shardDeletedHashes.size + patchLines.length
+  if (!opts?.force && !worthRewriting(before, after, liveOwnCount, ownAddIds.size)) {
     return { compacted: false, before, after: before } // not enough dead weight to bother
   }
   try {
-    atomicWriteLines(memPath, out)
+    writeOwnSet(compacted())
   } catch (err) {
     recordSwarmError('swarmMemory.compact.failed', err, { memPath })
     return { compacted: false, before, after: before }
@@ -3159,6 +3246,101 @@ function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean;
   activeShardBytes = -1 // the shard was rewritten from scratch — re-stat on the next append
   reloadFrom(shardFiles())
   return { compacted: true, before, after }
+}
+
+/**
+ * Replace this device's whole own set with `out`, split so no file exceeds the rotation cap.
+ *
+ * The ordering is the entire point and it is not the obvious one. There is no atomic multi-file
+ * swap, so a crash mid-way must leave the union of what is on disk a SUPERSET of the live state,
+ * never a subset: reloadFrom dedups adds by id, so seeing an entry twice is free, while missing one
+ * is unrecoverable. Hence — write every new generation under numbers that do not exist yet, THEN
+ * empty the active shard, THEN delete the old generations. Interrupt it at any point and the worst
+ * outcome is a store that is temporarily larger than it needs to be, which the next run fixes.
+ *
+ * Writing straight into `<base>.jsonl` first, the natural way to do this, would be the subset case.
+ */
+function writeOwnSet(out: Iterable<string>): void {
+  if (!memPath) return
+  const active = memPath
+  const prefix = rotationPrefix(active)
+  const existing = rotatedShardFiles(active)
+  let nextGen = 1
+  for (const f of existing) {
+    const g = rotationGen(f, prefix)
+    if (g !== null) nextGen = Math.max(nextGen, g + 1)
+  }
+
+  // One file at a time, streamed: open a temp, append until the cap, then roll. Same durability
+  // contract as atomicWriteLines (temp + fsync + rename) — not reused because it takes a whole
+  // file's worth of lines up front, and never holding that is the entire point here.
+  //
+  // The LAST chunk becomes the active shard and every earlier one becomes a generation, which is
+  // why a chunk is only renamed once the next line proves it wasn't the last. That ordering keeps
+  // the ordinary case ordinary: output that fits under the cap produces exactly one file, named
+  // exactly what it was named before, and compaction stays invisible to every store but the huge
+  // ones. Appends also keep landing in a file that already holds the newest entries.
+  const CHUNK = 4 * 1024 * 1024
+  let fd: number | null = null
+  let tmp = ''
+  let buf = ''
+  let bytes = 0
+  const fresh: string[] = []
+  const openNext = (): number => {
+    tmp = active + '.compact-' + String(fresh.length) + '.tmp'
+    buf = ''
+    bytes = 0
+    return fs.openSync(tmp, 'w')
+  }
+  const seal = (target: string): void => {
+    if (fd === null) return
+    try {
+      if (buf) fs.writeFileSync(fd, buf)
+      fs.fsyncSync(fd)
+    } finally { fs.closeSync(fd); fd = null }
+    try { fs.renameSync(tmp, target) }
+    catch {
+      // Windows: rename over an existing file fails while anything holds it open. The usual fix is
+      // to delete the target first — but NOT here. This target is the active shard, and if the
+      // retry then failed too we would have destroyed the only on-disk copy of everything it held.
+      // Move it aside instead, so there is always something to put back.
+      const aside = target + '.replaced'
+      try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
+      fs.renameSync(target, aside)
+      try { fs.renameSync(tmp, target) }
+      catch (err) { try { fs.renameSync(aside, target) } catch { /* ignore */ } throw err }
+      try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
+    }
+    fresh.push(target)
+  }
+  try {
+    for (const line of out) {
+      const size = Buffer.byteLength(line, 'utf8') + 1
+      // A single line bigger than the cap still gets written — it just gets a file to itself. The
+      // cap is a target for read cost; data is not negotiable.
+      if (fd !== null && bytes > 0 && bytes + size > maxShardBytes) seal(active.replace(/[.]jsonl$/, '.' + String(nextGen++) + '.jsonl'))
+      if (fd === null) fd = openNext()
+      buf += line + "\n"
+      bytes += size
+      if (buf.length >= CHUNK) { fs.writeFileSync(fd, buf); buf = '' }
+    }
+    // Whatever is still open was the tail, so it lands on the active shard. Renaming over it is the
+    // one name we cannot avoid reusing — and it is safe here precisely because everything that file
+    // used to hold is either already sealed into a new generation above or is in this very chunk.
+    if (fd !== null) seal(active)
+    else atomicWriteLines(active, []) // nothing survived compaction at all
+  } catch (err) {
+    // Leave every pre-existing file exactly where it is and clean up after ourselves: the old set is
+    // still the complete store, so a failed compaction costs nothing but the time it took.
+    if (fd !== null) { try { fs.closeSync(fd) } catch { /* ignore */ } }
+    try { if (tmp) fs.rmSync(tmp, { force: true }) } catch { /* ignore */ }
+    for (const f of fresh) { if (f !== active) { try { fs.rmSync(f, { force: true }) } catch { /* ignore */ } } }
+    throw err
+  }
+  // Every line is durable. ONLY NOW may the originals go.
+  for (const f of existing) {
+    try { fs.unlinkSync(f) } catch (err) { recordSwarmError('swarmMemory.compact.unlinkFailed', err, { shard: f }) }
+  }
 }
 
 // ---- Brain export / import (portable .zip) --------------------------------
