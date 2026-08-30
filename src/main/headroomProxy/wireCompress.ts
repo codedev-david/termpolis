@@ -38,6 +38,11 @@ export interface WireStats {
    *  START; this is what it costs to have KEPT GOING, and it is the only field here the
    *  compressor cannot act on — see headroom/sessionDepth.ts. */
   msgCount: number
+  /** `thinking.budget_tokens` as requested on this call, 0 when extended thinking is off.
+   *  Thinking bills as OUTPUT (5x input), so this is the denominator for asking whether a
+   *  larger budget is buying anything — a question nothing in the app could answer before,
+   *  because the budget was never recorded next to the tokens it produced. */
+  thinkBudget: number
   /** Whether this request carried the output-steering directive. Output is 5x input and the
    *  largest single bucket on the bill; steering is the only lever aimed at it, and until now
    *  nothing recorded whether it was even present, let alone what it earned. */
@@ -57,7 +62,7 @@ function emptyStats(): WireStats {
   return {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
-    sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, steered: false,
+    sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, thinkBudget: 0, steered: false,
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -522,6 +527,9 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
   // Before the `tools` early return on purpose: a request without a tools array still has a
   // depth, and dropping it would bias the curve toward tool-using turns only.
   stats.msgCount = Array.isArray(obj.messages) ? obj.messages.length : 0
+  const thinking = obj.thinking as { type?: string; budget_tokens?: unknown } | undefined
+  stats.thinkBudget =
+    thinking?.type === 'enabled' && typeof thinking.budget_tokens === 'number' ? thinking.budget_tokens : 0
   const tools = obj.tools
   if (!Array.isArray(tools)) return
   stats.toolCount = tools.length

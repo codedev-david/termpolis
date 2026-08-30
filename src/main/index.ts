@@ -125,6 +125,7 @@ import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings 
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
 import { writeAgentsMd, ensureCodexMemoryAutoApproved } from './codexParity'
 import { adaptSteeringMode, type SteeringMode } from './headroom/outputSteering'
+import { initOutputEconomy, armForSession, flushOutputEconomy, outputEconomyReport } from './headroom/outputEconomyStore'
 import { resolveWireMode } from './headroom/savingsFloor'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
@@ -156,6 +157,13 @@ import {
   listPins, addPin, removePin, updatePin, clearPins,
   type ContextPin,
 } from './contextPinStore'
+import { initMcpGateway, gatewayListTools, gatewayCall } from './mcpGatewayRuntime'
+import { initMemoryCorrections, correctMemory, applyCorrections } from './memoryCorrectionStore'
+import { runHeadless, type ExecAgent } from './headlessExec'
+import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
+import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
+import { buildProbes, runBench, checkRegression, baselineFrom, formatBench, type BenchMemory } from './recallBench'
+import { initRecallBench, loadBenchBaseline, saveBenchBaseline } from './recallBenchStore'
 // v1.26 — the memory brain lives in a utilityProcess (memoryHost.ts). NOTHING in main imports
 // ./swarmMemory any more: main talks to the store through this proxy, so initSwarmMemory's ~4,276 ms
 // launch block (measured, 475 MB / 90,817 entries) is off the thread that paints the window and
@@ -2090,6 +2098,14 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
         const cum = summarizeProxySavings().cumulative
         steeringMode = adaptSteeringMode(steeringMode, cum.outputTokens, cum.requests)
       }
+      // Randomized holdout. A small deterministic slice of sessions launches UNSTEERED so
+      // the app can answer "does steering actually reduce output?" with a comparison rather
+      // than an assumption. The existing steered-vs-unsteered split in the ledger is
+      // confounded — a session is unsteered because the user turned steering off, which
+      // correlates with everything else about how they work — so it can describe the two
+      // populations but cannot attribute the difference to steering. This can. The bucket is
+      // keyed by cwd so a project stays on one side for the life of the experiment.
+      if (steering && armForSession(opts?.cwd || 'default') === 'holdout') steering = false
     } catch { /* steering optional */ }
     const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode })
     const file = join(dir, `primer-${uuidv4()}.txt`)
@@ -2121,6 +2137,9 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
         const cum = summarizeProxySavings().cumulative
         steeringMode = adaptSteeringMode(steeringMode, cum.outputTokens, cum.requests)
       }
+      // Same holdout as the Claude path — keyed by cwd so a project is on the same side of
+      // the experiment whichever agent it launches, and the arms stay comparable.
+      if (steering && armForSession(opts.cwd) === 'holdout') steering = false
     } catch { /* steering optional */ }
     const agents = writeAgentsMd(opts.cwd, { cwd: opts.cwd, steering, mode: steeringMode })
     const approvals = ensureCodexMemoryAutoApproved(join(homedir(), '.codex', 'config.toml'))
@@ -2746,7 +2765,12 @@ if (!gotTheLock) {
           recordMetric({ t: 'recall', ts: Date.now(), hits: res.length, topScore: res[0]?.score ?? 0, path: ready ? 'vector' : 'keyword', ms })
           recordMetric({ t: 'embed', ts: Date.now(), available: ready })
         } catch { /* metrics are best-effort */ }
-        return res
+        // In-flow corrections apply on the READ path, not by rewriting the store: a memory
+        // the user just retracted has to stop reaching agents on the very next recall, and
+        // waiting for a re-index would mean the wrong fact gets used again in the same
+        // session it was corrected in. Retracted entries are dropped; amended ones carry
+        // the replacement text; demoted ones keep their place in the list but not their rank.
+        return applyCorrections(res)
       },
       memoryList: (opts) => memoryList({
         limit: opts.limit,
@@ -2847,12 +2871,111 @@ if (!gotTheLock) {
       codeImpact: (opts) => codeImpact(opts.name),
       codeSearch: (opts) => codeSymbols(opts.query, opts.limit ?? 50),
       codeLocate: (opts) => locateIssueSites(opts.issue, undefined, opts.limit),
+      // In-flow memory correction: the agent (or the user through it) can strike out a
+      // wrong recall at the moment it surfaces, instead of filing it for a review pass
+      // that never happens. Nothing is deleted — see memoryCorrection.ts.
+      memoryCorrect: (opts) => correctMemory({ id: opts.id, kind: opts.kind as 'retract' | 'amend' | 'demote', reason: opts.reason, replacement: opts.replacement }),
+      // Governed access to EXTERNAL MCP servers. Termpolis has always published tools to
+      // the agents; this is the other direction, and it is the only path by which an
+      // upstream server's traffic passes the app's policy, secret scan and audit log.
+      gatewayListTools: () => gatewayListTools(),
+      gatewayCall: (opts) => gatewayCall(opts),
       retrieveFull: (token: string) => headroomRetrieveFull(token),
+
+      // ── Operator verbs (CLI-only — see McpToolHandlers) ───────────────────────────────
+      // A headless run of a hosted CLI, primed with this project's memory. The point of
+      // the primer is that a CI job or a git hook starts with everything the app already
+      // learned instead of from zero, which is the whole difference between "an agent in
+      // a pipeline" and "an agent that has worked here before".
+      agentExec: async (opts) => await runHeadless(
+        {
+          task: opts.prompt,
+          ...(opts.agent ? { agent: opts.agent as ExecAgent } : {}),
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(opts.cwd ? { cwd: opts.cwd } : {}),
+          ...(opts.write !== undefined ? { write: opts.write } : {}),
+          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        },
+        {
+          deliver: deliverSecondOpinion,
+          primer: async (cwd: string) => {
+            const project = cwd ? normalizeProjectSlug(cwd) : ''
+            return await buildContextPrimer(memorySearch, {
+              query: project
+                ? `recent work, decisions, conventions, and context for ${project}`
+                : 'recent work, key decisions, and conventions',
+              limit: getPrimerLimit(),
+              maxSnippetChars: 400,
+              project: project || undefined,
+              projectPath: cwd || undefined,
+              recent: primerRecent,
+            })
+          },
+          remember: async (input) => await memoryWrite({
+            agentId: 'headless-exec',
+            kind: 'result',
+            content: input.content,
+            project: input.project,
+          }),
+        },
+      ),
+
+      savingsReceipt: (opts) => {
+        if (opts.verify) {
+          let parsed: SignedReceipt
+          try {
+            parsed = JSON.parse(opts.verify) as SignedReceipt
+          } catch {
+            return { ok: false, error: 'not valid JSON — pass the contents of a receipt file' }
+          }
+          return { ok: true, verify: checkReceipt(parsed) }
+        }
+        const receipt = issueReceipt(summarizeUnifiedSavings().cumulative, Date.now())
+        return opts.format === 'json'
+          ? { ok: true, receipt, text: renderReceiptJson(receipt) }
+          : { ok: true, receipt, text: renderReceiptMarkdown(receipt) }
+      },
+
+      // Scored recall quality over the brain's OWN memories. Probes are derived from
+      // signals already in the data (graph edges, distinctive terms, write-time
+      // adjacency), so the benchmark measures this install's real corpus rather than a
+      // synthetic set that would drift away from it.
+      recallBench: async (opts) => {
+        const limit = Math.min(Math.max(opts.limit ?? 200, 20), 1000)
+        const entries = await memoryList({ limit, project: opts.project })
+        const sample = await memoryGraphSample({ limit: Math.min(limit, 300) })
+        const links = new Map<string, string[]>()
+        for (const edge of sample.edges) {
+          const list = links.get(edge.from)
+          if (list) list.push(edge.to)
+          else links.set(edge.from, [edge.to])
+        }
+        const memories: BenchMemory[] = entries.map((e) => ({
+          id: e.id,
+          content: e.content,
+          ts: e.ts,
+          ...(e.project ? { project: e.project } : {}),
+          ...(links.has(e.id) ? { links: links.get(e.id) as string[] } : {}),
+        }))
+        const probes = buildProbes(memories)
+        const result = await runBench(probes, async (query, searchLimit) =>
+          await memorySearch({ query, limit: searchLimit, project: opts.project }))
+        const verdict = checkRegression(result, loadBenchBaseline())
+        // Only ever re-baseline on an explicit request: a bench that rebaselines every
+        // run can never report a regression, because each result becomes the new normal.
+        const saved = opts.save ? saveBenchBaseline(baselineFrom(result)) : false
+        return { ok: true, text: formatBench(result), result, verdict, saved }
+      },
     }
 
     initAuditLog(app.getPath('userData'))
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
+    initMcpGateway(app.getPath('userData'))
+    initMemoryCorrections(app.getPath('userData'))
+    initReceiptIdentity(app.getPath('userData'))
+    initRecallBench(app.getPath('userData'))
+    initOutputEconomy(app.getPath('userData'))
     initAiSecurity()
     // Back the memory sync-key cache with the OS keychain (safeStorage: DPAPI /
     // Keychain / libsecret) — no native module, ships in the one executable.
@@ -2888,6 +3011,21 @@ if (!gotTheLock) {
       // The one honest number: wire proxy + MCP tool compressor, minus retrieve_full give-backs,
       // counted once. The two legacy per-layer handlers stay for back-compat.
       ipcMain.handle('tokenSavings:get-unified-receipt', () => ok(summarizeUnifiedSavings()))
+      // The output side of the bill. Separate from the unified receipt on purpose: the
+      // receipt reports what was saved, this reports whether the thing believed to be saving
+      // it actually is — including the verdict that it is not.
+      ipcMain.handle('tokenSavings:get-output-economy', () => {
+        try { return ok(outputEconomyReport(getHeadroomSettings().thinkingCap || null)) }
+        catch (e: any) { return err(e.message) }
+      })
+      // A portable, signed receipt. The dashboard number is only convincing to whoever is
+      // looking at the dashboard; this one can be pasted into a procurement thread.
+      ipcMain.handle('tokenSavings:export-receipt', (_e, opts: { format?: 'markdown' | 'json' } = {}) => {
+        try {
+          const receipt = issueReceipt(summarizeUnifiedSavings().cumulative, Date.now())
+          return ok({ receipt, text: opts.format === 'json' ? renderReceiptJson(receipt) : renderReceiptMarkdown(receipt) })
+        } catch (e: any) { return err(e.message) }
+      })
     } catch { /* headroom persistence is best-effort */ }
 
     // ── Headroom compression proxy: ALWAYS-ON for Claude Code ───────────────────────────────────
@@ -2914,7 +3052,9 @@ if (!gotTheLock) {
       let hrProxyFlushTimer: ReturnType<typeof setTimeout> | null = null
       setProxyLedgerFlush(() => {
         if (hrProxyFlushTimer) return
-        hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir); saveDepthCurveToDisk(hrProxyDir) }, 3000)
+        // The output experiment rides the same debounce as the ledger it samples from: the
+        // two must never disagree about which requests happened, and one timer guarantees it.
+        hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir); saveDepthCurveToDisk(hrProxyDir); flushOutputEconomy() }, 3000)
       })
       onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
       // The result only lands once the upstream response ends, but Claude can call retrieve_full

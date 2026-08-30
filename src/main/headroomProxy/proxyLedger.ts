@@ -3,6 +3,7 @@ import { join } from 'path'
 import { ccrPut } from '../headroom/ccrStore'
 import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
+import { recordProxyOutput } from '../headroom/outputEconomyStore'
 
 export interface ProxyTotals {
   requests: number
@@ -131,6 +132,10 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   // `outputTokens` and a drift between them is immediately visible as a bug rather than noise.
   if (s.steered) { session.steeredRequests += 1; session.steeredOutputTokens += u.output_tokens || 0 }
   else { session.unsteeredRequests += 1; session.unsteeredOutputTokens += u.output_tokens || 0 }
+  // The randomized-holdout experiment and the thinking-budget bands. Fed from the same
+  // request the ledger just counted, so the experiment can never sample a different
+  // population than the invoice does. `s.steered` is what actually reached the model.
+  try { recordProxyOutput(!!s.steered, u.output_tokens || 0, s.thinkBudget || 0, s.msgCount || 0, u.cache_read_input_tokens || 0) } catch { /* never fail a request over a stat */ }
   if (Array.isArray(r.stashes)) for (const st of r.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } }
   try { flush?.() } catch { /* best effort */ }
 }
