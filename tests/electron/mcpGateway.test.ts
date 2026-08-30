@@ -414,7 +414,6 @@ describe('mcpGateway orchestration', () => {
   it('stringifies a non-Error upstream rejection', async () => {
     const gw = createGateway({
       getPolicy: () => ({ ...defaultPolicy(), defaultDecision: 'allow' }),
-      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       transports: () => [{ id: 'gh', listTools: async () => [], callTool: () => Promise.reject('plain string') }],
       scanSecrets: noSecrets,
     })

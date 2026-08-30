@@ -181,7 +181,6 @@ describe('headlessExec/runHeadless', () => {
   })
 
   it('stringifies a non-Error rejection', async () => {
-    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
     const res = await runHeadless({ task: 't' }, { deliver: () => Promise.reject('nope') })
     expect(res.error).toBe('nope')
   })
