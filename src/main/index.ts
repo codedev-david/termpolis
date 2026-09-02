@@ -458,6 +458,7 @@ import {
   listTrustedWorkspaces,
   ensureWorkspaceTrust,
 } from './workspaceTrust'
+import { trustClaudeWorkspace } from './claudeTrust'
 import {
   registerInClaudeSettings,
   registerInGlobalMcp,
@@ -607,6 +608,12 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
     if (!shell) return err('No shell available')
+    // EVERY folder Termpolis opens a terminal in is pre-approved in Claude Code's own
+    // config, not just the ones we launch an agent into: the user's own `claude` typed
+    // into a plain tab has to work too. Seeding here rather than at each launch site is
+    // what makes that unconditional — terminal creation is the one funnel they all share.
+    // Cheap and idempotent (memoised per folder per run); see src/main/claudeTrust.ts.
+    if (cwd) trustClaudeWorkspace(cwd)
     await new Promise<void>((resolve, reject) => {
       // NOTE: a `setTimeout(() => reject('timeout'), 5000)` "hang guard" used to sit here. It was
       // DEAD CODE: the executor body below is fully SYNCHRONOUS, so clearTimeout always won the
@@ -2244,6 +2251,21 @@ ipcMain.handle('workspace:is-trusted', async (_, { cwd }: { cwd: string }) => {
 
 ipcMain.handle('workspace:trust', async (_, { cwd }: { cwd: string }) => {
   try { trustWorkspace(cwd); return ok() } catch (e: any) { return err(e.message) }
+})
+
+// Pre-approve the folder in Claude Code's own config so its workspace-trust dialog
+// never renders. Answering that dialog by typing keys is what used to kill launches —
+// since Claude Code 2.1.x it opens focused on "No, exit", so the blind Enter Termpolis
+// sent as auto-trust quit the session. See src/main/claudeTrust.ts.
+ipcMain.handle('claude:trust-workspace', async (_, { cwd }: { cwd: string }) => {
+  try {
+    // Claude keys a git repo by its ROOT, so seed that too when there is one — it is
+    // the exact key Claude itself would write, and it covers launches from a subdir.
+    const root = await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 })
+      .then((s) => s.trim())
+      .catch(() => '')
+    return ok(trustClaudeWorkspace(cwd, { alsoTrust: root ? [root] : [] }))
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('workspace:revoke-trust', async (_, { cwd }: { cwd: string }) => {

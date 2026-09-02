@@ -74,11 +74,29 @@ function runInteractive() {
 
   rl.on('close', () => process.exit(0));
 
-  console.log('Quick safety check: Is this a project you created or one you trust?');
-  console.log('Yes, I trust this folder');
-  console.log('Enter to confirm');
+  // The workspace-trust dialog, rendered the way Claude Code 2.1.x renders it:
+  // `cancelFirst: true, focus: "cancel"` puts "No, exit" FIRST with the cursor
+  // already on it, and `hideIndexes: true` drops the "1." / "2." numbering. So a
+  // blind Enter QUITS. That is the whole bug, and the mock has to be able to
+  // reproduce it — the caller must arrow onto the affirmative row first.
+  const TRUST_OPTIONS = ['No, exit', 'Yes, I trust this folder'];
+  let trustCursor = 0;
+  console.log('Do you trust the files in this folder?');
+  console.log(process.cwd());
+  console.log('');
+  TRUST_OPTIONS.forEach((label, i) => console.log((i === trustCursor ? '❯ ' : '  ') + label));
 
-  rl.once('line', () => {
+  const onTrustLine = (line) => {
+    // readline is in non-terminal mode, so an arrow sequence arrives as the CONTENT
+    // of the line that the CR after it terminates.
+    const downs = (line.match(/\[B/g) || []).length;
+    const ups = (line.match(/\[A/g) || []).length;
+    trustCursor = Math.max(0, Math.min(TRUST_OPTIONS.length - 1, trustCursor + downs - ups));
+    if (!/^yes\b/i.test(TRUST_OPTIONS[trustCursor])) {
+      console.log('Exiting.');
+      process.exit(0);
+    }
+    rl.removeListener('line', onTrustLine);
     console.log('Claude Code v1.0.0 (mock)');
     console.log('Model: claude-opus-4-6');
     process.stdout.write('claude> ');
@@ -94,7 +112,8 @@ function runInteractive() {
       }
       process.stdout.write('claude> ');
     });
-  });
+  };
+  rl.on('line', onTrustLine);
 }
 
 // ───────────────────────────────────────────────────────────────────────────

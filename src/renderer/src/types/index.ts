@@ -349,6 +349,8 @@ export interface TermpolisAPI {
   workspaceTrust: (cwd: string) => Promise<IpcResponse>
   workspaceRevokeTrust: (cwd: string) => Promise<IpcResponse>
   workspaceListTrusted: () => Promise<IpcResponse<string[]>>
+  /** Pre-approve a folder in Claude Code's ~/.claude.json so its trust dialog never opens. */
+  claudeTrustWorkspace: (cwd: string) => Promise<IpcResponse<{ changed: boolean; keys: string[]; skipped?: string }>>
 
   // Shared swarm memory (RAG)
   memoryWrite: (input: MemoryWriteInput) => Promise<IpcResponse<MemoryEntry>>

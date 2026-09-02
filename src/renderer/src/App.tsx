@@ -771,7 +771,7 @@ export default function App() {
         const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
-          launchAgents([{ id: pId, agentCommand: prof.command }])
+          launchAgents([{ id: pId, agentCommand: prof.command, cwd: pCwd }])
         }
         break
       }
@@ -810,7 +810,7 @@ export default function App() {
     const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
-      launchAgents([{ id, agentCommand: config.command }], { onSettled: () => setLaunchingAgent(null) })
+      launchAgents([{ id, agentCommand: config.command, cwd }], { onSettled: () => setLaunchingAgent(null) })
     } else {
       setLaunchingAgent(null)
     }

@@ -55,6 +55,16 @@ export function wrapAsBracketedPaste(text: string): string {
   return BRACKETED_PASTE_START + normalised + BRACKETED_PASTE_END
 }
 
+// Pre-approve a folder in Claude Code's own config before `claude` is typed into
+// a terminal. Since Claude Code 2.1.x the workspace-trust dialog opens focused on
+// "No, exit", so a resume into an untrusted folder can be killed by a single stray
+// Enter — seeding trust means that dialog never renders at all. Never throws: a
+// failed seed only means the dialog may appear, which App.tsx's poller can answer.
+async function trustFolder(cwd: string | undefined): Promise<void> {
+  if (!cwd) return
+  try { await window.termpolis.claudeTrustWorkspace(cwd) } catch { /* dialog handler covers it */ }
+}
+
 export function PastAISessions({ open, onClose }: Props) {
   const [sessions, setSessions] = useState<AISessionSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -131,6 +141,7 @@ export function PastAISessions({ open, onClose }: Props) {
     onClose()
     try {
       await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, true) // resume always runs `claude --resume`
+      await trustFolder(session.cwd)
       // Give the shell ~800ms to print its first prompt before injecting the
       // resume command — too soon and the keystrokes land before the prompt
       // is ready, too late and the user sees a blank pane.
@@ -146,7 +157,7 @@ export function PastAISessions({ open, onClose }: Props) {
   // makes sense when that terminal is a plain shell, since typing
   // `claude --resume <id>` inside a running AI agent just sends those bytes
   // as a prompt to whatever is already there.
-  const resumeInActiveShell = (session: AISessionSummary) => {
+  const resumeInActiveShell = async (session: AISessionSummary) => {
     if (!activeTerminalId) {
       setStatusMsg('No active terminal. Open one first.')
       return
@@ -155,6 +166,9 @@ export function PastAISessions({ open, onClose }: Props) {
       setStatusMsg('Active shell is already an AI agent — use Resume (new tab) or Inject instead.')
       return
     }
+    // Claude will start in the ACTIVE terminal's folder, not the session's, so that
+    // is the folder to pre-approve.
+    await trustFolder(terminals.find(t => t.id === activeTerminalId)?.cwd)
     window.termpolis.writeToTerminal(activeTerminalId, 'claude --resume ' + session.id + '\r')
     onClose()
   }
@@ -207,6 +221,7 @@ export function PastAISessions({ open, onClose }: Props) {
       onClose()
       try {
         await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd))
+        if (isClaudeCommand(cmd)) await trustFolder(session.cwd)
         // 1. Boot the agent. 2. Wait for it to be ready. 3. Paste the prompt.
         // Two-step delay because agents take time to print their banner.
         setTimeout(() => {
@@ -339,7 +354,7 @@ export function PastAISessions({ open, onClose }: Props) {
                         ))}
                         <div className="border-t border-[#3c3c3c] my-1" />
                         <button
-                          onClick={() => { setHandoffMenu(null); resumeInActiveShell(s) }}
+                          onClick={() => { setHandoffMenu(null); void resumeInActiveShell(s) }}
                           className="w-full text-left text-xs px-3 py-1.5 hover:bg-[#094771] text-[#d4d4d4] disabled:opacity-50"
                           disabled={!activeTerminalId || activeIsAIShell}
                           title={

@@ -105,6 +105,14 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     ? (async () => { try { await window.termpolis.memoryPrepareCodexContext(cwd) } catch { /* launch bare */ } })()
     : Promise.resolve()
 
+  // Pre-approve the folder in Claude Code's own config so its workspace-trust dialog never
+  // renders. Overlapped with the recall and the shell wait — it is a small local file write —
+  // but AWAITED before the command is typed, because the seed only counts if it is on disk
+  // before Claude reads it. See src/main/claudeTrust.ts for why typing Enter is not the answer.
+  const claudeTrusted: Promise<void> = isClaude
+    ? (async () => { try { await window.termpolis.claudeTrustWorkspace(cwd) } catch { /* dialog handler covers it */ } })()
+    : Promise.resolve()
+
   // Started HERE, next to the recall, so the two overlap. Replaces a blind 4 s sleep with the
   // condition it stood for — the shell has spoken and gone quiet — keeping that 4 s as a ceiling.
   const shellReady = waitForShellReady({
@@ -157,15 +165,18 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // Waiting for the shell to actually go quiet is that same guarantee, obtained rather than assumed,
   // so the command is now the first thing typed.
   await shellReady
+  await claudeTrusted
   writeIfAlive(launchCommand + '\r')
-  // Auto-trust: Claude/Codex show trust prompts a few seconds after the command. These are BLIND —
-  // sent on a timer whether or not a prompt is showing — so they are measured from the command, not
-  // from the launch click. Typing the command earlier without this would stretch the gap they were
-  // tuned for (4.5 s) to as much as 8.5 s, widening the window for a stray Enter to land somewhere
-  // it was never meant to.
-  if (profile.command.startsWith('claude')) {
-    setTimeout(() => writeIfAlive('\r'), testDelay(afterCommandDelay(9000)))
-  }
+  // Auto-trust: Codex still shows a trust prompt a few seconds after the command. It is BLIND —
+  // sent on a timer whether or not a prompt is showing — so it is measured from the command, not
+  // from the launch click. Typing the command earlier without this would stretch the gap it was
+  // tuned for (4.5 s) to as much as 8.5 s, widening the window for a stray keypress to land
+  // somewhere it was never meant to.
+  //
+  // Claude has NO blind reply any more. Its dialog now opens focused on "No, exit", so a timed
+  // Enter quit the session instead of trusting it — the folder is pre-approved in config above,
+  // and if the dialog somehow still appears, App.tsx's poller answers the row that is actually
+  // highlighted rather than guessing.
   if (profile.command.startsWith('codex')) {
     // Codex requires '1' to trust the directory
     setTimeout(() => writeIfAlive('1\r'), testDelay(afterCommandDelay(9000)))

@@ -27,11 +27,15 @@ export const SLOW_DISMISS_MS = 15000
 export interface AgentLaunchTarget {
   id: string
   agentCommand?: string
+  /** The folder the terminal was opened in — pre-approved for Claude before it launches. */
+  cwd?: string
 }
 
 export interface AgentLaunchOptions {
   /** Writes to a terminal. Defaults to the preload bridge. */
   write?: (id: string, data: string) => void
+  /** Pre-approves a folder in Claude Code's config. Defaults to the preload bridge. */
+  trustClaudeWorkspace?: (cwd: string) => Promise<unknown>
   /** Called once every agent has been typed and its trust prompt answered. */
   onSettled?: () => void
 }
@@ -49,10 +53,21 @@ export function agentTargets<T extends AgentLaunchTarget>(targets: T[]): T[] {
 export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchOptions = {}): void {
   const agents = agentTargets(targets)
   const write = options.write ?? ((id: string, data: string) => window.termpolis.writeToTerminal(id, data))
+  const trustClaude = options.trustClaudeWorkspace
+    ?? ((cwd: string) => window.termpolis.claudeTrustWorkspace(cwd))
 
   if (agents.length === 0) {
     options.onSettled?.()
     return
+  }
+
+  // Pre-approve every Claude folder in Claude Code's own config so its workspace-trust
+  // dialog never renders. Fire-and-forget is safe here: the shell settle below is seconds
+  // long and this is a local file write, so the seed is on disk well before Claude reads it.
+  for (const t of agents) {
+    if (t.cwd && t.agentCommand!.startsWith('claude')) {
+      void Promise.resolve(trustClaude(t.cwd)).catch(() => { /* dialog handler covers it */ })
+    }
   }
 
   // Send a no-op newline to flush shell init, then the real command.
@@ -63,11 +78,12 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
     }, COMMAND_DELAY_MS)
   }, testDelay(SHELL_SETTLE_MS))
 
-  // Auto-trust: Claude wants a bare Enter, Codex wants option 1.
+  // Auto-trust: Codex wants option 1. Claude gets NOTHING typed at it any more — since
+  // Claude Code 2.1.x the trust dialog opens focused on "No, exit", so the bare Enter that
+  // used to live here quit the session instead of trusting it. Trust is seeded in config
+  // above; if the dialog still appears, App.tsx's poller answers the highlighted row.
   for (const t of agents) {
-    const reply = t.agentCommand!.startsWith('claude') ? '\r'
-      : t.agentCommand!.startsWith('codex') ? '1\r'
-      : null
+    const reply = t.agentCommand!.startsWith('codex') ? '1\r' : null
     if (reply) setTimeout(() => write(t.id, reply), testDelay(AUTO_TRUST_MS))
   }
 

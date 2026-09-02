@@ -13,14 +13,57 @@ describe('promptAutoDismiss.detectDismissChar', () => {
       expect(detectDismissChar(tail, { agentName: 'OpenAI Codex' })).toBe('1\r')
     })
 
-    it('catches "trust this folder" variant', () => {
-      const tail = 'Trust this folder and its dependencies?'
-      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    // Claude Code 2.1.x builds this dialog with `cancelFirst: true`,
+    // `focus: "cancel"` and `hideIndexes: true`: "No, exit" is rendered FIRST
+    // with the cursor already on it. The bare Enter this used to send therefore
+    // answered "No, exit" and quit Claude the instant it started — which is what
+    // made an auto-launch look like the injected command had been cut off.
+    it('arrows onto "Yes" before Enter when Claude opens focused on "No, exit"', () => {
+      const tail = 'Do you trust the files in this folder?\nC:/repo\n\n❯ No, exit\n  Yes, I trust this folder'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\x1b[B\r')
     })
 
-    it('catches "do you trust the authors"', () => {
-      const tail = 'Do you trust the authors of this workspace?'
-      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    it('arrows UP when the affirmative row sits above the cursor', () => {
+      const tail = 'Do you trust the files in this folder?\n  Yes, I trust this folder\n❯ No, exit'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\x1b[A\r')
+    })
+
+    it('handles the "continue without these permissions" cancel label', () => {
+      const tail = 'Do you trust the files in this folder?\n❯ No, continue without these permissions\n  Yes, I trust this folder'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\x1b[B\r')
+    })
+
+    it('reads the LAST rendered frame, not a stale one still in the buffer', () => {
+      // Ink redraws the whole dialog on every keystroke.
+      const frame = (cursor: number) =>
+        'Do you trust the files in this folder?\n'
+        + (cursor === 0 ? '❯ No, exit\n  Yes, I trust this folder' : '  No, exit\n❯ Yes, I trust this folder')
+      expect(detectDismissChar(frame(0) + '\n' + frame(1), { agentName: 'Claude Code' })).toBe('\r')
+    })
+
+    it('reads options out of a box-drawn dialog frame', () => {
+      const tail = '│ Do you trust the files in this folder?          │\n│ ❯ No, exit                                     │\n│   Yes, I trust this folder                     │'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\x1b[B\r')
+    })
+
+    // No rendered options means we cannot tell which row the cursor is on, and a
+    // guess costs the whole session. Trust is seeded in Claude's own config before
+    // launch (src/main/claudeTrust.ts), so answering nothing here is free.
+    it('answers NOTHING for Claude when the option rows cannot be read', () => {
+      expect(detectDismissChar('Trust this folder and its dependencies?', { agentName: 'Claude Code' })).toBeNull()
+      expect(detectDismissChar('Do you trust the authors of this workspace?', { agentName: 'Claude Code' })).toBeNull()
+    })
+
+    it('never falls through to the generic numbered-select Enter', () => {
+      // Pattern 8 matches "❯ 1. " for Claude. A trust dialog that also carries a
+      // numbered row must NOT reach it — that is the blind Enter coming back.
+      const tail = 'Do you trust the files in this folder?\n❯ 1. No, exit\n  2. Yes, I trust this folder'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\x1b[B\r')
+    })
+
+    it('still answers Gemini folder-trust with Enter', () => {
+      const tail = 'Would you like to trust this folder?'
+      expect(detectDismissChar(tail, { agentName: 'Gemini CLI' })).toBe('\r')
     })
   })
 
@@ -159,13 +202,13 @@ describe('promptAutoDismiss.detectDismissChar', () => {
   })
 
   describe('newer Claude Code onboarding (fresh-install variants)', () => {
-    it('matches "Would you like to trust"', () => {
-      const tail = 'Would you like to trust this folder?'
-      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
+    it('matches "Would you like to trust" and answers the highlighted row', () => {
+      const tail = 'Would you like to trust this folder?\n❯ No, exit\n  Yes, I trust this folder'
+      expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\x1b[B\r')
     })
 
-    it('matches "Trust this workspace"', () => {
-      const tail = 'Trust this workspace and run on it?'
+    it('matches "Trust this workspace" and answers the highlighted row', () => {
+      const tail = 'Trust this workspace and run on it?\n❯ Yes, proceed\n  No, exit'
       expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
     })
 

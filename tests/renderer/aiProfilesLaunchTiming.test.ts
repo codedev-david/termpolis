@@ -48,6 +48,7 @@ beforeEach(() => {
     writeToTerminal: vi.fn(),
     memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
     memoryPrepareCodexContext: vi.fn().mockResolvedValue({ success: true, data: { file: 'AGENTS.md' } }),
+    claudeTrustWorkspace: vi.fn().mockResolvedValue({ success: true, data: { changed: true, keys: [] } }),
     onTerminalData: vi.fn((cb: (id: string, data: string) => void) => {
       ptyListeners.push(cb)
       return () => { ptyListeners = ptyListeners.filter((l) => l !== cb) }
@@ -131,15 +132,39 @@ describe('launchAgentProfile — the memory primer overlaps the shell wait', () 
 })
 
 describe('launchAgentProfile — downstream timers are re-based onto the command', () => {
-  it('sends the Claude trust Enter the same 4.5s after the command as it always did', async () => {
+  // The Claude trust Enter USED to fire here, 4.5s after the command. It is gone:
+  // Claude Code 2.1.x opens that dialog focused on "No, exit", so the blind Enter
+  // quit the session and the launch looked cut off. The folder is pre-approved in
+  // Claude's own config before the command is typed instead.
+  it('never types a blind Enter at Claude — that Enter used to answer "No, exit"', async () => {
     const { done: p } = await startLaunch()
     emit(createdId(), '$ ')
     await vi.advanceTimersByTimeAsync(SHELL_QUIET_MS) // command is typed exactly now
     const afterCommand = typed().length
-    await vi.advanceTimersByTimeAsync(9000 - LEGACY_COMMAND_AT_MS - 1)
-    expect(typed().slice(afterCommand)).toEqual([]) // not yet
-    await vi.advanceTimersByTimeAsync(1)
-    expect(typed().slice(afterCommand)).toEqual(['\r'])
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(typed().slice(afterCommand)).toEqual([])
+    await p
+  })
+
+  it('seeds Claude trust for the picked folder BEFORE typing the command', async () => {
+    const { done: p } = await startLaunch()
+    // Seeded during the shell wait, so it is on disk by the time Claude reads it.
+    expect(api().claudeTrustWorkspace).toHaveBeenCalledWith('/test/project')
+    expect(typed().some((s) => s.startsWith('claude'))).toBe(false)
+    emit(createdId(), '$ ')
+    await vi.advanceTimersByTimeAsync(SHELL_QUIET_MS)
+    expect(typed().some((s) => s.startsWith('claude'))).toBe(true)
+    await vi.advanceTimersByTimeAsync(20_000)
+    await p
+  })
+
+  it('launches anyway when the trust seed fails', async () => {
+    api().claudeTrustWorkspace = vi.fn(() => Promise.reject(new Error('config locked')))
+    const p = launchAgentProfile(claude, deps())
+    await vi.advanceTimersByTimeAsync(0)
+    emit(createdId(), '$ ')
+    await vi.advanceTimersByTimeAsync(SHELL_QUIET_MS)
+    expect(typed().some((s) => s.startsWith('claude'))).toBe(true)
     await vi.advanceTimersByTimeAsync(20_000)
     await p
   })

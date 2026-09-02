@@ -477,7 +477,7 @@ test.describe.serial('Session Restore', () => {
       const id = JSON.parse(fs.readFileSync(sessionPath, 'utf8')).terminals?.[0]?.id
       expect(id, 'restored terminal not persisted yet').toBeTruthy()
       const res = await page.evaluate((tid: string) => window.termpolis.readTerminalBuffer(tid), id)
-      expect((res as any)?.data?.output ?? '').toContain('Quick safety check')
+      expect((res as any)?.data?.output ?? '').toContain('Do you trust the files in this folder?')
     }).toPass({ timeout: 30000 })
   })
 

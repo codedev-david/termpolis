@@ -46,12 +46,52 @@ describe('agentLaunch', () => {
       expect(write).toHaveBeenLastCalledWith('t1', 'claude\r')
     })
 
-    it('answers the Claude trust prompt with a bare Enter', () => {
+    // Claude Code 2.1.x opens its workspace-trust dialog focused on "No, exit"
+    // (`cancelFirst: true, focus: "cancel"`), so the blind Enter that used to be
+    // sent here QUIT the session — the launch looked cut off. Trust is seeded in
+    // Claude's own config instead; nothing is typed at the dialog.
+    it('types NOTHING at Claude after the command — a blind Enter would quit it', () => {
       const write = vi.fn()
-      launchAgents([{ id: 't1', agentCommand: 'claude' }], { write })
+      launchAgents([{ id: 't1', agentCommand: 'claude' }], { write, trustClaudeWorkspace: vi.fn() })
 
-      vi.advanceTimersByTime(AUTO_TRUST_MS)
-      expect(write).toHaveBeenLastCalledWith('t1', '\r')
+      vi.advanceTimersByTime(SLOW_DISMISS_MS)
+      expect(write.mock.calls).toEqual([['t1', '\r'], ['t1', 'claude\r']])
+    })
+
+    it('pre-approves each Claude folder in Claude Code\'s own config', () => {
+      const write = vi.fn()
+      const trustClaudeWorkspace = vi.fn().mockResolvedValue(undefined)
+      launchAgents(
+        [
+          { id: 't1', agentCommand: 'claude', cwd: 'C:/repo' },
+          { id: 't2', agentCommand: 'codex', cwd: 'C:/other' },
+          { id: 't3', agentCommand: 'claude' }, // no cwd known — nothing to seed
+        ],
+        { write, trustClaudeWorkspace },
+      )
+
+      expect(trustClaudeWorkspace).toHaveBeenCalledExactlyOnceWith('C:/repo')
+    })
+
+    it('defaults to the preload bridge for both the write and the trust seed', () => {
+      const writeToTerminal = vi.fn()
+      const claudeTrustWorkspace = vi.fn().mockResolvedValue({ success: true })
+      ;(window as never as { termpolis: unknown }).termpolis = { writeToTerminal, claudeTrustWorkspace }
+
+      launchAgents([{ id: 't1', agentCommand: 'claude', cwd: 'C:/repo' }])
+
+      expect(claudeTrustWorkspace).toHaveBeenCalledWith('C:/repo')
+      vi.advanceTimersByTime(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(writeToTerminal).toHaveBeenLastCalledWith('t1', 'claude\r')
+    })
+
+    it('still launches when the trust seed rejects', () => {
+      const write = vi.fn()
+      const trustClaudeWorkspace = vi.fn().mockRejectedValue(new Error('config locked'))
+      launchAgents([{ id: 't1', agentCommand: 'claude', cwd: 'C:/repo' }], { write, trustClaudeWorkspace })
+
+      vi.advanceTimersByTime(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write).toHaveBeenLastCalledWith('t1', 'claude\r')
     })
 
     it('answers the Codex approval prompt with option 1', () => {

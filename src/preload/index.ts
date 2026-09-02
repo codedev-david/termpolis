@@ -143,6 +143,9 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('workspace:revoke-trust', { cwd }),
   workspaceListTrusted: () =>
     ipcRenderer.invoke('workspace:list-trusted'),
+  // Seed Claude Code's own trust config for a folder, so its trust dialog never opens.
+  claudeTrustWorkspace: (cwd) =>
+    ipcRenderer.invoke('claude:trust-workspace', { cwd }),
 
   // Shared swarm memory (RAG)
   memoryWrite: (input) => ipcRenderer.invoke('memory:write', input),
