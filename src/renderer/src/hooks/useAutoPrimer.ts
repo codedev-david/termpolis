@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import type { AgentInfo } from '../lib/agentDetector'
+import { agentFromCommand, type AgentInfo } from '../lib/agentDetector'
 import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
@@ -25,7 +25,7 @@ import { useTerminalStore } from '../store/terminalStore'
 // APPENDS AT THE CURSOR, and the line buffer belongs to the agent's TUI, not to us. A write that
 // lands while the user is mid-sentence is concatenated onto their draft. (Exactly the fact that
 // made pre-send prompt redaction impossible in v1.25.2.) So an unprompted write must first check
-// that the input is idle — see reprimeAfterCompaction.
+// that the input is idle — see reprimeAfterCompaction and, for the launch prime, PrimerGate.
 
 const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
@@ -175,11 +175,93 @@ export async function reprimeAfterCompaction(
   return inject(terminalId, cwd)
 }
 
-// Fire injectAutoPrimer once, shortly after an AI agent is first detected in
-// this terminal. One TerminalPane mounts this per terminal, so the ref scopes
-// the "prime once" guard to that terminal's lifetime.
-export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | null, cwd: string): void {
+/** How often the launch prime re-checks its gate, and how long it waits before giving up. */
+export const PRIMER_GATE_POLL_MS = 500
+export const PRIMER_GATE_MAX_WAIT_MS = 180_000
+
+/**
+ * The two things that must both be true before the launch pointer may be pasted.
+ *
+ * They exist because output keyword-scraping (detectAgent) is NOT evidence that an agent is
+ * running — it only says the word appeared on screen. In a plain PowerShell terminal PSReadLine
+ * repaints the whole input line on every keystroke, so the moment the user has typed `claude`
+ * the scraper matches, and 1.5 s later the pointer was pasted onto their still-unsubmitted
+ * command: `claudeTermpolis memory: call the termpolis MCP tool ...`. The same regex fires on
+ * `cat claude-notes.md`, a grep hit for "gemini", or an MOTD mentioning OpenAI — and then the
+ * paste lands in a plain shell, which will happily try to RUN it on the next Enter.
+ */
+export interface PrimerGate {
+  /**
+   * The agent Termpolis can actually PROVE is running: the launch command Termpolis itself
+   * typed (`agentCommand`), or a launch command the user actually SUBMITTED. Null while they
+   * are still typing it — and null forever if the keyword only ever appeared in output.
+   */
+  launchedAgent: () => AgentInfo | null
+  /** The user's un-submitted draft on this terminal's input line; '' when the line is idle. */
+  draft: () => string
+}
+
+/**
+ * Wait for a safe moment, then paste the launch pointer.
+ *
+ * Gate first, THEN the boot delay — so the 1.5 s is measured from the launch actually being
+ * submitted, not from the first time the agent's name flickered through the output stream.
+ * The gate is re-checked after that delay, because the user can start typing during it.
+ *
+ * Gives up silently rather than pasting into a terminal we are not sure about: losing a prime
+ * is a nuisance, corrupting the user's command line is a bug.
+ */
+export async function primeOnLaunch(
+  terminalId: string,
+  cwd: string,
+  gate: PrimerGate,
+  opts: {
+    inject?: (id: string, cwd: string) => Promise<boolean>
+    sleep?: (ms: number) => Promise<void>
+    stopped?: () => boolean
+    pollMs?: number
+    maxWaitMs?: number
+    delayMs?: number
+  } = {},
+): Promise<boolean> {
+  // All built-in agents (Claude / Codex / Gemini) have parseable on-disk transcripts, so none
+  // need the self-record primer path; keep it wired for future agents that might.
+  // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
+  const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c, false, true))
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  const stopped = opts.stopped ?? (() => false)
+  const pollMs = opts.pollMs ?? PRIMER_GATE_POLL_MS
+  const maxWaitMs = opts.maxWaitMs ?? PRIMER_GATE_MAX_WAIT_MS
+  const delayMs = opts.delayMs ?? INJECT_DELAY_MS
+
+  const open = (): boolean => gate.launchedAgent() != null && gate.draft().length === 0
+  let waited = 0
+  while (!open()) {
+    if (waited >= maxWaitMs) return false
+    await sleep(pollMs)
+    if (stopped()) return false
+    waited += pollMs
+  }
+  await sleep(delayMs)
+  if (stopped()) return false
+  if (!open()) return false // they started typing while the CLI was booting
+  return inject(terminalId, cwd)
+}
+
+// Fire injectAutoPrimer once per terminal, on the first output that looks like an agent — but
+// only once PrimerGate says an agent was really launched AND the input line is idle. One
+// TerminalPane mounts this per terminal, so the ref scopes the "prime once" guard to that
+// terminal's lifetime.
+export function useAutoPrimer(
+  terminalId: string,
+  detectedAgent: AgentInfo | null,
+  cwd: string,
+  gate?: PrimerGate,
+): void {
   const primedRef = useRef(false)
+  // Read at FIRE time, not mount time — the gate closes over refs that keep changing.
+  const gateRef = useRef<PrimerGate | undefined>(gate)
+  gateRef.current = gate
   const agentName = detectedAgent?.name ?? null
   useEffect(() => {
     if (!agentName || !terminalId) return
@@ -193,14 +275,43 @@ export function useAutoPrimer(terminalId: string, detectedAgent: AgentInfo | nul
       return
     }
     primedRef.current = true
-    // All built-in agents (Claude / Codex / Gemini) have parseable on-disk transcripts, so
-    // none need the self-record primer path; keep it wired for future agents that might.
-    const selfRecord = false
-    const handle = setTimeout(() => {
-      // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
-      void injectAutoPrimer(terminalId, cwd, selfRecord, true)
-    }, INJECT_DELAY_MS)
-    return () => clearTimeout(handle)
+
+    // Without a gate from the pane, fall back to the one signal this hook can read on its own:
+    // the launch command Termpolis recorded for the terminal. Still authoritative, just blind
+    // to a hand-typed launch — which is the safe direction to be blind in.
+    const fallback: PrimerGate = {
+      launchedAgent: () =>
+        agentFromCommand(useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.agentCommand),
+      draft: () => '',
+    }
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let wake: (() => void) | null = null
+    const sleep = (ms: number): Promise<void> =>
+      new Promise<void>((resolve) => {
+        wake = resolve
+        timer = setTimeout(() => {
+          wake = null
+          timer = null
+          resolve()
+        }, ms)
+      })
+
+    void primeOnLaunch(terminalId, cwd, gateRef.current ?? fallback, {
+      sleep,
+      stopped: () => cancelled,
+    })
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      timer = null
+      // Resume the loop so it observes `cancelled` and unwinds, instead of leaving a
+      // never-settled promise holding this closure alive.
+      wake?.()
+      wake = null
+    }
   }, [terminalId, agentName, cwd])
 }
 

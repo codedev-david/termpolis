@@ -355,8 +355,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // instead of consuming it like Claude Code does, so that case keeps the old hot-swap.
   const isAuthoritativeClaudeSession = agentFromCommand(agentCommand)?.name === 'Claude Code'
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
-  // Seed a launched agent with recalled context (opt-out in Settings).
-  useAutoPrimer(terminalId, agent.detectedAgent, cwd)
+  // Seed a launched agent with recalled context (opt-out in Settings). The gate is what keeps
+  // the pointer out of a line the user is still typing: output detection fires on the ECHO of
+  // a half-typed `claude` (PSReadLine repaints the whole line per keystroke), so the trigger
+  // alone is not evidence an agent is running. `launchedAgent` demands a launch command that
+  // was actually submitted — by Termpolis (agentCommand) or by hand (lastCommandRef) — and
+  // `draft` is the un-submitted input line, which must be empty before we append at the cursor.
+  useAutoPrimer(terminalId, agent.detectedAgent, cwd, {
+    launchedAgent: () => agentFromCommand(agentCommand) ?? agentFromCommand(lastCommandRef.current),
+    draft: () => inputBufferRef.current,
+  })
   // Re-seed it after Claude compacts its conversation, restoring the detail it
   // summarized away from the durable memory brain (opt-out in Settings).
   const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)

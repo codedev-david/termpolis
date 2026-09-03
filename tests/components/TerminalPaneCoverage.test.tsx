@@ -1531,4 +1531,76 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
   })
+
+  // =========================================================================
+  // 20. LAUNCH primer gate — the COMPONENT's wiring into useAutoPrimer's PrimerGate.
+  //     Reported 2026-09-03: opening a plain PowerShell terminal and typing `claude`
+  //     produced, at the prompt, one un-runnable line —
+  //       PS C:\Users\DavidEngelhart> claudeTermpolis memory: call the termpolis MCP tool …
+  //     PSReadLine repaints the whole input line on every keystroke, so the echoed word
+  //     reached the output scraper; detectAgent matched /claude/i and the pointer was
+  //     pasted at the cursor 1.5s later, on top of a command that was never submitted.
+  //     The pane must gate on a SUBMITTED launch command and an EMPTY input line.
+  // =========================================================================
+  describe('launch primer gate wiring', () => {
+    const settle = async (ms: number): Promise<void> => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve()
+      })
+    }
+    const primerWrites = (): unknown[][] =>
+      mockWriteToTerminal.mock.calls.filter((c: unknown[]) => String(c[1]).includes('memory_primer'))
+
+    beforeEach(() => {
+      localStorage.setItem('termpolis.memory.autoPrimerOnLaunch', '1')
+      setAgent(CLAUDE)                                        // scraper matched the echoed word
+      setStore({ terminals: [{ id: 'term-1', isSwarm: false }] }) // plain shell: no agentCommand
+    })
+
+    it('does not paste onto a launch command the user has typed but not submitted', async () => {
+      useTimers()
+      render(<TerminalPane {...defaultProps} />)
+      for (const ch of 'claude') typeIntoPty(ch) // no Enter — the draft is still theirs
+      await settle(30_000)
+
+      expect(primerWrites()).toHaveLength(0)
+      expect(mockMemoryBuildPrimer).not.toHaveBeenCalled()
+    })
+
+    it('pastes once the launch command is actually submitted and the line is idle', async () => {
+      useTimers()
+      render(<TerminalPane {...defaultProps} />)
+      for (const ch of 'claude') typeIntoPty(ch)
+      await settle(5_000)
+      expect(primerWrites()).toHaveLength(0)
+
+      typeIntoPty('\r') // Enter → lastCommandRef = 'claude', draft cleared
+      await settle(10_000)
+
+      const writes = primerWrites()
+      expect(writes).toHaveLength(1)
+      expect(String(writes[0][1]).startsWith('\x1b[200~')).toBe(true)
+      expect(String(writes[0][1])).not.toContain('\r') // never auto-submitted
+    })
+
+    it('never pastes when the name only appeared in output (a filename, a grep hit, an MOTD)', async () => {
+      useTimers()
+      render(<TerminalPane {...defaultProps} />)
+      for (const ch of 'cat claude-notes.md') typeIntoPty(ch)
+      typeIntoPty('\r')
+      await settle(30_000)
+
+      expect(primerWrites()).toHaveLength(0)
+    })
+
+    it('still primes a Termpolis-launched agent, which needs no typing at all', async () => {
+      useTimers()
+      setStore({ terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }] })
+      render(<TerminalPane {...defaultProps} />)
+      await settle(10_000)
+
+      expect(primerWrites()).toHaveLength(1)
+    })
+  })
 })

@@ -8,12 +8,27 @@ import {
   injectAutoPrimer,
   buildPrimerPointer,
   reprimeAfterCompaction,
+  primeOnLaunch,
+  PRIMER_GATE_POLL_MS,
+  PRIMER_GATE_MAX_WAIT_MS,
+  type PrimerGate,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const agent = { name: 'Claude Code' } as any
+
+/** A gate that is already open: an agent Termpolis PROVED is running, on an idle input line. */
+const openGate = (): PrimerGate => ({ launchedAgent: () => agent, draft: () => '' })
+/** A mutable gate, so a test can open it mid-flight the way a real launch/Enter does. */
+function liveGate(init: { launched?: any; draft?: string } = {}) {
+  const state = { launched: init.launched ?? null, draft: init.draft ?? '' }
+  return {
+    state,
+    gate: { launchedAgent: () => state.launched, draft: () => state.draft } as PrimerGate,
+  }
+}
 
 function mockApi(overrides: Record<string, unknown> = {}) {
   ;(window as any).termpolis = {
@@ -123,7 +138,7 @@ describe('injectAutoPrimer', () => {
 describe('useAutoPrimer', () => {
   it('injects once, after the delay, when an agent is detected and the setting is ON', async () => {
     vi.useFakeTimers()
-    const { rerender } = renderHook(({ a }) => useAutoPrimer('term-1', a, '/home/me/proj'), {
+    const { rerender } = renderHook(({ a }) => useAutoPrimer('term-1', a, '/home/me/proj', openGate()), {
       initialProps: { a: null as any },
     })
     // No agent yet → nothing scheduled.
@@ -144,23 +159,34 @@ describe('useAutoPrimer', () => {
   it('does nothing when the setting is OFF', async () => {
     setAutoPrimerEnabled(false)
     vi.useFakeTimers()
-    renderHook(() => useAutoPrimer('term-1', agent, '/p'))
+    renderHook(() => useAutoPrimer('term-1', agent, '/p', openGate()))
     await vi.advanceTimersByTimeAsync(3000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
   })
 
   it('does nothing when no agent is detected', async () => {
     vi.useFakeTimers()
-    renderHook(() => useAutoPrimer('term-1', null, '/p'))
+    renderHook(() => useAutoPrimer('term-1', null, '/p', openGate()))
     await vi.advanceTimersByTimeAsync(3000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
   })
 
   it('cancels the pending injection if the terminal unmounts first', async () => {
     vi.useFakeTimers()
-    const { unmount } = renderHook(() => useAutoPrimer('term-1', agent, '/p'))
+    const { unmount } = renderHook(() => useAutoPrimer('term-1', agent, '/p', openGate()))
     unmount()
     await vi.advanceTimersByTimeAsync(3000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('cancels a GATED injection on unmount too (the loop unwinds, it does not fire later)', async () => {
+    vi.useFakeTimers()
+    const { state, gate } = liveGate() // closed: nothing launched yet
+    const { unmount } = renderHook(() => useAutoPrimer('term-1', agent, '/p', gate))
+    await vi.advanceTimersByTimeAsync(3000) // polling, gate still shut
+    unmount()
+    state.launched = agent // gate opens after unmount — must be ignored
+    await vi.advanceTimersByTimeAsync(10_000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
   })
 
@@ -169,10 +195,127 @@ describe('useAutoPrimer', () => {
     // so the on-detection typed pointer must NOT also fire (no double-prime).
     vi.useFakeTimers()
     useTerminalStore.setState({ terminals: [{ id: 'term-primed', launchPrimed: true } as any] })
-    renderHook(() => useAutoPrimer('term-primed', agent, '/home/me/proj'))
+    renderHook(() => useAutoPrimer('term-primed', agent, '/home/me/proj', openGate()))
     await vi.advanceTimersByTimeAsync(2000)
     expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
     useTerminalStore.setState({ terminals: [] })
+  })
+
+  // --- The PowerShell regression (2026-09-03) --------------------------------------------------
+  // A plain PowerShell terminal. The user typed `claude` and had NOT pressed Enter. PSReadLine
+  // repaints the whole input line on every keystroke, so the echoed word reached the output
+  // scraper, detectAgent matched /claude/i, and 1.5 s later the pointer was appended at the
+  // cursor. What the user saw at their prompt was one un-runnable command line:
+  //   PS C:\Users\DavidEngelhart> claudeTermpolis memory: call the termpolis MCP tool ...
+  it('does NOT paste while the user is still typing the launch command', async () => {
+    vi.useFakeTimers()
+    // Detection has fired off the echo, but nothing was submitted and `claude` is still a draft.
+    const { state, gate } = liveGate({ launched: null, draft: 'claude' })
+    renderHook(() => useAutoPrimer('term-ps', agent, 'C:\\Users\\DavidEngelhart', gate))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+
+    // Enter: the draft clears and the submitted command identifies the agent → now it may paste.
+    state.draft = ''
+    state.launched = agent
+    await vi.advanceTimersByTimeAsync(PRIMER_GATE_POLL_MS + 1500)
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it('never pastes when the agent name only ever APPEARED in output (grep hit, MOTD, a filename)', async () => {
+    vi.useFakeTimers()
+    // `cat claude-notes.md` — the scraper matched, but no agent was ever launched.
+    const { gate } = liveGate({ launched: null, draft: '' })
+    renderHook(() => useAutoPrimer('term-cat', agent, '/p', gate))
+    await vi.advanceTimersByTimeAsync(PRIMER_GATE_MAX_WAIT_MS + 5000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the recorded agentCommand when the pane supplies no gate', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 'term-launched', agentCommand: 'codex' } as any] })
+    renderHook(() => useAutoPrimer('term-launched', agent, '/home/me/proj'))
+    await vi.advanceTimersByTimeAsync(1500)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    useTerminalStore.setState({ terminals: [] })
+  })
+
+  it('stays shut with no gate and no recorded agentCommand (a hand-typed launch is invisible here)', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 'term-plain' } as any] })
+    renderHook(() => useAutoPrimer('term-plain', agent, '/home/me/proj'))
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    useTerminalStore.setState({ terminals: [] })
+  })
+})
+
+describe('primeOnLaunch (the launch gate)', () => {
+  const noSleep = () => Promise.resolve()
+
+  it('injects immediately when the gate is already open', async () => {
+    const inject = vi.fn(async () => true)
+    expect(await primeOnLaunch('t', '/p', openGate(), { inject, sleep: noSleep })).toBe(true)
+    expect(inject).toHaveBeenCalledWith('t', '/p')
+  })
+
+  it('waits for the launch command to be submitted, then for the delay', async () => {
+    const inject = vi.fn(async () => true)
+    const { state, gate } = liveGate()
+    let ticks = 0
+    const sleep = async () => {
+      if (++ticks === 3) state.launched = agent
+    }
+    expect(await primeOnLaunch('t', '/p', gate, { inject, sleep })).toBe(true)
+    expect(ticks).toBe(4) // 3 polls to open the gate + the boot delay
+    expect(inject).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up rather than pasting when the gate never opens', async () => {
+    const inject = vi.fn(async () => true)
+    const { gate } = liveGate()
+    expect(await primeOnLaunch('t', '/p', gate, { inject, sleep: noSleep, pollMs: 1000, maxWaitMs: 3000 })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+  })
+
+  it('re-checks the gate AFTER the boot delay — a draft typed while the CLI boots blocks the paste', async () => {
+    const inject = vi.fn(async () => true)
+    const { state, gate } = liveGate({ launched: agent, draft: '' })
+    // Gate is open, so the only sleep is the boot delay; the user starts typing during it.
+    const sleep = async () => { state.draft = 'explain this' }
+    expect(await primeOnLaunch('t', '/p', gate, { inject, sleep })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+  })
+
+  it('bails out when stopped mid-poll (terminal closed)', async () => {
+    const inject = vi.fn(async () => true)
+    const { gate } = liveGate()
+    let stop = false
+    const sleep = async () => { stop = true }
+    expect(await primeOnLaunch('t', '/p', gate, { inject, sleep, stopped: () => stop })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+  })
+
+  it('bails out when stopped during the boot delay', async () => {
+    const inject = vi.fn(async () => true)
+    let stop = false
+    const sleep = async () => { stop = true }
+    expect(await primeOnLaunch('t', '/p', openGate(), { inject, sleep, stopped: () => stop })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+  })
+
+  it('uses real defaults for poll/delay when none are supplied', async () => {
+    vi.useFakeTimers()
+    const inject = vi.fn(async () => true)
+    const { state, gate } = liveGate()
+    const p = primeOnLaunch('t', '/p', gate, { inject })
+    await vi.advanceTimersByTimeAsync(PRIMER_GATE_POLL_MS * 2)
+    expect(inject).not.toHaveBeenCalled()
+    state.launched = agent
+    await vi.advanceTimersByTimeAsync(PRIMER_GATE_POLL_MS + 1500)
+    expect(await p).toBe(true)
+    expect(inject).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -264,7 +407,7 @@ describe('primer self-record clause (buildPrimerPointer/injectAutoPrimer param �
 
   it('useAutoPrimer does NOT add the clause for a disk-transcript agent (Claude)', async () => {
     vi.useFakeTimers()
-    renderHook(() => useAutoPrimer('term-claude', { name: 'Claude Code' } as any, '/home/me/proj'))
+    renderHook(() => useAutoPrimer('term-claude', { name: 'Claude Code' } as any, '/home/me/proj', openGate()))
     await vi.advanceTimersByTimeAsync(1500)
     const calls = (window as any).termpolis.writeToTerminal.mock.calls
     expect(calls).toHaveLength(1)
@@ -322,7 +465,7 @@ describe('memories-loaded banner (Codex / Gemini typed-pointer path)', () => {
   it('useAutoPrimer shows the banner on launch for a detected Codex agent', async () => {
     mockApi({ memoryBuildPrimer: vi.fn(async () => ({ success: true, data: digest(4) })) })
     vi.useFakeTimers()
-    renderHook(() => useAutoPrimer('term-codex', { name: 'OpenAI Codex' } as any, '/home/me/proj'))
+    renderHook(() => useAutoPrimer('term-codex', { name: 'OpenAI Codex' } as any, '/home/me/proj', openGate()))
     await vi.advanceTimersByTimeAsync(1500)
     expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 4 memories for "proj"')
   })
