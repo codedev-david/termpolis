@@ -8,6 +8,7 @@ import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
 import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
+  PROMPT_ECHO_CEILING_MS,
 } from './launchSequence'
 
 /**
@@ -161,11 +162,31 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     if (typeof window === 'undefined' || !window.termpolis?.writeToTerminal) return
     window.termpolis.writeToTerminal(id, data)
   }
-  // The no-op newline that used to precede the command existed to "flush any partial shell init".
-  // Waiting for the shell to actually go quiet is that same guarantee, obtained rather than assumed,
-  // so the command is now the first thing typed.
+  // The no-op newline that used to precede the command was removed in v1.38.0 on the reasoning that
+  // waiting for the shell to go quiet is the same guarantee, obtained rather than assumed. It is
+  // not. Going quiet proves the shell has FINISHED SPEAKING; it does not prove the shell is yet
+  // READING. Between those two moments the first byte we type is dropped on the floor — Git Bash
+  // under ConPTY reliably eats it — and with the command typed first, the byte lost is the `c` of
+  // `claude`:
+  //
+  //   ~/repos/termpolis $ laude --append-system-prompt-file "…/primer-c2db4f68….txt"
+  //   bash: laude: command not found
+  //
+  // The primer was built and the file was written; the launch died on a missing first character.
+  // So the sacrificial newline is back, and it is now the ONLY thing that byte can be. It is also
+  // no longer followed by a blind 500 ms: we wait for the shell to ECHO it, which is the first
+  // positive proof that input is being consumed rather than discarded. If nothing comes back, the
+  // newline itself was the swallowed byte — the case this exists for — and the short ceiling lets
+  // the command through regardless.
   await shellReady
   await claudeTrusted
+  writeIfAlive('\r')
+  await waitForShellReady({
+    terminalId: id,
+    subscribe: (cb) => window.termpolis.onTerminalData(cb),
+    quietMs: testDelay(SHELL_QUIET_MS),
+    ceilingMs: testDelay(PROMPT_ECHO_CEILING_MS),
+  })
   writeIfAlive(launchCommand + '\r')
   // Auto-trust: Codex still shows a trust prompt a few seconds after the command. It is BLIND —
   // sent on a timer whether or not a prompt is showing — so it is measured from the command, not

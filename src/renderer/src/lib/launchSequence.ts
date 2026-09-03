@@ -48,6 +48,14 @@ export const SHELL_READY_CEILING_MS = 4000
  */
 export const SHELL_QUIET_MS = 150
 
+/**
+ * Ceiling for the wait that follows the sacrificial newline (see `aiProfiles.ts`). Short, because
+ * this one is only ever bridging a prompt echo — a few milliseconds in practice — and because its
+ * whole purpose is to be skippable: if the shell says nothing back, the newline was swallowed,
+ * which is exactly the case this guard exists for, and typing the command anyway is correct.
+ */
+export const PROMPT_ECHO_CEILING_MS = 1000
+
 export interface ShellReadyOpts {
   /** Only output from this terminal counts — a busy neighbour must not release this launch. */
   terminalId: string
