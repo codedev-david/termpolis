@@ -66,19 +66,12 @@ if (pIdx !== -1) {
 // ───────────────────────────────────────────────────────────────────────────
 function runInteractive() {
   const readline = require('readline');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: false,
-  });
-
-  rl.on('close', () => process.exit(0));
 
   // The workspace-trust dialog, rendered the way Claude Code 2.1.x renders it:
   // `cancelFirst: true, focus: "cancel"` puts "No, exit" FIRST with the cursor
   // already on it, and `hideIndexes: true` drops the "1." / "2." numbering. So a
-  // blind Enter QUITS. That is the whole bug, and the mock has to be able to
-  // reproduce it — the caller must arrow onto the affirmative row first.
+  // blind Enter QUITS. That is the whole bug, and the mock has to reproduce it —
+  // the caller must arrow onto the affirmative row before confirming.
   const TRUST_OPTIONS = ['No, exit', 'Yes, I trust this folder'];
   let trustCursor = 0;
   console.log('Do you trust the files in this folder?');
@@ -86,21 +79,45 @@ function runInteractive() {
   console.log('');
   TRUST_OPTIONS.forEach((label, i) => console.log((i === trustCursor ? '❯ ' : '  ') + label));
 
-  const onTrustLine = (line) => {
-    // readline is in non-terminal mode, so an arrow sequence arrives as the CONTENT
-    // of the line that the CR after it terminates.
-    const downs = (line.match(/\[B/g) || []).length;
-    const ups = (line.match(/\[A/g) || []).length;
+  // Read the dialog in RAW mode, the way a real Ink app does. Cooked mode cannot
+  // work here: on Windows the ConPTY console keeps its own line editor, which
+  // CONSUMES arrow keys (they move its cursor and never reach the child), so a
+  // readline-based reader can never see the Down that answers this dialog.
+  const stdin = process.stdin;
+  if (stdin.setRawMode) stdin.setRawMode(true);
+  stdin.resume();
+  stdin.on('end', () => process.exit(0));
+
+  const onKeys = (buf) => {
+    const s = buf.toString('utf8');
+    if (s.includes('\x03')) process.exit(0); // Ctrl+C
+    const downs = (s.match(/\x1b(?:\[|O)B/g) || []).length;
+    const ups = (s.match(/\x1b(?:\[|O)A/g) || []).length;
     trustCursor = Math.max(0, Math.min(TRUST_OPTIONS.length - 1, trustCursor + downs - ups));
+    // A select reads KEYS. A bracketed paste — Termpolis pastes its memory primer
+    // into agent terminals — goes into the app's text buffer and confirms NOTHING,
+    // even though ConPTY hands it over with a newline attached. So a chunk that
+    // still carries text once the arrows are stripped is a paste: never a confirm.
+    const text = s.replace(/\x1b(?:\[|O)[A-D]/g, '').replace(/[^ -~]/g, '').trim();
+    if (text) return;
+    if (!/[\r\n]/.test(s)) return; // arrows only so far — keep waiting for Enter
     if (!/^yes\b/i.test(TRUST_OPTIONS[trustCursor])) {
       console.log('Exiting.');
       process.exit(0);
     }
-    rl.removeListener('line', onTrustLine);
+    stdin.removeListener('data', onKeys);
+    if (stdin.setRawMode) stdin.setRawMode(false);
+    startSession();
+  };
+  stdin.on('data', onKeys);
+
+  function startSession() {
     console.log('Claude Code v1.0.0 (mock)');
     console.log('Model: claude-opus-4-6');
     process.stdout.write('claude> ');
 
+    const rl = readline.createInterface({ input: stdin, output: process.stdout, terminal: false });
+    rl.on('close', () => process.exit(0));
     rl.on('line', (input) => {
       const trimmed = input.trim();
       if (trimmed === 'exit' || trimmed === '/exit') process.exit(0);
@@ -112,8 +129,7 @@ function runInteractive() {
       }
       process.stdout.write('claude> ');
     });
-  };
-  rl.on('line', onTrustLine);
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────

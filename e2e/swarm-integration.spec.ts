@@ -162,6 +162,30 @@ async function activateTerminal(name: string) {
   await page.waitForTimeout(300)
 }
 
+/**
+ * Send raw bytes straight to a terminal's PTY, by name.
+ *
+ * Key PRESSES go through xterm's keyboard translation, which is platform- and
+ * mode-dependent (normal vs application cursor keys, ConPTY on Windows) — fine
+ * for typing text, useless for asserting that a specific escape sequence works.
+ * This writes the exact bytes instead, which is also exactly how the app answers
+ * a trust dialog (see promptAutoDismiss.trustDialogReply).
+ */
+async function sendRawToTerminal(name: string, data: string) {
+  await page.evaluate(
+    ({ n, d }) => {
+      const w = window as unknown as {
+        __termpolis_test_state?: () => { terminals: Array<{ id: string; name: string }> }
+        termpolis: { writeToTerminal: (id: string, data: string) => void }
+      }
+      const t = (w.__termpolis_test_state?.().terminals ?? []).find((x) => x.name === n)
+      if (!t) throw new Error(`no terminal named ${n}`)
+      w.termpolis.writeToTerminal(t.id, d)
+    },
+    { n: name, d: data },
+  )
+}
+
 /** Toggle split/tab view */
 async function toggleView() {
   const toggle = page.locator('button[title="Split View"], button[title="Tab View"]')
@@ -229,10 +253,12 @@ test.describe.serial('Swarm Integration', () => {
     await ss('01-claude-trust-prompt')
   })
 
-  test('2. Auto-trust fires on mock Claude -- startup banner appears', async () => {
-    // Send Enter to accept the trust prompt
-    await focusActiveTerminal()
-    await page.keyboard.press('Enter')
+  // Claude Code 2.1.x opens this dialog with the cursor on "No, exit", so a bare
+  // Enter QUITS — which is what made auto-launched sessions look cut off. The mock
+  // reproduces that, and the bytes below are exactly what the app now sends
+  // (promptAutoDismiss.trustDialogReply): arrow down onto "Yes", then confirm.
+  test('2. Down+Enter accepts the trust prompt -- startup banner appears', async () => {
+    await sendRawToTerminal('Claude Agent', '\x1b[B\r')
     await page.waitForTimeout(2000)
 
     const termContent = await readActiveTerminalContent()
