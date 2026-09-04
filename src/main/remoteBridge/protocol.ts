@@ -68,7 +68,10 @@ export type HostToBridge =
 /** Messages the bridge sends up to main. */
 export type BridgeToHost =
   | { kind: 'ready' }
-  | { kind: 'pairingCode'; qrPayload: string; verificationPhrase: string; expiresAt: number }
+  // No verificationPhrase: the safety number needs BOTH public keys and the
+  // device's does not exist until it answers. It arrives in its own message below.
+  | { kind: 'pairingCode'; qrPayload: string; expiresAt: number }
+  | { kind: 'verificationPhrase'; deviceId: string; phrase: string }
   | { kind: 'paired'; device: PairedDevice }
   | { kind: 'devicesChanged'; devices: PairedDevice[] }
   | { kind: 'attachedChanged'; attachedDeviceIds: string[] }

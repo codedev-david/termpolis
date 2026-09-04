@@ -2321,4 +2321,23 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - **Parent/child MessagePort asymmetry.** Child unwraps `e.data`; parent receives the payload directly (`src/main/memoryClient.ts:655-658`, `src/main/memoryHost.ts:306-310`). Task 10 and Task 11 sit on opposite sides of this and are written accordingly.
 - **Coverage exemptions.** Fork and bootstrap blocks are unreachable under vitest, so both carry `/* c8 ignore start|stop */`, matching `memoryClient.ts` and `memoryHost.ts`. Without them the branches ≥95 gate fails on code no unit test can reach.
 
-**One known rough edge, called out rather than hidden:** the `pairingCode` message in Task 11 emits a placeholder phrase derived from the pairing id, because the device's public key is not known until it responds. The real phrase is computed in `PairingSession.accept()` (Task 8) and verified in Task 12. When the transport lands, `beginPairing` must be changed to emit the phrase *after* the device responds, not before. This is noted here so the transport task does not inherit it silently.
+**That rough edge was fixed during execution, not deferred.** The drafted Task 11
+emitted a placeholder `verificationPhrase` off the pairing id and left a note to
+fix it when the transport landed. That was the wrong call. The safety number's
+entire value is that it is a function of BOTH public keys — a placeholder encodes
+nothing about who the user is talking to while looking exactly like one that
+does, so the UI would render it, the user would compare it against the phone, and
+the comparison would be a ritual rather than a check. A security control that
+verifies nothing is worse than an absent one, because it stops anyone looking for
+the real thing.
+
+ESLint found it independently: `pairing` was assigned and never read, because
+nothing ever accepted against the session. Both were the same defect.
+
+`pairingCode` now carries no phrase at all. `BridgeCore` gained
+`acceptPairing({ oneTimeSecret, devicePublicKey, label, now? })`, which spends the
+offer, adds the device, and emits the real phrase from
+`PairingSession.accept()` in a new `verificationPhrase` message. It is separate
+from `handleHostMessage` because it is driven by the relay, not by main — which
+is also what lets Task 12's CLI client complete a pairing with no mobile code and
+no relay running.

@@ -4,7 +4,13 @@ import { OutputFanout } from './outputFanout'
 import { LocalMcpClient } from './mcpClient'
 import { createPairingOffer, PairingSession } from './pairing'
 import { x25519 } from '@noble/curves/ed25519.js'
-import type { BridgeToHost, HostToBridge, RemoteEnvelope, RemoteResponse } from './protocol'
+import type {
+  BridgeToHost,
+  HostToBridge,
+  PairedDevice,
+  RemoteEnvelope,
+  RemoteResponse,
+} from './protocol'
 
 interface McpLike {
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>
@@ -20,6 +26,12 @@ export interface BridgeCoreDeps {
 export interface BridgeCore {
   handleHostMessage(msg: HostToBridge): void
   handleRemoteRequest(deviceId: string, env: RemoteEnvelope): Promise<RemoteResponse>
+  acceptPairing(input: {
+    oneTimeSecret: string
+    devicePublicKey: string
+    label: string
+    now?: number
+  }): { device: PairedDevice; verificationPhrase: string }
 }
 
 export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
@@ -48,12 +60,16 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       case 'beginPairing': {
         const offer = createPairingOffer({ relayUrl: deps.relayUrl, desktopPublicKey: publicKey })
         pairing = new PairingSession(offer, publicKey)
-        // The phrase shown here is against the desktop's own key until a device
-        // completes the handshake; the device recomputes and both are compared.
+        // NO verification phrase here, deliberately. The safety number is a function
+        // of BOTH public keys, and the device's key does not exist yet -- it arrives
+        // with its hello. Emitting a placeholder that merely looks like a phrase is
+        // worse than emitting none: the UI would render it, the user would compare
+        // it against the phone, and they would be comparing a value that encodes
+        // nothing about who they are actually talking to. The real phrase is sent
+        // with `paired`, computed in PairingSession.accept().
         deps.send({
           kind: 'pairingCode',
           qrPayload: offer.qrPayload,
-          verificationPhrase: offer.pairingId.slice(0, 12).match(/.{1,2}/g)!.slice(0, 6).join(' '),
           expiresAt: offer.expiresAt,
         })
         return
@@ -93,7 +109,38 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     }
   }
 
-  return { handleHostMessage, handleRemoteRequest }
+  /** Complete a pairing from a device's hello.
+   *
+   *  Separate from `handleHostMessage` because it is driven by the RELAY, not by
+   *  main: the device's public key arrives over the wire. Sub-project 2's transport
+   *  calls this; Task 12's CLI client calls it directly, which is what makes pairing
+   *  verifiable end to end with no mobile code and no relay.
+   *
+   *  Returns the safety number so the caller can show it. Both ends derive it from
+   *  the same two public keys, so a relay that substituted its own key produces
+   *  different words on the two screens and the user sees the substitution. */
+  function acceptPairing(input: {
+    oneTimeSecret: string
+    devicePublicKey: string
+    label: string
+    now?: number
+  }): { device: PairedDevice; verificationPhrase: string } {
+    if (!pairing) throw new Error('no pairing offer is open')
+    const result = pairing.accept(input)
+    // Single-use: the offer is spent whether or not the caller retries.
+    pairing = null
+    registry.add(result.device)
+    deps.send({ kind: 'paired', device: result.device })
+    deps.send({
+      kind: 'verificationPhrase',
+      deviceId: result.device.id,
+      phrase: result.verificationPhrase,
+    })
+    announceDevices()
+    return result
+  }
+
+  return { handleHostMessage, handleRemoteRequest, acceptPairing }
 }
 
 // ── Child-process bootstrap ──────────────────────────────────────────────────
