@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createPairingOffer, PairingSession } from '../../src/main/remoteBridge/pairing'
-import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
+import { generateIdentity, PHRASE_WORDS } from '../../src/main/remoteBridge/sealedChannel'
 import { NO_CAPABILITIES } from '../../src/main/remoteBridge/protocol'
 
 const desktop = generateIdentity()
@@ -40,7 +40,7 @@ describe('pairing', () => {
     const { verificationPhrase } = s.accept({
       oneTimeSecret: o.oneTimeSecret, devicePublicKey: phone.publicKey, label: 'Pixel', now: 1_500,
     })
-    expect(verificationPhrase.split(' ')).toHaveLength(6)
+    expect(verificationPhrase.split(' ')).toHaveLength(PHRASE_WORDS)
   })
 
   it('rejects a wrong secret', () => {

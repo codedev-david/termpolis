@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createBridgeCore } from '../../src/main/remoteBridge/entry'
-import { generateIdentity, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
+import {
+  generateIdentity,
+  deriveVerificationPhrase,
+  PHRASE_WORDS,
+} from '../../src/main/remoteBridge/sealedChannel'
 import { NO_CAPABILITIES, type BridgeToHost, type PairedDevice } from '../../src/main/remoteBridge/protocol'
 import type { RelayClientDeps, RelayState } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
@@ -97,7 +101,7 @@ describe('bridge core', () => {
     expect(sent.find((m) => m.kind === 'pairingCode')).not.toHaveProperty('verificationPhrase')
   })
 
-  it('emits the real 6-word phrase once a device completes pairing', () => {
+  it('emits the real 8-word phrase once a device completes pairing', () => {
     const { c, sent } = core()
     c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
     const code = sent.find((m) => m.kind === 'pairingCode')
@@ -110,7 +114,7 @@ describe('bridge core', () => {
       label: 'Pixel',
     })
 
-    expect(verificationPhrase.split(' ')).toHaveLength(6)
+    expect(verificationPhrase.split(' ')).toHaveLength(PHRASE_WORDS)
     // Derived from both keys, so the phone computes the identical words and a
     // relay that swapped in its own key makes the two screens disagree.
     expect(verificationPhrase).toBe(

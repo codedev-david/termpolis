@@ -2,6 +2,7 @@ import { x25519 } from '@noble/curves/ed25519.js'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { randomBytes } from 'crypto'
+import { SAFETY_WORDS } from './wordlist'
 
 /** What `seal` adds to a plaintext: nonce, counter, and the Poly1305 tag.
  *  Exported because the output chunker has to size payloads against the relay's
@@ -101,21 +102,31 @@ export class SealedChannel {
   }
 }
 
-/** Small, unambiguous wordlist — no homophones, no near-anagrams. */
-const WORDS = [
-  'anchor', 'bishop', 'cactus', 'dolphin', 'ember', 'falcon', 'granite', 'harbor',
-  'igloo', 'jasmine', 'kestrel', 'lantern', 'marble', 'nectar', 'orchid', 'pepper',
-  'quartz', 'ribbon', 'saddle', 'timber', 'umbrella', 'velvet', 'walnut', 'xenon',
-  'yonder', 'zephyr', 'amber', 'basalt', 'cobalt', 'dogwood', 'elm', 'fjord',
-]
+/** Words in a safety number. Eight words over a 256-word list is 64 bits.
+ *
+ *  The number that matters is the GRINDING cost, not the reading cost. The
+ *  desktop public key is static and appears in every QR that machine ever shows,
+ *  so an attacker searches offline, for days, from a photograph taken months
+ *  ago -- the 90-second offer TTL constrains none of it. The previous six words
+ *  over a 32-word list was 2^30, which finishes in under an hour, and a phrase
+ *  ground to match does not merely evade the check: the user compares it, sees
+ *  it match, and the comparison CONFIRMS the attacker.
+ *
+ *  One digest byte per word, no modulo -- SAFETY_WORDS holds exactly 256
+ *  entries, so every byte maps to a distinct word and the mapping is uniform by
+ *  construction. The old `% 32` over a 32-word list happened to be unbiased too,
+ *  but only by coincidence of the length; this cannot silently stop being true.
+ */
+export const PHRASE_WORDS = 8
 
 /**
- * Signal-style safety numbers. Both ends render this and the user confirms they match,
- * which is what stops a malicious relay from MITM-ing the pairing handshake.
- * Sorting the keys makes it order-independent, so both sides derive the same phrase.
+ * Signal-style safety numbers. Both ends render this and the user confirms they
+ * match, which is what stops a malicious relay from MITM-ing the pairing
+ * handshake. Sorting the keys makes it order-independent, so both sides derive
+ * the same phrase without agreeing on who is who.
  */
 export function deriveVerificationPhrase(aPublicKey: string, bPublicKey: string): string {
   const [lo, hi] = [aPublicKey, bPublicKey].sort()
   const digest = sha256(new TextEncoder().encode(`${lo}:${hi}`))
-  return Array.from({ length: 6 }, (_, i) => WORDS[digest[i] % WORDS.length]).join(' ')
+  return Array.from({ length: PHRASE_WORDS }, (_, i) => SAFETY_WORDS[digest[i]]).join(' ')
 }

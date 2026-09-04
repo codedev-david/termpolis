@@ -52,8 +52,12 @@ a log line — see `DEPLOY.md` for how logs are read.
 
 ## Safety numbers
 
-After pairing, the desktop and phone each display a six-word phrase derived
-from both public keys. If the two phrases match, you are talking to each other.
+After pairing, the desktop and phone each display an eight-word phrase derived
+from both public keys. Eight words drawn from a 256-word list is 64 bits, chosen
+against the cost of GRINDING a match rather than the cost of reading one aloud:
+the desktop's public key is static and printed in every QR that machine shows,
+so an attacker can search offline, for as long as they like, from a photograph
+taken months ago. If the two phrases match, you are talking to each other.
 If they do not, someone is between you — and a relay operator substituting keys
 is exactly the attack that check exists to catch. Compare them once, on first
 pair. This is the same construction Signal uses for its safety numbers.

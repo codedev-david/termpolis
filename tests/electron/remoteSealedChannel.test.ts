@@ -3,7 +3,13 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
-import { generateIdentity, SealedChannel, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
+import {
+  generateIdentity,
+  SealedChannel,
+  deriveVerificationPhrase,
+  PHRASE_WORDS,
+} from '../../src/main/remoteBridge/sealedChannel'
+import { SAFETY_WORDS } from '../../src/main/remoteBridge/wordlist'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -117,12 +123,42 @@ describe('SealedChannel', () => {
       .toBe(deriveVerificationPhrase(b.publicKey, a.publicKey))
   })
 
-  it('derives a 6-word phrase that differs for different peers', () => {
+  it('matches the cross-implementation golden vector', () => {
+    // The one test that catches a phone shipping a different wordlist, a
+    // different index scheme, or a different word count. Without it the two ends
+    // produce eight plausible words that never match, the user is told the
+    // phrase is the MITM defence, and they conclude the scan went wrong and
+    // re-pair -- training away the only check that catches a substituted key.
+    //
+    // Mirror this exact pair and expectation in the phone's conformance suite.
+    const a = '00'.repeat(31) + '01'
+    const b = '00'.repeat(31) + '02'
+    expect(deriveVerificationPhrase(a, b)).toBe(
+      'yonder urchin unicorn igloo pine pumice pelican indigo',
+    )
+    expect(deriveVerificationPhrase(b, a)).toBe(deriveVerificationPhrase(a, b))
+  })
+
+  it('spends a full digest byte on every word', () => {
+    // Eight words over 256 is 64 bits. Six over 32 was 30 -- grindable offline in
+    // under an hour against a desktop key that is static and printed in every QR
+    // that machine shows, which turns the user's comparison into a confirmation
+    // of the attacker rather than a catch.
+    const a = generateIdentity()
+    const b = generateIdentity()
+    for (const w of deriveVerificationPhrase(a.publicKey, b.publicKey).split(' ')) {
+      expect(SAFETY_WORDS).toContain(w)
+    }
+    expect(PHRASE_WORDS).toBe(8)
+    expect(SAFETY_WORDS).toHaveLength(256)
+  })
+
+  it('derives an 8-word phrase that differs for different peers', () => {
     const a = generateIdentity()
     const b = generateIdentity()
     const c = generateIdentity()
     const phrase = deriveVerificationPhrase(a.publicKey, b.publicKey)
-    expect(phrase.split(' ')).toHaveLength(6)
+    expect(phrase.split(' ')).toHaveLength(PHRASE_WORDS)
     expect(phrase).not.toBe(deriveVerificationPhrase(a.publicKey, c.publicKey))
   })
 
