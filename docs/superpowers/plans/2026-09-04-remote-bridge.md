@@ -733,7 +733,17 @@ export function assertAllowed(request: RemoteRequest, caps: Capabilities): void 
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- remotePolicy`
-Expected: PASS, all 6.
+Expected: PASS, all 9 — the 6 above plus three for input outside the union.
+
+**Amendment applied during execution.** The switch had no `default`, because
+TypeScript proves it exhaustive over `RemoteRequest`. But `RemoteRequest` is a
+claim about *our* code, not about the wire: this function's argument is a decoded
+network frame from a device that may be compromised, malicious, or simply newer
+than this desktop. An unknown `kind` fell through to an implicit `undefined`, which
+happened to fail closed only through `caps[undefined] !== true`. Security behaviour
+should not rest on an accident, so the `default` returns `null` explicitly,
+`CapabilityError` accepts `null` and says "unrecognised request kind" instead of
+blaming whichever capability sorted first, and three tests pin it.
 
 - [ ] **Step 5: Commit**
 
