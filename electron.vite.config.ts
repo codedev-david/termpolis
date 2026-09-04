@@ -29,6 +29,10 @@ export default defineConfig({
           // index.js so proxySupervisor can utilityProcess.fork() it. Compresses Claude's
           // tool_result/image bytes off the main (PTY/paint) thread.
           headroomProxy: resolve(__dirname, 'src/main/headroomProxy/proxyMain.ts'),
+          // Remote bridge, forked by remoteBridgeSupervisor. Its whole input is
+          // an untrusted network, so a crash there must not take the app down, and
+          // main stays free to pump PTY.
+          remoteBridge: resolve(__dirname, 'src/main/remoteBridge/entry.ts'),
         },
       },
     },
