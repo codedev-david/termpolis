@@ -102,6 +102,13 @@ opaque to it.
 
 The relay routes on an opaque pairing id. It sees frame sizes and timing; nothing else.
 
+**Key storage constraint.** `safeStorage` does not exist in a `utilityProcess` — `memoryClient.ts`
+already documents this for the memory store's at-rest key. The bridge's X25519 private key is
+therefore **provisioned in main** and handed to the child at init, mirroring
+`provisionMemoryKey()`. The established house rule applies unchanged: where there is no real OS
+keychain, stay honestly plaintext rather than writing a key next to the ciphertext it protects
+and calling it encrypted.
+
 ### 4.3 Pairing
 
 1. Desktop displays a QR encoding `{ relayUrl, pairingId, desktopPubKey, oneTimeSecret }`.
@@ -214,11 +221,18 @@ Three-part fix, all required:
 
 `src/renderer/src/lib/agentStatusDetector.ts` already classifies exactly the states worth
 notifying on: `waiting_for_input`, `completed`, `errored`, `blocked`. It is a pure function over
-terminal text with no DOM dependency, but it currently lives in the renderer, where the main
-process cannot reach it.
+terminal text with no DOM dependency.
 
-Move it to a shared location imported by both. This keeps one detector rather than two
-divergent copies, and it decouples notifications from having an open window.
+**Correction to an earlier draft of this spec:** main is *not* blocked from reaching it —
+`src/main/index.ts:119` already imports it directly across the boundary
+(`from '../renderer/src/lib/agentStatusDetector'`). Push triggers are therefore not blocked
+today.
+
+The move to `src/shared/agentStatusDetector.ts` is still in scope for sub-project 1, but for
+build hygiene rather than reachability: the bridge is a **separate electron-vite entry point**,
+and having that bundle reach into `src/renderer/src/lib/` to pull a pure utility is the kind of
+cross-tree import that quietly grows into a bundling problem. One detector, one home, three
+consumers (main, renderer, bridge).
 
 ---
 
