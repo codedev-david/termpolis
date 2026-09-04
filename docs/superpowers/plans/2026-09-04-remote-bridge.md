@@ -1540,7 +1540,14 @@ export class RequestDispatcher {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- remoteDispatcher`
-Expected: PASS, all 7.
+Expected: PASS, all 8 — the 7 above plus one for a kind outside the union.
+
+**Amendment applied during execution.** The switch has no `default`, and unlike
+`remotePolicy` that is genuinely safe here — but only because `assertAllowed`
+runs first and now rejects unknown kinds. Those two facts are load-bearing
+together and were nowhere pinned: remove the guard and the switch falls through
+to `undefined`, which the phone reads as a success. The added test asserts an
+unrecognised kind rejects AND that MCP was never called.
 
 - [ ] **Step 5: Commit**
 

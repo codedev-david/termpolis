@@ -1,0 +1,40 @@
+import { assertAllowed } from './remotePolicy'
+import type { Capabilities, RemoteRequest } from './protocol'
+
+interface McpLike {
+  callTool(name: string, args: Record<string, unknown>): Promise<unknown>
+}
+
+/** Translates remote requests into MCP tool calls, after checking capability. */
+export class RequestDispatcher {
+  constructor(private readonly mcp: McpLike) {}
+
+  async dispatch(request: RemoteRequest, caps: Capabilities): Promise<unknown> {
+    // Capability first, always — never let an unauthorized request reach MCP.
+    assertAllowed(request, caps)
+
+    switch (request.kind) {
+      case 'listTerminals':
+        return this.mcp.callTool('list_terminals', {})
+      case 'createTerminal':
+        return this.mcp.callTool('create_terminal', {
+          name: request.name,
+          ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+        })
+      case 'runCommand':
+        return this.mcp.callTool('run_command', {
+          terminalId: request.terminalId, command: request.command,
+        })
+      case 'writeToTerminal':
+        return this.mcp.callTool('write_to_terminal', {
+          terminalId: request.terminalId, text: request.text,
+        })
+      case 'closeTerminal':
+        return this.mcp.callTool('close_terminal', { terminalId: request.terminalId })
+      case 'subscribe':
+      case 'unsubscribe':
+        // Subscription state lives in OutputFanout; nothing to ask MCP for.
+        return { ok: true }
+    }
+  }
+}
