@@ -9,7 +9,7 @@ export function isRole(value: string | null): value is Role {
 }
 
 /** Which limit a peer hit, sent to it before it is cut. */
-export type QuotaLimit = 'frame-size' | 'frame-rate' | 'bytes' | 'idle'
+export type QuotaLimit = 'frame-size' | 'frame-rate' | 'connection-bytes' | 'idle'
 
 /** Relay-to-peer control messages.
  *
@@ -27,4 +27,17 @@ export type ControlFrame =
 
 export function encode(frame: ControlFrame): string {
   return JSON.stringify(frame)
+}
+
+/** Size of an inbound binary frame, whatever shape the runtime hands us.
+ *
+ *  With binaryType='arraybuffer' this is always the first branch; the others exist
+ *  so that a runtime change cannot silently make every frame measure zero and slip
+ *  past the size cap. Returning MAX_SAFE_INTEGER for an unrecognised shape fails
+ *  CLOSED -- an unmeasurable frame is refused rather than waved through. */
+export function byteLength(data: unknown): number {
+  if (data instanceof ArrayBuffer) return data.byteLength
+  if (ArrayBuffer.isView(data)) return data.byteLength
+  if (typeof data === 'string') return new TextEncoder().encode(data).length
+  return Number.MAX_SAFE_INTEGER
 }

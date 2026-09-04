@@ -1,10 +1,39 @@
-import { encode, isRole, type Role } from './wire'
+import { encode, isRole, byteLength, type Role, type QuotaLimit } from './wire'
+import type { Env } from './index'
+import {
+  ByteBudget,
+  TokenBucket,
+  resolveByteBudget,
+  FRAME_BURST,
+  FRAME_RATE_PER_SEC,
+  MAX_FRAME_BYTES,
+} from './quota'
 
 export class PairingRoom {
+  // Classic Durable Object shape: the runtime constructs one per pairing id and
+  // hands it the state and the environment. State is unused -- a pairing room is
+  // deliberately amnesiac, holding nothing across an eviction, because anything it
+  // remembered would be metadata about a conversation it is not entitled to know.
+  constructor(
+    _state: DurableObjectState,
+    private readonly env: Env,
+  ) {}
+
   /** At most one socket per role. A Map rather than two fields so the peer lookup
    *  is "the entry that is not me" instead of a conditional that has to be kept in
    *  step with the role list by hand. */
-  private readonly peers = new Map<Role, WebSocket>()
+  /** One record per connected peer, holding its socket AND its allowances.
+   *
+   *  These started as a Map and a parallel WeakMap keyed by the same socket, which
+   *  forced every read to carry an `if (limit)` guard for a desync no caller could
+   *  cause -- and coverage duly showed that branch was unreachable. One record
+   *  makes the invariant structural: a peer either exists with its budgets, or it
+   *  is not connected.
+   *
+   *  Budgets are per-CONNECTION, not per-role: a peer that is cut and reconnects
+   *  gets a fresh allowance, because the budget bounds one socket's cost -- it is
+   *  not a punishment attached to an identity the relay cannot even see. */
+  private readonly peers = new Map<Role, { sock: WebSocket; frames: TokenBucket; bytes: ByteBudget }>()
 
   async fetch(request: Request): Promise<Response> {
     const role = new URL(request.url).searchParams.get('role')
@@ -22,7 +51,17 @@ export class PairingRoom {
     // ArrayBuffers is what makes the forward below actually a forward.
     server.binaryType = 'arraybuffer'
     server.accept()
-    this.peers.set(role, server)
+    // Held in the closure below, NOT looked up by role when a frame arrives. A role
+    // is freed the moment its peer is cut and can be re-taken immediately, so a
+    // lookup would let a late frame from the cut socket spend the NEW peer's budget
+    // -- an honest client throttled for its predecessor's flood. The allowances
+    // belong to this connection, so this connection holds them.
+    const mine = {
+      sock: server,
+      frames: new TokenBucket(FRAME_BURST, FRAME_RATE_PER_SEC / 1000),
+      bytes: new ByteBudget(resolveByteBudget(this.env.CONNECTION_BYTE_BUDGET)),
+    }
+    this.peers.set(role, mine)
 
     server.send(encode({ kind: 'hello', role }))
     this.peer(role)?.send(encode({ kind: 'peer-joined', role }))
@@ -37,6 +76,15 @@ export class PairingRoom {
       const peer = this.peer(role)
       // No partner: drop. Queueing would make the relay hold payload between
       // connections, which is the one thing it promises not to do.
+      const size = byteLength(event.data)
+      // Enforce BEFORE forwarding. A limit applied after the send is a report, not
+      // a control -- the frame the relay objected to would already have been
+      // delivered and already have cost what it cost.
+      if (size > MAX_FRAME_BYTES) return this.cut(role, server, 1009, 'frame-size')
+
+      if (!mine.frames.take(Date.now())) return this.cut(role, server, 1008, 'frame-rate')
+      if (!mine.bytes.spend(size)) return this.cut(role, server, 1008, 'connection-bytes')
+
       if (!peer) return
       peer.send(event.data)
     })
@@ -49,12 +97,40 @@ export class PairingRoom {
 
   /** The other end of the pairing, if it is connected. */
   private peer(role: Role): WebSocket | undefined {
-    for (const [otherRole, sock] of this.peers) if (otherRole !== role) return sock
+    for (const [otherRole, p] of this.peers) if (otherRole !== role) return p.sock
     return undefined
   }
 
+
+  /** Unseat a peer and tell its partner.
+   *
+   *  Deletes by ROLE, with no check that the leaving socket is the one seated --
+   *  and that is safe rather than sloppy. `fetch` answers 409 while a role is
+   *  occupied, so a replacement cannot seat until the incumbent's drop has already
+   *  run; a close event can therefore never arrive for a socket some other
+   *  connection has since replaced. A guard here would be an unreachable branch
+   *  standing in for an invariant that the 409 already enforces. */
   private drop(role: Role): void {
+    // Idempotent: `close` and `error` are both wired to this, and a socket that
+    // errors then closes calls it twice. Without the early return the second call
+    // would announce a `peer-gone` for a peer that had already gone.
     if (!this.peers.delete(role)) return
     this.peer(role)?.send(encode({ kind: 'peer-gone', role }))
+  }
+
+  /** Tell the offender which limit it hit, then close it.
+   *
+   *  Naming the limit is deliberate: a client that cannot tell "you sent too much"
+   *  from "the network broke" will reconnect in a loop and turn its own bug into a
+   *  denial of service against the relay.
+   *
+   *  Freeing the role and telling the partner `peer-gone` is left to the `close`
+   *  listener rather than done here. Doing both would be two paths for one event,
+   *  and `close()` fires that listener anyway -- a mutation test proved the extra
+   *  `drop` call changed nothing, which is the definition of a line that can only
+   *  ever drift out of step with the one that matters. */
+  private cut(role: Role, sock: WebSocket, code: number, limit: QuotaLimit): void {
+    sock.send(encode({ kind: 'quota-exceeded', limit }))
+    sock.close(code, limit)
   }
 }

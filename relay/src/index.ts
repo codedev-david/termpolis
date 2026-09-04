@@ -2,6 +2,9 @@ import { PairingRoom } from './pairingRoom'
 
 export interface Env {
   PAIRING_ROOM: DurableObjectNamespace
+  /** Optional per-connection byte budget override, as a decimal string. Absent in
+   *  production, where the compiled-in default applies. */
+  CONNECTION_BYTE_BUDGET?: string
 }
 
 /** Pairing ids are 16 random bytes rendered lowercase hex -- see `createPairingOffer`
