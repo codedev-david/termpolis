@@ -3,6 +3,9 @@ import { RequestDispatcher } from './dispatcher'
 import { OutputFanout, type DrainedChunk } from './outputFanout'
 import { LocalMcpClient } from './mcpClient'
 import { createPairingOffer, PairingSession } from './pairing'
+import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
+import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
+import { SealedChannel } from './sealedChannel'
 import { x25519 } from '@noble/curves/ed25519.js'
 import type {
   BridgeToHost,
@@ -24,11 +27,23 @@ interface McpLike {
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>
 }
 
+/** What the bridge needs from a relay room. Narrower than `RelayClient` so a
+ *  test can stand one in without a socket, and so nothing here reaches for
+ *  reconnect internals that are the client's own business. */
+export interface RelayLike {
+  start(): void
+  send(payload: unknown): void
+  stop(): void
+  readonly state: RelayState
+}
+
 export interface BridgeCoreDeps {
   send(msg: BridgeToHost): void
   /** Injected in tests; built from init params in production. */
   mcp?: McpLike
   relayUrl: string
+  /** Injected in tests; production dials the real relay. */
+  openRelay?(deps: RelayClientDeps): RelayLike
 }
 
 export interface BridgeCore {
@@ -49,7 +64,75 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   let dispatcher: RequestDispatcher | null = null
   let pairing: PairingSession | null = null
   let publicKey = ''
+  let identitySecretKey = ''
   const fanout = new OutputFanout()
+
+  /** One relay room per paired device, keyed by device id.
+   *
+   *  Per DEVICE, not per desktop: a pairing IS a desktop-device pair, so the
+   *  relay never multiplexes and never learns how many devices a user has beyond
+   *  the rooms it happens to hold. It also means revoking one device closes
+   *  exactly one socket and cannot disturb the others. */
+  const rooms = new Map<string, { client: RelayLike; pairingId: string }>()
+
+  function openRoom(dev: PairedDevice): void {
+    const current = rooms.get(dev.id)
+    // A device id is a hash of the phone's public key and so is stable across
+    // re-pairs, but a pairing id is minted per offer. Same room: leave the live
+    // socket alone. Different room: the phone is waiting somewhere the desktop
+    // is not, and holding the old one is a re-pair that never connects.
+    if (current) {
+      if (current.pairingId === dev.pairingId) return
+      closeRoom(dev.id)
+    }
+    const open = deps.openRelay ?? ((d: RelayClientDeps) => new RelayClient(d))
+    const client = open({
+      url: deps.relayUrl,
+      pairingId: dev.pairingId,
+      // One channel per device, held for the life of the room. The replay
+      // counter lives in it, so rebuilding it per frame would reset the
+      // high-water mark and reopen the replay window it exists to close.
+      channel: new SealedChannel(identitySecretKey, dev.publicKey),
+      onRequest: (env) => handleRemoteRequest(dev.id, env),
+      onStateChange: (state) => onRoomState(dev.id, state),
+    })
+    rooms.set(dev.id, { client, pairingId: dev.pairingId })
+    client.start()
+  }
+
+  function closeRoom(deviceId: string): void {
+    rooms.get(deviceId)?.client.stop()
+    rooms.delete(deviceId)
+  }
+
+  function onRoomState(deviceId: string, state: RelayState): void {
+    deps.send({
+      kind: state === 'online' ? 'deviceConnected' : 'deviceDisconnected',
+      deviceId,
+    })
+    // Coming back online is the one moment a device has a backlog AND somewhere
+    // to put it. Without this, output queued during an outage sits in the
+    // fan-out until the next keystroke happens to flush it.
+    if (state === 'online') pump(deviceId)
+  }
+
+  /** Push whatever is queued for one device, in frames the relay will accept.
+   *
+   *  Draining is destructive and sending is best-effort, so the state check
+   *  immediately precedes the drain: a device that is not online keeps its queue,
+   *  which is the whole point of the fan-out. Output drained into a socket that
+   *  dies in the microseconds after that check is lost, and that is the accepted
+   *  trade -- the alternative is a second buffer shadowing the one that exists. */
+  function pump(deviceId: string): void {
+    const room = rooms.get(deviceId)
+    if (!room || room.client.state !== 'online') return
+    const chunks = fanout.drain(deviceId)
+    if (chunks.length === 0) return
+    // Never one frame per drain: a full queue of escape-dense output serialises
+    // past the relay's 1 MiB cap, and an oversized frame is not truncated -- the
+    // connection is cut.
+    for (const payload of chunkOutbound(chunks, MAX_PAYLOAD_BYTES)) room.client.send(payload)
+  }
 
   function announceDevices(): void {
     deps.send({ kind: 'devicesChanged', devices: registry.list() })
@@ -59,12 +142,16 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     switch (msg.kind) {
       case 'init': {
         registry = new DeviceRegistry(msg.devices)
+        identitySecretKey = msg.identitySecretKey
         const mcp = deps.mcp ?? new LocalMcpClient(msg.mcpPort, msg.mcpToken)
         dispatcher = new RequestDispatcher(mcp)
         publicKey = Buffer.from(
           x25519.getPublicKey(new Uint8Array(Buffer.from(msg.identitySecretKey, 'hex'))),
         ).toString('hex')
         deps.send({ kind: 'ready' })
+        // Every device already paired gets its room back on start. A phone left
+        // waiting overnight reconnects without the user touching either machine.
+        for (const dev of registry.list()) openRoom(dev)
         return
       }
       case 'beginPairing': {
@@ -90,6 +177,11 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       case 'revokeDevice':
         registry.revoke(msg.deviceId)
         fanout.dropDevice(msg.deviceId)
+        // Revoking has to reach the wire. Dropping the record alone leaves a
+        // socket the phone is still holding, and the next request on it would be
+        // refused by the registry -- but the connection itself would persist,
+        // which is not what the user asked for when they removed the device.
+        closeRoom(msg.deviceId)
         announceDevices()
         return
       case 'setCapabilities':
@@ -104,9 +196,11 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         return
       case 'terminalOutput':
         fanout.ingest(msg.terminalId, msg.slice)
+        for (const deviceId of rooms.keys()) pump(deviceId)
         return
       case 'shutdown':
         dispatcher = null
+        for (const deviceId of [...rooms.keys()]) closeRoom(deviceId)
         return
     }
   }
@@ -154,6 +248,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // Single-use: the offer is spent whether or not the caller retries.
     pairing = null
     registry.add(result.device)
+    openRoom(result.device)
     deps.send({ kind: 'paired', device: result.device })
     deps.send({
       kind: 'verificationPhrase',

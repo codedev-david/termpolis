@@ -28,6 +28,11 @@ export interface PairedDevice {
   label: string
   /** X25519 public key, hex. */
   publicKey: string
+  /** The relay room this device dials, minted with the pairing offer.
+   *
+   *  Stored on the device rather than regenerated, so a desktop restart re-dials
+   *  the room the phone is already waiting in instead of requiring a re-pair. */
+  pairingId: string
   capabilities: Capabilities
   pairedAt: number
   lastSeenAt: number
@@ -87,4 +92,18 @@ export type BridgeToHost =
   | { kind: 'paired'; device: PairedDevice }
   | { kind: 'devicesChanged'; devices: PairedDevice[] }
   | { kind: 'attachedChanged'; attachedDeviceIds: string[] }
+  // Reachability, which is not the same as paired: a device stays paired while
+  // the phone is in a tunnel. Settings shows the two separately.
+  | { kind: 'deviceConnected'; deviceId: string }
+  | { kind: 'deviceDisconnected'; deviceId: string }
   | { kind: 'error'; message: string }
+
+/** The relay refuses -- and cuts the connection on -- any frame larger than this.
+ *
+ *  Mirrors `MAX_FRAME_BYTES` in `relay/src/quota.ts`. The two packages cannot
+ *  share a module (one compiles for workerd, the other for Electron), so
+ *  `tests/electron/remoteOutputChunker.test.ts` imports both and asserts they
+ *  agree. Without that guard the drift shows up as a phone that disconnects
+ *  under load, which looks like a network fault and is not.
+ */
+export const RELAY_MAX_FRAME_BYTES = 1_048_576

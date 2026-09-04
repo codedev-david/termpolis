@@ -2,17 +2,72 @@ import { describe, it, expect, vi } from 'vitest'
 import { createBridgeCore } from '../../src/main/remoteBridge/entry'
 import { generateIdentity, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
 import { NO_CAPABILITIES, type BridgeToHost, type PairedDevice } from '../../src/main/remoteBridge/protocol'
+import type { RelayClientDeps, RelayState } from '../../src/main/remoteBridge/relayClient'
+import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
+
+// A real curve point: the core builds a SealedChannel against every paired
+// device's key the moment it opens that device's room, so a placeholder string
+// no longer survives init.
+const PEER = generateIdentity()
 
 function device(id = 'd1'): PairedDevice {
-  return { id, label: 'phone', publicKey: 'pk', capabilities: { ...NO_CAPABILITIES, read: true }, pairedAt: 0, lastSeenAt: 0 }
+  return {
+    id,
+    label: 'phone',
+    publicKey: PEER.publicKey,
+    pairingId: 'f'.repeat(32),
+    capabilities: { ...NO_CAPABILITIES, read: true },
+    pairedAt: 0,
+    lastSeenAt: 0,
+  }
+}
+
+/** A relay room that records instead of dialling. Every test goes through this:
+ *  a core that opened real sockets would leave reconnect timers running in the
+ *  suite and, worse, would make these tests depend on a network. */
+function stubRoom(deps: RelayClientDeps) {
+  const room = {
+    deps,
+    started: false,
+    stopped: false,
+    state: 'offline' as RelayState,
+    sent: [] as OutputPayload[],
+    start() {
+      room.started = true
+    },
+    send(payload: unknown) {
+      room.sent.push(payload as OutputPayload)
+    },
+    stop() {
+      room.stopped = true
+    },
+  }
+  return room
 }
 
 function core(devices: PairedDevice[] = []) {
   const sent: BridgeToHost[] = []
+  const rooms: ReturnType<typeof stubRoom>[] = []
   const callTool = vi.fn().mockResolvedValue({ terminals: [] })
-  const c = createBridgeCore({ send: (m) => sent.push(m), mcp: { callTool }, relayUrl: 'wss://relay.test' })
+  const c = createBridgeCore({
+    send: (m) => sent.push(m),
+    mcp: { callTool },
+    relayUrl: 'wss://relay.test',
+    openRelay: (d) => {
+      const room = stubRoom(d)
+      rooms.push(room)
+      return room
+    },
+  })
   c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices })
-  return { c, sent, callTool }
+  return { c, sent, callTool, rooms }
+}
+
+/** Bring a room up the way the relay client would, so the core's own
+ *  state-change handling runs rather than being bypassed. */
+function goOnline(room: ReturnType<typeof stubRoom>): void {
+  room.state = 'online'
+  room.deps.onStateChange('online')
 }
 
 describe('bridge core', () => {
@@ -281,5 +336,213 @@ describe('capability enforcement precedes side effects', () => {
       slice: { output: 'hello\r\n', nextOffset: 7, missed: 0 },
     })
     expect(c.drainOutput(granted.id)).toHaveLength(1)
+  })
+})
+
+describe('relay rooms', () => {
+  it('dials one room per paired device on init', () => {
+    const { rooms } = core([device('d1'), device('d2')])
+    expect(rooms).toHaveLength(2)
+    expect(rooms.every((r) => r.started)).toBe(true)
+    // Per device, so revoking one cannot disturb another's connection.
+    expect(new Set(rooms.map((r) => r.deps.pairingId)).size).toBe(1)
+    expect(rooms[0].deps.url).toBe('wss://relay.test')
+  })
+
+  it('closes the room when the device is revoked', () => {
+    const { c, rooms } = core([device()])
+    c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })
+
+    // Dropping the registry record alone would leave a socket the phone is still
+    // holding open. Removing a device has to reach the wire.
+    expect(rooms[0].stopped).toBe(true)
+  })
+
+  it('opens a room for a device as soon as it pairs', () => {
+    const { c, sent, rooms } = core()
+    c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
+    const code = sent.find((m) => m.kind === 'pairingCode') as Extract<
+      BridgeToHost,
+      { kind: 'pairingCode' }
+    >
+    const offer = JSON.parse(code.qrPayload)
+    c.acceptPairing({
+      oneTimeSecret: offer.oneTimeSecret,
+      devicePublicKey: PEER.publicKey,
+      label: 'Pixel',
+    })
+
+    // The room the phone is already waiting in -- the id it scanned, not a fresh
+    // one. A new id here would mean the two ends never meet.
+    expect(rooms).toHaveLength(1)
+    expect(rooms[0].deps.pairingId).toBe(offer.pairingId)
+    expect(rooms[0].started).toBe(true)
+  })
+
+  it('moves the device to the new room when the same phone re-pairs', () => {
+    const { c, sent, rooms } = core()
+    const pairOnce = () => {
+      c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
+      const code = sent.filter((m) => m.kind === 'pairingCode').at(-1) as Extract<
+        BridgeToHost,
+        { kind: 'pairingCode' }
+      >
+      const offer = JSON.parse(code.qrPayload)
+      c.acceptPairing({
+        oneTimeSecret: offer.oneTimeSecret,
+        devicePublicKey: PEER.publicKey,
+        label: 'Pixel',
+      })
+      return offer.pairingId as string
+    }
+    const first = pairOnce()
+    const second = pairOnce()
+
+    // A device id is a hash of the phone's public key, so it is the SAME phone
+    // both times -- but a pairing id is minted per offer, so the phone is now
+    // waiting in a room the desktop is not in. Keeping the first room because
+    // the device is "already open" is a re-pair that silently never connects.
+    expect(second).not.toBe(first)
+    expect(rooms).toHaveLength(2)
+    expect(rooms[0].deps.pairingId).toBe(first)
+    expect(rooms[0].stopped).toBe(true)
+    expect(rooms[1].deps.pairingId).toBe(second)
+    expect(rooms[1].started).toBe(true)
+  })
+
+  it('leaves a room alone when the same device is opened twice', () => {
+    const dev = device()
+    const { c, rooms } = core([dev])
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices: [dev] })
+
+    // Same device, same pairing id: the socket already dialled is the right one.
+    // Redialling would drop a live connection and lose whatever it was carrying.
+    expect(rooms).toHaveLength(1)
+    expect(rooms[0].stopped).toBe(false)
+  })
+
+  it('binds each room to its own device', async () => {
+    const { c, rooms } = core([device('d1'), device('d2')])
+    for (const r of rooms) goOnline(r)
+    for (const r of rooms) r.sent.length = 0
+
+    // Requests arrive on the ROOM, not through a shared entry point, so the
+    // device id comes from the closure rather than the message. A room wired to
+    // the wrong id would serve one phone's subscription to another -- the exact
+    // shape of cross-device leak this per-device model exists to prevent.
+    await rooms[1].deps.onRequest({ id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'only for d2', nextOffset: 11, missed: 0 },
+    })
+
+    expect(rooms[0].sent).toHaveLength(0)
+    expect(rooms[1].sent[0].chunks[0].chunk).toBe('only for d2')
+  })
+
+  it('closes every room on shutdown', () => {
+    const { c, rooms } = core([device('d1'), device('d2')])
+    c.handleHostMessage({ kind: 'shutdown' })
+    expect(rooms.map((r) => r.stopped)).toEqual([true, true])
+  })
+
+  it('reports reachability to the host, separately from being paired', () => {
+    const { sent, rooms } = core([device()])
+    goOnline(rooms[0])
+    expect(sent).toContainEqual({ kind: 'deviceConnected', deviceId: 'd1' })
+
+    rooms[0].state = 'offline'
+    rooms[0].deps.onStateChange('offline')
+    expect(sent).toContainEqual({ kind: 'deviceDisconnected', deviceId: 'd1' })
+  })
+
+  it('treats a dial in progress as not yet reachable', () => {
+    const { sent, rooms } = core([device()])
+    rooms[0].deps.onStateChange('connecting')
+
+    // Connecting is not connected. Reporting it as connected would light up
+    // Settings for a device that cannot receive anything.
+    expect(sent).toContainEqual({ kind: 'deviceDisconnected', deviceId: 'd1' })
+    expect(sent.some((m) => m.kind === 'deviceConnected')).toBe(false)
+  })
+})
+
+describe('output pump', () => {
+  function subscribed(deviceId = 'd1') {
+    const h = core([device(deviceId)])
+    goOnline(h.rooms[0])
+    h.rooms[0].sent.length = 0
+    return h
+  }
+
+  it('pushes terminal output to an online device', async () => {
+    const h = subscribed()
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'compiling...', nextOffset: 12, missed: 0 },
+    })
+
+    expect(h.rooms[0].sent).toHaveLength(1)
+    expect(h.rooms[0].sent[0].chunks[0].chunk).toBe('compiling...')
+  })
+
+  it('holds output for an offline device and delivers it on reconnect', async () => {
+    const h = core([device()])
+    goOnline(h.rooms[0])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.rooms[0].state = 'offline'
+    h.rooms[0].sent.length = 0
+
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'built in 4s', nextOffset: 11, missed: 0 },
+    })
+    // Draining into a dead socket would discard it silently. The fan-out is the
+    // buffer for exactly this: a phone that went into a tunnel mid-build.
+    expect(h.rooms[0].sent).toHaveLength(0)
+
+    goOnline(h.rooms[0])
+    expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((c) => c.chunk)).toContain('built in 4s')
+  })
+
+  it('sends nothing for a device that never subscribed', () => {
+    const h = subscribed()
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'SECRET=hunter2', nextOffset: 14, missed: 0 },
+    })
+    expect(h.rooms[0].sent).toHaveLength(0)
+  })
+
+  it('splits a burst too large for one relay frame', async () => {
+    const h = subscribed()
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    // Bare ESC, not a full colour sequence: ESC costs six wire bytes and the
+    // bracket-and-digits cost one each, so '\u001b[31m' averages two bytes per
+    // character and never reaches the cap within the fan-out's 262144-character
+    // queue. The density that overflows is escapes with little text between
+    // them, which is what a progress bar or a spinner actually emits.
+    const burst = '\u001b'.repeat(200_000)
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: burst, nextOffset: burst.length, missed: 0 },
+    })
+
+    // An oversized frame is not truncated by the relay -- the connection is cut.
+    // Escape-dense output is exactly what a build produces, so this is the
+    // ordinary case rather than an adversarial one.
+    expect(h.rooms[0].sent.length).toBeGreaterThan(1)
+    for (const payload of h.rooms[0].sent) {
+      expect(new TextEncoder().encode(JSON.stringify(payload)).length).toBeLessThanOrEqual(
+        MAX_PAYLOAD_BYTES,
+      )
+    }
+    expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((c) => c.chunk).join('')).toBe(burst)
   })
 })

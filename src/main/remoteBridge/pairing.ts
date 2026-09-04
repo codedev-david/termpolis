@@ -71,6 +71,7 @@ export class PairingSession {
       id: createHash('sha256').update(input.devicePublicKey).digest('hex').slice(0, 16),
       label: input.label,
       publicKey: input.devicePublicKey,
+      pairingId: this.offer.pairingId,
       capabilities: { ...NO_CAPABILITIES },
       pairedAt: now,
       lastSeenAt: now,

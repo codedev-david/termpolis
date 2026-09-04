@@ -3,6 +3,13 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { randomBytes } from 'crypto'
 
+/** What `seal` adds to a plaintext: nonce, counter, and the Poly1305 tag.
+ *  Exported because the output chunker has to size payloads against the relay's
+ *  frame cap, which applies to the sealed frame rather than the plaintext.
+ *  `tests/electron/remoteOutputChunker.test.ts` pins it by measuring a real seal,
+ *  so it cannot drift from the format. */
+export const SEAL_OVERHEAD_BYTES = 34
+
 const NONCE_BYTES = 12
 /** Frame counter width. 6 bytes is 2^48 frames — unreachable at any real rate, and it
  *  fits exactly in a JS number, so the check stays integer-exact with no BigInt. */
