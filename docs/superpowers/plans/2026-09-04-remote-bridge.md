@@ -405,12 +405,34 @@ export function deriveVerificationPhrase(aPublicKey: string, bPublicKey: string)
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Add replay protection**
+
+The code above authenticates frames but does not make them single-use. A random
+nonce does not help: the Poly1305 tag still verifies on a byte-identical frame an
+attacker captured earlier, so a recorded `run_command` can be re-sent and
+re-executed. Spec §97 asks for this; it is not optional for a feature whose
+purpose is remote command execution.
+
+Seal a 6-byte big-endian counter INSIDE the ciphertext — `nonce || AEAD(counter ||
+plaintext)` — so it is covered by the tag and cannot be edited. `open()` refuses any
+counter at or below the highest already accepted from that peer, which rejects
+replayed *and* reordered frames. Each `SealedChannel` instance tracks only its own
+peer's high-water mark, so the two directions never collide (both start at 0).
+
+6 bytes = 2^48 frames, unreachable in practice and exactly representable as a JS
+number, so the comparison needs no BigInt.
+
+- [ ] **Step 6: Run tests**
 
 Run: `npm test -- remoteSealedChannel`
-Expected: PASS, all 6.
+Expected: PASS, all 11 — the 6 above plus replay, reorder, a 500-frame in-order run,
+per-direction independence, and a truncated frame.
 
-- [ ] **Step 6: Commit**
+Verify the replay tests are not vacuous: neutralise the counter comparison and
+re-run. Exactly `refuses a replayed frame` and `refuses a frame delivered out of
+order` must fail.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add package.json package-lock.json src/main/remoteBridge/sealedChannel.ts tests/electron/remoteSealedChannel.test.ts

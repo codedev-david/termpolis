@@ -145,6 +145,9 @@
   "dependencies": {
     "@fortawesome/fontawesome-free": "7.2.0",
     "@monaco-editor/react": "4.7.0",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "@sentry/electron": "7.10.0",
     "@sentry/react": "10.45.0",
     "@xterm/addon-fit": "0.11.0",
