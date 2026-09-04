@@ -79,7 +79,7 @@ The smallest deployable relay: a Worker that correctly refuses everything that i
 - Consumes: nothing.
 - Produces: `export default { fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> }`; `interface Env { PAIRING_ROOM: DurableObjectNamespace }`.
 
-- [ ] **Step 1: Scaffold the relay project**
+- [x] **Step 1: Scaffold the relay project**
 
 ```bash
 mkdir -p relay/src relay/test
@@ -143,7 +143,7 @@ export default defineWorkersConfig({
 })
 ```
 
-- [ ] **Step 2: Keep the relay out of the app's test run**
+- [x] **Step 2: Keep the relay out of the app's test run**
 
 The root vitest config has no `include` restriction on test files, so `relay/**/*.test.ts` would be collected into the Node pool and fail on missing Workers globals. Add the exclusion in `vitest.config.ts`:
 
@@ -157,7 +157,7 @@ And in the root `package.json`:
     "test:relay": "npm --prefix relay test",
 ```
 
-- [ ] **Step 3: Write the failing test**
+- [x] **Step 3: Write the failing test**
 
 `relay/test/worker.test.ts`:
 
@@ -196,12 +196,12 @@ describe('worker routing', () => {
 })
 ```
 
-- [ ] **Step 4: Run it to verify it fails**
+- [x] **Step 4: Run it to verify it fails**
 
 Run: `npm --prefix relay test`
 Expected: FAIL — `src/index.ts` does not exist.
 
-- [ ] **Step 5: Write the minimal implementation**
+- [x] **Step 5: Write the minimal implementation**
 
 `relay/src/index.ts`:
 
@@ -247,12 +247,12 @@ export class PairingRoom {
 }
 ```
 
-- [ ] **Step 6: Run the tests and make sure they pass**
+- [x] **Step 6: Run the tests and make sure they pass**
 
 Run: `npm --prefix relay test`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add relay vitest.config.ts package.json
@@ -272,7 +272,7 @@ git commit -m "feat(relay): worker scaffold that routes only valid pairing upgra
 - Consumes: `Env` from Task 1.
 - Produces: `class PairingRoom implements DurableObject`; `type ControlFrame` in `wire.ts` with kinds `hello`, `peer-joined`, `peer-gone`, `quota-exceeded`, `error`; `const ROLES = ['desktop', 'device'] as const`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `relay/test/pairingRoom.test.ts`:
 
@@ -334,12 +334,12 @@ describe('pairing room', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npm --prefix relay test pairingRoom`
 Expected: FAIL — the stub returns 501.
 
-- [ ] **Step 3: Write `wire.ts`**
+- [x] **Step 3: Write `wire.ts`**
 
 ```ts
 /** The two ends of a pairing. A room holds at most one socket per role, which is
@@ -371,7 +371,7 @@ export function encode(frame: ControlFrame): string {
 }
 ```
 
-- [ ] **Step 4: Write the minimal `PairingRoom`**
+- [x] **Step 4: Write the minimal `PairingRoom`**
 
 `relay/src/pairingRoom.ts`:
 
@@ -415,12 +415,12 @@ export class PairingRoom {
 }
 ```
 
-- [ ] **Step 5: Run the tests and make sure they pass**
+- [x] **Step 5: Run the tests and make sure they pass**
 
 Run: `npm --prefix relay test`
 Expected: PASS, 8 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add relay
@@ -441,7 +441,7 @@ The heart of the zero-knowledge claim. A binary frame from one peer reaches the 
 - Consumes: `PairingRoom`, `ControlFrame` from Task 2.
 - Produces: no new exports; `PairingRoom` gains binary forwarding.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `relay/test/forwarding.test.ts`:
 
@@ -515,12 +515,12 @@ describe('frame forwarding', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npm --prefix relay test forwarding`
 Expected: FAIL — nothing forwards yet; the first assertion times out.
 
-- [ ] **Step 3: Add forwarding**
+- [x] **Step 3: Add forwarding**
 
 In `PairingRoom.fetch`, after the `close`/`error` listeners:
 
@@ -549,16 +549,16 @@ and the lookup:
   }
 ```
 
-- [ ] **Step 4: Run the tests and make sure they pass**
+- [x] **Step 4: Run the tests and make sure they pass**
 
 Run: `npm --prefix relay test`
 Expected: PASS, 11 tests.
 
-- [ ] **Step 5: Prove the forwarding test is not vacuous**
+- [x] **Step 5: Prove the forwarding test is not vacuous**
 
 Temporarily change `peer.send(event.data)` to `peer.send(new Uint8Array([0]))`. Re-run: the byte-for-byte test must fail. Restore.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add relay
@@ -580,7 +580,7 @@ Abuse controls from §7. The pure logic lives in `quota.ts` so it is testable wi
 - Consumes: `ControlFrame` from Task 2.
 - Produces: `MAX_FRAME_BYTES`, `class TokenBucket { constructor(capacity: number, refillPerMs: number); take(now: number, cost?: number): boolean }`, `class ByteBudget { constructor(limit: number); spend(n: number): boolean }`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `relay/test/quota.test.ts`:
 
@@ -639,12 +639,12 @@ describe('frame cap', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npm --prefix relay test quota`
 Expected: FAIL — `src/quota.ts` does not exist.
 
-- [ ] **Step 3: Write `quota.ts`**
+- [x] **Step 3: Write `quota.ts`**
 
 ```ts
 /** Largest frame the relay will forward. Matches `DEFAULT_CAPACITY_CHARS` in the
@@ -698,12 +698,12 @@ export class ByteBudget {
 }
 ```
 
-- [ ] **Step 4: Run the pure tests**
+- [x] **Step 4: Run the pure tests**
 
 Run: `npm --prefix relay test quota.test`
 Expected: PASS, 6 tests.
 
-- [ ] **Step 5: Write the enforcement test**
+- [x] **Step 5: Write the enforcement test**
 
 `relay/test/quotaEnforcement.test.ts`:
 
@@ -762,12 +762,12 @@ describe('quota enforcement', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npm --prefix relay test quotaEnforcement`
 Expected: FAIL — nothing enforces yet; frames forward freely.
 
-- [ ] **Step 7: Wire the quotas into `PairingRoom`**
+- [x] **Step 7: Wire the quotas into `PairingRoom`**
 
 Give each accepted socket its own limiter set, and replace the message handler:
 
@@ -816,12 +816,12 @@ import {
 > ```
 > in `wire.ts`, referenced by both `ControlFrame` and `cut`.
 
-- [ ] **Step 8: Run the tests and make sure they pass**
+- [x] **Step 8: Run the tests and make sure they pass**
 
 Run: `npm --prefix relay test`
 Expected: PASS, 20 tests.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add relay
@@ -842,7 +842,7 @@ A quota inside the DO cannot stop someone creating a million DOs. That has to be
 - Consumes: `Env` from Task 1.
 - Produces: `Env` gains `REGISTRATIONS: RateLimit`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `relay/test/rateLimit.test.ts`:
 
@@ -871,12 +871,12 @@ describe('registration rate limit', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npm --prefix relay test rateLimit`
 Expected: FAIL — no 429 is ever returned.
 
-- [ ] **Step 3: Add the binding**
+- [x] **Step 3: Add the binding**
 
 `relay/wrangler.toml`:
 
@@ -888,7 +888,7 @@ namespace_id = "1001"
 simple = { limit = 30, period = 60 }
 ```
 
-- [ ] **Step 4: Enforce it in the Worker**
+- [x] **Step 4: Enforce it in the Worker**
 
 ```ts
 export interface Env {
@@ -907,12 +907,12 @@ export interface Env {
 
 placed after the pairing-id validation and before the DO lookup.
 
-- [ ] **Step 5: Run the tests and make sure they pass**
+- [x] **Step 5: Run the tests and make sure they pass**
 
 Run: `npm --prefix relay test`
 Expected: PASS, 22 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add relay
@@ -933,7 +933,7 @@ A room whose peers vanished must not hold a Durable Object alive indefinitely.
 - Consumes: `PairingRoom`.
 - Produces: `const IDLE_TIMEOUT_MS = 300_000`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `relay/test/lifecycle.test.ts`:
 
@@ -987,12 +987,12 @@ describe('room lifecycle', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npm --prefix relay test lifecycle`
 Expected: FAIL on the third test — `alarm` is not a function.
 
-- [ ] **Step 3: Add the alarm**
+- [x] **Step 3: Add the alarm**
 
 ```ts
 /** How long a room may sit without a forwarded frame before it is closed. Long
@@ -1026,17 +1026,17 @@ and:
   }
 ```
 
-- [ ] **Step 4: Run the tests and make sure they pass**
+- [x] **Step 4: Run the tests and make sure they pass**
 
 Run: `npm --prefix relay test`
 Expected: PASS, 25 tests.
 
-- [ ] **Step 5: Verify the relay coverage gate**
+- [x] **Step 5: Verify the relay coverage gate**
 
 Run: `npm --prefix relay test -- --coverage`
 Expected: lines ≥95, functions ≥95, branches ≥90, statements ≥95. Backfill on the offending file if not — do not lower the gate.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add relay
@@ -1075,7 +1075,7 @@ git commit -m "feat(relay): peer-gone notification, role release, idle teardown"
   export function backoffDelay(attempt: number): number
   ```
 
-- [ ] **Step 1: Add the dependency**
+- [x] **Step 1: Add the dependency**
 
 ```bash
 npm i ws@8 && npm i -D @types/ws
@@ -1089,7 +1089,7 @@ npm ls bufferutil utf-8-validate
 
 Expected: both absent (they are optional peers of `ws`). If either appears, remove it — the no-native-dependencies constraint is not negotiable.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 `tests/electron/remoteRelayClient.test.ts`:
 
@@ -1217,12 +1217,12 @@ describe('relay client', () => {
 })
 ```
 
-- [ ] **Step 3: Run it to verify it fails**
+- [x] **Step 3: Run it to verify it fails**
 
 Run: `npx vitest run tests/electron/remoteRelayClient.test.ts`
 Expected: FAIL — `relayClient.ts` does not exist.
 
-- [ ] **Step 4: Write `relayClient.ts`**
+- [x] **Step 4: Write `relayClient.ts`**
 
 ```ts
 import WebSocket from 'ws'
@@ -1360,17 +1360,17 @@ export class RelayClient {
 }
 ```
 
-- [ ] **Step 5: Run the tests and make sure they pass**
+- [x] **Step 5: Run the tests and make sure they pass**
 
 Run: `npx vitest run tests/electron/remoteRelayClient.test.ts`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 6: Verify the app coverage gate still holds**
+- [x] **Step 6: Verify the app coverage gate still holds**
 
 Run: `npm run test:coverage`
 Expected: lines ≥97, functions ≥96, branches ≥95, statements ≥96. Backfill on `relayClient.ts` if it dropped — the gate does not move.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/main/remoteBridge/relayClient.ts tests/electron/remoteRelayClient.test.ts package.json package-lock.json
@@ -1389,7 +1389,7 @@ git commit -m "feat(remote): relay client with sealed framing and bounded backof
 - Consumes: `RelayClient` from Task 7; `BridgeCore` from sub-project 1.
 - Produces: `BridgeCoreDeps` gains `openRelay?(deps: RelayClientDeps): RelayClient`; `BridgeToHost` gains `{ kind: 'deviceConnected' | 'deviceDisconnected'; deviceId: string }`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/electron/remoteBridgeEntry.test.ts`:
 
@@ -1440,12 +1440,12 @@ Append to `tests/electron/remoteBridgeEntry.test.ts`:
   })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run tests/electron/remoteBridgeEntry.test.ts`
 Expected: FAIL — `openRelay` is not part of `BridgeCoreDeps`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `protocol.ts`, extend `BridgeToHost`:
 
@@ -1494,12 +1494,12 @@ Call `openRoom` for each device on `init` and on `acceptPairing`; call `closeRoo
 > already in the QR payload; add it to the record so a restart can re-dial the same
 > room without a re-pair.
 
-- [ ] **Step 4: Run the tests and make sure they pass**
+- [x] **Step 4: Run the tests and make sure they pass**
 
 Run: `npx vitest run tests/electron/remoteBridgeEntry.test.ts tests/electron/remoteEndToEnd.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Pump drained output into the room**
+- [x] **Step 5: Pump drained output into the room**
 
 Output currently sits in the fan-out until someone drains it. Wire the pump: after `fanout.ingest`, drain each connected device and send.
 
@@ -1520,12 +1520,12 @@ Output currently sits in the fan-out until someone drains it. Wire the pump: aft
 
 Add a test proving an offline device keeps its output and receives it on reconnect.
 
-- [ ] **Step 6: Run the full gate**
+- [x] **Step 6: Run the full gate**
 
 Run: `npm run typecheck && npm run lint && npm run test:coverage && npm --prefix relay test`
 Expected: all green, app gate at 97/96/95/96.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src tests
@@ -1540,17 +1540,17 @@ git commit -m "feat(remote): dial one relay room per paired device, pump output"
 - Create: `relay/PRIVACY.md`, `relay/DEPLOY.md`
 - Modify: `.github/workflows/ci.yml` (or the equivalent), root `package.json`
 
-- [ ] **Step 1: Write `relay/PRIVACY.md`**
+- [x] **Step 1: Write `relay/PRIVACY.md`**
 
 Short and honest, because there is little to disclose. It must state exactly what the relay can see — pairing ids, frame sizes, timing, connection metadata, source IP for rate limiting — and exactly what it cannot: frame contents, terminal output, commands, file paths, model credentials. It must say frames are never persisted and that the operator cannot decrypt traffic even under compulsion, because no key ever reaches the relay.
 
 Do not claim more than the design delivers. In particular: **traffic analysis is possible.** Frame sizes and timing leak activity patterns. Say so.
 
-- [ ] **Step 2: Write `relay/DEPLOY.md`**
+- [x] **Step 2: Write `relay/DEPLOY.md`**
 
 Cover: Cloudflare account and `wrangler login`; `wrangler deploy`; binding the custom domain; where the rate-limit namespace id comes from; how to roll back (`wrangler rollback`); and how to read logs without capturing frame bodies (`wrangler tail --format json`, which shows metadata only). State explicitly that no Cloudflare token is committed — CI reads `CLOUDFLARE_API_TOKEN` from repository secrets, and `gh secret list` shows the current inventory.
 
-- [ ] **Step 3: Add the CI job**
+- [x] **Step 3: Add the CI job**
 
 Relay tests are blocking, like `e2e/`:
 
@@ -1565,11 +1565,11 @@ Relay tests are blocking, like `e2e/`:
       - run: npm --prefix relay test -- --coverage
 ```
 
-- [ ] **Step 4: Verify the whole thing once more**
+- [x] **Step 4: Verify the whole thing once more**
 
 Run: `npm run typecheck && npm run lint && npm run test:coverage && npm --prefix relay test -- --coverage`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add relay .github package.json

@@ -41,6 +41,31 @@ jobs:
       - name: Build
         run: npm run build
 
+  # The relay is a separate npm project with its own lockfile, and its tests run
+  # inside real workerd rather than a mock -- Durable Object storage, alarms and
+  # WebSocket semantics behave as they will in production. That makes a green
+  # suite meaningful evidence, so this job is blocking like the rest.
+  #
+  # Blocking matters more here than elsewhere: the relay is the one component
+  # that ships by `wrangler deploy` rather than in the installer, so a break
+  # reaches every paired phone at once and cannot be rolled back by asking users
+  # not to upgrade.
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - name: Install relay dependencies
+        run: npm ci --prefix relay
+      - name: Typecheck relay
+        run: npm --prefix relay run typecheck
+      - name: Test relay
+        run: npm --prefix relay test -- --coverage
+
   # Unit tests across all three target platforms so we catch
   # platform-specific regressions (path separators, shell detection, node-pty).
   unit:
