@@ -1,6 +1,7 @@
 import type { DrainedChunk } from './outputFanout'
 import { RELAY_MAX_FRAME_BYTES, type OutputPayload } from './protocol'
 import { SEAL_OVERHEAD_BYTES } from './sealedChannel'
+import { SESSION_HEADER_BYTES } from './sessionCrypto'
 
 // Re-exported for the callers that already import it from here. The declaration
 // lives in protocol.ts, with the rest of the wire contract, so there is one
@@ -11,8 +12,10 @@ export type { OutputPayload }
  *
  *  The relay cuts a connection that sends an oversized frame -- it does not
  *  truncate it and it does not warn first. What arrives there is the SEALED
- *  frame, so the plaintext budget is the cap less what sealing adds. */
-export const MAX_PAYLOAD_BYTES = RELAY_MAX_FRAME_BYTES - SEAL_OVERHEAD_BYTES
+ *  frame, so the plaintext budget is the cap less everything wrapped around it:
+ *  the frame tag, the counter, and the Poly1305 tag. */
+export const MAX_PAYLOAD_BYTES =
+  RELAY_MAX_FRAME_BYTES - SESSION_HEADER_BYTES - SEAL_OVERHEAD_BYTES
 
 const ENVELOPE: OutputPayload = { kind: 'output', chunks: [] }
 

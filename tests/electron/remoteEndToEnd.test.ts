@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createBridgeCore } from '../../src/main/remoteBridge/entry'
-import { SealedChannel, generateIdentity, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
+import { generateIdentity, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
+import { Handshake, FRAME_SESSION } from '../../src/main/remoteBridge/sessionCrypto'
 import { NO_CAPABILITIES, type BridgeToHost, type RemoteResponse } from '../../src/main/remoteBridge/protocol'
 
 const enc = new TextEncoder()
@@ -104,16 +105,35 @@ describe('remote bridge end-to-end', () => {
     expect(ok.kind).toBe('ok')
     expect(callTool).toHaveBeenCalledWith('list_terminals', {})
 
-    const toPhone = new SealedChannel(desktop.secretKey, phone.publicKey)
-    const atPhone = new SealedChannel(phone.secretKey, desktop.publicKey)
-    const frame = toPhone.seal(enc.encode(JSON.stringify(ok)))
-    const received = JSON.parse(dec.decode(atPhone.open(frame))) as RemoteResponse
+    // The two ends greet, agree a session neither the relay nor a later thief of
+    // both identity keys can derive, and only then does a response cross.
+    const dh = new Handshake({
+      ownSecretKey: desktop.secretKey,
+      peerPublicKey: phone.publicKey,
+      role: 'desktop',
+    })
+    const ph = new Handshake({
+      ownSecretKey: phone.secretKey,
+      peerPublicKey: desktop.publicKey,
+      role: 'device',
+    })
+    const toPhone = dh.accept(ph.greeting)
+    const atPhone = ph.accept(dh.greeting)
+
+    const H = new Uint8Array([FRAME_SESSION])
+    const frame = toPhone.seal(H, enc.encode(JSON.stringify(ok)))
+    const received = JSON.parse(dec.decode(atPhone.open(frame, 1))) as RemoteResponse
     expect(received).toEqual(ok)
 
     // 8. A relay that tampers with the frame gets nothing through.
-    const tampered = toPhone.seal(enc.encode(JSON.stringify(ok)))
+    const tampered = toPhone.seal(H, enc.encode(JSON.stringify(ok)))
     tampered[tampered.length - 1] ^= 0xff
-    expect(() => atPhone.open(tampered)).toThrow()
+    expect(() => atPhone.open(tampered, 1)).toThrow()
+
+    // 8b. Nor does one that replays the frame it just forwarded. Under the old
+    // static channel this was only survivable while the bridge stayed up; a
+    // restart reset the counters and the replay landed.
+    expect(() => atPhone.open(frame, 1)).toThrow(/replay/)
 
     // 9. Revoke takes effect immediately — no reconnect, no restart.
     core.handleHostMessage({ kind: 'revokeDevice', deviceId: device.id })

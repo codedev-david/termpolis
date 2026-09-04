@@ -9,9 +9,9 @@ import { NO_CAPABILITIES, type BridgeToHost, type PairedDevice } from '../../src
 import type { RelayClientDeps, RelayState } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
 
-// A real curve point: the core builds a SealedChannel against every paired
-// device's key the moment it opens that device's room, so a placeholder string
-// no longer survives init.
+// A real curve point: the core mints a Handshake against every paired device's
+// key the moment it opens that device's room, so a placeholder string no longer
+// survives init.
 const PEER = generateIdentity()
 
 function device(id = 'd1'): PairedDevice {

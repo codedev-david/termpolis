@@ -21,7 +21,8 @@ const {
   createBridgeCore,
   generateIdentity,
   deriveVerificationPhrase,
-  SealedChannel,
+  Handshake,
+  FRAME_SESSION,
 } = require(path.join(__dirname, '..', 'out', 'main', 'remoteBridge.js'))
 
 const enc = new TextEncoder()
@@ -123,23 +124,67 @@ async function main() {
   const ok = await core.handleRemoteRequest(device.id, { id: 2, request: { kind: 'listTerminals' } })
   check('granted request is served', ok.kind === 'ok')
 
-  console.log('\n7. the response crosses the wire sealed')
-  const toPhone = new SealedChannel(desktop.secretKey, phone.publicKey)
-  const atPhone = new SealedChannel(phone.secretKey, desktop.publicKey)
-  const frame = toPhone.seal(enc.encode(JSON.stringify(ok)))
-  console.log(`   ${frame.length} opaque bytes on the wire; the relay sees only this`)
-  check('phone opens the frame', dec.decode(atPhone.open(frame)) === JSON.stringify(ok))
+  console.log('\n7. the two ends greet, then the response crosses the wire sealed')
+  // Both greet unprompted -- the relay forwards blind and neither end learns who
+  // arrived first, so a side that waited for the other would deadlock. The
+  // session key is fresh per connection, which is what makes recorded traffic
+  // useless to a relay that keeps it.
+  const dh = new Handshake({
+    ownSecretKey: desktop.secretKey,
+    peerPublicKey: phone.publicKey,
+    role: 'desktop',
+  })
+  const ph = new Handshake({
+    ownSecretKey: phone.secretKey,
+    peerPublicKey: desktop.publicKey,
+    role: 'device',
+  })
+  console.log(`   greetings: ${dh.greeting.length} + ${ph.greeting.length} bytes`)
+  const toPhone = dh.accept(ph.greeting)
+  const atPhone = ph.accept(dh.greeting)
 
-  const tampered = toPhone.seal(enc.encode(JSON.stringify(ok)))
-  tampered[tampered.length - 1] ^= 0xff
-  let opened = false
-  try {
-    atPhone.open(tampered)
-    opened = true
-  } catch {
-    /* expected */
+  const H = new Uint8Array([FRAME_SESSION])
+  const frame = toPhone.seal(H, enc.encode(JSON.stringify(ok)))
+  console.log(`   ${frame.length} opaque bytes on the wire; the relay sees only this`)
+  check('phone opens the frame', dec.decode(atPhone.open(frame, 1)) === JSON.stringify(ok))
+
+  const refuses = (label, fn) => {
+    let opened = false
+    try {
+      fn()
+      opened = true
+    } catch {
+      /* expected */
+    }
+    check(label, !opened)
   }
-  check('a tampered frame is rejected', !opened)
+
+  const tampered = toPhone.seal(H, enc.encode(JSON.stringify(ok)))
+  tampered[tampered.length - 1] ^= 0xff
+  refuses('a tampered frame is rejected', () => atPhone.open(tampered, 1))
+  refuses('a replayed frame is rejected', () => atPhone.open(frame, 1))
+  refuses('the phone cannot open its own frame reflected back', () =>
+    atPhone.open(atPhone.seal(H, enc.encode('echo')), 1),
+  )
+
+  // A second connection between the SAME two identities. Nothing recorded from
+  // the first one may open here -- that is the forward secrecy the static
+  // channel never had.
+  const dh2 = new Handshake({
+    ownSecretKey: desktop.secretKey,
+    peerPublicKey: phone.publicKey,
+    role: 'desktop',
+  })
+  const ph2 = new Handshake({
+    ownSecretKey: phone.secretKey,
+    peerPublicKey: desktop.publicKey,
+    role: 'device',
+  })
+  dh2.accept(ph2.greeting)
+  const atPhone2 = ph2.accept(dh2.greeting)
+  refuses('a frame from the previous connection will not open in a new one', () =>
+    atPhone2.open(frame, 1),
+  )
 
   console.log('\n8. live output streams to a subscribed device')
   await core.handleRemoteRequest(device.id, { id: 3, request: { kind: 'subscribe', terminalId: 't1' } })

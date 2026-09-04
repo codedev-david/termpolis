@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { chunkOutbound, MAX_PAYLOAD_BYTES } from '../../src/main/remoteBridge/outputChunker'
-import { SEAL_OVERHEAD_BYTES, SealedChannel, generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
+import { SEAL_OVERHEAD_BYTES } from '../../src/main/remoteBridge/sealedChannel'
+import {
+  SealedSession,
+  SESSION_HEADER_BYTES,
+  FRAME_SESSION,
+} from '../../src/main/remoteBridge/sessionCrypto'
 import { RELAY_MAX_FRAME_BYTES } from '../../src/main/remoteBridge/protocol'
 import { MAX_FRAME_BYTES } from '../../relay/src/quota'
 import type { DrainedChunk } from '../../src/main/remoteBridge/outputFanout'
@@ -23,13 +28,25 @@ describe('output chunker', () => {
     expect(RELAY_MAX_FRAME_BYTES).toBe(MAX_FRAME_BYTES)
   })
 
-  it('reserves exactly what sealing costs, no more and no less', () => {
-    const a = generateIdentity()
-    const b = generateIdentity()
-    const ch = new SealedChannel(a.secretKey, b.publicKey)
-    expect(ch.seal(new Uint8Array(0)).length).toBe(SEAL_OVERHEAD_BYTES)
-    expect(ch.seal(new Uint8Array(100)).length).toBe(100 + SEAL_OVERHEAD_BYTES)
-    expect(MAX_PAYLOAD_BYTES).toBe(RELAY_MAX_FRAME_BYTES - SEAL_OVERHEAD_BYTES)
+  it('reserves exactly what a session frame costs, no more and no less', () => {
+    // Measured against a real seal rather than restated from the constants, so
+    // the budget cannot drift from the format. The header counts: it is one byte
+    // on the wire and the relay's cap applies to the whole frame, so a budget
+    // that reserved only the seal would put a full-size payload exactly one byte
+    // over -- and the relay CUTS an oversized frame rather than truncating it,
+    // which reads to a user as an unreliable network.
+    const session = SealedSession.fromRoot(new Uint8Array(32).fill(7), 'desktop')
+    const header = new Uint8Array([FRAME_SESSION])
+    expect(header.length).toBe(SESSION_HEADER_BYTES)
+    expect(session.seal(header, new Uint8Array(0)).length).toBe(
+      SESSION_HEADER_BYTES + SEAL_OVERHEAD_BYTES,
+    )
+    expect(session.seal(header, new Uint8Array(100)).length).toBe(
+      100 + SESSION_HEADER_BYTES + SEAL_OVERHEAD_BYTES,
+    )
+    expect(session.seal(header, new Uint8Array(MAX_PAYLOAD_BYTES)).length).toBe(
+      RELAY_MAX_FRAME_BYTES,
+    )
   })
 
   it('sends nothing when there is nothing queued', () => {

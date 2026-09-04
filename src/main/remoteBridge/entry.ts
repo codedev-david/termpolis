@@ -5,7 +5,7 @@ import { LocalMcpClient } from './mcpClient'
 import { createPairingOffer, PairingSession } from './pairing'
 import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
 import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
-import { SealedChannel } from './sealedChannel'
+import { Handshake } from './sessionCrypto'
 import { x25519 } from '@noble/curves/ed25519.js'
 import type {
   BridgeToHost,
@@ -19,7 +19,8 @@ import type {
 // module. `scripts/remote-test-client.cjs` stands in for the phone and needs to mint an
 // identity, seal frames and render a safety number; the Expo client will need exactly
 // the same three. Neither should reimplement the crypto to talk to this bridge.
-export { generateIdentity, deriveVerificationPhrase, SealedChannel } from './sealedChannel'
+export { generateIdentity, deriveVerificationPhrase } from './sealedChannel'
+export { Handshake, SealedSession, deriveSessionRoomId, FRAME_SESSION } from './sessionCrypto'
 export { NO_CAPABILITIES } from './protocol'
 export type { Capabilities, PairedDevice, RemoteRequest, RemoteResponse } from './protocol'
 
@@ -89,10 +90,18 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     const client = open({
       url: deps.relayUrl,
       pairingId: dev.pairingId,
-      // One channel per device, held for the life of the room. The replay
-      // counter lives in it, so rebuilding it per frame would reset the
-      // high-water mark and reopen the replay window it exists to close.
-      channel: new SealedChannel(identitySecretKey, dev.publicKey),
+      // A factory, so every dial gets a fresh ephemeral key and therefore a fresh
+      // session key. That is what makes per-connection counters sound: they may
+      // start at zero on each connection precisely because the key they count
+      // under is new. The old single long-lived channel had counters that reset
+      // the same way over a key that did NOT change, so a recorded session
+      // replayed verbatim after any bridge restart.
+      handshake: () =>
+        new Handshake({
+          ownSecretKey: identitySecretKey,
+          peerPublicKey: dev.publicKey,
+          role: 'desktop',
+        }),
       onRequest: (env) => handleRemoteRequest(dev.id, env),
       onStateChange: (state) => onRoomState(dev.id, state),
     })
