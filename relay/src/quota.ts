@@ -79,3 +79,12 @@ export function resolveByteBudget(raw: string | undefined): number {
   const n = Number(raw)
   return Number.isFinite(n) && n > 0 ? n : CONNECTION_BYTE_BUDGET
 }
+
+/** How long a connection may stay silent before the relay closes it.
+ *
+ *  Five minutes. A socket that never speaks still occupies its role, which holds
+ *  it against the real peer's reconnect -- so an abandoned connection is not free,
+ *  it is a denial of service against the pairing's own owner. Long enough that a
+ *  phone on a slow link or a backgrounded app is not evicted mid-session; short
+ *  enough that a forgotten room does not keep a Durable Object billable forever. */
+export const IDLE_TIMEOUT_MS = 300_000

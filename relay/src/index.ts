@@ -2,6 +2,8 @@ import { PairingRoom } from './pairingRoom'
 
 export interface Env {
   PAIRING_ROOM: DurableObjectNamespace
+  /** Edge rate limit on ROOM CREATION, keyed by source address. */
+  REGISTRATIONS: { limit(opts: { key: string }): Promise<{ success: boolean }> }
   /** Optional per-connection byte budget override, as a decimal string. Absent in
    *  production, where the compiled-in default applies. */
   CONNECTION_BYTE_BUDGET?: string
@@ -32,6 +34,20 @@ export default {
 
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return refuse(426, 'expected a websocket upgrade')
+    }
+
+    // Checked LAST, after shape and upgrade. Spending limiter budget on requests
+    // that are refused anyway would let unparseable junk from a shared NAT exhaust
+    // an honest client's allowance -- the limit would become the attack.
+    //
+    // Keyed by source rather than globally: on a multi-tenant relay a global key
+    // would let one abuser lock out every other user, turning the defence into the
+    // outage it exists to prevent. The key is the caller's address and nothing
+    // else -- notably NOT the pairing id, which would tie a rate-limit record to a
+    // specific conversation the relay has no business distinguishing.
+    const source = request.headers.get('CF-Connecting-IP') ?? 'unknown'
+    if (!(await env.REGISTRATIONS.limit({ key: source })).success) {
+      return refuse(429, 'too many pairing rooms opened; slow down')
     }
 
     const id = env.PAIRING_ROOM.idFromName(pairingId)

@@ -4,6 +4,7 @@ import {
   ByteBudget,
   TokenBucket,
   resolveByteBudget,
+  IDLE_TIMEOUT_MS,
   FRAME_BURST,
   FRAME_RATE_PER_SEC,
   MAX_FRAME_BYTES,
@@ -15,7 +16,7 @@ export class PairingRoom {
   // deliberately amnesiac, holding nothing across an eviction, because anything it
   // remembered would be metadata about a conversation it is not entitled to know.
   constructor(
-    _state: DurableObjectState,
+    private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {}
 
@@ -33,7 +34,10 @@ export class PairingRoom {
    *  Budgets are per-CONNECTION, not per-role: a peer that is cut and reconnects
    *  gets a fresh allowance, because the budget bounds one socket's cost -- it is
    *  not a punishment attached to an identity the relay cannot even see. */
-  private readonly peers = new Map<Role, { sock: WebSocket; frames: TokenBucket; bytes: ByteBudget }>()
+  private readonly peers = new Map<
+    Role,
+    { sock: WebSocket; frames: TokenBucket; bytes: ByteBudget; lastSeen: number }
+  >()
 
   async fetch(request: Request): Promise<Response> {
     const role = new URL(request.url).searchParams.get('role')
@@ -60,8 +64,10 @@ export class PairingRoom {
       sock: server,
       frames: new TokenBucket(FRAME_BURST, FRAME_RATE_PER_SEC / 1000),
       bytes: new ByteBudget(resolveByteBudget(this.env.CONNECTION_BYTE_BUDGET)),
+      lastSeen: Date.now(),
     }
     this.peers.set(role, mine)
+    void this.state.storage.setAlarm(Date.now() + IDLE_TIMEOUT_MS)
 
     server.send(encode({ kind: 'hello', role }))
     this.peer(role)?.send(encode({ kind: 'peer-joined', role }))
@@ -85,6 +91,8 @@ export class PairingRoom {
       if (!mine.frames.take(Date.now())) return this.cut(role, server, 1008, 'frame-rate')
       if (!mine.bytes.spend(size)) return this.cut(role, server, 1008, 'connection-bytes')
 
+      mine.lastSeen = Date.now()
+
       if (!peer) return
       peer.send(event.data)
     })
@@ -102,6 +110,23 @@ export class PairingRoom {
   }
 
 
+  /** Close whatever has gone silent, then decide whether to look again.
+   *
+   *  Public because it is the Durable Object alarm handler -- the runtime calls it,
+   *  and so does the lifecycle test, which is the only way to observe this without
+   *  waiting five real minutes for a clock that does not advance inside a Workers
+   *  invocation anyway. */
+  async alarm(): Promise<void> {
+    const now = Date.now()
+    for (const [role, p] of [...this.peers]) {
+      if (now - p.lastSeen >= IDLE_TIMEOUT_MS) this.cut(role, p.sock, 1000, 'idle')
+    }
+    // Re-arm only while someone is still connected. An empty room that keeps
+    // scheduling alarms is a Durable Object that never goes away, billed forever
+    // for a pairing nobody is using -- and every wake-up is a write.
+    if (this.peers.size > 0) await this.state.storage.setAlarm(now + IDLE_TIMEOUT_MS)
+  }
+
   /** Unseat a peer and tell its partner.
    *
    *  Deletes by ROLE, with no check that the leaving socket is the one seated --
@@ -116,6 +141,10 @@ export class PairingRoom {
     // would announce a `peer-gone` for a peer that had already gone.
     if (!this.peers.delete(role)) return
     this.peer(role)?.send(encode({ kind: 'peer-gone', role }))
+    // Cancel the idle alarm when the last peer leaves. Leaving it armed would wake
+    // an empty room five minutes later purely to discover it is empty -- a write
+    // and a billable invocation for nothing, on every room anyone ever opened.
+    if (this.peers.size === 0) void this.state.storage.deleteAlarm()
   }
 
   /** Tell the offender which limit it hit, then close it.

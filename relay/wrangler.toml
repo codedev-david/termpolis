@@ -10,3 +10,13 @@ class_name = "PairingRoom"
 [[migrations]]
 tag = "v1"
 new_classes = ["PairingRoom"]
+
+# Registration rate limit. A per-room quota cannot stop someone creating a million
+# rooms, so room creation itself is limited at the edge, keyed by source address.
+# 30 per minute is far above any real pairing rate and far below what it takes to
+# make room creation a useful amplifier.
+[[unsafe.bindings]]
+name = "REGISTRATIONS"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
