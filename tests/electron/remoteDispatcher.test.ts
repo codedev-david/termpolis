@@ -70,4 +70,26 @@ describe('RequestDispatcher — input outside the union', () => {
     await expect(d.dispatch(bogus, all)).rejects.toThrow(/unrecognised request kind/)
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
+
+  it('maps runCommand to run_command', async () => {
+    const mcp = fakeMcp()
+    await new RequestDispatcher(mcp).dispatch({ kind: 'runCommand', terminalId: 't1', command: 'ls' }, all)
+    expect(mcp.callTool).toHaveBeenCalledWith('run_command', { terminalId: 't1', command: 'ls' })
+  })
+
+  it('maps closeTerminal to close_terminal', async () => {
+    const mcp = fakeMcp()
+    await new RequestDispatcher(mcp).dispatch({ kind: 'closeTerminal', terminalId: 't1' }, all)
+    expect(mcp.callTool).toHaveBeenCalledWith('close_terminal', { terminalId: 't1' })
+  })
+
+  // The cwd arm matters on its own: MCP's create_terminal treats an EXPLICIT
+  // `cwd: undefined` differently from an absent key, so spreading the key in
+  // unconditionally would silently change where remote terminals open.
+  it('omits cwd entirely when the phone did not send one', async () => {
+    const mcp = fakeMcp()
+    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'agent' }, all)
+    const args = mcp.callTool.mock.calls[0][1] as Record<string, unknown>
+    expect('cwd' in args).toBe(false)
+  })
 })

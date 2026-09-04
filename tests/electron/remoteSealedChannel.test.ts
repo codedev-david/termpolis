@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { x25519 } from '@noble/curves/ed25519.js'
+import { hexToBytes } from '@noble/hashes/utils.js'
 import { generateIdentity, SealedChannel, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
 
 const enc = new TextEncoder()
@@ -120,5 +124,39 @@ describe('SealedChannel', () => {
     const phrase = deriveVerificationPhrase(a.publicKey, b.publicKey)
     expect(phrase.split(' ')).toHaveLength(6)
     expect(phrase).not.toBe(deriveVerificationPhrase(a.publicKey, c.publicKey))
+  })
+
+  it('counts the frames it has sealed', () => {
+    const a = generateIdentity()
+    const b = generateIdentity()
+    const ch = new SealedChannel(a.secretKey, b.publicKey)
+    expect(ch.sentFrames).toBe(0)
+    ch.seal(new TextEncoder().encode('one'))
+    ch.seal(new TextEncoder().encode('two'))
+    // This is the rekey trigger: the counter is 48 bits wide, so the channel has to
+    // be able to say how close it is before the host decides to rotate keys.
+    expect(ch.sentFrames).toBe(2)
+  })
+
+  // A frame that authenticates but carries fewer bytes than the counter header.
+  // Only a peer holding the key can produce one, so this is not an outsider attack
+  // -- it is a buggy or downgraded client, and reading the counter off the end of
+  // the buffer would hand back a garbage sequence number that poisons replay state.
+  it('refuses an authentic frame too short to hold a counter', () => {
+    const a = generateIdentity()
+    const b = generateIdentity()
+    const sender = new SealedChannel(a.secretKey, b.publicKey)
+    const receiver = new SealedChannel(b.secretKey, a.publicKey)
+
+    // Forge a frame the receiver's key accepts, whose plaintext is 1 byte.
+    const good = sender.seal(new Uint8Array([1, 2, 3]))
+    const nonce = good.subarray(0, 12)
+    const ct = chacha20poly1305(sha256(x25519.getSharedSecret(hexToBytes(a.secretKey), hexToBytes(b.publicKey))), nonce)
+      .encrypt(new Uint8Array([9]))
+    const short = new Uint8Array(nonce.length + ct.length)
+    short.set(nonce, 0)
+    short.set(ct, nonce.length)
+
+    expect(() => receiver.open(short)).toThrow(/truncated/)
   })
 })

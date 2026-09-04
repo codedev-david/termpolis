@@ -111,4 +111,50 @@ describe('outputFanout — gap markers', () => {
     expect(drained[0].marker).toContain('4 chars')
     expect(drained.map((d) => d.chunk).join('')).toBe('efghijklmn')
   })
+
+  // Two eviction shapes, and only one of them was exercised above. When the head
+  // chunk fits ENTIRELY inside the overshoot it is dropped whole; when it straddles
+  // the boundary it is sliced. Getting the whole-drop arm wrong loses a chunk's
+  // worth of `missed` accounting, so the gap marker would understate the loss.
+  it('drops a whole head chunk when it fits inside the overshoot, then slices the next', () => {
+    const f = new OutputFanout(10)
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'abcd', nextOffset: 4, missed: 0 })
+    f.ingest('t1', { output: 'efghijklmnop', nextOffset: 16, missed: 0 })
+
+    const drained = f.drain('phone')
+    const text = drained.map((d) => d.chunk).join('')
+    const missed = drained.reduce((n, d) => n + d.missed, 0)
+
+    expect(text).toBe('ghijklmnop')
+    expect(text.length).toBe(10)
+    expect(missed).toBe(6) // 'abcd' dropped whole + 'ef' sliced off the next
+  })
+
+  it('ignores an empty slice with nothing missed', () => {
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: '', nextOffset: 0, missed: 0 })
+    expect(f.drain('phone')).toEqual([])
+  })
+
+  // A gap with no text still has to reach the device: 'nothing new, and you also
+  // lost 40 chars' is information, and dropping it hides the loss entirely.
+  it('delivers a slice that is empty but reports a loss', () => {
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: '', nextOffset: 40, missed: 40 })
+    const [chunk] = f.drain('phone')
+    expect(chunk.missed).toBe(40)
+    expect(chunk.marker).toContain('40 chars')
+  })
+
+  it('keeps one queue per device across repeated subscribes', () => {
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'first', nextOffset: 5, missed: 0 })
+    f.subscribe('phone', 't2') // same device, second terminal: must not reset the queue
+    f.ingest('t2', { output: 'second', nextOffset: 6, missed: 0 })
+    expect(f.drain('phone').map((c) => c.chunk)).toEqual(['first', 'second'])
+  })
 })

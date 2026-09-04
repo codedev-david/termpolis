@@ -1,6 +1,6 @@
 import { DeviceRegistry } from './deviceRegistry'
 import { RequestDispatcher } from './dispatcher'
-import { OutputFanout } from './outputFanout'
+import { OutputFanout, type DrainedChunk } from './outputFanout'
 import { LocalMcpClient } from './mcpClient'
 import { createPairingOffer, PairingSession } from './pairing'
 import { x25519 } from '@noble/curves/ed25519.js'
@@ -11,6 +11,14 @@ import type {
   RemoteEnvelope,
   RemoteResponse,
 } from './protocol'
+
+// The protocol surface, re-exported so the built bundle is a complete, self-describing
+// module. `scripts/remote-test-client.cjs` stands in for the phone and needs to mint an
+// identity, seal frames and render a safety number; the Expo client will need exactly
+// the same three. Neither should reimplement the crypto to talk to this bridge.
+export { generateIdentity, deriveVerificationPhrase, SealedChannel } from './sealedChannel'
+export { NO_CAPABILITIES } from './protocol'
+export type { Capabilities, PairedDevice, RemoteRequest, RemoteResponse } from './protocol'
 
 interface McpLike {
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>
@@ -32,6 +40,8 @@ export interface BridgeCore {
     label: string
     now?: number
   }): { device: PairedDevice; verificationPhrase: string }
+  /** Pull everything queued for one device. Destructive -- see the implementation. */
+  drainOutput(deviceId: string): DrainedChunk[]
 }
 
 export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
@@ -84,7 +94,16 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         return
       case 'setCapabilities':
         registry.setCapabilities(msg.deviceId, msg.capabilities)
+        // Subscriptions outlive the grant that created them. Withdrawing `read`
+        // stops future requests at the policy check, but an ALREADY-SUBSCRIBED
+        // device would keep receiving live terminal output -- the user would see
+        // the capability turned off in Settings while the phone kept streaming.
+        // Dropping the fan-out state is what makes the toggle mean what it says.
+        if (!msg.capabilities.read) fanout.dropDevice(msg.deviceId)
         announceDevices()
+        return
+      case 'terminalOutput':
+        fanout.ingest(msg.terminalId, msg.slice)
         return
       case 'shutdown':
         dispatcher = null
@@ -140,7 +159,18 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     return result
   }
 
-  return { handleHostMessage, handleRemoteRequest, acceptPairing }
+  /** Everything queued for one device, clearing the queue.
+   *
+   *  The transport calls this: the fan-out is the buffer between a terminal that
+   *  writes whenever it likes and a phone on a link that comes and goes, so output
+   *  is PULLED when there is somewhere to put it rather than pushed into a socket
+   *  that may be gone. Draining is destructive, so a caller that drops the result
+   *  drops the output -- send first, then drain, or accept the loss knowingly. */
+  function drainOutput(deviceId: string): DrainedChunk[] {
+    return fanout.drain(deviceId)
+  }
+
+  return { handleHostMessage, handleRemoteRequest, acceptPairing, drainOutput }
 }
 
 // ── Child-process bootstrap ──────────────────────────────────────────────────

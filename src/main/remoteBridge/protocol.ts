@@ -57,12 +57,24 @@ export interface RemoteEnvelope {
 }
 
 /** Messages main sends down to the bridge process. */
+/** One read of a terminal's output stream, as `readOutputFrom` in main produces it. */
+export interface OutputSlice {
+  output: string
+  nextOffset: number
+  /** Chars evicted before the reader got to them. Non-zero means output is gone. */
+  missed: number
+}
+
 export type HostToBridge =
   | { kind: 'init'; mcpPort: number; mcpToken: string; identitySecretKey: string; devices: PairedDevice[] }
   | { kind: 'beginPairing'; label: string }
   | { kind: 'cancelPairing' }
   | { kind: 'revokeDevice'; deviceId: string }
   | { kind: 'setCapabilities'; deviceId: string; capabilities: Capabilities }
+  // PTY output, pushed down from main. Main already owns the rolling window and the
+  // per-terminal offsets (terminalOutputBuffer.ts), so the bridge is handed slices
+  // rather than reaching back for them -- it never touches the PTY.
+  | { kind: 'terminalOutput'; terminalId: string; slice: OutputSlice }
   | { kind: 'shutdown' }
 
 /** Messages the bridge sends up to main. */

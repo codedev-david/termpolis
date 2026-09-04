@@ -15,35 +15,36 @@ export interface DrainedChunk extends QueuedChunk {
 }
 
 export class OutputFanout {
-  private readonly subs = new Map<string, Set<string>>()
-  private readonly queues = new Map<string, QueuedChunk[]>()
+  /** One entry per device, holding BOTH what it watches and what is waiting for it.
+   *
+   *  These were two maps keyed by the same id, which meant every method had to keep
+   *  them in step and `ingest` carried a `if (!q) continue` guard against a desync
+   *  that no caller could actually cause. One map makes the invariant structural:
+   *  a device either has a subscription record with a queue, or it does not exist. */
+  private readonly devices = new Map<string, { terminals: Set<string>; queue: QueuedChunk[] }>()
 
   constructor(private readonly capacityChars: number = DEFAULT_CAPACITY_CHARS) {}
 
   subscribe(deviceId: string, terminalId: string): void {
-    let set = this.subs.get(deviceId)
-    if (!set) this.subs.set(deviceId, (set = new Set()))
-    set.add(terminalId)
-    if (!this.queues.has(deviceId)) this.queues.set(deviceId, [])
+    let d = this.devices.get(deviceId)
+    if (!d) this.devices.set(deviceId, (d = { terminals: new Set(), queue: [] }))
+    d.terminals.add(terminalId)
   }
 
   unsubscribe(deviceId: string, terminalId: string): void {
-    this.subs.get(deviceId)?.delete(terminalId)
+    this.devices.get(deviceId)?.terminals.delete(terminalId)
   }
 
   dropDevice(deviceId: string): void {
-    this.subs.delete(deviceId)
-    this.queues.delete(deviceId)
+    this.devices.delete(deviceId)
   }
 
   ingest(terminalId: string, slice: { output: string; nextOffset: number; missed: number }): void {
     if (slice.output === '' && slice.missed === 0) return
-    for (const [deviceId, terminals] of this.subs) {
-      if (!terminals.has(terminalId)) continue
-      const q = this.queues.get(deviceId)
-      if (!q) continue
-      q.push({ terminalId, chunk: slice.output, missed: slice.missed })
-      this.trim(q)
+    for (const d of this.devices.values()) {
+      if (!d.terminals.has(terminalId)) continue
+      d.queue.push({ terminalId, chunk: slice.output, missed: slice.missed })
+      this.trim(d.queue)
     }
   }
 
@@ -69,9 +70,10 @@ export class OutputFanout {
   }
 
   drain(deviceId: string): DrainedChunk[] {
-    const q = this.queues.get(deviceId)
-    if (!q || q.length === 0) return []
-    this.queues.set(deviceId, [])
+    const d = this.devices.get(deviceId)
+    if (!d || d.queue.length === 0) return []
+    const q = d.queue
+    d.queue = []
     // Render the marker here rather than leaving it to each client. Dropped output
     // is the one failure mode of this design that the user cannot detect for
     // themselves -- a silent gap reads as "the agent went quiet", which is

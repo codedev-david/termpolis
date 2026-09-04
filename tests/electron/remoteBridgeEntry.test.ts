@@ -152,4 +152,69 @@ describe('bridge core', () => {
     expect(res.kind).toBe('error')
     expect((res as Extract<typeof res, { kind: 'error' }>).message).toMatch(/mcp down/)
   })
+
+  it('cancelPairing closes the window — a QR photographed off a screen is dead', () => {
+    const { c, sent } = core()
+    c.handleHostMessage({ kind: 'beginPairing' })
+    const code = sent.find((m) => m.kind === 'pairingCode')
+    if (code?.kind !== 'pairingCode') throw new Error('no pairing code')
+    const { oneTimeSecret } = JSON.parse(code.qrPayload) as { oneTimeSecret: string }
+
+    c.handleHostMessage({ kind: 'cancelPairing' })
+
+    expect(() =>
+      c.acceptPairing({ oneTimeSecret, devicePublicKey: generateIdentity().publicKey, label: 'late' }),
+    ).toThrow(/no pairing offer/)
+  })
+
+  it('shutdown stops serving requests', async () => {
+    const { c, callTool } = core([device()])
+    c.handleHostMessage({ kind: 'shutdown' })
+    const res = await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'listTerminals' } })
+    expect(res.kind).toBe('error')
+    expect(callTool).not.toHaveBeenCalled()
+  })
+
+  it('builds a real MCP client when the host did not inject one', () => {
+    const sent: BridgeToHost[] = []
+    const c = createBridgeCore({ send: (m) => sent.push(m), relayUrl: 'wss://relay.test' })
+    // No `mcp` dep: init must construct LocalMcpClient against the loopback port
+    // rather than crash. Nothing is dialled until a request arrives.
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices: [] })
+    expect(sent.some((m) => m.kind === 'ready')).toBe(true)
+  })
+
+  it('wires subscribe and unsubscribe into the output fan-out', async () => {
+    const { c } = core([device()])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
+    expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['hello'])
+
+    await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
+    c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'more', nextOffset: 9, missed: 0 } })
+    expect(c.drainOutput('d1')).toEqual([])
+  })
+
+  it('stops the live output stream when read is withdrawn, not just future requests', async () => {
+    const { c } = core([device()])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: { ...NO_CAPABILITIES } })
+
+    c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'secret', nextOffset: 6, missed: 0 } })
+    expect(c.drainOutput('d1')).toEqual([])
+  })
+
+  it('keeps the stream alive when a capability change still grants read', async () => {
+    const { c } = core([device()])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    c.handleHostMessage({
+      kind: 'setCapabilities', deviceId: 'd1',
+      capabilities: { ...NO_CAPABILITIES, read: true, writeToTerminal: true },
+    })
+
+    c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'still here', nextOffset: 10, missed: 0 } })
+    expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['still here'])
+  })
 })
