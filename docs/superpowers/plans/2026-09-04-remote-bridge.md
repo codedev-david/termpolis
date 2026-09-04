@@ -20,7 +20,8 @@
 - **Fail closed.** Unlike `memoryClient`, which falls back to in-process on repeated crashes, the bridge **disables remote** and surfaces an error. Never degrade to a less-protected path.
 - **Do not describe this feature as "like Telegram"** in code comments, UI copy, or docs. Telegram is not E2E by default; the model here is Signal's.
 - Commit directly to `main`. No branches, no PRs.
-- Existing commands: `npm test` (vitest run), `npm run typecheck`, `npm run lint:strict`.
+- Existing commands: `npm test` (vitest run), `npm run typecheck`, `npm run lint`.
+- **Use `npm run lint`, NOT `lint:strict`.** CI gates on `lint` (`.github/workflows/test.yml:34`), which tolerates warnings; `lint:strict` adds `--max-warnings 0` and already fails on a clean checkout of `main` with 327 pre-existing warnings, 0 errors. Chasing it is a dead end — the bar is "add no new warnings", not "get to zero".
 
 ---
 
@@ -2215,7 +2216,7 @@ Expected: prints a `ready` message, a `pairingCode` message, and a 6-word phrase
 
 - [ ] **Step 5: Full gate**
 
-Run: `npm run typecheck && npm run lint:strict && npm test`
+Run: `npm run typecheck && npm run lint && npm test`
 Expected: all PASS, coverage thresholds (lines 97 / fn 96 / branches 95 / stmts 96) still met. If a new module drags branches under 95, backfill its tests — do not lower the gate.
 
 - [ ] **Step 6: Commit**

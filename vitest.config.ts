@@ -56,6 +56,10 @@ export default defineConfig({
         'src/renderer/src/store/**/*.ts',
         'src/main/**/*.ts',
         'src/preload/**/*.ts',
+        // Code shared by main, renderer and the remote-bridge utilityProcess. Listed
+        // explicitly: it is under none of the trees above, so without this line moving a
+        // file into src/shared/ silently drops it from the gate.
+        'src/shared/**/*.ts',
       ],
       exclude: [
         '**/*.d.ts',

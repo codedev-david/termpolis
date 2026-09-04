@@ -1,6 +1,6 @@
 /**
  * Branch-coverage backfill for three pure-ish renderer libs:
- *   - src/renderer/src/lib/agentStatusDetector.ts
+ *   - src/shared/agentStatusDetector.ts
  *   - src/renderer/src/lib/memoryDashboard.ts
  *   - src/renderer/src/lib/conductorManager.ts
  *
@@ -28,7 +28,7 @@ vi.mock('../../src/renderer/src/lib/sentry', () => ({
   initSentry: vi.fn(),
 }))
 
-import { detectAgentStatus } from '../../src/renderer/src/lib/agentStatusDetector'
+import { detectAgentStatus } from '../../src/shared/agentStatusDetector'
 import {
   compactNumber,
   pct,

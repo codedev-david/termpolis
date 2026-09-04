@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectAgentStatus, type AgentStatus } from '../../src/renderer/src/lib/agentStatusDetector'
+import { detectAgentStatus, type AgentStatus } from '../../src/shared/agentStatusDetector'
 
 describe('detectAgentStatus', () => {
   // Helper to generate filler output
