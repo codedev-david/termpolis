@@ -939,7 +939,20 @@ export class OutputFanout {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- remoteOutputFanout`
-Expected: PASS, all 9.
+Expected: PASS, all 13 — the 9 above plus four for gap markers.
+
+**Amendment applied during execution.** The file-structure table promises "gap
+markers" and spec §215 requires the user to SEE lost output, but the drafted
+module only propagated a numeric `missed` and left rendering to whoever consumed
+it. Dropped output is the one failure of this design a user cannot detect
+unaided: a silent gap reads exactly like an agent that went quiet, and they may
+act on truncated text believing they saw all of it. So `drain()` now returns a
+rendered `marker: string | null` alongside the numeric count, and
+`formatGapMarker` is exported — no client gets the chance to forget it. Small
+losses report in chars, not a misleading `0.0 KB`.
+
+Note the shape change: `drain()` returns `DrainedChunk[]`, so the one existing
+`toEqual` on the exact object needs `marker: null` added.
 
 - [ ] **Step 5: Commit**
 
