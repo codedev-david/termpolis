@@ -18,9 +18,16 @@ export type QuotaLimit = 'frame-size' | 'frame-rate' | 'connection-bytes' | 'idl
  *  forwarded byte-for-byte without being read. Keeping the two on different
  *  WebSocket frame types is what makes "the relay cannot read your traffic" a
  *  structural property rather than a promise: there is no branch in which a binary
- *  frame reaches a parser. */
+ *  frame reaches a parser.
+ *
+ *  `hello.peer` says whether the partner was already seated. It has to, because a
+ *  frame arriving for an empty room is DROPPED rather than queued: a peer that
+ *  greeted on connect alone would be greeting nobody. The desktop is almost always
+ *  first into the room, so without this flag its half of the handshake goes into
+ *  the void and the phone waits forever for a key that was already thrown away.
+ *  The incumbent learns the same fact later, from `peer-joined`. */
 export type ControlFrame =
-  | { kind: 'hello'; role: Role }
+  | { kind: 'hello'; role: Role; peer: boolean }
   | { kind: 'peer-joined'; role: Role }
   | { kind: 'peer-gone'; role: Role }
   | { kind: 'quota-exceeded'; limit: QuotaLimit }

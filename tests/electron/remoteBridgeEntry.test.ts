@@ -67,11 +67,15 @@ function core(devices: PairedDevice[] = []) {
   return { c, sent, callTool, rooms }
 }
 
-/** Bring a room up the way the relay client would, so the core's own
- *  state-change handling runs rather than being bypassed. */
-function goOnline(room: ReturnType<typeof stubRoom>): void {
-  room.state = 'online'
-  room.deps.onStateChange('online')
+/** Attach a room the way the relay client would, so the core's own
+ *  state-change handling runs rather than being bypassed.
+ *
+ *  `attached` and not `online`: `online` means only that this desktop got a seat
+ *  in the relay room. There is no session in that state, so nothing can be sealed
+ *  and nothing can be sent. */
+function attach(room: ReturnType<typeof stubRoom>): void {
+  room.state = 'attached'
+  room.deps.onStateChange('attached')
 }
 
 describe('bridge core', () => {
@@ -433,7 +437,7 @@ describe('relay rooms', () => {
 
   it('binds each room to its own device', async () => {
     const { c, rooms } = core([device('d1'), device('d2')])
-    for (const r of rooms) goOnline(r)
+    for (const r of rooms) attach(r)
     for (const r of rooms) r.sent.length = 0
 
     // Requests arrive on the ROOM, not through a shared entry point, so the
@@ -459,7 +463,7 @@ describe('relay rooms', () => {
 
   it('reports reachability to the host, separately from being paired', () => {
     const { sent, rooms } = core([device()])
-    goOnline(rooms[0])
+    attach(rooms[0])
     expect(sent).toContainEqual({ kind: 'deviceConnected', deviceId: 'd1' })
 
     rooms[0].state = 'offline'
@@ -467,26 +471,40 @@ describe('relay rooms', () => {
     expect(sent).toContainEqual({ kind: 'deviceDisconnected', deviceId: 'd1' })
   })
 
-  it('treats a dial in progress as not yet reachable', () => {
+  it.each(['connecting', 'online'] as const)('treats %s as not yet reachable', (state) => {
     const { sent, rooms } = core([device()])
-    rooms[0].deps.onStateChange('connecting')
+    rooms[0].deps.onStateChange(state)
 
-    // Connecting is not connected. Reporting it as connected would light up
-    // Settings for a device that cannot receive anything.
+    // Neither is connected. `connecting` is a dial in progress; `online` is a seat
+    // in a relay room with nobody else in it -- reachable by the relay, with no
+    // phone on the other end and no session to seal into. Reporting either as
+    // connected lights up Settings for a device that cannot receive anything.
     expect(sent).toContainEqual({ kind: 'deviceDisconnected', deviceId: 'd1' })
     expect(sent.some((m) => m.kind === 'deviceConnected')).toBe(false)
+  })
+
+  it('reports a quota cut to the host, naming the limit', () => {
+    // For `frame-size` and `frame-rate` the client also stops redialing, so the
+    // room stays dark until the app restarts. Silence would leave the user with a
+    // phone that simply stopped working and nothing to act on.
+    const { sent, rooms } = core([device()])
+    rooms[0].deps.onQuota?.('frame-rate')
+    expect(sent).toContainEqual({
+      kind: 'error',
+      message: 'relay closed the phone connection: frame-rate',
+    })
   })
 })
 
 describe('output pump', () => {
   function subscribed(deviceId = 'd1') {
     const h = core([device(deviceId)])
-    goOnline(h.rooms[0])
+    attach(h.rooms[0])
     h.rooms[0].sent.length = 0
     return h
   }
 
-  it('pushes terminal output to an online device', async () => {
+  it('pushes terminal output to an attached device', async () => {
     const h = subscribed()
     await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
     h.c.handleHostMessage({
@@ -499,25 +517,35 @@ describe('output pump', () => {
     expect(h.rooms[0].sent[0].chunks[0].chunk).toBe('compiling...')
   })
 
-  it('holds output for an offline device and delivers it on reconnect', async () => {
-    const h = core([device()])
-    goOnline(h.rooms[0])
-    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
-    h.rooms[0].state = 'offline'
-    h.rooms[0].sent.length = 0
+  it.each(['offline', 'connecting', 'online'] as const)(
+    'holds output while a device is %s and delivers it on reconnect',
+    async (state) => {
+      const h = core([device()])
+      attach(h.rooms[0])
+      await h.c.handleRemoteRequest('d1', {
+        id: 1,
+        request: { kind: 'subscribe', terminalId: 't1' },
+      })
+      h.rooms[0].state = state
+      h.rooms[0].sent.length = 0
 
-    h.c.handleHostMessage({
-      kind: 'terminalOutput',
-      terminalId: 't1',
-      slice: { output: 'built in 4s', nextOffset: 11, missed: 0 },
-    })
-    // Draining into a dead socket would discard it silently. The fan-out is the
-    // buffer for exactly this: a phone that went into a tunnel mid-build.
-    expect(h.rooms[0].sent).toHaveLength(0)
+      h.c.handleHostMessage({
+        kind: 'terminalOutput',
+        terminalId: 't1',
+        slice: { output: 'built in 4s', nextOffset: 11, missed: 0 },
+      })
+      // Draining is DESTRUCTIVE, so anything short of attached must hold. `online`
+      // is the subtle one: the socket is alive and `send` will not throw, but there
+      // is no session behind it, so every frame handed over would be dropped
+      // unsealed -- and the drain that produced them has already emptied the queue.
+      // The fan-out is the buffer for exactly this: a phone in a tunnel mid-build,
+      // or one that has not walked into the room yet.
+      expect(h.rooms[0].sent).toHaveLength(0)
 
-    goOnline(h.rooms[0])
-    expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((c) => c.chunk)).toContain('built in 4s')
-  })
+      attach(h.rooms[0])
+      expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((c) => c.chunk)).toContain('built in 4s')
+    },
+  )
 
   it('sends nothing for a device that never subscribed', () => {
     const h = subscribed()

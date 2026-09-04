@@ -104,6 +104,15 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         }),
       onRequest: (env) => handleRemoteRequest(dev.id, env),
       onStateChange: (state) => onRoomState(dev.id, state),
+      // Reported, not swallowed. A quota cut is the relay saying this desktop is
+      // the problem, and for `frame-size`/`frame-rate` the client also stops
+      // redialing -- so without this the room goes quiet permanently and the only
+      // symptom the user gets is a phone that stopped working.
+      onQuota: (limit) =>
+        deps.send({
+          kind: 'error',
+          message: `relay closed the ${dev.label} connection: ${limit}`,
+        }),
     })
     rooms.set(dev.id, { client, pairingId: dev.pairingId })
     client.start()
@@ -115,26 +124,35 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   }
 
   function onRoomState(deviceId: string, state: RelayState): void {
+    // `attached`, not `online`. Settings is reporting whether the PHONE is
+    // reachable, and `online` means only that this desktop got a seat in an
+    // otherwise empty room -- reporting that as "connected" lights the indicator
+    // for a device that is not there and cannot be sent anything.
     deps.send({
-      kind: state === 'online' ? 'deviceConnected' : 'deviceDisconnected',
+      kind: state === 'attached' ? 'deviceConnected' : 'deviceDisconnected',
       deviceId,
     })
-    // Coming back online is the one moment a device has a backlog AND somewhere
-    // to put it. Without this, output queued during an outage sits in the
-    // fan-out until the next keystroke happens to flush it.
-    if (state === 'online') pump(deviceId)
+    // Attaching is the one moment a device has a backlog AND somewhere to put it.
+    // Without this, output queued during an outage sits in the fan-out until the
+    // next keystroke happens to flush it.
+    if (state === 'attached') pump(deviceId)
   }
 
   /** Push whatever is queued for one device, in frames the relay will accept.
    *
    *  Draining is destructive and sending is best-effort, so the state check
-   *  immediately precedes the drain: a device that is not online keeps its queue,
-   *  which is the whole point of the fan-out. Output drained into a socket that
-   *  dies in the microseconds after that check is lost, and that is the accepted
-   *  trade -- the alternative is a second buffer shadowing the one that exists. */
+   *  immediately precedes the drain: a device that is not attached keeps its
+   *  queue, which is the whole point of the fan-out. Output drained into a socket
+   *  that dies in the microseconds after that check is lost, and that is the
+   *  accepted trade -- the alternative is a second buffer shadowing the one that
+   *  exists.
+   *
+   *  `attached` and not `online`: a seated connection with no phone in the room
+   *  has no session, so every frame drained into it would be dropped unsealed --
+   *  destructively, since the drain already emptied the queue. */
   function pump(deviceId: string): void {
     const room = rooms.get(deviceId)
-    if (!room || room.client.state !== 'online') return
+    if (!room || room.client.state !== 'attached') return
     const chunks = fanout.drain(deviceId)
     if (chunks.length === 0) return
     // Never one frame per drain: a full queue of escape-dense output serialises

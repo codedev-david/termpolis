@@ -69,8 +69,12 @@ export class PairingRoom {
     this.peers.set(role, mine)
     void this.state.storage.setAlarm(Date.now() + IDLE_TIMEOUT_MS)
 
-    server.send(encode({ kind: 'hello', role }))
-    this.peer(role)?.send(encode({ kind: 'peer-joined', role }))
+    // One lookup, used twice: whether the partner is here is exactly what the
+    // arriving peer needs to know before it greets, and exactly who to tell that
+    // someone has arrived.
+    const partner = this.peer(role)
+    server.send(encode({ kind: 'hello', role, peer: partner !== undefined }))
+    partner?.send(encode({ kind: 'peer-joined', role }))
 
     server.addEventListener('message', (event) => {
       // Text is a peer trying to talk to the relay, or to forge a control frame at

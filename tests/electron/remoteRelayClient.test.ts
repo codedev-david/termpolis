@@ -1,10 +1,19 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { RelayClient, backoffDelay } from '../../src/main/remoteBridge/relayClient'
 import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
 import { Handshake, FRAME_SESSION, type SealedSession } from '../../src/main/remoteBridge/sessionCrypto'
+// The relay's own encoder, imported from the relay package rather than restated
+// here. A hand-written control frame would let this suite keep passing against a
+// shape the relay stopped sending -- which is precisely the class of drift Task 5
+// exists to close.
+import { encode, type ControlFrame } from '../../relay/src/wire'
 
 /** The one-byte header every session frame carries, and the AEAD's associated data. */
 const H = new Uint8Array([FRAME_SESSION])
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s)
+const envelope = (id: number): Uint8Array =>
+  enc(JSON.stringify({ id, request: { kind: 'listTerminals' } }))
 
 /** A socket that records what was written and lets the test push frames in. */
 function fakeSocket() {
@@ -46,7 +55,7 @@ function opener() {
 /** A paired desktop and phone.
  *
  *  Both sides are FACTORIES rather than channels, because a handshake is spent
- *  once: the client mints one per dial and so must the test's phone. */
+ *  once: the client mints one per peer and so must the test's phone. */
 function pair() {
   const desktop = generateIdentity()
   const phone = generateIdentity()
@@ -66,18 +75,31 @@ function pair() {
   }
 }
 
-/** Drive the greeting exchange the way a real phone does, and hand back the
- *  phone's end of the session.
+type Deps = ConstructorParameters<typeof RelayClient>[0]
+type RelayClientTestRequest = Deps['onRequest']
+
+/** Every client this suite builds, stopped after the test that built it.
  *
- *  Nearly every test needs this now: nothing opens until both greetings have
- *  crossed. The desktop's greeting is SHIFTED off `sent` rather than read in
- *  place, so assertions about what the client wrote still index from zero. */
-function connect(sock: ReturnType<typeof fakeSocket>, p: ReturnType<typeof pair>): SealedSession {
-  sock.emit('open')
-  const phone = p.phone()
-  const session = phone.accept(sock.sent.shift()!)
-  sock.emit('message', Buffer.from(phone.greeting), true)
-  return session
+ *  A client that lost its socket holds a pending redial. One left running outlives
+ *  its test, dials a fake socket nothing is watching, and keeps the worker's event
+ *  loop alive after the suite has finished. */
+const live: RelayClient[] = []
+afterEach(() => {
+  for (const c of live.splice(0)) c.stop()
+})
+
+function build(p: ReturnType<typeof pair>, open: Deps['openSocket'], extra: Partial<Deps> = {}) {
+  const c = new RelayClient({
+    url: 'wss://relay.test',
+    pairingId: 'a'.repeat(32),
+    handshake: p.handshake,
+    onRequest: vi.fn(),
+    onStateChange: () => {},
+    openSocket: open,
+    ...extra,
+  })
+  live.push(c)
+  return c
 }
 
 function client(
@@ -86,17 +108,34 @@ function client(
   onRequest: RelayClientTestRequest,
   onStateChange: (s: string) => void = () => {},
 ) {
-  return new RelayClient({
-    url: 'wss://relay.test',
-    pairingId: 'a'.repeat(32),
-    handshake: p.handshake,
-    onRequest,
-    onStateChange,
-    openSocket: () => sock as never,
-  })
+  return build(p, () => sock as never, { onRequest, onStateChange })
 }
 
-type RelayClientTestRequest = ConstructorParameters<typeof RelayClient>[0]['onRequest']
+/** Push one of the relay's control frames in, encoded by the relay's own encoder. */
+function control(sock: ReturnType<typeof fakeSocket>, frame: ControlFrame): void {
+  sock.emit('message', Buffer.from(encode(frame)), false)
+}
+
+/** Take a seat in the room. `peer` is whether the phone is already in it. */
+function seat(sock: ReturnType<typeof fakeSocket>, peer: boolean): void {
+  control(sock, { kind: 'hello', role: 'desktop', peer })
+}
+
+/** Drive a whole attachment the way the relay and a real phone do, and hand back
+ *  the phone's end of the session.
+ *
+ *  Nearly every test needs this: nothing opens until the relay has seated the
+ *  desktop AND both greetings have crossed. The desktop's greeting is SHIFTED off
+ *  `sent` rather than read in place, so assertions about what the client wrote
+ *  still index from zero. */
+function connect(sock: ReturnType<typeof fakeSocket>, p: ReturnType<typeof pair>): SealedSession {
+  sock.emit('open')
+  seat(sock, true)
+  const phone = p.phone()
+  const session = phone.accept(sock.sent.shift()!)
+  sock.emit('message', Buffer.from(phone.greeting), true)
+  return session
+}
 
 describe('relay client', () => {
   it('opens a sealed request, dispatches it, and seals the response back', async () => {
@@ -108,11 +147,7 @@ describe('relay client', () => {
     c.start()
     const phoneSide = connect(sock, p)
 
-    const request = phoneSide.seal(
-      H,
-      new TextEncoder().encode(JSON.stringify({ id: 1, request: { kind: 'listTerminals' } })),
-    )
-    sock.emit('message', Buffer.from(request), true)
+    sock.emit('message', Buffer.from(phoneSide.seal(H, envelope(1))), true)
     await vi.waitFor(() => expect(sock.sent.length).toBe(1))
 
     expect(onRequest).toHaveBeenCalledWith({ id: 1, request: { kind: 'listTerminals' } })
@@ -147,7 +182,7 @@ describe('relay client', () => {
     c.start()
     const phoneSide = connect(sock, p)
 
-    sock.emit('message', Buffer.from(phoneSide.seal(H, new TextEncoder().encode('not json'))), true)
+    sock.emit('message', Buffer.from(phoneSide.seal(H, enc('not json'))), true)
     await new Promise((r) => setTimeout(r, 20))
     expect(onRequest).not.toHaveBeenCalled()
   })
@@ -160,7 +195,7 @@ describe('relay client', () => {
     const c = client(sock, p, vi.fn(), (s) => states.push(s))
     c.start()
     connect(sock, p)
-    expect(states).toContain('online')
+    expect(states).toContain('attached')
     sock.emit('close')
     expect(states).toContain('offline')
 
@@ -168,20 +203,22 @@ describe('relay client', () => {
     // never written to the socket that just died.
     expect(() => c.send({ any: 'thing' })).not.toThrow()
     expect(sock.sent).toHaveLength(0)
-    c.stop()
   })
 
-  it('stays connecting until the peer greets, and drops output sent in that gap', () => {
-    // A window that did not exist under the old static channel: the socket is
-    // open and there is no key yet. Two things have to hold inside it.
+  it('is connecting until the relay seats it and online until the peer greets', () => {
+    // Three states across one connection, and each boundary matters.
     //
-    // The state must not read `online`, because the bridge DRAINS the fan-out on
-    // that edge and draining is destructive -- output handed to a client that
-    // cannot seal is output deleted.
+    // An open socket is not a seat in the room, so nothing is written before
+    // `hello` -- a greeting sent then goes to a relay that has not decided where
+    // to put it.
     //
-    // And `send` must drop rather than throw. The output pump runs on every
-    // terminal write, so a throw here escapes into the pump and stalls every
-    // later chunk for this device.
+    // A seat is not a peer. The state must not read `attached` while there is no
+    // key, because the bridge DRAINS the fan-out on that edge and draining is
+    // destructive: output handed to a client that cannot seal is output deleted.
+    //
+    // And `send` must drop rather than throw throughout. The output pump runs on
+    // every terminal write, so a throw here escapes into the pump and stalls
+    // every later chunk for this device.
     const p = pair()
     const states: string[] = []
     const sock = fakeSocket()
@@ -190,50 +227,71 @@ describe('relay client', () => {
     c.start()
     sock.emit('open')
     expect(c.state).toBe('connecting')
-    expect(states).not.toContain('online')
+    expect(sock.sent).toHaveLength(0)
 
-    expect(() => c.send({ kind: 'output', terminalId: 't', chunk: 'x', missed: 0 })).not.toThrow()
+    seat(sock, true)
+    expect(c.state).toBe('online')
+    expect(states).not.toContain('attached')
+
+    expect(() => c.send({ kind: 'output', chunks: [] })).not.toThrow()
     // The greeting, and nothing else. Sealing with no key cannot have happened.
     expect(sock.sent).toHaveLength(1)
 
     const phone = p.phone()
     phone.accept(sock.sent[0])
     sock.emit('message', Buffer.from(phone.greeting), true)
-    expect(c.state).toBe('online')
-    c.stop()
+    expect(c.state).toBe('attached')
   })
 
-  it('greets unprompted on every dial, with fresh keys each time', () => {
-    // The relay forwards blind and neither end learns who arrived first, so both
-    // greet without waiting. A client that held its greeting until the peer's
-    // arrived would deadlock against a phone doing the same.
+  it('waits for a peer before greeting, so its handshake is not thrown away', () => {
+    // The desktop is almost always first into the room, and the relay DROPS a
+    // binary frame addressed to a room with nobody else in it -- it does not
+    // queue it. Greeting on connect therefore spent the desktop's half of the
+    // handshake on nothing: the phone arrived later, greeted, and the desktop
+    // accepted and reported itself connected while the phone waited forever for a
+    // key that had already been discarded. Output then flowed one way into a
+    // phone with no key to open it, which looks exactly like a working link.
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    sock.emit('open')
+
+    seat(sock, false)
+    expect(c.state).toBe('online')
+    expect(sock.sent).toHaveLength(0)
+
+    control(sock, { kind: 'peer-joined', role: 'device' })
+    expect(sock.sent).toHaveLength(1)
+
+    const phone = p.phone()
+    phone.accept(sock.sent[0])
+    sock.emit('message', Buffer.from(phone.greeting), true)
+    expect(c.state).toBe('attached')
+  })
+
+  it('greets with keys of its own on every dial', () => {
     vi.useFakeTimers()
     try {
       const p = pair()
       const o = opener()
-      const c = new RelayClient({
-        url: 'wss://relay.test',
-        pairingId: 'a'.repeat(32),
-        handshake: p.handshake,
-        onRequest: vi.fn(),
-        onStateChange: () => {},
-        openSocket: o.open,
-      })
+      const c = build(p, o.open)
       c.start()
       o.sockets[0].emit('open')
+      seat(o.sockets[0], true)
       expect(o.sockets[0].sent).toHaveLength(1)
       const first = o.sockets[0].sent[0]
 
       o.sockets[0].emit('close')
       vi.advanceTimersByTime(backoffDelay(0))
       o.sockets[1].emit('open')
+      seat(o.sockets[1], true)
 
       // A FRESH greeting, not the first one resent. Reusing it would reuse the
       // ephemeral key and hand every connection the same session key -- exactly
       // the property this rewrite exists to establish.
       expect(o.sockets[1].sent).toHaveLength(1)
       expect(Buffer.from(o.sockets[1].sent[0]).equals(Buffer.from(first))).toBe(false)
-      c.stop()
     } finally {
       vi.useRealTimers()
     }
@@ -245,22 +303,12 @@ describe('relay client', () => {
       const p = pair()
       const o = opener()
       const onRequest = vi.fn().mockResolvedValue({ kind: 'ok', id: 1, data: { terminals: [] } })
-      const c = new RelayClient({
-        url: 'wss://relay.test',
-        pairingId: 'a'.repeat(32),
-        handshake: p.handshake,
-        onRequest,
-        onStateChange: () => {},
-        openSocket: o.open,
-      })
+      const c = build(p, o.open, { onRequest })
       c.start()
 
       const first = connect(o.sockets[0], p)
-      expect(c.state).toBe('online')
-      const stale = first.seal(
-        H,
-        new TextEncoder().encode(JSON.stringify({ id: 1, request: { kind: 'listTerminals' } })),
-      )
+      expect(c.state).toBe('attached')
+      const stale = first.seal(H, envelope(1))
 
       o.sockets[0].emit('close')
       vi.advanceTimersByTime(backoffDelay(0))
@@ -271,28 +319,58 @@ describe('relay client', () => {
       // peer's greeting down the frame path where it cannot open -- and the
       // socket then sits connected and permanently mute.
       const second = connect(o.sockets[1], p)
-      expect(c.state).toBe('online')
+      expect(c.state).toBe('attached')
 
       o.sockets[1].emit('message', Buffer.from(stale), true)
       await vi.advanceTimersByTimeAsync(0)
       expect(onRequest).not.toHaveBeenCalled()
 
-      o.sockets[1].emit(
-        'message',
-        Buffer.from(
-          second.seal(
-            H,
-            new TextEncoder().encode(JSON.stringify({ id: 2, request: { kind: 'listTerminals' } })),
-          ),
-        ),
-        true,
-      )
+      o.sockets[1].emit('message', Buffer.from(second.seal(H, envelope(2))), true)
       await vi.advanceTimersByTimeAsync(0)
       expect(onRequest).toHaveBeenCalledOnce()
-      c.stop()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('falls back to online when the peer leaves, and re-greets the one that replaces it', async () => {
+    // A phone that drops and comes back inside one desktop socket lifetime. The
+    // desktop's connection never wavered, so nothing tears it down and re-dials --
+    // which means without `peer-gone` clearing the session, the returning phone's
+    // greeting reaches the FRAME path, fails to open, and is dropped. The socket
+    // then sits connected, reporting itself attached, and permanently mute.
+    const p = pair()
+    const sock = fakeSocket()
+    const states: string[] = []
+    const onRequest = vi.fn().mockResolvedValue({ kind: 'ok', id: 2, data: null })
+    const c = client(sock, p, onRequest, (s) => states.push(s))
+    c.start()
+
+    const first = connect(sock, p)
+    const stale = first.seal(H, envelope(1))
+
+    control(sock, { kind: 'peer-gone', role: 'device' })
+    // Online, NOT offline. This desktop is still seated and still reachable;
+    // saying otherwise blames the wrong machine for the phone walking away.
+    expect(c.state).toBe('online')
+    expect(states).not.toContain('offline')
+    expect(sock.closed).toBe(false)
+
+    control(sock, { kind: 'peer-joined', role: 'device' })
+    // A second greeting on the SAME socket, with an ephemeral key of its own --
+    // re-sending the first would hand two different phones one session key.
+    expect(sock.sent).toHaveLength(1)
+    const phone = p.phone()
+    const second = phone.accept(sock.sent.shift()!)
+    sock.emit('message', Buffer.from(phone.greeting), true)
+    expect(c.state).toBe('attached')
+
+    sock.emit('message', Buffer.from(stale), true)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(onRequest).not.toHaveBeenCalled()
+
+    sock.emit('message', Buffer.from(second.seal(H, envelope(2))), true)
+    await vi.waitFor(() => expect(onRequest).toHaveBeenCalledOnce())
   })
 
   it('drops the connection when the peer greeting will not open', () => {
@@ -305,6 +383,7 @@ describe('relay client', () => {
     const c = client(sock, p, vi.fn(), (s) => states.push(s))
     c.start()
     sock.emit('open')
+    seat(sock, true)
 
     const impostor = new Handshake({
       ownSecretKey: generateIdentity().secretKey,
@@ -314,22 +393,21 @@ describe('relay client', () => {
     sock.emit('message', Buffer.from(impostor.greeting), true)
 
     expect(sock.closed).toBe(true)
-    expect(states).not.toContain('online')
-    c.stop()
+    expect(states).not.toContain('attached')
   })
 
   it('survives a frame that arrives before the socket opened', () => {
     // `ws` will not do this, but the relay is untrusted and nothing about the
     // handler's contract stops a hostile one from trying. There is no handshake
-    // to accept with yet, and that has to look like every other bad greeting
-    // rather than an unhandled throw out of the listener.
+    // to accept with yet -- not even a seat in the room -- and that has to look
+    // like every other bad greeting rather than an unhandled throw out of the
+    // listener.
     const p = pair()
     const sock = fakeSocket()
     const c = client(sock, p, vi.fn())
     c.start()
     expect(() => sock.emit('message', Buffer.from([9, 9, 9]), true)).not.toThrow()
     expect(sock.closed).toBe(true)
-    c.stop()
   })
 
   it('answers a request whose handler throws instead of leaving the phone hanging', async () => {
@@ -340,16 +418,7 @@ describe('relay client', () => {
     const c = client(sock, p, onRequest)
     c.start()
     const phoneSide = connect(sock, p)
-    sock.emit(
-      'message',
-      Buffer.from(
-        phoneSide.seal(
-          H,
-          new TextEncoder().encode(JSON.stringify({ id: 7, request: { kind: 'listTerminals' } })),
-        ),
-      ),
-      true,
-    )
+    sock.emit('message', Buffer.from(phoneSide.seal(H, envelope(7))), true)
     await vi.waitFor(() => expect(sock.sent.length).toBe(1))
 
     // Silence here would strand the caller: every phone request is correlated by
@@ -374,7 +443,7 @@ describe('relay client', () => {
     const c = client(sock, p, onRequest)
     c.start()
     const phoneSide = connect(sock, p)
-    sock.emit('message', Buffer.from(phoneSide.seal(H, new TextEncoder().encode(body))), true)
+    sock.emit('message', Buffer.from(phoneSide.seal(H, enc(body))), true)
     await new Promise((r) => setTimeout(r, 20))
 
     // The frame is authentic -- it came from the paired phone. Authenticity is not
@@ -382,29 +451,99 @@ describe('relay client', () => {
     expect(onRequest).not.toHaveBeenCalled()
   })
 
-  it('ignores text frames, which never carry payload', async () => {
+  it('ignores text that is not a control frame it knows', async () => {
     const p = pair()
     const sock = fakeSocket()
     const onRequest = vi.fn()
+    const states: string[] = []
 
-    const c = client(sock, p, onRequest)
+    const c = client(sock, p, onRequest, (s) => states.push(s))
     c.start()
     const phoneSide = connect(sock, p)
-    // The relay's own control frames (hello, peer-joined) arrive as text on this
-    // same socket. Reading them as payload would hand relay-authored bytes to the
-    // channel opener.
-    sock.emit(
-      'message',
-      Buffer.from(
-        phoneSide.seal(
-          H,
-          new TextEncoder().encode(JSON.stringify({ id: 1, request: { kind: 'listTerminals' } })),
-        ),
-      ),
-      false,
-    )
+    const before = states.length
+
+    // Not JSON at all; JSON of a kind this version has never heard of; and a
+    // perfectly good sealed frame delivered on the text channel. A control frame
+    // is a hint from an untrusted relay, so none of these may reach the opener,
+    // change state, or cost the connection.
+    sock.emit('message', Buffer.from('}{ not json'), false)
+    sock.emit('message', Buffer.from(JSON.stringify({ kind: 'from-the-future' })), false)
+    sock.emit('message', Buffer.from(phoneSide.seal(H, envelope(1))), false)
     await new Promise((r) => setTimeout(r, 20))
+
     expect(onRequest).not.toHaveBeenCalled()
+    expect(sock.closed).toBe(false)
+    expect(states).toHaveLength(before)
+    expect(c.state).toBe('attached')
+  })
+
+  it.each(['frame-size', 'frame-rate'] as const)(
+    'stops redialing when the relay cuts it for %s',
+    (limit) => {
+      // Both mean this desktop is the problem, and reconnecting does not fix a
+      // frame this desktop will just send again. A client that cannot tell "you
+      // sent too much" from "the network broke" turns its own bug into a denial
+      // of service against everyone else on the relay.
+      vi.useFakeTimers()
+      try {
+        const p = pair()
+        const o = opener()
+        const states: string[] = []
+        const c = build(p, o.open, { onStateChange: (s) => states.push(s) })
+        c.start()
+        o.sockets[0].emit('open')
+        seat(o.sockets[0], false)
+
+        control(o.sockets[0], { kind: 'quota-exceeded', limit })
+        o.sockets[0].emit('close')
+        vi.advanceTimersByTime(10 * 60_000)
+
+        expect(o.sockets.length).toBe(1)
+        expect(states).toContain('offline')
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it.each(['idle', 'connection-bytes'] as const)('redials after a %s cut', (limit) => {
+    // Neither is a fault worth latching. An idle cut means this end simply had
+    // nothing to send -- which is the whole of a desktop's life until a phone
+    // arrives -- and never redialing after one takes remote dark until a restart.
+    // `connection-bytes` takes 256 MiB to reach, so a loop on it is self-limiting
+    // -- worth reporting, not worth stranding a heavy user for.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const o = opener()
+      const c = build(p, o.open)
+      c.start()
+      o.sockets[0].emit('open')
+      seat(o.sockets[0], false)
+
+      control(o.sockets[0], { kind: 'quota-exceeded', limit })
+      o.sockets[0].emit('close')
+      vi.advanceTimersByTime(backoffDelay(0))
+
+      expect(o.sockets.length).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tells the host which limit the relay cut it for', () => {
+    // The room going quiet is the only other symptom. Without the limit, a user
+    // watching a phone that stopped working has nothing to act on.
+    const p = pair()
+    const sock = fakeSocket()
+    const onQuota = vi.fn()
+    const c = build(p, () => sock as never, { onQuota })
+    c.start()
+    sock.emit('open')
+    seat(sock, false)
+
+    control(sock, { kind: 'quota-exceeded', limit: 'frame-rate' })
+    expect(onQuota).toHaveBeenCalledWith('frame-rate')
   })
 
   it('redials after a drop, and counts one failure when error precedes close', () => {
@@ -412,14 +551,7 @@ describe('relay client', () => {
     try {
       const p = pair()
       const o = opener()
-      const c = new RelayClient({
-        url: 'wss://relay.test',
-        pairingId: 'a'.repeat(32),
-        handshake: p.handshake,
-        onRequest: vi.fn(),
-        onStateChange: () => {},
-        openSocket: o.open,
-      })
+      const c = build(p, o.open)
       c.start()
       o.sockets[0].emit('open')
 
@@ -440,7 +572,6 @@ describe('relay client', () => {
       // that drops once does not inherit last week's backoff.
       vi.advanceTimersByTime(backoffDelay(0))
       expect(o.sockets.length).toBe(3)
-      c.stop()
     } finally {
       vi.useRealTimers()
     }
@@ -451,14 +582,7 @@ describe('relay client', () => {
     try {
       const p = pair()
       const o = opener()
-      const c = new RelayClient({
-        url: 'wss://relay.test',
-        pairingId: 'a'.repeat(32),
-        handshake: p.handshake,
-        onRequest: vi.fn(),
-        onStateChange: () => {},
-        openSocket: o.open,
-      })
+      const c = build(p, o.open)
       c.start()
       o.sockets[0].emit('close')
       vi.advanceTimersByTime(backoffDelay(0))
@@ -472,7 +596,6 @@ describe('relay client', () => {
       expect(o.sockets.length).toBe(2)
       vi.advanceTimersByTime(backoffDelay(1) - backoffDelay(0))
       expect(o.sockets.length).toBe(3)
-      c.stop()
     } finally {
       vi.useRealTimers()
     }
@@ -484,14 +607,7 @@ describe('relay client', () => {
       const p = pair()
       const o = opener()
       const states: string[] = []
-      const c = new RelayClient({
-        url: 'wss://relay.test',
-        pairingId: 'a'.repeat(32),
-        handshake: p.handshake,
-        onRequest: vi.fn(),
-        onStateChange: (s) => states.push(s),
-        openSocket: o.open,
-      })
+      const c = build(p, o.open, { onStateChange: (s) => states.push(s) })
       c.start()
       o.sockets[0].emit('close')
       c.stop()
@@ -513,14 +629,7 @@ describe('relay client', () => {
       const p = pair()
       const o = opener()
       const states: string[] = []
-      const c = new RelayClient({
-        url: 'wss://relay.test',
-        pairingId: 'a'.repeat(32),
-        handshake: p.handshake,
-        onRequest: vi.fn(),
-        onStateChange: (x) => states.push(x),
-        openSocket: o.open,
-      })
+      const c = build(p, o.open, { onStateChange: (x) => states.push(x) })
       c.start()
       o.sockets[0].emit('open')
 
@@ -557,22 +666,18 @@ describe('relay client', () => {
 
     // The close event has not arrived yet but the socket is already gone. Throwing
     // here would escape the output pump and stall every later chunk.
-    expect(() => c.send({ kind: 'output', terminalId: 't', chunk: 'x', missed: 0 })).not.toThrow()
-    c.stop()
+    expect(() => c.send({ kind: 'output', chunks: [] })).not.toThrow()
   })
 
   it('dials a real ws socket when no opener is injected', async () => {
     const p = pair()
     const states: string[] = []
-    const c = new RelayClient({
+    const c = build(p, undefined, {
       // Port 1 refuses immediately. The point is not the connection but that the
       // production path -- new WebSocket(url) from the `ws` package -- constructs
       // and wires up at all under the Node that Electron ships, which no injected
       // fake can tell us.
       url: 'ws://127.0.0.1:1',
-      pairingId: 'a'.repeat(32),
-      handshake: p.handshake,
-      onRequest: vi.fn(),
       onStateChange: (x) => states.push(x),
     })
     c.start()
@@ -590,3 +695,4 @@ describe('relay client', () => {
     expect(backoffDelay(100)).toBe(60_000)
   })
 })
+

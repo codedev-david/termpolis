@@ -28,13 +28,19 @@ function nextText(ws: WebSocket): Promise<string> {
 }
 
 describe('pairing room', () => {
-  it('greets a desktop and a device with their own role', async () => {
+  it('greets a desktop and a device with their own role, and says who is already here', async () => {
     const id = room('a')
     const desktop = await connect(id, 'desktop')
-    expect(JSON.parse(await nextText(desktop))).toEqual({ kind: 'hello', role: 'desktop' })
+    // Alone. A greeting sent now would be forwarded to nobody and dropped, so the
+    // desktop has to be told to wait rather than spend its half of the handshake.
+    expect(JSON.parse(await nextText(desktop))).toEqual({
+      kind: 'hello',
+      role: 'desktop',
+      peer: false,
+    })
 
     const device = await connect(id, 'device')
-    expect(JSON.parse(await nextText(device))).toEqual({ kind: 'hello', role: 'device' })
+    expect(JSON.parse(await nextText(device))).toEqual({ kind: 'hello', role: 'device', peer: true })
   })
 
   it('tells a waiting desktop when its device arrives', async () => {

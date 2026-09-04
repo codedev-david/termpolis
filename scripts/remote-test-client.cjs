@@ -125,10 +125,13 @@ async function main() {
   check('granted request is served', ok.kind === 'ok')
 
   console.log('\n7. the two ends greet, then the response crosses the wire sealed')
-  // Both greet unprompted -- the relay forwards blind and neither end learns who
-  // arrived first, so a side that waited for the other would deadlock. The
-  // session key is fresh per connection, which is what makes recorded traffic
-  // useless to a relay that keeps it.
+  // Both greetings are in flight at once: neither end waits for the other, which
+  // is what keeps two symmetrical peers from deadlocking. What they DO wait for is
+  // the relay saying the room has someone in it -- a frame sent into an empty room
+  // is dropped, not queued, so a greeting sent on connect alone would be thrown
+  // away. That sequencing lives in relayClient.ts; here both ends are already in
+  // the room. The session key is fresh per attachment, which is what makes
+  // recorded traffic useless to a relay that keeps it.
   const dh = new Handshake({
     ownSecretKey: desktop.secretKey,
     peerPublicKey: phone.publicKey,

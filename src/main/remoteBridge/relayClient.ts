@@ -1,13 +1,29 @@
 import WebSocket from 'ws'
 import { FRAME_SESSION, type Handshake, type SealedSession } from './sessionCrypto'
-import type { RemoteEnvelope, RemoteResponse } from './protocol'
+import type {
+  QuotaLimit,
+  RelayControlFrame,
+  RemoteEnvelope,
+  RemoteResponse,
+} from './protocol'
 
 /** Every session frame is tagged, so a receiver knows which key opens it before it
  *  tries. One byte, and it is the AEAD's associated data -- retagging a frame fails
  *  authentication rather than being reinterpreted as another frame type. */
 const SESSION_HEADER = new Uint8Array([FRAME_SESSION])
 
-export type RelayState = 'connecting' | 'online' | 'offline'
+/** Where this end stands in the relay room.
+ *
+ *  `connecting` -- dialing, or holding a socket the relay has not yet seated.
+ *  `online`     -- seated. Reachable, with nobody on the other end.
+ *  `attached`   -- a sealed session with the peer. The only state frames flow in.
+ *  `offline`    -- no socket.
+ *
+ *  `online` and `attached` are separate because losing the PHONE is not the same
+ *  event as losing the RELAY. Collapsing them tells the user their own machine
+ *  dropped off the network when in fact the phone walked away, and it hides the
+ *  case that actually needs a diagnosis: seated, reachable, and nobody arriving. */
+export type RelayState = 'connecting' | 'online' | 'attached' | 'offline'
 
 /** The subset of `ws` this module uses. Named so tests can inject a fake without
  *  standing up a server, and so the `ws` import stays in exactly one place.
@@ -24,18 +40,36 @@ export interface SocketLike {
 export interface RelayClientDeps {
   url: string
   pairingId: string
-  /** A FACTORY, not a session: every dial needs its own ephemeral key. Handing
-   *  this client one long-lived channel is what made recorded traffic replayable
-   *  across a bridge restart. */
+  /** A FACTORY, not a session: every attachment needs its own ephemeral key.
+   *  Handing this client one long-lived channel is what made recorded traffic
+   *  replayable across a bridge restart. */
   handshake(): Handshake
   onRequest(env: RemoteEnvelope): Promise<RemoteResponse>
   onStateChange(state: RelayState): void
+  /** Told which limit the relay cut this connection for. Optional: it is a
+   *  diagnosis for the user, not part of the request path. */
+  onQuota?(limit: QuotaLimit): void
   /** Injected in tests. Production dials the real relay. */
   openSocket?(url: string): SocketLike
 }
 
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 60_000
+
+/** Limits that mean this client is the problem, and so must stop dialing.
+ *
+ *  The relay names the limit precisely so a client can tell "you sent too much"
+ *  from "the network broke" (`relay/src/pairingRoom.ts`); the alternative is a
+ *  client bug that reconnects in a loop and becomes a denial of service against
+ *  everyone else on the relay.
+ *
+ *  `idle` and `connection-bytes` are deliberately absent. An idle cut is not a
+ *  fault -- a desktop waiting alone for a phone sends nothing at all, so the relay
+ *  cuts it on schedule, and never redialing after one would take remote dark until
+ *  the app restarts. `connection-bytes` takes 256 MiB to reach,
+ *  so a loop on it is self-limiting: worth reporting, not worth stranding a heavy
+ *  user for. */
+const FATAL_LIMITS: readonly QuotaLimit[] = ['frame-size', 'frame-rate']
 
 /** Doubling backoff with a one-minute ceiling.
  *
@@ -51,8 +85,12 @@ export class RelayClient {
   private attempt = 0
   private stopped = false
   private timer: ReturnType<typeof setTimeout> | null = null
+  /** Latched when the relay cuts us for something only this client can fix.
+   *  Redialing then is exactly the loop the relay warns about, so nothing here
+   *  ever clears it: the connection comes back when the bridge does. */
+  private cutForQuota = false
   /** The handshake awaiting the peer's greeting, then the session it produced.
-   *  Both are per-connection and both are cleared when the socket goes. */
+   *  Both are per-attachment, and both die with the peer or with the socket. */
   private pending: Handshake | null = null
   private session: SealedSession | null = null
   state: RelayState = 'offline'
@@ -77,23 +115,27 @@ export class RelayClient {
     this.socket = sock
 
     sock.on('open', (() => {
-      this.attempt = 0
-      // Deliberately NOT `online` yet. A raw socket has no key: reporting online
-      // here would have the bridge drain the fan-out into a client that cannot
-      // seal, and draining is destructive -- the output would be gone. The state
-      // advances when the peer's greeting lands.
+      // Reaching an open socket is what proves the relay is up, which is what the
+      // backoff measures -- so the counter resets here rather than at `hello`.
       //
-      // Nothing is cleared here. Teardown belongs to `down`, which is the only
-      // route from a live socket back to another dial, and having both do it
-      // left neither one observable.
-      this.pending = this.deps.handshake()
-      sock.send(this.pending.greeting)
+      // Deliberately does NOT greet, and deliberately not `online` either. A raw
+      // socket is not a seat in the room, and a frame sent to a room with no
+      // partner in it is DROPPED rather than queued. The desktop is almost always
+      // first in, so greeting here put its half of the handshake nowhere and left
+      // the phone waiting for a key that had already been thrown away. `hello`
+      // says whether anyone is there and `peer-joined` says when someone arrives;
+      // both are answered in `control`.
+      this.attempt = 0
     }) as never)
 
     sock.on('message', ((data: Buffer, isBinary: boolean) => {
-      // Control frames are text and are not part of the request path. Only binary
-      // carries sealed payload.
-      if (!isBinary) return
+      // Text is the relay speaking for itself. Peers speak binary only, and the
+      // relay refuses to forward text at all, so nothing here can have come from
+      // the phone.
+      if (!isBinary) {
+        this.control(sock, data)
+        return
+      }
       const frame = new Uint8Array(data)
       if (this.session) {
         void this.handleFrame(frame)
@@ -116,10 +158,6 @@ export class RelayClient {
       // message handler routes on `session`, so a stale one sends the peer's
       // greeting down the frame path, where it cannot open -- and the socket then
       // sits connected and permanently mute.
-      //
-      // Nulling the handshake is hygiene rather than behaviour: `open` overwrites
-      // it regardless. It drops the ephemeral secret the moment the socket dies
-      // instead of holding it across a backoff that can run to a minute.
       this.pending = null
       this.session = null
       this.setState('offline')
@@ -129,6 +167,56 @@ export class RelayClient {
     sock.on('error', down as never)
   }
 
+  /** Act on a frame the relay authored.
+   *
+   *  Anything unparseable, or of a kind this client does not know, is dropped. The
+   *  relay is untrusted and a control frame is a hint, never an instruction worth
+   *  a disconnect. */
+  private control(sock: SocketLike, data: Buffer): void {
+    let frame: RelayControlFrame
+    try {
+      frame = JSON.parse(data.toString('utf8'))
+    } catch {
+      return
+    }
+    switch (frame?.kind) {
+      case 'hello':
+        this.setState('online')
+        // Greet only into a room that has someone in it -- see `dial`.
+        if (frame.peer) this.greet(sock)
+        return
+      case 'peer-joined':
+        this.greet(sock)
+        return
+      case 'peer-gone':
+        // `online`, NOT `offline`: this desktop is still seated and still
+        // reachable, and telling the user otherwise blames the wrong machine.
+        //
+        // The session is over regardless. Whoever takes the role next is a
+        // different connection with a different ephemeral key, and holding the old
+        // session would route their greeting down the frame path where it cannot
+        // open -- leaving a socket that is connected, attached, and mute.
+        this.pending = null
+        this.session = null
+        this.setState('online')
+        return
+      case 'quota-exceeded':
+        if (FATAL_LIMITS.includes(frame.limit)) this.cutForQuota = true
+        this.deps.onQuota?.(frame.limit)
+        return
+    }
+  }
+
+  /** Mint an ephemeral key for this attachment and send the greeting it makes.
+   *
+   *  Once per PEER rather than once per socket. A phone that drops and comes back
+   *  while the desktop's connection holds gets a session key that is new at both
+   *  ends, because `peer-gone` cleared the last one and `peer-joined` lands here. */
+  private greet(sock: SocketLike): void {
+    this.pending = this.deps.handshake()
+    sock.send(this.pending.greeting)
+  }
+
   /** The peer's first binary frame must be its greeting. Anything else is an
    *  impostor, a stale frame from a previous connection, or a relay playing games. */
   private acceptGreeting(sock: SocketLike, frame: Uint8Array): void {
@@ -136,12 +224,12 @@ export class RelayClient {
       this.session = this.pending!.accept(frame)
     } catch {
       // Drop the connection rather than sit in a half-open state the user cannot
-      // see: `connecting` that never becomes `online` is at least legible, and
-      // the backoff will try again against what may be a transient relay fault.
+      // see: a room that never reaches `attached` is at least legible, and the
+      // backoff will try again against what may be a transient relay fault.
       sock.close()
       return
     }
-    this.setState('online')
+    this.setState('attached')
   }
 
   private async handleFrame(frame: Uint8Array): Promise<void> {
@@ -171,7 +259,7 @@ export class RelayClient {
    *  the fan-out is the buffer for output, and a second queue here would
    *  double-store it.
    *
-   *  The session check is not redundant with the socket check. Between `open` and
+   *  The session check is not redundant with the socket check. Between `hello` and
    *  the peer's greeting there is a live socket and no key, and the output pump
    *  runs on every terminal write -- sealing on a null session there would throw
    *  into the pump and stall every later chunk for this device. */
@@ -187,7 +275,7 @@ export class RelayClient {
   }
 
   private retry(): void {
-    if (this.stopped) return
+    if (this.stopped || this.cutForQuota) return
     const delay = backoffDelay(this.attempt++)
     this.timer = setTimeout(() => this.dial(), delay)
   }

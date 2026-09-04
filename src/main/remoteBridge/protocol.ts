@@ -142,3 +142,23 @@ export type BridgeToHost =
  *  under load, which looks like a network fault and is not.
  */
 export const RELAY_MAX_FRAME_BYTES = 1_048_576
+
+/** Which limit a peer hit, as the relay names it just before cutting it off.
+ *
+ *  Mirrors `QuotaLimit` in `relay/src/wire.ts`, for the reason
+ *  `RELAY_MAX_FRAME_BYTES` mirrors `MAX_FRAME_BYTES`: the two packages compile for
+ *  different runtimes and cannot share a module. */
+export type QuotaLimit = 'frame-size' | 'frame-rate' | 'connection-bytes' | 'idle'
+
+/** The relay's own messages -- the only frames it authors, and the only ones it
+ *  reads. They arrive as JSON TEXT on the same socket as sealed payload, which is
+ *  BINARY and opaque. Mirrors `ControlFrame` in `relay/src/wire.ts`.
+ *
+ *  `role` is `string` rather than a union: nothing here acts on it, and a relay is
+ *  not trusted to be truthful about it anyway. `kind` and `hello.peer` are the
+ *  only fields that change what this client does. */
+export type RelayControlFrame =
+  | { kind: 'hello'; role: string; peer: boolean }
+  | { kind: 'peer-joined'; role: string }
+  | { kind: 'peer-gone'; role: string }
+  | { kind: 'quota-exceeded'; limit: QuotaLimit }
