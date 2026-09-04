@@ -95,6 +95,21 @@ async function main() {
 
   console.log('\n5. paired but ungranted — MCP must stay unreachable')
   const denied = await core.handleRemoteRequest(device.id, { id: 1, request: { kind: 'listTerminals' } })
+
+  // A refusal must also refuse the SIDE EFFECT. Registering the fan-out
+  // subscription before the capability check made `read` advisory: the device got
+  // an error back and the output stream anyway. Asserting only that the response
+  // says "no" would have passed against the leaking build.
+  const deniedSub = await core.handleRemoteRequest(device.id, {
+    id: 99,
+    request: { kind: 'subscribe', terminalId: 'probe' },
+  })
+  core.handleHostMessage({
+    kind: 'terminalOutput',
+    terminalId: 'probe',
+    slice: { output: 'SECRET=hunter2', nextOffset: 14, missed: 0 },
+  })
+  check('refused subscribe leaks no output', deniedSub.kind === 'error' && core.drainOutput(device.id).length === 0)
   check('ungranted request is refused', denied.kind === 'error')
 
   console.log('\n6. user grants read in Settings')

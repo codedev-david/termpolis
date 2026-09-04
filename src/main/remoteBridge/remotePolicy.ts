@@ -25,8 +25,15 @@ export function requiredCapability(request: RemoteRequest): keyof Capabilities |
     case 'unsubscribe':
       return 'read'
     case 'createTerminal':
-    case 'runCommand':
       return 'createTerminal'
+    // `runCommand` is NOT terminal creation. It reaches main as a writeToTerminal
+    // of the command plus a carriage return, and sanitizeAgentCommand passes any
+    // non-agent command through verbatim (agentCommandSanitizer.ts:57-59) -- so
+    // it is arbitrary shell execution under another name. Spec 4.5 separates
+    // `writeToTerminal` precisely because that power is the accepted risk that
+    // must be granted deliberately; letting `createTerminal` confer it would
+    // have handed it to every device allowed to open a terminal.
+    case 'runCommand':
     case 'writeToTerminal':
       return 'writeToTerminal'
     case 'closeTerminal':

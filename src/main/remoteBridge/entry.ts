@@ -116,11 +116,16 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     if (!device) return { kind: 'error', id: env.id, message: 'unknown or revoked device' }
     if (!dispatcher) return { kind: 'error', id: env.id, message: 'bridge not initialised' }
 
-    if (env.request.kind === 'subscribe') fanout.subscribe(deviceId, env.request.terminalId)
-    if (env.request.kind === 'unsubscribe') fanout.unsubscribe(deviceId, env.request.terminalId)
-
     try {
       const data = await dispatcher.dispatch(env.request, device.capabilities)
+      // Fan-out state changes only AFTER dispatch has returned without throwing.
+      // These two lines used to run first, which made the `read` grant advisory:
+      // a device refused `read` still got enrolled by its refused `subscribe`,
+      // and then received every subsequent chunk of terminal output. The error
+      // response said no while the output stream said yes. A side effect applied
+      // ahead of the check that authorises it is not a check.
+      if (env.request.kind === 'subscribe') fanout.subscribe(deviceId, env.request.terminalId)
+      if (env.request.kind === 'unsubscribe') fanout.unsubscribe(deviceId, env.request.terminalId)
       registry.touch(deviceId)
       return { kind: 'ok', id: env.id, data }
     } catch (err) {

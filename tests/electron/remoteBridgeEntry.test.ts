@@ -218,3 +218,68 @@ describe('bridge core', () => {
     expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['still here'])
   })
 })
+
+describe('capability enforcement precedes side effects', () => {
+  it('does not enrol an ungranted device in the fan-out when subscribe is refused', async () => {
+    const ungranted = { ...device(), capabilities: { ...NO_CAPABILITIES } }
+    const { c } = core([ungranted])
+
+    const res = await c.handleRemoteRequest(ungranted.id, {
+      id: 1,
+      request: { kind: 'subscribe', terminalId: 't1' },
+    })
+    expect(res.kind).toBe('error')
+
+    // The refusal must unwind the subscription too. Registering fan-out state
+    // before the capability check let a device that was refused `read` keep
+    // receiving every subsequent chunk -- the error told it "no" while the
+    // output stream said "yes".
+    c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'SECRET=hunter2\r\n', nextOffset: 16, missed: 0 },
+    })
+    expect(c.drainOutput(ungranted.id)).toEqual([])
+  })
+
+  it('does not unsubscribe an ungranted device that never should have been subscribed', async () => {
+    const granted = device()
+    const { c } = core([granted])
+    await c.handleRemoteRequest(granted.id, {
+      id: 1,
+      request: { kind: 'subscribe', terminalId: 't1' },
+    })
+
+    const ungranted = { ...device(), id: 'other', capabilities: { ...NO_CAPABILITIES } }
+    c.handleHostMessage({ kind: 'devices', devices: [granted, ungranted] })
+    // An ungranted device must not be able to reach the fan-out at all -- neither
+    // to join it nor to mutate it. `unsubscribe` is a write too.
+    await c.handleRemoteRequest(ungranted.id, {
+      id: 2,
+      request: { kind: 'unsubscribe', terminalId: 't1' },
+    })
+
+    c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'still here\r\n', nextOffset: 12, missed: 0 },
+    })
+    expect(c.drainOutput(granted.id)).toHaveLength(1)
+  })
+
+  it('still subscribes a device that holds read', async () => {
+    const granted = device()
+    const { c } = core([granted])
+    const res = await c.handleRemoteRequest(granted.id, {
+      id: 1,
+      request: { kind: 'subscribe', terminalId: 't1' },
+    })
+    expect(res.kind).toBe('ok')
+    c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'hello\r\n', nextOffset: 7, missed: 0 },
+    })
+    expect(c.drainOutput(granted.id)).toHaveLength(1)
+  })
+})
