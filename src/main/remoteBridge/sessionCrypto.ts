@@ -5,6 +5,19 @@ import { SealedDirection, fromHex, toHex } from './sealedChannel'
 
 export type Role = 'desktop' | 'device'
 
+/** A frame that carries nothing.
+ *
+ *  One byte, unsealed, and the same byte every time -- there is nothing in it to
+ *  protect and no state it can move. It exists because the relay closes any
+ *  connection whose last BINARY frame is older than its idle timeout, and a peer
+ *  waiting alone in a room has no sealed frame it could send: there is no session
+ *  until the other end arrives.
+ *
+ *  Reserved as the FIRST tag so a receiver recognises and drops it before
+ *  consulting a key. That ordering is the whole safety argument: a keepalive that
+ *  raced the peer's arrival would otherwise reach the greeting path, fail to open,
+ *  and cost the peer its connection. */
+export const FRAME_KEEPALIVE = 0x00
 export const FRAME_PAIRING_HELLO = 0x01
 export const FRAME_PAIRING_ACK = 0x02
 export const FRAME_SESSION_HELLO = 0x03

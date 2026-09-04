@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { RelayClient, backoffDelay } from '../../src/main/remoteBridge/relayClient'
+import { RelayClient, backoffDelay, KEEPALIVE_MS } from '../../src/main/remoteBridge/relayClient'
 import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
-import { Handshake, FRAME_SESSION, type SealedSession } from '../../src/main/remoteBridge/sessionCrypto'
-// The relay's own encoder, imported from the relay package rather than restated
-// here. A hand-written control frame would let this suite keep passing against a
-// shape the relay stopped sending -- which is precisely the class of drift Task 5
-// exists to close.
+import {
+  Handshake,
+  FRAME_KEEPALIVE,
+  FRAME_SESSION,
+  type SealedSession,
+} from '../../src/main/remoteBridge/sessionCrypto'
+// The relay's own encoder and its idle window, imported from the relay package
+// rather than restated here. A hand-written control frame would let this suite
+// keep passing against a shape the relay stopped sending -- which is precisely the
+// class of drift Task 5 exists to close.
 import { encode, type ControlFrame } from '../../relay/src/wire'
+import { IDLE_TIMEOUT_MS } from '../../relay/src/quota'
 
 /** The one-byte header every session frame carries, and the AEAD's associated data. */
 const H = new Uint8Array([FRAME_SESSION])
@@ -80,9 +86,9 @@ type RelayClientTestRequest = Deps['onRequest']
 
 /** Every client this suite builds, stopped after the test that built it.
  *
- *  A client that lost its socket holds a pending redial. One left running outlives
- *  its test, dials a fake socket nothing is watching, and keeps the worker's event
- *  loop alive after the suite has finished. */
+ *  A seated client holds a repeating keepalive. One left running outlives its
+ *  test, fires into a fake socket nothing is watching, and keeps the worker's
+ *  event loop alive after the suite has finished. */
 const live: RelayClient[] = []
 afterEach(() => {
   for (const c of live.splice(0)) c.stop()
@@ -507,9 +513,8 @@ describe('relay client', () => {
   )
 
   it.each(['idle', 'connection-bytes'] as const)('redials after a %s cut', (limit) => {
-    // Neither is a fault worth latching. An idle cut means this end simply had
-    // nothing to send -- which is the whole of a desktop's life until a phone
-    // arrives -- and never redialing after one takes remote dark until a restart.
+    // Neither is a fault worth latching. An idle cut means a keepalive was lost,
+    // and never redialing after one takes remote dark until the app restarts.
     // `connection-bytes` takes 256 MiB to reach, so a loop on it is self-limiting
     // -- worth reporting, not worth stranding a heavy user for.
     vi.useFakeTimers()
@@ -696,3 +701,145 @@ describe('relay client', () => {
   })
 })
 
+describe('relay client keepalive', () => {
+  it('holds the room open while it waits alone, without greeting', () => {
+    // The state this exists for: seated, no peer, and therefore no session and
+    // nothing to seal. The relay drops TEXT above its `lastSeen` update, so only a
+    // BINARY frame refreshes the idle clock -- which means a waiting desktop with
+    // nothing to send is cut every five minutes and redials a second later,
+    // forever, opening a window each time in which the phone finds an empty room.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      sock.emit('open')
+      seat(sock, false)
+      expect(sock.sent).toHaveLength(0)
+
+      vi.advanceTimersByTime(KEEPALIVE_MS)
+      expect(sock.sent).toHaveLength(1)
+      // One reserved byte and nothing else. There is nothing in a keepalive to
+      // protect and no state it can move, which is what lets it be sent with no
+      // key in hand.
+      expect([...sock.sent[0]]).toEqual([FRAME_KEEPALIVE])
+
+      vi.advanceTimersByTime(KEEPALIVE_MS)
+      expect(sock.sent).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('pings often enough to survive a lost frame', () => {
+    // Cross-package, like the frame-size assertion in remoteOutputChunker: the two
+    // numbers live in packages that compile for different runtimes and cannot
+    // share a module. Two intervals inside the window is the margin -- at one, a
+    // single dropped keepalive costs the room.
+    expect(KEEPALIVE_MS * 2).toBeLessThan(IDLE_TIMEOUT_MS)
+  })
+
+  it('stops pinging when the socket dies, and when the client is stopped', () => {
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const o = opener()
+      const c = build(p, o.open)
+      c.start()
+      o.sockets[0].emit('open')
+      seat(o.sockets[0], false)
+
+      o.sockets[0].emit('close')
+      vi.advanceTimersByTime(10 * KEEPALIVE_MS)
+      // An interval nothing holds a handle to, firing `send` into a dead socket,
+      // throws out of a timer callback -- which in the bridge process is a crash,
+      // not a logged warning.
+      expect(o.sockets[0].sent).toHaveLength(0)
+
+      vi.advanceTimersByTime(backoffDelay(0))
+      o.sockets[1].emit('open')
+      seat(o.sockets[1], false)
+      c.stop()
+      vi.advanceTimersByTime(10 * KEEPALIVE_MS)
+      expect(o.sockets[1].sent).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops pinging when stopped before the close event arrives', () => {
+    // `ws.close()` starts a closing handshake and the `close` event lands later.
+    // By then `stop()` has dropped its reference to the socket, so `down` -- which
+    // is what clears the keepalive on an ordinary outage -- sees a socket it no
+    // longer owns and returns having done nothing. Every other fake in this file
+    // closes synchronously and so cannot show this: the interval would survive
+    // stop(), and firing `send` into a closed socket throws out of a timer
+    // callback, which in the bridge process is a crash rather than a warning.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      sock.close = () => {
+        sock.closed = true
+      }
+      const c = client(sock, p, vi.fn())
+      c.start()
+      sock.emit('open')
+      seat(sock, false)
+
+      c.stop()
+      vi.advanceTimersByTime(10 * KEEPALIVE_MS)
+      expect(sock.sent).toHaveLength(0)
+
+      // And the late event changes nothing when it finally arrives.
+      sock.emit('close')
+      vi.advanceTimersByTime(10 * KEEPALIVE_MS)
+      expect(sock.sent).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a peer keepalive by tag, without spending its pending handshake', () => {
+    // A keepalive from the phone can race the desktop's greeting. Reaching
+    // `accept` it would fail to open and cost this end its connection -- for a
+    // frame whose entire purpose is to keep the connection. Dropping it by TAG,
+    // above both the greeting path and the frame path, is the whole safety
+    // argument for reserving byte zero.
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    sock.emit('open')
+    seat(sock, true)
+
+    sock.emit('message', Buffer.from([FRAME_KEEPALIVE]), true)
+    expect(sock.closed).toBe(false)
+    expect(c.state).toBe('online')
+
+    // The handshake it would have consumed is still there for the real greeting.
+    const phone = p.phone()
+    phone.accept(sock.sent[0])
+    sock.emit('message', Buffer.from(phone.greeting), true)
+    expect(c.state).toBe('attached')
+  })
+
+  it('drops a peer keepalive on an attached session too', async () => {
+    const p = pair()
+    const sock = fakeSocket()
+    const onRequest = vi.fn()
+    const c = client(sock, p, onRequest)
+    c.start()
+    connect(sock, p)
+
+    // Past the greeting the frame path owns every binary frame, and an unsealed
+    // byte cannot open. Silent there too -- but reached by the same tag check, so
+    // it never touches a key.
+    sock.emit('message', Buffer.from([FRAME_KEEPALIVE]), true)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(onRequest).not.toHaveBeenCalled()
+    expect(sock.closed).toBe(false)
+    expect(c.state).toBe('attached')
+  })
+})

@@ -1,5 +1,10 @@
 import WebSocket from 'ws'
-import { FRAME_SESSION, type Handshake, type SealedSession } from './sessionCrypto'
+import {
+  FRAME_KEEPALIVE,
+  FRAME_SESSION,
+  type Handshake,
+  type SealedSession,
+} from './sessionCrypto'
 import type {
   QuotaLimit,
   RelayControlFrame,
@@ -11,6 +16,9 @@ import type {
  *  tries. One byte, and it is the AEAD's associated data -- retagging a frame fails
  *  authentication rather than being reinterpreted as another frame type. */
 const SESSION_HEADER = new Uint8Array([FRAME_SESSION])
+
+/** The whole keepalive: one reserved tag byte. See `FRAME_KEEPALIVE`. */
+const KEEPALIVE_FRAME = new Uint8Array([FRAME_KEEPALIVE])
 
 /** Where this end stands in the relay room.
  *
@@ -56,6 +64,17 @@ export interface RelayClientDeps {
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 60_000
 
+/** How often a seated connection sends a keepalive.
+ *
+ *  The relay closes a connection whose last BINARY frame is older than 300 s
+ *  (`IDLE_TIMEOUT_MS`, `relay/src/quota.ts`), and it drops text ABOVE the
+ *  `lastSeen` update -- so only a binary frame holds a room. A desktop waiting for
+ *  a phone that has not arrived sends nothing at all, so without this it is cut
+ *  every five minutes and redials a second later, forever: a Durable Object
+ *  instantiation per paired device per ~301 s, and a window each time in which the
+ *  phone finds an empty room. 120 s leaves room for one lost frame. */
+export const KEEPALIVE_MS = 120_000
+
 /** Limits that mean this client is the problem, and so must stop dialing.
  *
  *  The relay names the limit precisely so a client can tell "you sent too much"
@@ -64,9 +83,8 @@ const MAX_DELAY_MS = 60_000
  *  everyone else on the relay.
  *
  *  `idle` and `connection-bytes` are deliberately absent. An idle cut is not a
- *  fault -- a desktop waiting alone for a phone sends nothing at all, so the relay
- *  cuts it on schedule, and never redialing after one would take remote dark until
- *  the app restarts. `connection-bytes` takes 256 MiB to reach,
+ *  fault -- it is a lost keepalive, and never redialing after one would take
+ *  remote dark until the app restarts. `connection-bytes` takes 256 MiB to reach,
  *  so a loop on it is self-limiting: worth reporting, not worth stranding a heavy
  *  user for. */
 const FATAL_LIMITS: readonly QuotaLimit[] = ['frame-size', 'frame-rate']
@@ -85,6 +103,7 @@ export class RelayClient {
   private attempt = 0
   private stopped = false
   private timer: ReturnType<typeof setTimeout> | null = null
+  private keepalive: ReturnType<typeof setInterval> | null = null
   /** Latched when the relay cuts us for something only this client can fix.
    *  Redialing then is exactly the loop the relay warns about, so nothing here
    *  ever clears it: the connection comes back when the bridge does. */
@@ -137,6 +156,11 @@ export class RelayClient {
         return
       }
       const frame = new Uint8Array(data)
+      // A keepalive carries nothing and is not sealed. Dropped here BY TAG, before
+      // either the greeting path or the frame path can mistake it for something
+      // that ought to open -- reaching `acceptGreeting` it would cost this end its
+      // connection, for a frame whose entire purpose is to keep the connection.
+      if (frame[0] === FRAME_KEEPALIVE) return
       if (this.session) {
         void this.handleFrame(frame)
         return
@@ -150,6 +174,7 @@ export class RelayClient {
     const down = () => {
       if (this.socket !== sock) return
       this.socket = null
+      this.stopKeepalive()
       // The session dies with the socket, and this is the only place that kills
       // it: `dial` reaches a live socket exclusively through here, so clearing it
       // in the `open` handler too would just make both copies unfalsifiable.
@@ -182,6 +207,7 @@ export class RelayClient {
     switch (frame?.kind) {
       case 'hello':
         this.setState('online')
+        this.startKeepalive(sock)
         // Greet only into a room that has someone in it -- see `dial`.
         if (frame.peer) this.greet(sock)
         return
@@ -274,6 +300,22 @@ export class RelayClient {
     }
   }
 
+  /** Hold the room open for as long as this socket is seated.
+   *
+   *  The socket is captured rather than read from `this`, so a timer that somehow
+   *  outlived its connection could not write into the next one. It is replaced
+   *  rather than added to: a second `hello` on one socket would otherwise leave an
+   *  interval nothing holds a handle to, firing forever into a dead socket. */
+  private startKeepalive(sock: SocketLike): void {
+    this.stopKeepalive()
+    this.keepalive = setInterval(() => sock.send(KEEPALIVE_FRAME), KEEPALIVE_MS)
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepalive) clearInterval(this.keepalive)
+    this.keepalive = null
+  }
+
   private retry(): void {
     if (this.stopped || this.cutForQuota) return
     const delay = backoffDelay(this.attempt++)
@@ -284,6 +326,7 @@ export class RelayClient {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    this.stopKeepalive()
     this.socket?.close()
     this.socket = null
     this.pending = null
