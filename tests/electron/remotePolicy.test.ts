@@ -102,6 +102,6 @@ describe('runCommand is shell execution, not terminal creation', () => {
 
   it('still lets createTerminal alone open a terminal', () => {
     const caps = { ...NO_CAPABILITIES, createTerminal: true }
-    expect(isAllowed({ kind: 'createTerminal', cwd: '.', command: 'claude' }, caps)).toBe(true)
+    expect(isAllowed({ kind: 'createTerminal', name: 'claude', cwd: '.' }, caps)).toBe(true)
   })
 })

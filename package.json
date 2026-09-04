@@ -28,7 +28,8 @@
     "bench:proof": "vitest run tests/electron/proofBenchmark.test.ts --reporter=verbose",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:test",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:strict": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "electron-vite preview"

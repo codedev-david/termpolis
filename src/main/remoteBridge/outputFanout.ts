@@ -1,18 +1,18 @@
-interface QueuedChunk {
-  terminalId: string
-  chunk: string
-  missed: number
-}
+import type { OutputChunk } from './protocol'
+
+/** What the fan-out holds: a wire chunk before its gap notice is rendered. */
+type QueuedChunk = Omit<OutputChunk, 'marker'>
 
 /** Default per-device queue. 8x the 32 KB terminal window, so a lagging phone
  *  loses nothing the desktop itself still holds. */
 const DEFAULT_CAPACITY_CHARS = 262_144
 
-/** What `drain` hands back: the queued chunk plus a rendered notice when output was
- *  lost. `missed` stays numeric so a client can also count it. */
-export interface DrainedChunk extends QueuedChunk {
-  marker: string | null
-}
+/** What `drain` hands back: the wire shape exactly, so a drained chunk goes
+ *  straight into a frame with no adapter in between.
+ *
+ *  An alias rather than a second structurally-identical declaration -- that is
+ *  how a field gets added to one and not the other. */
+export type DrainedChunk = OutputChunk
 
 export class OutputFanout {
   /** One entry per device, holding BOTH what it watches and what is waiting for it.

@@ -4,6 +4,7 @@ import { SEAL_OVERHEAD_BYTES, SealedChannel, generateIdentity } from '../../src/
 import { RELAY_MAX_FRAME_BYTES } from '../../src/main/remoteBridge/protocol'
 import { MAX_FRAME_BYTES } from '../../relay/src/quota'
 import type { DrainedChunk } from '../../src/main/remoteBridge/outputFanout'
+import type { OutputChunk, RemoteMessage } from '../../src/main/remoteBridge/protocol'
 
 function chunk(over: Partial<DrainedChunk> = {}): DrainedChunk {
   return { terminalId: 't1', chunk: 'hello', missed: 0, marker: null, ...over }
@@ -138,5 +139,50 @@ describe('output chunker', () => {
     const payloads = chunkOutbound([chunk({ chunk: half }), chunk({ chunk: half })], 4_096)
     expect(payloads).toHaveLength(2)
     for (const p of payloads) expect(wireSize(p)).toBeLessThanOrEqual(4_096)
+  })
+})
+
+describe('output wire shape', () => {
+  // The phone switches on `kind`. Two different shapes behind one discriminator is
+  // not a type smell -- it is a renderer that silently shows nothing. So assert
+  // that what the chunker emits IS the union member the phone will destructure.
+  it('emits messages assignable to the wire union', () => {
+    const [payload] = chunkOutbound([chunk({ chunk: 'hello' })], MAX_PAYLOAD_BYTES)
+    const message: RemoteMessage = payload
+    expect(message.kind).toBe('output')
+    if (message.kind !== 'output') throw new Error('unreachable')
+    expect(message.chunks[0].chunk).toBe('hello')
+  })
+
+  it('has no member of the union a phone cannot render', () => {
+    // An exhaustive switch. Adding a variant without teaching the phone about it
+    // fails to compile here, which is the only place that failure is cheap.
+    const render = (m: RemoteMessage): string => {
+      switch (m.kind) {
+        case 'ok':
+          return 'ok'
+        case 'error':
+          return 'error'
+        case 'output':
+          return 'output'
+        case 'status':
+          return 'status'
+        default: {
+          const never: never = m
+          return never
+        }
+      }
+    }
+    expect(render({ kind: 'ok', id: 1, data: null })).toBe('ok')
+    expect(render({ kind: 'error', id: 1, message: 'no' })).toBe('error')
+  })
+
+  it('hands a drained chunk straight to the wire with no adapter', () => {
+    // DrainedChunk and the wire chunk are the same type by construction. They were
+    // two structurally-identical declarations, which is exactly how a field gets
+    // added to one and not the other.
+    const drained: DrainedChunk = chunk()
+    const wire: OutputChunk = drained
+    expect(wire.marker).toBeNull()
   })
 })

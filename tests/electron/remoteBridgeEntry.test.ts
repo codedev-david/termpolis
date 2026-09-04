@@ -210,7 +210,7 @@ describe('bridge core', () => {
 
   it('cancelPairing closes the window — a QR photographed off a screen is dead', () => {
     const { c, sent } = core()
-    c.handleHostMessage({ kind: 'beginPairing' })
+    c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
     const code = sent.find((m) => m.kind === 'pairingCode')
     if (code?.kind !== 'pairingCode') throw new Error('no pairing code')
     const { oneTimeSecret } = JSON.parse(code.qrPayload) as { oneTimeSecret: string }
@@ -306,7 +306,13 @@ describe('capability enforcement precedes side effects', () => {
     })
 
     const ungranted = { ...device(), id: 'other', capabilities: { ...NO_CAPABILITIES } }
-    c.handleHostMessage({ kind: 'devices', devices: [granted, ungranted] })
+    c.handleHostMessage({
+      kind: 'init',
+      mcpPort: 1,
+      mcpToken: 't',
+      identitySecretKey: 'a'.repeat(64),
+      devices: [granted, ungranted],
+    })
     // An ungranted device must not be able to reach the fan-out at all -- neither
     // to join it nor to mutate it. `unsubscribe` is a write too.
     await c.handleRemoteRequest(ungranted.id, {

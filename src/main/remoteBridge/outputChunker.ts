@@ -1,12 +1,11 @@
 import type { DrainedChunk } from './outputFanout'
-import { RELAY_MAX_FRAME_BYTES } from './protocol'
+import { RELAY_MAX_FRAME_BYTES, type OutputPayload } from './protocol'
 import { SEAL_OVERHEAD_BYTES } from './sealedChannel'
 
-/** One `output` message, sized to fit a single relay frame. */
-export interface OutputPayload {
-  kind: 'output'
-  chunks: DrainedChunk[]
-}
+// Re-exported for the callers that already import it from here. The declaration
+// lives in protocol.ts, with the rest of the wire contract, so there is one
+// place to read when writing a second implementation of it.
+export type { OutputPayload }
 
 /** How much plaintext fits in a frame the relay will forward.
  *

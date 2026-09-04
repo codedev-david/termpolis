@@ -1,0 +1,26 @@
+{
+  // Typechecking for the remote-bridge tests.
+  //
+  // `tsconfig.node.json` covers `src/` and `tsconfig.web.json` covers the
+  // renderer; neither includes `tests/`, so until this file existed a
+  // type-level assertion in a test could not fail and a test helper could drift
+  // from the type it was standing in for with nothing to catch it.
+  //
+  // The scope is deliberately the remote bridge and nothing else. Turning this
+  // on for the whole suite surfaces 328 pre-existing errors, overwhelmingly
+  // implicit-any on test callbacks -- worth fixing, but not as a side effect of
+  // a protocol change. Widen the include as files are cleaned, one at a time.
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["tests/electron/remote*.ts", "src/main/remoteBridge/**/*"]
+}

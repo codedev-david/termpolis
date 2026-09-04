@@ -46,7 +46,7 @@ describe('remote bridge end-to-end', () => {
     expect(sent.map((m) => m.kind)).toEqual(['ready'])
 
     // 2. User taps "Pair a phone". The desktop paints a QR.
-    core.handleHostMessage({ kind: 'beginPairing' })
+    core.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
     const code = sent.find((m) => m.kind === 'pairingCode')
     if (code?.kind !== 'pairingCode') throw new Error('no pairing code was emitted')
     const qr = JSON.parse(code.qrPayload) as QrPayload

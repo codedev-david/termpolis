@@ -48,11 +48,46 @@ export type RemoteRequest =
   | { kind: 'subscribe'; terminalId: string }
   | { kind: 'unsubscribe'; terminalId: string }
 
-/** Responses and pushes the bridge may send back. */
+/** One terminal's output as it crosses the wire.
+ *
+ *  `missed` stays numeric alongside the rendered `marker` so a client can count a
+ *  gap as well as print it. */
+export interface OutputChunk {
+  terminalId: string
+  chunk: string
+  /** Chars evicted before the fan-out reached them. Non-zero means output is gone. */
+  missed: number
+  /** Rendered gap notice, on the FIRST piece of a split chunk only. */
+  marker: string | null
+}
+
+/** Terminal output, batched.
+ *
+ *  Many chunks per frame rather than one frame per chunk: the relay bills per
+ *  frame and allows a burst of 40, so a frame per echoed keystroke would spend
+ *  the whole burst on ordinary typing. */
+export interface OutputPayload {
+  kind: 'output'
+  chunks: OutputChunk[]
+}
+
+/** What `onRequest` returns: an answer to exactly one envelope. */
 export type RemoteResponse =
   | { kind: 'ok'; id: number; data: unknown }
   | { kind: 'error'; id: number; message: string }
-  | { kind: 'output'; terminalId: string; chunk: string; missed: number }
+
+/** Everything the desktop may put on the wire, answers and pushes alike. The
+ *  phone switches on `kind` over exactly this union.
+ *
+ *  Kept as one type because two shapes behind a single discriminator is not a
+ *  style problem -- it is a renderer that silently shows nothing. `RemoteResponse`
+ *  used to declare an `output` variant with a `chunk` field that nothing
+ *  constructed, while the bridge actually sent an `OutputPayload` with `chunks`.
+ *  A phone reading `.chunk` off that would have got `undefined` for every field,
+ *  with no error anywhere. */
+export type RemoteMessage =
+  | RemoteResponse
+  | OutputPayload
   | { kind: 'status'; terminalId: string; status: AgentStatus; summary: string }
 
 /** Envelope carrying a request with its correlation id. */
