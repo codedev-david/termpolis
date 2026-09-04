@@ -1,0 +1,12 @@
+name = "termpolis-relay"
+main = "src/index.ts"
+compatibility_date = "2026-08-22"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "PAIRING_ROOM"
+class_name = "PairingRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["PairingRoom"]
