@@ -21,6 +21,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:relay": "npm --prefix relay test",
+    "test:mobile": "npm --prefix mobile test",
+    "typecheck:mobile": "npm --prefix mobile run typecheck",
     "deploy:relay": "npm --prefix relay run deploy",
     "test:e2e": "playwright test",
     "test:e2e:manual": "playwright test -c playwright.manual.config.ts",

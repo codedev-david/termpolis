@@ -58,3 +58,8 @@ memory-audit-confirmed.json
 
 # local screenshot/demo scratch scripts (never part of the product)
 scratchpad/
+
+# phone client (own workspace, own lockfile)
+mobile/node_modules/
+mobile/.expo/
+mobile/coverage/

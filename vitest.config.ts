@@ -29,7 +29,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
-    exclude: ['**/node_modules/**', '**/.worktrees/**', '**/e2e/**', '**/relay/**'],
+    exclude: ['**/node_modules/**', '**/.worktrees/**', '**/e2e/**', '**/relay/**', '**/mobile/**'],
     // Vitest's DEFAULT is 5s, which this suite outgrew without anyone noticing. 344 files run in
     // parallel, and several tests do genuinely slow real work: embedding a corpus with the real bge
     // model, spawning an external unzip, writing hundreds of encrypted entries. Loaded, they blow

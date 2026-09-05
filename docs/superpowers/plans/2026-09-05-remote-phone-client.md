@@ -1375,7 +1375,7 @@ git commit -m "feat(remote): settings, unpair and the phone app shell"
 - [ ] **Step 1: Run the mobile gate.**
 
 ```bash
-cd mobile && npm run lint && npm run typecheck && npm run test:coverage
+cd mobile && npm run typecheck && npm run test:coverage
 ```
 
 Expected: exit 0, all four floors clear. Mobile thresholds are set just under

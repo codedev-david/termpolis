@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Termpolis Remote",
+    "slug": "termpolis-remote",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "termpolis",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "bundleIdentifier": "com.termpolis.remote",
+      "supportsTablet": true,
+      "infoPlist": { "ITSAppUsesNonExemptEncryption": true }
+    },
+    "android": { "package": "com.termpolis.remote" },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "Termpolis Remote uses the camera only to scan the pairing code shown on your desktop." }]
+    ]
+  }
+}

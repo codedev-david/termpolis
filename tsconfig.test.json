@@ -22,5 +22,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["tests/electron/remote*.ts", "src/main/remoteBridge/**/*"]
+  "include": ["tests/electron/remote*.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*"]
 }
