@@ -39,6 +39,25 @@ export class OutputFanout {
     this.devices.delete(deviceId)
   }
 
+  /** Forget every device. Shutdown only -- the bridge is going away, and a
+   *  subscription that outlives it keeps main pumping into a process that is no
+   *  longer there. */
+  dropAll(): void {
+    this.devices.clear()
+  }
+
+  /** Every terminal at least one device is watching.
+   *
+   *  Main pumps PTY output for exactly this set and nothing else, so it is the
+   *  answer to "which terminals cost anything". A union rather than a per-device
+   *  map because the caller would only compute the union anyway, and computing
+   *  it in two places is how the two come to disagree. */
+  subscribedTerminals(): string[] {
+    const all = new Set<string>()
+    for (const d of this.devices.values()) for (const t of d.terminals) all.add(t)
+    return [...all]
+  }
+
   ingest(terminalId: string, slice: { output: string; nextOffset: number; missed: number }): void {
     if (slice.output === '' && slice.missed === 0) return
     for (const d of this.devices.values()) {

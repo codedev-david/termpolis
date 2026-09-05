@@ -11,7 +11,12 @@ import {
 } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { sealPairingHello, openPairingAck } from '../../src/main/remoteBridge/pairing'
-import { NO_CAPABILITIES, type BridgeToHost, type PairedDevice } from '../../src/main/remoteBridge/protocol'
+import {
+  NO_CAPABILITIES,
+  type BridgeToHost,
+  type PairedDevice,
+  type RemoteRequest,
+} from '../../src/main/remoteBridge/protocol'
 import type {
   PairingRelayDeps,
   RelayClientDeps,
@@ -831,5 +836,93 @@ describe('pairing over the relay', () => {
     const second = ctx.rooms[ctx.rooms.length - 1]
     vi.advanceTimersByTime(31_000)
     expect(second.stopped).toBe(false)
+  })
+})
+
+describe('subscription announcements', () => {
+  /** Every terminal set the core has announced, in order. */
+  function announced(sent: BridgeToHost[]): string[][] {
+    return sent
+      .filter((m): m is Extract<BridgeToHost, { kind: 'subscriptionsChanged' }> =>
+        m.kind === 'subscriptionsChanged')
+      .map((m) => [...m.terminalIds].sort())
+  }
+
+  /** Drive one request through the core the way an attached room would. */
+  async function request(
+    c: ReturnType<typeof core>['c'],
+    deviceId: string,
+    request: RemoteRequest,
+  ) {
+    return c.handleRemoteRequest(deviceId, { id: 1, request })
+  }
+
+  it('announces the new set after a granted subscribe', async () => {
+    // Main has no other way to learn this. Without the message it pumps output
+    // for every terminal or for none.
+    const h = core([device()])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    expect(announced(h.sent)).toEqual([['t1']])
+  })
+
+  it('says nothing when a repeat subscribe leaves the set unchanged', async () => {
+    // A phone re-subscribing on reconnect is routine. Re-announcing an identical
+    // set would wake main and reset its pump for no reason.
+    const h = core([device()])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    expect(announced(h.sent)).toEqual([['t1']])
+  })
+
+  it('announces the empty set when the last subscriber unsubscribes', async () => {
+    const h = core([device()])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    await request(h.c, 'd1', { kind: 'unsubscribe', terminalId: 't1' })
+    expect(announced(h.sent)).toEqual([['t1'], []])
+  })
+
+  it('does not announce for a subscribe the policy refused', async () => {
+    // The fan-out is only updated after a successful dispatch, and the
+    // announcement must follow the fan-out rather than the request -- otherwise
+    // main starts pumping a terminal for a device that was told no.
+    const h = core([{ ...device(), capabilities: { ...NO_CAPABILITIES, read: false } }])
+    const res = await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    expect(res.kind).toBe('error')
+    expect(announced(h.sent)).toEqual([])
+  })
+
+  it('announces after revoking the only subscriber', async () => {
+    // Revoking has to stop the output too. A terminal left in the set would keep
+    // main serialising PTY output for a phone that is gone.
+    const h = core([device()])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    h.c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })
+    expect(announced(h.sent)).toEqual([['t1'], []])
+  })
+
+  it('announces after withdrawing read from the only subscriber', async () => {
+    const h = core([device()])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    h.c.handleHostMessage({
+      kind: 'setCapabilities',
+      deviceId: 'd1',
+      capabilities: { ...NO_CAPABILITIES, read: false },
+    })
+    expect(announced(h.sent)).toEqual([['t1'], []])
+  })
+
+  it('keeps a terminal in the set while a second device still watches it', async () => {
+    const h = core([device('d1'), device('d2')])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    await request(h.c, 'd2', { kind: 'subscribe', terminalId: 't1' })
+    h.c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })
+    expect(announced(h.sent)).toEqual([['t1']])
+  })
+
+  it('announces the empty set on shutdown so main stops pumping', async () => {
+    const h = core([device()])
+    await request(h.c, 'd1', { kind: 'subscribe', terminalId: 't1' })
+    h.c.handleHostMessage({ kind: 'shutdown' })
+    expect(announced(h.sent)).toEqual([['t1'], []])
   })
 })

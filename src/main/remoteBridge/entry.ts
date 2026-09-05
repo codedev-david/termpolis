@@ -270,6 +270,25 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     deps.send({ kind: 'devicesChanged', devices: registry.list() })
   }
 
+  /** The last set main was told about, as a stable key. Starts as the empty set,
+   *  which is what main assumes before the first announcement -- so a core that
+   *  opens with nothing subscribed correctly says nothing. */
+  let announcedSubscriptions = ''
+
+  /** Tell main which terminals are worth pumping, but only when that changes.
+   *
+   *  Main pumps PTY output for exactly this set. A phone re-subscribing on every
+   *  reconnect is routine, and re-announcing an identical set would wake main and
+   *  reset its pump for no reason -- so the comparison is on the SORTED ids
+   *  rather than on insertion order, which varies with who subscribed first. */
+  function announceSubscriptions(): void {
+    const terminalIds = fanout.subscribedTerminals().sort()
+    const key = terminalIds.join(' ')
+    if (key === announcedSubscriptions) return
+    announcedSubscriptions = key
+    deps.send({ kind: 'subscriptionsChanged', terminalIds })
+  }
+
   function handleHostMessage(msg: HostToBridge): void {
     switch (msg.kind) {
       case 'init': {
@@ -317,6 +336,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // which is not what the user asked for when they removed the device.
         closeRoom(msg.deviceId)
         announceDevices()
+        announceSubscriptions()
         return
       case 'setCapabilities':
         registry.setCapabilities(msg.deviceId, msg.capabilities)
@@ -327,6 +347,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // Dropping the fan-out state is what makes the toggle mean what it says.
         if (!msg.capabilities.read) fanout.dropDevice(msg.deviceId)
         announceDevices()
+        announceSubscriptions()
         return
       case 'terminalOutput':
         fanout.ingest(msg.terminalId, msg.slice)
@@ -336,6 +357,11 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         dispatcher = null
         closePairingRoom()
         for (const deviceId of [...rooms.keys()]) closeRoom(deviceId)
+        // Main's pump outlives this process by however long the teardown takes.
+        // Leaving it pumping into a bridge that is going away is the cost this
+        // whole mechanism exists to avoid.
+        fanout.dropAll()
+        announceSubscriptions()
         return
     }
   }
@@ -355,6 +381,10 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // ahead of the check that authorises it is not a check.
       if (env.request.kind === 'subscribe') fanout.subscribe(deviceId, env.request.terminalId)
       if (env.request.kind === 'unsubscribe') fanout.unsubscribe(deviceId, env.request.terminalId)
+      // After the fan-out, never before: the announcement has to follow what the
+      // fan-out actually holds, or main starts pumping a terminal for a device
+      // that was refused. `announceSubscriptions` is a no-op when nothing moved.
+      announceSubscriptions()
       registry.touch(deviceId)
       return { kind: 'ok', id: env.id, data }
     } catch (err) {

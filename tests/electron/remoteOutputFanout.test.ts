@@ -158,3 +158,55 @@ describe('outputFanout — gap markers', () => {
     expect(f.drain('phone').map((c) => c.chunk)).toEqual(['first', 'second'])
   })
 })
+
+describe('OutputFanout.subscribedTerminals', () => {
+  it('starts empty', () => {
+    expect(new OutputFanout().subscribedTerminals()).toEqual([])
+  })
+
+  it('reports the union across devices, without duplicates', () => {
+    // Main pumps a terminal if ANY phone is watching it. A per-device list would
+    // make the caller do the union, and doing it twice is how the two drift.
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('a', 't2')
+    f.subscribe('b', 't2')
+    f.subscribe('b', 't3')
+    expect(f.subscribedTerminals().sort()).toEqual(['t1', 't2', 't3'])
+  })
+
+  it('keeps a terminal while another device still watches it', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('b', 't1')
+    f.unsubscribe('a', 't1')
+    expect(f.subscribedTerminals()).toEqual(['t1'])
+  })
+
+  it('drops a terminal when its last subscriber leaves', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.unsubscribe('a', 't1')
+    expect(f.subscribedTerminals()).toEqual([])
+  })
+
+  it('drops every device on dropAll', () => {
+    // Shutdown only. A subscription that outlives the bridge keeps main pumping
+    // PTY output into a process that is no longer there.
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('b', 't2')
+    f.dropAll()
+    expect(f.subscribedTerminals()).toEqual([])
+  })
+
+  it('drops everything a revoked device was watching', () => {
+    // Revoking has to stop the output, not just the requests. A terminal left in
+    // the union would keep main serialising PTY output for a phone that is gone.
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('b', 't2')
+    f.dropDevice('a')
+    expect(f.subscribedTerminals()).toEqual(['t2'])
+  })
+})

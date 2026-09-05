@@ -136,6 +136,11 @@ export type BridgeToHost =
   | { kind: 'paired'; device: PairedDevice }
   | { kind: 'devicesChanged'; devices: PairedDevice[] }
   | { kind: 'attachedChanged'; attachedDeviceIds: string[] }
+  // Which terminals at least one phone is watching. Main pumps PTY output for
+  // exactly this set: without it main would either serialise every terminal
+  // across the process boundary or none of them, and the bridge is the only
+  // side that knows which a device actually subscribed to.
+  | { kind: 'subscriptionsChanged'; terminalIds: string[] }
   // Reachability, which is not the same as paired: a device stays paired while
   // the phone is in a tunnel. Settings shows the two separately.
   | { kind: 'deviceConnected'; deviceId: string }
