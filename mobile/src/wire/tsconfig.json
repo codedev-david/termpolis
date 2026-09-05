@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": [
+    "Deliberately standalone: no `extends`, so this directory compiles without",
+    "mobile/node_modules. tests/electron/remoteMobileInterop.test.ts imports",
+    "these files into the desktop's vitest run, and esbuild loads the nearest",
+    "tsconfig.json for every file it transforms. The parent mobile/tsconfig.json",
+    "extends `expo/tsconfig.base`, which only resolves once `npm ci` has run in",
+    "mobile/ -- and the root unit job never does. Without this file that job dies",
+    "with TSCONFIG_ERROR before a single interop assertion runs.",
+    "Options mirror expo/tsconfig.base plus mobile/tsconfig.json's strictness, so",
+    "a file that typechecks under `npm --prefix mobile run typecheck` typechecks",
+    "here too. `types: []` is the extra one: the wire format is host-free, and a",
+    "directory that cannot see @types/jest or @types/node cannot quietly grow a",
+    "dependency on either."
+  ],
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "lib": ["ESNext", "DOM"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "types": []
+  },
+  "include": ["**/*.ts"]
+}

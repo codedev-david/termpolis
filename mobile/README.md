@@ -42,12 +42,13 @@ into typing is a URL an attacker can supply.
 ## Gates
 
 ```bash
-npm run typecheck      # tsc --noEmit
-npm test               # jest
-npm run test:coverage  # jest --coverage, with floors
+npm run typecheck       # tsc --noEmit
+npm run typecheck:wire  # tsc --noEmit -p src/wire, on its own
+npm test                # jest
+npm run test:coverage   # jest --coverage, with floors
 ```
 
-The same three run in CI (the `mobile` job in
+The same four run in CI (the `mobile` job in
 `.github/workflows/test.yml`). Lint is not a separate script here: the root
 `npm run lint` already covers `mobile/`, under the root `.eslintrc.cjs`.
 
@@ -69,6 +70,17 @@ imports them **into the desktop's Node test process**, side by side with
 one React Native import to `src/wire/` and that test stops being able to load
 the file at all: the root gate goes red, and the thing that proved the phone's
 bytes and the desktop's bytes were the same bytes is gone.
+
+That import is also why `src/wire/` carries its own `tsconfig.json` with no
+`extends`. The root unit job installs the desktop's dependencies and nothing
+else, so `mobile/node_modules` is not there, so `expo/tsconfig.base` cannot
+resolve -- and esbuild loads the nearest tsconfig for every file it transforms.
+With only the parent config in reach, the interop suite dies at
+`[TSCONFIG_ERROR] Tsconfig not found` before a single assertion runs, on all
+three platforms, while passing on any machine that happens to have run
+`npm install` in `mobile/`. `npm run typecheck:wire` compiles the directory
+through that standalone config so it cannot rot back into something only Expo
+can load.
 
 So: platform code goes in `src/net/`, `src/storage/`, `src/state/` or
 `src/screens/`. `src/wire/` stays pure.

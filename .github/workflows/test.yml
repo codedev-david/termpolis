@@ -84,6 +84,11 @@ jobs:
         run: npm ci --prefix mobile
       - name: Typecheck mobile
         run: npm --prefix mobile run typecheck
+      # src/wire/ has its own standalone tsconfig because the desktop's unit job
+      # transforms those files without mobile/node_modules. Compile it on its own
+      # here so that config cannot rot into something only Expo can load.
+      - name: Typecheck the wire format standalone
+        run: npm --prefix mobile run typecheck:wire
       - name: Test mobile
         run: npm --prefix mobile run test:coverage
 

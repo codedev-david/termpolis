@@ -10,7 +10,8 @@
     "ios": "expo run:ios",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:wire": "tsc --noEmit -p src/wire"
   },
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
@@ -22,6 +23,7 @@
     "expo-camera": "~57.0.4",
     "expo-constants": "~57.0.17",
     "expo-secure-store": "~57.0.3",
+    "expo-splash-screen": "~57.0.8",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
