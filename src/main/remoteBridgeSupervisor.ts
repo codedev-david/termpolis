@@ -19,7 +19,6 @@ const RESTART_WINDOW_MS = 60_000
 
 let spawner: BridgeSpawner | null = null
 let handle: BridgeHandle | null = null
-let params: InitParams | null = null
 let disabled = false
 let stopping = false
 const restartTimes: number[] = []
@@ -45,8 +44,13 @@ function emit(m: BridgeToHost): void {
   for (const cb of subscribers) cb(m)
 }
 
-function spawn(): void {
-  if (!spawner || !params || disabled) return
+/** Fork one child and arm the restart policy behind it.
+ *
+ *  `init` is an argument rather than module state so a respawn replays exactly
+ *  what the first spawn was given. Held in a variable it could be `null` on a
+ *  path no caller can reach, which buys a guard nothing can exercise. */
+function spawn(init: InitParams): void {
+  if (!spawner || disabled) return
   const child = spawner()
   handle = child
   child.on('message', emit)
@@ -64,20 +68,47 @@ function spawn(): void {
       return
     }
     void code
-    spawn()
+    spawn(init)
   })
-  child.postMessage({ kind: 'init', ...params })
+  child.postMessage({ kind: 'init', ...init })
 }
 
 export function startRemoteBridge(init: InitParams): void {
-  if (handle || disabled) return
+  // `disabled` is checked in `spawn()` and nowhere else. Two places that decide
+  // whether a fail-closed switch is closed is one place too many: the day a
+  // third caller appears, it will copy whichever guard it happened to read.
+  if (handle) return
   stopping = false
-  params = init
-  spawn()
+  spawn(init)
+}
+
+/** Push one message down to the running bridge.
+ *
+ *  Silently a no-op when nothing is running. Every caller is reacting to a user
+ *  action or a PTY write, neither of which can know whether the child is up, and
+ *  making them all check first would put the same race in every call site. */
+export function sendToBridge(msg: HostToBridge): void {
+  handle?.postMessage(msg)
+}
+
+/** Re-arm after the flap limit tripped.
+ *
+ *  The supervisor fails CLOSED on a crash loop and stays that way, which is
+ *  right for an automatic restart and wrong for a person: toggling remote off
+ *  and on again is an explicit decision to try once more, and without this that
+ *  switch would do nothing until the app was restarted, with no explanation. */
+export function clearRemoteDisabled(): void {
+  disabled = false
+  restartTimes.length = 0
 }
 
 export function stopRemoteBridge(): void {
   stopping = true
+  // Ask before killing. The child closes its relay rooms on `shutdown`, which
+  // frees each seat immediately -- and a seat is exclusive: the relay answers a
+  // second desktop socket for the same room with 409. Without this the next
+  // start races the old sockets' timeouts.
+  handle?.postMessage({ kind: 'shutdown' })
   handle?.kill()
   handle = null
 }
@@ -143,7 +174,6 @@ export function _resetSupervisorForTests(): void {
   stopping = false
   disabled = false
   handle = null
-  params = null
   spawner = null
   restartTimes.length = 0
   subscribers.length = 0

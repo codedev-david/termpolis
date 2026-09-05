@@ -212,6 +212,43 @@ describe('createOutputPump', () => {
     expect(h.sent).toEqual([])
   })
 
+  it('does not flush a terminal that stays subscribed across a change', () => {
+    // Only the departing terminals earn a final read. Flushing the survivors too
+    // would send whatever the tick was about to send anyway, a tick early and out
+    // of band -- and on every subscription change a phone makes.
+    const h = harness()
+    h.pump.setSubscriptions(['t1', 't2'])
+    h.terminals.write('t1', 'stays')
+    h.terminals.write('t2', 'goes')
+    h.pump.setSubscriptions(['t1'])
+    expect(h.sent).toEqual([{ terminalId: 't2', slice: { output: 'goes', nextOffset: 4, missed: 0 } }])
+  })
+
+  it('flushNow after stop sends nothing', () => {
+    // stop() cancels the pending timer, but flushNow is a public entry point and
+    // reaches `flush` directly -- an unguarded one would push into a bridge the
+    // caller has already torn down.
+    const h = harness()
+    h.pump.setSubscriptions(['t1'])
+    h.terminals.write('t1', 'too late')
+    h.pump.markDirty('t1')
+    h.pump.stop()
+    h.pump.flushNow()
+    expect(h.sent).toEqual([])
+  })
+
+  it('setSubscriptions after stop does not flush the departing terminals', () => {
+    // The bridge can announce a subscription change while main is shutting the
+    // pump down. The final read that a normal unsubscribe earns would be sent
+    // into a bridge that is already gone.
+    const h = harness()
+    h.pump.setSubscriptions(['t1'])
+    h.terminals.write('t1', 'tail')
+    h.pump.stop()
+    h.pump.setSubscriptions([])
+    expect(h.sent).toEqual([])
+  })
+
   it('re-subscribing a terminal resumes from where it left off', () => {
     const h = harness()
     h.pump.setSubscriptions(['t1'])
