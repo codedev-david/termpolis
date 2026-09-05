@@ -121,3 +121,17 @@ memory for as long as the app does.
 The one-time pairing secret from the QR code is never written to storage at
 all, not even briefly. Unpair drops the lot, and does so whether or not the
 relay is reachable.
+
+## Shipping it
+
+Store submission material lives in [`store/`](store/): the privacy
+disclosures both forms ask for, the listing copy with its character counts,
+the screenshot sizes and capture commands, and what reviewers are told.
+[`store/README.md`](store/README.md) is the runbook.
+
+`app.json` and the dependency list are what those disclosures are *about*, so
+[`__tests__/appConfig.test.ts`](__tests__/appConfig.test.ts) asserts them
+exactly -- the bundle ids, the encryption declaration, the two Android
+permissions, the blocked ones, and the full dependency set. Adding a
+dependency fails that test on purpose: an analytics SDK arriving quietly is
+how a truthful "collects no data" becomes a false one.

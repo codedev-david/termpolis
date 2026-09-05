@@ -81,7 +81,7 @@ The policy covers the desktop app and the phone app together, because they are o
 product and a reviewer following the URL from either store should not land on a page
 that only describes the other half.
 
-- [ ] **Step 1: Read the site's shell**
+- [x] **Step 1: Read the site's shell**
 
 The page must match the existing chrome. Read `index.html`'s `<head>`, header and
 footer and reuse them verbatim — same `styles.css`, same nav, same favicon links.
@@ -91,7 +91,7 @@ sed -n '1,80p' ~/repos/termpolis-web/index.html
 grep -n '<footer' -A 30 ~/repos/termpolis-web/index.html
 ```
 
-- [ ] **Step 2: Write `privacy.html`**
+- [x] **Step 2: Write `privacy.html`**
 
 Sections, in this order: what the desktop stores locally and never uploads; what the
 phone stores (its X25519 secret and the pairing record, in the OS keystore); what the
@@ -102,7 +102,7 @@ desktop, under their terms — not us); children; changes; contact.
 
 Every claim must be one you can point at code for. If you cannot, cut the claim.
 
-- [ ] **Step 3: Verify it renders and the links resolve**
+- [x] **Step 3: Verify it renders and the links resolve**
 
 ```bash
 cd ~/repos/termpolis-web && python -m http.server 8099 &
@@ -111,13 +111,13 @@ python -c "import urllib.request as u; print(u.urlopen('http://localhost:8099/pr
 Expected: `200`, and the page is styled — an unstyled page means the CSS path is wrong
 relative to the site root.
 
-- [ ] **Step 4: Add the footer link and the sitemap entry**
+- [x] **Step 4: Add the footer link and the sitemap entry**
 
 Add `<a href="/privacy.html">Privacy</a>` to the footer of `index.html` and
 `docs.html`, and a `<url>` block for `https://termpolis.com/privacy.html` in
 `sitemap.xml` with `<priority>0.5</priority>`.
 
-- [ ] **Step 5: Commit and deploy**
+- [x] **Step 5: Commit and deploy** — pushed as `13ab9c2`; the "Deploy Website" Action succeeded (run 33955953921, 2m14s). The live-URL check is still outstanding: `termpolis.com` refuses on both 80 and 443 from this machine, and so does `codedev.llc`, which shares the same GoDaddy host — a hosting-side outage or an egress block, not a deploy failure. Re-run the `curl` when the host answers.
 
 ```bash
 cd ~/repos/termpolis-web
@@ -159,7 +159,7 @@ denylist only catches SDKs you thought of. An exact set forces whoever adds the 
 dependency to look at this test, read why it exists, and decide consciously whether the
 privacy answers still hold.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 import appConfig from '../app.json'
@@ -227,7 +227,7 @@ describe('package.json -- what makes "collects no data" true', () => {
 })
 ```
 
-- [ ] **Step 2: Run it and watch it fail for the right reason**
+- [x] **Step 2: Run it and watch it fail for the right reason**
 
 ```bash
 npm --prefix mobile test -- appConfig
@@ -236,19 +236,19 @@ Expected: FAIL — `Cannot find module '../app.json'` unless `resolveJsonModule`
 jest's transform allow JSON imports. If that is the failure, fix the config, not the
 test.
 
-- [ ] **Step 3: Make it pass**
+- [x] **Step 3: Make it pass**
 
 No production change should be needed: `1114d38` already sets every one of these. If a
 field is genuinely missing, add it to `app.json` — do not soften the assertion.
 
-- [ ] **Step 4: Run the whole mobile gate**
+- [x] **Step 4: Run the whole mobile gate**
 
 ```bash
 npm --prefix mobile run typecheck && npm --prefix mobile run typecheck:wire && npm --prefix mobile run test:coverage
 ```
 Expected: PASS, with coverage floors still met.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/__tests__/appConfig.test.ts mobile/jest.config.js
@@ -272,7 +272,7 @@ answered again at every future release by whoever is submitting that day. Writin
 answers down once, next to the reason each one is what it is, is the difference between
 a consistent record and a form filled in from memory at 11pm.
 
-- [ ] **Step 1: Write the Apple section**
+- [x] **Step 1: Write the Apple section**
 
 For every category Apple lists (Contact Info, Health, Financial, Location, Sensitive
 Info, Contacts, User Content, Browsing History, Search History, Identifiers, Purchases,
@@ -287,7 +287,7 @@ entirely. Note the two things a reviewer may ask about anyway:
   Apple's sense — it never reaches a server we can read — but say so plainly rather
   than leaving a reviewer to guess.
 
-- [ ] **Step 2: Write the Google section**
+- [x] **Step 2: Write the Google section**
 
 Play's form asks per data type whether it is *collected* (leaves the device to a server
 you control) and whether it is *shared*. Answer **no** to both throughout, then fill the
@@ -300,14 +300,14 @@ Record explicitly that the relay is not a collector: it forwards ciphertext addr
 a room id, keeps no logs, and persists no frames (`relay/src/pairingRoom.ts` stores only
 an idle alarm).
 
-- [ ] **Step 3: Write the "what would change this" section**
+- [x] **Step 3: Write the "what would change this" section**
 
 List the changes that would invalidate the answers: adding any analytics or crash SDK,
 adding push notifications, persisting scrollback, adding an account system, or the relay
 beginning to log. Point at `mobile/__tests__/appConfig.test.ts` as the thing that will
 notice the first of those.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add mobile/store/data-disclosures.md
@@ -326,7 +326,7 @@ git commit -m "docs(mobile): the App Store and Play data disclosures, with their
 - Produces: every text field both consoles require, and the commands that produce the
   image assets.
 
-- [ ] **Step 1: Write `listing.md`**
+- [x] **Step 1: Write `listing.md`**
 
 Fields, with the store's limit next to each: app name (30 chars, Apple), subtitle (30),
 promotional text (170), description (4000), keywords (100, comma-separated, no spaces),
@@ -345,7 +345,7 @@ Say what it is: read what your agents are doing, answer a prompt that is waiting
 a new agent terminal, from a phone. Say what it is not: no memory, no embeddings, no
 model credentials on the phone, nothing stored, no account.
 
-- [ ] **Step 2: Write `screenshots.md`**
+- [x] **Step 2: Write `screenshots.md`**
 
 Required sets: iPhone 6.9" (1320×2868 or 1290×2796) and 6.5"; iPad 13" only if
 `supportsTablet` stays true — it is true today, so either produce them or set it false
@@ -371,7 +371,7 @@ adb exec-out screencap -p > mobile/store/shots/android-01-pair.png
 Two rules for the captures: pair against a scratch repo, never a real one, and never let
 a real path, branch name or prompt into the frame. A screenshot is published forever.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add mobile/store/listing.md mobile/store/screenshots.md
@@ -395,12 +395,24 @@ cryptography. App Review guideline 2.1 requires the reviewer be able to exercise
 app. A reviewer opening Termpolis Remote sees a pairing screen and has no Termpolis
 desktop, so without preparation the app is untestable and gets rejected as incomplete.
 
+> **Correction, recorded during execution.** This task was planned around
+> handing the reviewer a pairing payload in the review notes. That cannot work:
+> a pairing offer expires after **90 seconds** (`DEFAULT_TTL_MS`,
+> `src/main/remoteBridge/pairing.ts:13`), so anything pasted into a static form
+> is stale long before a reviewer reads it. A newly paired device is also
+> granted **no capabilities at all** (`pairing.ts:217` seeds
+> `{ ...NO_CAPABILITIES }`), so a reviewer who paired successfully would still
+> see an empty app. `mobile/store/review-notes.md` as written instead walks the
+> reviewer through installing the free, notarized desktop build from
+> `releases/latest` and granting the two capabilities themselves, with a screen
+> recording as the fallback. The "no demo mode" decision below stands.
+
 The approach: **a real desktop, reachable during review.** Not a demo mode. A hidden
 scripted fake would be a second code path that no one exercises, that can drift from the
 real one, and that Apple treats with suspicion when it is discovered rather than
 declared. A real desktop is also the honest answer — it is exactly what a user does.
 
-- [ ] **Step 1: Write the reviewer procedure**
+- [x] **Step 1: Write the reviewer procedure**
 
 A numbered, no-context-assumed procedure: install, tap "Enter code manually", paste the
 payload from the review notes, compare the eight safety words against the screenshot
@@ -410,7 +422,7 @@ State plainly that the app is a client for software the reviewer is not being as
 install, that a desktop has been left running and paired-ready for the review window,
 and give a contact for re-issuing the payload if the window lapses.
 
-- [ ] **Step 2: Write the operator procedure**
+- [x] **Step 2: Write the operator procedure**
 
 What David does before submitting: launch Termpolis on a machine that will stay awake,
 enable Remote, grant `read` and `writeToTerminal` and nothing more, open a terminal in a
@@ -422,14 +434,14 @@ Note the capability choice and why: `createTerminal` and `closeTerminal` stay of
 reviewer does not need them, and a spare pairing that can spawn processes on a machine
 you own is not a thing to leave running for a week.
 
-- [ ] **Step 3: Record the fallback**
+- [x] **Step 3: Record the fallback**
 
 If leaving a desktop online for the review window is not workable, the fallback is a
 screen recording of the full flow attached to the review notes, plus an offer to
 demonstrate live. Weaker, sometimes accepted, and worth writing down now rather than
 inventing under a rejection.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add mobile/store/review-notes.md
@@ -463,13 +475,13 @@ visible in the plan rather than discovered at submission time.
 - **Google Play Console** registration ($25 one-time) and a service-account JSON for
   `eas submit`.
 
-- [ ] **Step 1: Write the runbook**
+- [x] **Step 1: Write the runbook**
 
 Order of operations, because several of these block each other: policy URL live →
 app records created in both consoles → disclosures submitted → listing and screenshots
 uploaded → build → internal testing track / TestFlight → review notes → submit.
 
-- [ ] **Step 2: Record the build and submit commands**
+- [x] **Step 2: Record the build and submit commands**
 
 ```bash
 npm --prefix mobile run typecheck && npm --prefix mobile run typecheck:wire && npm --prefix mobile run test:coverage
@@ -482,7 +494,7 @@ npx eas-cli submit --profile production --platform android
 `app.json`. The Android track is `internal` with `releaseStatus: draft` — deliberate, so
 the first upload cannot go public by accident.
 
-- [ ] **Step 3: Fill the placeholders**
+- [ ] **Step 3: Fill the placeholders** — BLOCKED on David: `ascAppId` does not exist until an App Store Connect app record is created, and `appleTeamId` is only readable from the Apple Developer account (it is in this repo as the write-only `APPLE_TEAM_ID` secret). Documented in `mobile/store/README.md` §2.
 
 Once the app records exist:
 
@@ -491,7 +503,7 @@ grep -n "REPLACE_WITH" mobile/eas.json
 ```
 Expected after the edit: no output. Neither value is a secret; both are safe to commit.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add mobile/store/README.md mobile/eas.json mobile/README.md
