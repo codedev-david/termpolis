@@ -86,6 +86,14 @@ export function pairingRoot(
  *  only a CSPRNG once `react-native-get-random-values` has been imported. That
  *  import is the first line of `index.ts` for exactly this reason: a key drawn
  *  before it is a total break that passes every test you would think to write. */
+/** The public half of an identity key.
+ *
+ *  Pure function of the private half, so a stored keypair is never two values
+ *  that can drift apart -- only the secret is ever persisted. */
+export function publicKeyFor(secretKeyHex: string): string {
+  return toHex(x25519.getPublicKey(fromHex(secretKeyHex)))
+}
+
 export function generateIdentity(): { secretKey: string; publicKey: string } {
   const secretKey = randomBytes(KEY_BYTES)
   return { secretKey: toHex(secretKey), publicKey: toHex(x25519.getPublicKey(secretKey)) }
