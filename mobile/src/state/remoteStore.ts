@@ -338,6 +338,10 @@ export function teardownRemote(): void {
     paired: null,
     safetyPhrase: null,
     terminals: [],
+    // Grants belong to the desktop that issued them. A teardown that left them
+    // behind would let the next screen enable a button on the strength of what
+    // some earlier desktop allowed.
+    capabilities: { ...NO_CAPABILITIES },
     output: {},
     agentStatus: {},
     stale: true,

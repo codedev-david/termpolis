@@ -190,3 +190,65 @@ describe('size', () => {
     expect(Date.now() - started).toBeLessThan(4000)
   })
 })
+
+describe('a truncated extended-colour sequence', () => {
+  it('clears the background rather than leaving the old one behind', () => {
+    // `48;5` with no index left is what a chunk boundary looks like when the
+    // scrollback is split mid-sequence. There is no colour to apply, and
+    // keeping the previous background would paint the rest of the screen with
+    // a colour the terminal had already moved on from.
+    const segments = renderAnsi(`${ESC}[41mred bg${ESC}[48;5mafter`)
+    expect(texts(segments)).toEqual(['red bg', 'after'])
+    expect(segments[0]?.bg).toBeDefined()
+    expect(segments[1]?.bg).toBeUndefined()
+  })
+
+  it('clears the foreground the same way', () => {
+    const segments = renderAnsi(`${ESC}[31mred fg${ESC}[38;2mafter`)
+    expect(texts(segments)).toEqual(['red fg', 'after'])
+    expect(segments[0]?.fg).toBeDefined()
+    expect(segments[1]?.fg).toBeUndefined()
+  })
+})
+
+describe('the corners of the SGR table', () => {
+  it('turns italic back off', () => {
+    // 3 on, 23 off. Without the pair, one italicised word italicises the rest of
+    // the session -- the desktop only ever sends the reset it expects to work.
+    const segs = renderAnsi(`${ESC}[3mslanted${ESC}[23mupright`)
+    expect(segs).toEqual([
+      { text: 'slanted', italic: true },
+      { text: 'upright' },
+    ])
+  })
+
+  it('paints the eight bright background colours', () => {
+    // 100-107. Agents use bright backgrounds for diff highlights, and a missing
+    // arm here would silently drop the highlight rather than fail loudly.
+    const segs = renderAnsi(`${ESC}[100ma${ESC}[107mb`)
+    expect(segs).toEqual([
+      { text: 'a', bg: '#666666' },
+      { text: 'b', bg: '#ffffff' },
+    ])
+  })
+
+  it('ignores a truecolour whose components are out of range', () => {
+    // A byte over 255 is a bug or a forgery upstream. Clamping it would invent a
+    // colour the desktop never sent; dropping it leaves the text readable.
+    const segs = renderAnsi(`${ESC}[38;2;300;0;0mstill readable`)
+    expect(segs).toEqual([{ text: 'still readable' }])
+  })
+
+  it('reads an omitted parameter as a zero', () => {
+    // `ESC[;31m` is legal: the empty slot means 0, which is the full reset. The
+    // 31 that follows must still apply, so this is not the same as ESC[0m.
+    expect(renderAnsi(`${ESC}[;31mred`)).toEqual([{ text: 'red', fg: '#cd3131' }])
+  })
+
+  it('drops a charset selector that runs off the end of the input', () => {
+    // Output arrives in chunks and a two-byte `ESC (` can be the last thing in
+    // one of them. Consuming three bytes there would step past the end and, on
+    // the next pass, emit the stray byte as text.
+    expect(renderAnsi(`done${ESC}(`)).toEqual([{ text: 'done' }])
+  })
+})

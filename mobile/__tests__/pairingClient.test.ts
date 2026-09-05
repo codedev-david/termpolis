@@ -428,3 +428,77 @@ describe('when pairing does not work', () => {
     expect(() => h.advance(PAIRING_TIMEOUT_MS * 2)).not.toThrow()
   })
 })
+
+describe('frames this version of the phone was not written for', () => {
+  it('ignores a relay control frame it does not recognise', async () => {
+    // The relay is deployed separately from the app stores, so it will one day
+    // speak a kind this build has never heard of. An unknown kind is not a
+    // failure -- abandoning the pairing over one would strand a phone whose
+    // only fault is being a version behind.
+    const h = harness()
+    const pending = start(h)
+    h.latest().open()
+    h.latest().control('{"kind":"rate-hint","perMinute":30}')
+
+    h.latest().control({ kind: 'hello', role: 'device', peer: true })
+    h.latest().binary(sealAck(deviceIdFor(PHONE_PK)))
+    await expect(pending).resolves.toMatchObject({
+      desktop: { deviceId: deviceIdFor(PHONE_PK) },
+    })
+  })
+
+  it('reads an ack delivered as a typed array, not only as an ArrayBuffer', async () => {
+    // Same platform quirk the session socket has to survive, and it lands here
+    // first: a phone that cannot read the ack never gets as far as a session.
+    const h = harness()
+    const pending = start(h)
+    h.latest().open()
+    h.latest().control({ kind: 'hello', role: 'device', peer: true })
+    h.latest().onmessage?.({ data: sealAck(deviceIdFor(PHONE_PK)) })
+    await expect(pending).resolves.toMatchObject({
+      desktop: { deviceId: deviceIdFor(PHONE_PK) },
+    })
+  })
+})
+
+describe('a connection that drops in the same breath as the ack', () => {
+  it('keeps the pairing it already resolved', async () => {
+    // onclose and onerror are the same function, and a relay that cuts the room
+    // the instant the ack lands fires both. A second settlement would reject a
+    // promise that already resolved -- in Node that is an unhandled rejection,
+    // and on the phone it is a pairing the user watched succeed and then fail.
+    const h = harness()
+    const p = start(h)
+    h.latest().open()
+    h.latest().control({ kind: 'hello', role: 'device', peer: true })
+    const down = h.latest().onclose
+    h.latest().binary(sealAck(deviceIdFor(PHONE_PK)))
+
+    // The handlers are detached by then, so this is the platform re-entering
+    // with an event it had already queued.
+    down?.()
+    down?.()
+
+    const outcome = (await p) as { desktop: { deviceId: string } }
+    expect(outcome.desktop.deviceId).toBe(deviceIdFor(PHONE_PK))
+  })
+
+  it('keeps the failure it already rejected with when a late ack arrives', async () => {
+    // The desktop closing the QR and the ack it just sent cross on the wire. The
+    // relay delivers peer-gone first, and the ack lands on handlers that have
+    // been detached -- but the platform had already queued the event, so the
+    // listener still runs. Resolving there would settle a rejected promise and
+    // leave the phone claiming a pairing the desktop has no record of.
+    const h = harness()
+    const p = start(h)
+    h.latest().open()
+    h.latest().control({ kind: 'hello', role: 'device', peer: true })
+    const deliver = h.latest().onmessage
+    h.latest().control({ kind: 'peer-gone', role: 'desktop' })
+
+    const ack = sealAck(deviceIdFor(PHONE_PK))
+    deliver?.({ data: ack.buffer.slice(ack.byteOffset, ack.byteOffset + ack.length) })
+
+    await expect(p).rejects.toThrow('The desktop stopped showing that code.')
+  })
+})

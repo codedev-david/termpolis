@@ -1,6 +1,7 @@
 import type { Capabilities } from '../src/wire/protocol'
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { Platform, ScrollView } from 'react-native'
 
 const GRANTS: Capabilities = {
   read: true,
@@ -48,7 +49,7 @@ jest.mock('../src/state/remoteStore', () => {
   }
 })
 
-import TerminalScreen from '../src/screens/TerminalScreen'
+import TerminalScreen, { KEYBOARD_BEHAVIOR } from '../src/screens/TerminalScreen'
 import { useRemoteStore } from '../src/state/remoteStore'
 
 function fn(name: 'subscribe' | 'unsubscribe' | 'send'): jest.Mock {
@@ -228,5 +229,141 @@ describe('TerminalScreen -- offline', () => {
     useRemoteStore.setState({ error: 'The desktop refused that.' })
     await render(<TerminalScreen />)
     expect(screen.getByText('The desktop refused that.')).toBeTruthy()
+  })
+})
+
+describe('TerminalScreen -- following the output', () => {
+  /** One scroll event, in the shape RN delivers it. */
+  function at(offsetY: number): { nativeEvent: Record<string, unknown> } {
+    return {
+      nativeEvent: {
+        contentOffset: { x: 0, y: offsetY },
+        layoutMeasurement: { width: 320, height: 400 },
+        contentSize: { width: 320, height: 1000 },
+      },
+    }
+  }
+
+  function spyOnScrollToEnd(): jest.SpyInstance {
+    const proto = ScrollView.prototype as unknown as { scrollToEnd: () => void }
+    return jest.spyOn(proto, 'scrollToEnd').mockImplementation(() => undefined)
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('follows new output while the view is already at the bottom', async () => {
+    // The default, and the whole point of the screen: an agent writes
+    // continuously and the phone is meant to show the newest line.
+    const end = spyOnScrollToEnd()
+    await render(<TerminalScreen />)
+    const scroll = screen.getByTestId('terminal-output')
+    // Laying the scrollback out fires a content-size change of its own. What
+    // is under test is what the NEXT one does, so start the count from here.
+    end.mockClear()
+
+    await fireEvent.scroll(scroll, at(600))
+    await fireEvent(scroll, 'contentSizeChange', 320, 1200)
+    expect(end).toHaveBeenCalledWith({ animated: false })
+  })
+
+  it('stops following once the user has scrolled up to read', async () => {
+    // Yanking the view back to the bottom mid-read is the single most annoying
+    // thing a log viewer can do, and output arrives every few hundred ms.
+    const end = spyOnScrollToEnd()
+    await render(<TerminalScreen />)
+    const scroll = screen.getByTestId('terminal-output')
+    // Laying the scrollback out fires a content-size change of its own. What
+    // is under test is what the NEXT one does, so start the count from here.
+    end.mockClear()
+
+    await fireEvent.scroll(scroll, at(100))
+    await fireEvent(scroll, 'contentSizeChange', 320, 1200)
+    expect(end).not.toHaveBeenCalled()
+  })
+
+  it('treats a pixel of rubber-banding as still being at the bottom', async () => {
+    // iOS reports a fractional offset at rest after a bounce. Without the slack
+    // the view would unpin itself on a scroll the user never made.
+    const end = spyOnScrollToEnd()
+    await render(<TerminalScreen />)
+    const scroll = screen.getByTestId('terminal-output')
+    // Laying the scrollback out fires a content-size change of its own. What
+    // is under test is what the NEXT one does, so start the count from here.
+    end.mockClear()
+
+    await fireEvent.scroll(scroll, at(590))
+    await fireEvent(scroll, 'contentSizeChange', 320, 1200)
+    expect(end).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('TerminalScreen -- leaving the screen', () => {
+  it('unsubscribes on unmount', async () => {
+    // The desktop fans output out per subscriber. A screen that leaves without
+    // saying so keeps a stream alive over the relay for a view nobody is looking
+    // at, and every later visit adds another.
+    const view = await render(<TerminalScreen />)
+    expect(fn('subscribe')).toHaveBeenCalledWith('t1')
+
+    await act(async () => {
+      view.unmount()
+    })
+    expect(fn('unsubscribe')).toHaveBeenCalledWith('t1')
+  })
+
+  it('swallows a refused unsubscribe rather than raising on the way out', async () => {
+    // Unmount usually happens because the desktop went away, which is exactly
+    // when this call fails. There is no longer a screen to show an error on.
+    fn('unsubscribe').mockRejectedValue(new Error('gone'))
+    const view = await render(<TerminalScreen />)
+    await act(async () => {
+      view.unmount()
+    })
+    expect(fn('unsubscribe')).toHaveBeenCalledWith('t1')
+  })
+})
+
+describe('TerminalScreen -- the agent status bar', () => {
+  it('shows a status this build has no label for, rather than a blank bar', async () => {
+    // The desktop ships on its own schedule. A blank bar reads as a bug in the
+    // phone; the raw word is at least true, and says which side is behind.
+    useRemoteStore.setState({
+      agentStatus: {
+        t1: { terminalId: 't1', status: 'compacting' as never, summary: 'squeezing history' },
+      },
+    })
+    await render(<TerminalScreen />)
+    expect(screen.getByTestId('terminal-agent-status')).toBeTruthy()
+    expect(screen.getByText('compacting')).toBeTruthy()
+  })
+
+  it('leaves the summary line out when there is no summary', async () => {
+    // An empty Text still occupies a line, so the bar would jump between one and
+    // two rows as the agent moves through states that carry no summary.
+    useRemoteStore.setState({
+      agentStatus: { t1: { terminalId: 't1', status: 'thinking', summary: '' } },
+    })
+    await render(<TerminalScreen />)
+    expect(screen.getByTestId('terminal-agent-status').children).toHaveLength(1)
+
+    await act(async () => {
+      useRemoteStore.setState({
+        agentStatus: { t1: { terminalId: 't1', status: 'thinking', summary: 'reading' } },
+      })
+    })
+    expect(screen.getByTestId('terminal-agent-status').children).toHaveLength(2)
+  })
+})
+
+describe('TerminalScreen -- keyboard avoidance', () => {
+  it('pads the view up on iOS', () => {
+    // The composer is the bottom-most thing on the screen, so without this it
+    // sits under the keyboard the moment the user taps it, with nothing to
+    // scroll it back into view. The Android half is in its own file, because
+    // the platform is read once at module load.
+    expect(KEYBOARD_BEHAVIOR).toBe('padding')
+    expect(Platform.OS).toBe('ios')
   })
 })

@@ -1,6 +1,7 @@
-import { SELF } from 'cloudflare:test'
+import { SELF, env, runInDurableObject } from 'cloudflare:test'
 import { describe, it, expect } from 'vitest'
 import { MAX_FRAME_BYTES, FRAME_BURST } from '../src/quota'
+import type { PairingRoom } from '../src/pairingRoom'
 
 function room(seed: string): string {
   return seed.repeat(32).slice(0, 32)
@@ -205,5 +206,107 @@ describe('a late close from a replaced connection', () => {
     })
     fresh.send(new Uint8Array(32))
     expect(await arrived).toBe(32)
+  })
+})
+
+describe('a flood does not take the room down with it', () => {
+  it('keeps serving the surviving peer after the offender is cut mid-burst', async () => {
+    const id = room('2')
+    const desktop = await connect(id, 'desktop')
+    const device = await connect(id, 'device')
+    await new Promise((r) => setTimeout(r, 20))
+
+    const said = collect(device)
+    const closed = closeEvent(desktop)
+    // Every frame sent after the one that trips the limit is already queued, and
+    // each arrives at a socket the relay has just closed. Announcing the quota on
+    // a closed socket throws, and an uncaught throw inside a Durable Object's
+    // message handler takes the whole room down -- evicting the peer that did
+    // nothing wrong, which then reconnects, which is how one client's bug becomes
+    // everyone's outage.
+    for (let i = 0; i < FRAME_BURST * 5; i++) desktop.send(new Uint8Array([i & 0xff]))
+    await closed
+    await new Promise((r) => setTimeout(r, 60))
+
+    expect(said.text.map((s) => JSON.parse(s).kind)).toContain('peer-gone')
+
+    // The room is still there and still pairing: the surviving device receives
+    // from a desktop that reconnects after the flood.
+    const fresh = await connect(id, 'desktop')
+    const arrived = new Promise<number>((resolve) => {
+      device.addEventListener('message', (e) => {
+        if (typeof e.data !== 'string') resolve((e.data as ArrayBuffer).byteLength)
+      })
+    })
+    fresh.send(new Uint8Array(16))
+    expect(await arrived).toBe(16)
+  })
+})
+
+function stub(id: string) {
+  return env.PAIRING_ROOM.get(env.PAIRING_ROOM.idFromName(id))
+}
+
+/** `cut` is private, and deliberately so -- nothing outside the room should be
+ *  able to hang up on a peer. Reaching it directly is still the only way to ask
+ *  the question below, because from outside the room a cut that throws and a cut
+ *  that does not look exactly alike: the socket ends up closed either way. */
+function cutOf(instance: PairingRoom) {
+  const room = instance as unknown as {
+    cut: (sock: WebSocket, code: number, limit: string) => void
+  }
+  return room.cut.bind(room)
+}
+
+describe('cutting a socket that has already closed', () => {
+  it('is a no-op rather than an uncaught exception', async () => {
+    const id = room('3')
+    await connect(id, 'desktop')
+
+    await runInDurableObject(stub(id), (instance: PairingRoom) => {
+      const sock = new WebSocketPair()[1]
+      sock.accept()
+      sock.close(1000, 'gone')
+
+      // workerd refuses BOTH halves of a cut after a close -- the quota notice
+      // and the close itself -- and every call site is an event listener or the
+      // alarm handler, where the throw is an uncaught exception inside the
+      // Durable Object rather than an error anyone can catch. A client that
+      // floods past the frame rate arrives here once per frame it had already
+      // queued behind the one that tripped the limit.
+      expect(() => cutOf(instance)(sock, 1008, 'frame-rate')).not.toThrow()
+    })
+  })
+
+  it('still announces the limit and closes when the socket is open', async () => {
+    const id = room('4')
+    await connect(id, 'desktop')
+
+    await runInDurableObject(stub(id), async (instance: PairingRoom) => {
+      const pair = new WebSocketPair()
+      const client = pair[0]
+      const sock = pair[1]
+      sock.accept()
+      client.accept()
+
+      const said: string[] = []
+      client.addEventListener('message', (e) => {
+        if (typeof e.data === 'string') said.push(e.data)
+      })
+      const closed = new Promise<number>((resolve) =>
+        client.addEventListener('close', (e) => resolve(e.code)),
+      )
+
+      // The guard must not be the whole method: a check that never lets anything
+      // through would pass the test above and silently stop telling clients why
+      // they were disconnected, which is the reconnect loop `cut` exists to
+      // prevent.
+      cutOf(instance)(sock, 1008, 'frame-rate')
+
+      expect(await closed).toBe(1008)
+      expect(said.map((s) => JSON.parse(s))).toEqual([
+        { kind: 'quota-exceeded', limit: 'frame-rate' },
+      ])
+    })
   })
 })

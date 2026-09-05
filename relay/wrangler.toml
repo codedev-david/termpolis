@@ -7,9 +7,19 @@ compatibility_flags = ["nodejs_compat"]
 name = "PAIRING_ROOM"
 class_name = "PairingRoom"
 
+# SQLite-backed, not the KV-backed `new_classes`. Two reasons, and only one of
+# them is about money: SQLite-backed Durable Objects are the only kind the
+# Workers free plan will create, and they are what Cloudflare provisions for new
+# classes by default. PairingRoom keeps nothing across a request anyway -- its
+# only storage calls are setAlarm/deleteAlarm for the idle timeout, which both
+# backends support identically.
+#
+# This can only be chosen once. A class deployed under `new_classes` cannot be
+# moved to SQLite afterwards, so getting it right before the first deploy is the
+# whole point of the comment.
 [[migrations]]
 tag = "v1"
-new_classes = ["PairingRoom"]
+new_sqlite_classes = ["PairingRoom"]
 
 # Registration rate limit. A per-room quota cannot stop someone creating a million
 # rooms, so room creation itself is limited at the edge, keyed by source address.

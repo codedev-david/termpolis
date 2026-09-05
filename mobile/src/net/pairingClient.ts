@@ -67,11 +67,15 @@ export function pairWithDesktop(opts: {
     let settled = false
     let greeted = false
     const timer = deps.setTimer(() => {
-      finish(null, new Error('Pairing timed out. Show the code again and rescan.'))
+      fail('Pairing timed out. Show the code again and rescan.')
     }, PAIRING_TIMEOUT_MS)
 
-    function finish(outcome: PairingOutcome | null, err: Error | null): void {
-      if (settled) return
+    /** Take the one settlement this pairing gets, or answer false to whoever is
+     *  second. `onclose` and `onerror` are the same function, and a relay that
+     *  drops the connection right after the ack fires both -- the second must
+     *  not reject a promise that already resolved. */
+    function claim(): boolean {
+      if (settled) return false
       settled = true
       // A live timer holds the JS context awake, and on a phone that keeps the
       // radio from idling long after the screen is off.
@@ -81,8 +85,15 @@ export function pairWithDesktop(opts: {
       sock.onclose = null
       sock.onerror = null
       sock.close()
-      if (outcome !== null) resolve(outcome)
-      else reject(err ?? new Error('Pairing failed.'))
+      return true
+    }
+
+    function succeed(outcome: PairingOutcome): void {
+      if (claim()) resolve(outcome)
+    }
+
+    function fail(message: string): void {
+      if (claim()) reject(new Error(message))
     }
 
     /** Send the hello, but only once the desktop is actually in the room.
@@ -129,24 +140,21 @@ export function pairWithDesktop(opts: {
       // may still be one frame behind it.
       if (ack === null) return
 
-      finish(
-        {
-          desktop: {
-            desktopPublicKey: offer.desktopPublicKey,
-            // Derived, never announced: the room this phone will meet the
-            // desktop in from now on is not a thing the relay is told.
-            sessionRoomId: deriveSessionRoomId(identity.secretKey, offer.desktopPublicKey),
-            relayUrl: offer.relayUrl,
-            // The desktop's id for this phone, not one computed here: it is the
-            // handle the user revokes by, and it must match what they see.
-            deviceId: ack.deviceId,
-            label: DEFAULT_DESKTOP_LABEL,
-            pairedAt: deps.now(),
-          },
-          safetyPhrase: deriveVerificationPhrase(identity.publicKey, offer.desktopPublicKey),
+      succeed({
+        desktop: {
+          desktopPublicKey: offer.desktopPublicKey,
+          // Derived, never announced: the room this phone will meet the
+          // desktop in from now on is not a thing the relay is told.
+          sessionRoomId: deriveSessionRoomId(identity.secretKey, offer.desktopPublicKey),
+          relayUrl: offer.relayUrl,
+          // The desktop's id for this phone, not one computed here: it is the
+          // handle the user revokes by, and it must match what they see.
+          deviceId: ack.deviceId,
+          label: DEFAULT_DESKTOP_LABEL,
+          pairedAt: deps.now(),
         },
-        null,
-      )
+        safetyPhrase: deriveVerificationPhrase(identity.publicKey, offer.desktopPublicKey),
+      })
     }
 
     function control(text: string): void {
@@ -168,10 +176,10 @@ export function pairWithDesktop(opts: {
         case 'peer-gone':
           // The desktop closed the QR. Unlike a session, there is nothing to wait
           // for: the code it was showing is spent either way.
-          finish(null, new Error('The desktop stopped showing that code.'))
+          fail('The desktop stopped showing that code.')
           return
         case 'quota-exceeded':
-          finish(null, new Error(`The relay refused the connection (${frame.limit}).`))
+          fail(`The relay refused the connection (${frame.limit}).`)
           return
         default:
           return
@@ -179,7 +187,7 @@ export function pairWithDesktop(opts: {
     }
 
     const down = (): void => {
-      finish(null, new Error('Lost the connection before the desktop answered.'))
+      fail('Lost the connection before the desktop answered.')
     }
     sock.onclose = down
     sock.onerror = down

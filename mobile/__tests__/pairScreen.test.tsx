@@ -207,3 +207,23 @@ describe('PairScreen — reporting and secrecy', () => {
     expect(hexRunsInTree().filter((hex) => hex !== DESKTOP_PK)).toEqual([])
   })
 })
+
+describe('PairScreen — while the pairing is in flight', () => {
+  beforeEach(() => {
+    mockCamera.permission = { granted: false, canAskAgain: false, status: 'denied' }
+  })
+
+  it('says so on the button, so the user does not press it again', async () => {
+    // Pairing crosses a relay and waits on a desktop. Left reading "Pair", the
+    // button looks like nothing happened, and a second press starts a second
+    // attempt against a code that is now spent.
+    pairFn().mockReturnValue(new Promise<void>(() => undefined))
+    await render(<PairScreen />)
+    await fireEvent.changeText(screen.getByTestId('pair-manual-input'), '{"v":1}')
+    expect(screen.getByText('Pair')).toBeTruthy()
+
+    await fireEvent.press(screen.getByTestId('pair-manual-submit'))
+    expect(screen.queryByText('Pair')).toBeNull()
+    expect(screen.getByText('Pairing…')).toBeTruthy()
+  })
+})

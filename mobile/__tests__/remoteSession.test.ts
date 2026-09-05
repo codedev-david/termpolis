@@ -426,3 +426,58 @@ describe('teardown', () => {
     expect(seen).toHaveLength(1)
   })
 })
+
+describe('unsubscribing from a stream', () => {
+  it('stops delivering status updates once the caller lets go', () => {
+    // The screen subscribes on mount and lets go on unmount. A returned
+    // unsubscribe that did not actually unseat the callback would keep a
+    // React state setter alive on a screen that is gone.
+    const h = harness()
+    const seen: AgentStatus[] = []
+    const stop = h.session.onStatus((u) => seen.push(u.status))
+
+    h.session.handleFrame(
+      frame({ kind: 'status', terminalId: 't1', status: 'working', summary: 'building' }),
+    )
+    stop()
+    h.session.handleFrame(
+      frame({ kind: 'status', terminalId: 't1', status: 'idle', summary: 'done' }),
+    )
+
+    expect(seen).toEqual(['working'])
+  })
+
+  it('stops delivering output once the caller lets go', () => {
+    const h = harness()
+    const seen: OutputChunk[][] = []
+    const stop = h.session.onOutput((chunks) => seen.push(chunks))
+
+    h.session.handleFrame(
+      frame({ kind: 'output', chunks: [{ terminalId: 't1', chunk: 'one', missed: 0, marker: null }] }),
+    )
+    stop()
+    h.session.handleFrame(
+      frame({ kind: 'output', chunks: [{ terminalId: 't1', chunk: 'two', missed: 0, marker: null }] }),
+    )
+
+    expect(seen).toHaveLength(1)
+  })
+
+  it('stops delivering capability changes once the caller lets go', () => {
+    const h = harness()
+    const seen: Capabilities[] = []
+    const stop = h.session.onCapabilities((caps) => seen.push(caps))
+    const caps: Capabilities = {
+      read: true,
+      createTerminal: false,
+      writeToTerminal: false,
+      closeTerminal: false,
+    }
+
+    h.session.handleFrame(frame({ kind: 'capabilities', capabilities: caps }))
+    stop()
+    h.session.handleFrame(frame({ kind: 'capabilities', capabilities: caps }))
+
+    expect(seen).toHaveLength(1)
+  })
+})

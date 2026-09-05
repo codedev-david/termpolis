@@ -46,6 +46,16 @@ const STATUS_LABEL: Record<string, string> = {
  * from `createTerminal` on the desktop precisely because it bypasses the
  * command sanitiser, so the phone must not infer one from the other.
  */
+/** iOS leaves the composer under the keyboard unless the view is padded up.
+ *  Android resizes the window for the keyboard already, and padding on top of
+ *  that double-counts it and pushes the input off the screen entirely.
+ *
+ *  Read once, at module load, because the platform cannot change under a running
+ *  app -- which also means the Android arm is only reachable from a test file
+ *  that sets Platform.OS before requiring this module. Exported so that file has
+ *  something to assert: the prop itself never reaches the host tree. */
+export const KEYBOARD_BEHAVIOR = Platform.OS === 'ios' ? 'padding' : undefined
+
 export default function TerminalScreen(): React.JSX.Element {
   const route = useRoute<RouteProp<RootStackParamList, 'Terminal'>>()
   const { terminalId } = route.params
@@ -83,10 +93,7 @@ export default function TerminalScreen(): React.JSX.Element {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.page}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <KeyboardAvoidingView style={styles.page} behavior={KEYBOARD_BEHAVIOR}>
       {stale ? (
         <Text testID="terminal-offline" style={styles.offline}>
           The desktop is offline. This is the last thing it sent.

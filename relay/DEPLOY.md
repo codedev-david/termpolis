@@ -6,8 +6,12 @@ migrate. A deploy replaces the code and nothing else.
 
 ## Prerequisites
 
-1. A Cloudflare account on any plan that includes Durable Objects. The Workers
-   Paid plan is the floor — DOs are not available on the free plan.
+1. A Cloudflare account. The Workers **free** plan is enough: `PairingRoom` is
+   declared under `new_sqlite_classes`, and SQLite-backed Durable Objects are
+   available on every plan. (The older KV-backed `new_classes` form does require
+   Workers Paid, which is why this one does not use it — see the comment in
+   `wrangler.toml`. The choice is permanent for a class, so it was made before
+   the first deploy rather than discovered after one.)
 2. Authentication, one of:
    - `npx wrangler login` in an interactive terminal, for a hand deploy; or
    - `CLOUDFLARE_API_TOKEN` in the environment, for CI. The token needs
@@ -29,6 +33,26 @@ npm --prefix relay run deploy    # wrangler deploy
 
 `wrangler deploy` prints the `workers.dev` URL it published to. That URL works
 immediately and is fine for a first smoke test.
+
+## Deploying from CI
+
+`.github/workflows/relay-deploy.yml` does the same thing without a laptop in the
+loop: it runs the typecheck and the workerd suite, deploys, then probes every
+trigger URL wrangler printed with `GET /v1/pair/<32 hex>` and requires a **426**.
+That path is refused before the rate limiter runs and before any Durable Object
+is addressed, so the smoke test proves the Worker is live and routing while
+opening nothing and costing nothing.
+
+It runs on pushes to `main` that touch `relay/`, and on demand:
+
+```bash
+gh workflow run relay-deploy.yml                    # deploy
+gh workflow run relay-deploy.yml -f dry_run=true    # validate config only, no token needed
+```
+
+With no `CLOUDFLARE_API_TOKEN` set, a push skips the deploy with a notice and a
+hand-run fails with instructions. It never half-deploys and never turns `main`
+red for a credential that was never added.
 
 ## Binding the custom domain
 

@@ -39,7 +39,9 @@ function rgb(r: number, g: number, b: number): string {
 /** One of the 256 indexed colours, or null if the index is not one. */
 function indexedColor(n: number): string | null {
   if (!Number.isInteger(n) || n < 0 || n > 255) return null
-  if (n < 16) return PALETTE[n] ?? null
+  // The guard above pins n to 0..15 and PALETTE has exactly sixteen entries, so
+  // the index cannot miss. A `?? null` here would only be a branch no input reaches.
+  if (n < 16) return PALETTE[n] as string
   if (n < 232) {
     const c = n - 16
     const r = CUBE_STEPS[Math.floor(c / 36) % 6] as number

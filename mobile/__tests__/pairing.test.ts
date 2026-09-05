@@ -1,6 +1,7 @@
 import { fromHex, toHex } from '../src/wire/bytes'
 import { deviceIdFor, openPairingAck, sealPairingHello } from '../src/wire/pairing'
 import { pairingRoot, sessionFromRoot } from '../src/wire/sessionCrypto'
+import { PROTOCOL_VERSION } from '../src/wire/version'
 import { utf8Encode } from '../src/wire/bytes'
 
 // Wire format section 12.
@@ -171,5 +172,44 @@ describe('openPairingAck', () => {
       utf8Encode('not json'),
     )
     expect(open(forged)).toBeNull()
+  })
+})
+
+describe('an ack whose payload is valid JSON but not an object', () => {
+  /** The desktop half, sealing whatever text the test wants to send. */
+  function ackOf(json: string): Uint8Array {
+    const header = Uint8Array.from([fromHex(ACK)[0] as number])
+    const root = pairingRoot(DESKTOP_ID_SK, DEVICE_ID_PK, PAIRING_ID)
+    return sessionFromRoot(root, 'desktop').seal(header, utf8Encode(json))
+  }
+
+  function open(json: string): { deviceId: string } | null {
+    return openPairingAck({
+      frame: ackOf(json),
+      deviceSecretKey: DEVICE_ID_SK,
+      desktopPublicKey: DESKTOP_ID_PK,
+      pairingId: PAIRING_ID,
+    })
+  }
+
+  it('refuses a bare number', () => {
+    // JSON.parse succeeds on `42`, so the try/catch around it does not catch
+    // this one. Reading `.v` off a number happens to yield undefined and the
+    // version check would refuse it -- by accident, and only for numbers.
+    expect(open('42')).toBeNull()
+  })
+
+  it('refuses a literal null', () => {
+    // `typeof null` is 'object', so the type check alone lets this through and
+    // the destructuring on the next line throws inside a socket callback.
+    expect(open('null')).toBeNull()
+  })
+
+  it('still opens the object form those were built against', () => {
+    // Otherwise the two above would pass against a function that refused
+    // everything this helper produced.
+    expect(open(JSON.stringify({ v: PROTOCOL_VERSION, deviceId: DEVICE_ID }))).toEqual({
+      deviceId: DEVICE_ID,
+    })
   })
 })

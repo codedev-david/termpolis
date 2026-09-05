@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   setBridgeSpawner, startRemoteBridge, stopRemoteBridge, isRemoteBridgeRunning,
   isRemoteDisabled, onBridgeMessage, sendToBridge, clearRemoteDisabled,
@@ -170,5 +170,40 @@ describe('supervisor message and re-arm surface', () => {
     expect(isRemoteDisabled()).toBe(false)
     startRemoteBridge(init)
     expect(isRemoteBridgeRunning()).toBe(true)
+  })
+})
+
+describe('remoteBridgeSupervisor -- crashes age out of the window', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('does not fail closed on crashes spread over more than a minute', () => {
+    // The counter is a RATE, not a total. A machine that suspends nightly, or an
+    // app left open for a week, will collect a crash here and a crash there --
+    // and if those never expire, the fourth one in a month disables remote until
+    // the user finds the switch. Only the ones inside the window may count.
+    const bridges: ReturnType<typeof fakeBridge>[] = []
+    let spawns = 0
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0)
+    setBridgeSpawner(() => {
+      spawns++
+      const b = fakeBridge()
+      bridges.push(b)
+      return b.handle
+    })
+    startRemoteBridge(init)
+
+    // Three crashes at once is the most the policy tolerates: one more inside the
+    // window would trip it.
+    for (let i = 0; i < 3; i++) bridges[bridges.length - 1].emitExit(1)
+    expect(isRemoteDisabled()).toBe(false)
+
+    now.mockReturnValue(61_000)
+    bridges[bridges.length - 1].emitExit(1)
+
+    expect(isRemoteDisabled()).toBe(false)
+    expect(isRemoteBridgeRunning()).toBe(true)
+    expect(spawns).toBe(5)
   })
 })

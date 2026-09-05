@@ -1,0 +1,166 @@
+name: Deploy relay
+
+# The relay is the one piece of Termpolis Remote that does not ship in the
+# installer. It is a Cloudflare Worker, it goes out by `wrangler deploy`, and
+# until it exists no phone can pair with any desktop -- the desktop's default
+# relay URL points at it. So this workflow is what turns "the relay is written
+# and tested" into "the relay is running".
+#
+# It deploys from main after the relay's own gates pass, and can be run by hand
+# for a first deploy, a redeploy after a rollback, or a dry run that validates
+# the configuration and the bundle without publishing anything.
+#
+# No token lives in this repository. `CLOUDFLARE_API_TOKEN` is a repository
+# secret scoped to *Workers Scripts: Edit* and *Workers Durable Objects: Edit*.
+# Until it is set, a push deploy skips with a notice rather than turning main
+# red; a hand-run deploy fails, because someone asked for it and should be told
+# why it did not happen.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate config and bundle without publishing'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay-deploy.yml'
+
+# One deploy at a time, and never cancel one in flight: a half-applied Worker
+# upload is not worth interrupting to save a minute.
+concurrency:
+  group: relay-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The hostname the desktop ships with (DEFAULT_RELAY_URL in
+  # src/main/remoteBridge/protocol.ts). The smoke test will probe it once it is
+  # bound as a custom domain, and ignores it until then.
+  RELAY_HOST: relay.termpolis.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+
+      - name: Install relay dependencies
+        run: npm ci --prefix relay
+
+      # The same gates test.yml runs, repeated here on purpose. This workflow can
+      # be dispatched against any commit, including one Tests never saw, and
+      # "someone probably ran the suite" is not a gate.
+      - name: Typecheck
+        run: npm --prefix relay run typecheck
+
+      - name: Test in real workerd
+        run: npm --prefix relay test
+
+      # Distinguishes "no token" from "bad token" before wrangler produces its
+      # own, less helpful version of the same message.
+      - name: Check for credentials
+        id: creds
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the deploy. Add it with: gh secret set CLOUDFLARE_API_TOKEN"
+          fi
+
+      - name: Fail a hand-run deploy with no token
+        if: github.event_name == 'workflow_dispatch' && steps.creds.outputs.present != 'true'
+        run: |
+          echo "This run asked for a deploy, but CLOUDFLARE_API_TOKEN is not set."
+          echo
+          echo "Create a token at https://dash.cloudflare.com/profile/api-tokens with"
+          echo "  Workers Scripts: Edit"
+          echo "  Workers Durable Objects: Edit"
+          echo "then: gh secret set CLOUDFLARE_API_TOKEN"
+          exit 1
+
+      # --dry-run needs no credentials at all: it builds the bundle and validates
+      # wrangler.toml, which is most of what a deploy can get wrong.
+      - name: Dry run
+        if: inputs.dry_run
+        working-directory: relay
+        run: npx wrangler deploy --dry-run
+
+      - name: Deploy
+        id: deploy
+        if: ${{ !inputs.dry_run && steps.creds.outputs.present == 'true' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eo pipefail
+          # Passed only when set. An empty CLOUDFLARE_ACCOUNT_ID is not the same
+          # as an absent one, and wrangler is entitled to treat it that way.
+          if [ -n "$ACCOUNT_ID" ]; then
+            export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT_ID"
+          fi
+          npm --prefix relay run deploy 2>&1 | tee deploy.log
+
+      # Proves the Worker is live and routing without opening a pairing room:
+      # /v1/pair/<32 hex> with no Upgrade header is refused with 426 before the
+      # rate limiter runs and before any Durable Object is addressed. A 404 would
+      # mean the route never matched; anything else means the thing answering is
+      # not this Worker.
+      #
+      # Only workers.dev triggers and the relay hostname are probed. wrangler
+      # prints dashboard and documentation links too, and a smoke test that
+      # wanders off to one of those proves nothing about the deploy.
+      - name: Smoke test the deployed Worker
+        if: steps.deploy.outcome == 'success'
+        run: |
+          set -eo pipefail
+          urls=$(grep -oE "https://[A-Za-z0-9._-]+" deploy.log \
+                 | grep -E "\.workers\.dev$|^https://${RELAY_HOST}$" \
+                 | sort -u || true)
+          if [ -z "$urls" ]; then
+            echo "No trigger URL in the deploy output, so there is nothing to probe."
+            echo "wrangler said:"
+            cat deploy.log
+            exit 1
+          fi
+          probe=00000000000000000000000000000000
+          for url in $urls; do
+            echo "probing $url"
+            status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url/v1/pair/$probe")
+            if [ "$status" != "426" ]; then
+              echo "  expected 426 (expected a websocket upgrade), got $status"
+              exit 1
+            fi
+            echo "  ok: 426"
+          done
+
+      - name: Say what still has to be done by hand
+        if: steps.deploy.outcome == 'success'
+        run: |
+          {
+            echo '### Relay deployed'
+            echo
+            echo 'The Worker is live. Two things this workflow cannot do:'
+            echo
+            echo "1. **Bind the custom domain.** Workers & Pages -> termpolis-relay ->"
+            echo "   Settings -> Domains & Routes -> Add -> Custom domain -> \`$RELAY_HOST\`."
+            echo '   A custom domain, not a route.'
+            echo '2. **Confirm a real phone pairs over it.** See `relay/DEPLOY.md`.'
+            echo
+            echo "The desktop already points at \`wss://$RELAY_HOST\`"
+            echo '(`DEFAULT_RELAY_URL`, `src/main/remoteBridge/protocol.ts`), so pairing'
+            echo 'starts working the moment that hostname resolves to this Worker.'
+          } >> "$GITHUB_STEP_SUMMARY"

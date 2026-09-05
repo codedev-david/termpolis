@@ -610,3 +610,94 @@ describe('keepalive backs off around real traffic', () => {
     expect(Array.from(last)).toEqual([0x00])
   })
 })
+
+describe('what the platform actually hands up on a message', () => {
+  it('reads a frame delivered as a typed array, not only as an ArrayBuffer', () => {
+    // The spec says binaryType 'arraybuffer' yields an ArrayBuffer, and some
+    // Android builds hand up a view over one instead. A view is the same frame.
+    // Refusing it would drop every message on those devices while the socket,
+    // the keepalives and the frame counts all kept looking healthy.
+    const h = attached()
+    h.latest().onmessage?.({ data: h.desktop.seal('{"kind":"output"}') })
+    expect(h.frames).toHaveLength(1)
+    expect(utf8Decode(h.frames[0] as Uint8Array)).toBe('{"kind":"output"}')
+  })
+
+  it('drops a Blob rather than mishandling it, and keeps the connection', () => {
+    // A Blob cannot be read synchronously, so there is nothing correct to do
+    // with it here. Dropping the frame keeps the socket, and the keepalive
+    // holds the room until a readable one arrives.
+    const h = attached()
+    h.latest().onmessage?.({ data: { size: 12, type: '' } })
+    expect(h.frames).toEqual([])
+    expect(h.latest().closed).toBe(false)
+  })
+})
+
+describe('the backoff itself', () => {
+  it('jitters with Math.random when no clock is injected', () => {
+    // The production call site passes no random -- every RelaySocket in the app
+    // uses the default. A fleet of phones reconnecting on one deterministic
+    // schedule is exactly the thundering herd the jitter exists to prevent.
+    const spy = jest.spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      expect(backoffDelay(0)).toBe(backoffDelay(0, () => 0))
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+describe('timers that outlive what armed them', () => {
+  it('a keepalive tick from a socket that has been let go sends nothing', () => {
+    // clearTimer is inert here on purpose: that is what a real platform does once
+    // a timer has already been handed to the event loop. The tick then runs
+    // against a socket the class no longer owns, and has to notice by itself.
+    const ticks: Array<() => void> = []
+    const h = harness({
+      setTimer: (fn) => {
+        ticks.push(fn)
+        return ticks.length
+      },
+      clearTimer: () => undefined,
+    })
+    h.socket.connect()
+    const sock = h.latest()
+    sock.open()
+    sock.control({ kind: 'hello', role: 'device', peer: true })
+    sock.binary(desktopReply(sock.sent[0] as Uint8Array).greeting)
+    const before = sock.sent.length
+
+    const stale = ticks[ticks.length - 1] as () => void
+    h.socket.close()
+    stale()
+
+    expect(sock.sent).toHaveLength(before)
+  })
+
+  it('cancels a pending reconnect on close', () => {
+    // dial() has no stopped check of its own, so this cancellation is the only
+    // thing standing between a sign-out and a socket reopening behind it.
+    const armed: number[] = []
+    const cleared: number[] = []
+    let next = 1
+    const h = harness({
+      setTimer: () => {
+        const id = next++
+        armed.push(id)
+        return id
+      },
+      clearTimer: (timer) => {
+        cleared.push(timer as number)
+      },
+    })
+    h.socket.connect()
+    h.latest().drop()
+    const retry = armed[armed.length - 1] as number
+    expect(armed).toHaveLength(1)
+
+    h.socket.close()
+    expect(cleared).toContain(retry)
+  })
+})

@@ -114,6 +114,29 @@ describe('idle eviction', () => {
     expect(said.map((s) => JSON.parse(s).kind)).toContain('peer-gone')
   })
 
+  it('evicts both peers when the whole room has gone quiet', async () => {
+    const id = room('9')
+    const desktop = await connect(id, 'desktop')
+    const device = await connect(id, 'device')
+    const both = Promise.all([closeEvent(desktop), closeEvent(device)])
+
+    await runInDurableObject(stub(id), (instance: PairingRoom) => {
+      for (const p of peersOf(instance).values()) p.lastSeen -= IDLE_TIMEOUT_MS + 1
+    })
+    await runInDurableObject(stub(id), (instance: PairingRoom) => instance.alarm())
+
+    // One pass closes both peers, and neither is unseated until its own close
+    // event is dispatched afterwards -- so the first `peer-gone` is addressed to a
+    // socket the same pass has already closed. Sending it anyway raises an
+    // uncaught exception inside the room, which no client-visible assertion would
+    // catch: from outside, both peers are evicted either way.
+    expect((await both).map((e) => e.reason)).toEqual(['idle', 'idle'])
+    await new Promise((r) => setTimeout(r, 50))
+    await runInDurableObject(stub(id), (instance: PairingRoom) => {
+      expect(peersOf(instance).size).toBe(0)
+    })
+  })
+
   it('arms the alarm when a peer connects', async () => {
     const id = room('f')
     await connect(id, 'desktop')

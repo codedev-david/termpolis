@@ -10,6 +10,33 @@ import {
   MAX_FRAME_BYTES,
 } from './quota'
 
+/** True while a socket can still be written to.
+ *
+ *  "It is seated, therefore it is open" is not true, only usually true. A peer is
+ *  unseated by its own `close` listener, which runs *after* the close, so there is
+ *  always a window in which a closed socket is still in the map -- and two
+ *  ordinary things land in it. A client that floods past the frame rate has more
+ *  frames already queued behind the one that trips the limit, and every one of
+ *  them arrives at a socket this file has just closed. An idle alarm closes both
+ *  peers in a single pass, before either close event is dispatched.
+ *
+ *  It matters because workerd throws on both `send()` and `close()` after a
+ *  close, and every call to either happens inside an event listener or the alarm
+ *  handler, where a throw is an uncaught exception in the Durable Object rather
+ *  than an error some caller can handle. */
+function isOpen(sock: WebSocket): boolean {
+  return sock.readyState === WebSocket.READY_STATE_OPEN
+}
+
+/** Send, unless the socket has already gone.
+ *
+ *  Dropping the frame is the whole of the handling: the recipient is closed, so
+ *  there is nobody left to tell, and every frame that goes through here is either
+ *  a courtesy notice or a forward whose sender will learn soon enough. */
+function deliver(sock: WebSocket, frame: ArrayBuffer | string): void {
+  if (isOpen(sock)) sock.send(frame)
+}
+
 export class PairingRoom {
   // Classic Durable Object shape: the runtime constructs one per pairing id and
   // hands it the state and the environment. State is unused -- a pairing room is
@@ -73,8 +100,11 @@ export class PairingRoom {
     // arriving peer needs to know before it greets, and exactly who to tell that
     // someone has arrived.
     const partner = this.peer(role)
+    // `server` was accepted three lines ago and its client half has not been
+    // handed out yet, so it cannot be anything but open. The partner has been
+    // connected for as long as it has been connected.
     server.send(encode({ kind: 'hello', role, peer: partner !== undefined }))
-    partner?.send(encode({ kind: 'peer-joined', role }))
+    if (partner) deliver(partner, encode({ kind: 'peer-joined', role }))
 
     server.addEventListener('message', (event) => {
       // Text is a peer trying to talk to the relay, or to forge a control frame at
@@ -90,15 +120,15 @@ export class PairingRoom {
       // Enforce BEFORE forwarding. A limit applied after the send is a report, not
       // a control -- the frame the relay objected to would already have been
       // delivered and already have cost what it cost.
-      if (size > MAX_FRAME_BYTES) return this.cut(role, server, 1009, 'frame-size')
+      if (size > MAX_FRAME_BYTES) return this.cut(server, 1009, 'frame-size')
 
-      if (!mine.frames.take(Date.now())) return this.cut(role, server, 1008, 'frame-rate')
-      if (!mine.bytes.spend(size)) return this.cut(role, server, 1008, 'connection-bytes')
+      if (!mine.frames.take(Date.now())) return this.cut(server, 1008, 'frame-rate')
+      if (!mine.bytes.spend(size)) return this.cut(server, 1008, 'connection-bytes')
 
       mine.lastSeen = Date.now()
 
       if (!peer) return
-      peer.send(event.data)
+      deliver(peer, event.data)
     })
 
     server.addEventListener('close', () => this.drop(role))
@@ -122,8 +152,8 @@ export class PairingRoom {
    *  invocation anyway. */
   async alarm(): Promise<void> {
     const now = Date.now()
-    for (const [role, p] of [...this.peers]) {
-      if (now - p.lastSeen >= IDLE_TIMEOUT_MS) this.cut(role, p.sock, 1000, 'idle')
+    for (const p of [...this.peers.values()]) {
+      if (now - p.lastSeen >= IDLE_TIMEOUT_MS) this.cut(p.sock, 1000, 'idle')
     }
     // Re-arm only while someone is still connected. An empty room that keeps
     // scheduling alarms is a Durable Object that never goes away, billed forever
@@ -144,7 +174,8 @@ export class PairingRoom {
     // errors then closes calls it twice. Without the early return the second call
     // would announce a `peer-gone` for a peer that had already gone.
     if (!this.peers.delete(role)) return
-    this.peer(role)?.send(encode({ kind: 'peer-gone', role }))
+    const partner = this.peer(role)
+    if (partner) deliver(partner, encode({ kind: 'peer-gone', role }))
     // Cancel the idle alarm when the last peer leaves. Leaving it armed would wake
     // an empty room five minutes later purely to discover it is empty -- a write
     // and a billable invocation for nothing, on every room anyone ever opened.
@@ -161,8 +192,14 @@ export class PairingRoom {
    *  listener rather than done here. Doing both would be two paths for one event,
    *  and `close()` fires that listener anyway -- a mutation test proved the extra
    *  `drop` call changed nothing, which is the definition of a line that can only
-   *  ever drift out of step with the one that matters. */
-  private cut(role: Role, sock: WebSocket, code: number, limit: QuotaLimit): void {
+   *  ever drift out of step with the one that matters.
+   *
+   *  Cutting a socket that is already closed is a no-op rather than a second
+   *  close. It happens routinely -- see `isOpen` -- and workerd throws on both
+   *  `send()` and `close()` after a close, so without the check one flooding
+   *  client raises an uncaught exception per queued frame inside the room. */
+  private cut(sock: WebSocket, code: number, limit: QuotaLimit): void {
+    if (!isOpen(sock)) return
     sock.send(encode({ kind: 'quota-exceeded', limit }))
     sock.close(code, limit)
   }

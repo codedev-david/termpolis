@@ -203,3 +203,40 @@ describe('TerminalListScreen -- offline', () => {
     expect(screen.getByText('The desktop refused that.')).toBeTruthy()
   })
 })
+
+describe('TerminalListScreen -- a status this build has never heard of', () => {
+  it('shows the raw status rather than an empty badge', async () => {
+    // The desktop ships on its own schedule and will add states this phone has
+    // no label for. A blank badge reads as a bug in the app; the raw word is at
+    // least true, and tells the user which of the two is behind.
+    useRemoteStore.setState({
+      capabilities: { ...GRANTS },
+      terminals: TERMINALS,
+      agentStatus: {
+        t1: { terminalId: 't1', status: 'compacting' as never, summary: 'squeezing history' },
+      },
+    })
+    await render(<TerminalListScreen />)
+    expect(screen.getByTestId('terminal-status-t1')).toBeTruthy()
+    expect(screen.getByText('compacting')).toBeTruthy()
+  })
+})
+
+describe('TerminalListScreen -- a create the desktop refuses', () => {
+  it('clears the field anyway rather than raising an unhandled rejection', async () => {
+    // createTerminal rejects when the grant was revoked between render and press.
+    // Unhandled, that rejection is a red box in dev and a silent crash in release.
+    useRemoteStore.setState({ capabilities: { ...GRANTS }, terminals: TERMINALS })
+    fn('createTerminal').mockRejectedValue(new Error('nope'))
+    await render(<TerminalListScreen />)
+
+    await fireEvent.press(screen.getByTestId('terminal-new'))
+    await fireEvent.changeText(screen.getByTestId('terminal-new-name'), 'build')
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('terminal-new-submit'))
+    })
+
+    expect(fn('createTerminal')).toHaveBeenCalledWith('build')
+    expect(screen.queryByTestId('terminal-new-name')).toBeNull()
+  })
+})

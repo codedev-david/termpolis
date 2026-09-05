@@ -1002,3 +1002,71 @@ describe('bridge core: telling a phone what it may do', () => {
     expect(h.rooms[0].sent).toEqual([])
   })
 })
+
+describe('remote bridge -- the wiring the stub relay usually stands in for', () => {
+  it('opens the pairing room through a real relay client when the host injected none', () => {
+    // Production passes no `openRelay`: the utilityProcess bootstrap hands the
+    // core a send, an MCP client and a URL, and the default factory is what
+    // actually dials. Stubbing it in every test leaves the one factory a user
+    // ever reaches unexercised until they scan a QR.
+    const sent: BridgeToHost[] = []
+    const c = createBridgeCore({
+      send: (m) => sent.push(m),
+      mcp: { callTool: vi.fn() },
+      relayUrl: 'wss://relay.test',
+    })
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices: [] })
+
+    expect(() => c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })).not.toThrow()
+    expect(sent.some((m) => m.kind === 'pairingCode')).toBe(true)
+
+    // Hand the socket back before the suite moves on: a real client holds a
+    // reconnect timer, and a room left open outlives the test that opened it.
+    c.handleHostMessage({ kind: 'cancelPairing' })
+    c.handleHostMessage({ kind: 'shutdown' })
+  })
+
+  it('says nothing to the host while the pairing room changes state', () => {
+    // `deviceConnected` is keyed by device id and the pairing room has no device
+    // yet. Reporting from here would light the Settings indicator for a phone
+    // that does not exist -- and leave it lit, because nothing later turns an id
+    // off that was never turned on.
+    const { c, sent, rooms } = core()
+    c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    const before = sent.length
+
+    rooms[0].deps.onStateChange('connecting')
+    rooms[0].deps.onStateChange('online')
+    rooms[0].deps.onStateChange('offline')
+
+    expect(sent.length).toBe(before)
+  })
+
+  it('tells the host when the relay cuts the pairing connection short', () => {
+    // Silence is the worst outcome here: the QR stays on screen, the phone keeps
+    // failing against a room nobody is in, and the desktop shows no reason why.
+    const { c, sent, rooms } = core()
+    c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+
+    rooms[0].deps.onQuota?.('frame-rate')
+
+    expect(sent).toContainEqual({
+      kind: 'error',
+      message: 'relay closed the pairing connection: frame-rate',
+    })
+  })
+
+  it('mints a fresh handshake per dial, so a reconnect is never the old session', () => {
+    // The room is handed a FACTORY, not a Handshake. Replay counters restart at
+    // zero on every connection, which is only sound because the key they count
+    // under is new each time -- one shared handshake would make a recorded
+    // session replayable verbatim after any reconnect.
+    const { rooms } = core([device()])
+    const deps = rooms[0].deps as SessionRelayDeps
+
+    const first = deps.handshake()
+    const second = deps.handshake()
+
+    expect(toHex(first.greeting)).not.toBe(toHex(second.greeting))
+  })
+})

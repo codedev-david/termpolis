@@ -18,7 +18,12 @@ const PAIRED: PairedDesktop = {
 }
 
 /** Every fake the store is built on, reachable from the tests. */
-const mockSockets: { deps: RelaySocketDeps; connected: boolean; closed: boolean }[] = []
+const mockSockets: {
+  deps: RelaySocketDeps
+  connected: boolean
+  closed: boolean
+  sent: unknown[]
+}[] = []
 const mockSessions: {
   deps: unknown
   requests: unknown[]
@@ -27,6 +32,8 @@ const mockSessions: {
   status: ((u: unknown) => void)[]
   caps: ((c: unknown) => void)[]
   resets: string[]
+  rejectNext: (err: unknown) => void
+  frames: unknown[]
 }[] = []
 const mockAppState: { handlers: ((s: string) => void)[] } = { handlers: [] }
 const mockStorage: { paired: PairedDesktop | null; cleared: number; saved: PairedDesktop[] } = {
@@ -47,6 +54,7 @@ jest.mock('../src/net/relaySocket', () => ({
     deps: unknown
     connected = false
     closed = false
+    sent: unknown[] = []
     constructor(deps: unknown) {
       this.deps = deps
       mockSockets.push(this as never)
@@ -54,8 +62,10 @@ jest.mock('../src/net/relaySocket', () => ({
     connect(): void {
       this.connected = true
     }
-    send(): void {
-      /* the store never seals; RemoteSession owns what goes out */
+    send(plaintext: unknown): void {
+      // The store never seals -- RemoteSession owns what goes out -- but WHICH
+      // socket a session writes to is the store's wiring, so it is recorded.
+      this.sent.push(plaintext)
     }
     close(): void {
       this.closed = true
@@ -72,7 +82,8 @@ jest.mock('../src/net/remoteSession', () => ({
     status: ((u: unknown) => void)[] = []
     caps: ((c: unknown) => void)[] = []
     resets: string[] = []
-    private pending: ((value: unknown) => void)[] = []
+    frames: unknown[] = []
+    private pending: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = []
 
     constructor(deps: unknown) {
       this.deps = deps
@@ -81,11 +92,15 @@ jest.mock('../src/net/remoteSession', () => ({
 
     request(req: unknown): Promise<unknown> {
       this.requests.push(req)
-      return new Promise((resolve) => this.pending.push(resolve))
+      return new Promise((resolve, reject) => this.pending.push({ resolve, reject }))
     }
 
     resolveNext(value: unknown): void {
-      this.pending.shift()?.(value)
+      this.pending.shift()?.resolve(value)
+    }
+
+    rejectNext(err: unknown): void {
+      this.pending.shift()?.reject(err)
     }
 
     onOutput(cb: (chunks: unknown) => void): () => void {
@@ -103,8 +118,10 @@ jest.mock('../src/net/remoteSession', () => ({
       return () => undefined
     }
 
-    handleFrame(): void {
-      /* driven through onOutput/onStatus instead */
+    handleFrame(plaintext: unknown): void {
+      // Driven through onOutput/onStatus in most tests; recorded so the socket's
+      // onFrame wiring can be checked for itself.
+      this.frames.push(plaintext)
     }
 
     reset(reason: string): void {
@@ -589,5 +606,307 @@ describe('following the app in and out of the foreground', () => {
     await booted()
     await useRemoteStore.getState().boot()
     expect(mockAppState.handlers).toHaveLength(1)
+  })
+})
+
+describe('a request the desktop refuses', () => {
+  async function attached(): Promise<void> {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext([])
+    await settle()
+  }
+
+  it('shows why, and still rejects the caller', async () => {
+    await attached()
+    // Both halves matter. Swallowing the rejection would leave a screen showing
+    // a spinner for work that has already failed; not recording the message
+    // would leave the user with a failure and no reason for it.
+    const pending = useRemoteStore.getState().runCommand('t1', 'ls')
+    session().rejectNext(new Error('No terminal t1 on this desktop.'))
+    await expect(pending).rejects.toThrow(/No terminal t1/)
+    expect(useRemoteStore.getState().error).toBe('No terminal t1 on this desktop.')
+  })
+
+  it('reports a rejection that is not an Error at all', async () => {
+    await attached()
+    // The session is fed by the network. A frame that rejects with a bare string
+    // must not turn into "undefined" on screen.
+    const pending = useRemoteStore.getState().subscribe('t1')
+    session().rejectNext('link went down')
+    await expect(pending).rejects.toBe('link went down')
+    expect(useRemoteStore.getState().error).toBe('link went down')
+  })
+})
+
+describe('the wiring the store hands to the socket and the session', () => {
+  async function booted(): Promise<void> {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+  }
+
+  function sessionDeps(): {
+    send: (plaintext: unknown) => void
+    setTimer: (fn: () => void, ms: number) => unknown
+    clearTimer: (timer: unknown) => void
+  } {
+    return session().deps as never
+  }
+
+  it('writes a session frame to the socket that session belongs to', async () => {
+    await booted()
+    sessionDeps().send(new Uint8Array([1, 2, 3]))
+    expect(socket().sent).toEqual([new Uint8Array([1, 2, 3])])
+  })
+
+  it('drops a session frame written after the socket is gone', async () => {
+    await booted()
+    const deps = sessionDeps()
+    // The session outlives the socket by a moment on every backgrounding. A
+    // write in that gap must be a no-op, not a throw inside the retransmit path.
+    mockAppState.handlers[0]?.('background')
+    expect(() => deps.send(new Uint8Array([9]))).not.toThrow()
+  })
+
+  it('gives the session real timers', async () => {
+    await booted()
+    const deps = sessionDeps()
+    const fired: string[] = []
+    const kept = deps.setTimer(() => fired.push('kept'), 10)
+    const cancelled = deps.setTimer(() => fired.push('cancelled'), 10)
+    deps.clearTimer(cancelled)
+    jest.advanceTimersByTime(20)
+    expect(fired).toEqual(['kept'])
+    expect(kept).toBeDefined()
+  })
+
+  it('opens the URL the socket asks for', async () => {
+    await booted()
+    const opened: string[] = []
+    const globals = globalThis as { WebSocket?: unknown }
+    const real = globals.WebSocket
+    globals.WebSocket = class {
+      constructor(url: string) {
+        opened.push(url)
+      }
+    }
+    try {
+      socket().deps.open('wss://relay.test/v1/pair/abc')
+    } finally {
+      globals.WebSocket = real
+    }
+    expect(opened).toEqual(['wss://relay.test/v1/pair/abc'])
+  })
+
+  it('builds a fresh handshake for every attachment', async () => {
+    await booted()
+    const first = socket().deps.handshake()
+    const second = socket().deps.handshake()
+    // One ephemeral key per attachment is what makes a recorded session
+    // unreadable after the fact -- a handshake reused across reconnects would
+    // hand a recorder the whole history for one compromise.
+    expect(first.ownPublicKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(first).not.toBe(second)
+  })
+
+  it('hands an arriving frame to the session, and ignores relay control frames', async () => {
+    await booted()
+    socket().deps.onFrame(new Uint8Array([7, 7]))
+    expect(session().frames).toEqual([new Uint8Array([7, 7])])
+    // The relay's own frames are not part of the sealed conversation, so the
+    // store has nothing to do with them.
+    expect(socket().deps.onControl({ kind: 'peer-joined', role: 'desktop' })).toBeUndefined()
+  })
+
+  it('gives the socket a clock and real timers', async () => {
+    await booted()
+    const before = Date.now()
+    expect(socket().deps.now()).toBeGreaterThanOrEqual(before)
+
+    const fired: string[] = []
+    const kept = socket().deps.setTimer(() => fired.push('kept'), 10)
+    const cancelled = socket().deps.setTimer(() => fired.push('cancelled'), 10)
+    socket().deps.clearTimer(cancelled)
+    jest.advanceTimersByTime(20)
+    expect(fired).toEqual(['kept'])
+    expect(kept).toBeDefined()
+  })
+})
+
+describe('creating and closing terminals', () => {
+  const T1 = { id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }
+  const T2 = { id: 't2', name: 'Codex', shellType: 'pwsh', cwd: '/repo' }
+
+  async function attachedWith(terminals: unknown[]): Promise<void> {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext(terminals)
+    await settle()
+  }
+
+  it('re-reads the list after creating a terminal, so the new one appears', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().createTerminal('New', '/repo/api')
+    session().resolveNext({ terminalId: 't9' })
+    await settle()
+    session().resolveNext([{ id: 't9', name: 'New', shellType: 'pwsh', cwd: '/repo/api' }])
+    await done
+    // Without the re-read the phone would report success and show a list that
+    // does not contain the terminal it just made.
+    expect(useRemoteStore.getState().terminals).toEqual([
+      { id: 't9', name: 'New', shellType: 'pwsh', cwd: '/repo/api' },
+    ])
+    expect(session().requests).toContainEqual({
+      kind: 'createTerminal',
+      name: 'New',
+      cwd: '/repo/api',
+    })
+  })
+
+  it('omits cwd entirely when none was given, rather than sending undefined', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().createTerminal('New')
+    session().resolveNext({ terminalId: 't9' })
+    await settle()
+    session().resolveNext([])
+    await done
+    expect(session().requests).toContainEqual({ kind: 'createTerminal', name: 'New' })
+  })
+
+  it('drops a closed terminal and its scrollback without waiting to be told again', async () => {
+    await attachedWith([T1, T2])
+    session().output[0]?.([chunk({ terminalId: 't1' }), chunk({ terminalId: 't2' })])
+
+    const done = useRemoteStore.getState().closeTerminal('t1')
+    session().resolveNext({ ok: true })
+    await done
+
+    expect(useRemoteStore.getState().terminals).toEqual([T2])
+    // The buffer belongs to a terminal that no longer exists. Keeping it would
+    // eventually show a reused id somebody else's output.
+    expect(useRemoteStore.getState().output).toEqual({ t2: 'hello' })
+  })
+})
+
+describe('a reconnect the user changed their mind about', () => {
+  it('cancels the pending dial when the app goes straight back to the background', async () => {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    mockAppState.handlers[0]?.('background')
+    mockAppState.handlers[0]?.('active')
+    // Inside the debounce window. Leaving the timer armed would dial a socket
+    // for an app that is no longer on screen -- and then hold it there.
+    mockAppState.handlers[0]?.('background')
+    jest.advanceTimersByTime(FOREGROUND_DEBOUNCE_MS * 4)
+    await settle()
+    expect(mockSockets).toHaveLength(1)
+  })
+})
+
+describe('the wiring the store hands to the pairing client', () => {
+  const RAW = JSON.stringify({
+    v: 1,
+    relayUrl: 'wss://relay.test',
+    pairingId: '0123456789abcdef0123456789abcdef',
+    desktopPublicKey: DESKTOP_PK,
+    oneTimeSecret: 'aa'.repeat(32),
+  })
+
+  function pairingDeps(): {
+    open: (url: string) => unknown
+    now: () => number
+    setTimer: (fn: () => void, ms: number) => unknown
+    clearTimer: (timer: unknown) => void
+  } {
+    return (mockPairing.calls[0] as { deps: never }).deps
+  }
+
+  it('gives the pairing client a socket opener, a clock and real timers', async () => {
+    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+
+    const opened: string[] = []
+    const globals = globalThis as { WebSocket?: unknown }
+    const real = globals.WebSocket
+    globals.WebSocket = class {
+      constructor(url: string) {
+        opened.push(url)
+      }
+    }
+    try {
+      pairingDeps().open('wss://relay.test/v1/pair/0123456789abcdef0123456789abcdef')
+    } finally {
+      globals.WebSocket = real
+    }
+    expect(opened).toEqual(['wss://relay.test/v1/pair/0123456789abcdef0123456789abcdef'])
+
+    // Pairing offers expire, so the clock and the timers are not decoration --
+    // they are how the client gives up instead of waiting on a dead offer.
+    expect(pairingDeps().now()).toBeGreaterThan(0)
+    const fired: string[] = []
+    pairingDeps().setTimer(() => fired.push('kept'), 10)
+    const cancelled = pairingDeps().setTimer(() => fired.push('cancelled'), 10)
+    pairingDeps().clearTimer(cancelled)
+    jest.advanceTimersByTime(20)
+    expect(fired).toEqual(['kept'])
+  })
+
+  it('says something useful when pairing fails with something that is not an Error', async () => {
+    // The pairing client talks to the network and to a QR code the user pointed
+    // a camera at. A rejection that is not an Error must not surface as
+    // "undefined" on the one screen a new user sees first.
+    mockPairing.error = 'socket died' as unknown as Error
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    expect(useRemoteStore.getState().error).toBe('Pairing failed.')
+    expect(useRemoteStore.getState().paired).toBeNull()
+  })
+})
+
+describe('an attach where the desktop answers with a refusal', () => {
+  it('swallows both re-asks rather than raising an unhandled rejection', async () => {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+
+    // Attaching fires two requests nobody is awaiting -- the capability re-ask
+    // and the terminal list. A rejection from either has no caller to reach, so
+    // if it were not swallowed here it would surface as an unhandled rejection
+    // that crashes the app on a desktop that merely said no.
+    session().rejectNext(new Error('The desktop is busy.'))
+    session().rejectNext(new Error('The desktop is still busy.'))
+    await settle()
+
+    expect(useRemoteStore.getState().error).toMatch(/busy/)
+    expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)
+    expect(useRemoteStore.getState().terminals).toEqual([])
+  })
+})
+
+describe('tearing the whole module down', () => {
+  it('forgets the grants along with everything else', async () => {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext([])
+    await settle()
+    expect(useRemoteStore.getState().capabilities.read).toBe(true)
+
+    teardownRemote()
+
+    // A grant is a statement about one desktop. Surviving a teardown, it would
+    // become a statement about the next one -- and the screens draw their
+    // buttons from exactly this.
+    expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)
+    expect(useRemoteStore.getState().paired).toBeNull()
+    expect(useRemoteStore.getState().terminals).toEqual([])
   })
 })

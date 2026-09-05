@@ -67,3 +67,23 @@ describe('OutputView', () => {
     expect(screen.queryByText('first')).toBeNull()
   })
 })
+
+describe('OutputView -- the styles agents actually use', () => {
+  it('carries italic through as text style', async () => {
+    await render(<OutputView text={`${ESC}[3mitalic${ESC}[0m plain`} />)
+    const italic = screen.getByTestId('output-segment-0')
+    const plain = screen.getByTestId('output-segment-1')
+    expect(JSON.stringify(italic.props.style)).toContain('italic')
+    expect(JSON.stringify(plain.props.style)).not.toContain('"fontStyle":"italic"')
+  })
+
+  it('renders dim as reduced opacity, not as a different colour', async () => {
+    // Agents write their own reasoning dim and their answer bright. Dropping the
+    // distinction makes the two indistinguishable on the phone.
+    await render(<OutputView text={`${ESC}[2mdim${ESC}[0m plain`} />)
+    const dim = screen.getByTestId('output-segment-0')
+    const plain = screen.getByTestId('output-segment-1')
+    expect(JSON.stringify(dim.props.style)).toContain('"opacity":0.6')
+    expect(JSON.stringify(plain.props.style)).toContain('"opacity":1')
+  })
+})

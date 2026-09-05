@@ -200,3 +200,43 @@ describe('what must never be written', () => {
     expect(await loadPaired()).toBeNull()
   })
 })
+
+describe('every field of a stored pairing is checked, not just the keys', () => {
+  // The record comes back from the OS keystore, which is less a threat model
+  // than a place where an older build's format survives an upgrade. Each of
+  // these would otherwise reach a screen or the relay as the wrong thing: an
+  // empty relayUrl dials nothing, a malformed deviceId is not the handle the
+  // user revokes by, and a non-finite pairedAt renders as "Infinity" in the
+  // device list.
+  const BAD: [string, Record<string, unknown>][] = [
+    ['a relayUrl that is not a string', { relayUrl: 42 }],
+    ['an empty relayUrl', { relayUrl: '' }],
+    ['a deviceId that is not a string', { deviceId: 42 }],
+    ['a deviceId that is not 16 hex characters', { deviceId: 'not hex' }],
+    ['a label that is not a string', { label: 42 }],
+    ['a pairedAt that is not a number', { pairedAt: 'yesterday' }],
+  ]
+
+  it.each(BAD)('refuses a record with %s', async (_name, override) => {
+    mockStore.set('termpolis.remote.paired.v1', JSON.stringify({ ...DESKTOP, ...override }))
+    expect(await loadPaired()).toBeNull()
+  })
+
+  it('refuses a pairedAt that parses to Infinity', async () => {
+    // Not reachable through JSON.stringify, which writes non-finite numbers as
+    // null -- but 1e999 in the stored text parses straight to Infinity, and a
+    // record written by a build that did the arithmetic differently would say
+    // exactly that.
+    const json = JSON.stringify(DESKTOP).replace(`"pairedAt":${DESKTOP.pairedAt}`, '"pairedAt":1e999')
+    expect(JSON.parse(json).pairedAt).toBe(Number.POSITIVE_INFINITY)
+    mockStore.set('termpolis.remote.paired.v1', json)
+    expect(await loadPaired()).toBeNull()
+  })
+
+  it('still accepts the record all of those were built from', async () => {
+    // Without this the table above would pass just as well against a validator
+    // that refused everything.
+    mockStore.set('termpolis.remote.paired.v1', JSON.stringify(DESKTOP))
+    expect(await loadPaired()).toEqual(DESKTOP)
+  })
+})

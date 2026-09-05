@@ -9,3 +9,11 @@ declare namespace Cloudflare {
     CONNECTION_BYTE_BUDGET?: string
   }
 }
+
+// `?raw` imports are a Vite transform, not a module the TypeScript resolver can
+// find. Declared so `npm run typecheck` accepts the wrangler.toml read in
+// config.test.ts without loosening anything else.
+declare module '*?raw' {
+  const contents: string
+  export default contents
+}

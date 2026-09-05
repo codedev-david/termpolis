@@ -26,7 +26,31 @@ function mockStub(testID: string): { __esModule: true; default: () => React.JSX.
 }
 
 jest.mock('../src/screens/PairScreen', () => mockStub('screen-pair'))
-jest.mock('../src/screens/TerminalListScreen', () => mockStub('screen-terminals'))
+/** The list is the only way into a terminal, so its stand-in carries the one
+ *  thing the shell needs from it: a `navigate` with real route params. The
+ *  shell reads the terminal's name off those params for the header title. */
+jest.mock('../src/screens/TerminalListScreen', () => {
+  const React = require('react')
+  const { Pressable, Text, View } = require('react-native')
+  const { useNavigation } = require('@react-navigation/native')
+  function Screen(): React.JSX.Element {
+    const nav = useNavigation()
+    return React.createElement(
+      View,
+      null,
+      React.createElement(Text, { testID: 'screen-terminals' }, 'screen-terminals'),
+      React.createElement(
+        Pressable,
+        {
+          testID: 'stub-open-terminal',
+          onPress: () => nav.navigate('Terminal', { terminalId: 't1', name: 'claude -- api' }),
+        },
+        React.createElement(Text, null, 'open'),
+      ),
+    )
+  }
+  return { __esModule: true, default: Screen }
+})
 jest.mock('../src/screens/TerminalScreen', () => mockStub('screen-terminal'))
 jest.mock('../src/screens/SafetyNumberScreen', () => mockStub('screen-safety'))
 jest.mock('../src/screens/SettingsScreen', () => mockStub('screen-settings'))
@@ -178,5 +202,25 @@ describe('App -- which screen is on top', () => {
     for (const id of ['screen-terminals', 'screen-terminal', 'screen-safety', 'screen-settings']) {
       expect(screen.queryByTestId(id)).toBeNull()
     }
+  })
+})
+
+describe('App -- naming the terminal screen', () => {
+  it('titles the header with the terminal that was opened', async () => {
+    // Four agent terminals look identical once you are inside one. The header
+    // is the only thing on the screen that says which of them you are typing
+    // into, and a mistyped line goes to a real shell on a real machine.
+    bootFn().mockImplementation(async () => {
+      useRemoteStore.setState({ paired: PAIRED })
+    })
+    await render(<App />)
+    await settle()
+
+    await fireEvent.press(screen.getByTestId('stub-open-terminal'))
+    expect(screen.getByTestId('screen-terminal')).toBeTruthy()
+
+    // Not the static route name, and not the desktop's label: the name the
+    // list handed over in the route params.
+    expect(JSON.stringify(screen.toJSON())).toContain('claude -- api')
   })
 })
