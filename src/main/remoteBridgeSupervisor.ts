@@ -107,8 +107,20 @@ export function resolveRemoteBridgePath(): string {
  */
 export function createRemoteBridgeTransport(
   bridgePath: string = resolveRemoteBridgePath(),
+  relayUrl?: string,
 ): BridgeHandle {
-  const child = utilityProcess.fork(bridgePath, [], { serviceName: 'termpolis-remote-bridge' })
+  // Extended, never replaced: the child is a Node process and needs PATH, TMPDIR
+  // and the Electron run-time variables to start at all.
+  //
+  // The key is omitted rather than set empty when there is no URL, because the
+  // child falls back with `?? DEFAULT_RELAY_URL` -- an empty string is not
+  // nullish and would sail through as a URL nothing can dial.
+  const env = { ...process.env }
+  if (relayUrl) env.TERMPOLIS_RELAY_URL = relayUrl
+  const child = utilityProcess.fork(bridgePath, [], {
+    serviceName: 'termpolis-remote-bridge',
+    env,
+  })
   return {
     postMessage: (msg) => child.postMessage(msg),
     on: (event: 'message' | 'exit', cb: never) => {
