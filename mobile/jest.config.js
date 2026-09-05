@@ -12,9 +12,15 @@ const transformIgnorePatterns = preset.transformIgnorePatterns.map((p) =>
 module.exports = {
   preset: 'jest-expo',
   transformIgnorePatterns,
-  collectCoverageFrom: ['src/**/*.{ts,tsx}'],
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  collectCoverageFrom: [
+    'src/**/*.{ts,tsx}',
+    // Type-only. Babel emits an empty module for it, which istanbul reports as
+    // 0% of nothing and drags the total down for a file that cannot be tested.
+    '!src/navigation/routes.ts',
+  ],
   // Raised to just under what the suite achieves as each task lands, in the
   // relay/vitest.config.ts style. Starting at zero and never revisiting is how a
   // gate becomes decoration.
-  coverageThreshold: { global: { lines: 0, functions: 0, branches: 0, statements: 0 } },
+  coverageThreshold: { global: { lines: 95, functions: 88, branches: 92, statements: 94 } },
 }
