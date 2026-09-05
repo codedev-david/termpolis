@@ -3,6 +3,20 @@ main = "src/index.ts"
 compatibility_date = "2026-08-22"
 compatibility_flags = ["nodejs_compat"]
 
+# The hostname both sides ship as their default -- `DEFAULT_RELAY_URL` in
+# `relay/src` has no say in it; `mobile/src/wire/protocol.ts` and
+# `src/main/remoteSettings.ts` both hardcode `wss://relay.termpolis.com`, so a
+# Worker reachable only at its `workers.dev` name is a Worker no client can find.
+#
+# Declared here rather than clicked in the dashboard so that a deploy from CI
+# provisions it too. `custom_domain` (not a route): a route would need the zone
+# to already answer for the hostname, while a custom domain creates the DNS
+# record and the certificate as part of the deploy. termpolis.com is already on
+# Cloudflare nameservers, which is what makes this legal.
+[[routes]]
+pattern = "relay.termpolis.com"
+custom_domain = true
+
 [[durable_objects.bindings]]
 name = "PAIRING_ROOM"
 class_name = "PairingRoom"
