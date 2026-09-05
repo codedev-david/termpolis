@@ -4,8 +4,8 @@ import { sanitizeDeviceLabel, MAX_DEVICE_LABEL } from '../../src/main/remoteBrid
 // Control characters are written as escapes throughout. A literal one in the
 // source is invisible in a diff, and a test whose input silently lost its ESC
 // asserts nothing at all.
-const ESC = ''
-const DEL = ''
+const ESC = '\u001b'
+const DEL = '\u007f'
 
 describe('sanitizeDeviceLabel', () => {
   it('leaves an ordinary label alone', () => {
@@ -25,7 +25,7 @@ describe('sanitizeDeviceLabel', () => {
   })
 
   it('drops DEL, which sits above the C0 range', () => {
-    // `c > ''` alone would wave this through: 0x7f is greater than 0x1f.
+    // `c > '\u001f'` alone would wave this through: 0x7f is greater than 0x1f.
     expect(sanitizeDeviceLabel(`a${DEL}b`)).toBe('ab')
   })
 
