@@ -27,7 +27,7 @@ current inventory. If it is not there, it has not been set — add it with
 ## Deploying
 
 ```bash
-npm --prefix relay test          # 51 tests, in real workerd
+npm --prefix relay test -- --coverage   # 98 tests in real workerd; floors are 100/100/100/100
 npm --prefix relay run deploy    # wrangler deploy
 ```
 

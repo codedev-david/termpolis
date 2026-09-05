@@ -64,8 +64,12 @@ jobs:
       - name: Typecheck
         run: npm --prefix relay run typecheck
 
+      # With --coverage, matching test.yml. The relay's floors are 100 on all four
+      # counters, and they live in the coverage run -- without the flag this step
+      # passes on a suite that skips whole files, which is exactly the state a
+      # deploy-any-commit workflow exists to catch.
       - name: Test in real workerd
-        run: npm --prefix relay test
+        run: npm --prefix relay test -- --coverage
 
       # Distinguishes "no token" from "bad token" before wrangler produces its
       # own, less helpful version of the same message.

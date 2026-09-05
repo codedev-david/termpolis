@@ -1,8 +1,10 @@
 import { PairingRoom } from './pairingRoom'
+import { rateLimitKey } from './rateLimitKey'
 
 export interface Env {
   PAIRING_ROOM: DurableObjectNamespace
-  /** Edge rate limit on ROOM CREATION, keyed by source address. */
+  /** Edge rate limit on ROOM CREATION, keyed by source -- an IPv4 address, or
+   *  the /64 an IPv6 address sits in. See `rateLimitKey`. */
   REGISTRATIONS: { limit(opts: { key: string }): Promise<{ success: boolean }> }
   /** Optional per-connection byte budget override, as a decimal string. Absent in
    *  production, where the compiled-in default applies. */
@@ -45,7 +47,12 @@ export default {
     // outage it exists to prevent. The key is the caller's address and nothing
     // else -- notably NOT the pairing id, which would tie a rate-limit record to a
     // specific conversation the relay has no business distinguishing.
-    const source = request.headers.get('CF-Connecting-IP') ?? 'unknown'
+    //
+    // Not the address verbatim, either. An IPv6 caller holds a whole /64 without
+    // asking, so a per-address key gave every one of them an unlimited allowance
+    // while holding IPv4 callers to the limit. `rateLimitKey` folds v6 into its
+    // /64 and leaves v4 alone.
+    const source = rateLimitKey(request.headers.get('CF-Connecting-IP'))
     if (!(await env.REGISTRATIONS.limit({ key: source })).success) {
       return refuse(429, 'too many pairing rooms opened; slow down')
     }

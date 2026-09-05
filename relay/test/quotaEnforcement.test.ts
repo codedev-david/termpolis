@@ -7,10 +7,27 @@ function room(seed: string): string {
   return seed.repeat(32).slice(0, 32)
 }
 
-async function connect(id: string, role: string): Promise<WebSocket> {
-  const res = await SELF.fetch(`https://relay.test/v1/pair/${id}?role=${role}`, {
-    headers: { Upgrade: 'websocket' },
+/** A fresh source address per upgrade.
+ *
+ *  The registration rate limit is keyed by source and has its own file. Sharing
+ *  one key across this one left the suite sitting a single upgrade below the
+ *  limit: the next test anyone added would have been refused by a limiter that is
+ *  not what this file is about, and the failure would have pointed at the frame
+ *  quota instead. */
+let sources = 0
+function source(): string {
+  sources++
+  return `10.${(sources >> 16) & 0xff}.${(sources >> 8) & 0xff}.${sources & 0xff}`
+}
+
+async function upgrade(id: string, role: string): Promise<Response> {
+  return SELF.fetch(`https://relay.test/v1/pair/${id}?role=${role}`, {
+    headers: { Upgrade: 'websocket', 'CF-Connecting-IP': source() },
   })
+}
+
+async function connect(id: string, role: string): Promise<WebSocket> {
+  const res = await upgrade(id, role)
   const ws = res.webSocket
   if (!ws) throw new Error(`no socket: ${res.status}`)
   ws.binaryType = 'arraybuffer'
@@ -181,31 +198,41 @@ describe('a cut connection cannot spend its successor budget', () => {
   })
 })
 
-describe('a late close from a replaced connection', () => {
-  it('does not evict the peer that took the role after it', async () => {
+describe('a role the relay freed', () => {
+  it('stays occupied until the incumbent has actually been dropped', async () => {
+    // Why `drop` may delete by ROLE without checking which socket is leaving: the
+    // seat is held for the whole of the teardown, and `fetch` answers 409 across
+    // that window. A close event therefore cannot arrive for a socket some other
+    // connection has already replaced -- the case a guard there would defend
+    // against is unreachable, and this is what makes it unreachable.
     const id = room('1')
     const stale = await connect(id, 'desktop')
-    const device = await connect(id, 'device')
+    expect((await upgrade(id, 'desktop')).status).toBe(409)
+
     const staleClosed = closeEvent(stale)
     stale.send(new Uint8Array(MAX_FRAME_BYTES + 1)) // cut for frame-size
     await staleClosed
 
-    const fresh = await connect(id, 'desktop')
-    const said = collect(device)
-    // The old socket's own close now arrives, after the role has been re-taken.
-    // Deleting by role alone would evict `fresh` and announce a `peer-gone` that
-    // never happened -- a reconnect storm caused by the reconnect that fixed it.
-    stale.close(1000, 'late')
-    await new Promise((r) => setTimeout(r, 60))
-    expect(said.text.map((s) => JSON.parse(s).kind)).not.toContain('peer-gone')
+    expect((await upgrade(id, 'desktop')).status).toBe(101)
+  })
 
-    const arrived = new Promise<number>((resolve) => {
-      device.addEventListener('message', (e) => {
-        if (typeof e.data !== 'string') resolve((e.data as ArrayBuffer).byteLength)
-      })
-    })
-    fresh.send(new Uint8Array(32))
-    expect(await arrived).toBe(32)
+  it('announces peer-gone once, not once per teardown event', async () => {
+    // `close` and `error` are both wired to `drop`, and a socket that errors and
+    // then closes calls it twice. A second announcement would tell the phone its
+    // desktop had left again -- plausibly after the desktop had reconnected.
+    const id = room('5')
+    const stale = await connect(id, 'desktop')
+    const device = await connect(id, 'device')
+    await new Promise((r) => setTimeout(r, 20))
+    const said = collect(device)
+
+    const staleClosed = closeEvent(stale)
+    stale.send(new Uint8Array(MAX_FRAME_BYTES + 1))
+    await staleClosed
+    await new Promise((r) => setTimeout(r, 60))
+
+    const gone = said.text.map((t) => JSON.parse(t)).filter((m) => m.kind === 'peer-gone')
+    expect(gone).toEqual([{ kind: 'peer-gone', role: 'desktop' }])
   })
 })
 

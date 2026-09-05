@@ -43,4 +43,32 @@ describe('registration rate limit', () => {
     }
     expect(await open(600, '198.51.100.7')).toBe(101)
   })
+
+  it('holds an IPv6 caller to one allowance per /64', async () => {
+    // Keying on the address was no limit at all here. An ISP hands out a /64
+    // without being asked, so a single ordinary home connection could open a room
+    // per address -- eighteen quintillion of them -- while the IPv4 client next
+    // door was cut off after a handful.
+    const codes: number[] = []
+    for (let i = 200; i < 240; i++) {
+      codes.push(await open(i, `2001:db8:aaaa:bbbb::${i.toString(16)}`))
+    }
+    expect(codes).toContain(429)
+    expect(codes[0]).toBe(101)
+  })
+
+  it('does not penalise a neighbouring /64', async () => {
+    // The other half of the trade. Aggregating wider than /64 would put unrelated
+    // subscribers of one ISP on a shared counter, which is the outage the limit
+    // exists to prevent rather than the abuse it exists to stop.
+    for (let i = 300; i < 340; i++) await open(i, `2001:db8:cccc:dddd::${i.toString(16)}`)
+    expect(await open(700, '2001:db8:cccc:dddf::1')).toBe(101)
+  })
+
+  it('counts a v4 address and its IPv4-mapped form together', async () => {
+    // A dual-stack edge may report either form for one client. Two forms with two
+    // counters is a free second allowance for anyone who can provoke the switch.
+    for (let i = 400; i < 440; i++) await open(i, '198.51.100.22')
+    expect(await open(800, '::ffff:198.51.100.22')).toBe(429)
+  })
 })
