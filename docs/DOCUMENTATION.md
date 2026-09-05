@@ -36,8 +36,9 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 26. [Observability](#26-observability)
 27. [Status Bar](#27-status-bar)
 28. [Troubleshooting](#28-troubleshooting)
-29. [Architecture](#29-architecture)
-30. [Keyboard Shortcut Reference](#30-keyboard-shortcut-reference)
+29. [Termpolis Remote (phone app)](#29-termpolis-remote-phone-app)
+30. [Architecture](#30-architecture)
+31. [Keyboard Shortcut Reference](#31-keyboard-shortcut-reference)
 
 ---
 
@@ -784,7 +785,80 @@ If none of the above fixes your problem, **[open an issue](https://github.com/co
 
 ---
 
-## 29. Architecture
+## 29. Termpolis Remote (phone app)
+
+**Termpolis Remote** is a small companion app for iPhone and Android that lets
+you read the terminals already running on your desktop and type into them while
+you are away from the machine. It is a **pass-through**, not a second
+Termpolis: nothing runs on the phone — no agent, no memory, no embeddings, no
+API keys. The desktop keeps running the Claude/Codex/Gemini session it was
+already running, signed in the way it was already signed in; the phone sends
+keystrokes and receives output. Lose the phone and you have lost a display, not
+an account.
+
+Remote is **off by default**.
+
+### Turning it on
+
+*Settings → Remote.*
+
+1. Tick **Enable Termpolis Remote**. The desktop half runs in its own
+   `utilityProcess`, off the main thread, so a stalled relay connection cannot
+   slow the terminals down. If it ever crashes it is restarted; four crashes
+   inside a minute disable Remote rather than restart forever, and the pane
+   says so.
+2. Leave **Relay address** at `wss://relay.termpolis.com` unless you are
+   running your own. The relay is Apache-2.0 source in `relay/` — a single
+   Cloudflare Worker — and pointing the setting at your own deployment is
+   supported.
+3. Type a label for the phone and press **Pair a device**. A QR code appears
+   and is valid for **90 seconds**; scan it with Termpolis Remote.
+4. Both screens show the **same eight words**. Compare them. They are derived
+   from the two device keys, so they match only if nothing is sitting in the
+   middle — this comparison is the entire verification, and it takes a couple
+   of seconds. If they differ, cancel and pair again.
+
+### What the phone is allowed to do
+
+A newly paired device is granted **nothing**. Four capabilities are granted
+individually in *Settings → Remote*, each revocable at any moment and
+re-checked on the desktop for every request — a phone that thinks it holds a
+grant it does not simply gets refused:
+
+| Capability | What it allows |
+|---|---|
+| **Read** | List terminals and read their output. |
+| **Create terminal** | Start a new AI terminal. The command goes through the same allowlist an agent's does. |
+| **Type into terminal** | Send keystrokes to an **existing** terminal. This bypasses the command allowlist — it is a keyboard. Deliberately **not** implied by *Create terminal*. |
+| **Close terminal** | Close a terminal. |
+
+**Revoke** deletes the device record. The channel cannot be re-opened without
+pairing again from both ends, and unpairing from the phone has the same
+effect.
+
+### How it is secured
+
+- **End-to-end encrypted.** X25519 key agreement, HKDF-SHA256 derivation and
+  ChaCha20-Poly1305 authenticated encryption, keyed from both devices'
+  identities at pairing time. The relay never holds the keys and cannot derive
+  them.
+- **The relay is not trusted.** It sees an opaque room id, a frame size and a
+  timestamp — not your terminal, not what you typed. It stores no messages and
+  keeps no traffic logs, and a room with nobody in it is discarded.
+- **Nothing leaves the desktop that was not asked for.** The phone drives the
+  desktop's own MCP server over the sealed channel; there is no second copy of
+  your memory, your embeddings or your model credentials anywhere.
+- **The desktop's identity key never reaches the renderer**, and is stored
+  through the OS keystore (DPAPI / Keychain / libsecret). The phone's key lives
+  in the iOS Keychain or Android Keystore, available only while the device is
+  unlocked and never backed up elsewhere.
+
+Privacy details are in `PRIVACY.md`; the combined policy for the desktop app,
+the phone app and the relay is at <https://termpolis.com/privacy.html>.
+
+---
+
+## 30. Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -821,7 +895,7 @@ If none of the above fixes your problem, **[open an issue](https://github.com/co
 
 ---
 
-## 30. Keyboard Shortcut Reference
+## 31. Keyboard Shortcut Reference
 
 All shortcuts are rebindable in Settings → Keybindings. Defaults:
 

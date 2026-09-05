@@ -15,7 +15,7 @@ describe('app.json -- the fields a store submission turns on', () => {
   const android = appConfig.expo.android
 
   it('declares non-exempt encryption', () => {
-    // X25519 + HKDF + XChaCha20-Poly1305. Claiming the exemption here would be
+    // X25519 + HKDF + ChaCha20-Poly1305. Claiming the exemption here would be
     // a false statement on an export-compliance form, not a shortcut.
     expect(ios.infoPlist.ITSAppUsesNonExemptEncryption).toBe(true)
   })

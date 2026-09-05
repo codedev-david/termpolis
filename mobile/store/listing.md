@@ -58,7 +58,7 @@ PAIRING TAKES ONE SCAN
 Your desktop shows a code. You scan it. Both screens then show the same eight words -- if they match, the two devices agreed on a key nothing in between can derive. If they do not match, something is in between, and the right move is to unpair.
 
 END TO END, NOT JUST IN TRANSIT
-Every message between your phone and your desktop is sealed with a key the two of them derived together, using X25519 key agreement and XChaCha20-Poly1305. The relay that carries the traffic sees a room id, a size and a time. It cannot read a single byte of what passes through it, and it keeps nothing.
+Every message between your phone and your desktop is sealed with a key the two of them derived together, using X25519 key agreement and ChaCha20-Poly1305. The relay that carries the traffic sees a room id, a size and a time. It cannot read a single byte of what passes through it, and it keeps nothing.
 
 YOUR DESKTOP DECIDES WHAT THIS PHONE CAN DO
 Reading output, starting terminals, typing, closing terminals -- each is granted on the desktop, in Settings, and each is checked again on the desktop for every request. This app can report what it has been allowed. It cannot grant itself anything.

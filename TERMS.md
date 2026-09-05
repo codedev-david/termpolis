@@ -1,9 +1,11 @@
 # Termpolis Terms of Use
 
-_Last updated: 2026-05-05_
+_Last updated: 2026-09-05_
 
 Thanks for trying Termpolis. These terms govern your use of the Termpolis
-desktop application and the source code published at
+desktop application, the **Termpolis Remote** companion app for iPhone and
+Android, the **pairing relay** those two use to reach each other, and the
+source code for all three published at
 <https://github.com/codedev-david/termpolis>. By installing or using the app you
 agree to them.
 
@@ -100,11 +102,43 @@ of provider-side data controls; reliance on the redaction scanner for
 secrets it does not detect; or any other circumstance covered by section 5
 above.
 
+## 5b. Termpolis Remote and the pairing relay — scope and limits
+
+**Termpolis Remote** is a companion app that reads and types into terminals
+already running on a Termpolis desktop. It is a remote control, not a second
+Termpolis: it runs no agent and holds no credentials, and anything it asks for
+is executed by your desktop, under your account, on your machine. **You remain
+responsible for what is run**, exactly as in section 3 — a command typed from
+a phone is a command you ran.
+
+The **pairing relay** (`relay.termpolis.com` by default) is a service we
+operate to introduce two devices that are usually on different networks. Using
+it, you accept that:
+
+- **It is provided as is, with no uptime commitment.** It may be rate limited,
+  restarted, moved or withdrawn without notice, and we are not liable for work
+  interrupted because a phone could not reach a desktop. The relay address is
+  a setting: the relay is Apache-2.0 source in `relay/`, and you may run your
+  own.
+- **It carries ciphertext only.** Traffic is encrypted end to end between your
+  two devices; we cannot read it, and we do not store it. That also means we
+  cannot recover it, replay it, or help you get back a session you lost.
+- **Turning Remote on is a decision about your own exposure.** Off by default,
+  it puts a network path to your terminals in the hands of whoever holds the
+  paired phone. Grant only the capabilities you need — typing into an existing
+  terminal deliberately is *not* implied by creating one — verify the eight
+  pairing words on both screens, and revoke a device you no longer control.
+- **Do not use the relay to carry traffic other than Termpolis Remote's**, to
+  attack or overload it, or to route another product's data through it.
+
 ## 6. Privacy
 
-Privacy practices are documented separately in `PRIVACY.md`. In short:
+Privacy practices are documented separately in `PRIVACY.md`, and the combined
+policy covering the desktop app, the phone app and the relay is published at
+<https://termpolis.com/privacy.html>. In short:
 Termpolis itself does not transmit your data anywhere unless you opt in to
-crash reporting. AI agents you launch from Termpolis (Claude Code, Codex,
+crash reporting or turn on Termpolis Remote — and Remote's traffic is
+end-to-end encrypted between your own two devices. AI agents you launch from Termpolis (Claude Code, Codex,
 Gemini CLI) communicate directly with their respective providers
 under those providers' own privacy terms — Termpolis is the local terminal
 host, not a privacy shield over those agents.

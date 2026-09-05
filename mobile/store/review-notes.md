@@ -92,7 +92,7 @@ the device and discarded; nothing is stored or uploaded. Step 5 also gives a
 manual path that never opens the camera.
 
 ENCRYPTION: the phone and the desktop derive a shared key (X25519 + HKDF-SHA256)
-and seal every message with XChaCha20-Poly1305. The relay that carries the
+and seal every message with ChaCha20-Poly1305. The relay that carries the
 traffic sees a room id and a byte count and cannot decrypt anything. This is why
 ITSAppUsesNonExemptEncryption is declared true. The format is published:
 https://github.com/codedev-david/termpolis/blob/main/docs/remote-wire-format.md

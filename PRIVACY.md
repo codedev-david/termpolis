@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: May 5, 2026 (auto-scan added in v1.11.44)
+Last updated: September 5, 2026 (Termpolis Remote and the pairing relay)
 
 ## Overview
 
@@ -11,9 +11,13 @@ to keep your data local.
 
 ## Summary
 
-- Termpolis does **not** run a Termpolis-hosted server. The app talks directly
-  to whatever tools and services you run inside it (shells, AI agents, git,
-  etc.).
+- Termpolis does **not** run a server that holds your work. The app talks
+  directly to whatever tools and services you run inside it (shells, AI
+  agents, git, etc.). The one Termpolis-hosted service that exists is the
+  **pairing relay** used by Termpolis Remote, and it only ever carries
+  end-to-end encrypted frames it cannot read. It is off until you turn Remote
+  on — see [Termpolis Remote and the Pairing
+  Relay](#termpolis-remote-and-the-pairing-relay).
 - Termpolis does **not** collect terminal contents, file contents, command
   history, file paths, usernames, or any data that would identify you.
 - **Optional**, opt-in crash reporting sends anonymous error stack traces and
@@ -35,6 +39,12 @@ upload it.
   pinned context snippets, and swarm memory.
 - The MCP auth token and port (written to `userData/mcp-token` and
   `userData/mcp-port` with `0600` permissions).
+- If you turn on **Termpolis Remote**: this desktop's X25519 identity key
+  (`userData/remote-identity-key`, encrypted at rest through the OS keystore —
+  DPAPI on Windows, Keychain on macOS, libsecret on Linux), one record per
+  paired device (`userData/remote-devices.json`: its label, its public key, the
+  capabilities you granted it, and when it paired and was last seen), and the
+  Remote settings themselves (`userData/remote-settings.json`).
 
 The `userData` directory lives at:
 
@@ -61,6 +71,13 @@ Termpolis itself only makes network requests for:
    ID. Before the report is sent, any Windows user-folder paths in
    breadcrumbs are redacted to `C:\Users\<redacted>`.
 
+3. **The pairing relay** (only if you turn on Termpolis Remote) — a WebSocket
+   connection to the relay address in Settings, `wss://relay.termpolis.com` by
+   default. Everything sent over it is encrypted end to end between your
+   desktop and your phone; the relay sees an opaque room id, a frame size and a
+   timestamp. Details in the next section. When Remote is off, this connection
+   is never opened.
+
 Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini
 CLI, your own shells) make their own network requests according
 to their own privacy policies. Termpolis does not proxy or intercept that
@@ -73,6 +90,66 @@ traffic.
 - Your username, email, machine name, or hostname.
 - Git repository contents, remotes, or commit metadata.
 - AI agent prompts or responses.
+
+That list is unchanged by Termpolis Remote: the relay described below carries
+ciphertext we cannot open, and we do not keep it.
+
+## Termpolis Remote and the Pairing Relay
+
+**Termpolis Remote** is a separate companion app for iPhone and Android that
+lets you read and type into terminals already running on your desktop. It is
+**off by default**. Until you turn Remote on in Settings and pair a device,
+none of what follows happens at all.
+
+The phone is a pass-through. It runs no agent, holds no memory, holds no
+embeddings and holds no model credentials — the desktop keeps running the
+agent it was already running, under the account it was already signed in to.
+The desktop decides what a paired phone may do: reading, creating a terminal,
+typing into an existing terminal and closing a terminal are four separate
+grants, all off until you turn them on, revocable at any moment, and re-checked
+on the desktop for every request.
+
+### The relay
+
+The phone and the desktop are usually on different networks, so they meet in a
+room on a relay we operate (`wss://relay.termpolis.com` by default — the
+address is a setting, and you can point it at your own). The relay is built so
+that trusting it is not required:
+
+- Every message is **end-to-end encrypted** between your phone and your
+  desktop: X25519 key agreement, HKDF-SHA256 derivation, ChaCha20-Poly1305
+  authenticated encryption. The keys are derived at pairing time from both
+  devices' identities. The relay does not hold them and cannot derive them.
+- What the relay can see is an **opaque room identifier, the size of each
+  frame, and its timing**. Not your terminal, not what you typed, not what came
+  back.
+- The relay **stores no messages and keeps no traffic logs**. It forwards a
+  frame to the other end of the room and forgets it; a room with nobody in it
+  is discarded.
+- Transport is TLS and the payload inside it is sealed separately. Both layers
+  would have to fail to expose anything.
+- When you pair, both screens show the **same eight words**, derived from the
+  two device keys. They match only if nothing is sitting in the middle.
+  Comparing them takes a couple of seconds and is the whole verification.
+
+### What the phone stores
+
+Its own private key, in the operating system's keystore (iOS Keychain /
+Android Keystore), marked available only while the device is unlocked and not
+backed up to another device; and the pairing record — the desktop's public
+key, a session identifier, the relay address, a device id and the label you
+gave the desktop. That is the whole list. Terminal output reaches the phone
+encrypted, is held in memory while the app is open, and is never written to
+disk. The camera is used for exactly one thing, scanning the pairing code your
+desktop displays; frames are decoded on the device and discarded.
+
+The phone app has no account, no analytics SDK, no crash reporter, no
+advertising identifier and no server of ours that it talks to. Unpairing —
+from either end — erases the key material, and the channel cannot be re-opened
+without pairing again.
+
+The combined policy covering the desktop app, the phone app and the relay
+together is published at <https://termpolis.com/privacy.html>.
 
 ## AI Security Center (Settings → Security)
 
@@ -145,6 +222,13 @@ the respective provider's privacy policy:
   listed above.
 - **Uninstall** — remove Termpolis through your OS's normal application
   uninstall flow.
+- **Turn Termpolis Remote off** — it is off to begin with. Once on, unticking
+  it in Settings → Remote stops the bridge and closes the relay connection.
+- **Cut a phone off** — revoke the device in Settings → Remote, or unpair from
+  the phone. Either end is enough: the channel cannot be re-opened without
+  pairing again from both.
+- **Use your own relay** — the relay address is a setting. Point it at a
+  deployment of `relay/` you run, and no traffic touches ours.
 
 ## Children's Privacy
 

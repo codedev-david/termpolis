@@ -24,7 +24,7 @@ termpolis-web (auto-deploys to termpolis.com on push to main).
 - Bundle id `com.termpolis.remote` on **both** platforms. Never change it after the
   first submission; it is not re-assignable.
 - `ITSAppUsesNonExemptEncryption: true`. The pairing channel is X25519 + HKDF +
-  XChaCha20-Poly1305. The exemption does not apply, and getting this wrong is the most
+  ChaCha20-Poly1305. The exemption does not apply, and getting this wrong is the most
   commonly missed submission gate.
 - The phone app collects **nothing**. No analytics SDK, no crash reporter, no
   advertising id, no account. Every disclosure follows from that, so any change to it
@@ -167,7 +167,7 @@ import pkg from '../package.json'
 
 describe('app.json -- the fields a store submission turns on', () => {
   it('declares non-exempt encryption', () => {
-    // X25519 + HKDF + XChaCha20-Poly1305. Claiming exemption here is a false
+    // X25519 + HKDF + ChaCha20-Poly1305. Claiming exemption here is a false
     // statement on an export-compliance form, not a shortcut.
     expect(appConfig.expo.ios.infoPlist.ITSAppUsesNonExemptEncryption).toBe(true)
   })

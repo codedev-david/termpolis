@@ -67,7 +67,7 @@ infer it.
 ### Export compliance
 
 `ITSAppUsesNonExemptEncryption` is **true**. The pairing channel uses X25519 key
-agreement, HKDF-SHA256 and XChaCha20-Poly1305; that is not the "exempt" category, and
+agreement, HKDF-SHA256 and ChaCha20-Poly1305; that is not the "exempt" category, and
 claiming otherwise would be a false statement on an export form rather than a shortcut.
 Answer App Store Connect's follow-up questions as: encryption is used for
 authentication and for protecting the user's own data in transit; the app is not
