@@ -786,6 +786,71 @@ export type WorkflowRunEvent =
   | { type: 'step:finished'; runId: string; stepId: string; result: StepResult }
   | { type: 'run:finished'; runId: string; status: RunStatus; at: number }
 
+/** One paired phone as the Settings pane sees it.
+ *
+ *  Deliberately missing `sessionRoomId`: it decrypts nothing, but it names this
+ *  desktop's seat on the relay, and a seat is exclusive -- knowing it is enough
+ *  to keep the real phone out. Main rebuilds this view rather than forwarding the
+ *  stored record, so a field added there later is excluded by default. */
+export interface RemoteDeviceView {
+  id: string
+  label: string
+  publicKey: string
+  capabilities: RemoteCapabilities
+  pairedAt: number
+  lastSeenAt: number
+  /** Reachable right now. Distinct from paired, which survives a tunnel. */
+  attached: boolean
+}
+
+export interface RemoteCapabilities {
+  read: boolean
+  createTerminal: boolean
+  writeToTerminal: boolean
+  closeTerminal: boolean
+}
+
+export interface RemotePairingView {
+  /** The QR text, verbatim. Encode it as-is: it carries the desktop's public key
+   *  and the one-time pairing secret, and re-formatting it breaks the scan. */
+  qrPayload: string
+  expiresAt: number
+}
+
+export interface RemoteStatusView {
+  enabled: boolean
+  running: boolean
+  /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
+  disabled: boolean
+  relayUrl: string
+  publicKey: string
+  pairing: RemotePairingView | null
+  devices: RemoteDeviceView[]
+}
+
+/** One thing that just happened, for a toast or to close a modal. Device detail
+ *  arrives through the status push instead, which is scrubbed in one place. */
+export interface RemoteEvent {
+  kind: string
+  deviceId?: string
+  label?: string
+  phrase?: string
+  message?: string
+}
+
+export interface RemoteAPI {
+  status: () => Promise<IpcResponse<RemoteStatusView>>
+  setEnabled: (enabled: boolean) => Promise<IpcResponse<RemoteStatusView>>
+  setRelayUrl: (relayUrl: string) => Promise<IpcResponse<RemoteStatusView>>
+  beginPairing: (label: string) => Promise<IpcResponse<RemoteStatusView>>
+  cancelPairing: () => Promise<IpcResponse<RemoteStatusView>>
+  revokeDevice: (deviceId: string) => Promise<IpcResponse<RemoteStatusView>>
+  setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) => Promise<IpcResponse<RemoteStatusView>>
+  verificationPhrase: (deviceId: string) => Promise<IpcResponse<{ deviceId: string; phrase: string }>>
+  onStatus: (cb: (status: RemoteStatusView) => void) => () => void
+  onEvent: (cb: (event: RemoteEvent) => void) => () => void
+}
+
 declare global {
   interface Window {
     termpolis: TermpolisAPI
@@ -806,5 +871,6 @@ declare global {
       onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => () => void
       onTerminalClosed: (cb: (terminalId: string) => void) => () => void
     }
+    remote: RemoteAPI
   }
 }

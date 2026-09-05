@@ -23,7 +23,14 @@ export interface RemoteHostDeps {
   userDataDir: string
   mcpPort: number
   mcpToken: string
-  sendToRenderer(channel: string, payload: unknown): void
+  /** Push the whole picture. Two typed callbacks and not one
+   *  `send(channel, payload)`: the channel names then appear as literals at the
+   *  one call site that owns a BrowserWindow, which is what the main<->preload
+   *  anti-drift guard scans for -- a variable channel is invisible to it, and the
+   *  matching preload listener would read as a ghost. */
+  sendStatus(status: RemoteStatusView): void
+  /** Push one thing that just happened, for a toast or a modal. */
+  sendEvent(event: RemoteEvent): void
   readOutput(terminalId: string, fromOffset: number): OutputSlice
   startBridge(init: InitParams, relayUrl: string): void
   stopBridge(): void
@@ -138,9 +145,9 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
    *  Every call site here is inside a bridge message handler, and a throw there
    *  escapes into the supervisor's emit loop -- one closing window would take
    *  remote down for the rest of the run. */
-  function toRenderer(channel: string, payload: unknown): void {
+  function push(send: () => void): void {
     try {
-      deps.sendToRenderer(channel, payload)
+      send()
     } catch {
       /* window is gone */
     }
@@ -162,7 +169,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   }
 
   function emitStatus(): void {
-    toRenderer('remote:status', status())
+    push(() => deps.sendStatus(status()))
   }
 
   function newPump(): OutputPump {
@@ -201,7 +208,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       default:
         break
     }
-    toRenderer('remote:event', toEvent(m))
+    push(() => deps.sendEvent(toEvent(m)))
     emitStatus()
   }
 
@@ -281,11 +288,16 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     },
 
     setRelayUrl(url: string): void {
+      const before = settings.relayUrl
       settings = saveRemoteSettings(deps.userDataDir, { relayUrl: url })
       // The child reads the URL once, at bootstrap, so a running bridge has to be
       // replaced to pick it up. A stopped one is left stopped: changing an address
       // is not a request to start listening on it.
-      if (deps.isBridgeRunning()) {
+      //
+      // Only a real change is worth that: re-saving the address already in effect
+      // -- or a malformed one the store refuses, which leaves the old value
+      // standing -- would otherwise drop every connected phone for nothing.
+      if (settings.relayUrl !== before && deps.isBridgeRunning()) {
         shutdown()
         launch()
       }

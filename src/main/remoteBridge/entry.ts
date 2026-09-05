@@ -283,7 +283,10 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  rather than on insertion order, which varies with who subscribed first. */
   function announceSubscriptions(): void {
     const terminalIds = fanout.subscribedTerminals().sort()
-    const key = terminalIds.join(' ')
+    // '\u0000' as an escape, never a literal NUL: a raw one makes the whole file
+    // read as binary to grep and to the code indexer, which is how it hid before
+    // (v1.25.6). The separator itself is right -- it cannot occur in a uuid.
+    const key = terminalIds.join('\u0000')
     if (key === announcedSubscriptions) return
     announcedSubscriptions = key
     deps.send({ kind: 'subscriptionsChanged', terminalIds })

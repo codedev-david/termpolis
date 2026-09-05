@@ -25,7 +25,7 @@ const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
 
 /** `=== true` and not `Boolean(v)`: `'false'`, `1` and `{}` are all truthy, and a
  *  capability check reading `if (caps.writeToTerminal)` would honour every one. */
-function capabilities(v: unknown): Capabilities {
+export function coerceCapabilities(v: unknown): Capabilities {
   const raw = (typeof v === 'object' && v !== null ? v : {}) as Unknown
   const keys = Object.keys(NO_CAPABILITIES) as (keyof Capabilities)[]
   const out = { ...NO_CAPABILITIES }
@@ -52,7 +52,7 @@ function device(v: unknown): PairedDevice | null {
     label: str(raw.label),
     publicKey,
     sessionRoomId,
-    capabilities: capabilities(raw.capabilities),
+    capabilities: coerceCapabilities(raw.capabilities),
     pairedAt: num(raw.pairedAt),
     lastSeenAt: num(raw.lastSeenAt),
   }

@@ -428,8 +428,15 @@ import { initAutoUpdater } from './autoUpdater'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
-function ok<T>(data?: T) { return { success: true, data } }
-function err(error: string) { return { success: false, error } }
+import { ok, err } from './ipcResult'
+import {
+  noteTerminalClosed as remoteNoteTerminalClosed,
+  noteTerminalOutput as remoteNoteTerminalOutput,
+  realBridgeTransport,
+  registerRemoteIpc,
+  startRemoteBridgeHost,
+  stopRemoteBridgeHost,
+} from './remoteHost'
 
 // One-way bypass for the agents-running close guard: armed when the user clicks
 // "Restart" on a downloaded update, so the quit from quitAndInstall isn't
@@ -626,6 +633,10 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
         spawnTerminal(id, shell.executable, cwd, (data) => {
           mainWindow?.webContents.send('terminal:data', id, data)
           appendOutput(terminalOutputBuffers, id, data)
+          // Mark only. The remote pump reads the buffer on its own 50ms tick, so a
+          // paired phone never adds work proportional to PTY chatter -- and with no
+          // phone subscribed this is a set lookup that finds nothing.
+          remoteNoteTerminalOutput(id)
         }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
         resolve()
       } catch (e) {
@@ -670,6 +681,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
   try {
     killTerminal(id)
     terminalOutputBuffers.delete(id)
+    remoteNoteTerminalClosed(id)
     try { detachWatchers(id) } catch {}
     if (recentlyAuditedTerminals.has(id)) {
       recentlyAuditedTerminals.delete(id)
@@ -2428,6 +2440,12 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
   return ok({ ...slice, length: slice.output.length })
 })
 
+// Remote access (phone companion). Registered here, at module scope, because the
+// Settings pane asks for status the moment it mounts -- long before the bridge
+// itself starts, which waits on the MCP port. Every handler resolves the host at
+// call time and answers "not running" until then.
+registerRemoteIpc(ipcMain)
+
 // Second Opinion: run a chosen agent headless over captured terminal output and return its
 // review text. `args` carries a PROMPT_TOKEN placeholder where the (UNTRUSTED, terminal-
 // scraped) prompt goes — the prompt is NEVER placed on a shell command line: on Windows the
@@ -2677,6 +2695,7 @@ if (!gotTheLock) {
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             mainWindow?.webContents.send('terminal:data', id, data)
             appendOutput(terminalOutputBuffers, id, data)
+            remoteNoteTerminalOutput(id)
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
@@ -2703,6 +2722,7 @@ if (!gotTheLock) {
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
         terminalOutputBuffers.delete(terminalId)
+        remoteNoteTerminalClosed(terminalId)
         mcpCreatedTerminals.delete(terminalId)
         mainWindow?.webContents.send('mcp:terminal-closed', terminalId)
       },
@@ -3509,6 +3529,33 @@ if (!gotTheLock) {
       console.error(`[mcp-port] Failed to bind MCP server, port file not written: ${err.message}`)
     })
 
+    // ── Remote access (phone companion) ──
+    // Started after the port binds, not beside startMcpServer: the bridge serves a
+    // phone by calling the same MCP handlers this app exposes locally, so a port
+    // it cannot reach makes it a bridge to nothing. Nothing is spawned unless the
+    // user turned remote on -- `start()` reads the setting and returns.
+    //
+    // The secret key crosses exactly one boundary, main -> bridge child, because
+    // `safeStorage` does not exist in a utilityProcess. It never reaches the
+    // renderer: everything pushed there is rebuilt from an allowlist.
+    awaitMcpPortBound().then((boundPort) => {
+      try {
+        startRemoteBridgeHost({
+          userDataDir: app.getPath('userData'),
+          mcpPort: boundPort,
+          mcpToken: getMcpAuthToken(),
+          sendStatus: (status) => { try { mainWindow?.webContents.send('remote:status-changed', status) } catch { /* window gone */ } },
+          sendEvent: (event) => { try { mainWindow?.webContents.send('remote:event', event) } catch { /* window gone */ } },
+          readOutput: (terminalId, fromOffset) => readOutputFrom(terminalOutputBuffers, terminalId, fromOffset),
+          createTransport: realBridgeTransport,
+        })
+      } catch (e) {
+        // A wiring fault here must not fatal `whenReady` -- the app-boot rule. Remote
+        // is off in that run and every channel says so; the terminal still works.
+        console.error(`[remote] failed to start: ${(e as Error).message}`)
+      }
+    }).catch(() => { /* the port failure is already reported above */ })
+
     // Auto-register Termpolis as an MCP server in Claude Code's settings
     const adapterPath = app.isPackaged
       ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.cjs')
@@ -3703,6 +3750,10 @@ if (!gotTheLock) {
     // Reap the memory process. The store is already durable on disk (every write is appended before
     // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
     try { stopMemoryHost() } catch {}
+    // Ask the bridge to close its relay rooms before the process goes. A seat is
+    // exclusive -- the relay answers a second desktop socket for the same room
+    // with 409 -- so a killed child leaves the next launch racing its timeout.
+    try { stopRemoteBridgeHost() } catch {}
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
     try { saveDepthCurveToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
@@ -3744,6 +3795,7 @@ if (!gotTheLock) {
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
+    try { stopRemoteBridgeHost() } catch {}
     stage = 'watchers'
     // close() on an already-stopped server throws ERR_SERVER_NOT_RUNNING, and this used to be the
     // one unguarded call standing in front of the exit path.

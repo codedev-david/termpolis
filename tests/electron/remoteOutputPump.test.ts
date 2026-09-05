@@ -8,16 +8,27 @@ function fakeTimers() {
   let pending: (() => void) | null = null
   let handle = 0
   let live = 0
+  let lastDelay = -1
+  const cleared: unknown[] = []
   return {
     get pendingCount() {
       return live
     },
-    setTimer(fn: () => void) {
+    /** What the pump asked to wait, and what it later cancelled. Recorded rather
+     *  than ignored: the coalescing interval IS the feature -- a pump that
+     *  scheduled at 0ms would pass every other assertion in this file. */
+    get lastDelay() {
+      return lastDelay
+    },
+    cleared,
+    setTimer(fn: () => void, ms: number) {
       live++
       pending = fn
+      lastDelay = ms
       return ++handle
     },
-    clearTimer() {
+    clearTimer(h: unknown) {
+      cleared.push(h)
       live--
       pending = null
     },
@@ -80,6 +91,9 @@ describe('createOutputPump', () => {
       h.pump.markDirty('t1')
     }
     expect(setTimer).toHaveBeenCalledTimes(1)
+    // At the interval, not immediately: a 0ms schedule would still be one timer
+    // per burst and would pass the count above while sending on every keystroke.
+    expect(h.timers.lastDelay).toBe(50)
     expect(h.sent).toEqual([])
     h.timers.tick()
     expect(h.sent).toEqual([{ terminalId: 't1', slice: { output: 'x'.repeat(50), nextOffset: 50, missed: 0 } }])

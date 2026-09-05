@@ -12,7 +12,12 @@ import { NO_CAPABILITIES, type BridgeToHost, type HostToBridge, type PairedDevic
 import { loadRemoteDevices, saveRemoteDevices } from '../../src/main/remoteDeviceStore'
 import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
 import { loadRemoteSettings, saveRemoteSettings } from '../../src/main/remoteSettings'
-import { createRemoteHost, type RemoteHost } from '../../src/main/remoteBridgeHost'
+import {
+  createRemoteHost,
+  type RemoteEvent,
+  type RemoteHost,
+  type RemoteStatusView,
+} from '../../src/main/remoteBridgeHost'
 
 const XOR = 0x5a
 function fakeSafeStorage() {
@@ -46,7 +51,8 @@ let harness: ReturnType<typeof makeHarness>
 function makeHarness() {
   const started: Array<{ init: Omit<Extract<HostToBridge, { kind: 'init' }>, 'kind'>; relayUrl: string }> = []
   const posted: HostToBridge[] = []
-  const events: Array<{ channel: string; payload: unknown }> = []
+  const statuses: RemoteStatusView[] = []
+  const events: RemoteEvent[] = []
   const timers: Array<() => void> = []
   let bridgeListener: (m: BridgeToHost) => void = () => {}
   let running = false
@@ -58,7 +64,8 @@ function makeHarness() {
     userDataDir: dir,
     mcpPort: 3369,
     mcpToken: 'mcp-token',
-    sendToRenderer: (channel, payload) => events.push({ channel, payload }),
+    sendStatus: (s) => statuses.push(s),
+    sendEvent: (e) => events.push(e),
     readOutput: (id, from) => {
       const all = text[id] ?? ''
       return { output: all.slice(from), nextOffset: all.length, missed: 0 }
@@ -95,6 +102,7 @@ function makeHarness() {
     },
     started,
     posted,
+    statuses,
     events,
     /** Deliver a message as the bridge child would. */
     fromBridge: (m: BridgeToHost) => bridgeListener(m),
@@ -131,11 +139,9 @@ afterEach(() => {
   }
 })
 
-/** Renderer payloads pushed on the `remote:event` channel. */
-function remoteEvents(): Array<Record<string, unknown>> {
-  return harness.events
-    .filter((e) => e.channel === 'remote:event')
-    .map((e) => e.payload as Record<string, unknown>)
+/** Everything pushed at the renderer, both channels, as one blob to scan. */
+function pushedToRenderer(): string {
+  return JSON.stringify({ statuses: harness.statuses, events: harness.events })
 }
 
 describe('remote bridge host', () => {
@@ -196,7 +202,7 @@ describe('remote bridge host', () => {
     harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
     harness.fromBridge({ kind: 'pairingCode', qrPayload: 'qr', expiresAt: 9e15 })
 
-    const serialized = JSON.stringify({ status: harness.host.status(), events: harness.events })
+    const serialized = JSON.stringify({ status: harness.host.status(), pushed: pushedToRenderer() })
     expect(serialized).not.toContain(identity.secretKey)
     expect(harness.host.status()).not.toHaveProperty('identitySecretKey')
   })
@@ -208,7 +214,7 @@ describe('remote bridge host', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
     harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
-    const serialized = JSON.stringify({ status: harness.host.status(), events: harness.events })
+    const serialized = JSON.stringify({ status: harness.host.status(), pushed: pushedToRenderer() })
     expect(serialized).not.toContain('c9dc49b87f0dc983be61f034ceab7c52')
   })
 
@@ -216,7 +222,7 @@ describe('remote bridge host', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
     harness.fromBridge({ kind: 'error', message: 'relay closed the connection' })
-    expect(remoteEvents()).toContainEqual({
+    expect(harness.events).toContainEqual({
       kind: 'error',
       message: 'relay closed the connection',
     })
@@ -228,7 +234,7 @@ describe('remote bridge host', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
     harness.fromBridge({ kind: 'verificationPhrase', deviceId: 'dev1', phrase: 'a b c d e f g h' })
-    expect(remoteEvents()).toContainEqual({
+    expect(harness.events).toContainEqual({
       kind: 'verificationPhrase',
       deviceId: 'dev1',
       phrase: 'a b c d e f g h',
@@ -239,7 +245,7 @@ describe('remote bridge host', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
     harness.fromBridge({ kind: 'paired', device: pairedDevice() })
-    expect(remoteEvents()).toContainEqual({
+    expect(harness.events).toContainEqual({
       kind: 'paired',
       deviceId: 'dev1',
       label: 'Pixel 9 Pro',
@@ -251,15 +257,15 @@ describe('remote bridge host', () => {
     harness.host.start()
     harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
     harness.fromBridge({ kind: 'deviceDisconnected', deviceId: 'dev1' })
-    expect(remoteEvents()).toContainEqual({ kind: 'deviceConnected', deviceId: 'dev1' })
-    expect(remoteEvents()).toContainEqual({ kind: 'deviceDisconnected', deviceId: 'dev1' })
+    expect(harness.events).toContainEqual({ kind: 'deviceConnected', deviceId: 'dev1' })
+    expect(harness.events).toContainEqual({ kind: 'deviceDisconnected', deviceId: 'dev1' })
   })
 
   it('forwards a bare event with nothing to add', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
     harness.fromBridge({ kind: 'ready' })
-    expect(remoteEvents()).toContainEqual({ kind: 'ready' })
+    expect(harness.events).toContainEqual({ kind: 'ready' })
   })
 
   it('exposes the pairing code and drops it once the device pairs', () => {
@@ -382,7 +388,8 @@ describe('remote bridge host', () => {
       userDataDir: dir,
       mcpPort: 1,
       mcpToken: 't',
-      sendToRenderer: () => {},
+      sendStatus: () => {},
+      sendEvent: () => {},
       readOutput: read,
       startBridge: () => {},
       stopBridge: () => {},
@@ -450,6 +457,18 @@ describe('remote bridge host', () => {
     expect(harness.host.status().relayUrl).toBe('wss://other.example/ws')
   })
 
+  it('leaves a running bridge alone when the address has not actually changed', () => {
+    // Every restart drops every connected phone. Re-saving the address already in
+    // effect -- or a malformed one the store refuses, which leaves the old value
+    // standing -- is not worth that.
+    saveRemoteSettings(dir, { enabled: true, relayUrl: 'wss://relay.example/ws' })
+    harness.host.start()
+    harness.host.setRelayUrl('wss://relay.example/ws')
+    harness.host.setRelayUrl('http://relay.example')
+    expect(harness.started).toHaveLength(1)
+    expect(harness.host.status().relayUrl).toBe('wss://relay.example/ws')
+  })
+
   it('does not start a stopped bridge just because the relay URL changed', () => {
     harness.host.start()
     harness.host.setRelayUrl('wss://other.example/ws')
@@ -464,7 +483,10 @@ describe('remote bridge host', () => {
       userDataDir: dir,
       mcpPort: 1,
       mcpToken: 't',
-      sendToRenderer: () => {
+      sendStatus: () => {
+        throw new Error('Object has been destroyed')
+      },
+      sendEvent: () => {
         throw new Error('Object has been destroyed')
       },
       readOutput: () => ({ output: '', nextOffset: 0, missed: 0 }),

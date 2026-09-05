@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { TermpolisAPI, ShellType, PlatformInfo } from '../renderer/src/types'
+import type {
+  TermpolisAPI,
+  ShellType,
+  PlatformInfo,
+  RemoteCapabilities,
+  RemoteEvent,
+  RemoteStatusView,
+} from '../renderer/src/types'
 
 const api: TermpolisAPI = {
   createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom) =>
@@ -441,6 +448,32 @@ contextBridge.exposeInMainWorld('aiSecurity', {
     ) => cb(data)
     ipcRenderer.on('terminal:sensitive-file-read', handler)
     return () => ipcRenderer.removeListener('terminal:sensitive-file-read', handler)
+  },
+})
+
+// Remote access (phone companion). Its own namespace rather than more surface on
+// `termpolis`: nothing here is a terminal operation, and a renderer that never
+// opens Settings never touches it.
+contextBridge.exposeInMainWorld('remote', {
+  status: () => ipcRenderer.invoke('remote:status'),
+  setEnabled: (enabled: boolean) => ipcRenderer.invoke('remote:set-enabled', { enabled }),
+  setRelayUrl: (relayUrl: string) => ipcRenderer.invoke('remote:set-relay-url', { relayUrl }),
+  beginPairing: (label: string) => ipcRenderer.invoke('remote:begin-pairing', { label }),
+  cancelPairing: () => ipcRenderer.invoke('remote:cancel-pairing'),
+  revokeDevice: (deviceId: string) => ipcRenderer.invoke('remote:revoke-device', { deviceId }),
+  setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) =>
+    ipcRenderer.invoke('remote:set-capabilities', { deviceId, capabilities }),
+  verificationPhrase: (deviceId: string) =>
+    ipcRenderer.invoke('remote:verification-phrase', { deviceId }),
+  onStatus: (cb: (status: RemoteStatusView) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, status: RemoteStatusView) => cb(status)
+    ipcRenderer.on('remote:status-changed', handler)
+    return () => ipcRenderer.removeListener('remote:status-changed', handler)
+  },
+  onEvent: (cb: (event: RemoteEvent) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: RemoteEvent) => cb(event)
+    ipcRenderer.on('remote:event', handler)
+    return () => ipcRenderer.removeListener('remote:event', handler)
   },
 })
 
