@@ -76,13 +76,13 @@ Tests live in `tests/electron/` following the existing convention.
 
 This is a pure move. The file's contents do not change; only its location and its importers do. Doing it first means every later task imports from the final path.
 
-- [ ] **Step 1: Move the file verbatim**
+- [x] **Step 1: Move the file verbatim**
 
 ```bash
 git mv src/renderer/src/lib/agentStatusDetector.ts src/shared/agentStatusDetector.ts
 ```
 
-- [ ] **Step 2: Repoint all four importers**
+- [x] **Step 2: Repoint all four importers**
 
 ```bash
 sed -i "s#from '../renderer/src/lib/agentStatusDetector'#from '../shared/agentStatusDetector'#" src/main/index.ts
@@ -90,21 +90,21 @@ sed -i "s#from './lib/agentStatusDetector'#from '../../shared/agentStatusDetecto
 sed -i "s#'../../src/renderer/src/lib/agentStatusDetector'#'../../src/shared/agentStatusDetector'#" tests/renderer/agentStatusDetector.test.ts tests/renderer/rendererLibsCoverage.test.ts
 ```
 
-- [ ] **Step 3: Fix the stale doc-comment reference**
+- [x] **Step 3: Fix the stale doc-comment reference**
 
 `tests/renderer/rendererLibsCoverage.test.ts:3` names the old path in a comment. Update it to `src/shared/agentStatusDetector.ts`.
 
-- [ ] **Step 4: Verify nothing still points at the old path**
+- [x] **Step 4: Verify nothing still points at the old path**
 
 Run: `grep -rn "renderer/src/lib/agentStatusDetector" src tests e2e`
 Expected: no output.
 
-- [ ] **Step 5: Typecheck and test**
+- [x] **Step 5: Typecheck and test**
 
 Run: `npm run typecheck && npm test -- agentStatusDetector rendererLibsCoverage`
 Expected: PASS. This is a move with no behavior change, so the existing suites must pass untouched.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor: move agentStatusDetector to src/shared
@@ -128,7 +128,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `AgentStatus` from `src/shared/agentStatusDetector`.
 - Produces: every type below.
 
-- [ ] **Step 1: Write the protocol module**
+- [x] **Step 1: Write the protocol module**
 
 ```typescript
 import type { AgentStatus } from '../../shared/agentStatusDetector'
@@ -208,12 +208,12 @@ export type BridgeToHost =
   | { kind: 'error'; message: string }
 ```
 
-- [ ] **Step 2: Typecheck**
+- [x] **Step 2: Typecheck**
 
 Run: `npm run typecheck`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/main/remoteBridge/protocol.ts
@@ -238,7 +238,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
   - `class SealedChannel` with `constructor(ownSecretKey: string, peerPublicKey: string)`, `seal(plaintext: Uint8Array): Uint8Array`, `open(frame: Uint8Array): Uint8Array` (throws on tamper), `readonly sentFrames: number`
   - `deriveVerificationPhrase(aPublicKey: string, bPublicKey: string): string` — order-independent, 6 words
 
-- [ ] **Step 1: Add the crypto dependencies**
+- [x] **Step 1: Add the crypto dependencies**
 
 ```bash
 npm install @noble/curves@2.4.0 @noble/ciphers@2.4.0 @noble/hashes@2.4.0
@@ -251,7 +251,7 @@ ls node_modules/@noble/curves | grep -i "binding\|prebuild\|\.node$" ; echo "exi
 ```
 Expected: no matches (`exit=1`). If anything matches, STOP — the no-native-modules constraint is violated.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```typescript
 import { describe, it, expect } from 'vitest'
@@ -320,12 +320,12 @@ describe('SealedChannel', () => {
 })
 ```
 
-- [ ] **Step 3: Run it to confirm it fails**
+- [x] **Step 3: Run it to confirm it fails**
 
 Run: `npm test -- remoteSealedChannel`
 Expected: FAIL — cannot resolve `src/main/remoteBridge/sealedChannel`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 ```typescript
 import { x25519 } from '@noble/curves/ed25519.js'
@@ -405,7 +405,7 @@ export function deriveVerificationPhrase(aPublicKey: string, bPublicKey: string)
 }
 ```
 
-- [ ] **Step 5: Add replay protection**
+- [x] **Step 5: Add replay protection**
 
 The code above authenticates frames but does not make them single-use. A random
 nonce does not help: the Poly1305 tag still verifies on a byte-identical frame an
@@ -422,7 +422,7 @@ peer's high-water mark, so the two directions never collide (both start at 0).
 6 bytes = 2^48 frames, unreachable in practice and exactly representable as a JS
 number, so the comparison needs no BigInt.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run: `npm test -- remoteSealedChannel`
 Expected: PASS, all 11 — the 6 above plus replay, reorder, a 500-frame in-order run,
@@ -432,7 +432,7 @@ Verify the replay tests are not vacuous: neutralise the counter comparison and
 re-run. Exactly `refuses a replayed frame` and `refuses a frame delivered out of
 order` must fail.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add package.json package-lock.json src/main/remoteBridge/sealedChannel.ts tests/electron/remoteSealedChannel.test.ts
@@ -457,7 +457,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `PairedDevice`, `Capabilities`, `NO_CAPABILITIES` from `./protocol`.
 - Produces: `class DeviceRegistry` with `constructor(devices?: PairedDevice[])`, `add(device: PairedDevice): void`, `get(id: string): PairedDevice | undefined`, `list(): PairedDevice[]`, `revoke(id: string): boolean`, `setCapabilities(id: string, caps: Capabilities): boolean`, `touch(id: string, now?: number): void`, `expireIdle(maxIdleMs: number, now?: number): string[]`, `toJSON(): PairedDevice[]`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect } from 'vitest'
@@ -533,12 +533,12 @@ describe('DeviceRegistry', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remoteDeviceRegistry`
 Expected: FAIL — cannot resolve `deviceRegistry`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 import { NO_CAPABILITIES, type Capabilities, type PairedDevice } from './protocol'
@@ -595,12 +595,12 @@ export class DeviceRegistry {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remoteDeviceRegistry`
 Expected: PASS, all 9.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/deviceRegistry.ts tests/electron/remoteDeviceRegistry.test.ts
@@ -621,7 +621,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `Capabilities`, `RemoteRequest` from `./protocol`.
 - Produces: `requiredCapability(request: RemoteRequest): keyof Capabilities | null`, `isAllowed(request: RemoteRequest, caps: Capabilities): boolean`, `assertAllowed(request: RemoteRequest, caps: Capabilities): void` (throws `CapabilityError`), `class CapabilityError extends Error`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect } from 'vitest'
@@ -677,12 +677,12 @@ describe('remotePolicy', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remotePolicy`
 Expected: FAIL — cannot resolve `remotePolicy`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 import type { Capabilities, RemoteRequest } from './protocol'
@@ -730,7 +730,7 @@ export function assertAllowed(request: RemoteRequest, caps: Capabilities): void 
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remotePolicy`
 Expected: PASS, all 9 — the 6 above plus three for input outside the union.
@@ -745,7 +745,7 @@ should not rest on an accident, so the `default` returns `null` explicitly,
 `CapabilityError` accepts `null` and says "unrecognised request kind" instead of
 blaming whichever capability sorted first, and three tests pin it.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/remotePolicy.ts tests/electron/remotePolicy.test.ts
@@ -771,7 +771,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Why this exists:** `MAX_TERMINAL_BUFFER_CHARS` is 32 KB and `readOutputFrom`'s `missed` count means output is gone for good (spec §5.2). The fan-out keeps a larger per-device queue so a lagging remote device loses nothing the desktop still has, and surfaces a `missed` count when loss happened anyway.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect } from 'vitest'
@@ -855,12 +855,12 @@ describe('OutputFanout', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remoteOutputFanout`
 Expected: FAIL — cannot resolve `outputFanout`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 interface QueuedChunk {
@@ -936,7 +936,7 @@ export class OutputFanout {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remoteOutputFanout`
 Expected: PASS, all 13 — the 9 above plus four for gap markers.
@@ -954,7 +954,7 @@ losses report in chars, not a misleading `0.0 KB`.
 Note the shape change: `drain()` returns `DrainedChunk[]`, so the one existing
 `toEqual` on the exact object needs `marker: null` added.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/outputFanout.ts tests/electron/remoteOutputFanout.test.ts
@@ -985,7 +985,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 1. **Tool failures come back as `result`, not as JSON-RPC `error`.** `mcpServer.ts:770-772` returns `{ result: { content: [...], isError: true } }` on a thrown tool. A client that only checks `parsed.error` would treat `"Error: Tool execution failed"` as a successful result and hand it to the phone as data. Check `isError`.
 2. **Result text is compressed unless the tool is exempt.** `mcpServer.ts:761` wraps every result in `compressToolResult`, which returns `JSON.stringify(result, null, 2)` only when the tool is exempt — otherwise a compressed form plus a `[headroom] Full result cached — call the retrieve_full tool…` footer, which is not parseable JSON. `src/main/headroom/router.ts:3-6` currently exempts exactly the five tools this bridge dispatches (`list_terminals`, `create_terminal`, `run_command`, `close_terminal`, `write_to_terminal`), so parsing is safe today. **`read_output` is NOT exempt** — the transport pass, which will need it for the fan-out, must either add it to `EXEMPT_TOOLS` or read the buffer directly rather than through MCP. Task 7 therefore parses when it can and passes the raw text through when it cannot, instead of throwing on a footer it did not expect.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -1082,12 +1082,12 @@ describe('LocalMcpClient', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remoteMcpClient`
 Expected: FAIL — cannot resolve `mcpClient`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 import * as http from 'http'
@@ -1185,12 +1185,12 @@ export class LocalMcpClient {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remoteMcpClient`
 Expected: PASS, all 7.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/mcpClient.ts tests/electron/remoteMcpClient.test.ts
@@ -1214,7 +1214,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `generateIdentity`, `deriveVerificationPhrase` from `./sealedChannel`; `PairedDevice`, `NO_CAPABILITIES` from `./protocol`.
 - Produces: `interface PairingOffer { pairingId: string; oneTimeSecret: string; qrPayload: string; expiresAt: number }`, `createPairingOffer(opts: { relayUrl: string; desktopPublicKey: string; now?: number; ttlMs?: number }): PairingOffer`, `class PairingSession` with `constructor(offer: PairingOffer, desktopPublicKey: string)`, `accept(input: { oneTimeSecret: string; devicePublicKey: string; label: string; now?: number }): { device: PairedDevice; verificationPhrase: string }` (throws on wrong secret, reuse, or expiry).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect } from 'vitest'
@@ -1301,12 +1301,12 @@ describe('pairing', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remotePairing`
 Expected: FAIL — cannot resolve `pairing`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 import { createHash, randomBytes, timingSafeEqual } from 'crypto'
@@ -1395,12 +1395,12 @@ export class PairingSession {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remotePairing`
 Expected: PASS, all 8.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/pairing.ts tests/electron/remotePairing.test.ts
@@ -1424,7 +1424,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `LocalMcpClient` (Task 7), `assertAllowed` (Task 5), `RemoteRequest`/`Capabilities` (Task 2).
 - Produces: `class RequestDispatcher` with `constructor(mcp: Pick<LocalMcpClient, 'callTool'>)`, `dispatch(request: RemoteRequest, caps: Capabilities): Promise<unknown>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect, vi } from 'vitest'
@@ -1487,12 +1487,12 @@ describe('RequestDispatcher', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remoteDispatcher`
 Expected: FAIL — cannot resolve `dispatcher`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 import { assertAllowed } from './remotePolicy'
@@ -1537,7 +1537,7 @@ export class RequestDispatcher {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remoteDispatcher`
 Expected: PASS, all 8 — the 7 above plus one for a kind outside the union.
@@ -1549,7 +1549,7 @@ together and were nowhere pinned: remove the guard and the switch falls through
 to `undefined`, which the phone reads as a success. The added test asserts an
 unrecognised kind rejects AND that MCP was never called.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/dispatcher.ts tests/electron/remoteDispatcher.test.ts
@@ -1583,7 +1583,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 Mirrors `memoryClient.ts`'s injectable-spawner pattern so tests never need a real `utilityProcess`. **Differs deliberately in one way:** on repeated crashes `memoryClient` falls back to in-process; the bridge instead **disables remote entirely**. A network-facing component must fail closed.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -1675,12 +1675,12 @@ describe('remoteBridgeSupervisor', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remoteBridgeSupervisor`
 Expected: FAIL — cannot resolve `remoteBridgeSupervisor`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 import { fileURLToPath } from 'url'
@@ -1823,12 +1823,12 @@ export function _resetSupervisorForTests(): void {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remoteBridgeSupervisor`
 Expected: PASS, all 7.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridgeSupervisor.ts tests/electron/remoteBridgeSupervisor.test.ts
@@ -1854,7 +1854,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: everything from Tasks 2–9.
 - Produces: `createBridgeCore(deps): BridgeCore` — the testable core, with `handleHostMessage(m: HostToBridge): void` and `handleRemoteRequest(deviceId: string, env: RemoteEnvelope): Promise<RemoteResponse>`. `entry.ts`'s module side-effect wires it to `process.parentPort`; the core itself takes no Electron dependency so it is unit-testable.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, it, expect, vi } from 'vitest'
@@ -1944,12 +1944,12 @@ describe('bridge core', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [x] **Step 2: Run it to confirm it fails**
 
 Run: `npm test -- remoteBridgeEntry`
 Expected: FAIL — cannot resolve `entry`.
 
-- [ ] **Step 3: Implement the core plus the entry side-effect**
+- [x] **Step 3: Implement the core plus the entry side-effect**
 
 ```typescript
 import { DeviceRegistry } from './deviceRegistry'
@@ -2087,12 +2087,12 @@ if (parentPort) {
 /* c8 ignore stop */
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `npm test -- remoteBridgeEntry`
 Expected: PASS, all 9.
 
-- [ ] **Step 5: Add the build entry**
+- [x] **Step 5: Add the build entry**
 
 In `electron.vite.config.ts`, inside `main.build.rollupOptions.input`, add beside `headroomProxy`:
 
@@ -2103,7 +2103,7 @@ In `electron.vite.config.ts`, inside `main.build.rollupOptions.input`, add besid
           remoteBridge: resolve(__dirname, 'src/main/remoteBridge/entry.ts'),
 ```
 
-- [ ] **Step 6: Verify the bundle emits**
+- [x] **Step 6: Verify the bundle emits**
 
 Run: `npm run build`
 Expected: build succeeds and `out/main/remoteBridge.js` exists. Confirm with:
@@ -2112,7 +2112,7 @@ Expected: build succeeds and `out/main/remoteBridge.js` exists. Confirm with:
 ls out/main/remoteBridge.js
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/main/remoteBridge/entry.ts electron.vite.config.ts tests/electron/remoteBridgeEntry.test.ts
@@ -2136,7 +2136,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: everything above.
 - Produces: a runnable harness proving pair → grant → request → revoke without any mobile code.
 
-- [ ] **Step 1: Write the failing end-to-end test**
+- [x] **Step 1: Write the failing end-to-end test**
 
 ```typescript
 import { describe, it, expect, vi } from 'vitest'
@@ -2220,12 +2220,12 @@ describe('remote bridge end-to-end', () => {
 })
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `npm test -- remoteEndToEnd`
 Expected: PASS, both. If anything fails, the failure is real — fix the implementation, not the test.
 
-- [ ] **Step 3: Write the CLI harness**
+- [x] **Step 3: Write the CLI harness**
 
 ```javascript
 #!/usr/bin/env node
@@ -2261,17 +2261,17 @@ console.log('\nrun the vitest suite for the full assertion-backed flow:')
 console.log('   npm test -- remoteEndToEnd')
 ```
 
-- [ ] **Step 4: Run the harness**
+- [x] **Step 4: Run the harness**
 
 Run: `npm run build && node scripts/remote-test-client.cjs`
 Expected: prints a `ready` message, a `pairingCode` message, and a 6-word phrase. No stack trace.
 
-- [ ] **Step 5: Full gate**
+- [x] **Step 5: Full gate**
 
 Run: `npm run typecheck && npm run lint && npm test`
 Expected: all PASS, coverage thresholds (lines 97 / fn 96 / branches 95 / stmts 96) still met. If a new module drags branches under 95, backfill its tests — do not lower the gate.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/remote-test-client.cjs tests/electron/remoteEndToEnd.test.ts

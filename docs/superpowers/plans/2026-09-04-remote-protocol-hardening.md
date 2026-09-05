@@ -119,7 +119,7 @@ The relay. Every fix here is on the peer side; the relay's contract (binary forw
 **Interfaces:**
 - Produces: `RemoteMessage` (everything the desktop may put on the wire), `RemoteResponse` (only what `onRequest` returns: `ok | error`), `OutputPayload` re-homed in `protocol.ts`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `tests/electron/remoteOutputChunker.test.ts`:
 
@@ -162,12 +162,12 @@ describe('output wire shape', () => {
 })
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `npx vitest run tests/electron/remoteOutputChunker.test.ts`
 Expected: FAIL — `RemoteMessage` is not exported from `protocol.ts`.
 
-- [ ] **Step 3: Make it pass**
+- [x] **Step 3: Make it pass**
 
 In `protocol.ts`, delete the dead variant and split the union:
 
@@ -205,12 +205,12 @@ export type RemoteMessage =
 
 In `outputChunker.ts`, delete the local `OutputPayload` and `DrainedChunk` re-declaration and import from `protocol.ts`, re-exporting `OutputPayload` for existing importers. Fix `tests/electron/remoteRelayClient.test.ts:364` to construct an `OutputPayload`.
 
-- [ ] **Step 4: Run the remote suite**
+- [x] **Step 4: Run the remote suite**
 
 Run: `npx vitest run tests/electron/remote --coverage.enabled=false`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/remoteBridge/protocol.ts src/main/remoteBridge/outputChunker.ts tests/electron/remoteOutputChunker.test.ts tests/electron/remoteRelayClient.test.ts
@@ -234,7 +234,7 @@ git commit -m "fix(remote): one output shape on the wire, exhaustively typed"
 - Consumes: nothing.
 - Produces: `SAFETY_WORDS: readonly string[]` (length 256), `PHRASE_WORDS = 8`, `deriveVerificationPhrase(a: string, b: string): string` (unchanged signature, new output).
 
-- [ ] **Step 1: Write the failing invariant test**
+- [x] **Step 1: Write the failing invariant test**
 
 `tests/electron/remoteWordlist.test.ts`:
 
@@ -268,21 +268,21 @@ describe('safety wordlist', () => {
 })
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `npx vitest run tests/electron/remoteWordlist.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Author the list**
+- [x] **Step 3: Author the list**
 
 Create `src/main/remoteBridge/wordlist.ts` with a header comment stating the four invariants above and 256 common English nouns/adjectives satisfying them, sorted alphabetically (sorted so a human can audit it; the *derivation* does not depend on order, but the phone must ship the identical array — Task 2 Step 6 pins that with a golden vector). Start from concrete, picturable words — `anchor, apple, arrow, atlas, …` — and avoid: homophones (`flour`/`flower`), plurals of other entries, and anything that reads as an instruction.
 
-- [ ] **Step 4: Run the invariant test until green**
+- [x] **Step 4: Run the invariant test until green**
 
 Run: `npx vitest run tests/electron/remoteWordlist.test.ts`
 Expected: PASS. Fix duplicates and prefix collisions the test names until it is clean.
 
-- [ ] **Step 5: Rewrite the derivation**
+- [x] **Step 5: Rewrite the derivation**
 
 In `sealedChannel.ts`, delete the 32-word `WORDS` array and replace:
 
@@ -308,7 +308,7 @@ export function deriveVerificationPhrase(aPublicKey: string, bPublicKey: string)
 }
 ```
 
-- [ ] **Step 6: Pin a golden vector**
+- [x] **Step 6: Pin a golden vector**
 
 Generate it once from fixed keys, then paste the literal into the test — a golden vector the phone will mirror. Run:
 
@@ -341,7 +341,7 @@ it('yields eight words', () => {
 })
 ```
 
-- [ ] **Step 7: Run and commit**
+- [x] **Step 7: Run and commit**
 
 Run: `npx vitest run tests/electron/remoteWordlist.test.ts tests/electron/remoteSealedChannel.test.ts`
 Expected: PASS.
@@ -375,7 +375,7 @@ The codec change. `SealedChannel` currently derives one key by static ECDH and u
   ```
 - Consumed by: Task 4's `SealedSession`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/electron/remoteSealedChannel.test.ts`:
 
@@ -431,12 +431,12 @@ describe('SealedDirection', () => {
 })
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `npx vitest run tests/electron/remoteSealedChannel.test.ts`
 Expected: FAIL — `SealedDirection` is not exported.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace the `SealedChannel` class in `sealedChannel.ts`:
 
@@ -513,16 +513,16 @@ function nonceFor(counter: number): Uint8Array {
 
 Delete the `randomBytes` import if it becomes unused. Update `outputChunker.ts` to import the new `SEAL_OVERHEAD_BYTES` (the value is imported, not restated, so `MAX_PAYLOAD_BYTES` follows automatically).
 
-- [ ] **Step 4: Run and fix the fallout**
+- [x] **Step 4: Run and fix the fallout**
 
 Run: `npx vitest run tests/electron/remote --coverage.enabled=false`
 Expected: FAIL in `remoteBridgeEntry`, `remoteRelayClient`, `remoteEndToEnd` — they construct `SealedChannel`. Leave them failing; Task 4 introduces the replacement they need. Confirm `remoteSealedChannel` and `remoteOutputChunker` are green.
 
-- [ ] **Step 5: Verify the overhead pin still measures**
+- [x] **Step 5: Verify the overhead pin still measures**
 
 `tests/electron/remoteOutputChunker.test.ts` pins `SEAL_OVERHEAD_BYTES` by sealing a real frame. Update it to the `SealedDirection` API and confirm it measures 22, rather than hard-coding it.
 
-- [ ] **Step 6: Commit (with the entry tests still red)**
+- [x] **Step 6: Commit (with the entry tests still red)**
 
 Do not commit a red suite. Fold Steps 4–6 into Task 4 and commit once, at Task 4 Step 6.
 
@@ -566,7 +566,7 @@ The blocker. Give every connection its own key.
   export function deriveSessionRoomId(ownSecretKey: string, peerPublicKey: string): string
   ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/electron/remoteSessionCrypto.test.ts`:
 
@@ -657,12 +657,12 @@ describe('deriveSessionRoomId', () => {
 })
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `npx vitest run tests/electron/remoteSessionCrypto.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `sessionCrypto.ts`**
+- [x] **Step 3: Implement `sessionCrypto.ts`**
 
 ```ts
 import { x25519 } from '@noble/curves/ed25519.js'
@@ -815,12 +815,12 @@ export class Handshake {
 }
 ```
 
-- [ ] **Step 4: Run the crypto tests**
+- [x] **Step 4: Run the crypto tests**
 
 Run: `npx vitest run tests/electron/remoteSessionCrypto.test.ts`
 Expected: PASS, all seven.
 
-- [ ] **Step 5: Wire it into `RelayClient`**
+- [x] **Step 5: Wire it into `RelayClient`**
 
 `RelayClientDeps.channel: SealedChannel` becomes `handshake(): Handshake` — a factory, because a fresh handshake is needed per dial. `RelayClient` gains a `session: SealedSession | null`, sends `greeting` on `open`, and treats the first binary frame as the peer's greeting:
 
@@ -855,7 +855,7 @@ if (!this.session) {
 
 `send` and `handleFrame` use `this.session`, with `FRAME_SESSION` as a one-byte header and `headerBytes = 1`.
 
-- [ ] **Step 6: Update `entry.ts`, fix every red test, commit**
+- [x] **Step 6: Update `entry.ts`, fix every red test, commit**
 
 In `openRoom`, replace `channel: new SealedChannel(identitySecretKey, dev.publicKey)` with
 `handshake: () => new Handshake({ ownSecretKey: identitySecretKey, peerPublicKey: dev.publicKey, role: 'desktop' })`,
@@ -891,7 +891,7 @@ high-water mark."
 - Produces: `RelayState = 'connecting' | 'online' | 'attached' | 'offline'` and `RelayClientDeps.onQuota?(limit: QuotaLimit): void`.
   `online` = this end is seated in the room. `attached` = the peer is seated too.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 it('reports attached when the peer joins', async () => {
@@ -928,16 +928,16 @@ it('ignores text that is not a control frame', async () => {
 })
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `npx vitest run tests/electron/remoteRelayClient.test.ts`
 Expected: FAIL — states never include `attached`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace the `if (!isBinary) return` early exit with a branch that parses text as a control frame, tolerating anything unrecognised, and set a `quotaCut` flag that `retry()` honours by refusing to schedule.
 
-- [ ] **Step 4: Run, then commit**
+- [x] **Step 4: Run, then commit**
 
 Run: `npx vitest run tests/electron/remote --coverage.enabled=false`
 
@@ -960,7 +960,7 @@ git commit -m "feat(remote): act on the relay's control frames instead of droppi
 **Interfaces:**
 - Produces: `KEEPALIVE_MS = 120_000`, and a sealed `{ kind: 'ping' }` payload on the session channel.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 it('sends a sealed keepalive well inside the relay idle window', () => {
@@ -982,20 +982,20 @@ it('stops pinging once stopped', () => {
 })
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `npx vitest run tests/electron/remoteRelayClient.test.ts -t keepalive`
 Expected: FAIL — nothing is sent.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Start the interval when the session is established, clear it in `down` and in `stop`.
 
-- [ ] **Step 4: Teach the request path to ignore a ping**
+- [x] **Step 4: Teach the request path to ignore a ping**
 
 A `ping` reaching `handleRemoteRequest` would be answered `unknown request`, which is noise, not an error. Drop it in `handleFrame` before dispatch.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 ```bash
 git add src/main/remoteBridge/relayClient.ts src/main/remoteBridge/entry.ts tests/electron/remoteRelayClient.test.ts
@@ -1018,7 +1018,7 @@ git commit -m "feat(remote): keepalive so a waiting desktop holds its room"
 - Consumes: `deriveSessionRoomId` (Task 4).
 - Produces: `PairedDevice.sessionRoomId: string` replacing `pairingId`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 it('gives the device a session room that never appeared in the QR', () => {
@@ -1035,20 +1035,20 @@ it('gives the device a session room that never appeared in the QR', () => {
 })
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `npx vitest run tests/electron/remotePairing.test.ts`
 Expected: FAIL — `sessionRoomId` is undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `PairingSession` takes the desktop's *secret* key as well (it needs it for the DH) and sets `sessionRoomId: deriveSessionRoomId(desktopSecretKey, input.devicePublicKey)`. Rename the field in `protocol.ts` with a comment saying why it is derived and not announced. `entry.ts` passes `identitySecretKey` when constructing the session, and `openRoom` keys on `dev.sessionRoomId`.
 
-- [ ] **Step 4: Update the room-identity test in `remoteBridgeEntry.test.ts`**
+- [x] **Step 4: Update the room-identity test in `remoteBridgeEntry.test.ts`**
 
 The existing "re-pairs into the new room" test asserted on `pairingId`. It still holds — a device that re-pairs with a *new* keypair gets a new session room — but the field name changes. A device that re-pairs with the *same* keypair now keeps its room, which is the intended behaviour and worth its own test.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 ```bash
 git add src/main/remoteBridge tests/electron/remote*.test.ts
@@ -1081,7 +1081,7 @@ The last hole. `acceptPairing` is documented as "sub-project 2's transport calls
   }): { devicePublicKey: string; label: string; oneTimeSecret: string }
   ```
 
-- [ ] **Step 1: Write the failing transport test**
+- [x] **Step 1: Write the failing transport test**
 
 `tests/electron/remotePairingTransport.test.ts`:
 
@@ -1156,30 +1156,30 @@ describe('pairing over the relay', () => {
 })
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `npx vitest run tests/electron/remotePairingTransport.test.ts`
 Expected: FAIL — `sealPairingHello` is not exported, and `beginPairing` opens no room.
 
-- [ ] **Step 3: Implement the hello codec in `pairing.ts`**
+- [x] **Step 3: Implement the hello codec in `pairing.ts`**
 
 Header is `0x01 || devicePublicKey[32]`; body is `{ v: 2, label, oneTimeSecret }` sealed on a `SealedSession.fromRoot(pairingRoot(...), 'device')`. `openPairingHello` reads the clear key from the header, rebuilds the root with the desktop's secret, and opens with `role: 'desktop'`.
 
-- [ ] **Step 4: Implement the transport in `entry.ts`**
+- [x] **Step 4: Implement the transport in `entry.ts`**
 
 `beginPairing` closes any open pairing room, then opens one on `offer.pairingId` with a raw-frame callback rather than the session request path. On a `0x01` frame: `openPairingHello`, then `acceptPairing`, then send the `0x02` ack on the same socket, then `closePairingRoom()` and `openRoom(device)` — which dials the *session* room. `cancelPairing` closes it. `shutdown` closes it.
 
 A pairing room needs `RelayClient` to skip the session handshake, since neither end can run one before the device key is known. Add `RelayClientDeps.mode: 'session' | 'pairing'`; in `pairing` mode `onFrame(raw)` is called with the frame as received and `handshake` is not consulted.
 
-- [ ] **Step 5: Update the CLI test client**
+- [x] **Step 5: Update the CLI test client**
 
 `scripts/remote-test-client.cjs` is the executable specification the Expo client mirrors, so it must do exactly what the phone will: dial the pairing room with `binaryType = 'arraybuffer'`, send the `0x01` hello as **binary**, read the `0x02` ack, derive the session room locally, dial it, run the handshake, and print the safety number for comparison against the desktop's.
 
-- [ ] **Step 6: Extend the end-to-end test**
+- [x] **Step 6: Extend the end-to-end test**
 
 `tests/electron/remoteEndToEnd.test.ts` currently calls `acceptPairing` in-process. Drive it through the frames instead: build a hello, feed it to the pairing room's `onFrame`, assert the ack opens on the phone side, assert the phone's locally derived session room matches the desktop's, and assert the two safety numbers agree.
 
-- [ ] **Step 7: Full suite, coverage, commit**
+- [x] **Step 7: Full suite, coverage, commit**
 
 Run: `npx vitest run tests/electron/remote` then the gate:
 `npx vitest run --coverage`
@@ -1200,15 +1200,15 @@ The phone is a second implementation of everything above. Every constant it gets
 - Create: `docs/remote-wire-format.md`
 - Test: `tests/electron/remoteWireVectors.test.ts`
 
-- [ ] **Step 1: Write the vector test**
+- [x] **Step 1: Write the vector test**
 
 Fixed identity keys and a fixed ephemeral key produce a fixed greeting, a fixed session key and a fixed sealed frame. Assert every one against a literal. Generate the literals once, from the implementation, and paste them in — the value is not that they are right today but that they cannot change unnoticed.
 
-- [ ] **Step 2: Write the document**
+- [x] **Step 2: Write the document**
 
 Contents: the four frame types with byte layouts; the key schedule with exact info strings; the counter/nonce rule; the two 409-avoiding rooms; the four gotchas that cost a day each (binary-only, `binaryType = 'arraybuffer'` on your own socket, header-as-AAD, one direction per key); and the golden vectors from Task 2 and Step 1 above.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/remote-wire-format.md tests/electron/remoteWireVectors.test.ts
