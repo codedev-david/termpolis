@@ -349,6 +349,15 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // the capability turned off in Settings while the phone kept streaming.
         // Dropping the fan-out state is what makes the toggle mean what it says.
         if (!msg.capabilities.read) fanout.dropDevice(msg.deviceId)
+        // And tell the phone, for the same reason. Its Settings screen shows the
+        // grants as facts and hides the controls it has none for; a phone that
+        // hears about a change only on its next attempt shows a button that
+        // errors. A no-op when the device is not attached -- it re-asks on
+        // every attach.
+        rooms.get(msg.deviceId)?.client.send({
+          kind: 'capabilities',
+          capabilities: msg.capabilities,
+        })
         announceDevices()
         announceSubscriptions()
         return
@@ -373,6 +382,17 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     const device = registry.get(deviceId)
     if (!device) return { kind: 'error', id: env.id, message: 'unknown or revoked device' }
     if (!dispatcher) return { kind: 'error', id: env.id, message: 'bridge not initialised' }
+
+    // Answered here, above the dispatcher, because it needs no grant. A device
+    // that has been granted nothing must still be able to learn that: without
+    // it the phone can only discover a missing capability by attempting the
+    // action and reading the refusal, which means offering a control that
+    // errors. It is deliberately absent from `requiredCapability`, so losing
+    // this branch fails closed rather than open.
+    if (env.request.kind === 'getCapabilities') {
+      registry.touch(deviceId)
+      return { kind: 'ok', id: env.id, data: device.capabilities }
+    }
 
     try {
       const data = await dispatcher.dispatch(env.request, device.capabilities)

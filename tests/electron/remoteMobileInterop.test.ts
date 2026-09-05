@@ -13,7 +13,13 @@ import {
   FRAME_SESSION,
   SESSION_HEADER_BYTES,
 } from '../../src/main/remoteBridge/sessionCrypto'
-import { RELAY_MAX_FRAME_BYTES as DESKTOP_MAX_FRAME } from '../../src/main/remoteBridge/protocol'
+import {
+  NO_CAPABILITIES as DESKTOP_NO_CAPABILITIES,
+  RELAY_MAX_FRAME_BYTES as DESKTOP_MAX_FRAME,
+  type Capabilities as DesktopCapabilities,
+  type RemoteMessage as DesktopMessage,
+  type RemoteRequest as DesktopRequest,
+} from '../../src/main/remoteBridge/protocol'
 // The source the desktop protocol imports its status union FROM, so the phone's
 // retyped copy is compared against the original rather than against a re-export.
 import type { AgentStatus as DesktopAgentStatus } from '../../src/shared/agentStatusDetector'
@@ -27,9 +33,14 @@ import {
   deriveSessionRoomId as phoneRoomId,
 } from '../../mobile/src/wire/sessionCrypto'
 import {
+  NO_CAPABILITIES as PHONE_NO_CAPABILITIES,
+  parseCapabilities,
   parseRemoteMessage,
   RELAY_MAX_FRAME_BYTES as PHONE_MAX_FRAME,
   type AgentStatus as PhoneAgentStatus,
+  type Capabilities as PhoneCapabilities,
+  type RemoteMessage as PhoneMessage,
+  type RemoteRequest as PhoneRequest,
 } from '../../mobile/src/wire/protocol'
 import { utf8Encode, utf8Decode } from '../../mobile/src/wire/bytes'
 
@@ -382,5 +393,56 @@ describe('the constants the two trees each declare for themselves', () => {
     const asPhone: PhoneAgentStatus = fromDesktop
     const backAgain: DesktopAgentStatus = asPhone
     expect(backAgain).toBe('waiting_for_input')
+  })
+
+  it('agree on the capability record', () => {
+    // Same structural check as the status union. If either tree adds a
+    // capability without the other, one of these assignments stops compiling --
+    // which matters more here than elsewhere, because a phone that misreads the
+    // record draws the wrong buttons.
+    const fromDesktop: DesktopCapabilities = {
+      read: true,
+      createTerminal: true,
+      writeToTerminal: true,
+      closeTerminal: true,
+    }
+    const asPhone: PhoneCapabilities = fromDesktop
+    const backAgain: DesktopCapabilities = asPhone
+    expect(backAgain.writeToTerminal).toBe(true)
+  })
+
+  it('agree that a device starts out granted nothing', () => {
+    expect({ ...PHONE_NO_CAPABILITIES }).toEqual({ ...DESKTOP_NO_CAPABILITIES })
+    expect(Object.values(DESKTOP_NO_CAPABILITIES).every((v) => v === false)).toBe(true)
+  })
+
+  it('agree that getCapabilities is a request the phone may make', () => {
+    // The phone asks it on every attach. If the desktop dropped the case, the
+    // phone would be left drawing controls from a record it never received.
+    const asked: PhoneRequest = { kind: 'getCapabilities' }
+    const heard: DesktopRequest = asked
+    expect(heard.kind).toBe('getCapabilities')
+  })
+
+  it('agree on the shape of the capability push', () => {
+    const sent: DesktopMessage = {
+      kind: 'capabilities',
+      capabilities: { ...DESKTOP_NO_CAPABILITIES, read: true },
+    }
+    const heard: PhoneMessage = sent
+    expect(heard).toEqual(parseRemoteMessage(utf8Encode(JSON.stringify(sent))))
+  })
+
+  it('the phone reads a real desktop capability record without losing a flag', () => {
+    // Round-trip through the wire, not through the type system: `parseCapabilities`
+    // reconstructs the record field by field, so a desktop flag it does not name
+    // silently becomes `false` even though the types above still line up.
+    const granted: DesktopCapabilities = {
+      read: true,
+      createTerminal: true,
+      writeToTerminal: true,
+      closeTerminal: true,
+    }
+    expect(parseCapabilities(JSON.parse(JSON.stringify(granted)))).toEqual(granted)
   })
 })

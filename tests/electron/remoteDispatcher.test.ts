@@ -92,4 +92,16 @@ describe('RequestDispatcher — input outside the union', () => {
     const args = mcp.callTool.mock.calls[0][1] as Record<string, unknown>
     expect('cwd' in args).toBe(false)
   })
+
+  // The bridge answers getCapabilities before the dispatcher ever sees it. If one
+  // reaches here anyway the dispatcher must refuse it, not reach for a tool that
+  // does not exist -- an ungranted kind arriving at MCP is the failure the whole
+  // capability model exists to prevent.
+  it('refuses getCapabilities even with every capability granted', async () => {
+    const mcp = fakeMcp()
+    await expect(
+      new RequestDispatcher(mcp).dispatch({ kind: 'getCapabilities' }, all),
+    ).rejects.toThrow(CapabilityError)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
 })

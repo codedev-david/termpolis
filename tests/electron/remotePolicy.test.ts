@@ -104,4 +104,14 @@ describe('runCommand is shell execution, not terminal creation', () => {
     const caps = { ...NO_CAPABILITIES, createTerminal: true }
     expect(isAllowed({ kind: 'createTerminal', name: 'claude', cwd: '.' }, caps)).toBe(true)
   })
+
+  // getCapabilities is answered in entry.ts ABOVE this policy, because it needs
+  // no grant. It has no case here on purpose: the day that interception moves or
+  // is refactored away, the request must fall to the default arm and be refused
+  // rather than quietly become the one kind that reaches MCP ungated.
+  it('has no rule for getCapabilities, so losing its interception fails closed', () => {
+    expect(requiredCapability({ kind: 'getCapabilities' })).toBeNull()
+    expect(isAllowed({ kind: 'getCapabilities' }, all)).toBe(false)
+    expect(() => assertAllowed({ kind: 'getCapabilities' }, all)).toThrow(CapabilityError)
+  })
 })

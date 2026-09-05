@@ -926,3 +926,79 @@ describe('subscription announcements', () => {
     expect(announced(h.sent)).toEqual([['t1'], []])
   })
 })
+
+describe('bridge core: telling a phone what it may do', () => {
+  it('answers getCapabilities for a device granted nothing at all', async () => {
+    const h = core([{ ...device(), capabilities: { ...NO_CAPABILITIES } }])
+    const res = await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'getCapabilities' } })
+    expect(res).toEqual({ kind: 'ok', id: 1, data: { ...NO_CAPABILITIES } })
+  })
+
+  it('reports the grants the device actually holds', async () => {
+    const caps = { ...NO_CAPABILITIES, read: true, createTerminal: true }
+    const h = core([{ ...device(), capabilities: caps }])
+    const res = await h.c.handleRemoteRequest('d1', { id: 7, request: { kind: 'getCapabilities' } })
+    expect(res).toEqual({ kind: 'ok', id: 7, data: caps })
+  })
+
+  // Answered above the dispatcher, so no tool call may escape from it. A
+  // getCapabilities that reached MCP would be the one ungated path to the host.
+  it('answers without touching MCP', async () => {
+    const h = core([device()])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'getCapabilities' } })
+    expect(h.callTool).not.toHaveBeenCalled()
+  })
+
+  it('still refuses a revoked device', async () => {
+    const h = core([device()])
+    h.c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })
+    const res = await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'getCapabilities' } })
+    expect(res).toEqual({ kind: 'error', id: 1, message: 'unknown or revoked device' })
+  })
+
+  it('pushes the new record to the phone when Settings changes a grant', () => {
+    const h = core([device()])
+    const room = h.rooms[0]
+    attach(room)
+    const caps = { ...NO_CAPABILITIES, read: true, createTerminal: true }
+    h.c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: caps })
+    expect(room.sent).toContainEqual({ kind: 'capabilities', capabilities: caps })
+  })
+
+  // Withdrawing read drops the fan-out; the phone has to hear about that too, or
+  // its Settings screen keeps claiming a grant the desktop has already taken back.
+  it('pushes a withdrawal as readily as a grant', () => {
+    const h = core([device()])
+    attach(h.rooms[0])
+    h.c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: { ...NO_CAPABILITIES } })
+    expect(h.rooms[0].sent).toContainEqual({
+      kind: 'capabilities',
+      capabilities: { ...NO_CAPABILITIES },
+    })
+  })
+
+  // The push is a courtesy. A phone in a tunnel simply misses it, which is why
+  // it re-asks on attach -- and why an edit while it is away must not throw.
+  it('does not throw when the phone is not attached', () => {
+    const h = core([device()])
+    expect(() =>
+      h.c.handleHostMessage({
+        kind: 'setCapabilities',
+        deviceId: 'd1',
+        capabilities: { ...NO_CAPABILITIES, read: true },
+      }),
+    ).not.toThrow()
+  })
+
+  it('says nothing to a device that has no room at all', () => {
+    const h = core([device()])
+    expect(() =>
+      h.c.handleHostMessage({
+        kind: 'setCapabilities',
+        deviceId: 'unknown',
+        capabilities: { ...NO_CAPABILITIES, read: true },
+      }),
+    ).not.toThrow()
+    expect(h.rooms[0].sent).toEqual([])
+  })
+})

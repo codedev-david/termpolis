@@ -5,6 +5,7 @@ import {
   parseRemoteMessage,
   RELAY_MAX_FRAME_BYTES,
   type AgentStatus,
+  type Capabilities,
   type OutputChunk,
   type RemoteRequest,
 } from '../wire/protocol'
@@ -56,6 +57,7 @@ export class RemoteSession {
   private readonly pending = new Map<number, Pending>()
   private readonly outputSubscribers = new Set<(chunks: OutputChunk[]) => void>()
   private readonly statusSubscribers = new Set<(update: StatusUpdate) => void>()
+  private readonly capabilitySubscribers = new Set<(caps: Capabilities) => void>()
   private nextId = 1
 
   constructor(private readonly deps: RemoteSessionDeps) {}
@@ -99,6 +101,13 @@ export class RemoteSession {
     }
   }
 
+  onCapabilities(cb: (caps: Capabilities) => void): () => void {
+    this.capabilitySubscribers.add(cb)
+    return () => {
+      this.capabilitySubscribers.delete(cb)
+    }
+  }
+
   /** Route one opened frame.
    *
    *  Never throws, for any input. This runs inside the socket's message handler,
@@ -129,6 +138,9 @@ export class RemoteSession {
           status: message.status,
           summary: message.summary,
         })
+        return
+      case 'capabilities':
+        this.fanOut(this.capabilitySubscribers, message.capabilities)
         return
     }
   }

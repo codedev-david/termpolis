@@ -2,6 +2,9 @@ import type { RelaySocketDeps, RelayState } from '../src/net/relaySocket'
 import type { OutputChunk } from '../src/wire/protocol'
 import type { PairedDesktop } from '../src/storage/identity'
 
+/** What the desktop answers `getCapabilities` with in these tests. */
+const GRANTS = { read: true, createTerminal: true, writeToTerminal: false, closeTerminal: false }
+
 const PHONE_PK = '0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20'
 const DESKTOP_PK = '7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13'
 
@@ -22,6 +25,7 @@ const mockSessions: {
   resolveNext: (value: unknown) => void
   output: ((chunks: OutputChunk[]) => void)[]
   status: ((u: unknown) => void)[]
+  caps: ((c: unknown) => void)[]
   resets: string[]
 }[] = []
 const mockAppState: { handlers: ((s: string) => void)[] } = { handlers: [] }
@@ -66,6 +70,7 @@ jest.mock('../src/net/remoteSession', () => ({
     requests: unknown[] = []
     output: ((chunks: unknown) => void)[] = []
     status: ((u: unknown) => void)[] = []
+    caps: ((c: unknown) => void)[] = []
     resets: string[] = []
     private pending: ((value: unknown) => void)[] = []
 
@@ -90,6 +95,11 @@ jest.mock('../src/net/remoteSession', () => ({
 
     onStatus(cb: (u: unknown) => void): () => void {
       this.status.push(cb)
+      return () => undefined
+    }
+
+    onCapabilities(cb: (c: unknown) => void): () => void {
+      this.caps.push(cb)
       return () => undefined
     }
 
@@ -130,6 +140,7 @@ jest.mock('../src/storage/identity', () => ({
 }))
 
 import { AppState } from 'react-native'
+import { NO_CAPABILITIES } from '../src/wire/protocol'
 import { deriveVerificationPhrase } from '../src/wire/safetyNumber'
 import { FOREGROUND_DEBOUNCE_MS, teardownRemote, useRemoteStore } from '../src/state/remoteStore'
 
@@ -275,14 +286,17 @@ describe('stale means stale', () => {
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
+    // Two requests go out on attach, capabilities first. `resolveNext` answers
+    // them in the order they were made.
+    session().resolveNext(GRANTS)
     session().resolveNext([])
     await settle()
   }
 
-  it('clears stale and asks for the terminal list on attach', async () => {
+  it('clears stale and asks what it may do, then for the terminal list', async () => {
     await attached()
     expect(useRemoteStore.getState().stale).toBe(false)
-    expect(session().requests[0]).toEqual({ kind: 'listTerminals' })
+    expect(session().requests).toEqual([{ kind: 'getCapabilities' }, { kind: 'listTerminals' }])
   })
 
   it('keeps the list once it arrives', async () => {
@@ -290,6 +304,7 @@ describe('stale means stale', () => {
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
+    session().resolveNext(GRANTS)
     session().resolveNext([{ id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }])
     await settle()
     expect(useRemoteStore.getState().terminals).toEqual([
@@ -311,6 +326,7 @@ describe('stale means stale', () => {
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
+    session().resolveNext(GRANTS)
     session().resolveNext([{ id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }])
     await settle()
     state('offline')
@@ -319,6 +335,7 @@ describe('stale means stale', () => {
 
   const writes: [string, () => Promise<unknown>][] = [
     ['refreshTerminals', () => useRemoteStore.getState().refreshTerminals()],
+    ['refreshCapabilities', () => useRemoteStore.getState().refreshCapabilities()],
     ['subscribe', () => useRemoteStore.getState().subscribe('t1')],
     ['unsubscribe', () => useRemoteStore.getState().unsubscribe('t1')],
     ['send', () => useRemoteStore.getState().send('t1', 'ls')],
@@ -363,6 +380,7 @@ describe('output', () => {
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
+    session().resolveNext(GRANTS)
     session().resolveNext([])
     await settle()
   }
@@ -415,9 +433,11 @@ describe('unpairing', () => {
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
+    session().resolveNext(GRANTS)
     session().resolveNext([{ id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }])
     await settle()
     session().output[0]?.([chunk()])
+    expect(useRemoteStore.getState().terminals).toHaveLength(1)
 
     await useRemoteStore.getState().unpair()
 
@@ -428,10 +448,78 @@ describe('unpairing', () => {
     expect(s.terminals).toEqual([])
     expect(s.output).toEqual({})
     expect(s.safetyPhrase).toBeNull()
+    // A phone that is no longer paired may do nothing, and must say so.
+    expect(s.capabilities).toEqual(NO_CAPABILITIES)
   })
 
   it('is harmless on a phone that never paired', async () => {
     await expect(useRemoteStore.getState().unpair()).resolves.toBeUndefined()
+  })
+})
+
+describe('what this phone may do', () => {
+  async function attached(): Promise<void> {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+  }
+
+  it('starts out allowed nothing, because it has not asked yet', () => {
+    expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)
+  })
+
+  it('asks on attach and holds the answer', async () => {
+    await attached()
+    expect(session().requests).toContainEqual({ kind: 'getCapabilities' })
+    session().resolveNext(GRANTS)
+    await settle()
+    expect(useRemoteStore.getState().capabilities).toEqual(GRANTS)
+  })
+
+  it('asks before it asks for anything else -- the list is drawn from the grants', async () => {
+    await attached()
+    expect(session().requests[0]).toEqual({ kind: 'getCapabilities' })
+  })
+
+  it('fails closed when the desktop answers with junk', async () => {
+    await attached()
+    session().resolveNext('nope')
+    await settle()
+    expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)
+  })
+
+  it('fails closed per flag, so a half-answer grants only what it names', async () => {
+    await attached()
+    session().resolveNext({ read: true, createTerminal: 'yes' })
+    await settle()
+    expect(useRemoteStore.getState().capabilities).toEqual({
+      read: true,
+      // 'yes' is not `true`. Anything short of the literal is not a grant.
+      createTerminal: false,
+      writeToTerminal: false,
+      closeTerminal: false,
+    })
+  })
+
+  it('takes the desktop word for it when Settings changes mid-session', async () => {
+    await attached()
+    session().resolveNext(GRANTS)
+    await settle()
+    session().caps[0]?.({ ...NO_CAPABILITIES, read: true })
+    expect(useRemoteStore.getState().capabilities).toEqual({
+      read: true,
+      createTerminal: false,
+      writeToTerminal: false,
+      closeTerminal: false,
+    })
+  })
+
+  it('does not throw when the desktop never answers', async () => {
+    await attached()
+    await expect(
+      Promise.race([useRemoteStore.getState().refreshCapabilities(), settle()]),
+    ).resolves.toBeUndefined()
   })
 })
 

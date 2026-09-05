@@ -13,7 +13,14 @@ import {
 import { parseQrPayload } from '../wire/qr'
 import { deriveVerificationPhrase } from '../wire/safetyNumber'
 import { Handshake } from '../wire/sessionCrypto'
-import { parseTerminalList, type RemoteRequest, type TerminalSummary } from '../wire/protocol'
+import {
+  NO_CAPABILITIES,
+  parseCapabilities,
+  parseTerminalList,
+  type Capabilities,
+  type RemoteRequest,
+  type TerminalSummary,
+} from '../wire/protocol'
 
 /** Android fires `change` far more eagerly than iOS: a task-switcher swipe can
  *  produce several in a row, and one dial each is a reconnect storm against a
@@ -32,6 +39,10 @@ interface RemoteState {
    *  that put itself in the middle. */
   safetyPhrase: string | null
   terminals: TerminalSummary[]
+  /** What the desktop says this phone may do. Display only -- the desktop
+   *  re-checks every request against its own record -- but a screen offering a
+   *  control the desktop will refuse is worse than one that offers nothing. */
+  capabilities: Capabilities
   output: Record<string, string>
   agentStatus: Record<string, StatusUpdate>
   /** True whenever what is on screen is not being kept current. */
@@ -42,6 +53,7 @@ interface RemoteState {
   pairFromQr(raw: string, label: string): Promise<void>
   unpair(): Promise<void>
   refreshTerminals(): Promise<void>
+  refreshCapabilities(): Promise<void>
   subscribe(terminalId: string): Promise<void>
   unsubscribe(terminalId: string): Promise<void>
   send(terminalId: string, text: string): Promise<void>
@@ -109,6 +121,14 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       set((prev) => ({ agentStatus: { ...prev.agentStatus, [update.terminalId]: update } }))
     })
 
+    // The desktop pushes this when the user edits the grants. Taking it means a
+    // capability withdrawn on the desktop stops being offered here at once,
+    // rather than at whatever moment the user next taps the control and reads a
+    // refusal.
+    live.onCapabilities((caps) => {
+      set({ capabilities: caps })
+    })
+
     socket = new RelaySocket({
       url: desktop.relayUrl,
       // The STORED room, never one recomputed here. Recomputing would look right
@@ -126,7 +146,14 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
         set({ status: next, stale: !attached })
         // Whatever is on screen was true for the last connection. The list is
         // the cheapest thing to re-establish and everything else hangs off it.
-        if (attached) void get().refreshTerminals().catch(() => undefined)
+        //
+        // Capabilities are re-asked here and not merely taken from the push:
+        // grants change while the phone is in a tunnel, and the push for that
+        // edit was dropped at a desktop with nobody attached to send it to.
+        if (attached) {
+          void get().refreshCapabilities().catch(() => undefined)
+          void get().refreshTerminals().catch(() => undefined)
+        }
       },
       now: () => Date.now(),
       setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -174,6 +201,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     paired: null,
     safetyPhrase: null,
     terminals: [],
+    // Nothing until a desktop says otherwise. A phone that assumed a grant it
+    // has not been given would offer a control that errors on first use.
+    capabilities: { ...NO_CAPABILITIES },
     output: {},
     agentStatus: {},
     // Nothing on screen has been confirmed against a live desktop yet, which is
@@ -239,6 +269,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
         paired: null,
         safetyPhrase: null,
         terminals: [],
+        capabilities: { ...NO_CAPABILITIES },
         output: {},
         agentStatus: {},
         error: null,
@@ -247,6 +278,12 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
 
     async refreshTerminals() {
       set({ terminals: parseTerminalList(await ask({ kind: 'listTerminals' })) })
+    },
+
+    /** Ask what this phone may do. Needs no grant, which is the point: a device
+     *  granted nothing must still be able to learn that. */
+    async refreshCapabilities() {
+      set({ capabilities: parseCapabilities(await ask({ kind: 'getCapabilities' })) })
     },
 
     async subscribe(terminalId) {

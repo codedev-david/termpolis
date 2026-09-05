@@ -85,8 +85,30 @@ export function parseTerminalList(data: unknown): TerminalSummary[] {
   return rows
 }
 
+/** Read a capability record off the wire, failing closed.
+ *
+ *  Anything that is not literally `true` is a grant the phone does not have. That
+ *  matters most for the flag this build has never heard of and the one an OLDER
+ *  desktop omits: both must read as "not granted" rather than as truthy junk,
+ *  because the phone decides which controls to OFFER from this. It never decides
+ *  what is ALLOWED -- the desktop re-checks every request against its own record,
+ *  so a phone lying to itself here gets refused rather than obeyed. */
+export function parseCapabilities(data: unknown): Capabilities {
+  if (!isObject(data)) return { ...NO_CAPABILITIES }
+  return {
+    read: data.read === true,
+    createTerminal: data.createTerminal === true,
+    writeToTerminal: data.writeToTerminal === true,
+    closeTerminal: data.closeTerminal === true,
+  }
+}
+
 /** Requests a remote device may send. */
 export type RemoteRequest =
+  // The one request that needs no grant. A phone that could not ask this could
+  // only discover a missing capability by attempting the action and reading the
+  // refusal -- which means offering a control that errors.
+  | { kind: 'getCapabilities' }
   | { kind: 'listTerminals' }
   | { kind: 'createTerminal'; name: string; cwd?: string }
   | { kind: 'runCommand'; terminalId: string; command: string }
@@ -135,6 +157,10 @@ export type RemoteMessage =
   | RemoteResponse
   | OutputPayload
   | { kind: 'status'; terminalId: string; status: AgentStatus; summary: string }
+  // Pushed when the user edits the grants on the desktop. Unprompted, and only
+  // while this phone is attached -- which is why the phone also asks on attach
+  // rather than treating the push as its only source.
+  | { kind: 'capabilities'; capabilities: Capabilities }
 
 /** The relay refuses -- and cuts the connection on -- any frame larger than this.
  *  Mirrors `RELAY_MAX_FRAME_BYTES` on the desktop and `MAX_FRAME_BYTES` in the
@@ -223,6 +249,15 @@ export function parseRemoteMessage(plaintext: Uint8Array): RemoteMessage | null 
             status: parsed.status as AgentStatus,
             summary: parsed.summary,
           }
+        : null
+
+    // Structure gates the message; a missing FLAG does not. A `capabilities`
+    // field that is not an object is a frame this phone cannot read, and
+    // dropping it leaves the last known-good record in place -- better than
+    // replacing it with four falses invented here.
+    case 'capabilities':
+      return isObject(parsed.capabilities)
+        ? { kind: 'capabilities', capabilities: parseCapabilities(parsed.capabilities) }
         : null
 
     default:

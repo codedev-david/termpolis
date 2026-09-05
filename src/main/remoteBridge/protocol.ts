@@ -49,6 +49,14 @@ export interface PairedDevice {
 
 /** Requests a remote device may send. */
 export type RemoteRequest =
+  // Needs no grant, and deliberately has no case in `requiredCapability`: it is
+  // answered above the dispatcher in `entry.ts`. A device granted nothing must
+  // still be able to learn that, or the only way for a phone to discover a
+  // missing capability is to attempt the action and read the refusal -- which
+  // means showing a button that errors. Keeping it out of the policy means that
+  // if that interception is ever lost, the policy's default arm refuses it
+  // rather than waving an ungranted kind through.
+  | { kind: 'getCapabilities' }
   | { kind: 'listTerminals' }
   | { kind: 'createTerminal'; name: string; cwd?: string }
   | { kind: 'runCommand'; terminalId: string; command: string }
@@ -98,6 +106,11 @@ export type RemoteMessage =
   | RemoteResponse
   | OutputPayload
   | { kind: 'status'; terminalId: string; status: AgentStatus; summary: string }
+  // Pushed when the user changes the grants in Settings, not only answered on
+  // request. Same reason the fan-out is dropped on the same edit: a toggle the
+  // phone learns about only on its next attempt leaves the two screens
+  // disagreeing about what this device is allowed to do.
+  | { kind: 'capabilities'; capabilities: Capabilities }
 
 /** Envelope carrying a request with its correlation id. */
 export interface RemoteEnvelope {

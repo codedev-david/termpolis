@@ -6,7 +6,7 @@ import {
   SESSION_HEADER_BYTES,
   FRAME_SESSION,
 } from '../../src/main/remoteBridge/sessionCrypto'
-import { RELAY_MAX_FRAME_BYTES } from '../../src/main/remoteBridge/protocol'
+import { NO_CAPABILITIES, RELAY_MAX_FRAME_BYTES } from '../../src/main/remoteBridge/protocol'
 import { MAX_FRAME_BYTES } from '../../relay/src/quota'
 import type { DrainedChunk } from '../../src/main/remoteBridge/outputFanout'
 import type { OutputChunk, RemoteMessage } from '../../src/main/remoteBridge/protocol'
@@ -184,6 +184,8 @@ describe('output wire shape', () => {
           return 'output'
         case 'status':
           return 'status'
+        case 'capabilities':
+          return 'capabilities'
         default: {
           const never: never = m
           return never
@@ -192,6 +194,7 @@ describe('output wire shape', () => {
     }
     expect(render({ kind: 'ok', id: 1, data: null })).toBe('ok')
     expect(render({ kind: 'error', id: 1, message: 'no' })).toBe('error')
+    expect(render({ kind: 'capabilities', capabilities: NO_CAPABILITIES })).toBe('capabilities')
   })
 
   it('hands a drained chunk straight to the wire with no adapter', () => {

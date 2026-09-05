@@ -1,6 +1,7 @@
 import { utf8Encode } from '../src/wire/bytes'
 import {
   NO_CAPABILITIES,
+  parseCapabilities,
   parseRemoteMessage,
   parseTerminalList,
   RELAY_MAX_FRAME_BYTES,
@@ -15,7 +16,7 @@ function parseJson(value: unknown): RemoteMessage | null {
   return parse(JSON.stringify(value))
 }
 
-describe('parseRemoteMessage: the four desktop shapes', () => {
+describe('parseRemoteMessage: the five desktop shapes', () => {
   it('reads an ok response and passes its data through untouched', () => {
     // `data` is deliberately unknown: it is whatever MCP tool answered, and this
     // layer is not the one that knows the shape.
@@ -64,6 +65,32 @@ describe('parseRemoteMessage: the four desktop shapes', () => {
       terminalId: 't2',
       status: 'waiting_for_input',
       summary: 'Claude is asking to run npm test',
+    })
+  })
+
+  it('reads a capability push, taking each flag as it comes', () => {
+    expect(
+      parseJson({
+        kind: 'capabilities',
+        capabilities: { read: true, createTerminal: true },
+      }),
+    ).toEqual({
+      kind: 'capabilities',
+      capabilities: {
+        read: true,
+        createTerminal: true,
+        writeToTerminal: false,
+        closeTerminal: false,
+      },
+    })
+  })
+
+  it('reads a capability push that grants nothing at all', () => {
+    // The desktop saying "you may do nothing" is a message, not a malformed one.
+    // A phone that discarded it would keep showing controls the user just revoked.
+    expect(parseJson({ kind: 'capabilities', capabilities: {} })).toEqual({
+      kind: 'capabilities',
+      capabilities: NO_CAPABILITIES,
     })
   })
 })
@@ -140,6 +167,15 @@ describe('parseRemoteMessage: refusals', () => {
     expect(parseJson({ kind: 'status', status: 'idle', summary: '' })).toBeNull()
   })
 
+  it('refuses a capability push whose record is not a record', () => {
+    // Structure gates the message. A missing FLAG is a withheld grant, but a
+    // missing RECORD is a frame the desktop did not send in this shape.
+    expect(parseJson({ kind: 'capabilities' })).toBeNull()
+    expect(parseJson({ kind: 'capabilities', capabilities: null })).toBeNull()
+    expect(parseJson({ kind: 'capabilities', capabilities: 'read' })).toBeNull()
+    expect(parseJson({ kind: 'capabilities', capabilities: [] })).toBeNull()
+  })
+
   it('refuses a plaintext that is not valid UTF-8', () => {
     expect(parseRemoteMessage(Uint8Array.from([0xff, 0xfe, 0xfd]))).toBeNull()
   })
@@ -201,6 +237,62 @@ describe('NO_CAPABILITIES', () => {
     // Spreading it is the caller's job, but a frozen object makes a missed spread
     // fail loudly here instead of silently granting one phone another's rights.
     expect(Object.isFrozen(NO_CAPABILITIES)).toBe(true)
+  })
+})
+
+describe('parseCapabilities fails closed', () => {
+  it('reads a full grant', () => {
+    expect(
+      parseCapabilities({
+        read: true,
+        createTerminal: true,
+        writeToTerminal: true,
+        closeTerminal: true,
+      }),
+    ).toEqual({
+      read: true,
+      createTerminal: true,
+      writeToTerminal: true,
+      closeTerminal: true,
+    })
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a string', 'read'],
+    ['a number', 1],
+    ['an array', ['read']],
+    ['an empty object', {}],
+  ])('grants nothing for %s', (_name, value) => {
+    expect(parseCapabilities(value)).toEqual(NO_CAPABILITIES)
+  })
+
+  it.each([
+    ['a truthy string', 'yes'],
+    ['1', 1],
+    ['an object', {}],
+    ['the string "true"', 'true'],
+  ])('does not accept %s as a grant -- only the literal true is one', (_name, value) => {
+    expect(parseCapabilities({ read: value }).read).toBe(false)
+  })
+
+  it('ignores flags it does not know, rather than carrying them forward', () => {
+    const parsed = parseCapabilities({ read: true, runAnything: true })
+    expect(parsed).toEqual({ ...NO_CAPABILITIES, read: true })
+    expect(Object.keys(parsed).sort()).toEqual([
+      'closeTerminal',
+      'createTerminal',
+      'read',
+      'writeToTerminal',
+    ])
+  })
+
+  it('returns a fresh record, so a caller cannot mutate the shared default', () => {
+    const first = parseCapabilities(null)
+    first.read = true
+    expect(parseCapabilities(null).read).toBe(false)
+    expect(NO_CAPABILITIES.read).toBe(false)
   })
 })
 

@@ -1,5 +1,5 @@
 import { utf8Decode, utf8Encode } from '../src/wire/bytes'
-import type { AgentStatus, OutputChunk, RemoteEnvelope } from '../src/wire/protocol'
+import type { AgentStatus, Capabilities, OutputChunk, RemoteEnvelope } from '../src/wire/protocol'
 import { MAX_REQUEST_BYTES, RemoteSession, type RemoteSessionDeps } from '../src/net/remoteSession'
 
 interface Harness {
@@ -182,6 +182,79 @@ describe('pushes', () => {
     expect(seen).toEqual([
       { terminalId: 't1', status: 'waiting_for_input', summary: 'approve?' },
     ])
+  })
+
+  it('routes a capability push to capability subscribers', () => {
+    const h = harness()
+    const seen: Capabilities[] = []
+    h.session.onCapabilities((c) => seen.push(c))
+    h.session.onCapabilities((c) => seen.push(c))
+
+    h.session.handleFrame(
+      frame({ kind: 'capabilities', capabilities: { read: true, closeTerminal: true } }),
+    )
+    const expected = {
+      read: true,
+      createTerminal: false,
+      writeToTerminal: false,
+      closeTerminal: true,
+    }
+    expect(seen).toEqual([expected, expected])
+  })
+
+  it('delivers a push that revokes everything', () => {
+    // The withdrawal is the whole point of the push: a phone that ignored it
+    // would keep offering a control the user just took away.
+    const h = harness()
+    const seen: Capabilities[] = []
+    h.session.onCapabilities((c) => seen.push(c))
+    h.session.handleFrame(frame({ kind: 'capabilities', capabilities: {} }))
+    expect(seen).toEqual([
+      { read: false, createTerminal: false, writeToTerminal: false, closeTerminal: false },
+    ])
+  })
+
+  it('does not resolve a pending request with a capability push', async () => {
+    // The pull and the push carry the same record. They must not be confused:
+    // a push arriving mid-request would otherwise answer the wrong question.
+    const h = harness()
+    let settled = false
+    void h.session
+      .request({ kind: 'getCapabilities' })
+      .then(() => {
+        settled = true
+      })
+      .catch(() => {
+        settled = true
+      })
+
+    h.session.handleFrame(frame({ kind: 'capabilities', capabilities: { read: true } }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+  })
+
+  it('stops delivering once a capability subscriber unsubscribes', () => {
+    const h = harness()
+    const seen: Capabilities[] = []
+    const off = h.session.onCapabilities((c) => seen.push(c))
+    h.session.handleFrame(frame({ kind: 'capabilities', capabilities: { read: true } }))
+    off()
+    h.session.handleFrame(frame({ kind: 'capabilities', capabilities: {} }))
+    expect(seen).toHaveLength(1)
+  })
+
+  it('keeps delivering capabilities to the other subscribers when one throws', () => {
+    const h = harness()
+    const seen: Capabilities[] = []
+    h.session.onCapabilities(() => {
+      throw new Error('a bad render')
+    })
+    h.session.onCapabilities((c) => seen.push(c))
+
+    expect(() =>
+      h.session.handleFrame(frame({ kind: 'capabilities', capabilities: { read: true } })),
+    ).not.toThrow()
+    expect(seen).toHaveLength(1)
   })
 
   it('stops delivering once a subscriber unsubscribes', () => {

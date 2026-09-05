@@ -495,6 +495,7 @@ standing between a malicious relay and a MITM of the pairing handshake.
 
 | `kind` | Fields | Capability |
 | --- | --- | --- |
+| `getCapabilities` | — | none |
 | `listTerminals` | — | `read` |
 | `subscribe` | `terminalId` | `read` |
 | `unsubscribe` | `terminalId` | `read` |
@@ -509,6 +510,29 @@ device in Settings. `runCommand` requires `writeToTerminal`, not
 it is arbitrary shell execution under another name. An unrecognised `kind` is
 refused outright.
 
+`getCapabilities` is the one request that needs no grant, and it answers with
+the capability record itself — `{"read":…,"createTerminal":…,
+"writeToTerminal":…,"closeTerminal":…}`. A device that has been granted
+nothing must still be able to learn that: without it a phone can only discover a
+missing capability by attempting the action and reading the refusal, which means
+offering a control that errors. It is granted by being answered *above* the
+capability check rather than by a rule inside it, so a desktop that loses that
+branch refuses the request instead of admitting it.
+
+A phone should ask on every attach, because grants change while it is away.
+The desktop also **pushes** the record, unprompted, whenever the user edits the
+grants in Settings:
+
+```json
+{"kind":"capabilities","capabilities":{"read":true,"createTerminal":false,"writeToTerminal":false,"closeTerminal":false}}
+```
+
+The push is a courtesy, not a guarantee — it is dropped if the phone is not
+attached, which is exactly why the phone re-asks on attach rather than relying
+on it. It is not authorization either: the desktop re-checks every request
+against its own record, so a phone that never receives the push is refused
+normally rather than trusted.
+
 Desktop → phone is one of:
 
 ```json
@@ -516,6 +540,7 @@ Desktop → phone is one of:
 {"kind":"error","id":1,"message":"…"}
 {"kind":"output","chunks":[{"terminalId":"t1","chunk":"…","missed":0,"marker":null}]}
 {"kind":"status","terminalId":"t1","status":"working","summary":"…"}
+{"kind":"capabilities","capabilities":{"read":true,"createTerminal":false,"writeToTerminal":false,"closeTerminal":false}}
 ```
 
 Output is **batched** — many chunks per frame, never a frame per chunk. The
