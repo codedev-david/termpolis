@@ -32,7 +32,7 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 22. [Activity Feed](#22-activity-feed)
 23. [Intervention Controls](#23-intervention-controls)
 24. [Swarm Review Panel](#24-swarm-review-panel)
-25. [Shared Memory (RAG)](#25-shared-memory-rag)
+25. [Persistent Memory](#25-persistent-memory--the-growing-brain)
 26. [Observability](#26-observability)
 27. [Status Bar](#27-status-bar)
 28. [Troubleshooting](#28-troubleshooting)
@@ -58,7 +58,7 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 - **Intervention controls**: pause, cancel, or steer any agent mid-task without leaving the feed.
 - **Shared memory**: a RAG-backed memory store that any agent can read and write via MCP.
 - **MCP-native end to end**: all three agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
-- **Share-ready output**: a four-way Copy submenu (`Ctrl+Shift+M`) — Copy as Code Block, Plain Text, With Command, or PNG Image — turns any terminal selection into a Slack/Teams/PR-ready paste. See [Copy for Slack / Teams / PRs](#copy-for-slack-teams-prs).
+- **Share-ready output**: a four-way Copy submenu (`Ctrl+Shift+M`) — Copy as Code Block, Plain Text, With Command, or PNG Image — turns any terminal selection into a Slack/Teams/PR-ready paste. See [Copy for Slack / Teams / PRs](#copy-for-slack--teams--prs).
 
 Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well, securely.
 
@@ -303,7 +303,7 @@ Every user-facing action has a keybinding. The Keybindings tab lists them groupe
 
 Bindings are platform-aware — `Ctrl` becomes `⌘` on macOS automatically. Conflicts across OS are flagged.
 
-See [§30](#30-keyboard-shortcut-reference) for the complete default list.
+See [§31](#31-keyboard-shortcut-reference) for the complete default list.
 
 ---
 
