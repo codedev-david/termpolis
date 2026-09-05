@@ -12,6 +12,7 @@ import {
 import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
 import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
 import { Handshake } from './sessionCrypto'
+import { DEFAULT_RELAY_URL } from './protocol'
 import { x25519 } from '@noble/curves/ed25519.js'
 import type {
   BridgeToHost,
@@ -425,7 +426,7 @@ const parentPort = (process as NodeJS.Process & { parentPort?: ParentPortLike })
 if (parentPort) {
   const core = createBridgeCore({
     send: (m) => parentPort.postMessage(m),
-    relayUrl: process.env.TERMPOLIS_RELAY_URL ?? 'wss://relay.termpolis.com',
+    relayUrl: process.env.TERMPOLIS_RELAY_URL ?? DEFAULT_RELAY_URL,
   })
   parentPort.on('message', (e) => {
     try {

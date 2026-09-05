@@ -152,6 +152,18 @@ export type BridgeToHost =
  */
 export const RELAY_MAX_FRAME_BYTES = 1_048_576
 
+/** Where a desktop dials when the user has not named a relay of their own.
+ *
+ *  `wss:` and not `ws:`. Every frame that crosses it is already sealed end to
+ *  end, so plaintext transport would not leak a keystroke -- but it would expose
+ *  the room ids to any middlebox on the path, which is enough to map who talks to
+ *  whom and when. It also makes the app's default traffic look strippable.
+ *
+ *  Lives here rather than in `remoteSettings` so the bridge child -- which reads
+ *  it out of `TERMPOLIS_RELAY_URL` and must have a fallback -- and main agree by
+ *  construction instead of by two matching string literals. */
+export const DEFAULT_RELAY_URL = 'wss://relay.termpolis.com'
+
 /** Which limit a peer hit, as the relay names it just before cutting it off.
  *
  *  Mirrors `QuotaLimit` in `relay/src/wire.ts`, for the reason
