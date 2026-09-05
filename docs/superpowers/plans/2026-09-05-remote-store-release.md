@@ -117,7 +117,7 @@ Add `<a href="/privacy.html">Privacy</a>` to the footer of `index.html` and
 `docs.html`, and a `<url>` block for `https://termpolis.com/privacy.html` in
 `sitemap.xml` with `<priority>0.5</priority>`.
 
-- [x] **Step 5: Commit and deploy** — pushed as `13ab9c2`; the "Deploy Website" Action succeeded (run 33955953921, 2m14s). The live-URL check is still outstanding: `termpolis.com` refuses on both 80 and 443 from this machine, and so does `codedev.llc`, which shares the same GoDaddy host — a hosting-side outage or an egress block, not a deploy failure. Re-run the `curl` when the host answers.
+- [x] **Step 5: Commit and deploy** — pushed as `13ab9c2`; the "Deploy Website" Action succeeded (run 33955953921, 2m14s). Live URL verified: `https://termpolis.com/privacy.html` returns **200**, `text/html`, no redirect, `<title>Privacy Policy — Termpolis</title>`. Checked through an external fetcher, because this machine cannot reach the host at all — `termpolis.com` and `codedev.llc` both refuse on 80 and 443 here while the site serves 200 to the outside world. The host is `72.167.84.0`, and a `.0` last octet is dropped by plenty of local firewalls as a network address. That is a workstation networking quirk, not a site or deploy problem; verify from outside, not with `curl` on this box.
 
 ```bash
 cd ~/repos/termpolis-web
