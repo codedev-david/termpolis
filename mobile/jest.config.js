@@ -19,8 +19,10 @@ module.exports = {
     // 0% of nothing and drags the total down for a file that cannot be tested.
     '!src/navigation/routes.ts',
   ],
-  // Raised to just under what the suite achieves as each task lands, in the
-  // relay/vitest.config.ts style. Starting at zero and never revisiting is how a
-  // gate becomes decoration.
-  coverageThreshold: { global: { lines: 95, functions: 88, branches: 92, statements: 94 } },
+  // The app is at 100 on all four counters, so the gate sits there too. It can,
+  // because the two branches that genuinely could not be reached were deleted
+  // rather than ignored -- an unreachable branch is dead code, and an
+  // istanbul-ignore comment only hides that. This phone talks to a machine over
+  // a relay it does not trust; an untested line here is one nobody has run.
+  coverageThreshold: { global: { lines: 100, functions: 100, branches: 100, statements: 100 } },
 }

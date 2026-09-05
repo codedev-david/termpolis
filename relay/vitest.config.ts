@@ -20,11 +20,12 @@ export default defineConfig({
     coverage: {
       provider: 'istanbul',
       include: ['src/**/*.ts'],
-      // Lower than the app's 97/96/95/96: Workers runtime edges (hibernation,
-      // DO eviction, socket teardown races) are not all reachable in-process.
-      // Set just under what the suite actually achieves (98.88/97.56/100/100), so a
-      // regression trips the gate rather than quietly eroding a generous margin.
-      thresholds: { lines: 97, functions: 100, branches: 95, statements: 97 },
+      // The Workers runtime edges this once could not reach (hibernation, DO
+      // eviction, socket teardown races) are covered now, and the suite sits at
+      // 100 on all four counters. Held there: this is a few hundred lines with
+      // one job, and it is the piece a phone cannot pair without. Any line that
+      // arrives without a test is a line nobody has run.
+      thresholds: { lines: 100, functions: 100, branches: 100, statements: 100 },
     },
   },
 })
