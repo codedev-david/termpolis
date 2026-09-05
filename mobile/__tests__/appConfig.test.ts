@@ -26,6 +26,14 @@ describe('app.json -- the fields a store submission turns on', () => {
     expect(android.package).toBe('com.termpolis.remote')
   })
 
+  it('targets the two platforms that were reviewed, and no third one', () => {
+    // Expo defaults to every platform it knows about, web included. Web is not
+    // a target here -- the wire code has never been run against a DOM, and a
+    // bundle nobody tests is a bundle nobody has checked for a leaked key. With
+    // the list pinned, an unqualified `expo export` builds exactly what ships.
+    expect(appConfig.expo.platforms).toEqual(['ios', 'android'])
+  })
+
   it('asks Android for the camera and the network, and nothing else', () => {
     expect(android.permissions).toEqual([
       'android.permission.CAMERA',

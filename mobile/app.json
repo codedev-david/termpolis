@@ -3,6 +3,10 @@
     "name": "Termpolis Remote",
     "slug": "termpolis-remote",
     "version": "1.0.0",
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "orientation": "portrait",
     "scheme": "termpolis",
     "userInterfaceStyle": "dark",

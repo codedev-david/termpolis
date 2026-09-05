@@ -63,3 +63,7 @@ scratchpad/
 mobile/node_modules/
 mobile/.expo/
 mobile/coverage/
+mobile/dist/
+# `expo prebuild` output: generated from app.json, never hand-edited, never committed.
+mobile/android/
+mobile/ios/
