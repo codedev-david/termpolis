@@ -180,7 +180,7 @@ code, config, repo wiring, and the reasoning behind each boundary.
   `QR_ENVELOPE_VERSION = 1`. Every later wire task imports these rather than
   restating the literals.
 
-- [ ] **Step 1: Make the directories**
+- [x] **Step 1: Make the directories**
 
 ```bash
 mkdir -p mobile/src/wire mobile/src/net mobile/src/storage mobile/src/state mobile/src/ansi mobile/src/screens mobile/__tests__
@@ -189,7 +189,7 @@ mkdir -p mobile/src/wire mobile/src/net mobile/src/storage mobile/src/state mobi
 Do **not** use `npx create-expo-app` — it wants an empty directory and installs a
 router template this app does not need. Write the files directly.
 
-- [ ] **Step 2: Write `mobile/package.json` and install**
+- [x] **Step 2: Write `mobile/package.json` and install**
 
 ```json
 {
@@ -230,7 +230,7 @@ silent behavioural difference in the one layer that must not have one.
 
 Record the resolved Expo SDK version in the commit message.
 
-- [ ] **Step 3: Write the config files**
+- [x] **Step 3: Write the config files**
 
 `mobile/babel.config.js`:
 
@@ -300,7 +300,7 @@ commonly missed submission gate.
 }
 ```
 
-- [ ] **Step 4: Write the entry point**
+- [x] **Step 4: Write the entry point**
 
 `mobile/index.ts` — the import order here is not stylistic.
 
@@ -336,7 +336,7 @@ React Native components annotate `React.JSX.Element`. The desktop renderer's bar
 `JSX.Element` convention comes from its own global JSX namespace and does not
 apply in this workspace.
 
-- [ ] **Step 5: Write the failing test**
+- [x] **Step 5: Write the failing test**
 
 ```ts
 // mobile/__tests__/scaffold.test.ts
@@ -356,12 +356,12 @@ describe('wire version constants', () => {
 })
 ```
 
-- [ ] **Step 6: Run it and watch it fail**
+- [x] **Step 6: Run it and watch it fail**
 
 Run: `npm --prefix mobile test`
 Expected: FAIL — `Cannot find module '../src/wire/version'`
 
-- [ ] **Step 7: Write the implementation**
+- [x] **Step 7: Write the implementation**
 
 ```ts
 // mobile/src/wire/version.ts
@@ -376,11 +376,11 @@ export const PROTOCOL_VERSION = 2
 export const QR_ENVELOPE_VERSION = 1
 ```
 
-- [ ] **Step 8: Run it and watch it pass**
+- [x] **Step 8: Run it and watch it pass**
 
 Run: `npm --prefix mobile test` — expect PASS, 2 tests.
 
-- [ ] **Step 9: Wire the repo gates**
+- [x] **Step 9: Wire the repo gates**
 
 `vitest.config.ts` — add `'**/mobile/**'` to the existing `test.exclude`, which
 currently reads `['**/node_modules/**', '**/.worktrees/**', '**/e2e/**', '**/relay/**']`.
@@ -397,7 +397,7 @@ Root `package.json` scripts, beside `test:relay`:
 
 `.gitignore` — add `mobile/node_modules` and `mobile/.expo`.
 
-- [ ] **Step 10: Prove nothing at the root regressed**
+- [x] **Step 10: Prove nothing at the root regressed**
 
 ```bash
 npm run typecheck && npm run lint && npx vitest run
@@ -406,7 +406,7 @@ npm run typecheck && npm run lint && npx vitest run
 Expected: typecheck clean, lint exit 0, vitest green, and `mobile/`'s jest suite
 absent from the vitest run.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add mobile .gitignore vitest.config.ts tsconfig.test.json package.json
@@ -437,7 +437,7 @@ also reject odd-length and non-hex input rather than producing a short array —
 `@noble` reports a short scalar as a curve error, which is a poor way to learn a
 frame was truncated.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // mobile/__tests__/bytes.test.ts
@@ -522,12 +522,12 @@ describe('equalBytes', () => {
 })
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `npm --prefix mobile test bytes`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `mobile/src/wire/bytes.ts`**
+- [x] **Step 3: Implement `mobile/src/wire/bytes.ts`**
 
 Write the six functions. `utf8Encode` walks code points with `codePointAt` and
 emits the 1/2/3/4-byte forms; `utf8Decode` reverses it and uses
@@ -539,11 +539,11 @@ length check first.
 Every function takes and returns real `Uint8Array` — never a Node `Buffer`, which
 `@noble` rejects.
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `npm --prefix mobile test bytes` — expect PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/wire/bytes.ts mobile/__tests__/bytes.test.ts
@@ -566,7 +566,7 @@ git commit -m "feat(remote): hex and UTF-8 codecs for the phone client"
 - Produces: `SAFETY_WORDS: readonly string[]`,
   `deriveVerificationPhrase(aPublicKeyHex: string, bPublicKeyHex: string): string`.
 
-- [ ] **Step 1: Copy the wordlist verbatim**
+- [x] **Step 1: Copy the wordlist verbatim**
 
 ```bash
 sed 's#^##' src/main/remoteBridge/wordlist.ts > mobile/src/wire/wordlist.ts
@@ -578,7 +578,7 @@ one word with **no modulo**; a reordered or short list produces a phrase that is
 merely different, which is a phrase the user compares, sees mismatch, and reads as
 an attack that is not happening — or worse, the inverse.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```ts
 // mobile/__tests__/safetyNumber.test.ts
@@ -621,15 +621,15 @@ describe('deriveVerificationPhrase', () => {
 })
 ```
 
-- [ ] **Step 3: Run it and watch it fail.** `npm --prefix mobile test safetyNumber`
+- [x] **Step 3: Run it and watch it fail.** `npm --prefix mobile test safetyNumber`
 
-- [ ] **Step 4: Implement `safetyNumber.ts`** per §8: sort the two hex strings
+- [x] **Step 4: Implement `safetyNumber.ts`** per §8: sort the two hex strings
 lexicographically, `SHA-256(utf8(lo ‖ ":" ‖ hi))`, map the first eight digest bytes
 through `SAFETY_WORDS`, join with a single space.
 
-- [ ] **Step 5: Run it and watch it pass.**
+- [x] **Step 5: Run it and watch it pass.**
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add mobile/src/wire/wordlist.ts mobile/src/wire/safetyNumber.ts mobile/__tests__/safetyNumber.test.ts
@@ -655,7 +655,7 @@ four-step opening order), §5.2 (one key, one direction).
   `open` returns `null` on every rejection and **never throws** — a hostile peer
   must not be able to tear down the message handler.
 
-- [ ] **Step 1: Write the failing test.** Cover, at minimum:
+- [x] **Step 1: Write the failing test.** Cover, at minimum:
   - a seal/open round trip in both directions across two `SealedSession`s;
   - counters increment independently per direction, both starting at 0;
   - a frame shorter than `headerBytes + 22` returns `null` **without** advancing
@@ -669,17 +669,17 @@ four-step opening order), §5.2 (one key, one direction).
     high-water mark must not have advanced;
   - a session cannot open the frame it sealed itself (reflection).
 
-- [ ] **Step 2: Run it and watch it fail.**
+- [x] **Step 2: Run it and watch it fail.**
 
-- [ ] **Step 3: Implement.** `writeCounter` writes 6-byte big-endian; `readCounter`
+- [x] **Step 3: Implement.** `writeCounter` writes 6-byte big-endian; `readCounter`
 reads it back. The nonce is `6 zero bytes ‖ counter`. `open` follows §5.1's order
 exactly: length check, counter-vs-high-water check, decrypt with
 `aad = frame.subarray(0, headerBytes)`, and only then advance. High-water starts at
 `-1`. Wrap the decrypt in try/catch and return `null`.
 
-- [ ] **Step 4: Run it and watch it pass.**
+- [x] **Step 4: Run it and watch it pass.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/wire/sealedChannel.ts mobile/__tests__/sealedChannel.test.ts
@@ -715,7 +715,7 @@ seals with `p2d` and opens with `d2p`. Getting this backwards does not throw —
 produces a session that seals frames the desktop cannot open and opens nothing,
 and the socket stays connected and looks healthy throughout.
 
-- [ ] **Step 1: Write the failing test.** Pin the golden vectors from §12 —
+- [x] **Step 1: Write the failing test.** Pin the golden vectors from §12 —
 these are the gate, so write them as literals, not as computed values:
   - `desktopIdSk = 0x11 × 32` derives
     `desktopIdPk = 7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13`
@@ -738,17 +738,17 @@ Also cover the rejection paths, which the vectors cannot:
   - a greeting whose `role` equals your own is refused;
   - two `Handshake`s, one per side, agree on the same session root.
 
-- [ ] **Step 2: Run it and watch it fail.**
+- [x] **Step 2: Run it and watch it fail.**
 
-- [ ] **Step 3: Implement** per §5.2, §6.1, §6.2, §6.3. Note two traps the wire
+- [x] **Step 3: Implement** per §5.2, §6.1, §6.2, §6.3. Note two traps the wire
 doc calls out: build a **fresh** handshake-root session for the seal and for the
 open (they are independent counters that both start at zero, so reusing one object
 makes the second operation fail), and the session-root `ikm` is
 ephemeral-DH-first, which is not negotiable.
 
-- [ ] **Step 4: Run it and watch it pass.**
+- [x] **Step 4: Run it and watch it pass.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/wire/sessionCrypto.ts mobile/__tests__/sessionCrypto.test.ts
@@ -782,7 +782,7 @@ that is not `wss:`; a `pairingId` that is not `^[0-9a-f]{32}$`; a
 rather than throwing — a scan of a cereal box should show "that is not a pairing
 code", not a crash.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
 For `qr.test.ts`: a good payload parses; each of the five rejections above returns
 `null`; an `http://` or `ws://` relay URL is refused (the transport is not
@@ -800,17 +800,17 @@ For `pairing.test.ts`, pin from §12:
     next offer the same desktop shows
   - a tampered ack returns `null` rather than throwing
 
-- [ ] **Step 2: Run them and watch them fail.**
+- [x] **Step 2: Run them and watch them fail.**
 
-- [ ] **Step 3: Implement.** `sealPairingHello` header is
+- [x] **Step 3: Implement.** `sealPairingHello` header is
 `0x01 ‖ devicePublicKey[32]`, sealed on a fresh pairing-root session at counter 0
 with the device's tx key. `openPairingAck` opens `headerBytes = 1` on a **fresh**
 session built from the pairing root — that freshness is what lets the phone open
 the ack without having kept the session it sealed its own hello with.
 
-- [ ] **Step 4: Run them and watch them pass.**
+- [x] **Step 4: Run them and watch them pass.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/wire/pairing.ts mobile/src/wire/qr.ts mobile/__tests__/pairing.test.ts mobile/__tests__/qr.test.ts
@@ -845,7 +845,7 @@ envelope, is dropped silently — and neither may throw out of the message handl
 because an unhandled rejection there tears down a connection a hostile phone could
 then drop at will. The same discipline applies in the other direction.
 
-- [ ] **Step 1: Write the failing test.** Cover: each of the four desktop→phone
+- [x] **Step 1: Write the failing test.** Cover: each of the four desktop→phone
 shapes parses; malformed JSON returns `null`; valid JSON with an unknown `kind`
 returns `null`; an `output` message with a non-array `chunks` returns `null`; an
 `output` chunk missing `terminalId` returns `null`; a `status` message carries
@@ -853,14 +853,14 @@ returns `null`; an `output` message with a non-array `chunks` returns `null`; an
 input, asserted over a table of hostile strings including `'null'`, `'[]'`,
 `'{"kind":"ok"}'` (no `id`) and a 1 MiB string.
 
-- [ ] **Step 2: Run it and watch it fail.**
+- [x] **Step 2: Run it and watch it fail.**
 
-- [ ] **Step 3: Implement**, mirroring the desktop union and guarding every field
+- [x] **Step 3: Implement**, mirroring the desktop union and guarding every field
 that is read.
 
-- [ ] **Step 4: Run it and watch it pass.**
+- [x] **Step 4: Run it and watch it pass.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/wire/protocol.ts mobile/__tests__/protocol.test.ts
@@ -884,7 +884,7 @@ run, in both directions, including the paths no vector covers.
   fails here immediately rather than at the next `npm run build`.
 - Produces: nothing. It is a gate.
 
-- [ ] **Step 1: Write the test.** There is no red-then-green cycle here: every
+- [x] **Step 1: Write the test.** There is no red-then-green cycle here: every
 module it imports already exists and already passes its own suite. The test is
 red only if the port is wrong, which is the point.
 
@@ -917,7 +917,7 @@ Structure it as one `describe` per protocol stage, mirroring
   8. **Direction independence.** Desktop→phone counter 1 opens after counter 0,
      while phone→desktop is still at its own counter 0.
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 ```bash
 npx vitest run tests/electron/remoteMobileInterop.test.ts
@@ -927,7 +927,7 @@ Expected: PASS. If it fails, the failure is in `mobile/src/wire` — the desktop
 is already gated by `tests/electron/remoteWireVectors.test.ts` and the smoke
 client.
 
-- [ ] **Step 3: Prove it is actually in the root gate**
+- [x] **Step 3: Prove it is actually in the root gate**
 
 ```bash
 npm run typecheck:test && npx vitest run --coverage
@@ -937,7 +937,7 @@ npm run typecheck:test && npx vitest run --coverage
 `tsconfig.test.json` include added in Task 1. Confirm by introducing a deliberate
 type error in a wire file, watching `typecheck:test` fail, then reverting it.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/electron/remoteMobileInterop.test.ts
@@ -989,7 +989,7 @@ keepalive is a suite nobody runs.
    consulting any key.** One that reached the greeting path would fail to open and
    cost the connection — for a frame whose entire purpose is to keep it.
 
-- [ ] **Step 1: Write the failing test.** With a fake `SocketLike` and injected
+- [x] **Step 1: Write the failing test.** With a fake `SocketLike` and injected
 timers, cover:
   - `binaryType` is set to `'arraybuffer'` on the socket before `connect` returns;
   - the URL is `wss://<host>/v1/pair/<roomId>?role=device`;
@@ -1011,15 +1011,15 @@ timers, cover:
     never an instruction worth a disconnect;
   - `backoffDelay` is monotonic, jittered, and capped.
 
-- [ ] **Step 2: Run it and watch it fail.**
+- [x] **Step 2: Run it and watch it fail.**
 
-- [ ] **Step 3: Implement.** Mirror `src/main/remoteBridge/relayClient.ts` where
+- [x] **Step 3: Implement.** Mirror `src/main/remoteBridge/relayClient.ts` where
 the behaviour is shared — it already solved all five traps — but do not import it;
 this is a second implementation on purpose.
 
-- [ ] **Step 4: Run it and watch it pass.**
+- [x] **Step 4: Run it and watch it pass.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/net/relaySocket.ts mobile/__tests__/relaySocket.test.ts
@@ -1044,7 +1044,7 @@ git commit -m "feat(remote): relay socket for the phone client"
     `onStatus(cb: (s: { terminalId: string; status: string; summary: string }) => void): () => void`,
     `handleFrame(plaintext: Uint8Array): void`.
 
-- [ ] **Step 1: Write the failing test.** Cover:
+- [x] **Step 1: Write the failing test.** Cover:
   - `request` correlates by `id` and resolves the matching `ok`;
   - an `error` response rejects with its `message`;
   - ids increment and two concurrent requests resolve to their own answers, not
@@ -1059,13 +1059,13 @@ git commit -m "feat(remote): relay socket for the phone client"
     than truncating it, which reads to a user as an unreliable network;
   - unsubscribing a callback stops delivery.
 
-- [ ] **Step 2: Run it and watch it fail.**
+- [x] **Step 2: Run it and watch it fail.**
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
 
-- [ ] **Step 4: Run it and watch it pass.**
+- [x] **Step 4: Run it and watch it pass.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/net/remoteSession.ts mobile/__tests__/remoteSession.test.ts
@@ -1099,7 +1099,7 @@ backup onto a second handset does not silently produce two devices the desktop
 cannot tell apart. The one-time secret is **never** persisted — §7.5 requires it be
 discarded, and a test asserts it never reaches SecureStore.
 
-- [ ] **Step 1: Write the failing test.** Mock `expo-secure-store` with an
+- [x] **Step 1: Write the failing test.** Mock `expo-secure-store` with an
 in-memory map. Cover: first `loadIdentity` mints and writes; the second returns the
 same keypair without writing again; the write uses
 `keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY`; `savePaired` /
@@ -1108,10 +1108,10 @@ also when the stored JSON is corrupt, rather than throwing; `clearPaired` leaves
 the identity intact; `wipeIdentity` removes both; and no call anywhere writes a
 value containing the one-time secret.
 
-- [ ] **Step 2: Run it and watch it fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run it and watch it pass.**
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run it and watch it fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run it and watch it pass.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/storage/identity.ts mobile/__tests__/identity.test.ts
@@ -1148,7 +1148,7 @@ git commit -m "feat(remote): keystore-backed identity for the phone client"
   fires `change` more eagerly than iOS, so debounce the foreground transition
   (250 ms) or a task-switcher swipe produces a reconnect storm.
 
-- [ ] **Step 1: Write the failing test.** With `net/*` and `storage/*` mocked:
+- [x] **Step 1: Write the failing test.** With `net/*` and `storage/*` mocked:
   - `boot()` with nothing paired lands in `paired: null` and does not open a socket;
   - `boot()` with a stored pairing connects to the **stored** `sessionRoomId`;
   - `pairFromQr` on a malformed payload sets `error` and does not touch storage;
@@ -1163,10 +1163,10 @@ git commit -m "feat(remote): keystore-backed identity for the phone client"
   - the AppState foreground transition is debounced: two `change` events 50 ms
     apart produce one reconnect.
 
-- [ ] **Step 2: Run it and watch it fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run it and watch it pass.**
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run it and watch it fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run it and watch it pass.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/state/remoteStore.ts mobile/__tests__/remoteStore.test.ts
@@ -1194,7 +1194,7 @@ erase, scroll-region and OSC sequences rather than attempting them — a phone v
 is a scrollback, not a grid, and a half-implemented cursor move corrupts text in a
 way that stripping never does.
 
-- [ ] **Step 1: Write the failing test.** Cover: plain text is one segment;
+- [x] **Step 1: Write the failing test.** Cover: plain text is one segment;
 `ESC[31m` sets red and `ESC[0m` resets; nested attributes accumulate and reset
 together; `ESC[38;5;208m` and `ESC[38;2;10;20;30m` parse; an unterminated escape at
 end of input is dropped rather than emitted as text; cursor and erase sequences are
@@ -1202,10 +1202,10 @@ stripped; an OSC title sequence terminated by `BEL` and one terminated by `ESC\`
 are both stripped; a lone `ESC` is dropped; CRLF and bare CR are normalised; and a
 1 MiB input returns in reasonable time without quadratic string building.
 
-- [ ] **Step 2: Run it and watch it fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run it and watch it pass.**
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run it and watch it fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run it and watch it pass.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/ansi/render.ts mobile/__tests__/ansiRender.test.ts
@@ -1243,7 +1243,7 @@ carries: read them against the other screen; if they differ, unpair. **Both a
 button trains the user to tap through, which is how safety numbers stop working.
 "Do not match" unpairs immediately.
 
-- [ ] **Step 1: Write the failing test.** With `expo-camera` mocked and the store
+- [x] **Step 1: Write the failing test.** With `expo-camera` mocked and the store
   mocked: permission-undetermined renders the rationale and a request button, and
   requests only on press; denied renders the manual-entry path; the scan callback
   passes the **raw** scanned string through untouched; a scan while
@@ -1252,10 +1252,10 @@ button trains the user to tap through, which is how safety numbers stop working.
   `unpair`; and no screen ever renders the identity secret — assert the rendered
   tree contains no 64-hex-char string other than the desktop public key.
 
-- [ ] **Step 2: Run it and watch it fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run it and watch it pass.**
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run it and watch it fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run it and watch it pass.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/screens/PairScreen.tsx mobile/src/screens/SafetyNumberScreen.tsx mobile/__tests__/pairScreen.test.tsx mobile/__tests__/safetyNumberScreen.test.tsx
@@ -1292,7 +1292,7 @@ it were continuous.
 that always fails is a bug report; the desktop is the authority and the phone
 reflects what it granted.
 
-- [ ] **Step 1: Write the failing test.** With the store mocked: the list renders
+- [x] **Step 1: Write the failing test.** With the store mocked: the list renders
   one row per terminal; the new-terminal control is absent without
   `createTerminal` and present with it; pull-to-refresh calls `refreshTerminals`;
   opening a terminal calls `subscribe` once and unmounting calls `unsubscribe`
@@ -1302,10 +1302,10 @@ reflects what it granted.
   and `OutputView` renders coloured segments from `renderAnsi` rather than raw
   escape bytes.
 
-- [ ] **Step 2: Run it and watch it fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run it and watch it pass.**
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run it and watch it fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run it and watch it pass.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/screens/TerminalListScreen.tsx mobile/src/screens/TerminalScreen.tsx mobile/src/components/OutputView.tsx mobile/__tests__/terminalListScreen.test.tsx mobile/__tests__/terminalScreen.test.tsx
@@ -1346,17 +1346,17 @@ Navigation: `Pair` when nothing is stored, otherwise `Terminals` as the root, wi
 `Terminal`, `SafetyNumber` and `Settings` pushed above it. `boot()` runs once on
 mount.
 
-- [ ] **Step 1: Write the failing test.** Settings renders the paired label,
+- [x] **Step 1: Write the failing test.** Settings renders the paired label,
   phrase, capabilities and device id; unpair prompts first and only calls
   `unpair` on confirm; unpair still calls it while `stale`; the identity secret
   never appears in the tree. Shell: unpaired boots to `Pair`; paired boots to
   `Terminals`; `boot()` is called exactly once across a re-render; completing a
   pairing navigates to `SafetyNumber`; unpairing returns to `Pair`.
 
-- [ ] **Step 2: Run it and watch it fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run it and watch it pass.**
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run it and watch it fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run it and watch it pass.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mobile/src/screens/SettingsScreen.tsx mobile/src/App.tsx mobile/__tests__/settingsScreen.test.tsx mobile/__tests__/appShell.test.tsx
@@ -1372,7 +1372,7 @@ git commit -m "feat(remote): settings, unpair and the phone app shell"
   implementation, nothing normative), `mobile/README.md` (create)
 - Verify: `vitest.config.ts`, `tsconfig.test.json`, `.github/workflows/ci.yml`
 
-- [ ] **Step 1: Run the mobile gate.**
+- [x] **Step 1: Run the mobile gate.**
 
 ```bash
 cd mobile && npm run typecheck && npm run test:coverage
@@ -1383,7 +1383,7 @@ achieved, per the `relay/` convention. `src/wire/**` and `src/net/**` should sit
 or very near 100% — they are pure and fully reachable; screens will be lower.
 If a floor fails, **backfill tests**; never lower a threshold.
 
-- [ ] **Step 2: Run the root gate, which now includes the interop test.**
+- [x] **Step 2: Run the root gate, which now includes the interop test.**
 
 ```bash
 export PATH="/c/Program Files/Git/cmd:$PATH"
@@ -1395,31 +1395,31 @@ statements ≥ 96, and `tests/electron/remoteMobileInterop.test.ts` among the
 passing files. This is the gate that matters: it proves the phone's bytes and the
 desktop's bytes are the same bytes, on every CI run, without a device.
 
-- [ ] **Step 3: Confirm CI actually runs both.** Read
+- [x] **Step 3: Confirm CI actually runs both.** Read
   `.github/workflows/ci.yml`. The root job must pick up the interop test with no
   change (it lives under `tests/electron/`, already in scope). Add a `mobile` job
   mirroring the `relay` job — `npm ci` then `npm run lint && npm run typecheck &&
   npm run test:coverage`, working directory `mobile`. If the relay job is
   `ubuntu-latest`, match it; the mobile unit tests are platform-independent.
 
-- [ ] **Step 4: Write `mobile/README.md`.** How to run it (`npx expo start`,
+- [x] **Step 4: Write `mobile/README.md`.** How to run it (`npx expo start`,
   Expo Go for the JS-only paths, a dev build for the camera), how to point it at a
   relay, that `src/wire/` is pure by contract and why, and that
   `tests/electron/remoteMobileInterop.test.ts` is the cross-implementation gate —
   so the next person to add an RN import to `wire/` learns what it breaks before
   they break it.
 
-- [ ] **Step 5: Update the root `README.md`.** One short section under the remote
+- [x] **Step 5: Update the root `README.md`.** One short section under the remote
   feature: the phone app exists, it is pass-through only, it holds no memory or
   model credentials, and pairing requires physical access to the desktop screen.
 
-- [ ] **Step 6: Add the pointer to `docs/remote-wire-format.md`.** A single line
+- [x] **Step 6: Add the pointer to `docs/remote-wire-format.md`.** A single line
   naming `mobile/src/wire/` as the second implementation, and stating the doc
   stays normative for both. Change nothing else in that file — it is the source of
   truth both sides are tested against, and editing it to match an implementation
   inverts the relationship.
 
-- [ ] **Step 7: Tick this plan's checkboxes and commit.**
+- [x] **Step 7: Tick this plan's checkboxes and commit.**
 
 ```bash
 git add -A
@@ -1427,7 +1427,7 @@ git commit -m "docs(remote): phone client docs and CI gate"
 git push origin main
 ```
 
-- [ ] **Step 8: Verify CI is green.**
+- [x] **Step 8: Verify CI is green.**
 
 ```bash
 gh run list --limit 3

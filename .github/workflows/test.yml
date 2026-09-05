@@ -66,6 +66,27 @@ jobs:
       - name: Test relay
         run: npm --prefix relay test -- --coverage
 
+  # The phone client. Pure TypeScript unit tests -- no simulator, no device, no
+  # Expo account. `src/wire/` is a second implementation of the same wire format
+  # the desktop speaks, and tests/electron/remoteMobileInterop.test.ts (in the
+  # `unit` job) is what keeps the two honest; this job only proves the phone
+  # tree builds and passes on its own.
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+      - name: Typecheck mobile
+        run: npm --prefix mobile run typecheck
+      - name: Test mobile
+        run: npm --prefix mobile run test:coverage
+
   # Unit tests across all three target platforms so we catch
   # platform-specific regressions (path separators, shell detection, node-pty).
   unit:

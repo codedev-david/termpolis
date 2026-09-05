@@ -20,6 +20,13 @@ The reference implementation is `src/main/remoteBridge/` (desktop) and
 session against the built bridge and is the shortest executable example of the
 whole flow.
 
+The second implementation is `mobile/src/wire/`, and this document stays
+normative for both. It is not a port to be kept in step by hand:
+[`tests/electron/remoteMobileInterop.test.ts`](../tests/electron/remoteMobileInterop.test.ts)
+imports the desktop's modules and the phone's side by side and makes each open
+what the other sealed, so a change to one that this document does not sanction
+fails the root gate rather than a phone in someone's hand.
+
 ---
 
 ## 1. Vocabulary

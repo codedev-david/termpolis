@@ -206,6 +206,20 @@ Long AI coding sessions chew through rate limits and hit compaction fast — and
 
 ---
 
+## 📱 Termpolis Remote — keep a session going from your phone
+
+The desktop app is where the work happens. **Termpolis Remote** is a small companion app for iPhone and Android that lets you read those terminals and type into them while you are away from the machine — nothing more. It is a **pass-through**, not a second Termpolis.
+
+- **Nothing runs on the phone.** No agent, no memory, no embeddings, no API keys. The desktop runs the Claude/Codex/Gemini session it was already running, signed in the way it was already signed in; the phone sends keystrokes and receives output. Lose the phone and you have lost a display, not an account.
+- **End-to-end encrypted, and the relay is not trusted.** Pairing is an X25519 exchange completed by scanning a QR code **off the desktop's own screen**, so an attacker needs to be standing in front of your machine. Everything afterwards is ChaCha20-Poly1305 under a key the relay never sees — it forwards opaque frames between two rooms and cannot read, replay or reorder a single one. Both ends show the same eight-word **safety phrase**; if the words differ, something is in the middle.
+- **The desktop decides what the phone may do.** Read, create a terminal, type into a terminal and close a terminal are four separate grants, all **off until you turn them on**, revocable from the desktop at any moment, and re-checked on the desktop for every request — a phone that thinks it has a grant it does not simply gets refused. Typing into a terminal is deliberately *not* implied by creating one.
+- **Off by default, and unpairable from either end.** Remote is disabled until you enable it. The desktop can revoke a device; the phone can unpair itself even with no network, because a phone that can only be unpaired while online cannot be unpaired when it matters. Either side ending it is enough — the session key cannot be re-derived without both identities.
+- **It runs off the main thread.** The bridge lives in its own Electron `utilityProcess`, so a busy relay connection can never make your terminals stutter.
+
+The wire format is specified in [`docs/remote-wire-format.md`](docs/remote-wire-format.md) and implemented twice — `src/main/remoteBridge/` on the desktop, `mobile/src/wire/` on the phone — with a test that makes each side open what the other sealed on every CI run. See [`mobile/README.md`](mobile/README.md) to run the client.
+
+---
+
 ## 📊 Memory & Learning dashboard — proof it's working, computed locally
 
 A **Memory & Learning** tab in Settings turns the brain from a black box into an inspectable instrument — **every number computed on your machine, offline, from the append-only store.** No word-taking; nothing on the screen leaves your machine.
