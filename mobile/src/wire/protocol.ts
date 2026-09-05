@@ -52,6 +52,39 @@ const AGENT_STATUSES: readonly string[] = [
   'blocked',
 ]
 
+/** One row of `listTerminals`.
+ *
+ *  The desktop answers `ok` with `data: unknown`, and the two ends ship through
+ *  separate app stores -- an older desktop really does answer here -- so the
+ *  phone parses this rather than casting it. */
+export interface TerminalSummary {
+  id: string
+  name: string
+  shellType: string
+  cwd: string
+}
+
+/** Read a terminal list, keeping only rows the phone can actually render.
+ *
+ *  A bad row is dropped rather than failing the whole list: one terminal the
+ *  phone cannot name is not a reason to show the user no terminals at all. */
+export function parseTerminalList(data: unknown): TerminalSummary[] {
+  if (!Array.isArray(data)) return []
+  const rows: TerminalSummary[] = []
+  for (const row of data) {
+    if (typeof row !== 'object' || row === null) continue
+    const { id, name, shellType, cwd } = row as Record<string, unknown>
+    if (typeof id !== 'string' || id.length === 0) continue
+    rows.push({
+      id,
+      name: typeof name === 'string' ? name : id,
+      shellType: typeof shellType === 'string' ? shellType : '',
+      cwd: typeof cwd === 'string' ? cwd : '',
+    })
+  }
+  return rows
+}
+
 /** Requests a remote device may send. */
 export type RemoteRequest =
   | { kind: 'listTerminals' }

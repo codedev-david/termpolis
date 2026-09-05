@@ -2,6 +2,7 @@ import { utf8Encode } from '../src/wire/bytes'
 import {
   NO_CAPABILITIES,
   parseRemoteMessage,
+  parseTerminalList,
   RELAY_MAX_FRAME_BYTES,
   type RemoteMessage,
 } from '../src/wire/protocol'
@@ -206,5 +207,37 @@ describe('NO_CAPABILITIES', () => {
 describe('RELAY_MAX_FRAME_BYTES', () => {
   it('matches the relay ceiling', () => {
     expect(RELAY_MAX_FRAME_BYTES).toBe(1_048_576)
+  })
+})
+
+describe('parseTerminalList', () => {
+  const row = { id: 't1', name: 'Claude', shellType: 'pwsh', cwd: 'C:/repos/termpolis' }
+
+  it('reads a well-formed list', () => {
+    expect(parseTerminalList([row])).toEqual([row])
+  })
+
+  it('returns nothing for anything that is not a list', () => {
+    for (const junk of [null, undefined, 42, 'terminals', {}, { terminals: [row] }]) {
+      expect(parseTerminalList(junk)).toEqual([])
+    }
+  })
+
+  it('drops a row with no id and keeps the rest', () => {
+    // One terminal the phone cannot address is not a reason to show the user no
+    // terminals at all.
+    expect(parseTerminalList([{ name: 'nameless' }, row, null, 7, { id: '' }])).toEqual([row])
+  })
+
+  it('fills in the fields a row is only missing, rather than dropping it', () => {
+    expect(parseTerminalList([{ id: 't2' }])).toEqual([
+      { id: 't2', name: 't2', shellType: '', cwd: '' },
+    ])
+  })
+
+  it('refuses non-string fields rather than rendering them', () => {
+    expect(parseTerminalList([{ id: 't3', name: 12, shellType: {}, cwd: [] }])).toEqual([
+      { id: 't3', name: 't3', shellType: '', cwd: '' },
+    ])
   })
 })
