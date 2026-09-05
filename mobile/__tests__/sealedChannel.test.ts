@@ -14,6 +14,13 @@ function pair(): { a: SealedSession; b: SealedSession } {
   return { a: new SealedSession(KEY_A, KEY_B), b: new SealedSession(KEY_B, KEY_A) }
 }
 
+/** noUncheckedIndexedAccess makes `buf[i] ^= x` a type error, which is the
+ *  point: an out-of-range read yielding undefined is exactly the bug class this
+ *  file exists to catch. */
+function flip(buf: Uint8Array, index: number, mask = 0x01): void {
+  buf[index] = (buf[index] as number) ^ mask
+}
+
 const HEADER = Uint8Array.from([0x04])
 const HELLO = Uint8Array.from([0x68, 0x69]) // "hi"
 
@@ -106,14 +113,14 @@ describe('SealedSession', () => {
   it('refuses a frame with a flipped ciphertext byte', () => {
     const { a, b } = pair()
     const frame = a.seal(HEADER, HELLO)
-    frame[frame.length - 1] ^= 0x01
+    flip(frame, frame.length - 1)
     expect(b.open(frame, 1)).toBeNull()
   })
 
   it('refuses a frame with a flipped header byte, which proves the header is the AAD', () => {
     const { a, b } = pair()
     const frame = a.seal(HEADER, HELLO)
-    frame[0] ^= 0x01
+    flip(frame, 0)
     expect(b.open(frame, 1)).toBeNull()
   })
 
@@ -133,7 +140,7 @@ describe('SealedSession', () => {
     const { a, b } = pair()
     const good = a.seal(HEADER, HELLO)
     const forged = a.seal(HEADER, HELLO)
-    forged[forged.length - 1] ^= 0xff
+    flip(forged, forged.length - 1, 0xff)
     expect(b.open(forged, 1)).toBeNull()
     expect(b.open(good, 1)).toEqual(HELLO)
   })
