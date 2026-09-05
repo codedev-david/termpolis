@@ -45,17 +45,12 @@ export interface SocketLike {
   close(): void
 }
 
-export interface RelayClientDeps {
+interface RelayCommonDeps {
   url: string
   /** The relay room to dial. Which room, and where its name came from, is the
    *  caller's business: a paired device's room is DERIVED and never announced,
    *  while a pairing room's name is on screen for as long as the QR is. */
   roomId: string
-  /** A FACTORY, not a session: every attachment needs its own ephemeral key.
-   *  Handing this client one long-lived channel is what made recorded traffic
-   *  replayable across a bridge restart. */
-  handshake(): Handshake
-  onRequest(env: RemoteEnvelope): Promise<RemoteResponse>
   onStateChange(state: RelayState): void
   /** Told which limit the relay cut this connection for. Optional: it is a
    *  diagnosis for the user, not part of the request path. */
@@ -63,6 +58,32 @@ export interface RelayClientDeps {
   /** Injected in tests. Production dials the real relay. */
   openSocket?(url: string): SocketLike
 }
+
+/** A room where the two ends are already paired and can therefore establish a
+ *  session. The default: `mode` is optional so every existing call site reads as
+ *  it did before the pairing room existed. */
+export interface SessionRelayDeps extends RelayCommonDeps {
+  mode?: 'session'
+  /** A FACTORY, not a session: every attachment needs its own ephemeral key.
+   *  Handing this client one long-lived channel is what made recorded traffic
+   *  replayable across a bridge restart. */
+  handshake(): Handshake
+  onRequest(env: RemoteEnvelope): Promise<RemoteResponse>
+}
+
+/** A room the two ends meet in BEFORE they are paired.
+ *
+ *  There is no session here and there cannot be one: a session key is derived
+ *  from two identity keys, and the whole purpose of this room is to learn the
+ *  phone's. So frames go to the caller unopened, and this client never touches
+ *  `handshake` -- which is not a comment but a type: the pairing shape has no
+ *  `handshake` to touch. */
+export interface PairingRelayDeps extends RelayCommonDeps {
+  mode: 'pairing'
+  onFrame(frame: Uint8Array): void
+}
+
+export type RelayClientDeps = SessionRelayDeps | PairingRelayDeps
 
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 60_000
@@ -164,8 +185,15 @@ export class RelayClient {
       // that ought to open -- reaching `acceptGreeting` it would cost this end its
       // connection, for a frame whose entire purpose is to keep the connection.
       if (frame[0] === FRAME_KEEPALIVE) return
+      // Pairing rooms end here: nothing in one is sealed under a key this client
+      // holds, so the frame goes out whole and the bridge decides what it is.
+      const { deps } = this
+      if (deps.mode === 'pairing') {
+        deps.onFrame(frame)
+        return
+      }
       if (this.session) {
-        void this.handleFrame(frame)
+        void this.handleFrame(deps, frame)
         return
       }
       this.acceptGreeting(sock, frame)
@@ -242,7 +270,12 @@ export class RelayClient {
    *  while the desktop's connection holds gets a session key that is new at both
    *  ends, because `peer-gone` cleared the last one and `peer-joined` lands here. */
   private greet(sock: SocketLike): void {
-    this.pending = this.deps.handshake()
+    const { deps } = this
+    // A pairing room has nobody to greet. The peer arriving there is a phone this
+    // desktop has never seen, so there is no identity key to handshake against --
+    // the phone speaks first, with a hello sealed under the QR's own root.
+    if (deps.mode === 'pairing') return
+    this.pending = deps.handshake()
     sock.send(this.pending.greeting)
   }
 
@@ -261,7 +294,10 @@ export class RelayClient {
     this.setState('attached')
   }
 
-  private async handleFrame(frame: Uint8Array): Promise<void> {
+  /** `deps` is passed in already narrowed rather than read off `this`. Only the
+   *  session path reaches here -- a pairing room returns above -- and handing the
+   *  narrowed value down says so in the types instead of in a comment. */
+  private async handleFrame(deps: SessionRelayDeps, frame: Uint8Array): Promise<void> {
     let envelope: RemoteEnvelope
     try {
       // Two distinct rejections, both silent: a frame that does not open (forged,
@@ -277,7 +313,7 @@ export class RelayClient {
 
     let response: RemoteResponse
     try {
-      response = await this.deps.onRequest(envelope)
+      response = await deps.onRequest(envelope)
     } catch (err) {
       response = { kind: 'error', id: envelope.id, message: (err as Error).message }
     }
@@ -298,6 +334,24 @@ export class RelayClient {
       this.socket.send(
         this.session.seal(SESSION_HEADER, new TextEncoder().encode(JSON.stringify(payload))),
       )
+    } catch {
+      // A write to a socket the peer already closed. `close` will follow.
+    }
+  }
+
+  /** Write a frame exactly as given, sealing nothing.
+   *
+   *  Pairing is the only caller. Its two frames are sealed under a root derived
+   *  from the QR, which this client does not hold and should not: routing them
+   *  through `send` would seal them a second time under a session that does not
+   *  exist in a pairing room, so they would be dropped instead of sent.
+   *
+   *  Drops rather than throws when the socket is gone. This runs inside the
+   *  message handler, and the phone can leave between its hello and this answer;
+   *  a throw there escapes into the socket callback and takes the bridge with it. */
+  sendFrame(frame: Uint8Array): void {
+    try {
+      this.socket?.send(frame)
     } catch {
       // A write to a socket the peer already closed. `close` will follow.
     }

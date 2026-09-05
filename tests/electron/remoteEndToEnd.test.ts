@@ -1,11 +1,61 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createBridgeCore } from '../../src/main/remoteBridge/entry'
 import { generateIdentity, deriveVerificationPhrase } from '../../src/main/remoteBridge/sealedChannel'
-import { Handshake, FRAME_SESSION } from '../../src/main/remoteBridge/sessionCrypto'
+import { Handshake, FRAME_SESSION, deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
+import { sealPairingHello, openPairingAck } from '../../src/main/remoteBridge/pairing'
+import type {
+  PairingRelayDeps,
+  RelayClientDeps,
+  RelayState,
+} from '../../src/main/remoteBridge/relayClient'
 import { NO_CAPABILITIES, type BridgeToHost, type RemoteResponse } from '../../src/main/remoteBridge/protocol'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
+
+/** Relay rooms, recorded instead of dialled.
+ *
+ *  The bridge joins a room the moment a QR is painted, so without this the test
+ *  would open a real socket to a host that does not exist. Recording them is also
+ *  what lets the phone's frames be pushed in the way the relay would push them --
+ *  which is the point of driving pairing from here at all. */
+interface RecordedRoom {
+  deps: RelayClientDeps
+  frames: Uint8Array[]
+  started: boolean
+  stopped: boolean
+  state: RelayState
+  start(): void
+  send(): void
+  sendFrame(frame: Uint8Array): void
+  stop(): void
+}
+
+function relayRecorder() {
+  const rooms: RecordedRoom[] = []
+  const openRelay = (deps: RelayClientDeps): RecordedRoom => {
+    const r: RecordedRoom = {
+      deps,
+      frames: [],
+      started: false,
+      stopped: false,
+      state: 'offline',
+      start() {
+        r.started = true
+      },
+      send() {},
+      sendFrame(frame) {
+        r.frames.push(frame)
+      },
+      stop() {
+        r.stopped = true
+      },
+    }
+    rooms.push(r)
+    return r
+  }
+  return { rooms, openRelay }
+}
 
 /** The QR code the desktop paints. The phone scans exactly this and nothing else. */
 interface QrPayload {
@@ -30,10 +80,12 @@ describe('remote bridge end-to-end', () => {
 
     const sent: BridgeToHost[] = []
     const callTool = vi.fn().mockResolvedValue({ terminals: [{ id: 't1', name: 'agent' }] })
+    const { rooms, openRelay } = relayRecorder()
     const core = createBridgeCore({
       send: (m) => sent.push(m),
       mcp: { callTool },
       relayUrl: 'wss://relay.test',
+      openRelay,
     })
 
     // 1. Boot with no devices at all. Pairing has to create the only one.
@@ -58,35 +110,73 @@ describe('remote bridge end-to-end', () => {
     expect(qr.desktopPublicKey).toBe(desktop.publicKey)
     expect(qr.desktopPublicKey).not.toBe(desktop.secretKey)
 
-    // 3. The phone scans it and answers with its own public key.
-    const { device, verificationPhrase } = core.acceptPairing({
-      oneTimeSecret: qr.oneTimeSecret,
-      devicePublicKey: phone.publicKey,
-      label: 'iPhone',
-    })
+    // The desktop is already sitting in the room its QR names. It has to be: a
+    // frame sent into an empty relay room is dropped rather than queued, so a QR
+    // painted before the socket exists is an invitation to nowhere.
+    const pairingRoom = rooms.find((r) => r.deps.roomId === qr.pairingId)
+    if (!pairingRoom) throw new Error('the desktop never joined the room its QR names')
+    expect(pairingRoom.deps.mode).toBe('pairing')
+    expect(pairingRoom.started).toBe(true)
+
+    // 3. The phone answers with a hello sealed under a root derived from the QR.
+    //    Everything the desktop learns about this phone arrives in these bytes --
+    //    no in-process call, no shared object, the same frame Expo will send.
+    const hello = (oneTimeSecret: string, label: string) =>
+      sealPairingHello({
+        deviceSecretKey: phone.secretKey,
+        devicePublicKey: phone.publicKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        label,
+        oneTimeSecret,
+      })
+    const deliver = (frame: Uint8Array) => (pairingRoom.deps as PairingRelayDeps).onFrame(frame)
+    deliver(hello(qr.oneTimeSecret, 'iPhone'))
+
+    const paired = sent.find((m) => m.kind === 'paired')
+    if (paired?.kind !== 'paired') throw new Error('the hello paired nobody')
+    const device = paired.device
     expect(device.label).toBe('iPhone')
     // Ungranted on arrival: pairing establishes WHO, never WHAT.
     expect(device.capabilities).toEqual(NO_CAPABILITIES)
 
+    // The answer is sealed to that phone alone and carries the device id it will
+    // quote on every later request.
+    expect(
+      openPairingAck({
+        deviceSecretKey: phone.secretKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        frame: pairingRoom.frames[0],
+      }),
+    ).toEqual({ deviceId: device.id })
+
+    // The room the two ends actually meet in appears in no QR and on no wire: it
+    // is a Diffie-Hellman over the two identity keys, and the desktop is seated in
+    // it before the phone has been told anything at all.
+    expect(rooms.map((r) => r.deps.roomId)).toContain(
+      deriveSessionRoomId(phone.secretKey, desktop.publicKey),
+    )
+
     // Both ends independently derive the same phrase — this is what defeats a MITM
     // relay. The phone computes it from the two keys it holds; the desktop emits it
     // to the host so the user can read the two aloud and compare.
-    expect(verificationPhrase).toBe(deriveVerificationPhrase(phone.publicKey, desktop.publicKey))
     const announced = sent.find((m) => m.kind === 'verificationPhrase')
     if (announced?.kind !== 'verificationPhrase') throw new Error('no phrase was announced')
     expect(announced.deviceId).toBe(device.id)
-    expect(announced.phrase).toBe(verificationPhrase)
-    expect(sent.some((m) => m.kind === 'paired')).toBe(true)
+    expect(announced.phrase).toBe(deriveVerificationPhrase(phone.publicKey, desktop.publicKey))
     expect(sent.some((m) => m.kind === 'devicesChanged')).toBe(true)
 
     // 4. The offer is spent. A second phone photographing the same QR gets nothing.
-    expect(() =>
-      core.acceptPairing({
-        oneTimeSecret: qr.oneTimeSecret,
-        devicePublicKey: generateIdentity().publicKey,
-        label: 'attacker',
-      }),
-    ).toThrow(/no pairing offer/)
+    //    Two defences, and both are load-bearing: the room is gone, so in production
+    //    the frame never arrives at all — and were it somehow delivered anyway, the
+    //    offer behind it has already been used.
+    expect(pairingRoom.stopped).toBe(true)
+    deliver(hello(qr.oneTimeSecret, 'attacker'))
+    expect(sent.filter((m) => m.kind === 'paired')).toHaveLength(1)
+    const refused = sent.find((m) => m.kind === 'error')
+    if (refused?.kind !== 'error') throw new Error('the second scan was not refused')
+    expect(refused.message).toMatch(/no pairing offer/)
 
     // 5. Paired is not granted. The device is refused and MCP is never touched.
     const denied = await core.handleRemoteRequest(device.id, { id: 1, request: { kind: 'listTerminals' } })

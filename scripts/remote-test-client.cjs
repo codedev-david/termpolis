@@ -21,6 +21,9 @@ const {
   createBridgeCore,
   generateIdentity,
   deriveVerificationPhrase,
+  deriveSessionRoomId,
+  sealPairingHello,
+  openPairingAck,
   Handshake,
   FRAME_SESSION,
 } = require(path.join(__dirname, '..', 'out', 'main', 'remoteBridge.js'))
@@ -39,11 +42,40 @@ async function main() {
   const phone = generateIdentity()
 
   const sent = []
+  /** Relay rooms, recorded rather than dialled.
+   *
+   *  The bridge opens a room the moment a QR is painted, so a harness that did not
+   *  stand in for the relay would open a real socket to a real host. Standing in
+   *  for it is also what lets this script push the phone's own frames through the
+   *  same path the relay would -- which is the point: every frame below is the
+   *  frame an Expo client will send. */
+  const rooms = []
   const core = createBridgeCore({
     send: (m) => sent.push(m),
     // Stub MCP: the point here is the bridge, not the terminals behind it.
     mcp: { callTool: async (name, args) => ({ stub: name, args }) },
     relayUrl: 'wss://relay.test',
+    openRelay: (deps) => {
+      const room = {
+        deps,
+        frames: [],
+        sent: [],
+        stopped: false,
+        state: 'offline',
+        start() {},
+        send(payload) {
+          room.sent.push(payload)
+        },
+        sendFrame(frame) {
+          room.frames.push(frame)
+        },
+        stop() {
+          room.stopped = true
+        },
+      }
+      rooms.push(room)
+      return room
+    },
   })
 
   console.log('1. boot the bridge with no paired devices')
@@ -56,7 +88,7 @@ async function main() {
   })
   check('bridge reports ready', sent.some((m) => m.kind === 'ready'))
 
-  console.log('\n2. desktop paints a pairing QR')
+  console.log('\n2. desktop paints a pairing QR and waits in the room it names')
   core.handleHostMessage({ kind: 'beginPairing' })
   const code = sent.find((m) => m.kind === 'pairingCode')
   check('a pairing code was emitted', Boolean(code))
@@ -65,12 +97,39 @@ async function main() {
   console.log('   QR payload:', code.qrPayload.replace(qr.oneTimeSecret, '<secret>'))
   check('QR carries the PUBLIC key, never the secret', qr.desktopPublicKey === desktop.publicKey)
 
-  console.log('\n3. phone scans the QR and answers with its public key')
-  const { device, verificationPhrase } = core.acceptPairing({
-    oneTimeSecret: qr.oneTimeSecret,
+  // The desktop has to be IN the room before the phone speaks. A frame sent into
+  // an empty relay room is dropped rather than queued, so a QR painted without a
+  // socket behind it is an invitation to nowhere.
+  const pairingRoom = rooms.find((r) => r.deps.roomId === qr.pairingId)
+  check('the desktop is already seated in the pairing room', Boolean(pairingRoom))
+  if (!pairingRoom) return
+  check('the pairing room establishes no session', pairingRoom.deps.mode === 'pairing')
+
+  console.log('\n3. phone answers with a hello sealed under a root derived from the QR')
+  // Everything below is what an Expo client sends, byte for byte. The device key
+  // is in the clear because the desktop cannot derive the sealing key without it;
+  // the label and the one-time secret are inside the seal, so the relay -- which
+  // sees this frame and that clear key -- still cannot pair itself in.
+  const helloFrame = sealPairingHello({
+    deviceSecretKey: phone.secretKey,
     devicePublicKey: phone.publicKey,
+    desktopPublicKey: qr.desktopPublicKey,
+    pairingId: qr.pairingId,
     label: 'CLI Test Client',
+    oneTimeSecret: qr.oneTimeSecret,
   })
+  console.log(`   hello: ${helloFrame.length} bytes, of which 33 are readable`)
+  check(
+    'the one-time secret never crosses in the clear',
+    !Buffer.from(helloFrame).toString('hex').includes(qr.oneTimeSecret),
+  )
+  pairingRoom.deps.onFrame(helloFrame)
+
+  const paired = sent.find((m) => m.kind === 'paired')
+  check('the desktop paired from the frame alone', Boolean(paired))
+  if (!paired) return
+  const device = paired.device
+  const verificationPhrase = sent.find((m) => m.kind === 'verificationPhrase').phrase
   console.log('   device id:', device.id)
   console.log('   safety number (compare on both screens):')
   console.log('     ', verificationPhrase)
@@ -80,21 +139,42 @@ async function main() {
   )
   check('device arrives with no capabilities', Object.values(device.capabilities).every((v) => v !== true))
 
-  console.log('\n4. the offer is single-use')
-  let reused = false
-  try {
-    core.acceptPairing({
-      oneTimeSecret: qr.oneTimeSecret,
-      devicePublicKey: generateIdentity().publicKey,
-      label: 'second scanner',
-    })
-    reused = true
-  } catch {
-    /* expected */
-  }
-  check('a second scan of the same QR is refused', !reused)
+  console.log('\n4. desktop acks, closes the QR room, and moves to a room nobody announced')
+  check('exactly one frame came back', pairingRoom.frames.length === 1)
+  const ack = openPairingAck({
+    deviceSecretKey: phone.secretKey,
+    desktopPublicKey: qr.desktopPublicKey,
+    pairingId: qr.pairingId,
+    frame: pairingRoom.frames[0],
+  })
+  check('the phone opens the ack and reads the same device id', ack.deviceId === device.id)
+  check('the QR room is closed once it has been used', pairingRoom.stopped)
 
-  console.log('\n5. paired but ungranted — MCP must stay unreachable')
+  // The session room is a Diffie-Hellman over the two identity keys. It is in no
+  // QR and on no wire, so photographing the code does not tell anyone where the
+  // two ends actually meet -- and the phone computes the same name from what it
+  // already holds, which is what makes them meet at all.
+  const sessionRoomId = deriveSessionRoomId(phone.secretKey, desktop.publicKey)
+  const sessionRoom = rooms.find((r) => r.deps.roomId === sessionRoomId)
+  check('the desktop moved to the derived session room', Boolean(sessionRoom))
+  check('which is NOT the room the QR named', sessionRoomId !== qr.pairingId)
+
+  console.log('\n5. the offer is single-use')
+  const second = sealPairingHello({
+    deviceSecretKey: phone.secretKey,
+    devicePublicKey: phone.publicKey,
+    desktopPublicKey: qr.desktopPublicKey,
+    pairingId: qr.pairingId,
+    label: 'second scanner',
+    oneTimeSecret: qr.oneTimeSecret,
+  })
+  const before = sent.length
+  pairingRoom.deps.onFrame(second)
+  const refused = sent.slice(before).find((m) => m.kind === 'error')
+  check('a second scan of the same QR is refused', Boolean(refused))
+  check('and pairs nobody', sent.filter((m) => m.kind === 'paired').length === 1)
+
+  console.log('\n6. paired but ungranted — MCP must stay unreachable')
   const denied = await core.handleRemoteRequest(device.id, { id: 1, request: { kind: 'listTerminals' } })
 
   // A refusal must also refuse the SIDE EFFECT. Registering the fan-out
@@ -113,7 +193,7 @@ async function main() {
   check('refused subscribe leaks no output', deniedSub.kind === 'error' && core.drainOutput(device.id).length === 0)
   check('ungranted request is refused', denied.kind === 'error')
 
-  console.log('\n6. user grants read in Settings')
+  console.log('\n7. user grants read in Settings')
   core.handleHostMessage({
     kind: 'setCapabilities',
     deviceId: device.id,
@@ -124,7 +204,7 @@ async function main() {
   const ok = await core.handleRemoteRequest(device.id, { id: 2, request: { kind: 'listTerminals' } })
   check('granted request is served', ok.kind === 'ok')
 
-  console.log('\n7. the two ends greet, then the response crosses the wire sealed')
+  console.log('\n8. the two ends greet, then the response crosses the wire sealed')
   // Both greetings are in flight at once: neither end waits for the other, which
   // is what keeps two symmetrical peers from deadlocking. What they DO wait for is
   // the relay saying the room has someone in it -- a frame sent into an empty room
@@ -189,7 +269,7 @@ async function main() {
     atPhone2.open(frame, 1),
   )
 
-  console.log('\n8. live output streams to a subscribed device')
+  console.log('\n9. live output streams to a subscribed device')
   await core.handleRemoteRequest(device.id, { id: 3, request: { kind: 'subscribe', terminalId: 't1' } })
   core.handleHostMessage({
     kind: 'terminalOutput', terminalId: 't1',
@@ -199,7 +279,7 @@ async function main() {
   check('subscribed device receives terminal output', streamed.map((c) => c.chunk).join('') === 'build finished\r\n')
   check('drain is destructive, nothing is delivered twice', core.drainOutput(device.id).length === 0)
 
-  console.log('\n9. withdrawing read stops the stream, not just future requests')
+  console.log('\n10. withdrawing read stops the stream, not just future requests')
   core.handleHostMessage({
     kind: 'setCapabilities', deviceId: device.id,
     capabilities: { read: false, createTerminal: false, writeToTerminal: false, closeTerminal: false },
@@ -210,10 +290,14 @@ async function main() {
   })
   check('output stops the moment read is withdrawn', core.drainOutput(device.id).length === 0)
 
-  console.log('\n10. revoke takes effect immediately')
+  console.log('\n11. revoke takes effect immediately')
   core.handleHostMessage({ kind: 'revokeDevice', deviceId: device.id })
   const after = await core.handleRemoteRequest(device.id, { id: 4, request: { kind: 'listTerminals' } })
   check('revoked device is refused', after.kind === 'error')
+
+  // Closes every room and clears the pairing offer's expiry timer. Without it a
+  // run that never paired would hold the process open for the rest of the TTL.
+  core.handleHostMessage({ kind: 'shutdown' })
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) FAILED`)
   process.exitCode = failures === 0 ? 0 : 1

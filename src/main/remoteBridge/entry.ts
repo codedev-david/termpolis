@@ -2,7 +2,13 @@ import { DeviceRegistry } from './deviceRegistry'
 import { RequestDispatcher } from './dispatcher'
 import { OutputFanout, type DrainedChunk } from './outputFanout'
 import { LocalMcpClient } from './mcpClient'
-import { createPairingOffer, PairingSession } from './pairing'
+import {
+  createPairingOffer,
+  openPairingHello,
+  sealPairingAck,
+  PairingSession,
+  type PairingOffer,
+} from './pairing'
 import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
 import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
 import { Handshake } from './sessionCrypto'
@@ -21,6 +27,11 @@ import type {
 // the same three. Neither should reimplement the crypto to talk to this bridge.
 export { generateIdentity, deriveVerificationPhrase } from './sealedChannel'
 export { Handshake, SealedSession, deriveSessionRoomId, FRAME_SESSION } from './sessionCrypto'
+// The phone's half of pairing. `sealPairingHello` and `openPairingAck` are never
+// called on this side; they are exported so the CLI client -- and after it the
+// Expo client -- can speak the pairing wire without reimplementing it, which is
+// the only way the two halves stay in step.
+export { sealPairingHello, openPairingAck, openPairingHello, sealPairingAck } from './pairing'
 export { NO_CAPABILITIES } from './protocol'
 export type { Capabilities, PairedDevice, RemoteRequest, RemoteResponse } from './protocol'
 
@@ -34,6 +45,10 @@ interface McpLike {
 export interface RelayLike {
   start(): void
   send(payload: unknown): void
+  /** Write a frame already sealed by the caller. Only pairing uses it: its frames
+   *  are sealed under a root derived from the QR, not under a session the relay
+   *  client owns. */
+  sendFrame(frame: Uint8Array): void
   stop(): void
   readonly state: RelayState
 }
@@ -75,6 +90,95 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  the rooms it happens to hold. It also means revoking one device closes
    *  exactly one socket and cannot disturb the others. */
   const rooms = new Map<string, { client: RelayLike; roomId: string }>()
+
+  /** The room named by the QR currently on screen, if there is one.
+   *
+   *  Separate from `rooms` because it is a different KIND of room: named in the
+   *  clear, held for ninety seconds, and carrying frames that no session opens.
+   *  Keeping it out of `rooms` is also what stops the output pump from ever
+   *  draining a device's queue into it. */
+  let pairingRoom: RelayLike | null = null
+  let pairingTimer: ReturnType<typeof setTimeout> | null = null
+
+  function closePairingRoom(): void {
+    if (pairingTimer) clearTimeout(pairingTimer)
+    pairingTimer = null
+    pairingRoom?.stop()
+    pairingRoom = null
+  }
+
+  /** Sit in the QR's room and wait for a phone to speak first.
+   *
+   *  The desktop cannot greet here: a greeting is a handshake against an identity
+   *  key, and learning the phone's key is what this room is FOR. So the phone
+   *  opens, sealed under a root both ends derive from the QR. */
+  function openPairingRoom(offer: PairingOffer): void {
+    closePairingRoom()
+    const open = deps.openRelay ?? ((d: RelayClientDeps) => new RelayClient(d))
+    pairingRoom = open({
+      url: deps.relayUrl,
+      roomId: offer.pairingId,
+      mode: 'pairing',
+      onFrame: (frame) => onPairingFrame(offer, frame),
+      // Nothing to report: this room's states are about a QR the user is already
+      // looking at, and `deviceConnected` for a device that does not exist yet
+      // would light the Settings indicator for nobody.
+      onStateChange: () => {},
+      onQuota: (limit) =>
+        deps.send({ kind: 'error', message: `relay closed the pairing connection: ${limit}` }),
+    })
+    // The offer outlives its usefulness by exactly its TTL, and an abandoned QR
+    // would otherwise hold a socket -- keepalived every two minutes -- for as long
+    // as the app runs.
+    pairingTimer = setTimeout(closePairingRoom, Math.max(0, offer.expiresAt - Date.now()))
+    pairingRoom.start()
+  }
+
+  function onPairingFrame(offer: PairingOffer, frame: Uint8Array): void {
+    let hello: ReturnType<typeof openPairingHello>
+    try {
+      hello = openPairingHello({
+        desktopSecretKey: identitySecretKey,
+        pairingId: offer.pairingId,
+        frame,
+      })
+    } catch {
+      // The room's name is on screen, so anything at all can arrive in it. A frame
+      // that does not open is the ordinary noise of a public room name -- reporting
+      // each one would train the user to ignore the report that matters, and
+      // closing on one would let a photographed QR deny pairing outright.
+      return
+    }
+
+    let result: { device: PairedDevice; verificationPhrase: string }
+    try {
+      result = acceptPairing({
+        oneTimeSecret: hello.oneTimeSecret,
+        devicePublicKey: hello.devicePublicKey,
+        label: hello.label,
+      })
+    } catch (err) {
+      // This one IS worth surfacing: the frame opened, so the sender had the QR's
+      // pairing id and public key but not its secret. The offer survives a refusal,
+      // so the room stays open and the real phone can still finish.
+      deps.send({ kind: 'error', message: `pairing failed: ${(err as Error).message}` })
+      return
+    }
+
+    // Ack first, close second. `acceptPairing` has already seated this desktop in
+    // the session room, so by the time the phone reads this and follows, there is
+    // someone there to meet it -- a frame into an empty relay room is dropped
+    // rather than queued.
+    pairingRoom?.sendFrame(
+      sealPairingAck({
+        desktopSecretKey: identitySecretKey,
+        devicePublicKey: result.device.publicKey,
+        pairingId: offer.pairingId,
+        deviceId: result.device.id,
+      }),
+    )
+    closePairingRoom()
+  }
 
   function openRoom(dev: PairedDevice): void {
     const current = rooms.get(dev.id)
@@ -184,6 +288,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       case 'beginPairing': {
         const offer = createPairingOffer({ relayUrl: deps.relayUrl, desktopPublicKey: publicKey })
         pairing = new PairingSession(offer, publicKey, identitySecretKey)
+        openPairingRoom(offer)
         // NO verification phrase here, deliberately. The safety number is a function
         // of BOTH public keys, and the device's key does not exist yet -- it arrives
         // with its hello. Emitting a placeholder that merely looks like a phrase is
@@ -200,6 +305,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       }
       case 'cancelPairing':
         pairing = null
+        closePairingRoom()
         return
       case 'revokeDevice':
         registry.revoke(msg.deviceId)
@@ -227,6 +333,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         return
       case 'shutdown':
         dispatcher = null
+        closePairingRoom()
         for (const deviceId of [...rooms.keys()]) closeRoom(deviceId)
         return
     }
@@ -257,9 +364,9 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   /** Complete a pairing from a device's hello.
    *
    *  Separate from `handleHostMessage` because it is driven by the RELAY, not by
-   *  main: the device's public key arrives over the wire. Sub-project 2's transport
-   *  calls this; Task 12's CLI client calls it directly, which is what makes pairing
-   *  verifiable end to end with no mobile code and no relay.
+   *  main: the device's public key arrives over the wire. `onPairingFrame` calls
+   *  this once a hello has opened; the CLI client also calls it directly, which is
+   *  what keeps pairing verifiable end to end with no relay and no mobile code.
    *
    *  Returns the safety number so the caller can show it. Both ends derive it from
    *  the same two public keys, so a relay that substituted its own key produces

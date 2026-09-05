@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { RelayClient, backoffDelay, KEEPALIVE_MS } from '../../src/main/remoteBridge/relayClient'
+import type { SessionRelayDeps } from '../../src/main/remoteBridge/relayClient'
 import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
 import {
   Handshake,
   FRAME_KEEPALIVE,
+  FRAME_PAIRING_HELLO,
+  FRAME_PAIRING_ACK,
   FRAME_SESSION,
   type SealedSession,
 } from '../../src/main/remoteBridge/sessionCrypto'
@@ -81,7 +84,7 @@ function pair() {
   }
 }
 
-type Deps = ConstructorParameters<typeof RelayClient>[0]
+type Deps = SessionRelayDeps
 type RelayClientTestRequest = Deps['onRequest']
 
 /** Every client this suite builds, stopped after the test that built it.
@@ -841,5 +844,100 @@ describe('relay client keepalive', () => {
     expect(onRequest).not.toHaveBeenCalled()
     expect(sock.closed).toBe(false)
     expect(c.state).toBe('attached')
+  })
+})
+
+describe('relay client pairing mode', () => {
+  /** A client dialled at a PAIRING room: no session to establish, no handshake to
+   *  spend, and frames that go straight to the caller. */
+  function pairingClient(
+    sock: ReturnType<typeof fakeSocket>,
+    onFrame: (frame: Uint8Array) => void,
+  ) {
+    const c = new RelayClient({
+      url: 'wss://relay.test',
+      roomId: 'b'.repeat(32),
+      mode: 'pairing',
+      onFrame,
+      onStateChange: () => {},
+      openSocket: () => sock as never,
+    })
+    live.push(c)
+    c.start()
+    sock.emit('open')
+    return c
+  }
+
+  it('never greets, even when the relay says the phone is already there', () => {
+    // A greeting here would be a handshake against a device key the desktop has
+    // not seen -- there is no paired peer yet, which is the entire point of the
+    // room. The phone speaks first in a pairing room; the desktop only listens.
+    const sock = fakeSocket()
+    pairingClient(sock, () => {})
+    seat(sock, true)
+    control(sock, { kind: 'peer-joined', role: 'device' })
+    expect(sock.sent).toEqual([])
+  })
+
+  it('hands a binary frame to the caller exactly as it arrived', () => {
+    const seen: Uint8Array[] = []
+    const sock = fakeSocket()
+    pairingClient(sock, (f) => seen.push(f))
+    seat(sock, true)
+    const frame = new Uint8Array([FRAME_PAIRING_HELLO, 1, 2, 3])
+    sock.emit('message', Buffer.from(frame), true)
+    expect(seen).toEqual([frame])
+    // And stops there. Carried on into the session path, this frame would reach
+    // `acceptGreeting`, fail against a handshake that was never started, and take
+    // the connection down with it -- one phone's malformed hello would then end
+    // the pairing window for the real one.
+    expect(sock.closed).toBe(false)
+  })
+
+  it('drops a keepalive instead of reading it as a hello', () => {
+    // The relay's idle timer runs in a pairing room too, so keepalives cross it.
+    // Passed through, one would reach `openPairingHello` and be reported as a
+    // failed pairing attempt every two minutes.
+    const seen: Uint8Array[] = []
+    const sock = fakeSocket()
+    pairingClient(sock, (f) => seen.push(f))
+    seat(sock, true)
+    sock.emit('message', Buffer.from([FRAME_KEEPALIVE]), true)
+    expect(seen).toEqual([])
+  })
+
+  it('writes a raw frame without sealing it', () => {
+    // The ack is sealed under the pairing root, which this client does not hold.
+    // Passing it through `send` would seal it a second time under a session that
+    // does not exist, so it would be dropped instead.
+    const sock = fakeSocket()
+    const c = pairingClient(sock, () => {})
+    seat(sock, true)
+    const ack = new Uint8Array([FRAME_PAIRING_ACK, 9, 9])
+    c.sendFrame(ack)
+    expect(sock.sent).toEqual([ack])
+  })
+
+  it('drops a raw frame the peer has already stopped listening for', () => {
+    // `ws` throws synchronously on a socket the peer closed underneath it. This
+    // runs inside the message handler, so a throw here escapes into the socket
+    // callback and takes the bridge with it.
+    const sock = fakeSocket()
+    const c = pairingClient(sock, () => {})
+    seat(sock, true)
+    sock.send = () => {
+      throw new Error('WebSocket is not open')
+    }
+    expect(() => c.sendFrame(new Uint8Array([FRAME_PAIRING_ACK]))).not.toThrow()
+  })
+
+  it('drops a raw frame when there is no socket rather than throwing', () => {
+    // `sendFrame` runs from the message handler, and the phone can close the room
+    // between its hello and the desktop's answer. A throw there escapes into the
+    // socket callback and takes the bridge down with it.
+    const sock = fakeSocket()
+    const c = pairingClient(sock, () => {})
+    c.stop()
+    expect(() => c.sendFrame(new Uint8Array([FRAME_PAIRING_ACK]))).not.toThrow()
   })
 })

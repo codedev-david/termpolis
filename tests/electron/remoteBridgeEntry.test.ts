@@ -1,14 +1,23 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { x25519 } from '@noble/curves/ed25519.js'
 import { createHash } from 'crypto'
 import { createBridgeCore } from '../../src/main/remoteBridge/entry'
 import {
   generateIdentity,
   deriveVerificationPhrase,
+  fromHex,
+  toHex,
   PHRASE_WORDS,
 } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
+import { sealPairingHello, openPairingAck } from '../../src/main/remoteBridge/pairing'
 import { NO_CAPABILITIES, type BridgeToHost, type PairedDevice } from '../../src/main/remoteBridge/protocol'
-import type { RelayClientDeps, RelayState } from '../../src/main/remoteBridge/relayClient'
+import type {
+  PairingRelayDeps,
+  RelayClientDeps,
+  RelayState,
+  SessionRelayDeps,
+} from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
 
 // A real curve point: the core mints a Handshake against every paired device's
@@ -51,14 +60,21 @@ function stubRoom(deps: RelayClientDeps) {
     stopped: false,
     state: 'offline' as RelayState,
     sent: [] as OutputPayload[],
+    frames: [] as Uint8Array[],
+    /** How many raw frames had been written when this room was stopped. */
+    stoppedAtFrame: -1,
     start() {
       room.started = true
     },
     send(payload: unknown) {
       room.sent.push(payload as OutputPayload)
     },
+    sendFrame(frame: Uint8Array) {
+      room.frames.push(frame)
+    },
     stop() {
       room.stopped = true
+      room.stoppedAtFrame = room.frames.length
     },
   }
   return room
@@ -368,6 +384,12 @@ describe('capability enforcement precedes side effects', () => {
   })
 })
 
+/** Only the per-device SESSION rooms. `beginPairing` opens a room too -- named in
+ *  the clear by the QR, holding no session -- and it is not one of these. */
+function sessionRooms(rooms: ReturnType<typeof stubRoom>[]) {
+  return rooms.filter((r) => r.deps.mode !== 'pairing')
+}
+
 describe('relay rooms', () => {
   it('dials one room per paired device on init', () => {
     const { rooms } = core([device('d1'), device('d2')])
@@ -409,10 +431,11 @@ describe('relay rooms', () => {
     // actually meet in is a DH over their identity keys, so it never appears in
     // the QR and never crosses the wire -- and the phone computes the same value
     // from what it already holds, which is what makes them meet at all.
-    expect(rooms).toHaveLength(1)
-    expect(rooms[0].deps.roomId).not.toBe(offer.pairingId)
-    expect(rooms[0].deps.roomId).toBe(deriveSessionRoomId(PEER.secretKey, offer.desktopPublicKey))
-    expect(rooms[0].started).toBe(true)
+    const [session] = sessionRooms(rooms)
+    expect(sessionRooms(rooms)).toHaveLength(1)
+    expect(session.deps.roomId).not.toBe(offer.pairingId)
+    expect(session.deps.roomId).toBe(deriveSessionRoomId(PEER.secretKey, offer.desktopPublicKey))
+    expect(session.started).toBe(true)
   })
 
   it('keeps the live room when the same phone re-pairs', () => {
@@ -440,8 +463,8 @@ describe('relay rooms', () => {
     // the desktop had to redial to follow it. Now there is nowhere to follow to,
     // and redialling would drop a live socket to arrive back where it started.
     expect(second).not.toBe(first)
-    expect(rooms).toHaveLength(1)
-    expect(rooms[0].stopped).toBe(false)
+    expect(sessionRooms(rooms)).toHaveLength(1)
+    expect(sessionRooms(rooms)[0].stopped).toBe(false)
   })
 
   it('abandons a stale room when the desktop identity behind it has changed', () => {
@@ -471,10 +494,11 @@ describe('relay rooms', () => {
       label: 'Pixel',
     })
 
-    expect(rooms).toHaveLength(2)
-    expect(rooms[0].stopped).toBe(true)
-    expect(rooms[1].deps.roomId).toBe(deriveSessionRoomId(DESKTOP_SECRET, PEER.publicKey))
-    expect(rooms[1].started).toBe(true)
+    const [before, after] = sessionRooms(rooms)
+    expect(sessionRooms(rooms)).toHaveLength(2)
+    expect(before.stopped).toBe(true)
+    expect(after.deps.roomId).toBe(deriveSessionRoomId(DESKTOP_SECRET, PEER.publicKey))
+    expect(after.started).toBe(true)
   })
 
   it('leaves a room alone when the same device is opened twice', () => {
@@ -497,7 +521,10 @@ describe('relay rooms', () => {
     // device id comes from the closure rather than the message. A room wired to
     // the wrong id would serve one phone's subscription to another -- the exact
     // shape of cross-device leak this per-device model exists to prevent.
-    await rooms[1].deps.onRequest({ id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    await (rooms[1].deps as SessionRelayDeps).onRequest({
+      id: 1,
+      request: { kind: 'subscribe', terminalId: 't1' },
+    })
     c.handleHostMessage({
       kind: 'terminalOutput',
       terminalId: 't1',
@@ -635,5 +662,174 @@ describe('output pump', () => {
       )
     }
     expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((c) => c.chunk).join('')).toBe(burst)
+  })
+})
+
+describe('pairing over the relay', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const DESKTOP_PUBLIC = toHex(x25519.getPublicKey(fromHex(DESKTOP_SECRET)))
+
+  /** What the phone reads off the QR, parsed rather than reached for internally:
+   *  the QR is the entire input a phone gets. */
+  function scan(sent: BridgeToHost[]) {
+    const code = sent.find((m) => m.kind === 'pairingCode')
+    return JSON.parse((code as Extract<BridgeToHost, { kind: 'pairingCode' }>).qrPayload) as {
+      relayUrl: string
+      pairingId: string
+      desktopPublicKey: string
+      oneTimeSecret: string
+    }
+  }
+
+  /** Push a frame into the pairing room the way the relay does. */
+  function feed(room: ReturnType<typeof stubRoom>, frame: Uint8Array): void {
+    ;(room.deps as PairingRelayDeps).onFrame(frame)
+  }
+
+  function message<K extends BridgeToHost['kind']>(
+    sent: BridgeToHost[],
+    kind: K,
+  ): Extract<BridgeToHost, { kind: K }> | undefined {
+    return sent.find((m) => m.kind === kind) as Extract<BridgeToHost, { kind: K }> | undefined
+  }
+
+  /** Paint a QR, then hand back everything a phone would hold after scanning it. */
+  function begin() {
+    const ctx = core()
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    const qr = scan(ctx.sent)
+    const phone = generateIdentity()
+    const hello = (oneTimeSecret = qr.oneTimeSecret, label = 'Pixel') =>
+      sealPairingHello({
+        deviceSecretKey: phone.secretKey,
+        devicePublicKey: phone.publicKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        label,
+        oneTimeSecret,
+      })
+    return { ...ctx, qr, phone, hello, room: ctx.rooms[0] }
+  }
+
+  it('opens the room the QR names, in pairing mode', () => {
+    // Without this the QR was an invitation to a room nobody was in: the phone
+    // scanned it, connected, sent its hello, and the desktop never arrived.
+    const { qr, room } = begin()
+    expect(room.deps.roomId).toBe(qr.pairingId)
+    expect(room.deps.mode).toBe('pairing')
+    expect(room.started).toBe(true)
+  })
+
+  it('publishes the desktop public key, never the secret behind it', () => {
+    const { qr } = begin()
+    expect(qr.desktopPublicKey).toBe(DESKTOP_PUBLIC)
+    expect(JSON.stringify(qr)).not.toContain(DESKTOP_SECRET)
+  })
+
+  it('pairs the phone from its hello and seats itself in the session room', () => {
+    const { sent, rooms, room, phone, hello } = begin()
+    feed(room, hello())
+    expect(message(sent, 'paired')?.device.label).toBe('Pixel')
+    expect(message(sent, 'verificationPhrase')?.phrase.split(' ')).toHaveLength(PHRASE_WORDS)
+    // The session room is DERIVED, so the desktop is seated in it before the phone
+    // has been told anything -- which is the only ordering that works, since a
+    // frame into an empty relay room is dropped rather than queued.
+    expect(rooms[1].deps.roomId).toBe(deriveSessionRoomId(phone.secretKey, DESKTOP_PUBLIC))
+    expect(rooms[1].deps.roomId).not.toBe(room.deps.roomId)
+  })
+
+  it('answers with an ack only that phone can open, then closes the room', () => {
+    const { room, qr, phone, hello } = begin()
+    feed(room, hello())
+    expect(room.frames).toHaveLength(1)
+    expect(
+      openPairingAck({
+        deviceSecretKey: phone.secretKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        frame: room.frames[0],
+      }),
+    ).toEqual({ deviceId: createHash('sha256').update(phone.publicKey).digest('hex').slice(0, 16) })
+    // Acked, THEN closed. The other order writes into a socket already closing and
+    // leaves the phone waiting on an answer that was never sent.
+    expect(room.stoppedAtFrame).toBe(1)
+  })
+
+  it('ignores a frame that does not open, and keeps the offer live', () => {
+    // The room's name is on screen for ninety seconds, so anything at all can
+    // arrive in it. Reporting every one would train the user to ignore the report
+    // that matters, and closing on one would let a photograph deny pairing.
+    const { sent, room, hello } = begin()
+    feed(room, new Uint8Array(64))
+    expect(sent.filter((m) => m.kind === 'error')).toEqual([])
+    expect(room.stopped).toBe(false)
+    feed(room, hello())
+    expect(message(sent, 'paired')).toBeDefined()
+  })
+
+  it('reports a hello that opens but carries the wrong secret', () => {
+    // Worth surfacing: it opened, so the sender had the QR's pairing id and public
+    // key but not its secret. A refusal does not spend the offer, so the real
+    // phone can still finish.
+    const { sent, room, hello } = begin()
+    feed(room, hello('0'.repeat(64)))
+    expect(message(sent, 'error')?.message).toMatch(/secret mismatch/)
+    expect(room.stopped).toBe(false)
+    feed(room, hello())
+    expect(message(sent, 'paired')).toBeDefined()
+  })
+
+  it('closes the room when the user cancels', () => {
+    const { c, room } = begin()
+    c.handleHostMessage({ kind: 'cancelPairing' })
+    expect(room.stopped).toBe(true)
+  })
+
+  it('closes the room on shutdown', () => {
+    const { c, room } = begin()
+    c.handleHostMessage({ kind: 'shutdown' })
+    expect(room.stopped).toBe(true)
+  })
+
+  it('replaces the room when a second QR is painted', () => {
+    // Two rooms means two sockets, and the abandoned one holds a Durable Object
+    // alive for a QR that is no longer on screen.
+    const { c, room, rooms } = begin()
+    c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    expect(room.stopped).toBe(true)
+    expect(rooms).toHaveLength(2)
+    expect(rooms[1].deps.roomId).not.toBe(room.deps.roomId)
+  })
+
+  it('closes the room when the offer expires', () => {
+    // A user who taps Pair and walks away would otherwise leave a socket and a
+    // Durable Object alive indefinitely -- keepalived every two minutes, for a QR
+    // that stopped being valid after ninety seconds.
+    vi.useFakeTimers()
+    const { c, rooms } = core()
+    c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    expect(rooms[0].stopped).toBe(false)
+    vi.advanceTimersByTime(90_000)
+    expect(rooms[0].stopped).toBe(true)
+  })
+
+  it('leaves no expiry timer behind when pairing succeeds', () => {
+    // The timer closes `pairingRoom`, and by the time it fires that name has been
+    // reused by the NEXT pairing. Left running, a QR painted 80 seconds after a
+    // successful pair would be torn down ten seconds later for no visible reason.
+    vi.useFakeTimers()
+    const ctx = begin()
+    feed(ctx.room, ctx.hello())
+    // A minute later, so the first offer's expiry falls INSIDE the window advanced
+    // below and the second one's falls outside it. Painting both at t=0 would let
+    // a stale timer survive the test by simply not having come due yet.
+    vi.advanceTimersByTime(60_000)
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    const second = ctx.rooms[ctx.rooms.length - 1]
+    vi.advanceTimersByTime(31_000)
+    expect(second.stopped).toBe(false)
   })
 })
