@@ -1,5 +1,6 @@
 import React from 'react'
 import logoSvg from '/logo-termpolis.svg?url'
+import { RemoteIndicator } from './RemoteIndicator'
 
 const isMac = navigator.platform.startsWith('Mac') || navigator.platform === 'MacIntel'
 
@@ -13,6 +14,7 @@ export function TitleBar() {
       <div className={`flex items-center gap-2 ${isMac ? 'pl-20' : 'pl-3'}`}>
         <img src={logoSvg} alt="" className="w-5 h-5" />
         <span className="text-sm font-semibold tracking-wide text-[#e0e0e0]">Termpolis</span>
+        <RemoteIndicator />
       </div>
       {/* Only show custom window controls on Windows/Linux — macOS has native traffic lights */}
       {!isMac && (
