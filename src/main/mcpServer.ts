@@ -85,13 +85,41 @@ function rotateLogIfNeeded(): void {
   } catch {}
 }
 
-function logMcpRequest(method: string, tool: string | null, status: 'ok' | 'error' | 'denied' | 'rate_limited', detail?: string): void {
+/** The id of the paired phone a request came in on behalf of, if any.
+ *
+ *  Sent by the remote bridge as `X-Termpolis-Device`. Validated against the
+ *  shape `pairing.ts` mints -- sixteen lowercase hex characters -- rather than
+ *  trusted, for two reasons: a header is caller-controlled, and this string is
+ *  written into an audit file that a human reads to answer "which phone did
+ *  this". A tag that could be any string is a tag that can be made to name
+ *  somebody else's device.
+ *
+ *  Returns null for a header that is absent, repeated, or the wrong shape. An
+ *  untagged line is honest -- it says a local caller, or one that would not
+ *  identify itself -- where a bogus tag is not. */
+function deviceTag(headers: http.IncomingHttpHeaders): string | null {
+  const raw = headers['x-termpolis-device']
+  if (typeof raw !== 'string') return null
+  return /^[0-9a-f]{16}$/.test(raw) ? raw : null
+}
+
+function logMcpRequest(
+  method: string,
+  tool: string | null,
+  status: 'ok' | 'error' | 'denied' | 'rate_limited',
+  detail?: string,
+  device?: string | null,
+): void {
   const entry = {
     ts: new Date().toISOString(),
     method,
     ...(tool && { tool }),
     status,
     ...(detail && { detail }),
+    // Spec section 4.4. Absent, not null, when the caller is local: every line
+    // in this file carrying a `device` is then a line a phone caused, which is
+    // the query the trail exists for.
+    ...(device ? { device } : {}),
   }
   const line = JSON.stringify(entry) + '\n'
   console.log(`[MCP audit] ${line.trimEnd()}`)
@@ -860,11 +888,19 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     const authHeader = req.headers['authorization'] || ''
     const token = authHeader.replace(/^Bearer\s+/i, '')
     if (token !== MCP_AUTH_TOKEN) {
+      // Deliberately untagged. The bearer token did not match, so nothing about
+      // this caller has been established -- including the device it claims to be.
+      // Writing an unauthenticated header into the trail would let anyone who can
+      // reach loopback file audit lines under a real phone's id.
       logMcpRequest(req.method || 'UNKNOWN', null, 'denied', 'invalid auth token')
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Unauthorized. Pass Authorization: Bearer <token> header.' }))
       return
     }
+
+    // Past the token check: whoever set this header also holds the bearer token,
+    // which is the same trust the rest of this endpoint runs on.
+    const device = deviceTag(req.headers)
 
     if (req.method === 'GET' && req.url === '/mcp/sse') {
       // SSE endpoint for notifications
@@ -883,7 +919,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     if (req.method === 'POST' && req.url === '/mcp') {
       // Global rate limit
       if (!checkRateLimit('_global')) {
-        logMcpRequest('POST', null, 'rate_limited', 'global limit exceeded')
+        logMcpRequest('POST', null, 'rate_limited', 'global limit exceeded', device)
         res.writeHead(429, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Rate limit exceeded' }, id: null }))
         return
@@ -909,7 +945,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
           // Per-tool rate limit for tools/call
           const toolName = request.method === 'tools/call' ? request.params?.name : null
           if (toolName && RATE_LIMITS[toolName] && !checkRateLimit(toolName)) {
-            logMcpRequest('tools/call', toolName, 'rate_limited', `${toolName} limit exceeded`)
+            logMcpRequest('tools/call', toolName, 'rate_limited', `${toolName} limit exceeded`, device)
             res.writeHead(429, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({
               jsonrpc: '2.0',
@@ -920,7 +956,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
           }
 
           const response = await handleJsonRpc(request, handlers)
-          logMcpRequest(request.method || 'unknown', toolName, response.error ? 'error' : 'ok')
+          logMcpRequest(request.method || 'unknown', toolName, response.error ? 'error' : 'ok', undefined, device)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(response))
         } catch {

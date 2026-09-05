@@ -16,6 +16,7 @@ import {
 } from '../../src/main/remoteBridge/protocol'
 import type { RemoteEvent, RemoteStatusView } from '../../src/main/remoteBridgeHost'
 import {
+  REMOTE_NOT_RUNNING,
   REMOTE_UNAVAILABLE,
   _resetRemoteHostForTests,
   noteTerminalClosed,
@@ -82,6 +83,10 @@ function makeHarness() {
         const all = text[id] ?? ''
         return { output: all.slice(from), nextOffset: all.length, missed: 0 }
       },
+      // The whole window plus the name, which is what the status detector needs.
+      // Null for a terminal with nothing in it: `starting` derived from an empty
+      // buffer would be a guess presented to the phone as a reading.
+      readRecent: (id) => (text[id] === undefined ? null : { output: text[id], name: id }),
       createTransport: (relayUrl) => {
         const child = {
           relayUrl,
@@ -133,6 +138,69 @@ afterEach(() => {
   _resetRemoteHostForTests()
   setSafeStorage(null as never)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+describe('remoteHost with the bridge down', () => {
+  // Three channels only POST to the child: `sendToBridge` is `handle?.postMessage`,
+  // which throws nothing and reports nothing when there is no handle. Answering
+  // `ok(status())` there tells the renderer a thing happened that did not, and
+  // the renderer then waits for a result nobody is producing.
+  const enabledButNeverForked = (): void => {
+    // Settings say on; nothing is forked, which is exactly the window between a
+    // crash-loop stop and the user noticing the switch.
+    saveRemoteSettings(dir, { enabled: true })
+    harness.start()
+    harness.call('remote:set-enabled', { enabled: false })
+    expect((harness.call('remote:status').data as RemoteStatusView).running).toBe(false)
+  }
+
+  it('refuses to mint a pairing code', () => {
+    enabledButNeverForked()
+    expect(harness.call('remote:begin-pairing', { label: 'Pixel' })).toEqual({
+      success: false,
+      error: REMOTE_NOT_RUNNING,
+    })
+  })
+
+  it('refuses to revoke a device', () => {
+    // The worse half: a user cutting off a stolen phone would be shown a device
+    // list with it gone and no phone actually disconnected.
+    saveRemoteDevices(dir, [pairedDevice()])
+    enabledButNeverForked()
+    expect(harness.call('remote:revoke-device', { deviceId: 'dev1' })).toEqual({
+      success: false,
+      error: REMOTE_NOT_RUNNING,
+    })
+  })
+
+  it('refuses to change capabilities', () => {
+    saveRemoteDevices(dir, [pairedDevice()])
+    enabledButNeverForked()
+    expect(
+      harness.call('remote:set-capabilities', {
+        deviceId: 'dev1',
+        capabilities: { ...NO_CAPABILITIES, read: true, writeToTerminal: true },
+      }),
+    ).toEqual({ success: false, error: REMOTE_NOT_RUNNING })
+  })
+
+  it('still lets a pairing offer be withdrawn', () => {
+    // Cancel is the one that must stay quiet. It is what closing the dialog
+    // calls, and an error banner for tidying up after a bridge that has already
+    // gone away is noise about nothing.
+    enabledButNeverForked()
+    expect(harness.call('remote:cancel-pairing').success).toBe(true)
+  })
+
+  it('validates the payload before it blames the bridge', () => {
+    // Order matters: a malformed capability object is wrong whether or not the
+    // child is up, and reporting "remote is off" for it hides a real bug.
+    enabledButNeverForked()
+    expect(
+      harness.call('remote:set-capabilities', { deviceId: 'dev1', capabilities: { read: 1 } }).error,
+    ).not.toBe(REMOTE_NOT_RUNNING)
+    expect(harness.call('remote:revoke-device', {}).error).not.toBe(REMOTE_NOT_RUNNING)
+  })
 })
 
 describe('remoteHost lifecycle', () => {
@@ -282,9 +350,13 @@ describe('remote IPC surface', () => {
   it('strips control characters out of a device label', () => {
     // The label lands in the device list beside a live terminal. An embedded
     // escape sequence there is a way to redraw a pane it has no business touching.
+    //
+    // The bytes are written as escapes on purpose. Raw control characters in a
+    // source file make it binary to grep and ripgrep, which silently skip it --
+    // this file went unsearchable for exactly that reason.
     saveRemoteSettings(dir, { enabled: true })
     harness.start()
-    harness.call('remote:begin-pairing', { label: '  Pixel[2J 9  ' })
+    harness.call('remote:begin-pairing', { label: '  Pixel\u001b[2J\u0007 9  ' })
     expect(harness.child().posted.at(-1)).toEqual({ kind: 'beginPairing', label: 'Pixel[2J 9' })
   })
 
@@ -294,7 +366,7 @@ describe('remote IPC surface', () => {
     harness.call('remote:begin-pairing', { label: 'x'.repeat(200) })
     expect((harness.child().posted.at(-1) as { label: string }).label).toHaveLength(64)
 
-    harness.call('remote:begin-pairing', { label: ' ' })
+    harness.call('remote:begin-pairing', { label: '\u0000\u0001' })
     expect(harness.child().posted.at(-1)).toEqual({ kind: 'beginPairing', label: 'Phone' })
 
     harness.call('remote:begin-pairing', {})

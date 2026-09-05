@@ -41,7 +41,7 @@ describe('buildQrPath', () => {
 
 describe('PairingModal', () => {
   it('draws the live offer and counts down', () => {
-    render(<PairingModal pairing={offer()} paired={null} onClose={() => {}} />)
+    render(<PairingModal pairing={offer()} awaiting={false} paired={null} onClose={() => {}} />)
     const path = screen.getByTestId('pairing-qr').querySelector('path')
     expect(path?.getAttribute('d')?.length ?? 0).toBeGreaterThan(200)
     expect(screen.getByTestId('pairing-countdown').textContent).toContain('2:00')
@@ -49,7 +49,7 @@ describe('PairingModal', () => {
   })
 
   it('ticks the countdown down and pads the seconds', () => {
-    render(<PairingModal pairing={offer()} paired={null} onClose={() => {}} />)
+    render(<PairingModal pairing={offer()} awaiting={false} paired={null} onClose={() => {}} />)
     act(() => { vi.advanceTimersByTime(61_000) })
     expect(screen.getByTestId('pairing-countdown').textContent).toContain('0:59')
     act(() => { vi.advanceTimersByTime(54_000) })
@@ -57,7 +57,7 @@ describe('PairingModal', () => {
   })
 
   it('replaces the code with an explanation once it expires', () => {
-    render(<PairingModal pairing={offer()} paired={null} onClose={() => {}} />)
+    render(<PairingModal pairing={offer()} awaiting={false} paired={null} onClose={() => {}} />)
     act(() => { vi.advanceTimersByTime(121_000) })
     expect(screen.getByTestId('pairing-expired')).toBeTruthy()
     // A dead code is worse than none: scanning it just gets the phone refused.
@@ -65,7 +65,7 @@ describe('PairingModal', () => {
   })
 
   it('shows the expired state when there is no offer at all', () => {
-    render(<PairingModal pairing={null} paired={null} onClose={() => {}} />)
+    render(<PairingModal pairing={null} awaiting={false} paired={null} onClose={() => {}} />)
     expect(screen.getByTestId('pairing-expired')).toBeTruthy()
     expect(screen.queryByTestId('pairing-qr')).toBeNull()
   })
@@ -94,7 +94,7 @@ describe('PairingModal', () => {
 
   it('closes from the header and from the footer', () => {
     const onClose = vi.fn()
-    render(<PairingModal pairing={offer()} paired={null} onClose={onClose} />)
+    render(<PairingModal pairing={offer()} awaiting={false} paired={null} onClose={onClose} />)
     fireEvent.click(screen.getByTestId('pairing-close'))
     fireEvent.click(screen.getByTestId('pairing-dismiss'))
     expect(onClose).toHaveBeenCalledTimes(2)
@@ -102,8 +102,41 @@ describe('PairingModal', () => {
 
   it('labels the footer Done once paired', () => {
     render(
-      <PairingModal pairing={null} paired={{ label: 'Pixel', phrase: 'a b c d' }} onClose={() => {}} />,
+      <PairingModal pairing={null} awaiting={false} paired={{ label: 'Pixel', phrase: 'a b c d' }} onClose={() => {}} />,
     )
     expect(screen.getByTestId('pairing-dismiss').textContent).toBe('Done')
+  })
+  it('says it is asking the desktop rather than claiming the code expired', () => {
+    // Same null offer, opposite meaning. The bridge mints the code in a forked
+    // child, so there is always a round trip between opening this dialog and
+    // having something to draw -- and "this pairing code has expired" during
+    // that gap sends the user back to the button that just worked.
+    render(<PairingModal pairing={null} awaiting={true} paired={null} onClose={() => {}} />)
+
+    expect(screen.getByTestId('pairing-waiting')).toBeTruthy()
+    expect(screen.queryByTestId('pairing-expired')).toBeNull()
+  })
+
+  it('draws the code as soon as one exists, waiting flag or not', () => {
+    render(<PairingModal pairing={offer()} awaiting={true} paired={null} onClose={() => {}} />)
+
+    expect(screen.getByTestId('pairing-qr')).toBeTruthy()
+    expect(screen.queryByTestId('pairing-waiting')).toBeNull()
+  })
+
+  it('shows the safety words even if a code request was still outstanding', () => {
+    // The phone can answer an offer before the desktop's own status round trip
+    // lands. Pairing succeeded; nothing here should still be asking for a code.
+    render(
+      <PairingModal
+        pairing={null}
+        awaiting={true}
+        paired={{ label: 'Pixel', phrase: 'a b c d' }}
+        onClose={() => {}}
+      />,
+    )
+
+    expect(screen.getByTestId('pairing-paired')).toBeTruthy()
+    expect(screen.queryByTestId('pairing-waiting')).toBeNull()
   })
 })

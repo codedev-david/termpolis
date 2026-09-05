@@ -60,6 +60,10 @@ export function RemoteSettings(): JSX.Element {
   const [label, setLabel] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [paired, setPaired] = useState<PairedResult | null>(null)
+  // True only between asking for a code and the bridge producing one. Without
+  // it the modal cannot tell "no code yet" from "the code expired", and the
+  // happy path flashes an expiry notice for the length of one round trip.
+  const [awaitingCode, setAwaitingCode] = useState(false)
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null)
   const [phrases, setPhrases] = useState<Record<string, string>>({})
   const [now, setNow] = useState(() => Date.now())
@@ -99,6 +103,12 @@ export function RemoteSettings(): JSX.Element {
     }
   }, [])
 
+  // The code has arrived (or the offer has since been spent); either way the
+  // modal is no longer waiting on the bridge for one.
+  useEffect(() => {
+    if (status?.pairing) setAwaitingCode(false)
+  }, [status?.pairing])
+
   const apply = (res: StatusResult): void => {
     if (res.success) {
       setStatus(res.data)
@@ -123,12 +133,20 @@ export function RemoteSettings(): JSX.Element {
 
   const startPairing = async (): Promise<void> => {
     setPaired(null)
+    const res = await window.remote.beginPairing(label)
+    apply(res)
+    // Opened only on success. A refused call means no code is coming, so a modal
+    // that opened anyway could only tell the user something untrue -- and the
+    // one thing it used to say, "this pairing code has expired", sends them
+    // round the same loop forever instead of to the switch that is off.
+    if (!res.success) return
+    setAwaitingCode(true)
     setModalOpen(true)
-    apply(await window.remote.beginPairing(label))
   }
 
   const closeModal = async (): Promise<void> => {
     setModalOpen(false)
+    setAwaitingCode(false)
     // Only if the offer went unused: cancelling after a successful pair would
     // ask the bridge to withdraw a code it has already spent.
     if (!paired) apply(await window.remote.cancelPairing())
@@ -220,7 +238,11 @@ export function RemoteSettings(): JSX.Element {
             data-testid="remote-relay-url"
             value={relayDraft ?? status.relayUrl}
             onChange={(e) => setRelayDraft(e.target.value)}
-            placeholder="wss://relay.termpolis.com/ws"
+            // The DEFAULT relay, exactly as `DEFAULT_RELAY_URL` spells it. It used
+            // to read `.../ws`, a path this relay does not serve -- so a user who
+            // typed the suggestion verbatim got a relay that could never connect,
+            // and no hint that the address was the reason.
+            placeholder="wss://relay.termpolis.com"
             className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
           />
           <button
@@ -345,7 +367,12 @@ export function RemoteSettings(): JSX.Element {
       </div>
 
       {modalOpen && (
-        <PairingModal pairing={status.pairing} paired={paired} onClose={() => void closeModal()} />
+        <PairingModal
+          pairing={status.pairing}
+          paired={paired}
+          awaiting={awaitingCode}
+          onClose={() => void closeModal()}
+        />
       )}
     </div>
   )

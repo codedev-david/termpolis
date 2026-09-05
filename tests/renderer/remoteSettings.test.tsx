@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-libra
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { RemoteSettings } from '../../src/renderer/src/components/SettingsPane/RemoteSettings'
 import type { RemoteEvent, RemoteStatusView } from '../../src/renderer/src/types'
+import { DEFAULT_RELAY_URL } from '../../src/main/remoteBridge/protocol'
 
 const ok = <T,>(data: T) => ({ success: true as const, data })
 const fail = (error: string) => ({ success: false as const, error })
@@ -24,7 +25,7 @@ const statusView = (over: Record<string, unknown> = {}): RemoteStatusView =>
     enabled: false,
     running: false,
     disabled: false,
-    relayUrl: 'wss://relay.termpolis.com/ws',
+    relayUrl: DEFAULT_RELAY_URL,
     publicKey: 'a'.repeat(64),
     pairing: null,
     devices: [],
@@ -83,7 +84,13 @@ describe('RemoteSettings', () => {
     await mount()
     expect((screen.getByTestId('remote-enable') as HTMLInputElement).checked).toBe(false)
     expect((screen.getByTestId('remote-relay-url') as HTMLInputElement).value).toBe(
-      'wss://relay.termpolis.com/ws',
+      DEFAULT_RELAY_URL,
+    )
+    // Pinned to the constant the bridge actually dials. The placeholder used to
+    // suggest `.../ws`, a path this relay does not serve, so a user who typed the
+    // suggestion got an address that could never connect and no hint why.
+    expect((screen.getByTestId('remote-relay-url') as HTMLInputElement).placeholder).toBe(
+      DEFAULT_RELAY_URL,
     )
     expect(screen.getByTestId('remote-public-key').textContent).toBe('a'.repeat(64))
     expect(screen.getByTestId('remote-no-devices')).toBeTruthy()
@@ -184,6 +191,51 @@ describe('RemoteSettings pairing', () => {
     // The phrase lookup lost a race with a revoke: show the code, not a lie.
     await waitFor(() => expect(api.verificationPhrase).toHaveBeenCalledWith('dev-1'))
     expect(screen.queryByTestId('pairing-phrase')).toBeNull()
+  })
+
+  it('refuses to open the modal when the bridge is not running', async () => {
+    // With remote off, `beginPairing` reaches a `handle?.postMessage` that
+    // discards it. The modal used to open anyway and then settle on "this
+    // pairing code has expired" -- a false diagnosis with no way out of it,
+    // since pairing again produces exactly the same message.
+    api.beginPairing.mockResolvedValue(fail('Remote access is off. Switch on "Allow phones to connect" first.'))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+
+    await waitFor(() => expect(api.beginPairing).toHaveBeenCalled())
+    expect(screen.queryByTestId('pairing-modal')).toBeNull()
+    expect((await screen.findByTestId('remote-error')).textContent).toContain(
+      'Allow phones to connect',
+    )
+  })
+
+  it('waits visibly for the code instead of announcing an expiry', async () => {
+    // `remote:begin-pairing` returns the status as it stands, which is before
+    // the forked bridge has answered -- so the first render after a SUCCESSFUL
+    // request always has a null offer. It must not read as expiry.
+    api.beginPairing.mockResolvedValue(ok(statusView({ enabled: true, running: true })))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+
+    expect(await screen.findByTestId('pairing-waiting')).toBeTruthy()
+    expect(screen.queryByTestId('pairing-expired')).toBeNull()
+
+    act(() => pushStatus(statusView({ enabled: true, running: true, pairing: offer })))
+    expect(await screen.findByTestId('pairing-qr')).toBeTruthy()
+    expect(screen.queryByTestId('pairing-waiting')).toBeNull()
+  })
+
+  it('asks for the code again cleanly after closing a waiting modal', async () => {
+    // The waiting flag has to be cleared on close, or the next dialog opens
+    // already believing a code is on its way and never shows the expiry state.
+    api.beginPairing.mockResolvedValue(ok(statusView({ enabled: true, running: true })))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    expect(await screen.findByTestId('pairing-waiting')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('pairing-close'))
+    await waitFor(() => expect(screen.queryByTestId('pairing-modal')).toBeNull())
+    expect(api.cancelPairing).toHaveBeenCalled()
   })
 })
 
@@ -318,7 +370,7 @@ describe('RemoteSettings clock and defaults', () => {
     // Not the empty string: an untouched field still shows a real address, and
     // sending "" would ask the host to clear the relay the user is using.
     await waitFor(() =>
-      expect(api.setRelayUrl).toHaveBeenCalledWith('wss://relay.termpolis.com/ws'),
+      expect(api.setRelayUrl).toHaveBeenCalledWith(DEFAULT_RELAY_URL),
     )
   })
 

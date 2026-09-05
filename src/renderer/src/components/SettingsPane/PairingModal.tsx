@@ -13,6 +13,10 @@ export interface PairingModalProps {
   /** Set the moment a phone completes the handshake. Takes precedence over the
    *  offer: the code is single-use, so there is nothing left to scan. */
   paired: PairedResult | null
+  /** The desktop has been asked for a code and has not produced one yet. It is
+   *  the difference between "not yet" and "too late", and only the caller knows
+   *  which -- a null offer looks the same either way from in here. */
+  awaiting: boolean
   onClose(): void
 }
 
@@ -33,12 +37,18 @@ function formatCountdown(seconds: number): string {
 /**
  * The pairing dialog: a code to scan, then the safety words to compare.
  *
- * Three states and no fourth. A spent or expired offer shows why rather than a
- * QR that would simply be refused, and the safety phrase sits under the code
- * with the instruction to read it against the phone -- a safety number nobody
- * compares is decoration.
+ * Four states and no fifth. A spent or expired offer shows why rather than a QR
+ * that would simply be refused, "asking the desktop" is kept distinct from
+ * "expired" because a null offer means both and only the caller knows which, and
+ * the safety phrase sits under the code with the instruction to read it against
+ * the phone -- a safety number nobody compares is decoration.
  */
-export function PairingModal({ pairing, paired, onClose }: PairingModalProps): JSX.Element {
+export function PairingModal({
+  pairing,
+  paired,
+  awaiting,
+  onClose,
+}: PairingModalProps): JSX.Element {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -131,6 +141,14 @@ export function PairingModal({ pairing, paired, onClose }: PairingModalProps): J
                 value={live.qrPayload}
                 className="font-mono text-[10px] h-24 bg-[#1e1e1e] text-[#d4d4d4] border border-[#3c3c3c] rounded p-2"
               />
+            </div>
+          ) : awaiting ? (
+            <div className="flex flex-col gap-2" data-testid="pairing-waiting">
+              <p className="text-sm text-[#9ca3af]">Asking the desktop for a code...</p>
+              <p className="text-xs text-[#9ca3af]">
+                The code is minted inside the remote bridge, not here, so it arrives a moment after
+                the dialog does.
+              </p>
             </div>
           ) : (
             <div className="flex flex-col gap-2" data-testid="pairing-expired">

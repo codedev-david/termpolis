@@ -28,6 +28,13 @@ function wireSize(payload: OutputPayload): number {
   return new TextEncoder().encode(JSON.stringify(payload)).length
 }
 
+/** Bytes an empty envelope costs: `{"kind":"output","chunks":[]}`.
+ *
+ *  Measured once at module load so the packer below can price a piece on its own
+ *  and add it to a running total, instead of re-serialising everything it has
+ *  already packed. See `chunkOutbound`. */
+const EMPTY_BYTES = wireSize(ENVELOPE)
+
 /** Split one chunk's text into pieces that each serialise under `maxBytes`.
  *
  *  Halving rather than computing an offset from the byte count: the mapping from
@@ -65,20 +72,42 @@ function splitChunk(chunk: DrainedChunk, maxBytes: number): DrainedChunk[] {
  *
  *  Few frames matters as much as small ones: every frame spends a token from the
  *  relay's 40-frame burst, so a payload per echoed keystroke would trip the
- *  frame-rate limit during ordinary typing. */
+ *  frame-rate limit during ordinary typing.
+ *
+ *  The running total is exact, not an estimate, so this packs identically to
+ *  measuring the whole array each time -- and it has to be exact, because
+ *  overshooting `maxBytes` by one byte gets the connection cut. A JSON array
+ *  serialises as the envelope plus each element plus one comma between
+ *  neighbours, and an element's own bytes do not depend on what sits beside it,
+ *  so `EMPTY_BYTES + sum(element bytes) + (count - 1)` IS the wire size.
+ *
+ *  Measuring the accumulated array instead costs a full re-serialisation per
+ *  piece: quadratic in both count and bytes. That is not a micro-optimisation
+ *  here. Nothing bounds the piece count -- the fan-out evicts on a character
+ *  budget, never on a count -- so a phone reattaching after a long detach hands
+ *  this tens of thousands of small chunks at once, synchronously, in the
+ *  utilityProcess that serves every paired device. Measured on the real modules,
+ *  a full 256 KB backlog of escape-heavy output took ~33 seconds to pack that
+ *  way and 23 ms this way. Thirty-three seconds is long enough for the relay to
+ *  drop the socket for idleness, so the reattach that triggered it also fails. */
 export function chunkOutbound(chunks: DrainedChunk[], maxBytes: number): OutputPayload[] {
   const pieces = chunks.flatMap((c) => splitChunk(c, maxBytes))
   const payloads: OutputPayload[] = []
   let open: DrainedChunk[] = []
+  let openBytes = EMPTY_BYTES
 
   for (const piece of pieces) {
-    const candidate = [...open, piece]
-    if (open.length > 0 && wireSize({ ...ENVELOPE, chunks: candidate }) > maxBytes) {
+    const pieceBytes = wireSize({ ...ENVELOPE, chunks: [piece] }) - EMPTY_BYTES
+    // The comma is only spent once there is a neighbour to separate it from.
+    const withPiece = openBytes + pieceBytes + (open.length > 0 ? 1 : 0)
+    if (open.length > 0 && withPiece > maxBytes) {
       payloads.push({ kind: 'output', chunks: open })
       open = [piece]
+      openBytes = EMPTY_BYTES + pieceBytes
       continue
     }
-    open = candidate
+    open.push(piece)
+    openBytes = withPiece
   }
   if (open.length > 0) payloads.push({ kind: 'output', chunks: open })
   return payloads

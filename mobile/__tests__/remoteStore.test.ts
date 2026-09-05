@@ -36,10 +36,16 @@ const mockSessions: {
   frames: unknown[]
 }[] = []
 const mockAppState: { handlers: ((s: string) => void)[] } = { handlers: [] }
-const mockStorage: { paired: PairedDesktop | null; cleared: number; saved: PairedDesktop[] } = {
+const mockStorage: {
+  paired: PairedDesktop | null
+  cleared: number
+  saved: PairedDesktop[]
+  identityLoads: number
+} = {
   paired: null,
   cleared: 0,
   saved: [],
+  identityLoads: 0,
 }
 const mockPairing: { result: unknown; error: Error | null; calls: unknown[] } = {
   result: null,
@@ -140,20 +146,26 @@ jest.mock('../src/net/pairingClient', () => ({
 
 jest.mock('../src/storage/identity', () => ({
   // Inlined: a jest.mock factory may not reach out-of-scope constants.
-  loadIdentity: async () => ({
-    secretKey: '22'.repeat(32),
-    publicKey: '0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20',
-  }),
+  loadIdentity: async () => {
+    // Counted, not varied: the public key below is the real derivation of the
+    // secret and other tests check the safety phrase against it. What the count
+    // proves is that the store went back to storage for a key rather than
+    // reusing the one it had cached.
+    mockStorage.identityLoads += 1
+    return {
+      secretKey: '22'.repeat(32),
+      publicKey: '0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20',
+    }
+  },
   loadPaired: async () => mockStorage.paired,
   savePaired: async (d: PairedDesktop) => {
     mockStorage.saved.push(d)
     mockStorage.paired = d
   },
-  clearPaired: async () => {
+  wipeIdentity: async () => {
     mockStorage.cleared += 1
     mockStorage.paired = null
   },
-  wipeIdentity: async () => undefined,
 }))
 
 import { AppState } from 'react-native'
@@ -200,6 +212,7 @@ beforeEach(() => {
   mockAppState.handlers.length = 0
   mockStorage.paired = null
   mockStorage.cleared = 0
+  mockStorage.identityLoads = 0
   mockStorage.saved.length = 0
   mockPairing.result = null
   mockPairing.error = null
@@ -336,6 +349,34 @@ describe('stale means stale', () => {
     expect(useRemoteStore.getState().status).toBe('offline')
   })
 
+  it('clears the error banner when the desktop comes back', async () => {
+    // The message describes a connection that no longer exists. Left up, a phone
+    // fresh out of a tunnel shows a live terminal list underneath "The desktop is
+    // offline" -- and nothing else in the store ever clears it.
+    await attached()
+    const failed = useRemoteStore.getState().refreshTerminals()
+    session().rejectNext(new Error('the desktop refused'))
+    await expect(failed).rejects.toThrow('the desktop refused')
+    expect(useRemoteStore.getState().error).toBe('the desktop refused')
+
+    state('offline')
+    state('attached')
+    expect(useRemoteStore.getState().error).toBeNull()
+  })
+
+  it('keeps the banner while the desktop is still away', async () => {
+    // Only ATTACH clears it. A drop straight into `connecting` is not news that
+    // the problem is over, and blanking the banner there would hide the reason
+    // the user's last action failed.
+    await attached()
+    const failed = useRemoteStore.getState().refreshTerminals()
+    session().rejectNext(new Error('the desktop refused'))
+    await expect(failed).rejects.toThrow()
+
+    state('connecting')
+    expect(useRemoteStore.getState().error).toBe('the desktop refused')
+  })
+
   it('keeps the last-known terminals while stale', async () => {
     // Showing nothing would read as "the desktop has no terminals", which is a
     // different and wrong statement.
@@ -375,6 +416,24 @@ describe('stale means stale', () => {
     await useRemoteStore.getState().boot()
     await expect(run()).rejects.toThrow()
     expect(mockSessions).toHaveLength(0)
+  })
+
+  it.each(writes)('%s says on screen why it refused while stale', async (_name, run) => {
+    // Every screen swallows the rejection and reads the banner instead, so a
+    // refusal that only threw was a button that did nothing at all: no output, no
+    // error, nothing to tell the user their desktop had gone.
+    await attached()
+    state('offline')
+    await expect(run()).rejects.toThrow()
+    expect(useRemoteStore.getState().error).toBe(
+      'The desktop is offline. Reconnect before sending anything.',
+    )
+  })
+
+  it.each(writes)('%s says on screen why it refused when unpaired', async (_name, run) => {
+    await useRemoteStore.getState().boot()
+    await expect(run()).rejects.toThrow()
+    expect(useRemoteStore.getState().error).toBe('This phone is not paired with a desktop yet.')
   })
 
   it('sends again once the connection is back', async () => {
@@ -471,6 +530,22 @@ describe('unpairing', () => {
 
   it('is harmless on a phone that never paired', async () => {
     await expect(useRemoteStore.getState().unpair()).resolves.toBeUndefined()
+  })
+
+  it('drops the cached private key as well as the stored one', async () => {
+    // The keystore is not the only copy. `identity` is a module-level cache that
+    // outlives the store, so an unpair that erased only the keychain would go on
+    // greeting desktops under the key the user just revoked for the rest of the
+    // process -- the promise true of the disk and false of the running app.
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    await settle()
+    expect(mockStorage.identityLoads).toBe(1)
+
+    await useRemoteStore.getState().unpair()
+    await useRemoteStore.getState().boot()
+
+    expect(mockStorage.identityLoads).toBe(2)
   })
 })
 

@@ -15,7 +15,6 @@ jest.mock('expo-secure-store', () => ({
 
 import * as SecureStore from 'expo-secure-store'
 import {
-  clearPaired,
   loadIdentity,
   loadPaired,
   savePaired,
@@ -143,28 +142,34 @@ describe('the paired desktop', () => {
 })
 
 describe('unpairing', () => {
-  it('clearPaired forgets the desktop and keeps the identity', async () => {
-    // Unpairing must not mint a new key. The desktop still lists this device, and
-    // re-pairing from the same identity is what lets the user see it is the same
-    // phone rather than a second entry they have to reason about.
-    const identity = await loadIdentity()
-    await savePaired(DESKTOP)
-    await clearPaired()
-
-    expect(await loadPaired()).toBeNull()
-    expect(await loadIdentity()).toEqual(identity)
-  })
-
-  it('wipeIdentity removes both', async () => {
+  it('removes the pairing record and the private key together', async () => {
     await loadIdentity()
     await savePaired(DESKTOP)
+
     await wipeIdentity()
 
     expect(await loadPaired()).toBeNull()
+    // Nothing left at all, not just nothing under the pairing key. PRIVACY.md
+    // tells the user unpairing "erases the key material"; a secret still sitting
+    // in the keychain would make that sentence false.
     expect(mockStore.size).toBe(0)
   })
 
-  it('wipeIdentity on a phone that never paired is harmless', async () => {
+  it('leaves no key behind for the next pairing to reuse', async () => {
+    // The sharp end of the same promise. If the old secret survived, the next
+    // pairing would greet the desktop under the identity the user just revoked,
+    // and a desktop that had not also revoked the device would let it straight
+    // back in.
+    const before = await loadIdentity()
+
+    await wipeIdentity()
+
+    const after = await loadIdentity()
+    expect(after.secretKey).not.toBe(before.secretKey)
+    expect(after.publicKey).not.toBe(before.publicKey)
+  })
+
+  it('is harmless on a phone that never paired', async () => {
     await expect(wipeIdentity()).resolves.toBeUndefined()
   })
 })

@@ -11,6 +11,8 @@ import { getOrCreateRemoteIdentity, type RemoteIdentity } from './remoteIdentity
 import { loadRemoteDevices, saveRemoteDevices } from './remoteDeviceStore'
 import { DEFAULT_REMOTE_SETTINGS, loadRemoteSettings, saveRemoteSettings } from './remoteSettings'
 import { createOutputPump, type OutputPump } from './remoteOutputPump'
+import { createStatusPump, type StatusPump, type TerminalSnapshot } from './remoteStatusPump'
+import { detectAgentStatus } from '../shared/agentStatusDetector'
 
 type InitParams = Omit<Extract<HostToBridge, { kind: 'init' }>, 'kind'>
 
@@ -32,6 +34,10 @@ export interface RemoteHostDeps {
   /** Push one thing that just happened, for a toast or a modal. */
   sendEvent(event: RemoteEvent): void
   readOutput(terminalId: string, fromOffset: number): OutputSlice
+  /** The whole rolling window plus the terminal's name, for status detection.
+   *  Separate from `readOutput` because that one is an incremental read that
+   *  advances an offset, and the detector needs the window every time. */
+  readRecent(terminalId: string): TerminalSnapshot | null
   startBridge(init: InitParams, relayUrl: string): void
   stopBridge(): void
   sendToBridge(msg: HostToBridge): void
@@ -129,6 +135,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   const attached = new Set<string>()
   let pairing: RemotePairingView | null = null
   let pump: OutputPump | null = null
+  let statusPump: StatusPump | null = null
 
   /** The long-term X25519 identity, minted on first use.
    *
@@ -172,6 +179,22 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     push(() => deps.sendStatus(status()))
   }
 
+  function newStatusPump(): StatusPump {
+    return createStatusPump({
+      read: (terminalId) => deps.readRecent(terminalId),
+      detect: detectAgentStatus,
+      send: (terminalId, result) =>
+        deps.sendToBridge({
+          kind: 'terminalStatus',
+          terminalId,
+          status: result.status,
+          summary: result.summary,
+        }),
+      setTimer: (fn, ms) => deps.setTimer(fn, ms),
+      clearTimer: (handle) => deps.clearTimer(handle),
+    })
+  }
+
   function newPump(): OutputPump {
     return createOutputPump({
       read: (terminalId, fromOffset) => deps.readOutput(terminalId, fromOffset),
@@ -204,6 +227,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
         break
       case 'subscriptionsChanged':
         pump?.setSubscriptions(m.terminalIds)
+        statusPump?.setSubscriptions(m.terminalIds)
         break
       default:
         break
@@ -220,6 +244,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   function launch(): void {
     pump?.stop()
     pump = newPump()
+    statusPump?.stop()
+    statusPump = newStatusPump()
     deps.startBridge(
       {
         mcpPort: deps.mcpPort,
@@ -234,6 +260,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   function shutdown(): void {
     pump?.stop()
     pump = null
+    statusPump?.stop()
+    statusPump = null
     attached.clear()
     pairing = null
     deps.stopBridge()
@@ -339,10 +367,12 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
 
     noteTerminalOutput(terminalId: string): void {
       pump?.markDirty(terminalId)
+      statusPump?.markDirty(terminalId)
     },
 
     noteTerminalClosed(terminalId: string): void {
       pump?.dropTerminal(terminalId)
+      statusPump?.dropTerminal(terminalId)
     },
   }
 }

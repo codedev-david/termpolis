@@ -99,7 +99,7 @@ describe('remote bridge end-to-end', () => {
     expect(sent.map((m) => m.kind)).toEqual(['ready'])
 
     // 2. User taps "Pair a phone". The desktop paints a QR.
-    core.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    core.handleHostMessage({ kind: 'beginPairing', label: 'Kitchen iPhone' })
     const code = sent.find((m) => m.kind === 'pairingCode')
     if (code?.kind !== 'pairingCode') throw new Error('no pairing code was emitted')
     const qr = JSON.parse(code.qrPayload) as QrPayload
@@ -136,7 +136,11 @@ describe('remote bridge end-to-end', () => {
     const paired = sent.find((m) => m.kind === 'paired')
     if (paired?.kind !== 'paired') throw new Error('the hello paired nobody')
     const device = paired.device
-    expect(device.label).toBe('iPhone')
+    // The name the DESKTOP user typed wins over the name the phone gives for
+    // itself. The phone's arrives over the relay and is sender-chosen text, so a
+    // handset could otherwise seat itself in the device list under the name of a
+    // phone the user already trusts.
+    expect(device.label).toBe('Kitchen iPhone')
     // Ungranted on arrival: pairing establishes WHO, never WHAT.
     expect(device.capabilities).toEqual(NO_CAPABILITIES)
 
@@ -193,7 +197,9 @@ describe('remote bridge end-to-end', () => {
     // 7. Now it is served — and the response survives a sealed round-trip.
     const ok = await core.handleRemoteRequest(device.id, { id: 2, request: { kind: 'listTerminals' } })
     expect(ok.kind).toBe('ok')
-    expect(callTool).toHaveBeenCalledWith('list_terminals', {})
+    // Named, not anonymous: the device id rides along to MCP so `mcp-audit.log`
+    // records WHICH phone asked. Spec section 4.4.
+    expect(callTool).toHaveBeenCalledWith('list_terminals', {}, device.id)
 
     // The two ends greet, agree a session neither the relay nor a later thief of
     // both identity keys can derive, and only then does a response cross.

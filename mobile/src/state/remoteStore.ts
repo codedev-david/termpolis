@@ -4,10 +4,10 @@ import { RelaySocket, type RelayState, type SocketLike } from '../net/relaySocke
 import { RemoteSession, type StatusUpdate } from '../net/remoteSession'
 import { pairWithDesktop } from '../net/pairingClient'
 import {
-  clearPaired,
   loadIdentity,
   loadPaired,
   savePaired,
+  wipeIdentity,
   type PairedDesktop,
 } from '../storage/identity'
 import { parseQrPayload } from '../wire/qr'
@@ -76,11 +76,21 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
    *  Nothing is ever queued. Work must not silently execute later: a runCommand
    *  buffered through an outage and fired on reconnect is arbitrary shell
    *  execution at a moment the user has stopped expecting it. */
+  /** Refuse a request AND say why on screen.
+   *
+   *  Every screen swallows the rejection (`.catch(() => undefined)`) and reads the
+   *  banner instead, so a refusal that only threw was a button that did nothing at
+   *  all -- no output, no error, no clue. */
+  function refuse(message: string): never {
+    set({ error: message })
+    throw new Error(message)
+  }
+
   async function ask<T>(request: RemoteRequest): Promise<T> {
     const { paired, stale } = get()
-    if (paired === null) throw new Error('This phone is not paired with a desktop yet.')
+    if (paired === null) refuse('This phone is not paired with a desktop yet.')
     if (session === null || stale) {
-      throw new Error('The desktop is offline. Reconnect before sending anything.')
+      refuse('The desktop is offline. Reconnect before sending anything.')
     }
     try {
       return await session.request<T>(request)
@@ -143,7 +153,11 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       onState: (next) => {
         const attached = next === 'attached'
         if (!attached) live.reset('The connection dropped.')
-        set({ status: next, stale: !attached })
+        // The banner clears on ATTACH, not on the next successful request. The
+        // message the user is reading describes a connection that no longer
+        // exists, so leaving it up means a phone fresh out of a tunnel shows a
+        // live terminal list underneath "The desktop is offline."
+        set({ status: next, stale: !attached, error: attached ? null : get().error })
         // Whatever is on screen was true for the last connection. The list is
         // the cheapest thing to re-establish and everything else hangs off it.
         //
@@ -262,7 +276,17 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
 
     async unpair() {
       disconnect()
-      await clearPaired()
+      // The private KEY, not merely the pairing record. That key is this phone's
+      // authority -- a desktop that has not also revoked the device goes on
+      // trusting whoever holds it -- and PRIVACY.md tells the user in as many
+      // words that unpairing erases it. Keeping it to make a re-pair land on the
+      // same desktop entry is a convenience, and it is not worth making a
+      // published promise false.
+      await wipeIdentity()
+      // The keystore is not the only copy. `identity` is cached for the life of
+      // the process, so leaving it set would hand the very next pairing the key
+      // that was just erased: true of the disk, false of the running app.
+      identity = null
       // Everything on screen belonged to that desktop. Leaving any of it behind
       // would show the next pairing another machine's terminals.
       set({

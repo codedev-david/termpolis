@@ -12,7 +12,10 @@ import {
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { sealPairingHello, openPairingAck } from '../../src/main/remoteBridge/pairing'
 import {
+  DEVICE_EXPIRY_SWEEP_MS,
+  DEVICE_IDLE_EXPIRY_MS,
   NO_CAPABILITIES,
+  SEEN_ANNOUNCE_INTERVAL_MS,
   type BridgeToHost,
   type PairedDevice,
   type RemoteRequest,
@@ -42,6 +45,9 @@ const DESKTOP_SECRET = 'a'.repeat(64)
  *  because the pairing tests below scan with that key. */
 const PEERS: Record<string, ReturnType<typeof generateIdentity>> = { d1: PEER }
 
+/** Frozen per run so a device record stays comparable across assertions. */
+const SEEN_NOW = Date.now()
+
 function device(id = 'd1'): PairedDevice {
   const keys = PEERS[id] ?? (PEERS[id] = generateIdentity())
   return {
@@ -51,7 +57,10 @@ function device(id = 'd1'): PairedDevice {
     sessionRoomId: deriveSessionRoomId(DESKTOP_SECRET, keys.publicKey),
     capabilities: { ...NO_CAPABILITIES, read: true },
     pairedAt: 0,
-    lastSeenAt: 0,
+    // Seen just now, not at the epoch. The bridge expires pairings that have
+    // gone quiet for `DEVICE_IDLE_EXPIRY_MS`, and it sweeps at startup -- a
+    // fixture dated 1970 is a device the bridge is right to forget on sight.
+    lastSeenAt: SEEN_NOW,
   }
 }
 
@@ -200,7 +209,10 @@ describe('bridge core', () => {
     const { c, callTool } = core([device()])
     const res = await c.handleRemoteRequest('d1', { id: 7, request: { kind: 'listTerminals' } })
     expect(res.kind).toBe('ok')
-    expect(callTool).toHaveBeenCalledWith('list_terminals', {})
+    // With the device id, not without it: `mcp-audit.log` is the only record of
+    // which paired phone caused a tool call, and it can only carry what is passed
+    // here. Spec section 4.4.
+    expect(callTool).toHaveBeenCalledWith('list_terminals', {}, 'd1')
   })
 
   it('refuses a request from an unknown device', async () => {
@@ -229,7 +241,7 @@ describe('bridge core', () => {
     c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: { ...NO_CAPABILITIES, read: true, writeToTerminal: true } })
     const res = await c.handleRemoteRequest('d1', { id: 4, request: { kind: 'writeToTerminal', terminalId: 't', text: 'hi' } })
     expect(res.kind).toBe('ok')
-    expect(callTool).toHaveBeenCalledWith('write_to_terminal', { terminalId: 't', text: 'hi' })
+    expect(callTool).toHaveBeenCalledWith('write_to_terminal', { terminalId: 't', text: 'hi' }, 'd1')
   })
 
   it('reports device changes to the host after a revoke', () => {
@@ -670,6 +682,111 @@ describe('output pump', () => {
   })
 })
 
+describe('last seen, and forgetting a phone that never comes back', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('tells main when a device is heard from', async () => {
+    // `registry.touch` only ever moved a number inside this process. Main owns
+    // both the settings file and the "last seen" column, so without an
+    // announcement a phone in daily use showed the moment it was paired.
+    const { c, sent } = core([device()])
+    const before = sent.filter((m) => m.kind === 'devicesChanged').length
+
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'listTerminals' } })
+
+    const announced = sent.filter((m) => m.kind === 'devicesChanged')
+    expect(announced.length).toBe(before + 1)
+    expect(announced.at(-1)!.devices[0].lastSeenAt).toBeGreaterThanOrEqual(SEEN_NOW)
+  })
+
+  it('does not rewrite the settings file once per request', async () => {
+    // Every request advances the timestamp. Announcing each one would put a disk
+    // write behind every keystroke a phone sends, for a column rounded to the
+    // minute and redrawn on a one-minute tick.
+    const { c, sent } = core([device()])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'listTerminals' } })
+    const after = sent.filter((m) => m.kind === 'devicesChanged').length
+
+    for (let i = 2; i < 40; i++) {
+      await c.handleRemoteRequest('d1', { id: i, request: { kind: 'listTerminals' } })
+    }
+
+    expect(sent.filter((m) => m.kind === 'devicesChanged').length).toBe(after)
+  })
+
+  it('announces again once the record has drifted past the interval', async () => {
+    const { c, sent } = core([device()])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'listTerminals' } })
+    const announced = sent.filter((m) => m.kind === 'devicesChanged')
+    const after = announced.length
+    // Measured from what was actually announced, not from a constant: the first
+    // request lands a millisecond or two after the fixture was built, and a
+    // threshold test that ignores that drift is a threshold test that flakes.
+    const seenAt = announced.at(-1)!.devices[0].lastSeenAt
+
+    vi.spyOn(Date, 'now').mockReturnValue(seenAt + SEEN_ANNOUNCE_INTERVAL_MS)
+    await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'listTerminals' } })
+
+    expect(sent.filter((m) => m.kind === 'devicesChanged').length).toBe(after + 1)
+  })
+
+  it('says nothing about a device that was revoked mid-request', async () => {
+    // `getCapabilities` is answered above the dispatcher and touches the device
+    // on the way through. A revoke that lands first leaves nothing to touch.
+    const { c, sent } = core([device()])
+    c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })
+    const after = sent.filter((m) => m.kind === 'devicesChanged').length
+
+    const res = await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'getCapabilities' } })
+
+    expect(res.kind).toBe('error')
+    expect(sent.filter((m) => m.kind === 'devicesChanged').length).toBe(after)
+  })
+
+  it('forgets a pairing that went quiet for longer than the idle window', () => {
+    // The design promises idle pairings auto-expire. Nothing called `expireIdle`,
+    // so a phone lost two years ago stayed authorised until somebody happened to
+    // open Settings and revoke it by hand.
+    const stale = { ...device('d1'), lastSeenAt: Date.now() - DEVICE_IDLE_EXPIRY_MS - 1 }
+    const { sent, rooms } = core([stale])
+
+    const changed = sent.filter((m) => m.kind === 'devicesChanged').at(-1)
+    expect(changed?.devices).toEqual([])
+    // And no room opened for it: expiry runs before the reconnect loop, or an
+    // expired device is live again for the length of every startup.
+    expect(rooms).toHaveLength(0)
+    expect(sent.some((m) => m.kind === 'error' && m.message.includes('forgotten'))).toBe(true)
+  })
+
+  it('keeps a pairing that is merely old', () => {
+    const recent = { ...device('d1'), lastSeenAt: Date.now() - DEVICE_IDLE_EXPIRY_MS + 60_000 }
+    const { sent, rooms } = core([recent])
+
+    expect(sent.some((m) => m.kind === 'error')).toBe(false)
+    expect(rooms).toHaveLength(1)
+  })
+
+  it('keeps sweeping while the bridge runs, and stops when it does not', () => {
+    vi.useFakeTimers()
+    const { c, sent, rooms } = core([device('d1')])
+    expect(rooms).toHaveLength(1)
+
+    // Past the window without the phone ever coming back.
+    vi.setSystemTime(Date.now() + DEVICE_IDLE_EXPIRY_MS + 1)
+    vi.advanceTimersByTime(DEVICE_EXPIRY_SWEEP_MS)
+    expect(sent.filter((m) => m.kind === 'devicesChanged').at(-1)?.devices).toEqual([])
+    expect(rooms[0].stopped).toBe(true)
+
+    // A timer left running in a process that is going away is exactly what the
+    // shutdown path exists to prevent.
+    c.handleHostMessage({ kind: 'shutdown' })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
 describe('pairing over the relay', () => {
   afterEach(() => {
     vi.useRealTimers()
@@ -719,6 +836,81 @@ describe('pairing over the relay', () => {
     return { ...ctx, qr, phone, hello, room: ctx.rooms[0] }
   }
 
+  it('names the device what the desktop user typed, not what the phone claims', () => {
+    // The label field in Settings used to be decoration: `beginPairing` carried
+    // it to the bridge and the bridge dropped it on the floor, so every device
+    // row was named by the phone regardless of what the user asked for.
+    const { sent, room, hello } = begin()
+    feed(room, hello(undefined, 'Definitely Your Laptop'))
+    expect(message(sent, 'paired')?.device.label).toBe('desk')
+  })
+
+  it('falls back to the phone name when the user typed nothing', () => {
+    const ctx = core()
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: '   ' })
+    const qr = scan(ctx.sent)
+    const phone = generateIdentity()
+    feed(
+      ctx.rooms[0],
+      sealPairingHello({
+        deviceSecretKey: phone.secretKey,
+        devicePublicKey: phone.publicKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        label: 'Pixel 9',
+        oneTimeSecret: qr.oneTimeSecret,
+      }),
+    )
+    expect(message(ctx.sent, 'paired')?.device.label).toBe('Pixel 9')
+  })
+
+  it('will not persist an escape sequence or a novel as a device name', () => {
+    // This label crosses the relay, so its bytes and its length are the sender's
+    // choice. It is then written to `remote-devices.json` and drawn beside a live
+    // terminal -- unbounded and unfiltered, a paired phone could park a screen
+    // clear in the desktop's own settings file.
+    const ctx = core()
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: '' })
+    const qr = scan(ctx.sent)
+    const phone = generateIdentity()
+    feed(
+      ctx.rooms[0],
+      sealPairingHello({
+        deviceSecretKey: phone.secretKey,
+        devicePublicKey: phone.publicKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        label: '\u001b[2J\u0007 ' + 'A'.repeat(400),
+        oneTimeSecret: qr.oneTimeSecret,
+      }),
+    )
+    // The introducer is gone, so what is left is inert text rather than a screen
+    // clear, and the whole thing is capped at 64.
+    const label = message(ctx.sent, 'paired')!.device.label
+    expect(label).toBe('[2J ' + 'A'.repeat(60))
+    expect(label).not.toContain('\u001b')
+    expect(label).not.toContain('\u0007')
+  })
+
+  it('names a phone that sends nothing usable at all', () => {
+    const ctx = core()
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: '' })
+    const qr = scan(ctx.sent)
+    const phone = generateIdentity()
+    feed(
+      ctx.rooms[0],
+      sealPairingHello({
+        deviceSecretKey: phone.secretKey,
+        devicePublicKey: phone.publicKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        label: '\u0000\u0001',
+        oneTimeSecret: qr.oneTimeSecret,
+      }),
+    )
+    expect(message(ctx.sent, 'paired')?.device.label).toBe('Phone')
+  })
+
   it('opens the room the QR names, in pairing mode', () => {
     // Without this the QR was an invitation to a room nobody was in: the phone
     // scanned it, connected, sent its hello, and the desktop never arrived.
@@ -737,7 +929,9 @@ describe('pairing over the relay', () => {
   it('pairs the phone from its hello and seats itself in the session room', () => {
     const { sent, rooms, room, phone, hello } = begin()
     feed(room, hello())
-    expect(message(sent, 'paired')?.device.label).toBe('Pixel')
+    // 'desk' is what the desktop user typed into Settings; 'Pixel' is what the
+    // phone calls itself. The user's name wins -- see the label tests below.
+    expect(message(sent, 'paired')?.device.label).toBe('desk')
     expect(message(sent, 'verificationPhrase')?.phrase.split(' ')).toHaveLength(PHRASE_WORDS)
     // The session room is DERIVED, so the desktop is seated in it before the phone
     // has been told anything -- which is the only ordering that works, since a
@@ -1068,5 +1262,153 @@ describe('remote bridge -- the wiring the stub relay usually stands in for', () 
     const second = deps.handshake()
 
     expect(toHex(first.greeting)).not.toBe(toHex(second.greeting))
+  })
+})
+
+describe('agent status, pushed from main to the phones watching', () => {
+  it('sends a status frame to every device subscribed to that terminal', async () => {
+    const { c, rooms } = core([device('d1'), device('d2')])
+    attach(rooms[0])
+    attach(rooms[1])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    await c.handleRemoteRequest('d2', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    c.handleHostMessage({
+      kind: 'terminalStatus',
+      terminalId: 't1',
+      status: 'waiting_for_input',
+      summary: 'Continue?',
+    })
+
+    const frame = { kind: 'status', terminalId: 't1', status: 'waiting_for_input', summary: 'Continue?' }
+    expect(rooms[0].sent).toContainEqual(frame)
+    expect(rooms[1].sent).toContainEqual(frame)
+  })
+
+  it('does not send it to a device watching a different terminal', () => {
+    // Subscription IS the authorisation here. A device that never asked for this
+    // terminal has not been granted a view of what its agent is doing.
+    const { c, rooms } = core([device('d1')])
+    attach(rooms[0])
+
+    c.handleHostMessage({
+      kind: 'terminalStatus',
+      terminalId: 't1',
+      status: 'thinking',
+      summary: 'Thinking',
+    })
+
+    expect(rooms[0].sent).toEqual([])
+  })
+
+  it('replays the last status when a phone subscribes', async () => {
+    // Main only sends when the answer CHANGES, so a phone that reconnects to a
+    // terminal that has been idle for an hour would otherwise show a blank label
+    // for as long as it stays idle -- which is forever.
+    const { c, rooms } = core([device('d1'), device('d2')])
+    attach(rooms[0])
+    attach(rooms[1])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+    rooms[1].sent.length = 0
+
+    await c.handleRemoteRequest('d2', { id: 2, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    expect(rooms[1].sent).toContainEqual({
+      kind: 'status',
+      terminalId: 't1',
+      status: 'idle',
+      summary: 'Idle',
+    })
+  })
+
+  it('stays quiet on subscribe when main has never reported that terminal', async () => {
+    // Inventing a status is worse than showing none: on the phone the two look
+    // identical, and only one of them is true.
+    const { c, rooms } = core([device('d1')])
+    attach(rooms[0])
+
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 'unknown' } })
+
+    expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
+  })
+
+  it('holds nothing for a terminal no device watches any more', async () => {
+    // The bridge is never told a terminal closed, so without this prune the map
+    // grows one entry per terminal for the life of the process -- and a reused id
+    // would replay a dead terminal's last state to the phone that opened the new
+    // one.
+    const { c, rooms } = core([device('d1')])
+    attach(rooms[0])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+    await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
+
+    // Any later status message is what runs the prune; a second terminal stands
+    // in for "the bridge is still alive and still being told things".
+    await c.handleRemoteRequest('d1', { id: 3, request: { kind: 'subscribe', terminalId: 't2' } })
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't2', status: 'idle', summary: 'Idle' })
+    rooms[0].sent.length = 0
+
+    await c.handleRemoteRequest('d1', { id: 4, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
+  })
+
+  it('drops a status for a device that is subscribed but not attached', () => {
+    // A frame sent into a room with no session is dropped unsealed. Status is a
+    // fact about the present rather than a queued chunk, so it is simply skipped
+    // -- the subscribe on reconnect replays it.
+    const { c, rooms } = core([device('d1')])
+    attach(rooms[0])
+    return c
+      .handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+      .then(() => {
+        rooms[0].state = 'online'
+        rooms[0].sent.length = 0
+        c.handleHostMessage({
+          kind: 'terminalStatus',
+          terminalId: 't1',
+          status: 'thinking',
+          summary: 'Thinking',
+        })
+        expect(rooms[0].sent).toEqual([])
+      })
+  })
+})
+
+describe('status survives the phone going through a tunnel', () => {
+  it('replays every watched terminal when a device re-attaches', async () => {
+    // The phone does NOT re-subscribe on reconnect -- its subscription lives on
+    // the desktop and survives the drop -- so re-attach is the only moment left
+    // to hand it the state it missed.
+    const { c, rooms } = core([device('d1')])
+    attach(rooms[0])
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'subscribe', terminalId: 't2' } })
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'thinking', summary: 'Thinking' })
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't2', status: 'idle', summary: 'Idle' })
+
+    rooms[0].state = 'offline'
+    rooms[0].deps.onStateChange('offline')
+    rooms[0].sent.length = 0
+    attach(rooms[0])
+
+    const statuses = rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')
+    expect(statuses).toEqual([
+      { kind: 'status', terminalId: 't1', status: 'thinking', summary: 'Thinking' },
+      { kind: 'status', terminalId: 't2', status: 'idle', summary: 'Idle' },
+    ])
+  })
+
+  it('replays nothing for a device that was watching nothing', () => {
+    const { c, rooms } = core([device('d1')])
+    attach(rooms[0])
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+    rooms[0].sent.length = 0
+
+    attach(rooms[0])
+
+    expect(rooms[0].sent).toEqual([])
   })
 })

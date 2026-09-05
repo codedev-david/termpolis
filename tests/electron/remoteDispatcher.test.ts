@@ -6,29 +6,34 @@ import { NO_CAPABILITIES, type Capabilities, type RemoteRequest } from '../../sr
 const all: Capabilities = { read: true, createTerminal: true, writeToTerminal: true, closeTerminal: true }
 const fakeMcp = () => ({ callTool: vi.fn().mockResolvedValue({ ok: true }) })
 
+/** A device id of the shape `pairing.ts` mints: sixteen lowercase hex. The MCP
+ *  server validates it before writing it to the audit trail, so a placeholder
+ *  like 'phone' here would pass the dispatcher and be silently dropped there. */
+const DEVICE = 'a1b2c3d4e5f60718'
+
 describe('RequestDispatcher', () => {
   it('maps listTerminals to the list_terminals tool', async () => {
     const mcp = fakeMcp()
-    await new RequestDispatcher(mcp).dispatch({ kind: 'listTerminals' }, all)
-    expect(mcp.callTool).toHaveBeenCalledWith('list_terminals', {})
+    await new RequestDispatcher(mcp).dispatch({ kind: 'listTerminals' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('list_terminals', {}, DEVICE)
   })
 
   it('maps createTerminal with its arguments', async () => {
     const mcp = fakeMcp()
-    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'agent-1', cwd: '/repo' }, all)
-    expect(mcp.callTool).toHaveBeenCalledWith('create_terminal', { name: 'agent-1', cwd: '/repo' })
+    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'agent-1', cwd: '/repo' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('create_terminal', { name: 'agent-1', cwd: '/repo' }, DEVICE)
   })
 
   it('maps writeToTerminal', async () => {
     const mcp = fakeMcp()
-    await new RequestDispatcher(mcp).dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hi' }, all)
-    expect(mcp.callTool).toHaveBeenCalledWith('write_to_terminal', { terminalId: 't1', text: 'hi' })
+    await new RequestDispatcher(mcp).dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hi' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('write_to_terminal', { terminalId: 't1', text: 'hi' }, DEVICE)
   })
 
   it('refuses a request the device lacks capability for, without touching MCP', async () => {
     const mcp = fakeMcp()
     const d = new RequestDispatcher(mcp)
-    await expect(d.dispatch({ kind: 'writeToTerminal', terminalId: 't', text: 'x' }, NO_CAPABILITIES))
+    await expect(d.dispatch({ kind: 'writeToTerminal', terminalId: 't', text: 'x' }, NO_CAPABILITIES, DEVICE))
       .rejects.toThrow(CapabilityError)
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
@@ -37,22 +42,22 @@ describe('RequestDispatcher', () => {
     const mcp = fakeMcp()
     const d = new RequestDispatcher(mcp)
     const readOnly: Capabilities = { ...NO_CAPABILITIES, read: true }
-    await expect(d.dispatch({ kind: 'createTerminal', name: 'x' }, readOnly)).rejects.toThrow(CapabilityError)
-    await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 't' }, readOnly)).rejects.toThrow(CapabilityError)
+    await expect(d.dispatch({ kind: 'createTerminal', name: 'x' }, readOnly, DEVICE)).rejects.toThrow(CapabilityError)
+    await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 't' }, readOnly, DEVICE)).rejects.toThrow(CapabilityError)
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
 
   it('handles subscribe/unsubscribe locally without calling MCP', async () => {
     const mcp = fakeMcp()
     const d = new RequestDispatcher(mcp)
-    await d.dispatch({ kind: 'subscribe', terminalId: 't1' }, all)
-    await d.dispatch({ kind: 'unsubscribe', terminalId: 't1' }, all)
+    await d.dispatch({ kind: 'subscribe', terminalId: 't1' }, all, DEVICE)
+    await d.dispatch({ kind: 'unsubscribe', terminalId: 't1' }, all, DEVICE)
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
 
   it('propagates an MCP failure rather than swallowing it', async () => {
     const mcp = { callTool: vi.fn().mockRejectedValue(new Error('mcp down')) }
-    await expect(new RequestDispatcher(mcp).dispatch({ kind: 'listTerminals' }, all))
+    await expect(new RequestDispatcher(mcp).dispatch({ kind: 'listTerminals' }, all, DEVICE))
       .rejects.toThrow(/mcp down/)
   })
 })
@@ -67,20 +72,20 @@ describe('RequestDispatcher — input outside the union', () => {
     const d = new RequestDispatcher(mcp)
     const bogus = { kind: 'sudoEverything' } as unknown as RemoteRequest
 
-    await expect(d.dispatch(bogus, all)).rejects.toThrow(/unrecognised request kind/)
+    await expect(d.dispatch(bogus, all, DEVICE)).rejects.toThrow(/unrecognised request kind/)
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
 
   it('maps runCommand to run_command', async () => {
     const mcp = fakeMcp()
-    await new RequestDispatcher(mcp).dispatch({ kind: 'runCommand', terminalId: 't1', command: 'ls' }, all)
-    expect(mcp.callTool).toHaveBeenCalledWith('run_command', { terminalId: 't1', command: 'ls' })
+    await new RequestDispatcher(mcp).dispatch({ kind: 'runCommand', terminalId: 't1', command: 'ls' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('run_command', { terminalId: 't1', command: 'ls' }, DEVICE)
   })
 
   it('maps closeTerminal to close_terminal', async () => {
     const mcp = fakeMcp()
-    await new RequestDispatcher(mcp).dispatch({ kind: 'closeTerminal', terminalId: 't1' }, all)
-    expect(mcp.callTool).toHaveBeenCalledWith('close_terminal', { terminalId: 't1' })
+    await new RequestDispatcher(mcp).dispatch({ kind: 'closeTerminal', terminalId: 't1' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('close_terminal', { terminalId: 't1' }, DEVICE)
   })
 
   // The cwd arm matters on its own: MCP's create_terminal treats an EXPLICIT
@@ -88,7 +93,7 @@ describe('RequestDispatcher — input outside the union', () => {
   // unconditionally would silently change where remote terminals open.
   it('omits cwd entirely when the phone did not send one', async () => {
     const mcp = fakeMcp()
-    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'agent' }, all)
+    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'agent' }, all, DEVICE)
     const args = mcp.callTool.mock.calls[0][1] as Record<string, unknown>
     expect('cwd' in args).toBe(false)
   })
@@ -100,8 +105,42 @@ describe('RequestDispatcher — input outside the union', () => {
   it('refuses getCapabilities even with every capability granted', async () => {
     const mcp = fakeMcp()
     await expect(
-      new RequestDispatcher(mcp).dispatch({ kind: 'getCapabilities' }, all),
+      new RequestDispatcher(mcp).dispatch({ kind: 'getCapabilities' }, all, DEVICE),
     ).rejects.toThrow(CapabilityError)
     expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+})
+
+describe('RequestDispatcher — who asked', () => {
+  it('tags every MCP-bound request with the originating device', async () => {
+    // Spec section 4.4: "audit entries are tagged with the originating device".
+    // The tag is applied at the call, so a request kind added later without it
+    // produces an audit line that cannot name the phone that caused it -- and
+    // nothing else in the system would notice. Enumerating the kinds here is
+    // what makes that a failing test rather than a silent gap.
+    const acting: RemoteRequest[] = [
+      { kind: 'listTerminals' },
+      { kind: 'createTerminal', name: 'agent' },
+      { kind: 'runCommand', terminalId: 't1', command: 'ls' },
+      { kind: 'writeToTerminal', terminalId: 't1', text: 'hi' },
+      { kind: 'closeTerminal', terminalId: 't1' },
+    ]
+
+    for (const request of acting) {
+      const mcp = fakeMcp()
+      await new RequestDispatcher(mcp).dispatch(request, all, DEVICE)
+      expect(mcp.callTool).toHaveBeenCalledTimes(1)
+      expect(mcp.callTool.mock.calls[0][2]).toBe(DEVICE)
+    }
+  })
+
+  it('passes the id through untouched rather than deriving anything from it', async () => {
+    // The dispatcher is not the component that decides whether an id is real --
+    // `handleRemoteRequest` already resolved it against the registry, and the MCP
+    // server validates the shape again before it writes it down. Rewriting it
+    // here would put a third opinion between those two.
+    const mcp = fakeMcp()
+    await new RequestDispatcher(mcp).dispatch({ kind: 'listTerminals' }, all, 'ffffffffffffffff')
+    expect(mcp.callTool.mock.calls[0][2]).toBe('ffffffffffffffff')
   })
 })

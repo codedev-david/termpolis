@@ -52,8 +52,11 @@ The same four run in CI (the `mobile` job in
 `.github/workflows/test.yml`). Lint is not a separate script here: the root
 `npm run lint` already covers `mobile/`, under the root `.eslintrc.cjs`.
 
-Coverage floors sit just under what the suite achieves, and they ratchet up.
-If one fails, backfill tests — never lower a floor.
+Coverage floors are **100 on all four counters** — lines, functions, branches,
+statements (`jest.config.js`). Not "just under the suite": this app holds the
+private key that authorises a phone to type into the user's terminals, and an
+untested line here is a line nobody has run. If a floor fails, backfill the
+test — never lower a floor.
 
 ## `src/wire/` is pure by contract
 

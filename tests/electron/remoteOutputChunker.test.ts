@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { chunkOutbound, MAX_PAYLOAD_BYTES } from '../../src/main/remoteBridge/outputChunker'
+import {
+  chunkOutbound,
+  MAX_PAYLOAD_BYTES,
+  type OutputPayload,
+} from '../../src/main/remoteBridge/outputChunker'
 import { SEAL_OVERHEAD_BYTES } from '../../src/main/remoteBridge/sealedChannel'
 import {
   SealedSession,
@@ -8,6 +12,7 @@ import {
 } from '../../src/main/remoteBridge/sessionCrypto'
 import { NO_CAPABILITIES, RELAY_MAX_FRAME_BYTES } from '../../src/main/remoteBridge/protocol'
 import { MAX_FRAME_BYTES } from '../../relay/src/quota'
+import { OutputFanout } from '../../src/main/remoteBridge/outputFanout'
 import type { DrainedChunk } from '../../src/main/remoteBridge/outputFanout'
 import type { OutputChunk, RemoteMessage } from '../../src/main/remoteBridge/protocol'
 
@@ -204,5 +209,100 @@ describe('output wire shape', () => {
     const drained: DrainedChunk = chunk()
     const wire: OutputChunk = drained
     expect(wire.marker).toBeNull()
+  })
+})
+
+/** The packer prices each piece once and keeps a running total. That is only
+ *  sound because a JSON array's size is the envelope plus its elements plus one
+ *  comma between neighbours -- an element's bytes never depend on what sits
+ *  beside it. These two tests hold both halves of that: the arithmetic is exact,
+ *  and it stays fast at the sizes a real reattach produces. */
+describe('output chunker -- packing a reattach backlog', () => {
+  /** The obvious implementation: measure the whole accumulated array every time.
+   *  Correct, and quadratic. Kept here as the oracle the fast path must match
+   *  byte for byte -- "faster" is worth nothing if it packs one byte differently,
+   *  because one byte over the cap is a cut connection. */
+  function packByRemeasuring(pieces: DrainedChunk[], maxBytes: number): OutputPayload[] {
+    const payloads: OutputPayload[] = []
+    let open: DrainedChunk[] = []
+    for (const piece of pieces) {
+      const candidate = [...open, piece]
+      if (open.length > 0 && wireSize({ kind: 'output', chunks: candidate }) > maxBytes) {
+        payloads.push({ kind: 'output', chunks: open })
+        open = [piece]
+        continue
+      }
+      open = candidate
+    }
+    if (open.length > 0) payloads.push({ kind: 'output', chunks: open })
+    return payloads
+  }
+
+  /** Deterministic, so a failure reproduces. Math.random would make this test
+   *  report a boundary bug once and then never again. */
+  function lcg(seed: number): () => number {
+    let s = seed >>> 0
+    return () => {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0
+      return s / 0x1_0000_0000
+    }
+  }
+
+  it('packs exactly as re-measuring the whole array would', () => {
+    // Mixed on purpose: plain ASCII prices one byte per character, ESC prices
+    // six, and an astral character prices twelve across two code units. If the
+    // running total were an estimate rather than the real arithmetic, a queue
+    // that mixes them is where it would drift.
+    const rnd = lcg(20260905)
+    const alphabet = ['x', ' ', '\n', '\u001b[31m', '"', '\\', '\u00e9', '\u{1f600}']
+    const chunks: DrainedChunk[] = Array.from({ length: 900 }, (_, i) => {
+      const len = 1 + Math.floor(rnd() * 40)
+      let text = ''
+      for (let j = 0; j < len; j++) text += alphabet[Math.floor(rnd() * alphabet.length)]
+      return {
+        terminalId: `t${i % 4}`,
+        chunk: text,
+        missed: i % 7 === 0 ? i : 0,
+        marker: i % 11 === 0 ? `[${i} lines lost]` : null,
+      }
+    })
+
+    // Several budgets, because the interesting behaviour is at the boundary and
+    // a single budget only ever exercises one of them.
+    for (const budget of [120, 512, 4096, 65_536, MAX_PAYLOAD_BYTES]) {
+      const pieces = chunks.flatMap((c) => chunkOutbound([c], budget).flatMap((p) => p.chunks))
+      expect(chunkOutbound(chunks, budget)).toEqual(packByRemeasuring(pieces, budget))
+    }
+  })
+
+  it('packs a full backlog fast enough that the bridge keeps answering', () => {
+    // The shape a reattach actually produces. The fan-out evicts on a CHARACTER
+    // budget and never on a chunk count, and the pump enqueues one chunk per
+    // dirty terminal every 50ms -- so a phone detached for a quarter of an hour
+    // over a chatty terminal comes back to tens of thousands of tiny chunks, all
+    // handed to the packer at once.
+    const fanout = new OutputFanout()
+    fanout.subscribe('phone', 't1')
+    for (let i = 0; i < 18_000; i++) {
+      fanout.ingest('t1', { output: '\u001b[32mok\u001b[0m hi\n', nextOffset: i, missed: 0 })
+    }
+    const drained = fanout.drain('phone')
+    // Guard the guard: if the fan-out ever starts evicting by count, this test
+    // would keep passing while no longer testing anything.
+    expect(drained.length).toBeGreaterThan(10_000)
+
+    const started = performance.now()
+    const payloads = chunkOutbound(drained, MAX_PAYLOAD_BYTES)
+    const elapsed = performance.now() - started
+
+    // Measured at ~23ms here. Re-measuring the whole array each time took ~33
+    // SECONDS on the same input -- long enough for the relay to drop the socket
+    // for idleness, so the reattach that caused the stall also fails. The
+    // threshold is loose enough for a loaded CI box and still two orders of
+    // magnitude below the regression.
+    expect(elapsed).toBeLessThan(3000)
+    for (const p of payloads) expect(wireSize(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES)
+    // Nothing dropped on the way through.
+    expect(payloads.flatMap((p) => p.chunks)).toHaveLength(drained.length)
   })
 })

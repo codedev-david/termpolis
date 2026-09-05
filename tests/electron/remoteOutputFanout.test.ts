@@ -210,3 +210,51 @@ describe('OutputFanout.subscribedTerminals', () => {
     expect(f.subscribedTerminals()).toEqual(['t2'])
   })
 })
+
+describe('who is watching what', () => {
+  it('names the devices subscribed to one terminal', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('b', 't1')
+    f.subscribe('c', 't2')
+    expect(f.subscribersOf('t1').sort()).toEqual(['a', 'b'])
+    expect(f.subscribersOf('t2')).toEqual(['c'])
+  })
+
+  it('names nobody for a terminal nobody watches', () => {
+    // The empty answer is the authorisation answer: a status push for an
+    // unwatched terminal goes to no one rather than to everyone.
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    expect(f.subscribersOf('t9')).toEqual([])
+  })
+
+  it('forgets a device the moment it is dropped', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.dropDevice('a')
+    expect(f.subscribersOf('t1')).toEqual([])
+    expect(f.terminalsOf('a')).toEqual([])
+  })
+
+  it('names the terminals one device is watching', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('a', 't2')
+    f.subscribe('b', 't3')
+    expect(f.terminalsOf('a').sort()).toEqual(['t1', 't2'])
+  })
+
+  it('names nothing for a device that never subscribed', () => {
+    expect(new OutputFanout().terminalsOf('ghost')).toEqual([])
+  })
+
+  it('drops a terminal from the device that unsubscribed and no other', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('b', 't1')
+    f.unsubscribe('a', 't1')
+    expect(f.subscribersOf('t1')).toEqual(['b'])
+    expect(f.terminalsOf('a')).toEqual([])
+  })
+})

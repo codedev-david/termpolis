@@ -61,8 +61,10 @@ import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSy
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
+import { createTerminalNameLookup } from './terminalNames'
 import {
   appendOutput,
+  readOutput,
   readOutputFrom,
   readOutputTail,
   type OutputBuffers,
@@ -450,6 +452,18 @@ const terminalOutputBuffers: OutputBuffers = new Map()
 
 // Track terminals created via MCP (swarm) so we can enforce agent commands
 const mcpCreatedTerminals = new Set<string>()
+
+/** What the user called a terminal, or '' when nothing is on record.
+ *
+ *  Names matter to the agent-status detector -- "please restart claude" is a
+ *  blocked state for Claude and ordinary output for anything else -- and the
+ *  remote status pump asks once per watched terminal per second. Cached, because
+ *  the answer lives in the session file and this process is the one pumping
+ *  every PTY in the window. */
+const terminalDisplayName = createTerminalNameLookup({
+  load: () => loadSession().terminals,
+  now: () => Date.now(),
+})
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
@@ -3547,6 +3561,10 @@ if (!gotTheLock) {
           sendStatus: (status) => { try { mainWindow?.webContents.send('remote:status-changed', status) } catch { /* window gone */ } },
           sendEvent: (event) => { try { mainWindow?.webContents.send('remote:event', event) } catch { /* window gone */ } },
           readOutput: (terminalId, fromOffset) => readOutputFrom(terminalOutputBuffers, terminalId, fromOffset),
+          readRecent: (terminalId) =>
+            terminalOutputBuffers.has(terminalId)
+              ? { output: readOutput(terminalOutputBuffers, terminalId), name: terminalDisplayName(terminalId) }
+              : null,
           createTransport: realBridgeTransport,
         })
       } catch (e) {

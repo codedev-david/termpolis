@@ -137,6 +137,12 @@ export type HostToBridge =
   // per-terminal offsets (terminalOutputBuffer.ts), so the bridge is handed slices
   // rather than reaching back for them -- it never touches the PTY.
   | { kind: 'terminalOutput'; terminalId: string; slice: OutputSlice }
+  // Agent status, derived in main from the same rolling buffer the slices come
+  // from. It is computed there rather than here because the detector needs the
+  // WINDOW and the bridge is only ever handed increments -- and because the
+  // terminal's name, which the detector keys several of its rules off, lives in
+  // main's session record and nowhere the bridge can see.
+  | { kind: 'terminalStatus'; terminalId: string; status: AgentStatus; summary: string }
   | { kind: 'shutdown' }
 
 /** Messages the bridge sends up to main. */
@@ -169,6 +175,34 @@ export type BridgeToHost =
  *  under load, which looks like a network fault and is not.
  */
 export const RELAY_MAX_FRAME_BYTES = 1_048_576
+
+/** How long a paired phone may go unseen before the desktop forgets it.
+ *
+ *  The design promises that "idle pairings auto-expire", and a pairing that
+ *  never expires is a key that outlives the phone it was minted for -- a lost
+ *  handset stays authorised until somebody remembers to revoke it. Thirty days
+ *  is long enough that a holiday does not cost the user a re-pair, and short
+ *  enough that a drawer full of old phones does not accumulate access.
+ *
+ *  Counted from `lastSeenAt`, which the bridge advances on every request a
+ *  device makes. */
+export const DEVICE_IDLE_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000
+
+/** How often the bridge looks for devices that have aged out.
+ *
+ *  Six hours, not six seconds: expiry is measured in days, and a sweep is only
+ *  ever going to find something at the granularity the thing it sweeps for
+ *  changes. The bridge also sweeps once at startup, which is what catches a
+ *  desktop that was closed for the whole of a device's idle window. */
+export const DEVICE_EXPIRY_SWEEP_MS = 6 * 60 * 60 * 1000
+
+/** How stale `lastSeenAt` may get before the bridge tells main about it.
+ *
+ *  Every request a phone makes advances the timestamp, and announcing each one
+ *  would rewrite `remote-devices.json` per keystroke. Settings rounds the column
+ *  to the minute and redraws it on a one-minute tick, so anything finer than
+ *  this could not be seen even if it were sent. */
+export const SEEN_ANNOUNCE_INTERVAL_MS = 60_000
 
 /** Where a desktop dials when the user has not named a relay of their own.
  *

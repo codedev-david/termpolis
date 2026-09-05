@@ -70,6 +70,7 @@ function makeHarness() {
       const all = text[id] ?? ''
       return { output: all.slice(from), nextOffset: all.length, missed: 0 }
     },
+    readRecent: (id) => (id in text ? { output: text[id], name: id } : null),
     startBridge: (init, relayUrl) => {
       started.push({ init, relayUrl })
       running = true
@@ -375,9 +376,13 @@ describe('remote bridge host', () => {
     harness.host.noteTerminalOutput('t1')
     harness.host.noteTerminalOutput('t2')
     harness.tick()
-    expect(harness.posted).toEqual([
+    expect(harness.posted.filter((m) => m.kind === 'terminalOutput')).toEqual([
       { kind: 'terminalOutput', terminalId: 't1', slice: { output: 'watched', nextOffset: 7, missed: 0 } },
     ])
+    // Nothing about the unwatched terminal crosses at all -- not its bytes and
+    // not its status. Two pumps read the same subscription set, and a scope test
+    // that only checked one of them would pass while the other leaked.
+    expect(harness.posted.some((m) => JSON.stringify(m).includes('t2'))).toBe(false)
   })
 
   it('does not read terminals at all while remote is off', () => {
@@ -391,6 +396,7 @@ describe('remote bridge host', () => {
       sendStatus: () => {},
       sendEvent: () => {},
       readOutput: read,
+      readRecent: () => null,
       startBridge: () => {},
       stopBridge: () => {},
       sendToBridge: () => {},
@@ -419,10 +425,11 @@ describe('remote bridge host', () => {
     harness.host.noteTerminalClosed('t1')
     harness.host.noteTerminalOutput('t1')
     harness.tick()
-    expect(harness.posted.map((m) => (m as { slice: { output: string } }).slice.output)).toEqual([
-      'first',
-      'first',
-    ])
+    expect(
+      harness.posted
+        .filter((m) => m.kind === 'terminalOutput')
+        .map((m) => (m as { slice: { output: string } }).slice.output),
+    ).toEqual(['first', 'first'])
   })
 
   it('sends pairing, capability and relay changes down to the bridge', () => {
@@ -490,6 +497,7 @@ describe('remote bridge host', () => {
         throw new Error('Object has been destroyed')
       },
       readOutput: () => ({ output: '', nextOffset: 0, missed: 0 }),
+      readRecent: () => null,
       startBridge: () => {},
       stopBridge: () => {},
       sendToBridge: () => {},
@@ -515,7 +523,10 @@ describe('remote bridge host', () => {
     harness.host.noteTerminalOutput('t1')
     harness.host.stop()
     expect(harness.running).toBe(false)
-    expect(harness.cleared).toBe(1)
+    // Two, because there are two pumps behind `noteTerminalOutput` -- bytes and
+    // status -- and each had a pass scheduled. A one here would mean one of them
+    // survived the stop with a timer still armed against a dead bridge.
+    expect(harness.cleared).toBe(2)
     harness.write('t1', 'after')
     harness.host.noteTerminalOutput('t1')
     harness.tick()

@@ -18,6 +18,8 @@ import {
 } from './remoteBridgeSupervisor'
 import { coerceCapabilities } from './remoteDeviceStore'
 import { NO_CAPABILITIES, type BridgeToHost, type Capabilities, type OutputSlice } from './remoteBridge/protocol'
+import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
+import type { TerminalSnapshot } from './remoteStatusPump'
 import { ok, err } from './ipcResult'
 
 /**
@@ -35,6 +37,7 @@ export interface RemoteHostBinding {
   sendStatus(status: RemoteStatusView): void
   sendEvent(event: RemoteEvent): void
   readOutput(terminalId: string, fromOffset: number): OutputSlice
+  readRecent(terminalId: string): TerminalSnapshot | null
   /** How a bridge child is forked. Injected so tests never fork anything; the
    *  app passes `realBridgeTransport`. */
   createTransport(relayUrl: string): BridgeHandle
@@ -45,6 +48,14 @@ export interface RemoteHostBinding {
  *  for status regardless. A message, not a throw: an unhandled rejection in the
  *  renderer would surface as a blank pane with nothing to read. */
 export const REMOTE_UNAVAILABLE = 'Remote access is not running in this session'
+
+/** Answered by the three channels that only POST to the bridge and cannot wait
+ *  for an answer. `sendToBridge` is `handle?.postMessage(...)` -- with the child
+ *  down it discards the message and reports nothing, so without this the
+ *  renderer is told the pairing/revoke/capability change succeeded and then
+ *  waits forever for a result the bridge was never asked to produce. */
+export const REMOTE_NOT_RUNNING =
+  'Remote access is off. Switch on "Allow phones to connect" first.'
 
 let host: RemoteHost | null = null
 let handler: ((m: BridgeToHost) => void) | null = null
@@ -66,6 +77,7 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
     sendStatus: binding.sendStatus,
     sendEvent: binding.sendEvent,
     readOutput: binding.readOutput,
+    readRecent: binding.readRecent,
     startBridge: (init, relayUrl) => {
       // Re-armed on every launch: the spawner closes over the relay URL, and the
       // supervisor calls it again on a crash restart. Wiring it once at bootstrap
@@ -110,25 +122,11 @@ export function noteTerminalClosed(terminalId: string): void {
   host?.noteTerminalClosed(terminalId)
 }
 
-const MAX_LABEL = 64
-
-/** A device label safe to persist and to render.
- *
- *  Control characters are dropped rather than escaped: the label is echoed into
- *  the device list beside a live terminal, and an embedded escape sequence there
- *  is a way to redraw a pane the label has no business touching. */
+/** The device label as the user typed it, made safe. The bridge applies the
+ *  same treatment to the name the PHONE sends -- see `deviceLabel.ts` -- so
+ *  neither end can put an escape sequence in the device list. */
 function sanitizeLabel(raw: unknown): string {
-  const text = typeof raw === 'string' ? raw : ''
-  const clean = [...text]
-    // Compared as strings so an astral character survives whole: `[...text]`
-    // yields the surrogate pair, and its high surrogate sorts well above the
-    // control range.
-    .filter((c) => c > '' && c !== '')
-    .join('')
-    .trim()
-    .slice(0, MAX_LABEL)
-    .trim()
-  return clean || 'Phone'
+  return sanitizeDeviceLabel(raw) || 'Phone'
 }
 
 function deviceIdOf(input: unknown): string {
@@ -191,6 +189,7 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
 
   ipc.handle('remote:begin-pairing', (_e, input) => {
     if (!host) return err(REMOTE_UNAVAILABLE)
+    if (!host.status().running) return err(REMOTE_NOT_RUNNING)
     host.beginPairing(sanitizeLabel((input as { label?: unknown } | undefined)?.label))
     return ok(host.status())
   })
@@ -205,6 +204,7 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     if (!host) return err(REMOTE_UNAVAILABLE)
     const deviceId = deviceIdOf(input)
     if (!deviceId) return err('A device id is required')
+    if (!host.status().running) return err(REMOTE_NOT_RUNNING)
     host.revokeDevice(deviceId)
     return ok(host.status())
   })
@@ -215,6 +215,7 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     if (!deviceId) return err('A device id is required')
     const read = readCapabilities(input)
     if ('error' in read) return err(read.error)
+    if (!host.status().running) return err(REMOTE_NOT_RUNNING)
     host.setDeviceCapabilities(deviceId, read.caps)
     return ok(host.status())
   })

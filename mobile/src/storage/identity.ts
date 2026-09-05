@@ -108,15 +108,23 @@ export async function savePaired(desktop: PairedDesktop): Promise<void> {
   await SecureStore.setItemAsync(PAIRED_KEY, JSON.stringify(record), KEYCHAIN)
 }
 
-/** Forget the desktop, keep the identity.
+/** Forget the desktop AND the private key. This is what unpairing does.
  *
- *  Re-pairing then arrives at the desktop as the same device rather than as a
- *  second entry the user has to reason about. */
-export async function clearPaired(): Promise<void> {
-  await SecureStore.deleteItemAsync(PAIRED_KEY)
-}
-
-/** Forget everything. Only the explicit "forget this phone" path calls this. */
+ *  There is deliberately no "forget the desktop, keep the key" variant. Keeping
+ *  it would make a re-pair land on the desktop's existing entry for this phone
+ *  instead of a second one -- pleasant, and not worth what it costs: the key is
+ *  this phone's whole authority, a desktop that has not also revoked the device
+ *  goes on trusting whoever holds it, and PRIVACY.md states plainly that
+ *  unpairing erases the key material.
+ *
+ *  The delete is ordered pairing-record-first so that an interrupted wipe leaves
+ *  a phone with a key and no desktop -- which is the pair screen, and recoverable
+ *  -- rather than a desktop record whose key is gone, which is a phone that
+ *  believes it is paired and fails every handshake with nothing on screen to
+ *  explain it.
+ *
+ *  Callers must also drop any in-memory copy of the identity; the keystore is not
+ *  the only place it lives. */
 export async function wipeIdentity(): Promise<void> {
   await SecureStore.deleteItemAsync(PAIRED_KEY)
   await SecureStore.deleteItemAsync(IDENTITY_KEY)

@@ -12,8 +12,15 @@ import {
 import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
 import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
 import { Handshake } from './sessionCrypto'
-import { DEFAULT_RELAY_URL } from './protocol'
+import {
+  DEFAULT_RELAY_URL,
+  DEVICE_EXPIRY_SWEEP_MS,
+  DEVICE_IDLE_EXPIRY_MS,
+  SEEN_ANNOUNCE_INTERVAL_MS,
+} from './protocol'
+import { sanitizeDeviceLabel } from './deviceLabel'
 import { x25519 } from '@noble/curves/ed25519.js'
+import type { AgentStatus } from '../../shared/agentStatusDetector'
 import type {
   BridgeToHost,
   HostToBridge,
@@ -37,7 +44,7 @@ export { NO_CAPABILITIES } from './protocol'
 export type { Capabilities, PairedDevice, RemoteRequest, RemoteResponse } from './protocol'
 
 interface McpLike {
-  callTool(name: string, args: Record<string, unknown>): Promise<unknown>
+  callTool(name: string, args: Record<string, unknown>, deviceId: string): Promise<unknown>
 }
 
 /** What the bridge needs from a relay room. Narrower than `RelayClient` so a
@@ -81,8 +88,28 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   let dispatcher: RequestDispatcher | null = null
   let pairing: PairingSession | null = null
   let publicKey = ''
+  /** The label the desktop user typed for the offer currently open. Held here
+   *  rather than on the offer because the offer is minted before the device
+   *  exists, and it is the device row this name ends up on. */
+  let requestedLabel = ''
+  /** Per device, the `lastSeenAt` main was last told about. Throttles the
+   *  announcement; see `noteSeen`. */
+  const announcedSeenAt = new Map<string, number>()
+  let expirySweep: ReturnType<typeof setInterval> | null = null
   let identitySecretKey = ''
   const fanout = new OutputFanout()
+  /** The last status main reported for each watched terminal.
+   *
+   *  Kept because a status frame is a fact about the present, not an entry in a
+   *  queue: a phone that was offline when it was sent has missed it, and main
+   *  will not send it again until the answer CHANGES. Replaying the remembered
+   *  one on subscribe is what stops a reconnecting phone from showing a blank
+   *  label under a terminal that has been sitting in the same state for an hour.
+   *
+   *  Bounded by pruning against the fan-out's watched set on every status
+   *  message: the bridge is never told a terminal closed, so nothing else would
+   *  ever remove an entry. */
+  const lastStatus = new Map<string, { status: AgentStatus; summary: string }>()
 
   /** One relay room per paired device, keyed by device id.
    *
@@ -156,7 +183,13 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       result = acceptPairing({
         oneTimeSecret: hello.oneTimeSecret,
         devicePublicKey: hello.devicePublicKey,
-        label: hello.label,
+        // The name the user chose wins; the phone's own name is the fallback for
+        // a user who left the field empty. Both are cleaned, because both end up
+        // in `remote-devices.json` and in the device list -- and the phone's
+        // arrives over the relay, so its length and its bytes are the sender's
+        // choice entirely. Unsanitised, a paired phone could park an escape
+        // sequence or a few kilobytes of text in the desktop's settings file.
+        label: requestedLabel || sanitizeDeviceLabel(hello.label) || 'Phone',
       })
     } catch (err) {
       // This one IS worth surfacing: the frame opened, so the sender had the QR's
@@ -240,7 +273,16 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // Attaching is the one moment a device has a backlog AND somewhere to put it.
     // Without this, output queued during an outage sits in the fan-out until the
     // next keystroke happens to flush it.
-    if (state === 'attached') pump(deviceId)
+    if (state === 'attached') {
+      pump(deviceId)
+      // Status is not queued the way output is -- it is a fact about the present,
+      // and main only re-sends it when the answer CHANGES. A phone that spent the
+      // outage on a terminal screen keeps its subscription across the drop, so it
+      // never re-subscribes on the way back; without this replay its status label
+      // stays blank until the agent happens to move, which for an idle terminal
+      // is never.
+      for (const terminalId of fanout.terminalsOf(deviceId)) sendStatus(deviceId, terminalId)
+    }
   }
 
   /** Push whatever is queued for one device, in frames the relay will accept.
@@ -266,8 +308,62 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     for (const payload of chunkOutbound(chunks, MAX_PAYLOAD_BYTES)) room.client.send(payload)
   }
 
+  /** Send one device the remembered status of one terminal.
+   *
+   *  Silent when there is nothing remembered: a terminal main has not reported on
+   *  yet has no status, and inventing one would put a wrong label on the phone
+   *  that is indistinguishable from a right one. */
+  function sendStatus(deviceId: string, terminalId: string): void {
+    const known = lastStatus.get(terminalId)
+    if (!known) return
+    const room = rooms.get(deviceId)
+    if (!room || room.client.state !== 'attached') return
+    room.client.send({ kind: 'status', terminalId, status: known.status, summary: known.summary })
+  }
+
   function announceDevices(): void {
     deps.send({ kind: 'devicesChanged', devices: registry.list() })
+  }
+
+  /** Mark a device seen, and let main know if the record has drifted far enough
+   *  from what main last wrote to be worth another disk write.
+   *
+   *  `registry.touch` alone only ever moved a number inside this process. Main
+   *  owns `remote-devices.json` and the Settings "last seen" column, and it was
+   *  never told -- so a phone in daily use showed the moment it was paired,
+   *  months after the fact, and every device looked equally stale on a list
+   *  whose whole job is telling them apart. */
+  function noteSeen(deviceId: string): void {
+    registry.touch(deviceId)
+    const seenAt = registry.get(deviceId)?.lastSeenAt
+    if (seenAt === undefined) return
+    if (seenAt - (announcedSeenAt.get(deviceId) ?? 0) < SEEN_ANNOUNCE_INTERVAL_MS) return
+    announcedSeenAt.set(deviceId, seenAt)
+    announceDevices()
+  }
+
+  /** Forget devices that have not been heard from inside the idle window.
+   *
+   *  Runs at startup and on a slow timer. Startup matters most: a desktop that
+   *  was shut for six weeks has to drop those pairings before it reopens their
+   *  rooms, or an expired device is briefly live again every time the app
+   *  starts. */
+  function expireIdleDevices(): void {
+    const expired = registry.expireIdle(DEVICE_IDLE_EXPIRY_MS)
+    if (expired.length === 0) return
+    for (const id of expired) {
+      fanout.dropDevice(id)
+      closeRoom(id)
+      announcedSeenAt.delete(id)
+      deps.send({
+        kind: 'error',
+        message: `a paired phone was forgotten after ${Math.round(
+          DEVICE_IDLE_EXPIRY_MS / 86_400_000,
+        )} days without contact -- pair it again to reconnect`,
+      })
+    }
+    announceDevices()
+    announceSubscriptions()
   }
 
   /** The last set main was told about, as a stable key. Starts as the empty set,
@@ -303,12 +399,19 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
           x25519.getPublicKey(new Uint8Array(Buffer.from(msg.identitySecretKey, 'hex'))),
         ).toString('hex')
         deps.send({ kind: 'ready' })
+        // Before any room opens: a pairing that aged out while the desktop was
+        // closed must not come back to life for the length of one startup.
+        expireIdleDevices()
+        expirySweep ??= setInterval(expireIdleDevices, DEVICE_EXPIRY_SWEEP_MS)
         // Every device already paired gets its room back on start. A phone left
         // waiting overnight reconnects without the user touching either machine.
         for (const dev of registry.list()) openRoom(dev)
         return
       }
       case 'beginPairing': {
+        // What the user typed in Settings. It is already sanitised on the way in,
+        // but this process does not get to assume that about anything it is sent.
+        requestedLabel = sanitizeDeviceLabel(msg.label)
         const offer = createPairingOffer({ relayUrl: deps.relayUrl, desktopPublicKey: publicKey })
         pairing = new PairingSession(offer, publicKey, identitySecretKey)
         openPairingRoom(offer)
@@ -332,6 +435,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         return
       case 'revokeDevice':
         registry.revoke(msg.deviceId)
+        announcedSeenAt.delete(msg.deviceId)
         fanout.dropDevice(msg.deviceId)
         // Revoking has to reach the wire. Dropping the record alone leaves a
         // socket the phone is still holding, and the next request on it would be
@@ -365,8 +469,21 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         fanout.ingest(msg.terminalId, msg.slice)
         for (const deviceId of rooms.keys()) pump(deviceId)
         return
+      case 'terminalStatus': {
+        lastStatus.set(msg.terminalId, { status: msg.status, summary: msg.summary })
+        const watched = new Set(fanout.subscribedTerminals())
+        for (const id of [...lastStatus.keys()]) {
+          if (!watched.has(id)) lastStatus.delete(id)
+        }
+        for (const deviceId of fanout.subscribersOf(msg.terminalId)) {
+          sendStatus(deviceId, msg.terminalId)
+        }
+        return
+      }
       case 'shutdown':
         dispatcher = null
+        if (expirySweep) clearInterval(expirySweep)
+        expirySweep = null
         closePairingRoom()
         for (const deviceId of [...rooms.keys()]) closeRoom(deviceId)
         // Main's pump outlives this process by however long the teardown takes.
@@ -390,25 +507,31 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // errors. It is deliberately absent from `requiredCapability`, so losing
     // this branch fails closed rather than open.
     if (env.request.kind === 'getCapabilities') {
-      registry.touch(deviceId)
+      noteSeen(deviceId)
       return { kind: 'ok', id: env.id, data: device.capabilities }
     }
 
     try {
-      const data = await dispatcher.dispatch(env.request, device.capabilities)
+      const data = await dispatcher.dispatch(env.request, device.capabilities, deviceId)
       // Fan-out state changes only AFTER dispatch has returned without throwing.
       // These two lines used to run first, which made the `read` grant advisory:
       // a device refused `read` still got enrolled by its refused `subscribe`,
       // and then received every subsequent chunk of terminal output. The error
       // response said no while the output stream said yes. A side effect applied
       // ahead of the check that authorises it is not a check.
-      if (env.request.kind === 'subscribe') fanout.subscribe(deviceId, env.request.terminalId)
+      if (env.request.kind === 'subscribe') {
+        fanout.subscribe(deviceId, env.request.terminalId)
+        // Before the phone has waited for a change: main only sends a status
+        // when the answer moves, so a terminal that has been idle for an hour
+        // would otherwise open with a blank label and keep it.
+        sendStatus(deviceId, env.request.terminalId)
+      }
       if (env.request.kind === 'unsubscribe') fanout.unsubscribe(deviceId, env.request.terminalId)
       // After the fan-out, never before: the announcement has to follow what the
       // fan-out actually holds, or main starts pumping a terminal for a device
       // that was refused. `announceSubscriptions` is a no-op when nothing moved.
       announceSubscriptions()
-      registry.touch(deviceId)
+      noteSeen(deviceId)
       return { kind: 'ok', id: env.id, data }
     } catch (err) {
       return { kind: 'error', id: env.id, message: (err as Error).message }

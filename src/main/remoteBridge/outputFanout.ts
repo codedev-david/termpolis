@@ -58,6 +58,26 @@ export class OutputFanout {
     return [...all]
   }
 
+  /** The devices watching one terminal.
+   *
+   *  Status pushes go to exactly these and no others. Being in this list already
+   *  means the device holds `read`: a subscribe from a device without it is
+   *  refused before it reaches the fan-out, and a grant withdrawn later drops the
+   *  device from it outright. So this IS the authorisation check for a status
+   *  frame, not a lookup that still needs one. */
+  subscribersOf(terminalId: string): string[] {
+    const ids: string[] = []
+    for (const [deviceId, d] of this.devices) if (d.terminals.has(terminalId)) ids.push(deviceId)
+    return ids
+  }
+
+  /** The terminals one device is watching. Empty for a device that has never
+   *  subscribed, which is the same answer as one that has unsubscribed from
+   *  everything -- neither is owed anything. */
+  terminalsOf(deviceId: string): string[] {
+    return [...(this.devices.get(deviceId)?.terminals ?? [])]
+  }
+
   ingest(terminalId: string, slice: { output: string; nextOffset: number; missed: number }): void {
     if (slice.output === '' && slice.missed === 0) return
     for (const d of this.devices.values()) {
