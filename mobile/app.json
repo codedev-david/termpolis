@@ -6,14 +6,48 @@
     "orientation": "portrait",
     "scheme": "termpolis",
     "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
+    "primaryColor": "#0e639c",
     "ios": {
       "bundleIdentifier": "com.termpolis.remote",
+      "buildNumber": "1",
       "supportsTablet": true,
-      "infoPlist": { "ITSAppUsesNonExemptEncryption": true }
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": true
+      }
     },
-    "android": { "package": "com.termpolis.remote" },
+    "android": {
+      "package": "com.termpolis.remote",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#04080D"
+      },
+      "permissions": ["android.permission.CAMERA", "android.permission.INTERNET"],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "Termpolis Remote uses the camera only to scan the pairing code shown on your desktop." }]
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Termpolis Remote uses the camera only to scan the pairing code shown on your desktop.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#1e1e1e"
+        }
+      ]
     ]
   }
 }
