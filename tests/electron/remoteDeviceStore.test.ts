@@ -104,6 +104,27 @@ describe('remoteDeviceStore', () => {
     })
   })
 
+  it('grants nothing when the capabilities field is not an object', () => {
+    // `typeof null === 'object'`, so the null case is a separate branch from the
+    // scalar one and both have to fail closed. A device whose record was hand-
+    // edited, truncated, or written by an older build must come back with no
+    // grants at all -- never with the field skipped and the defaults left as
+    // whatever the caller merged in.
+    writeRaw([
+      { ...device({ id: 'null-caps' }), capabilities: null },
+      { ...device({ id: 'scalar-caps' }), capabilities: 'all' },
+      { ...device({ id: 'missing-caps' }), capabilities: undefined },
+    ])
+    for (const loaded of loadRemoteDevices(dir)) {
+      expect(loaded.capabilities).toEqual({
+        read: false,
+        createTerminal: false,
+        writeToTerminal: false,
+        closeTerminal: false,
+      })
+    }
+  })
+
   it('drops unknown keys and repairs missing scalars', () => {
     writeRaw([{ ...device(), evil: 'payload', label: undefined, pairedAt: 'soon' }])
     const [loaded] = loadRemoteDevices(dir)

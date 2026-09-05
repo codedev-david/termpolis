@@ -40,7 +40,10 @@ function validRelayUrl(value: unknown): string | null {
   try {
     const url = new URL(value.trim())
     if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return null
-    if (!url.hostname) return null
+    // No empty-hostname check: `ws` and `wss` are WHATWG special schemes, and a
+    // special scheme with no host is a parse failure, not a URL with a blank
+    // one. `ws:///relay` parses as host `relay`, and `ws://` throws into the
+    // catch below. A guard here would be a branch nothing can reach.
     return value.trim()
   } catch {
     return null

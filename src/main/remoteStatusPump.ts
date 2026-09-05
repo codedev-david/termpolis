@@ -110,9 +110,12 @@ export function createStatusPump(deps: StatusPumpDeps): StatusPump {
     if (stopped) return
     const ids = [...dirty]
     dirty.clear()
-    for (const id of ids) {
-      if (subscribed.has(id)) detectOne(id, false)
-    }
+    // No subscription re-check. Nothing unwatched can be in here: `markDirty`
+    // refuses an id that is not subscribed, and both `setSubscriptions` and
+    // `dropTerminal` prune the id as they go. Filtering again would be a branch
+    // with no reachable false arm, and it would contradict the comment on
+    // `markDirty` that says where the filtering lives.
+    for (const id of ids) detectOne(id, false)
   }
 
   return {

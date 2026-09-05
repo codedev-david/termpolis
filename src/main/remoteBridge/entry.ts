@@ -333,12 +333,15 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  never told -- so a phone in daily use showed the moment it was paired,
    *  months after the fact, and every device looked equally stale on a list
    *  whose whole job is telling them apart. */
-  function noteSeen(deviceId: string): void {
-    registry.touch(deviceId)
-    const seenAt = registry.get(deviceId)?.lastSeenAt
-    if (seenAt === undefined) return
-    if (seenAt - (announcedSeenAt.get(deviceId) ?? 0) < SEEN_ANNOUNCE_INTERVAL_MS) return
-    announcedSeenAt.set(deviceId, seenAt)
+  function noteSeen(device: PairedDevice): void {
+    // The record, not the id: `touch` writes through the same object `get`
+    // returned, so `lastSeenAt` is the fresh stamp and is typed `number`.
+    // Looking it up again would reintroduce an `undefined` this function has no
+    // reachable way to receive -- both callers are past the `!device` guard.
+    registry.touch(device.id)
+    const seenAt = device.lastSeenAt
+    if (seenAt - (announcedSeenAt.get(device.id) ?? 0) < SEEN_ANNOUNCE_INTERVAL_MS) return
+    announcedSeenAt.set(device.id, seenAt)
     announceDevices()
   }
 
@@ -507,7 +510,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // errors. It is deliberately absent from `requiredCapability`, so losing
     // this branch fails closed rather than open.
     if (env.request.kind === 'getCapabilities') {
-      noteSeen(deviceId)
+      noteSeen(device)
       return { kind: 'ok', id: env.id, data: device.capabilities }
     }
 
@@ -531,7 +534,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // fan-out actually holds, or main starts pumping a terminal for a device
       // that was refused. `announceSubscriptions` is a no-op when nothing moved.
       announceSubscriptions()
-      noteSeen(deviceId)
+      noteSeen(device)
       return { kind: 'ok', id: env.id, data }
     } catch (err) {
       return { kind: 'error', id: env.id, message: (err as Error).message }

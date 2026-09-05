@@ -148,6 +148,27 @@ describe('remote status pump', () => {
     expect(world.sent.map((s) => s.summary)).toEqual(['Continue?', 'Overwrite main?'])
   })
 
+  it('drops dirty work for a terminal nobody is watching any more', () => {
+    // The dirty set is fed by the PTY and the subscription set by the phone, and
+    // output can arrive, the phone unsubscribe, and the flush timer fire in that
+    // order. `flush` does NOT re-check subscriptions -- it trusts that pending
+    // work for an unwatched terminal was already dropped -- so this is the test
+    // that keeps the pruning in `setSubscriptions` honest.
+    const { pump, world, timers } = harness()
+    world.say('t1', 'first', THINKING)
+    pump.setSubscriptions(['t1'])
+    expect(world.sent).toHaveLength(1)
+
+    world.say('t1', 'second', WAITING)
+    pump.markDirty('t1')
+    pump.setSubscriptions([])
+    const detectsBefore = world.detected.length
+    timers.tick()
+
+    expect(world.sent).toHaveLength(1)
+    expect(world.detected).toHaveLength(detectsBefore)
+  })
+
   it('feeds the previous status back into the detector', () => {
     // The real detector takes it as a third argument and uses it to hold a state
     // that its own rules cannot re-derive from the tail alone.

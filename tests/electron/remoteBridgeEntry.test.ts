@@ -94,7 +94,7 @@ function stubRoom(deps: RelayClientDeps) {
   return room
 }
 
-function core(devices: PairedDevice[] = []) {
+function core(devices: PairedDevice[] = [], { init = true }: { init?: boolean } = {}) {
   const sent: BridgeToHost[] = []
   const rooms: ReturnType<typeof stubRoom>[] = []
   const callTool = vi.fn().mockResolvedValue({ terminals: [] })
@@ -108,7 +108,9 @@ function core(devices: PairedDevice[] = []) {
       return room
     },
   })
-  c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices })
+  if (init) {
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices })
+  }
   return { c, sent, callTool, rooms }
 }
 
@@ -284,6 +286,17 @@ describe('bridge core', () => {
     const res = await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'listTerminals' } })
     expect(res.kind).toBe('error')
     expect(callTool).not.toHaveBeenCalled()
+  })
+
+  it('shuts down cleanly when init never arrived', () => {
+    // Main forks the bridge and can decide to stop it before `init` lands -- a
+    // quick off/on of the Remote toggle is enough. There is no identity, no
+    // room and no expiry sweep to clear at that point, and shutdown still has
+    // to complete: a bridge that throws on the way out leaves main waiting on
+    // an exit that never comes.
+    const { c, sent } = core([], { init: false })
+    expect(() => c.handleHostMessage({ kind: 'shutdown' })).not.toThrow()
+    expect(sent.some((m) => m.kind === 'ready')).toBe(false)
   })
 
   it('builds a real MCP client when the host did not inject one', () => {
