@@ -47,7 +47,10 @@ export interface SocketLike {
 
 export interface RelayClientDeps {
   url: string
-  pairingId: string
+  /** The relay room to dial. Which room, and where its name came from, is the
+   *  caller's business: a paired device's room is DERIVED and never announced,
+   *  while a pairing room's name is on screen for as long as the QR is. */
+  roomId: string
   /** A FACTORY, not a session: every attachment needs its own ephemeral key.
    *  Handing this client one long-lived channel is what made recorded traffic
    *  replayable across a bridge restart. */
@@ -130,7 +133,7 @@ export class RelayClient {
     this.setState('connecting')
     const open =
       this.deps.openSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike)
-    const sock = open(`${this.deps.url}/v1/pair/${this.deps.pairingId}?role=desktop`)
+    const sock = open(`${this.deps.url}/v1/pair/${this.deps.roomId}?role=desktop`)
     this.socket = sock
 
     sock.on('open', (() => {

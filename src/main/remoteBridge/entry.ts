@@ -74,22 +74,22 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  relay never multiplexes and never learns how many devices a user has beyond
    *  the rooms it happens to hold. It also means revoking one device closes
    *  exactly one socket and cannot disturb the others. */
-  const rooms = new Map<string, { client: RelayLike; pairingId: string }>()
+  const rooms = new Map<string, { client: RelayLike; roomId: string }>()
 
   function openRoom(dev: PairedDevice): void {
     const current = rooms.get(dev.id)
-    // A device id is a hash of the phone's public key and so is stable across
-    // re-pairs, but a pairing id is minted per offer. Same room: leave the live
-    // socket alone. Different room: the phone is waiting somewhere the desktop
-    // is not, and holding the old one is a re-pair that never connects.
+    // A device id is a hash of the phone's public key, and so is the session room,
+    // so re-pairing the same phone lands on the same room and the live socket is
+    // left alone. A phone that re-pairs with a NEW keypair is a different room --
+    // the old one leads nowhere, and holding it is a re-pair that never connects.
     if (current) {
-      if (current.pairingId === dev.pairingId) return
+      if (current.roomId === dev.sessionRoomId) return
       closeRoom(dev.id)
     }
     const open = deps.openRelay ?? ((d: RelayClientDeps) => new RelayClient(d))
     const client = open({
       url: deps.relayUrl,
-      pairingId: dev.pairingId,
+      roomId: dev.sessionRoomId,
       // A factory, so every dial gets a fresh ephemeral key and therefore a fresh
       // session key. That is what makes per-connection counters sound: they may
       // start at zero on each connection precisely because the key they count
@@ -114,7 +114,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
           message: `relay closed the ${dev.label} connection: ${limit}`,
         }),
     })
-    rooms.set(dev.id, { client, pairingId: dev.pairingId })
+    rooms.set(dev.id, { client, roomId: dev.sessionRoomId })
     client.start()
   }
 
@@ -183,7 +183,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       }
       case 'beginPairing': {
         const offer = createPairingOffer({ relayUrl: deps.relayUrl, desktopPublicKey: publicKey })
-        pairing = new PairingSession(offer, publicKey)
+        pairing = new PairingSession(offer, publicKey, identitySecretKey)
         // NO verification phrase here, deliberately. The safety number is a function
         // of BOTH public keys, and the device's key does not exist yet -- it arrives
         // with its hello. Emitting a placeholder that merely looks like a phrase is

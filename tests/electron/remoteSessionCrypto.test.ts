@@ -328,6 +328,12 @@ describe('SealedSession', () => {
   })
 })
 
+/** A public key from a fixed secret, so the vector below is reproducible.
+ *  `generateIdentity` mints a random secret and cannot pin anything. */
+function pub(secretKey: string): string {
+  return toHex(x25519.getPublicKey(fromHex(secretKey)))
+}
+
 describe('deriveSessionRoomId', () => {
   it('is the same on both ends and hides from everyone else', () => {
     const desktop = generateIdentity()
@@ -336,6 +342,21 @@ describe('deriveSessionRoomId', () => {
     const theirs = deriveSessionRoomId(device.secretKey, desktop.publicKey)
     expect(mine).toBe(theirs)
     expect(mine).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  it('matches a frozen vector, so a phone port lands in the same room', () => {
+    // A room both ends compute independently is only a room if they compute it
+    // IDENTICALLY. Nothing in the protocol announces it, so a React Native port
+    // that changed the HKDF label -- or skipped the HKDF and used the raw DH --
+    // would not fail a handshake. It would sit in an empty room forever, and the
+    // only symptom would be a phone that never connects. This vector is what such
+    // a port is checked against; see docs/remote-wire-format.md.
+    const a = '11'.repeat(32)
+    const b = '22'.repeat(32)
+    const A = pub(a)
+    const B = pub(b)
+    expect(deriveSessionRoomId(a, B)).toBe('c9dc49b87f0dc983be61f034ceab7c52')
+    expect(deriveSessionRoomId(b, A)).toBe('c9dc49b87f0dc983be61f034ceab7c52')
   })
 
   it('differs per pairing', () => {

@@ -8,7 +8,7 @@ function device(id: string, lastSeenAt = 1000): PairedDevice {
     label: `phone-${id}`,
     publicKey: `pk-${id}`,
     capabilities: { ...NO_CAPABILITIES },
-    pairingId: 'f'.repeat(32),
+    sessionRoomId: `room-${id}`,
     pairedAt: 500,
     lastSeenAt,
   }

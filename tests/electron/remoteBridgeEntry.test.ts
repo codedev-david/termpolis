@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'crypto'
 import { createBridgeCore } from '../../src/main/remoteBridge/entry'
 import {
   generateIdentity,
   deriveVerificationPhrase,
   PHRASE_WORDS,
 } from '../../src/main/remoteBridge/sealedChannel'
+import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { NO_CAPABILITIES, type BridgeToHost, type PairedDevice } from '../../src/main/remoteBridge/protocol'
 import type { RelayClientDeps, RelayState } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
@@ -14,12 +16,25 @@ import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBrid
 // survives init.
 const PEER = generateIdentity()
 
+/** The identity `init` hands the core in every test here. Named rather than
+ *  inlined because the session room is a DH over it: a device fixture whose room
+ *  was derived from some other secret would be a room the core never dials. */
+const DESKTOP_SECRET = 'a'.repeat(64)
+
+/** One identity per device id, so two paired devices are two real phones.
+ *
+ *  Devices sharing a public key would derive the SAME session room, and the
+ *  second desktop socket into it takes a 409 off the first. `d1` is `PEER`
+ *  because the pairing tests below scan with that key. */
+const PEERS: Record<string, ReturnType<typeof generateIdentity>> = { d1: PEER }
+
 function device(id = 'd1'): PairedDevice {
+  const keys = PEERS[id] ?? (PEERS[id] = generateIdentity())
   return {
     id,
     label: 'phone',
-    publicKey: PEER.publicKey,
-    pairingId: 'f'.repeat(32),
+    publicKey: keys.publicKey,
+    sessionRoomId: deriveSessionRoomId(DESKTOP_SECRET, keys.publicKey),
     capabilities: { ...NO_CAPABILITIES, read: true },
     pairedAt: 0,
     lastSeenAt: 0,
@@ -63,7 +78,7 @@ function core(devices: PairedDevice[] = []) {
       return room
     },
   })
-  c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices })
+  c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices })
   return { c, sent, callTool, rooms }
 }
 
@@ -210,7 +225,7 @@ describe('bridge core', () => {
       mcp: { callTool: vi.fn().mockRejectedValue(new Error('mcp down')) },
       relayUrl: 'wss://relay.test',
     })
-    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices: [device()] })
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices: [device()] })
     const res = await c.handleRemoteRequest('d1', { id: 5, request: { kind: 'listTerminals' } })
     expect(res.kind).toBe('error')
     expect((res as Extract<typeof res, { kind: 'error' }>).message).toMatch(/mcp down/)
@@ -243,7 +258,7 @@ describe('bridge core', () => {
     const c = createBridgeCore({ send: (m) => sent.push(m), relayUrl: 'wss://relay.test' })
     // No `mcp` dep: init must construct LocalMcpClient against the loopback port
     // rather than crash. Nothing is dialled until a request arrives.
-    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices: [] })
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices: [] })
     expect(sent.some((m) => m.kind === 'ready')).toBe(true)
   })
 
@@ -318,7 +333,7 @@ describe('capability enforcement precedes side effects', () => {
       kind: 'init',
       mcpPort: 1,
       mcpToken: 't',
-      identitySecretKey: 'a'.repeat(64),
+      identitySecretKey: DESKTOP_SECRET,
       devices: [granted, ungranted],
     })
     // An ungranted device must not be able to reach the fan-out at all -- neither
@@ -358,8 +373,10 @@ describe('relay rooms', () => {
     const { rooms } = core([device('d1'), device('d2')])
     expect(rooms).toHaveLength(2)
     expect(rooms.every((r) => r.started)).toBe(true)
-    // Per device, so revoking one cannot disturb another's connection.
-    expect(new Set(rooms.map((r) => r.deps.pairingId)).size).toBe(1)
+    // Per device, so revoking one cannot disturb another's connection -- and two
+    // real phones are two rooms, because the room is a DH over the pair of
+    // identities and the phones' halves differ.
+    expect(new Set(rooms.map((r) => r.deps.roomId)).size).toBe(2)
     expect(rooms[0].deps.url).toBe('wss://relay.test')
   })
 
@@ -386,14 +403,19 @@ describe('relay rooms', () => {
       label: 'Pixel',
     })
 
-    // The room the phone is already waiting in -- the id it scanned, not a fresh
-    // one. A new id here would mean the two ends never meet.
+    // NOT the id it scanned. That one is on screen for anyone with a camera, and
+    // a room name is enough to take a seat: a stranger holding the `device` slot
+    // leaves the real phone looping on a 409 it cannot explain. The room the two
+    // actually meet in is a DH over their identity keys, so it never appears in
+    // the QR and never crosses the wire -- and the phone computes the same value
+    // from what it already holds, which is what makes them meet at all.
     expect(rooms).toHaveLength(1)
-    expect(rooms[0].deps.pairingId).toBe(offer.pairingId)
+    expect(rooms[0].deps.roomId).not.toBe(offer.pairingId)
+    expect(rooms[0].deps.roomId).toBe(deriveSessionRoomId(PEER.secretKey, offer.desktopPublicKey))
     expect(rooms[0].started).toBe(true)
   })
 
-  it('moves the device to the new room when the same phone re-pairs', () => {
+  it('keeps the live room when the same phone re-pairs', () => {
     const { c, sent, rooms } = core()
     const pairOnce = () => {
       c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
@@ -412,24 +434,55 @@ describe('relay rooms', () => {
     const first = pairOnce()
     const second = pairOnce()
 
-    // A device id is a hash of the phone's public key, so it is the SAME phone
-    // both times -- but a pairing id is minted per offer, so the phone is now
-    // waiting in a room the desktop is not in. Keeping the first room because
-    // the device is "already open" is a re-pair that silently never connects.
+    // Two offers, two pairing ids -- and one room, because the room is a function
+    // of two identity keys and neither changed. Back when the room WAS the
+    // pairing id, a re-pair moved the phone somewhere the desktop was not, so
+    // the desktop had to redial to follow it. Now there is nowhere to follow to,
+    // and redialling would drop a live socket to arrive back where it started.
     expect(second).not.toBe(first)
+    expect(rooms).toHaveLength(1)
+    expect(rooms[0].stopped).toBe(false)
+  })
+
+  it('abandons a stale room when the desktop identity behind it has changed', () => {
+    // Persisted device records outlive the identity they were derived from: lose
+    // the stored desktop key and the next boot mints a new one, at which point
+    // every `sessionRoomId` on disk names a room nobody will ever be in. The
+    // re-pair that follows recomputes the room -- and the socket already dialled
+    // to the stale one has to be dropped, or the desktop sits in an empty room
+    // while the phone waits in the real one.
+    // The id a re-pair of this phone will produce -- a hash of its public key, so
+    // the persisted record and the fresh one are the same DEVICE and the guard
+    // in openRoom is what decides whether the old socket lives.
+    const id = createHash('sha256').update(PEER.publicKey).digest('hex').slice(0, 16)
+    const stale = { ...device(), id, sessionRoomId: 'f'.repeat(32) }
+    const { c, sent, rooms } = core([stale])
+    expect(rooms[0].deps.roomId).toBe('f'.repeat(32))
+
+    c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
+    const code = sent.filter((m) => m.kind === 'pairingCode').at(-1) as Extract<
+      BridgeToHost,
+      { kind: 'pairingCode' }
+    >
+    const offer = JSON.parse(code.qrPayload)
+    c.acceptPairing({
+      oneTimeSecret: offer.oneTimeSecret,
+      devicePublicKey: PEER.publicKey,
+      label: 'Pixel',
+    })
+
     expect(rooms).toHaveLength(2)
-    expect(rooms[0].deps.pairingId).toBe(first)
     expect(rooms[0].stopped).toBe(true)
-    expect(rooms[1].deps.pairingId).toBe(second)
+    expect(rooms[1].deps.roomId).toBe(deriveSessionRoomId(DESKTOP_SECRET, PEER.publicKey))
     expect(rooms[1].started).toBe(true)
   })
 
   it('leaves a room alone when the same device is opened twice', () => {
     const dev = device()
     const { c, rooms } = core([dev])
-    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: 'a'.repeat(64), devices: [dev] })
+    c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices: [dev] })
 
-    // Same device, same pairing id: the socket already dialled is the right one.
+    // Same device, same room: the socket already dialled is the right one.
     // Redialling would drop a live connection and lose whatever it was carrying.
     expect(rooms).toHaveLength(1)
     expect(rooms[0].stopped).toBe(false)

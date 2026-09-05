@@ -28,11 +28,20 @@ export interface PairedDevice {
   label: string
   /** X25519 public key, hex. */
   publicKey: string
-  /** The relay room this device dials, minted with the pairing offer.
+  /** The relay room this device and this desktop meet in.
    *
-   *  Stored on the device rather than regenerated, so a desktop restart re-dials
-   *  the room the phone is already waiting in instead of requiring a re-pair. */
-  pairingId: string
+   *  DERIVED from the two identity keys, never announced -- see
+   *  `deriveSessionRoomId`. It used to be the pairing id straight off the QR,
+   *  which made the session room's address public to anyone who photographed the
+   *  code: a room name is not a credential, so a stranger could take the `device`
+   *  seat and leave the real phone looping on a 409 with nothing to show the user.
+   *  Neither the offer's TTL nor its single-use flag touches that, because the
+   *  exposure is the NAME and the name outlived the secret.
+   *
+   *  Stored rather than recomputed only so the registry is self-describing; both
+   *  ends can derive it at any time from keys they already hold, which is what
+   *  lets a desktop restart re-dial the room the phone is still waiting in. */
+  sessionRoomId: string
   capabilities: Capabilities
   pairedAt: number
   lastSeenAt: number

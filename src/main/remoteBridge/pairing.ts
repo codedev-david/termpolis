@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto'
 import { deriveVerificationPhrase } from './sealedChannel'
+import { deriveSessionRoomId } from './sessionCrypto'
 import { NO_CAPABILITIES, type PairedDevice } from './protocol'
 
 const DEFAULT_TTL_MS = 90_000
@@ -51,6 +52,12 @@ export class PairingSession {
   constructor(
     private readonly offer: PairingOffer,
     private readonly desktopPublicKey: string,
+    /** The desktop's identity SECRET key.
+     *
+     *  Needed because the session room is a Diffie-Hellman over the two identities
+     *  rather than a value anyone hands out. The public key alone cannot compute
+     *  it -- which is exactly why the room name survives a photographed QR. */
+    private readonly desktopSecretKey: string,
   ) {}
 
   accept(input: {
@@ -71,7 +78,7 @@ export class PairingSession {
       id: createHash('sha256').update(input.devicePublicKey).digest('hex').slice(0, 16),
       label: input.label,
       publicKey: input.devicePublicKey,
-      pairingId: this.offer.pairingId,
+      sessionRoomId: deriveSessionRoomId(this.desktopSecretKey, input.devicePublicKey),
       capabilities: { ...NO_CAPABILITIES },
       pairedAt: now,
       lastSeenAt: now,

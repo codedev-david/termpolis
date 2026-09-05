@@ -97,7 +97,7 @@ afterEach(() => {
 function build(p: ReturnType<typeof pair>, open: Deps['openSocket'], extra: Partial<Deps> = {}) {
   const c = new RelayClient({
     url: 'wss://relay.test',
-    pairingId: 'a'.repeat(32),
+    roomId: 'a'.repeat(32),
     handshake: p.handshake,
     onRequest: vi.fn(),
     onStateChange: () => {},
