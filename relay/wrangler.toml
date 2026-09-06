@@ -3,6 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2026-08-22"
 compatibility_flags = ["nodejs_compat"]
 
+# No workers.dev hostname. The relay is reachable at exactly one name, the one
+# both clients ship as their default; a second, unauthenticated public hostname
+# for a pairing relay is attack surface with no user behind it. Turning it off
+# also drops wrangler's demand that the account have a workers.dev subdomain
+# provisioned at all (API error 10063 on a first deploy).
+workers_dev = false
+
 # The hostname both sides ship as their default -- `DEFAULT_RELAY_URL` in
 # `relay/src` has no say in it; `mobile/src/wire/protocol.ts` and
 # `src/main/remoteSettings.ts` both hardcode `wss://relay.termpolis.com`, so a

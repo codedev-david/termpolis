@@ -17,6 +17,18 @@ export default defineConfig({
     }),
   ],
   test: {
+    // The rate-limit suite drives a REAL workerd through 40 sequential
+    // `SELF.fetch` round-trips -- it has to be sequential, because the assertion
+    // is on the ORDER in which requests flip from accepted to refused, and it has
+    // to exceed 30, because that is the limit being proved. At ~125ms per
+    // round-trip on a loaded CI runner that lands within a rounding error of
+    // vitest's 5000ms default, which is why it passed locally and on three CI
+    // runs and then timed out on the fourth.
+    //
+    // Raised rather than retried on purpose: a retry would hide a test that is
+    // still one slow runner away from failing, and would hide a genuine
+    // slowdown in the limiter behind a green tick.
+    testTimeout: 30_000,
     coverage: {
       provider: 'istanbul',
       include: ['src/**/*.ts'],
