@@ -25,9 +25,57 @@ Roughly two weeks of calendar time, most of it waiting on other people.
 | --- | --- | --- |
 | Apple Developer Program | $99/yr | **Already active.** `release.yml` notarizes the desktop app with `secrets.APPLE_TEAM_ID` and an Apple Developer ID certificate, and notarization is impossible without a live Program membership. |
 | App Store Connect app record | -- | Create an iOS app with bundle id `com.termpolis.remote`. This mints the numeric App ID that `eas.json` needs. |
-| Google Play Console | $25 once | New accounts face a **14-day closed test with at least 12 testers** before production access. Start this first; it is the long pole. |
-| Play service account JSON | -- | For `eas submit`. Google Cloud → service account → grant it Play Console access. |
+| Google Play Console | $25 once | **Registered.** Whether it needs a 14-day closed test before production depends on the account type -- see below. |
+| Play service account JSON | -- | For `eas submit`. Google Cloud → service account → grant it Play Console access -- see below. |
 | Expo account | free | EAS runs the builds. `expo.dev` → sign up. The Apple and Google credentials are stored here, not in this repo. |
+
+#### Play: find out which timeline you are on, first
+
+Google requires **personal** developer accounts registered since late 2023 to
+run a closed test -- at least 12 testers, opted in, continuously for 14 days --
+before they may apply for production access. **Organization** accounts are not
+subject to it. Termpolis has an LLC behind it (codedev.llc), so which one was
+selected at registration decides whether the Android launch is two weeks out or
+days out.
+
+Check it rather than assume: Play Console → **Settings → Developer account →
+Account details**, and Play Console → **Release → Production**, which states
+the outstanding requirement directly. The Console is authoritative; this policy
+has moved before and will again.
+
+If the closed test does apply, **it reorders everything below.** The 14-day
+clock does not start when the account is created -- it starts when a build is
+live on a closed track with testers opted in. So on the Android side, run
+steps 2, 3 and 7 (link EAS, fill placeholders, build) as early as they will go,
+push that build to a closed track, and do the screenshots, feature graphic,
+listing copy and forms *during* the fortnight rather than before it. None of
+that work gates the clock, and doing it first simply adds its duration to the
+wait.
+
+#### Play: the app record and the service account
+
+The Play app record takes `com.termpolis.remote` -- **permanent from the first
+upload.** It cannot be renamed, and a typo means a new app record, a new
+listing, and a new URL.
+
+`eas submit` authenticates as a service account, not as you:
+
+1. Play Console → **Setup → API access** → create or link a Google Cloud project.
+2. In Google Cloud, create a service account, then create a **JSON** key for it.
+3. Back in Play Console → **Users and permissions**, invite that service
+   account's address and grant it release permissions for this app.
+4. Hand the JSON to EAS. It never enters this repository:
+
+```bash
+eas secret:create --scope project --name GOOGLE_SERVICE_ACCOUNT_KEY --type file --value ./play-service-account.json
+```
+
+Then delete the local copy. It is a credential that can publish to the store
+under your name.
+
+The permission grant in step 3 propagates on Google's schedule, not yours -- a
+`eas submit` run minutes after granting can still fail on permissions. Retry
+before assuming the key is wrong.
 
 ### 2. Link the app to an EAS project
 
