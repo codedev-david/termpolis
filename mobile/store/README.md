@@ -31,26 +31,47 @@ Roughly two weeks of calendar time, most of it waiting on other people.
 
 #### Play: find out which timeline you are on, first
 
-Google requires **personal** developer accounts registered since late 2023 to
-run a closed test -- at least 12 testers, opted in, continuously for 14 days --
-before they may apply for production access. **Organization** accounts are not
-subject to it. Termpolis has an LLC behind it (codedev.llc), so which one was
-selected at registration decides whether the Android launch is two weeks out or
-days out.
+The account is **personal**, so the closed test applies: at least 12 testers,
+opted in, continuously for 14 days, before production access can even be
+applied for. Organization accounts are exempt; this one is not.
 
-Check it rather than assume: Play Console → **Settings → Developer account →
-Account details**, and Play Console → **Release → Production**, which states
-the outstanding requirement directly. The Console is authoritative; this policy
-has moved before and will again.
+Play Console → **Release → Production** states the outstanding requirement
+directly, and is authoritative over anything written here -- the policy has
+moved before and will again.
 
-If the closed test does apply, **it reorders everything below.** The 14-day
-clock does not start when the account is created -- it starts when a build is
-live on a closed track with testers opted in. So on the Android side, run
-steps 2, 3 and 7 (link EAS, fill placeholders, build) as early as they will go,
-push that build to a closed track, and do the screenshots, feature graphic,
-listing copy and forms *during* the fortnight rather than before it. None of
-that work gates the clock, and doing it first simply adds its duration to the
-wait.
+**What the fortnight does and does not let you defer.** The clock starts when a
+build is live on a *closed* track with testers opted in -- not when the account
+was created. But Play will not publish to a closed track until App content and
+the main store listing are complete, so the Android assets and disclosure forms
+are *not* deferrable: they gate the start of the clock. The work that genuinely
+parallelises is **iOS** -- the App Store Connect record, `ascAppId`, the iOS
+build and its screenshots all proceed while Android's fourteen days run.
+
+So the Android critical path is: link EAS → app record → App content + listing
+(steps 4, 6 and 9 below, using the answers already written in
+`data-disclosures.md` and `listing.md`) → build → submit to the closed track →
+recruit testers. Everything after that is waiting, and iOS fills it.
+
+Two mistakes here cost a fortnight each and report nothing at the time they are
+made:
+
+- **Internal testing is not closed testing.** They are separate tracks and only
+  the closed one counts. `eas.json` therefore has a dedicated `closedtest`
+  submit profile on the `alpha` track; the `production` profile targets
+  `internal` and will not advance the clock.
+- **A draft release is not installable**, so nobody can opt in to it. The
+  `closedtest` profile sets `releaseStatus: "completed"` for that reason.
+
+`mobile/__tests__/appConfig.test.ts` asserts both, because neither is visible in
+the Console until the two weeks have already been lost.
+
+```bash
+npx eas-cli submit --platform android --profile closedtest
+```
+
+The 12 testers must be 12 distinct Google accounts, added by email or through a
+Google Group. Do not pad the count with accounts you control -- Google screens
+for it, and the penalty lands on the developer account rather than the release.
 
 #### Play: the app record and the service account
 

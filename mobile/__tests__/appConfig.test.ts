@@ -1,4 +1,5 @@
 import appConfig from '../app.json'
+import easJson from '../eas.json'
 import pkg from '../package.json'
 
 /**
@@ -93,5 +94,48 @@ describe('package.json -- what makes "collects no data" true', () => {
       'react-native-screens',
       'zustand',
     ])
+  })
+})
+
+describe('eas.json -- the submit tracks the Play timeline depends on', () => {
+  // Google lets a personal developer account apply for production only after a
+  // CLOSED test that ran 14 continuous days with at least 12 opted-in testers.
+  // Two settings decide whether a submission starts that clock, and both are
+  // easy to get wrong in a way that looks like success: internal testing is a
+  // different track from closed testing and does not count, and a draft release
+  // is not installable, so no tester can opt in to it. Either mistake costs a
+  // fortnight and reports nothing at the time it is made.
+  it('has a closed-test profile on a closed track, released live', () => {
+    const android = easJson.submit.closedtest.android
+    // "alpha" is the closed-testing track. "internal" and "beta" (open testing)
+    // both fail the requirement.
+    expect(android.track).toBe('alpha')
+    expect(android.releaseStatus).toBe('completed')
+  })
+
+  it('keeps the production profile a draft on internal', () => {
+    // Deliberate: the first store build is proven by installing it FROM the
+    // store before anyone promotes it. This profile is not the one that starts
+    // the closed-test clock, and must not be mistaken for it.
+    const android = easJson.submit.production.android
+    expect(android.track).toBe('internal')
+    expect(android.releaseStatus).toBe('draft')
+  })
+
+  it('never carries an Apple credential, only the two public identifiers', () => {
+    // ascAppId and appleTeamId are public and belong in the committed file. The
+    // App Store Connect .p8 and the Play service-account JSON are credentials
+    // and live in EAS. A key that reaches this file reaches the repository.
+    const ios: Record<string, unknown> = easJson.submit.production.ios
+    expect(Object.keys(ios).sort()).toEqual(['appleTeamId', 'ascAppId'])
+    expect(JSON.stringify(easJson)).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY|private_key|\.p8/)
+  })
+
+  it('builds Android as an app bundle and lets EAS own the build numbers', () => {
+    // Play refuses an APK for a new app. autoIncrement is what keeps versionCode
+    // and buildNumber monotonic without a human remembering to bump them.
+    expect(easJson.build.production.android.buildType).toBe('app-bundle')
+    expect(easJson.build.production.autoIncrement).toBe(true)
+    expect(easJson.build.production.distribution).toBe('store')
   })
 })
