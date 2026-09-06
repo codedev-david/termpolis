@@ -28,6 +28,13 @@ jobs:
   # was thrown away and the release published with no .exe and, worse, no `latest.yml`, the
   # manifest every Windows client polls to discover an update. Creating the release exactly
   # once, before the fan-out, removes the race instead of retrying harder inside it.
+  #
+  # It is created as a DRAFT. Until v1.39.0 it was created live, ahead of every artifact,
+  # so a single platform failing (`fail-fast: false` guarantees the others still finish)
+  # left a permanently public release missing that platform's installer AND its latest*.yml
+  # — which is what shipped on v1.39.0 when notarization timed out. A draft is invisible to
+  # users and to electron-updater, so a partial build now publishes nothing at all. The
+  # release goes live only after validate-draft has checked the bytes (see publish-release).
   create-release:
     needs: test
     runs-on: ubuntu-latest
@@ -38,10 +45,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          # The reuse branch must FORCE the draft state, not assume it.
+          # action-gh-release's update path (taken whenever the release already
+          # exists) sends `draft: existingRelease.draft` and ignores the `draft:`
+          # input entirely -- so nothing downstream can pull a release back once
+          # it is public. Re-running a workflow whose release already published
+          # would otherwise swap freshly-built assets onto a LIVE release, with
+          # every gate below skipped if any build then failed.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — reusing it."
+            echo "Release $TAG already exists — forcing it back to a draft for this run."
+            gh release edit "$TAG" --draft=true
           else
-            gh release create "$TAG" --title "$TAG" --generate-notes
+            gh release create "$TAG" --title "$TAG" --generate-notes --draft
           fi
 
   build:
@@ -322,7 +337,7 @@ jobs:
       # `xcrun stapler staple` writes the notarization ticket into each .dmg
       # AFTER electron-builder wrote latest-mac.yml, so the recorded SHA512
       # + size are stale by ~2KB per dmg. Recompute them now or
-      # validate-update-metadata fails (and Mac auto-update breaks).
+      # validate-draft fails (and Mac auto-update breaks).
       - name: Refresh latest-mac.yml after notarization (macOS)
         if: matrix.platform == 'mac'
         shell: bash
@@ -385,6 +400,16 @@ jobs:
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2.6.1
         with:
+          # REQUIRED. action-gh-release@v2.6.1 calls finalizeRelease() after its
+          # uploads, which flips a draft live unless `input_draft === true`. Without
+          # this the first platform to finish publishes the release — re-opening the
+          # exact hole create-release's --draft was added to close.
+          #
+          # What it does NOT do: re-draft an already-public release. The update path
+          # hardcodes `draft: existingRelease.draft` and never reads this input. That
+          # is create-release's job (see the forced `--draft=true` above), and the
+          # only reason a rerun is safe.
+          draft: true
           # Notes are generated once by create-release. Asking for them here too would have
           # all three jobs PATCH the same release body concurrently for no benefit.
           files: |
@@ -396,8 +421,135 @@ jobs:
             dist-electron-builder/*.blockmap
             dist-electron-builder/latest*.yml
 
+  # ---- The release gate, in two jobs --------------------------------
+  #
+  # Until v1.39.0 this was ONE job, `validate-update-metadata`, and it was
+  # broken in two independent ways.
+  #
+  # 1. STRUCTURAL. It was `needs: build`, and GitHub SKIPS a job whose needs
+  #    failed. So the guard against "a platform failed" could only ever run
+  #    in the case where no platform had failed. It had never fired in anger
+  #    and by construction never could.
+  # 2. LOGICAL. Even when it did run, validateLatestYml.cjs treated an
+  #    entirely ABSENT latest*.yml as a skip rather than a failure. The
+  #    v1.39.0 release published with no latest-mac.yml at all, and because
+  #    the other two fetched fine it would have reported "all valid".
+  #
+  # The release is now a draft until it has been checked, which makes
+  # `needs: build` skipping exactly the right behaviour: nothing reaches
+  # users. --strict closes the second hole. And the same validator runs
+  # TWICE over one codepath -- once on the draft's bytes, before anyone can
+  # see them, and once on the live CDN URLs electron-updater actually hits.
+
+  # Validates the draft's assets on disk, before publication. `gh release
+  # download` writes them flat, so the validator swaps its TRANSPORT (--dir)
+  # and not its logic. Checks that every advertised file exists, that its
+  # sha512 and size match the actual bytes -- the gap that broke v1.11.23/24
+  # auto-update -- and that `version` matches the tag.
+  validate-draft:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm install --omit=optional --no-audit --no-fund
+      - name: Download the draft's assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "${GITHUB_REF_NAME}" --dir draft-assets --clobber
+      - name: Validate latest*.yml against the draft's bytes
+        run: node scripts/validateLatestYml.cjs --version "${GITHUB_REF_NAME}" --dir draft-assets --strict
+
+  # The publish. Nothing in this job but the flip -- every check that could
+  # keep a release away from users has already run.
+  # The flip to public and the check that the public URLs actually serve are
+  # ONE job on purpose. Split across two, a retract left the release
+  # unrecoverable by re-running: `gh run rerun --failed` re-runs only failed
+  # jobs and their dependents, and the publish job had SUCCEEDED. The re-run
+  # therefore verified a release nothing would ever re-publish, failed again on
+  # three 404s, and re-retracted. Fused, re-running this one job re-flips the
+  # release live and then re-checks it.
+  publish-release:
+    needs: validate-draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm install --omit=optional --no-audit --no-fund
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
+      # Give GitHub a beat to finalize the publish -- the API returns before
+      # CDN edges can serve the newly-public assets consistently.
+      - name: Wait for release CDN consistency
+        run: sleep 30
+      # Same validator, same flags as validate-draft, now against the public URLs
+      # electron-updater will hit. validate-draft proved the bytes are right;
+      # this proves they are actually being served.
+      #
+      # Retried, unlike the draft check: a failure here is about SERVING, not
+      # content, and CDN propagation is genuinely eventually-consistent. One
+      # unlucky poll must not retract a good release -- that is a worse failure
+      # than the one it guards.
+      - name: Validate latest*.yml against live release
+        id: live_check
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BASE="https://github.com/codedev-david/termpolis/releases/download"
+          for attempt in 1 2 3; do
+            if node scripts/validateLatestYml.cjs --version "$VERSION" --base "$BASE" --strict; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed."
+            if [ "$attempt" -lt 3 ]; then sleep 30; fi
+          done
+          echo "Live validation failed 3 times over ~60s -- this is not propagation lag."
+          exit 1
+      # Gated on the CHECK failing, not on the job failing. A bare `if: failure()`
+      # also fires when checkout or npm install dies, which would un-publish a
+      # perfectly good release because a runner had a bad minute.
+      - name: Retract to draft if the live release is broken
+        if: failure() && steps.live_check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          echo "Live validation failed -- pulling $GITHUB_REF_NAME back to a draft."
+          gh release edit "${GITHUB_REF_NAME}" --draft=true
+
+  # Chocolatey and the termpolis.com mirror are the two channels that reach end
+  # users OUTSIDE GitHub Releases. They used to run inside `build (win)`, which
+  # put them ahead of every gate: the Chocolatey package rewrites
+  # chocolateyinstall.ps1 to point at releases/download/v$version/..., a URL a
+  # draft does not serve, so a build that failed on another platform left a
+  # public Chocolatey listing whose installer 404s permanently. Gated on
+  # publish-release, both now ship only bytes that were validated twice.
+  #
+  # The installer comes from the release rather than a build workspace, so the
+  # hash Chocolatey advertises is over the exact bytes users download.
+  publish-windows-channels:
+    needs: publish-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fetch the published installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "${env:GITHUB_REF_NAME}" --pattern "Termpolis.Setup.*.exe" --dir dist-electron-builder --clobber
       - name: Upload installer to termpolis.com
-        if: matrix.platform == 'win'
         shell: pwsh
         run: |
           # Copy the .exe plus a stable-name copy for the Microsoft Store
@@ -417,7 +569,6 @@ jobs:
       # command line. (SFTP is a cleaner transport still; switching needs the host
       # to expose SSH/SFTP + an SSH key secret — tracked as a follow-up.)
       - name: Mirror installer to termpolis.com/downloads (FTPS, retried)
-        if: matrix.platform == 'win'
         continue-on-error: true
         shell: pwsh
         env:
@@ -466,7 +617,6 @@ jobs:
           exit 0
 
       - name: Publish to Chocolatey
-        if: matrix.platform == 'win'
         continue-on-error: true
         shell: pwsh
         env:
@@ -508,41 +658,14 @@ jobs:
           }
           exit 0
 
-  # Auto-update metadata gate — runs AFTER all platform builds have
-  # published their artifacts to the GitHub release. Hits the live URLs
-  # electron-updater will later hit and verifies that every advertised
-  # file is reachable, that sha512 digests aren't truncated, and that
-  # the `version` field matches the tag. If any of those fails, the
-  # release is effectively broken for auto-update even though installs
-  # succeeded — so we flag the workflow red and page the maintainer
-  # before users start trying to update.
-  validate-update-metadata:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm install --omit=optional --no-audit --no-fund
-      # Give GitHub a beat to finalize asset uploads — the upload step
-      # returns before CDN edges can serve the new assets consistently.
-      - name: Wait for release CDN consistency
-        run: sleep 30
-      - name: Validate latest*.yml against live release
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          BASE="https://github.com/codedev-david/termpolis/releases/download"
-          node scripts/validateLatestYml.cjs --version "$VERSION" --base "$BASE"
 
   # Fires a repository_dispatch at codedev-david/homebrew-termpolis so that
   # tap rewrites Casks/termpolis.rb against the new tag's DMG sha256s. Gated
-  # on validate-update-metadata so we only bump the tap when the release is
-  # known-good. Will silently no-op until HOMEBREW_TAP_TOKEN is set.
+  # on publish-release so we only bump the tap once the release is live AND its
+  # update metadata has been checked. Will silently no-op until
+  # HOMEBREW_TAP_TOKEN is set.
   bump-homebrew-tap:
-    needs: validate-update-metadata
+    needs: publish-release
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch tap update

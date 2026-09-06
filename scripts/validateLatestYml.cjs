@@ -26,6 +26,8 @@
 
 const yaml = require('js-yaml')
 const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
 
 const YML_FILES = ['latest.yml', 'latest-mac.yml', 'latest-linux.yml']
 const SHA512_B64_LEN = 88 // base64 of 64-byte digest — 88 chars with padding
@@ -99,11 +101,14 @@ function validateParsed(parsed, expectedVersion) {
 }
 
 function parseArgs(argv) {
-  const args = { version: null, base: null, timeoutMs: 15000 }
+  const args = { version: null, base: null, dir: null, strict: false, timeoutMs: 15000, unknown: [] }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--version' && argv[i + 1]) { args.version = argv[++i] }
     else if (argv[i] === '--base' && argv[i + 1]) { args.base = argv[++i] }
+    else if (argv[i] === '--dir' && argv[i + 1]) { args.dir = argv[++i] }
+    else if (argv[i] === '--strict') { args.strict = true }
     else if (argv[i] === '--timeout' && argv[i + 1]) { args.timeoutMs = Number(argv[++i]) }
+    else { args.unknown.push(argv[i]) }
   }
   return args
 }
@@ -151,13 +156,50 @@ async function fetchHashAndSize(url, timeoutMs, fetchImpl = fetch) {
 }
 
 /**
+ * A `fetchImpl` that answers from a local directory instead of the network,
+ * so a DRAFT release can be validated before it is visible to anyone.
+ *
+ * Deliberately NOT an "offline mode" branch inside runValidation: swapping
+ * only the transport keeps ONE validation codepath, so the draft check and
+ * the public check can never drift apart. Assets resolve by filename —
+ * `gh release download` writes them flat, and the directory part of the URL
+ * is a GitHub CDN path with no meaning on disk.
+ */
+function makeDirFetch(dir) {
+  const root = path.resolve(dir)
+  const missing = () => ({
+    ok: false,
+    status: 404,
+    async text() { throw new Error('not found') },
+    async arrayBuffer() { throw new Error('not found') },
+  })
+  return async function dirFetch(url) {
+    const raw = String(url).split('?')[0].split('#')[0]
+    const name = decodeURIComponent(raw.slice(raw.lastIndexOf('/') + 1))
+    const file = path.resolve(root, name)
+    // A latest*.yml can advertise any string as a url. Anything that resolves
+    // outside the directory is refused rather than read.
+    if (path.dirname(file) !== root || !fs.existsSync(file)) return missing()
+    return {
+      ok: true,
+      status: 200,
+      async text() { return fs.readFileSync(file, 'utf8') },
+      async arrayBuffer() {
+        const b = fs.readFileSync(file)
+        return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)
+      },
+    }
+  }
+}
+
+/**
  * Pure orchestrator — fetches every latest*.yml from the release base,
  * validates structure, and HEAD-checks advertised assets. Returns
  * `{ exitCode, findings, log }` so the CLI and tests share one codepath.
  *
  * `fetchImpl` defaults to global fetch; tests pass a mock.
  */
-async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fetch } = {}) {
+async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fetch, strict = false } = {}) {
   const log = []
   if (!version || !base) {
     log.push('usage: validateLatestYml.cjs --version <vX.Y.Z> --base <releases/download-url>')
@@ -174,7 +216,14 @@ async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fet
     try {
       text = await fetchText(ymlUrl, timeoutMs, fetchImpl)
     } catch (e) {
-      log.push(`  (skip: ${e.message})`)
+      // Non-strict tolerates a manifest that simply isn't there, for ad-hoc runs
+      // against older or single-platform releases. In CI that tolerance IS the
+      // bug: v1.39.0 published with no latest-mac.yml at all, and because the
+      // other two fetched fine this returned exit 0 / "all valid". --strict makes
+      // an absent manifest a finding, which is the failure mode the script exists
+      // to catch in the first place.
+      if (strict) allFindings.push(`${name}: not reachable — ${e.message}`)
+      else log.push(`  (skip: ${e.message})`)
       continue
     }
     checkedAtLeastOne = true
@@ -229,6 +278,9 @@ async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fet
 
   if (!checkedAtLeastOne) {
     log.push(`FAIL: no latest*.yml files were reachable at ${releaseBase}`)
+    // Under --strict every manifest is already a finding; without naming them
+    // here CI shows one unactionable line and the findings die with the process.
+    for (const f of allFindings) log.push(` - ${f}`)
     return { exitCode: 1, findings: allFindings, log }
   }
   if (allFindings.length > 0) {
@@ -240,13 +292,48 @@ async function runValidation({ version, base, timeoutMs = 15000, fetchImpl = fet
   return { exitCode: 0, findings: [], log }
 }
 
+/**
+ * Rejects anything parseArgs did not recognize.
+ *
+ * Unrecognized tokens used to be dropped in silence, which meant `--strict=true`
+ * or `-strict` -- both natural things to write -- restored the exact tolerance
+ * that let v1.39.0 publish with no mac manifest, and printed OK while doing it.
+ * A gate whose strictness rides on an unchecked string has to fail loudly on
+ * that string, or it is not a gate.
+ */
+function usageError(args) {
+  if (args.unknown && args.unknown.length > 0) {
+    return `unrecognized argument(s): ${args.unknown.join(' ')}`
+  }
+  return null
+}
+
+/**
+ * Maps parsed CLI args onto runValidation options. Extracted so the flag
+ * wiring is testable on its own: a `--strict` that silently failed to reach
+ * runValidation would leave the gate exactly as broken as it was before.
+ */
+function buildRunOptions(args) {
+  return {
+    version: args.version,
+    // --dir needs no public base; the transport ignores everything but the filename.
+    base: args.base || (args.dir ? 'local' : null),
+    timeoutMs: args.timeoutMs,
+    strict: Boolean(args.strict),
+    fetchImpl: args.dir ? makeDirFetch(args.dir) : undefined,
+  }
+}
+
 async function runCli() {
   const args = parseArgs(process.argv.slice(2))
-  const { exitCode, log } = await runValidation({
-    version: args.version,
-    base: args.base,
-    timeoutMs: args.timeoutMs,
-  })
+  const bad = usageError(args)
+  if (bad) {
+    console.error(`FAIL: ${bad}`)
+    console.error('usage: validateLatestYml.cjs --version <vX.Y.Z> [--base <url> | --dir <path>] [--strict] [--timeout <ms>]')
+    process.exit(2)
+  }
+  if (args.dir) console.log(`local dir: ${path.resolve(args.dir)} (assets resolved by filename)`)
+  const { exitCode, log } = await runValidation(buildRunOptions(args))
   for (const line of log) {
     if (exitCode !== 0 && (line.startsWith('FAIL') || line.startsWith(' -') || line.startsWith('usage:'))) {
       console.error(line)
@@ -257,7 +344,7 @@ async function runCli() {
   process.exit(exitCode)
 }
 
-module.exports = { validateParsed, parseArgs, fetchText, headOk, fetchHashAndSize, runValidation }
+module.exports = { validateParsed, parseArgs, fetchText, headOk, fetchHashAndSize, runValidation, makeDirFetch, buildRunOptions, usageError }
 
 if (require.main === module) {
   runCli().catch(err => {
