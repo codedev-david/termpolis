@@ -11,7 +11,9 @@ name: Deploy relay
 # the configuration and the bundle without publishing anything.
 #
 # No token lives in this repository. `CLOUDFLARE_API_TOKEN` is a repository
-# secret scoped to *Workers Scripts: Edit* and *Workers Durable Objects: Edit*.
+# secret scoped to *Workers Scripts: Edit* (account), *Workers Routes: Edit* and
+# *DNS: Edit* (both on the termpolis.com zone -- the last one because the custom
+# domain in wrangler.toml is provisioned by the deploy, not by hand).
 # Until it is set, a push deploy skips with a notice rather than turning main
 # red; a hand-run deploy fails, because someone asked for it and should be told
 # why it did not happen.
@@ -91,8 +93,14 @@ jobs:
           echo "This run asked for a deploy, but CLOUDFLARE_API_TOKEN is not set."
           echo
           echo "Create a token at https://dash.cloudflare.com/profile/api-tokens with"
-          echo "  Workers Scripts: Edit"
-          echo "  Workers Durable Objects: Edit"
+          echo "  Account -> Workers Scripts: Edit"
+          echo "  Zone    -> Workers Routes:  Edit"
+          echo "  Zone    -> DNS:             Edit   (on termpolis.com)"
+          echo
+          echo "DNS: Edit is not optional and is in no token template. wrangler.toml"
+          echo "declares relay.termpolis.com as a custom domain, so the deploy creates"
+          echo "the DNS record itself; without that scope the script uploads and then"
+          echo "the deploy fails at a hostname no client would have found anyway."
           echo "then: gh secret set CLOUDFLARE_API_TOKEN"
           exit 1
 
