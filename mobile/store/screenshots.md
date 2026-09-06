@@ -45,20 +45,53 @@ legible UI is the honest version of what the buyer gets.
 
 ## Apple
 
-Apple takes one set per display class and scales it down for the rest. With
-`supportsTablet: true` in `app.json`, the iPad set is **not optional** -- an
-app submitted as iPad-compatible with no iPad screenshots cannot be submitted.
+**None of this is needed for TestFlight.** Internal testing takes no
+screenshots at all. This section is only for the public App Store listing.
 
-| Display class | Pixel size (portrait) | Simulator that produces it |
+Apple takes one set and scales it down for the rest, so **one display class**
+is the whole requirement:
+
+| Display class | Pixel size (portrait) | Accepted alternates |
 | --- | --- | --- |
-| iPhone 6.9" | 1320 × 2868 | iPhone 16 Pro Max |
-| iPad 13" | 2064 × 2752 | iPad Pro 13-inch (M4) |
+| iPhone 6.9" | 1320 × 2868 | 1290 × 2796 |
 
-Up to 10 per set. Five is the right number here.
+`app.json` sets `supportsTablet: false`, so **the iPad 13" set (2064 × 2752) is
+not required** -- an iPhone-only app is a complete submission. Turning that flag
+back on makes the iPad set mandatory in the same moment, which is why
+`appConfig.test.ts` pins it. iPad support is a later version, taken together
+with its screenshots.
+
+Up to 10. Five is the right number here.
+
+### Capturing them without a Mac
+
+There is no Mac here, and the simulator route below needs one. The route that
+does not:
+
+**Screenshot the TestFlight build on a real iPhone.** Side button + volume up,
+then AirDrop or iCloud the PNGs across. This is only sufficient if the phone is
+a **Pro Max / Plus class device** -- 16/17 Pro Max give 1320 × 2868 natively,
+15 Pro Max and the Plus models give 1290 × 2796, and App Store Connect accepts
+both for the 6.9" slot. A 6.1" iPhone produces 1179 × 2556 and will be
+**rejected** for that slot; do not upscale it, because Apple rejects the
+resulting soft image too.
+
+Check what a file actually is before uploading:
+
+```bash
+python -c "import struct,sys;d=open(sys.argv[1],'rb').read(24);print(struct.unpack('>II',d[16:24]))" \
+  mobile/store/shots/ios-6.9/1-terminals.png
+```
+
+If the phone is not a Pro Max, rent a Mac for an hour (MacInCloud and the like)
+and use the simulator; it is the cheapest fix and the one already proven here
+for macOS desktop work.
+
+### With a Mac
 
 ```bash
 # List what is installed, then boot the exact device.
-xcrun simctl list devices available | grep -E '16 Pro Max|iPad Pro 13'
+xcrun simctl list devices available | grep '16 Pro Max'
 xcrun simctl boot "iPhone 16 Pro Max"
 
 # Build and install the app on it.
@@ -76,15 +109,10 @@ file is already the size App Store Connect wants. Verify rather than assume:
 sips -g pixelWidth -g pixelHeight store/shots/ios-6.9/*.png
 ```
 
-Repeat with `xcrun simctl boot "iPad Pro 13-inch (M4)"` into
-`store/shots/ios-13/`.
-
 **The simulator has no camera.** Screenshot 3 shows the Pair screen; take it
-with the manual-entry field visible rather than a dead camera preview. On the
-iPad set, or if you want the scanner viewfinder in the shot, use a real device
-and `Cmd-Shift-4`-style capture off a screen mirror -- but a manual-entry Pair
-screen is the more honest picture anyway, because it is the path a reviewer
-will use.
+with the manual-entry field visible rather than a dead camera preview. A
+manual-entry Pair screen is the more honest picture anyway, because it is the
+path a reviewer will use.
 
 ## Google Play
 
@@ -130,8 +158,7 @@ in `app.json` under `android.adaptiveIcon.backgroundColor`.
 
 ```
 mobile/store/shots/
-  ios-6.9/        1320 x 2868, five files
-  ios-13/         2064 x 2752, five files
+  ios-6.9/        1320 x 2868 (or 1290 x 2796), five files
   android-phone/  five files
   android-tablet-7/
   android-tablet-10/

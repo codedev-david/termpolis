@@ -15,9 +15,93 @@ declaration nobody checked.
 
 ---
 
-## Order of operations
+## Two timelines, not one
 
-Roughly two weeks of calendar time, most of it waiting on other people.
+The App Store and Play Store no longer share a schedule here, and conflating
+them is what makes this look like a fortnight of work.
+
+| | What gates it | Realistic |
+| --- | --- | --- |
+| **iPhone, on David's own device** | Nothing but Apple account setup and a build | Same day |
+| **iPhone, public on the App Store** | Screenshots, listing, App Review | ~1 week |
+| **Android, public on Play** | 14-day closed test with 12 testers, or an org conversion | 2-4 weeks |
+
+Android is parked. Everything under "The iPhone fast path" is independent of
+it -- do not read the Play sections as prerequisites.
+
+---
+
+## The iPhone fast path (TestFlight, no review)
+
+**The goal here is the app running on David's iPhone, not a store listing.**
+Those are different products with different gates, and only the second one is
+slow.
+
+TestFlight **internal** testing needs an active Apple Developer membership, an
+App Store Connect app record, and one uploaded build. It needs **no
+screenshots, no listing copy, no privacy questionnaire, and no App Review** --
+internal testers (up to 100, all of them people on the Apple team account) get
+the build as soon as it finishes processing. Nothing below is skipped by doing
+this; it just moves the reviewable work off the critical path.
+
+No Mac is required at any point. EAS builds iOS in the cloud.
+
+**1. Link the Expo project** (this is section 2 below, and it is the one step
+that will hard-fail everything after it if skipped):
+
+```bash
+cd mobile
+npx eas-cli login
+npx eas-cli init          # writes owner + extra.eas.projectId into app.json
+```
+
+**2. Create the App Store Connect record.** appstoreconnect.apple.com → Apps →
+**+** → New App → iOS, name **Termpolis Remote**, bundle id
+`com.termpolis.remote`, SKU anything. The bundle id is permanent from the first
+upload.
+
+**3. Build.** EAS will offer to create the distribution certificate and
+provisioning profile -- say yes, and let it manage them:
+
+```bash
+npx eas-cli build --platform ios --profile production
+```
+
+**4. Upload to TestFlight.** The `testflight` submit profile exists precisely so
+this does not wait on the numeric App ID; `eas submit` resolves the record from
+the bundle identifier and will prompt for the Apple ID interactively, so no
+App Store Connect API key is needed for the first run either:
+
+```bash
+npx eas-cli submit --platform ios --profile testflight
+```
+
+**5. Answer export compliance -- and answer it the right way.** The build will
+land in App Store Connect marked **Missing Compliance**, because
+`ITSAppUsesNonExemptEncryption` is `true` in `app.json`. That is correct and
+deliberate (`data-disclosures.md`), but the follow-up answer decides whether
+this costs thirty seconds or a fortnight:
+
+- "Does your app use encryption?" → **Yes**
+- "Does it qualify for any of the exemptions?" → **Yes** -- standard published
+  algorithms (X25519, HKDF-SHA256, ChaCha20-Poly1305) in a mass-market app.
+
+Answering **no exemption** puts the build into Apple's export-documentation
+review, where it sits until a human approves it and TestFlight stays blocked
+the whole time. It is the same form either way; only the answer differs.
+
+**6. Install it.** TestFlight → Internal Testing → add yourself as a tester →
+install the TestFlight app on the iPhone → install the build. Then pair against
+a running desktop: Settings → Remote → "Allow phones to connect" → "Pair a
+device". Pairing offers expire after 90 seconds, so have the phone in hand.
+
+Everything from section 6 onward (screenshots, listing, forms) is what turns
+this into a public App Store listing. It can now happen while the app is
+already in daily use.
+
+---
+
+## Order of operations
 
 ### 1. Accounts (blocking, and only David can do these)
 
@@ -197,6 +281,14 @@ and is bumped by hand.
 npx eas-cli submit --platform ios     --profile production
 npx eas-cli submit --platform android --profile production
 ```
+
+There are three submit profiles and they are not interchangeable:
+
+| Profile | Goes to | Use it for |
+| --- | --- | --- |
+| `testflight` | TestFlight, iOS only | Getting the build onto a real iPhone today. No App ID needed. |
+| `closedtest` | Play `alpha`, released live | The only Android track that advances the 14-day clock. |
+| `production` | App Store / Play `internal` draft | The public release. |
 
 Android's production profile submits to the **internal** track as a **draft**
 on purpose. Promote it in the Play Console once it has been installed from the

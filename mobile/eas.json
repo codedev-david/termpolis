@@ -23,6 +23,9 @@
     }
   },
   "submit": {
+    "testflight": {
+      "ios": {}
+    },
     "closedtest": {
       "android": {
         "track": "alpha",

@@ -21,6 +21,16 @@ describe('app.json -- the fields a store submission turns on', () => {
     expect(ios.infoPlist.ITSAppUsesNonExemptEncryption).toBe(true)
   })
 
+  it('does not claim iPad support', () => {
+    // supportsTablet is not a cosmetic flag: declaring iPad compatibility makes
+    // the iPad 13" screenshot set (2064 x 2752) MANDATORY at submission, and
+    // there is no iPad here to shoot it on. Shipping iPhone-only costs iPad
+    // users nothing but letterboxing, and iPad support can arrive in a later
+    // version together with its screenshots. Flipping this back to true without
+    // taking those screenshots makes the build unsubmittable.
+    expect(ios.supportsTablet).toBe(false)
+  })
+
   it('keeps the bundle identifiers that were submitted', () => {
     // Not re-assignable after the first submission, on either store.
     expect(ios.bundleIdentifier).toBe('com.termpolis.remote')
@@ -111,6 +121,17 @@ describe('eas.json -- the submit tracks the Play timeline depends on', () => {
     // both fail the requirement.
     expect(android.track).toBe('alpha')
     expect(android.releaseStatus).toBe('completed')
+  })
+
+  it('has a TestFlight profile that needs no App Store Connect id', () => {
+    // The fastest route to the app running on a real iPhone is TestFlight
+    // internal testing: no screenshots, no listing, no review. The only thing
+    // that could delay it is a submit profile demanding ascAppId before the app
+    // record exists. An EMPTY ios block is therefore the point of this profile,
+    // not an oversight -- eas submit then resolves the record from the bundle
+    // identifier and offers to create it. Putting a placeholder string here
+    // would fail the submit with an unhelpful error.
+    expect(easJson.submit.testflight.ios).toEqual({})
   })
 
   it('keeps the production profile a draft on internal', () => {
