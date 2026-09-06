@@ -139,19 +139,39 @@ jobs:
         if: steps.deploy.outcome == 'success'
         run: |
           set -eo pipefail
-          urls=$(grep -oE "https://[A-Za-z0-9._-]+" deploy.log \
-                 | grep -E "\.workers\.dev$|^https://${RELAY_HOST}$" \
-                 | sort -u || true)
-          if [ -z "$urls" ]; then
-            echo "No trigger URL in the deploy output, so there is nothing to probe."
+          # wrangler prints a workers.dev trigger WITH a scheme but a custom
+          # domain WITHOUT one:
+          #     Deployed termpolis-relay triggers (1.15 sec)
+          #       relay.termpolis.com (custom domain)
+          # so a grep for https:// finds nothing on a `workers_dev = false`
+          # deploy. That failed this step on the first genuinely successful
+          # deploy of the relay, reporting a broken smoke test for a Worker that
+          # was live and correct. Collect BOTH shapes, as bare hostnames.
+          hosts=$(
+            {
+              grep -oE "https://[A-Za-z0-9._-]+" deploy.log | sed 's|^https://||'
+              grep -oE "^[[:space:]]+[A-Za-z0-9._-]+ \(custom domain\)" deploy.log \
+                | sed -E 's/^[[:space:]]+([A-Za-z0-9._-]+) .*/\1/'
+            } | grep -E "\.workers\.dev$|^${RELAY_HOST}$" | sort -u || true
+          )
+          if [ -z "$hosts" ]; then
+            echo "No trigger host in the deploy output, so there is nothing to probe."
             echo "wrangler said:"
             cat deploy.log
             exit 1
           fi
+          # Probing whatever wrangler happened to bind would pass while the
+          # product stayed broken: both clients ship wss://${RELAY_HOST} as their
+          # default, so that exact name is the thing under test.
+          if ! echo "$hosts" | grep -qx "${RELAY_HOST}"; then
+            echo "Deploy did not bind ${RELAY_HOST}. It bound:"
+            echo "$hosts"
+            exit 1
+          fi
           probe=00000000000000000000000000000000
-          for url in $urls; do
-            echo "probing $url"
-            status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url/v1/pair/$probe")
+          for host in $hosts; do
+            echo "probing https://$host"
+            status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$host/v1/pair/$probe")
             if [ "$status" != "426" ]; then
               echo "  expected 426 (expected a websocket upgrade), got $status"
               exit 1
