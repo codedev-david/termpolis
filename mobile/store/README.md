@@ -27,8 +27,33 @@ Roughly two weeks of calendar time, most of it waiting on other people.
 | App Store Connect app record | -- | Create an iOS app with bundle id `com.termpolis.remote`. This mints the numeric App ID that `eas.json` needs. |
 | Google Play Console | $25 once | New accounts face a **14-day closed test with at least 12 testers** before production access. Start this first; it is the long pole. |
 | Play service account JSON | -- | For `eas submit`. Google Cloud → service account → grant it Play Console access. |
+| Expo account | free | EAS runs the builds. `expo.dev` → sign up. The Apple and Google credentials are stored here, not in this repo. |
 
-### 2. Fill the two placeholders
+### 2. Link the app to an EAS project
+
+`app.json` ships with no `owner` and no `extra.eas.projectId`, because a project
+id is minted per Expo account and this repository does not have one baked in.
+Until it is linked, **step 6 fails before it builds anything** -- `eas build`
+has no project to build for.
+
+```bash
+cd mobile
+npx eas-cli login
+npx eas-cli init          # writes owner + extra.eas.projectId into app.json
+```
+
+Commit the result. Neither value is a credential: the project id is a public
+identifier and the owner is an account slug. The credential is the Expo access
+token, and that only ever lives in `eas credentials` or a GitHub secret named
+`EXPO_TOKEN`.
+
+Verify before moving on -- this is the check that step 6 assumes passed:
+
+```bash
+node -e "const e=require('./app.json').expo; if(!e.extra?.eas?.projectId) { console.error('not linked'); process.exit(1) } console.log('linked:', e.owner, e.extra.eas.projectId)"
+```
+
+### 3. Fill the two placeholders
 
 `mobile/eas.json` ships with them deliberately visible:
 
@@ -50,7 +75,7 @@ eas credentials              # interactive, stores the .p8 with Expo
 eas secret:create --scope project --name GOOGLE_SERVICE_ACCOUNT_KEY --type file --value ./play-service-account.json
 ```
 
-### 3. Fill the two content placeholders
+### 4. Fill the two content placeholders
 
 ```bash
 grep -rn '<VIDEO URL>\|<SUPPORT EMAIL>' mobile/store/
@@ -60,17 +85,23 @@ The support address is an open decision -- see the bottom of `listing.md`.
 Whatever it becomes, it goes in three places at once: the App Store listing,
 the Play listing, and `privacy.html` on termpolis.com.
 
-### 4. Deploy the relay (blocking)
+### 5. Deploy the relay (done)
 
-Nothing can be reviewed without it. `relay/` is written and tested but has
-never been deployed; it needs a Cloudflare account, `wrangler login` or a
-`CLOUDFLARE_API_TOKEN`, and `relay.termpolis.com` resolving. See [`relay/DEPLOY.md`](../../relay/DEPLOY.md).
+Nothing can be reviewed without it. **This is done** -- the Worker is live on
+`relay.termpolis.com` and the `Deploy relay` workflow is green end to end. A
+redeploy is `gh workflow run "Deploy Relay" -f dry_run=false`; see
+[`relay/DEPLOY.md`](../../relay/DEPLOY.md).
 
-Confirm with a real phone and a real desktop before anything is submitted. A
-reviewer hitting a dead relay sees a broken app, and that rejection costs a
-week.
+The smoke test asserts the deploy bound `relay.termpolis.com` specifically, not
+merely that *something* answered. Both clients hardcode `wss://relay.termpolis.com`
+as their default, so a deploy that bound only a `workers.dev` name would leave
+every phone unable to pair while the check went green.
 
-### 5. Assets and copy
+Still confirm with a real phone and a real desktop before anything is
+submitted. A reviewer hitting a dead relay sees a broken app, and that
+rejection costs a week.
+
+### 6. Assets and copy
 
 - Take the screenshots (`screenshots.md`). Scratch repository only.
 - Build the 1024x500 Play feature graphic.
@@ -79,7 +110,7 @@ week.
   that file were measured, and a form that silently truncates is a form that
   ships a half sentence.
 
-### 6. Build
+### 7. Build
 
 ```bash
 cd mobile
@@ -91,7 +122,7 @@ npx eas-cli build --platform android --profile production
 `versionCode` advance on their own. `version` in `app.json` is the human one
 and is bumped by hand.
 
-### 7. Submit
+### 8. Submit
 
 ```bash
 npx eas-cli submit --platform ios     --profile production
@@ -103,7 +134,7 @@ on purpose. Promote it in the Play Console once it has been installed from the
 store on a real device -- an app that works from a local build and fails from
 the store is a class of bug that only that step finds.
 
-### 8. Fill the forms
+### 9. Fill the forms
 
 - Apple: App Privacy → **Data Not Collected** (see `data-disclosures.md`),
   then the export-compliance questions, then Review Notes from
