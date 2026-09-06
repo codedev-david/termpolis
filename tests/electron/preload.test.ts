@@ -176,6 +176,53 @@ describe('preload: termpolis API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:read-buffer', { terminalId: 't1', fromOffset: 100 })
   })
 
+  it('clearTerminalBuffer invokes terminal:clear, keying the id as `terminalId`', async () => {
+    // The main handler destructures `{ terminalId }` and answers err() for anything
+    // else, so the KEY NAME is the contract: an `{ id }` payload (the shape
+    // createTerminal/killTerminal use) would be rejected and the transcript would come
+    // straight back on the next TerminalPane mount, with no error the user can see.
+    await exposed.termpolis.clearTerminalBuffer('t1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:clear', { terminalId: 't1' })
+  })
+
+  // --- App log (the app's own output, surfaced by the Ctrl+Shift+O viewer) ---
+
+  it('readAppLog invokes app-log:read with the requested limit', async () => {
+    await exposed.termpolis.readAppLog(250)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app-log:read', { limit: 250 })
+  })
+
+  it('readAppLog with no argument still sends a payload and invents no limit of its own', async () => {
+    // `limit` is optional in the type, and main answers an absent one with its own
+    // default of 500. A wrapper that threw on undefined — or quietly substituted a
+    // number here — would make that default unreachable and put the size of the log
+    // window in two places at once.
+    await exposed.termpolis.readAppLog()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app-log:read', { limit: undefined })
+  })
+
+  it('clearAppLog invokes app-log:clear with no payload', async () => {
+    await exposed.termpolis.clearAppLog()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app-log:clear')
+  })
+
+  it('appLogPath invokes app-log:path with no payload', async () => {
+    await exposed.termpolis.appLogPath()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app-log:path')
+  })
+
+  it('writeAppLog SENDS app-log:append — fire-and-forget, never invoke', () => {
+    // Every console.* in the renderer is funnelled through this one wrapper. `invoke`
+    // would put an IPC round trip (and a floating promise) inside every log line in the
+    // app, so a chatty render would be paying main-process latency to say something
+    // nobody is waiting for. `send` is the entire reason this method is not a Promise.
+    exposed.termpolis.writeAppLog('warn', 'shell probe timed out')
+    expect(mockIpcRenderer.send).toHaveBeenCalledWith('app-log:append', {
+      level: 'warn', message: 'shell probe timed out',
+    })
+    expect(mockIpcRenderer.invoke).not.toHaveBeenCalled()
+  })
+
   // --- Git methods ---
 
   it('gitStatusParsed invokes git:status-parsed', async () => {
@@ -993,6 +1040,51 @@ describe('preload — workflow orchestrator bridge', () => {
     expect(typeof cleanup).toBe('function')
     cleanup()
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('workflow:run-event', handler)
+  })
+})
+
+describe('preload: event bridges that only ever fire from main', () => {
+  // These three registrars hand main a closure and hand the renderer an unsubscribe.
+  // The sweep at the bottom of this file proves they can be CALLED, but never that the
+  // closure they registered actually forwards anything — so a handler that dropped its
+  // payload, or forwarded the raw IpcRendererEvent instead of the data, would ship
+  // green. Each case below registers, fires the handler main would fire, and checks
+  // both the payload the renderer sees and that cleanup removes that exact handler.
+
+  it('aiSecurity.onShieldScanFailed forwards the failure, dropping the ipc event arg', () => {
+    // Commit Shield fails OPEN: the git op already went through unscanned. This event is
+    // the only thing that stops that from also being fail-SILENT, so a handler that
+    // swallowed the payload would turn a broken control into an invisible one.
+    const cb = vi.fn()
+    const cleanup = exposed.aiSecurity.onShieldScanFailed(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'shield:scan-failed')![1] as Function
+    const data = { op: 'commit', cwd: '/repo', error: 'scanner crashed' }
+    handler({}, data)
+    expect(cb).toHaveBeenCalledWith(data)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('shield:scan-failed', handler)
+  })
+
+  it('remote.onStatus forwards the status view and unsubscribes cleanly', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.remote.onStatus(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'remote:status-changed')![1] as Function
+    const status = { running: true, devices: [] }
+    handler({}, status)
+    expect(cb).toHaveBeenCalledWith(status)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('remote:status-changed', handler)
+  })
+
+  it('remote.onEvent forwards the event and unsubscribes cleanly', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.remote.onEvent(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'remote:event')![1] as Function
+    const evt = { kind: 'paired', deviceId: 'd1' }
+    handler({}, evt)
+    expect(cb).toHaveBeenCalledWith(evt)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('remote:event', handler)
   })
 })
 

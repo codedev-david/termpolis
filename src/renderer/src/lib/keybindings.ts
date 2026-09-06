@@ -14,6 +14,11 @@ export interface KeybindingMap {
   toggleAutocomplete: string
   toggleSidebar: string
   toggleGrid: string
+  /** Opens the app's own log -- what Termpolis printed behind the scenes. */
+  viewLogs: string
+  /** Wipes the focused terminal's screen AND its scrollback, here and in the main
+   *  process, without sending anything to the running program. */
+  clearTerminal: string
   // Per-agent launch shortcuts — map to the first three AI profiles, which are
   // always the built-in Claude / Codex / Gemini defaults.
   launchAgent1: string
@@ -37,6 +42,11 @@ export const DEFAULT_KEYBINDINGS: KeybindingMap = {
   toggleAutocomplete: 'Ctrl+Space',
   toggleSidebar: 'Ctrl+B',
   toggleGrid: 'Ctrl+Shift+G',
+  // Ctrl+Shift+L is NOT free: it is the default voice push-to-talk activation.
+  // O = output log; X = wipe. Both were checked against every hardcoded
+  // Ctrl+Shift+<letter> in App.tsx and the Electron menu accelerators.
+  viewLogs: 'Ctrl+Shift+O',
+  clearTerminal: 'Ctrl+Shift+X',
   // Ctrl+<digit> (no Shift): Shift mutates the digit into a symbol in
   // KeyboardEvent.key (1 → "!"), which matchesKeybinding could never match.
   launchAgent1: 'Ctrl+1',
@@ -58,6 +68,8 @@ export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   toggleAutocomplete: 'Trigger Autocomplete',
   toggleSidebar: 'Toggle Sidebar',
   toggleGrid: 'Toggle Split View',
+  viewLogs: 'View App Log',
+  clearTerminal: 'Clear Terminal',
   launchAgent1: 'Launch Claude Code',
   launchAgent2: 'Launch OpenAI Codex',
   launchAgent3: 'Launch Gemini CLI',

@@ -11,7 +11,7 @@ import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlo
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
 import { primaryModifier } from '../../lib/platform'
-import { requestsMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, type MouseEncoding } from '../../lib/mouseMode'
+import { requestsMouseTracking, requestsSgrMouseEncoding, disablesMouseTracking, exitsAltScreen, wheelNotchLines, buildWheelSequence, isTapGesture, cellFromPoint, buildClickSequence, type MouseEncoding } from '../../lib/mouseMode'
 import { PinnedOutput, type PinnedItem } from '../PinnedOutput/PinnedOutput'
 import { TerminalSearch, type TerminalSearchOptions } from '../TerminalSearch/TerminalSearch'
 import { v4 as uuid } from 'uuid'
@@ -325,6 +325,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // (e.g. it was sent in an order/timing we don't capture). We still upgrade to SGR
   // explicitly when we DO see it, and — crucially — never clobber it back to X10.
   const mouseEncodingRef = useRef<MouseEncoding>('sgr')
+  // Where and when the current left press started, so the matching release can be
+  // classified as a click (forward it to the app) or a drag (leave it as a text
+  // selection). Null whenever no plain left press is in flight — a modified press
+  // never records one, which is how Alt+Shift anchor / Shift-select / Ctrl-click
+  // keep their existing meanings for free.
+  const clickStartRef = useRef<{ x: number; y: number; t: number } | null>(null)
+  // Set from the useCallback below. The xterm key handler is installed once, inside
+  // the mount effect, so it cannot close over a callback that changes -- it reads the
+  // current one through this ref (same pattern as voiceStopRef).
+  const clearTerminalRef = useRef<() => void>(() => {})
 
   // Pinned output state
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
@@ -596,10 +606,105 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // remembered one is stale — retire it, so Copy can never paste something they visibly
       // dismissed. Agent output repainting does NOT retire it; only the user does.
       lastGoodSnapRef.current = null
+      // Remember a PLAIN press so its release can be forwarded to a mouse-tracking
+      // app as a click. Modified presses record nothing, so Shift/Ctrl/Alt clicks
+      // stay purely local (selection override, link open, copy anchor).
+      clickStartRef.current = (e.altKey || e.shiftKey || e.ctrlKey || e.metaKey)
+        ? null
+        : { x: e.clientX, y: e.clientY, t: Date.now() }
     }
     if (e.button !== 2) return
     mouseDownSnapRef.current = { snap: buildCopySnapshot(termRef.current), t: Date.now() }
   }, [posFromMouse])
+
+  // Forward a plain left CLICK to a mouse-tracking app.
+  //
+  // Termpolis swallows the app's mouse-tracking enable so a click-drag keeps
+  // selecting text (see the CSI handler below) — which also swallows the click,
+  // leaving a TUI's own clickable UI inert. Claude Code's diff panel is the case
+  // that surfaced it: its ✕ is a mouse target with no keyboard equivalent, so the
+  // panel could not be closed at all. The wheel is already synthesized back the
+  // same way; this completes the pair.
+  //
+  // Only a plain, stationary, short left press qualifies (isTapGesture + the
+  // modifier check at mousedown), so no gesture that used to select text changes:
+  // a drag still selects, Shift still overrides, Alt+Shift is still the copy
+  // anchor. And a live selection vetoes the forward outright — if the user has
+  // text highlighted, this release ended a selection, not a button press.
+  const handleTerminalMouseUp = useCallback((e: React.MouseEvent) => {
+    const start = clickStartRef.current
+    clickStartRef.current = null
+    if (e.button !== 0 || !start) return
+    if (allowAppMouseControlRef.current) return // xterm delivers the click natively
+    if (!appWantedMouseRef.current) return      // plain shell — nothing wants a click report
+    if (!isTapGesture(e.clientX - start.x, e.clientY - start.y, Date.now() - start.t)) return
+    const term = termRef.current
+    if (!term || term.hasSelection()) return
+    const screenEl = containerRef.current?.querySelector('.xterm-screen') as HTMLElement | null
+    if (!screenEl) return
+    const rect = screenEl.getBoundingClientRect()
+    const { col, row } = cellFromPoint(e.clientX, e.clientY, rect, term.cols, term.rows)
+    const seq = buildClickSequence({ encoding: mouseEncodingRef.current, col, row })
+    if (seq) window.termpolis.writeToTerminal(terminalId, seq)
+  }, [terminalId])
+
+  // A real `clear` for an AI terminal.
+  //
+  // Typing `clear` works in a shell and does nothing useful in a running agent: the
+  // agent owns the screen, and its next repaint puts everything back. This wipes the
+  // pane outright -- viewport AND scrollback -- for the case a user explicitly asks
+  // for: "start this terminal fresh".
+  //
+  // Two halves, and BOTH are required. term.reset() clears what is on screen, but
+  // TerminalPane replays window.termpolis.readTerminalBuffer() into a fresh xterm on
+  // every mount, so a renderer-only clear is undone by the next tab switch -- the
+  // transcript reappears and the feature looks broken. clearTerminalBuffer() empties
+  // the main-process window that replay reads from. Order matters: clear the source
+  // first, so nothing that arrives mid-clear is left stranded on screen.
+  //
+  // This is deliberately NOT sent to the pty. The agent's own context is untouched --
+  // it still remembers the conversation, and this only forgets what was DRAWN. That
+  // asymmetry is the honest one: the app can throw away its own scrollback, but it has
+  // no business rewriting an agent's history behind its back.
+  const handleClearTerminal = useCallback(async () => {
+    try {
+      await window.termpolis.clearTerminalBuffer(terminalId)
+    } catch {
+      // A failed buffer clear still leaves a clear screen; replay would restore the
+      // old text on the next mount, which is worse than nothing but not worth
+      // refusing the visible half of the action over.
+    }
+    const term = termRef.current
+    if (term) {
+      term.reset()
+      term.scrollToBottom()
+    }
+    // Everything derived from the text that just went away. Leaving these set is how
+    // you get a diff badge on an empty terminal, or a stale copy snapshot the context
+    // menu will happily paste.
+    outputBufferRef.current = ''
+    pendingWriteRef.current = ''
+    inputBufferRef.current = ''
+    copySnapshotRef.current = null
+    mouseDownSnapRef.current = null
+    lastGoodSnapRef.current = null
+    diffDetectedRef.current = false
+    setDiffDetected(false)
+    setShowDiffViewer(false)
+    setFixSuggestion(null)
+  }, [terminalId])
+
+  clearTerminalRef.current = () => { void handleClearTerminal() }
+
+  // The window-level hotkey path (App.tsx) fires when no terminal has focus; it names
+  // the active terminal and every pane checks whether it is the one.
+  useEffect(() => {
+    const onClear = (e: Event) => {
+      if ((e as CustomEvent).detail === terminalId) void handleClearTerminal()
+    }
+    window.addEventListener('termpolis:clear-terminal', onClear)
+    return () => window.removeEventListener('termpolis:clear-terminal', onClear)
+  }, [terminalId, handleClearTerminal])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -900,6 +1005,15 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.terminalSearch)) {
         e.preventDefault()
         setSearchOpen(true)
+        return false
+      }
+
+      // Clear the pane (default Ctrl+Shift+X). Handled here rather than letting it
+      // reach the shell: the point is to wipe what Termpolis is holding, and a stray
+      // control byte in an agent's prompt is exactly what nobody asked for.
+      if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.clearTerminal)) {
+        e.preventDefault()
+        clearTerminalRef.current()
         return false
       }
 
@@ -1378,6 +1492,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         ref={containerRef}
         className="flex-1 relative min-h-0 overflow-hidden"
         onMouseDownCapture={handleMouseDownCapture}
+        onMouseUp={handleTerminalMouseUp}
         onContextMenu={handleContextMenu}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
         onDrop={(e) => {
@@ -1503,6 +1618,21 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           {/* Past AI Sessions / Model / Second Opinion only apply to AI terminals — an
               agent launched here, OR an AI CLI (claude/codex/…) the user started in a
               plain shell (picked up by output detection). `badgeAgent` captures both. */}
+          {/* Clear is offered on AI terminals because it is the only place it is hard to
+              reach: a shell has `clear`, an agent owns the screen and redraws over it.
+              The hotkey (default Ctrl+Shift+X) works in every terminal regardless. */}
+          {badgeAgent && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); void handleClearTerminal() }}
+              className="flex items-center gap-1.5 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-2 py-1 transition-colors"
+              title="Clear this terminal — wipes the screen and all scrollback. The agent keeps its own context; only what is displayed here is discarded."
+              data-testid="clear-terminal-btn"
+            >
+              <i className="fa-solid fa-eraser text-[9px]"></i>
+              Clear
+            </button>
+          )}
           {badgeAgent && (
             <button
               type="button"

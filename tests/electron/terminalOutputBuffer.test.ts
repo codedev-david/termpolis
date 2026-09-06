@@ -4,6 +4,7 @@ import {
   readOutput,
   readOutputFrom,
   readOutputTail,
+  clearOutput,
   MAX_TERMINAL_BUFFER_CHARS,
   type OutputBuffers,
   type OutputWindow,
@@ -290,5 +291,160 @@ describe('readOutputFrom — absolute stream offsets', () => {
     // 6 chars were evicted — not 56, which is what an unclamped negative offset would claim.
     expect(slice.missed).toBe(6)
     expect(slice.nextOffset).toBe(10)
+  })
+})
+
+describe('clearOutput — dropping the window without rewinding the stream', () => {
+  /** 11 + 12 = 23 chars of stream, in two chunks, so the clear has something real to drop. */
+  const seeded = (): OutputBuffers => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', 'first line\n')
+    appendOutput(buffers, 't', 'second line\n')
+    return buffers
+  }
+
+  it('empties the retained window', () => {
+    const buffers = seeded()
+    clearOutput(buffers, 't')
+    expect(readOutput(buffers, 't')).toBe('')
+    expect(buffers.get('t')!.bytes).toBe(0)
+    expect(buffers.get('t')!.chunks).toEqual([])
+    invariant(buffers, 't')
+  })
+
+  it('leaves total alone, because every live offset is a position in it', () => {
+    // The swarm bridge, the MCP readers and the phone's output pump each hold an ABSOLUTE
+    // offset. Zeroing total here would make all three see the stream jump backwards, which
+    // reads to them as a restarted terminal reusing an id — and they re-emit old output.
+    const buffers = seeded()
+    expect(buffers.get('t')!.total).toBe(23)
+    clearOutput(buffers, 't')
+    expect(buffers.get('t')!.total).toBe(23)
+  })
+
+  it('clamps a pre-clear offset forward instead of replaying the cleared transcript', () => {
+    const buffers = seeded()
+    expect(readOutputFrom(buffers, 't', 0).output).toBe('first line\nsecond line\n')
+    clearOutput(buffers, 't')
+    // Because total survives, `dropped` is now the WHOLE stream, so an offset from before
+    // the clear resolves to the (empty) end rather than to the start of a shrunken window.
+    expect(readOutputFrom(buffers, 't', 0)).toEqual({
+      output: '',
+      nextOffset: 23,
+      missed: 23,
+    })
+  })
+
+  it('does not rewind a caught-up poller: its offset is still the end of the stream', () => {
+    const buffers = seeded()
+    const caughtUp = readOutputFrom(buffers, 't', 0).nextOffset
+    clearOutput(buffers, 't')
+    const after = readOutputFrom(buffers, 't', caughtUp)
+    // Nothing was lost from this caller's point of view — it had already consumed all 23
+    // chars — so the clear must not manufacture a `missed` gap for it either.
+    expect(after).toEqual({ output: '', nextOffset: caughtUp, missed: 0 })
+  })
+
+  it('resumes cleanly: a poller holding its post-clear offset sees only the new output', () => {
+    const buffers = seeded()
+    clearOutput(buffers, 't')
+    // The offset handed back by the first poll after the clear — the one the caller echoes.
+    const resumeAt = readOutputFrom(buffers, 't', 0).nextOffset
+    appendOutput(buffers, 't', 'after the clear\n')
+    expect(readOutputFrom(buffers, 't', resumeAt)).toEqual({
+      output: 'after the clear\n',
+      nextOffset: 39,
+      missed: 0,
+    })
+    invariant(buffers, 't')
+  })
+
+  it('tells a stale poller it lost the cleared chars rather than resuming silently', () => {
+    // A caller that was mid-window when the user hit clear must not get the cleared
+    // transcript back, but it should still learn that a gap happened.
+    const buffers = seeded()
+    clearOutput(buffers, 't')
+    appendOutput(buffers, 't', 'fresh')
+    const slice = readOutputFrom(buffers, 't', 5)
+    expect(slice.output).toBe('fresh')
+    expect(slice.missed).toBe(18) // the 23 cleared chars, less the 5 this caller had read
+    expect(slice.nextOffset).toBe(28)
+  })
+
+  it('keeps appending — and evicting — normally after a clear', () => {
+    const buffers: OutputBuffers = new Map()
+    for (const c of ['aaaa', 'bbbb', 'cccc']) appendOutput(buffers, 't', c, 8)
+    clearOutput(buffers, 't')
+    for (const c of ['dddd', 'eeee', 'ffff']) appendOutput(buffers, 't', c, 8)
+    const win = buffers.get('t')!
+    expect(readOutput(buffers, 't')).toBe('eeeeffff')
+    expect(win.bytes).toBe(8)
+    expect(win.total).toBe(24)
+    invariant(buffers, 't')
+    // 16 unreachable chars: the 12 the clear dropped plus the 4 the cap then evicted. The
+    // clear leaves the window in exactly the state normal eviction would have produced.
+    expect(readOutputFrom(buffers, 't', 0)).toEqual({
+      output: 'eeeeffff',
+      nextOffset: 24,
+      missed: 16,
+    })
+  })
+
+  it('is a no-op for a terminal that has no window, and does not create one', () => {
+    // The clear path fires for whatever pane is focused, including one that has not
+    // printed anything yet; creating a window here would leak an entry per clear.
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 'other', 'x')
+    clearOutput(buffers, 'never-spoke')
+    expect(buffers.size).toBe(1)
+    expect(buffers.has('never-spoke')).toBe(false)
+    expect(readOutput(buffers, 'other')).toBe('x')
+  })
+
+  it('is a no-op on an empty map', () => {
+    const buffers: OutputBuffers = new Map()
+    clearOutput(buffers, 't')
+    expect(buffers.size).toBe(0)
+  })
+
+  it('is idempotent — repeat clears change nothing, total included', () => {
+    const buffers = seeded()
+    clearOutput(buffers, 't')
+    clearOutput(buffers, 't')
+    clearOutput(buffers, 't')
+    expect(buffers.get('t')).toEqual({ chunks: [], bytes: 0, total: 23 })
+    expect(readOutputFrom(buffers, 't', 0).nextOffset).toBe(23)
+    invariant(buffers, 't')
+  })
+
+  it('clears only the terminal it was asked to clear', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 'a', 'keep me')
+    appendOutput(buffers, 'b', 'wipe me')
+    clearOutput(buffers, 'b')
+    expect(readOutput(buffers, 'a')).toBe('keep me')
+    expect(readOutput(buffers, 'b')).toBe('')
+    expect(buffers.get('a')!.total).toBe(7)
+    expect(buffers.size).toBe(2)
+  })
+
+  it('leaves readOutputTail with nothing to return', () => {
+    const buffers: OutputBuffers = new Map()
+    for (let i = 1; i <= 10; i++) appendOutput(buffers, 't', `line${i}\n`)
+    expect(readOutputTail(buffers, 't', 3)).toBe('line9\nline10\n')
+    clearOutput(buffers, 't')
+    expect(readOutputTail(buffers, 't', 3)).toBe('')
+    expect(readOutputTail(buffers, 't', 1000)).toBe('')
+  })
+
+  it('gives readOutputTail the post-clear lines and none of the old scrollback', () => {
+    // TerminalPane replays this window into a fresh xterm on every mount, so anything the
+    // clear left behind would reappear on the next tab switch or split re-layout.
+    const buffers: OutputBuffers = new Map()
+    for (let i = 1; i <= 10; i++) appendOutput(buffers, 't', `line${i}\n`)
+    clearOutput(buffers, 't')
+    appendOutput(buffers, 't', 'fresh1\nfresh2\n')
+    expect(readOutputTail(buffers, 't', 50)).toBe('fresh1\nfresh2\n')
+    invariant(buffers, 't')
   })
 })

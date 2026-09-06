@@ -24,6 +24,7 @@ const ConversationSearch = lazy(() => import('./components/ConversationSearch/Co
 const SwarmDashboard = lazy(() => import('./components/SwarmDashboard/SwarmDashboard').then(m => ({ default: m.SwarmDashboard })))
 const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/SwarmCompleteDialog').then(m => ({ default: m.SwarmCompleteDialog })))
 const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
+const AppLogModal = lazy(() => import('./components/AppLogModal/AppLogModal').then(m => ({ default: m.AppLogModal })))
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
@@ -81,6 +82,7 @@ export default function App() {
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
+  const [showAppLog, setShowAppLog] = useState(false)
   const launchingAgent = useTerminalStore(s => s.launchingAgent)
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
   const swarmNotification = useTerminalStore(s => s.swarmNotification)
@@ -316,6 +318,27 @@ export default function App() {
         return
       }
 
+      // Show what the app itself has been printing. In a packaged build there is no
+      // console to open, so without this the answer to "why did it do that?" is a
+      // dev build.
+      if (matchesKeybinding(e, kb.viewLogs)) {
+        e.preventDefault()
+        setShowAppLog(v => !v)
+        return
+      }
+
+      // Wipe the active terminal the way `clear` does -- scrollback included. The
+      // pane owns the reset (it holds the xterm instance), so this window-level
+      // path only names the terminal; a focused pane handles the key itself.
+      if (matchesKeybinding(e, kb.clearTerminal)) {
+        e.preventDefault()
+        const { activeTerminalId: clearId } = useTerminalStore.getState()
+        if (clearId) {
+          window.dispatchEvent(new CustomEvent('termpolis:clear-terminal', { detail: clearId }))
+        }
+        return
+      }
+
       if (matchesKeybinding(e, kb.toggleGrid)) {
         e.preventDefault()
         const { activeTerminalId: aid, terminals: terms } = useTerminalStore.getState()
@@ -474,12 +497,18 @@ export default function App() {
     const onOpenMemory = () => setShowMemory(true)
     window.addEventListener('termpolis:openMemory', onOpenMemory)
 
+    // Same bridge for the app log, so the Help modal / command palette can open it
+    // without threading a prop through every panel.
+    const onOpenAppLog = () => setShowAppLog(true)
+    window.addEventListener('termpolis:openAppLog', onOpenAppLog)
+
     return () => {
       window.removeEventListener('keydown', handler)
       window.removeEventListener('termpolis:launch-agent-slot', onLaunchSlot)
       window.removeEventListener('termpolis:openContextPins', onOpenPins)
       window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
       window.removeEventListener('termpolis:openMemory', onOpenMemory)
+      window.removeEventListener('termpolis:openAppLog', onOpenAppLog)
       unsubGlobal?.()
       unsubSwarm?.()
       unsubClose?.()
@@ -945,6 +974,7 @@ export default function App() {
       <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />
       <Suspense fallback={null}>
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
+        {showAppLog && <AppLogModal onClose={() => setShowAppLog(false)} />}
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (
           <AddTerminalModal

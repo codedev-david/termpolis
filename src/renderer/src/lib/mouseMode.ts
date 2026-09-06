@@ -136,3 +136,110 @@ export function buildWheelSequence(opts: {
   }
   return one.repeat(lines)
 }
+
+// --- Click forwarding --------------------------------------------------------
+//
+// Swallowing the tracking enable also swallows the CLICK, and that is what leaves
+// a TUI's own clickable UI dead. Claude Code's diff panel draws an ✕ that only a
+// mouse report can close, so the panel "won't close" and there is no keyboard way
+// out of it — the app is waiting for a button-press report that never arrives.
+//
+// The wheel is already synthesized back to the app (above); this does the same for
+// a PLAIN left click, and only for a plain left click:
+//
+//   • a drag is still a text selection (press and release must land within
+//     CLICK_MAX_MOVE_PX of each other, inside CLICK_MAX_DURATION_MS)
+//   • every modified click keeps the meaning it already had — Alt+Shift is the
+//     copy anchor, Shift is the universal "select text through a mouse app"
+//     override, Ctrl opens a link
+//   • right and middle buttons stay with the context menu and paste
+//
+// So the gesture that closes a panel starts working without any gesture that used
+// to select text changing behaviour.
+
+/** Furthest the pointer may travel between press and release and still count as a
+ *  click rather than the start of a drag-select. 4px absorbs the hand-shake in a
+ *  real click while staying well inside a single terminal cell. */
+export const CLICK_MAX_MOVE_PX = 4
+
+/** Longest press-to-release that still counts as a click. A press held longer than
+ *  this is someone selecting (or thinking) rather than pressing a button, and
+ *  forwarding it would fire a TUI control the user never meant to hit. */
+export const CLICK_MAX_DURATION_MS = 700
+
+/**
+ * True when a press/release pair is a click rather than a drag-select. Both
+ * bounds have to hold: a long press that never moved is not a click, and neither
+ * is a fast flick across half the screen.
+ *
+ * Non-finite inputs (a missing timestamp, a NaN from an unmeasurable rect) answer
+ * false — the safe direction, because a false negative costs one dead click while
+ * a false positive fires a TUI control mid-selection.
+ */
+export function isTapGesture(dxPx: number, dyPx: number, durationMs: number): boolean {
+  if (!Number.isFinite(dxPx) || !Number.isFinite(dyPx) || !Number.isFinite(durationMs)) return false
+  if (durationMs < 0 || durationMs > CLICK_MAX_DURATION_MS) return false
+  return Math.abs(dxPx) <= CLICK_MAX_MOVE_PX && Math.abs(dyPx) <= CLICK_MAX_MOVE_PX
+}
+
+/** A 1-based (col,row) cell in the terminal's VIEWPORT — what a mouse report
+ *  carries, as distinct from an absolute position in the scrollback buffer. */
+export interface ViewportCell {
+  col: number
+  row: number
+}
+
+/**
+ * The viewport cell under a point, measured from the rendered screen rectangle.
+ *
+ * Measured from the DOM rect rather than xterm internals for the same reason the
+ * rest of this file is: an xterm upgrade can rename a private service, and a
+ * mouse report that silently points at the wrong cell is worse than one that
+ * never arrives. A degenerate rect (a hidden pane, a zero-size measurement)
+ * answers cell 1,1 instead of dividing by zero.
+ */
+export function cellFromPoint(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  cols: number,
+  rows: number,
+): ViewportCell {
+  const safeCols = Math.max(1, Math.floor(cols) || 1)
+  const safeRows = Math.max(1, Math.floor(rows) || 1)
+  const cellW = rect.width > 0 ? rect.width / safeCols : 0
+  const cellH = rect.height > 0 ? rect.height / safeRows : 0
+  const col = cellW > 0 ? Math.floor((clientX - rect.left) / cellW) + 1 : 1
+  const row = cellH > 0 ? Math.floor((clientY - rect.top) / cellH) + 1 : 1
+  return {
+    col: Math.min(safeCols, Math.max(1, Number.isFinite(col) ? col : 1)),
+    row: Math.min(safeRows, Math.max(1, Number.isFinite(row) ? row : 1)),
+  }
+}
+
+/**
+ * Build the press+release pair for one left click, to write to the pty so a
+ * mouse-tracking app sees the click we swallowed the tracking for.
+ *
+ * Left button is 0. SGR (`CSI < 0 ; col ; row M` then the same with a lowercase
+ * `m`) distinguishes press from release by the final byte, which is the whole
+ * reason SGR exists; legacy X10 has no per-button release, so release is the
+ * dedicated button 3. Both reports are sent together because a TUI that acts on
+ * release — and several do — otherwise sees a button held down forever.
+ */
+export function buildClickSequence(opts: {
+  encoding: MouseEncoding
+  col: number
+  row: number
+}): string {
+  const col = Math.max(1, Math.floor(opts.col) || 1)
+  const row = Math.max(1, Math.floor(opts.row) || 1)
+  if (opts.encoding === 'sgr') {
+    return `\x1b[<0;${col};${row}M\x1b[<0;${col};${row}m`
+  }
+  const cx = String.fromCharCode(Math.min(255, 32 + col))
+  const cy = String.fromCharCode(Math.min(255, 32 + row))
+  const press = `\x1b[M${String.fromCharCode(32)}${cx}${cy}`
+  const release = `\x1b[M${String.fromCharCode(35)}${cx}${cy}`
+  return press + release
+}

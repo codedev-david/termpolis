@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchCustomKeybinding, customComboHasModifier, isEditableTarget, RESERVED_COPY_ACTIONS, isReservedAction, isReservedCombo, withReservedDefaults } from '../../src/renderer/src/lib/keybindings'
 import type { CustomKeybinding } from '../../src/renderer/src/types'
+import { DEFAULT_VOICE_SETTINGS } from '../../src/renderer/src/lib/voice/voiceTypes'
 
 function key(overrides: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -441,5 +442,74 @@ describe('isEditableTarget', () => {
   it('is false for non-editable elements and null', () => {
     expect(isEditableTarget({ tagName: 'BUTTON', isContentEditable: false } as unknown as EventTarget)).toBe(false)
     expect(isEditableTarget(null)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Collision guard.
+//
+// Every default here is a Ctrl+Shift+<letter>, and the supply of those is small
+// and already heavily spoken for -- by other defaults, by shortcuts hardcoded in
+// App.tsx that never went through this map, and by voice push-to-talk, which
+// lives in voiceTypes.ts and is the one nobody remembers. Adding `viewLogs` in
+// v1.39.1 nearly took Ctrl+Shift+L, which would have silently broken dictation
+// for anyone who had it enabled: both handlers fire, neither knows about the
+// other, and nothing anywhere would have failed.
+//
+// So the guard is asserted rather than remembered. If a future default collides
+// with anything already claimed, this test names both sides.
+// ---------------------------------------------------------------------------
+
+describe('default keybindings do not collide', () => {
+  /** Shortcuts hardcoded in App.tsx's window keydown handler (`primaryMod && e.shiftKey
+   *  && e.key === X`). They bypass this map entirely, so the map cannot see them --
+   *  which is exactly why they have to be written down somewhere that runs. */
+  const APP_TSX_HARDCODED: Record<string, string> = {
+    'Ctrl+Shift+I': 'insights panel',
+    'Ctrl+Shift+E': 'efficiency panel',
+    'Ctrl+Shift+A': 'agent activity panel',
+    'Ctrl+Shift+B': 'budget panel',
+    'Ctrl+Shift+D': 'dashboard',
+    'Ctrl+Shift+Y': 'redundancy panel',
+    'Ctrl+Shift+M': 'memory panel',
+    'Ctrl+Shift+P': 'prompt templates',
+    'Ctrl+Shift+S': 'swarm dashboard',
+  }
+
+  it('assigns every action a distinct combo', () => {
+    const seen = new Map<string, string>()
+    for (const [action, combo] of Object.entries(DEFAULT_KEYBINDINGS)) {
+      const prior = seen.get(combo)
+      expect(prior, `${action} and ${prior} both default to ${combo}`).toBeUndefined()
+      seen.set(combo, action)
+    }
+  })
+
+  it('avoids every shortcut hardcoded in App.tsx', () => {
+    for (const [action, combo] of Object.entries(DEFAULT_KEYBINDINGS)) {
+      expect(
+        APP_TSX_HARDCODED[combo],
+        `${action} defaults to ${combo}, which App.tsx already uses for the ${APP_TSX_HARDCODED[combo]}`,
+      ).toBeUndefined()
+    }
+  })
+
+  it('avoids the voice push-to-talk key', () => {
+    for (const [action, combo] of Object.entries(DEFAULT_KEYBINDINGS)) {
+      expect(
+        combo,
+        `${action} defaults to the voice push-to-talk combo`,
+      ).not.toBe(DEFAULT_VOICE_SETTINGS.pushToTalkKey)
+    }
+  })
+
+  it('labels exactly the actions it binds', () => {
+    expect(Object.keys(KEYBINDING_LABELS).sort()).toEqual(Object.keys(DEFAULT_KEYBINDINGS).sort())
+    for (const label of Object.values(KEYBINDING_LABELS)) expect(label.trim()).not.toBe('')
+  })
+
+  it('binds the two actions v1.39.1 added', () => {
+    expect(DEFAULT_KEYBINDINGS.viewLogs).toBe('Ctrl+Shift+O')
+    expect(DEFAULT_KEYBINDINGS.clearTerminal).toBe('Ctrl+Shift+X')
   })
 })

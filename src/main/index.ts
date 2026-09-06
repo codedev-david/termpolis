@@ -62,11 +62,14 @@ import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
 import { createTerminalNameLookup } from './terminalNames'
+import { initAppLog, logToApp, readAppLog, clearAppLog, appLogFilePath, captureConsole } from './appLog'
+import { normalizeLevel } from '../shared/appLog'
 import {
   appendOutput,
   readOutput,
   readOutputFrom,
   readOutputTail,
+  clearOutput,
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, computeWindowsPty } from './terminalManager'
@@ -228,6 +231,15 @@ import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
+
+// Mirror main's console into the app log from the moment this module loads, well before
+// Electron is ready. Everything printed during startup -- which shell was resolved, why a
+// service failed to wire, what the updater decided -- is exactly what a user needs when
+// startup is what went wrong, and in a packaged build it otherwise goes to a stdout that
+// does not exist. initAppLog() (in whenReady) later points these lines at a file; until
+// then they accumulate in memory and are not lost.
+captureConsole(console, 'main')
+
 
 // v1.26 — the sync-void `link` dep, made safe against an out-of-process graph write.
 //
@@ -2454,6 +2466,40 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
   return ok({ ...slice, length: slice.output.length })
 })
 
+// Wipe a terminal's retained output. The renderer clears xterm itself; this is the
+// half that makes it STICK -- TerminalPane replays this window into a fresh xterm on
+// every mount, so without it the transcript the user just cleared comes straight back
+// on the next tab switch or split re-layout. Nothing is sent to the pty: a clear is a
+// display action, and typing `clear` into a running agent would be a message to the
+// agent rather than a command to the terminal.
+ipcMain.handle('terminal:clear', async (_, { terminalId }) => {
+  if (typeof terminalId !== 'string' || !terminalId) return err('terminalId required')
+  clearOutput(terminalOutputBuffers, terminalId)
+  return ok()
+})
+
+// The app's own log -- what Termpolis printed about itself, which in a packaged build
+// goes to a console nobody can open. The viewer (default Ctrl+Shift+O) reads from the
+// in-memory ring; the file beside it is what survives a crash.
+ipcMain.handle('app-log:read', async (_, args) => {
+  const limit = typeof args?.limit === 'number' ? args.limit : 500
+  return ok({ entries: readAppLog(limit), path: appLogFilePath() })
+})
+
+ipcMain.handle('app-log:clear', async () => {
+  clearAppLog()
+  return ok()
+})
+
+ipcMain.handle('app-log:path', async () => ok(appLogFilePath()))
+
+// Renderer-side console lines. `on`, not `handle`: a log line that makes the caller
+// await a round trip would put IPC latency inside every console.log in the app.
+ipcMain.on('app-log:append', (_e, payload) => {
+  const message = typeof payload?.message === 'string' ? payload.message : String(payload?.message ?? '')
+  logToApp(normalizeLevel(payload?.level), 'renderer', [message])
+})
+
 // Remote access (phone companion). Registered here, at module scope, because the
 // Settings pane asks for status the moment it mounts -- long before the bridge
 // itself starts, which waits on the MCP port. Every handler resolves the host at
@@ -3024,6 +3070,10 @@ if (!gotTheLock) {
       },
     }
 
+    // Point the app log at the profile now that userData exists. Console capture
+    // (below, at module scope) has been filling the in-memory ring since load, so
+    // startup lines survive into the file the first time anything is written.
+    initAppLog(app.getPath('userData'))
     initAuditLog(app.getPath('userData'))
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))

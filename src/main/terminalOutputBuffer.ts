@@ -143,3 +143,24 @@ export function readOutputTail(buffers: OutputBuffers, id: string, lines: number
   const clamped = Math.max(1, Math.min(Math.floor(lines) || 50, 1000))
   return readOutput(buffers, id).split('\n').slice(-clamped).join('\n')
 }
+
+/** Drop everything retained for a terminal, keeping its stream position.
+ *
+ *  This is what a user-requested "clear" needs on THIS side of the wire. Wiping
+ *  xterm alone is not enough and is worse than doing nothing: TerminalPane replays
+ *  this window into a fresh xterm on every mount, so a tab switch or a split
+ *  re-layout would resurrect the whole transcript the user just cleared.
+ *
+ *  `total` deliberately survives. It is the basis of every absolute offset — the
+ *  swarm bridge, the MCP readers and the phone's output pump all hold one — and
+ *  resetting it to 0 would make each of them see the stream jump BACKWARDS, which
+ *  reads as "a restarted terminal reusing an id" and re-delivers output that was
+ *  already consumed. Keeping it means `dropped` becomes the whole stream, so
+ *  readOutputFrom clamps every existing offset forward to the (now empty) end and
+ *  each poller simply resumes with whatever the terminal prints next. */
+export function clearOutput(buffers: OutputBuffers, id: string): void {
+  const win = buffers.get(id)
+  if (!win) return
+  win.chunks = []
+  win.bytes = 0
+}

@@ -1,3 +1,5 @@
+import type { AppLogEntry, AppLogLevel } from '../../../shared/appLog'
+
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
 export type ViewMode = 'tabs' | 'split'
@@ -323,6 +325,16 @@ export interface TermpolisAPI {
   ) => Promise<
     IpcResponse<{ output: string; length: number; nextOffset: number; missed: number }>
   >
+  /** Drops the main-process copy of a terminal's output so a cleared terminal stays
+   *  cleared across remounts. The renderer wipes its own xterm separately. */
+  clearTerminalBuffer: (terminalId: string) => Promise<IpcResponse>
+
+  // App log -- what Termpolis itself printed, kept so users can see behind the scenes
+  readAppLog: (limit?: number) => Promise<IpcResponse<{ entries: AppLogEntry[]; path: string | null }>>
+  clearAppLog: () => Promise<IpcResponse>
+  appLogPath: () => Promise<IpcResponse<string | null>>
+  /** Fire-and-forget: pushes one renderer-side line into the same log as main's. */
+  writeAppLog: (level: AppLogLevel, message: string) => void
 
   // Git operations
   gitFindRoot: (cwd: string) => Promise<IpcResponse<string | null>>

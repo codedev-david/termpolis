@@ -105,6 +105,19 @@ const api: TermpolisAPI = {
   readTerminalBuffer: (terminalId, fromOffset) =>
     ipcRenderer.invoke('terminal:read-buffer', { terminalId, fromOffset }),
 
+  clearTerminalBuffer: (terminalId) =>
+    ipcRenderer.invoke('terminal:clear', { terminalId }),
+
+  // App log (the app's own behind-the-scenes output, not a terminal's)
+  readAppLog: (limit) =>
+    ipcRenderer.invoke('app-log:read', { limit }),
+  clearAppLog: () =>
+    ipcRenderer.invoke('app-log:clear'),
+  appLogPath: () =>
+    ipcRenderer.invoke('app-log:path'),
+  writeAppLog: (level, message) =>
+    ipcRenderer.send('app-log:append', { level, message }),
+
   // Git operations
   gitFindRoot: (cwd) =>
     ipcRenderer.invoke('git:find-root', { cwd }),
