@@ -316,111 +316,75 @@ jobs:
             echo 'started. Re-run with **dry_run** unchecked to build.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # `eas build --non-interactive` cannot create the iOS distribution
-      # certificate. It only ever reuses one that already exists:
+      # `eas build --non-interactive` can only ever REUSE a distribution
+      # certificate -- SetUpDistributionCertificate.js:41-48 throws
+      # MissingCredentialsNonInteractiveError when there is none -- so on an
+      # Apple account that has never signed anything the first build dies four
+      # seconds in with "Credentials are not set up", after authenticating to
+      # Apple perfectly. Nothing about that failure is a credentials problem,
+      # and re-checking the secrets is a dead end.
       #
-      #   credentials/ios/actions/SetUpDistributionCertificate.js:41-48
-      #   async runNonInteractiveAsync(_ctx, currentCertificate) {
-      #     Log.warn('Distribution Certificate is not validated for non-interactive builds.')
-      #     if (!currentCertificate) { throw new MissingCredentialsNonInteractiveError() }
+      # `credentials:configure-build` is the same credential setup with
+      # nonInteractive hardcoded to false (commands/credentials/configure-build.js)
+      # and no build attached, so it costs seconds. It asks two questions --
+      # "Generate a new Apple Distribution Certificate?" and the same for the
+      # provisioning profile -- and both default to yes.
       #
-      # The App Store Connect key gets eas-cli past the Apple login and past the
-      # provisioning profile, but not past that `if`. So the first build on an
-      # account that has never signed anything fails four seconds in, having
-      # authenticated perfectly -- which is exactly what run 34081512774 did.
-      # No amount of correct secrets fixes it; the certificate has to be minted
-      # once, and only an interactive run will mint it.
-      #
-      # `credentials:configure-build` is that same credential setup with
-      # `nonInteractive: false` hardcoded (commands/credentials/configure-build.js)
-      # and no build attached, so it costs seconds instead of forty minutes.
-      # Interactive means a real terminal -- promptAsync throws outright when
-      # `!process.stdin.isTTY` (prompts.js:16) -- so it runs under `script`,
-      # which hands it a pty.
-      #
-      # The remaining question on this path is a confirm whose default is the
-      # answer we want, so the input is newlines:
-      #   no certificate yet  -> "Generate a new Apple Distribution Certificate?"
-      #                          (initial: true) -> mints one through the ASC API
-      #   one already on file -> "Reuse this distribution certificate?"
-      #                          (initial: true) -> reuses it
-      #   already set up      -> returns before asking anything at all
-      # That last case is why this runs on every build rather than behind a
-      # flag: once the certificate exists the step is a ten-second no-op, and a
-      # flag nobody remembers to tick is how this failure comes back.
+      # Once it has run, the certificate and profile live on EAS and every later
+      # --non-interactive build reuses them; this step then finds them valid,
+      # prints "All credentials are ready to build" and exits without asking
+      # anything. That is why it stays unconditional instead of hiding behind a
+      # flag: a flag nobody remembers to tick is how this failure comes back
+      # when the certificate expires in 2027.
       - name: Create the signing certificate
         if: ${{ !inputs.dry_run }}
+        # A backstop, not the mechanism -- the driver has its own deadline. This
+        # exists because the previous two attempts at this step failed by
+        # running forever rather than by failing, and a wedged step otherwise
+        # burns the job's full six-hour default.
+        timeout-minutes: 12
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
           EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          # Same reason as the build step: unset, resolveCredentials.js:145
-          # prompts for the team id, and a prompt answered by a stray newline
-          # is worse than one that fails.
           EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Not optional, and not cosmetic. Unset, resolveCredentials.js:131-141
-          # asks "Select your Apple Team Type:" -- a SELECT, not a confirm --
-          # whose first choice is Enterprise. In run 34140635497 a newline
-          # picked it, and Enterprise is the one answer that changes behaviour:
-          # it is the sole input to `inHouse` (resolveCredentials.js:150), which
-          # switches every profile lookup and creation to IOS_APP_INHOUSE. A
-          # newline is only a safe answer to a question whose default is right,
-          # so this prompt gets removed rather than answered.
-          #
-          # COMPANY_OR_ORGANIZATION regardless of how the Apple account is
-          # enrolled: `inHouse` is the only thing derived from this value, and
-          # it is false for COMPANY_OR_ORGANIZATION and INDIVIDUAL alike.
+          # Mandatory, and NOT because the value is interesting. Unset,
+          # resolveCredentials.js:131-141 asks "Select your Apple Team Type:" --
+          # a select, not a confirm -- whose first entry is Enterprise. Pressing
+          # Enter picks Enterprise, and that is the one answer on this path that
+          # changes behaviour: it is the sole input to `inHouse` (:150), which
+          # switches every provisioning profile lookup and creation to
+          # IOS_APP_INHOUSE. COMPANY_OR_ORGANIZATION is correct however the
+          # Apple account is enrolled, because `inHouse` is false for INDIVIDUAL
+          # too, and it is also what eas-cli itself defaults to elsewhere
+          # (ensureTestFlightSetup.js:32).
           EXPO_APPLE_TEAM_TYPE: COMPANY_OR_ORGANIZATION
         run: |
           cd mobile
-          # A newline every three seconds. Not a burst up front, and not a burst
-          # followed by a sleep -- both of those were wrong in run 34140635497,
-          # each for its own reason.
-          #
-          # Wrong to burst. The pty queues input in canonical mode until the
-          # child reads it, and the child's first read drains the whole queue
-          # into whichever keypress handler is attached at that instant. All
-          # eight newlines were echoed at 15:55:00, the team-type prompt opened
-          # at 15:55:02, consumed the entire queue to answer itself, and the
-          # certificate confirm a second later got nothing. Input written before
-          # a prompt exists is spent on that prompt, however much of it there is.
-          #
-          # Wrong to sleep. SIGPIPE is delivered on a write, so a feeder that has
-          # stopped writing is never told the reader is gone -- it sleeps out its
-          # full duration while bash waits for every member of the pipeline.
-          # That is why the step took exactly 900 seconds. It would have taken
-          # exactly 900 seconds on success too.
-          #
-          # Writing on an interval fixes both: each prompt gets its own newline
-          # within three seconds of opening, and the feeder dies within three
-          # seconds of `script` exiting.
-          #
-          # errexit off around the pipeline because the status that matters is
-          # `script`'s, not the feeder's, and PIPESTATUS cannot be read after the
-          # shell has already exited on it.
           set +e
-          { while :; do printf '\n'; sleep 3; done; } \
-            | timeout 600 script -qec 'eas credentials:configure-build -p ios -e production' /dev/null
-          status=${PIPESTATUS[1]}
+          PTY_ANSWER_TIMEOUT=600 \
+            python3 "$GITHUB_WORKSPACE/.github/scripts/pty-answer.py" \
+            eas credentials:configure-build -p ios -e production
+          status=$?
           set -e
           if [ "$status" -eq 124 ]; then
-            echo "::error::Credential setup did not finish within 10 minutes."
-            echo "It is stuck on a question a newline does not answer. Run it"
-            echo "locally to see which one, then pin that answer the way"
-            echo "EXPO_APPLE_TEAM_TYPE is pinned above:"
-            echo "  cd mobile && npx eas-cli credentials:configure-build -p ios -e production"
+            echo "::error::iOS credential setup stopped on a question it could not answer."
+            echo "The driver logs every prompt it sees, so the last '? ...' line above"
+            echo "is the one it got stuck on. Answer that question with an environment"
+            echo "variable rather than a keystroke -- EXPO_APPLE_TEAM_TYPE above is the"
+            echo "worked example -- and do not add a blind answer for it."
             exit 1
           fi
           if [ "$status" -ne 0 ]; then
             echo "::error::Could not set up iOS signing credentials (exit $status)."
-            echo "The most likely cause is the App Store Connect key's role. An"
-            echo "App Manager key authenticates and uploads but cannot create"
-            echo "signing certificates. The key has to be ADMIN:"
-            echo "  appstoreconnect.apple.com -> Users and Access -> Integrations"
-            echo "  -> App Store Connect API -> Team Keys"
-            echo "A key's role cannot be changed after it is created -- revoke it"
-            echo "and mint a new one, then re-set all three ASC secrets."
+            echo "If Apple rejected the request rather than the CLI stalling, the"
+            echo "likeliest cause is the App Store Connect key's role: creating"
+            echo "certificates needs Admin, and an App Manager key authenticates"
+            echo "fine and then cannot create them. Check the key in App Store"
+            echo "Connect > Users and Access > Integrations. A key's role cannot be"
+            echo "changed after it is issued -- revoke it, mint a new Admin key,"
+            echo "and re-set ASC_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID."
             exit "$status"
           fi
 
