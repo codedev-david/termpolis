@@ -27,7 +27,10 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#04080D"
       },
-      "permissions": ["android.permission.CAMERA", "android.permission.INTERNET"],
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET"
+      ],
       "blockedPermissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_EXTERNAL_STORAGE",
@@ -52,6 +55,12 @@
           "backgroundColor": "#1e1e1e"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b46b3707-416e-4717-8fc7-df83b6048854"
+      }
+    },
+    "owner": "davidcodedev-llc"
   }
 }
