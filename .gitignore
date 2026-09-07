@@ -67,3 +67,5 @@ mobile/dist/
 # `expo prebuild` output: generated from app.json, never hand-edited, never committed.
 mobile/android/
 mobile/ios/
+mobile/store/raw/
+mobile/store/out/

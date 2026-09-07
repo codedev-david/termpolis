@@ -1,0 +1,67 @@
+# Answers "TestFlight is asking me for an invite code".
+#
+# That message means TestFlight does not recognise the signed-in Apple ID as a
+# tester. Creating a beta group -- which `eas submit` does automatically, as
+# "Team (Expo)" -- does NOT put anybody in it, so the default state after a
+# first submission is a group with zero testers and a phone asking for a code.
+#
+# Runs read-only unless `add_tester` is filled in.
+name: TestFlight access
+
+on:
+  workflow_dispatch:
+    inputs:
+      add_tester:
+        description: 'Email to add to the internal group (blank = read-only)'
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: testflight-access
+  cancel-in-progress: false
+
+jobs:
+  access:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The key never touches the checkout, so it cannot be committed by a
+      # later step and is not in the workspace an artifact upload would see.
+      - name: Stage the App Store Connect key
+        id: asckey
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -eo pipefail
+          if [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::ASC_KEY_P8 is not set."
+            exit 1
+          fi
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$ASC_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Who can install the build
+        env:
+          ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_APP_ID: ${{ vars.ASC_APP_ID || secrets.ASC_APP_ID }}
+          ADD_TESTER_EMAIL: ${{ inputs.add_tester }}
+        run: node .github/scripts/asc-testflight.mjs
+
+      - name: Shred the key
+        if: always()
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          if [ -f "$key_path" ]; then
+            shred -u "$key_path" 2>/dev/null || rm -f "$key_path"
+          fi
