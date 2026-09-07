@@ -135,6 +135,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           missing=""
           [ -n "$EXPO_TOKEN" ]   || missing="$missing EXPO_TOKEN"
@@ -145,7 +146,20 @@ jobs:
             echo "All four credentials are present."
             exit 0
           fi
-          echo "Cannot build iOS. Missing:$missing"
+          # A dry run reaches Expo and stops before Apple: it resolves the
+          # account, mints the EAS project and commits the link back to main.
+          # None of that touches the App Store Connect key. Letting it run on
+          # EXPO_TOKEN alone is the point -- it proves the Expo half while the
+          # Apple half is still being collected, instead of leaving both halves
+          # to fail for the first time on the same run.
+          if [ "$DRY_RUN" = "true" ] && [ -n "$EXPO_TOKEN" ]; then
+            fatal=""
+            echo "Dry run. EXPO_TOKEN is present, which is all this run needs."
+            echo "Still to collect before a real build:$missing"
+          else
+            fatal=1
+            echo "Cannot build iOS. Missing:$missing"
+          fi
           echo
           echo "EXPO_TOKEN"
           echo "  expo.dev -> account settings -> Access tokens -> Create token."
@@ -162,7 +176,7 @@ jobs:
           echo "  gh secret set ASC_KEY_ID    --body '<key id>'"
           echo "  gh secret set ASC_ISSUER_ID --body '<issuer id>'"
           echo "  gh secret set ASC_KEY_P8 < AuthKey_XXXXXXXXXX.p8"
-          exit 1
+          [ -z "$fatal" ] || exit 1
 
       - name: Install eas-cli
         run: npm install -g "eas-cli@${EAS_CLI_VERSION}"
@@ -178,6 +192,7 @@ jobs:
       # about neither keys nor encodings.
       - name: Stage the App Store Connect key
         id: asckey
+        if: ${{ !inputs.dry_run }}
         env:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
