@@ -69,6 +69,10 @@ on:
         description: 'TestFlight "What to Test" notes'
         type: string
         default: ''
+      submit_only:
+        description: 'Skip the build and upload the last one EAS built'
+        type: boolean
+        default: false
       dry_run:
         description: 'Run the gates and resolve credentials, then stop'
         type: boolean
@@ -398,7 +402,7 @@ jobs:
       # a credential-shaped edit is exactly what we are avoiding.
       - name: Build
         id: build
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && !inputs.submit_only }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
@@ -427,6 +431,22 @@ jobs:
       # ascAppId cannot come from an environment variable (see the header), so it
       # is written in here and reverted below. Runner-only: this edit is never
       # added, never committed, and the revert is unconditional.
+      #
+      # The three ascApiKey* fields are here for a different reason. The
+      # EXPO_ASC_* environment variables authenticate credential operations, and
+      # they are enough for the certificate step and for TestFlight group setup
+      # -- but NOT for the upload. `eas submit` resolves its key separately
+      # (IosSubmitCommand.js:102-127) and falls back to the key stored in the
+      # EAS credentials service, which on a fresh account does not exist:
+      #
+      #     Looking up credentials configuration for com.termpolis.remote...
+      #     App Store Connect API Keys cannot be set up in --non-interactive mode.
+      #
+      # (SetUpAscApiKey.js:40, run 34146951983 -- after a successful forty-minute
+      # build.) Naming the key in the profile takes the `path` source instead and
+      # never consults the credentials service, which also keeps the key in
+      # GitHub secrets rather than uploading it to Expo. All three fields are
+      # required together: any subset is a hard error in non-interactive mode.
       - name: Point the submit profile at the App Store Connect record
         id: patch
         if: ${{ !inputs.dry_run && inputs.submit }}
@@ -441,6 +461,9 @@ jobs:
           # the value.
           ASC_APP_ID: ${{ vars.ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -eo pipefail
           if [ -z "$ASC_APP_ID" ] || [ -z "$APPLE_TEAM_ID" ]; then
@@ -448,12 +471,23 @@ jobs:
             echo "::warning::The build is finished and stored on EAS, but it was not uploaded: ASC_APP_ID or APPLE_TEAM_ID is not set."
             exit 0
           fi
+          # Checked here rather than trusted, because the failure this prevents
+          # costs a whole build to discover.
+          if [ ! -s "$ASC_API_KEY_PATH" ] || [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ]; then
+            echo "patched=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::The build is finished and stored on EAS, but it was not uploaded: the App Store Connect key is incomplete."
+            exit 0
+          fi
           node -e '
             const fs = require("fs")
             const p = "mobile/eas.json"
             const j = JSON.parse(fs.readFileSync(p, "utf8"))
-            j.submit.production.ios.ascAppId = process.env.ASC_APP_ID
-            j.submit.production.ios.appleTeamId = process.env.APPLE_TEAM_ID
+            const ios = j.submit.production.ios
+            ios.ascAppId = process.env.ASC_APP_ID
+            ios.appleTeamId = process.env.APPLE_TEAM_ID
+            ios.ascApiKeyPath = process.env.ASC_API_KEY_PATH
+            ios.ascApiKeyId = process.env.ASC_KEY_ID
+            ios.ascApiKeyIssuerId = process.env.ASC_ISSUER_ID
             fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n")
           '
           # Apple checks this before it checks anything else, and the failure it
@@ -471,7 +505,9 @@ jobs:
       # --latest picks the build that just finished. Separate from the build step
       # rather than folded into it with --auto-submit, so that a submit failure
       # (a rejected key, a missing app record) leaves a finished build on EAS to
-      # retry against instead of throwing away forty minutes of compute.
+      # retry against instead of throwing away forty minutes of compute. Run the
+      # workflow again with submit_only to collect on that: the build step is
+      # skipped and --latest still resolves to the same finished build.
       - name: Submit to App Store Connect
         id: submit
         if: ${{ !inputs.dry_run && inputs.submit && steps.patch.outputs.patched == 'true' }}
