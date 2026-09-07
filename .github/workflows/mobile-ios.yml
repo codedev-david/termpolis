@@ -338,8 +338,8 @@ jobs:
       # `!process.stdin.isTTY` (prompts.js:16) -- so it runs under `script`,
       # which hands it a pty.
       #
-      # Every question on this path is a confirm whose default is the answer we
-      # want, so the input is newlines:
+      # The remaining question on this path is a confirm whose default is the
+      # answer we want, so the input is newlines:
       #   no certificate yet  -> "Generate a new Apple Distribution Certificate?"
       #                          (initial: true) -> mints one through the ASC API
       #   one already on file -> "Reuse this distribution certificate?"
@@ -359,21 +359,59 @@ jobs:
           # prompts for the team id, and a prompt answered by a stray newline
           # is worse than one that fails.
           EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Not optional, and not cosmetic. Unset, resolveCredentials.js:131-141
+          # asks "Select your Apple Team Type:" -- a SELECT, not a confirm --
+          # whose first choice is Enterprise. In run 34140635497 a newline
+          # picked it, and Enterprise is the one answer that changes behaviour:
+          # it is the sole input to `inHouse` (resolveCredentials.js:150), which
+          # switches every profile lookup and creation to IOS_APP_INHOUSE. A
+          # newline is only a safe answer to a question whose default is right,
+          # so this prompt gets removed rather than answered.
+          #
+          # COMPANY_OR_ORGANIZATION regardless of how the Apple account is
+          # enrolled: `inHouse` is the only thing derived from this value, and
+          # it is false for COMPANY_OR_ORGANIZATION and INDIVIDUAL alike.
+          EXPO_APPLE_TEAM_TYPE: COMPANY_OR_ORGANIZATION
         run: |
           cd mobile
-          # The sleep holds the pty's stdin open. Without it `script` sees EOF
-          # the moment the newlines are consumed and can tear the terminal down
-          # under a command still waiting on Apple. `script` exiting delivers it
-          # SIGPIPE, so it never outlives the step.
+          # A newline every three seconds. Not a burst up front, and not a burst
+          # followed by a sleep -- both of those were wrong in run 34140635497,
+          # each for its own reason.
+          #
+          # Wrong to burst. The pty queues input in canonical mode until the
+          # child reads it, and the child's first read drains the whole queue
+          # into whichever keypress handler is attached at that instant. All
+          # eight newlines were echoed at 15:55:00, the team-type prompt opened
+          # at 15:55:02, consumed the entire queue to answer itself, and the
+          # certificate confirm a second later got nothing. Input written before
+          # a prompt exists is spent on that prompt, however much of it there is.
+          #
+          # Wrong to sleep. SIGPIPE is delivered on a write, so a feeder that has
+          # stopped writing is never told the reader is gone -- it sleeps out its
+          # full duration while bash waits for every member of the pipeline.
+          # That is why the step took exactly 900 seconds. It would have taken
+          # exactly 900 seconds on success too.
+          #
+          # Writing on an interval fixes both: each prompt gets its own newline
+          # within three seconds of opening, and the feeder dies within three
+          # seconds of `script` exiting.
           #
           # errexit off around the pipeline because the status that matters is
-          # `script`'s, not the sleep's, and PIPESTATUS cannot be read after the
+          # `script`'s, not the feeder's, and PIPESTATUS cannot be read after the
           # shell has already exited on it.
           set +e
-          { printf '\n\n\n\n\n\n\n\n'; sleep 900; } \
-            | script -qec 'eas credentials:configure-build -p ios -e production' /dev/null
+          { while :; do printf '\n'; sleep 3; done; } \
+            | timeout 600 script -qec 'eas credentials:configure-build -p ios -e production' /dev/null
           status=${PIPESTATUS[1]}
           set -e
+          if [ "$status" -eq 124 ]; then
+            echo "::error::Credential setup did not finish within 10 minutes."
+            echo "It is stuck on a question a newline does not answer. Run it"
+            echo "locally to see which one, then pin that answer the way"
+            echo "EXPO_APPLE_TEAM_TYPE is pinned above:"
+            echo "  cd mobile && npx eas-cli credentials:configure-build -p ios -e production"
+            exit 1
+          fi
           if [ "$status" -ne 0 ]; then
             echo "::error::Could not set up iOS signing credentials (exit $status)."
             echo "The most likely cause is the App Store Connect key's role. An"
