@@ -1,0 +1,57 @@
+# Read-only. Answers "TestFlight shows no builds" -- which has three causes that
+# look identical in the console: still processing, uploaded into a different app
+# record, or rejected by Apple's post-upload validation. Costs seconds, changes
+# nothing, and is safe to run any time.
+name: App Store Connect status
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: asc-status
+  cancel-in-progress: true
+
+jobs:
+  status:
+    name: Ask Apple where the build went
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Same staging as the publish workflow: the key lands in RUNNER_TEMP,
+      # never in the checkout, and is shredded unconditionally below.
+      - name: Stage the App Store Connect key
+        id: asckey
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -eo pipefail
+          if [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::ASC_KEY_P8 is not set."
+            exit 1
+          fi
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$ASC_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Ask Apple
+        env:
+          ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+        run: node .github/scripts/asc-status.mjs
+
+      - name: Shred the App Store Connect key
+        if: always()
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          if [ -f "$key_path" ]; then
+            shred -u "$key_path" 2>/dev/null || rm -f "$key_path"
+          fi
