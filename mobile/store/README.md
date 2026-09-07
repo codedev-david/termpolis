@@ -77,11 +77,24 @@ npx eas-cli submit --platform ios --profile testflight
 ```
 
 **5. Answer export compliance -- and answer it the right way.** The build will
-land in App Store Connect marked **Missing Compliance**, because
-`ITSAppUsesNonExemptEncryption` is `true` in `app.json`. That is correct and
-deliberate (`data-disclosures.md`), but the follow-up answer decides whether
-this costs thirty seconds or a fortnight:
+land in App Store Connect marked **Missing Compliance**, because `app.json`
+carries no `ITSAppUsesNonExemptEncryption` key.
 
+That absence is deliberate, and it is the fix for **ITMS-90592** (2026-09-07).
+The key does not mean "this app uses encryption"; it means "this app uses
+encryption that is NOT exempt", and setting it to `true` obliges Apple to find
+a matching `ITSEncryptionExportComplianceCode` in the same Info.plist. We had
+no such code, so Apple rejected the delivery *after* accepting the upload --
+`eas submit` reported success, EAS recorded the submission as FINISHED with no
+error, and App Store Connect simply never grew a build. The only notice was an
+email to the account holder. Four submissions were lost that way.
+
+Leaving the key out means the declaration is made by a human in App Store
+Connect, which is where an export statement belongs, instead of being asserted
+by a config file. `__tests__/appConfig.test.ts` enforces this: `true` is
+allowed only alongside a non-empty compliance code.
+
+The follow-up answer decides whether this costs thirty seconds or a fortnight:
 - "Does your app use encryption?" → **Yes**
 - "Does it qualify for any of the exemptions?" → **Yes** -- standard published
   algorithms (X25519, HKDF-SHA256, ChaCha20-Poly1305) in a mass-market app.
@@ -187,9 +200,9 @@ green while the Apple half is still being collected, instead of leaving both to
 fail for the first time on the same run.
 
 Two things it deliberately does not do. It does not answer **export
-compliance** — the build arrives marked *Missing Compliance* because
-`ITSAppUsesNonExemptEncryption` is `true`, and the answer is *Yes, it uses
-encryption* → *Yes, it qualifies for an exemption*. And it does not promote
+compliance** — the build arrives marked *Missing Compliance* because `app.json`
+carries no `ITSAppUsesNonExemptEncryption` key (section 5), and the answer is
+*Yes, it uses encryption* → *Yes, it qualifies for an exemption*. And it does not promote
 anything to the public store; that still needs the screenshots and listing in
 sections 6 and 9.
 
@@ -420,8 +433,11 @@ Some things are permanent from the moment Apple or Google accepts a build.
   fails a test rather than a release.
 - **The app name**, effectively. It can be changed, but it is how people find
   the app again.
-- **`ITSAppUsesNonExemptEncryption`.** Also test-asserted. Flipping it to false
-  would be a false statement on an export declaration.
+- **`ITSAppUsesNonExemptEncryption` stays OUT of `app.json`.** Test-asserted:
+  `true` is allowed only alongside a non-empty `ITSEncryptionExportComplianceCode`,
+  because Apple rejects the delivery otherwise (ITMS-90592, section 5). Setting it
+  to `false` is the other thing not to do -- that asserts an exemption nobody
+  filed for. Absent is neither claim, and lets a human answer in App Store Connect.
 - **Removing a permission is free; adding one is a review.** The `CAMERA` and
   `INTERNET` pair is what the current listing describes.
 

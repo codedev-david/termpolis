@@ -66,9 +66,14 @@ infer it.
 
 ### Export compliance
 
-`ITSAppUsesNonExemptEncryption` is **true**. The pairing channel uses X25519 key
-agreement, HKDF-SHA256 and ChaCha20-Poly1305; that is not the "exempt" category, and
-claiming otherwise would be a false statement on an export form rather than a shortcut.
+`ITSAppUsesNonExemptEncryption` is **absent from `app.json`**, and deliberately so.
+The pairing channel uses X25519 key agreement, HKDF-SHA256 and ChaCha20-Poly1305, so the
+app plainly uses encryption -- but that key does not ask whether the app uses encryption.
+It asserts that the encryption is NOT exempt, and Apple then requires a matching
+`ITSEncryptionExportComplianceCode` in the same Info.plist. Setting it to `true` without
+that code is ITMS-90592, and it silently destroyed four deliveries on 2026-09-07.
+Leaving it out puts the declaration where it belongs: a human answering App Store
+Connect's own questions, not a config file asserting a conclusion.
 Answer App Store Connect's follow-up questions as: encryption is used for
 authentication and for protecting the user's own data in transit; the app is not
 proprietary-encryption; it qualifies for the standard mass-market treatment. Expect to

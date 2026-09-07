@@ -5,7 +5,7 @@ import pkg from '../package.json'
 /**
  * A store disclosure is a claim about code.
  *
- * `ITSAppUsesNonExemptEncryption` can be dropped by a careless `app.json` edit,
+ * An export-compliance key can be asserted without the code Apple demands,
  * `blockedPermissions` can be lost when a plugin is added, and "collects no
  * data" stops being true the first time someone installs an analytics SDK. In
  * every case silently, months after the form was signed. These are the cheapest
@@ -15,10 +15,39 @@ describe('app.json -- the fields a store submission turns on', () => {
   const ios = appConfig.expo.ios
   const android = appConfig.expo.android
 
-  it('declares non-exempt encryption', () => {
-    // X25519 + HKDF + ChaCha20-Poly1305. Claiming the exemption here would be
-    // a false statement on an export-compliance form, not a shortcut.
-    expect(ios.infoPlist.ITSAppUsesNonExemptEncryption).toBe(true)
+  it('does not assert non-exempt encryption without a compliance code', () => {
+    // ITMS-90592, 2026-09-07. This file used to require
+    // `ITSAppUsesNonExemptEncryption: true`, and that single key is why the
+    // first four submissions produced no build. The key does not mean "this
+    // app uses encryption" -- it means "this app uses encryption that is NOT
+    // exempt", and Apple then requires a matching
+    // `ITSEncryptionExportComplianceCode` in the same Info.plist. Without one
+    // Apple rejects the DELIVERY, after accepting the upload:
+    //
+    //   ITMS-90592: Invalid Export Compliance Code -- The export compliance
+    //   key value [] in the app's Info.plist doesn't match the key value of
+    //   the app's export compliance documentation.
+    //
+    // Nothing on our side sees that. `eas submit` reports success, EAS records
+    // the submission as FINISHED with no error, and App Store Connect simply
+    // never grows a build -- the only notice is an email to the account
+    // holder. Do not diagnose that as slow processing.
+    //
+    // With the key absent, the binary is accepted and the build lands in
+    // TestFlight as "Missing Compliance". The declaration is then made by a
+    // human in App Store Connect, which is where an export statement belongs,
+    // rather than asserted by a config file. That is deliberate: the earlier
+    // note here was right that claiming an exemption in code would be a
+    // statement nobody had actually made -- it was wrong only about which
+    // value makes that claim.
+    const info = (ios as { infoPlist?: Record<string, unknown> }).infoPlist
+    if (info?.ITSAppUsesNonExemptEncryption === true) {
+      // Allowed, but only once a real code exists. Apple checks exactly this.
+      expect(typeof info.ITSEncryptionExportComplianceCode).toBe('string')
+      expect(info.ITSEncryptionExportComplianceCode).not.toBe('')
+    } else {
+      expect(info?.ITSAppUsesNonExemptEncryption).toBeUndefined()
+    }
   })
 
   it('does not claim iPad support', () => {
