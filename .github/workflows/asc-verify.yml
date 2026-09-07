@@ -1,0 +1,86 @@
+name: Verify ASC key
+on: { workflow_dispatch: {} }
+permissions: { contents: read }
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe App Store Connect with the stored key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_APP_ID: ${{ vars.ASC_APP_ID || secrets.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -eo pipefail
+          umask 077
+          printf '%s\n' "$ASC_KEY_P8" > key.p8
+          npm i --silent jsonwebtoken@9 >/dev/null 2>&1
+          node <<'JS'
+          const jwt = require('jsonwebtoken');
+          const fs = require('fs');
+          const now = Math.floor(Date.now() / 1000);
+          const token = jwt.sign(
+            { iss: process.env.ASC_ISSUER_ID, iat: now, exp: now + 600, aud: 'appstoreconnect-v1' },
+            fs.readFileSync('key.p8'),
+            { algorithm: 'ES256', header: { alg: 'ES256', kid: process.env.ASC_KEY_ID, typ: 'JWT' } },
+          );
+          const H = { Authorization: `Bearer ${token}` };
+          const B = 'https://api.appstoreconnect.apple.com/v1';
+          const get = async (path) => {
+            const r = await fetch(`${B}${path}`, { headers: H });
+            return { status: r.status, body: await r.json().catch(() => ({})) };
+          };
+          (async () => {
+            let bad = 0;
+
+            // 1. Does the key authenticate at all?
+            const apps = await get('/apps?limit=200');
+            if (apps.status !== 200) {
+              console.log(`FAIL  auth  HTTP ${apps.status}  ${JSON.stringify(apps.body).slice(0, 400)}`);
+              process.exit(1);
+            }
+            console.log(`PASS  auth  the key is valid and the issuer id matches`);
+
+            // 2. Does the app record exist, and is ASC_APP_ID actually its id?
+            const list = apps.body.data ?? [];
+            console.log(`      apps visible to this key: ${list.length}`);
+            for (const a of list) {
+              console.log(`        ${a.id}  ${a.attributes.bundleId}  "${a.attributes.name}"`);
+            }
+            const want = list.find((a) => a.attributes.bundleId === 'com.termpolis.remote');
+            if (!want) {
+              console.log('FAIL  app   no app record for com.termpolis.remote');
+              bad = 1;
+            } else if (want.id !== process.env.ASC_APP_ID) {
+              console.log(`FAIL  app   ASC_APP_ID is ${process.env.ASC_APP_ID}, but the record is ${want.id}`);
+              bad = 1;
+            } else {
+              console.log(`PASS  app   ASC_APP_ID ${want.id} matches com.termpolis.remote`);
+            }
+
+            // 3. THE one that costs forty minutes: Admin vs App Manager. Only a
+            //    key that can reach Certificates/Identifiers/Profiles can mint the
+            //    signing certificate, and App Manager cannot -- which fails at the
+            //    build, long after the step that chose the role.
+            const certs = await get('/certificates?limit=1');
+            if (certs.status === 200) {
+              console.log('PASS  role  the key can read certificates, so it can create them (Admin)');
+            } else {
+              console.log(`FAIL  role  certificates -> HTTP ${certs.status}. This is App Manager, not Admin.`);
+              console.log('            Regenerate the Team Key with Access = Admin; the build fails otherwise.');
+              bad = 1;
+            }
+
+            // 4. Team id sanity -- wrong here and provisioning silently targets
+            //    another team.
+            const prov = await get('/bundleIds?filter[identifier]=com.termpolis.remote&limit=1');
+            if (prov.status === 200) {
+              const n = (prov.body.data ?? []).length;
+              console.log(n ? 'PASS  bid   com.termpolis.remote is registered in this team'
+                            : 'WARN  bid   not registered yet -- the build will register it');
+            }
+            process.exit(bad);
+          })();
+          JS
