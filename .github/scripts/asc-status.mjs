@@ -76,3 +76,44 @@ for (const a of apps?.data ?? []) {
     )
   }
 }
+
+console.log('')
+console.log('=== every build this key can see, unfiltered ===')
+// Filtering by app hides a build that Apple attached somewhere unexpected, and
+// an empty filtered list plus a non-empty unfiltered one is the whole diagnosis.
+const all = await api(
+  '/v1/builds?limit=25&sort=-uploadedDate' +
+    '&fields[builds]=version,processingState,uploadedDate,expired'
+)
+if (all) {
+  for (const b of all.data) {
+    console.log(
+      `  v${b.attributes.version}  ${b.attributes.processingState}` +
+        `  uploaded=${b.attributes.uploadedDate}`
+    )
+  }
+  if (all.data.length === 0) console.log('  (none -- Apple has not ingested any binary at all)')
+}
+
+console.log('')
+console.log('=== prerelease versions (the TestFlight "version" rows) ===')
+for (const a of apps?.data ?? []) {
+  const pre = await api(
+    `/v1/preReleaseVersions?filter[app]=${a.id}&limit=25` +
+      `&fields[preReleaseVersions]=version,platform`
+  )
+  console.log(`  ${a.attributes.bundleId}:`)
+  for (const v of pre?.data ?? []) {
+    console.log(`    v${v.attributes.version}  ${v.attributes.platform}`)
+  }
+  if (!pre || pre.data.length === 0) console.log('    (none)')
+}
+
+console.log('')
+console.log('=== who this key is, and what it may do ===')
+// A key that can read apps but not builds reads as "no builds" too, and that is
+// a permissions answer, not an Apple-processing one.
+const me = await api('/v1/users?limit=20&fields[users]=username,firstName,lastName,roles')
+for (const u of me?.data ?? []) {
+  console.log(`  ${u.attributes.username}  roles=${(u.attributes.roles || []).join(',')}`)
+}

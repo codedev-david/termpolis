@@ -6,6 +6,11 @@ name: App Store Connect status
 
 on:
   workflow_dispatch:
+    inputs:
+      submission_id:
+        description: 'EAS submission id to ask Apple about (optional)'
+        type: string
+        default: '8143fd3d-5e33-4b25-994c-a4fbc3107021'
 
 concurrency:
   group: asc-status
@@ -47,6 +52,13 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
         run: node .github/scripts/asc-status.mjs
+
+      - name: Ask EAS what Apple said about the submission
+        if: ${{ inputs.submission_id != '' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+        run: node .github/scripts/eas-submission.mjs
 
       - name: Shred the App Store Connect key
         if: always()
