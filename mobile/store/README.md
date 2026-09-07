@@ -140,8 +140,51 @@ certificate and the provisioning profile from one, with no interactive login
 ID would need a `FASTLANE_SESSION` cookie that expires about a month after
 someone pastes it, which is a pipeline that breaks on a schedule.
 
-Run it with **dry_run** checked first: that runs the gates, resolves the
-credentials and links the project, then stops before spending a build.
+### What you never create by hand
+
+Apple spreads four similar-sounding things across two websites, and three of
+them are traps. The whole list, so the wrong one is easy to recognise:
+
+| Section | Site | |
+|---|---|---|
+| **Certificates** | developer.apple.com | ❌ Never. EAS mints the distribution certificate itself. |
+| **Keys** | developer.apple.com | ❌ Wrong Keys — those are APNs/DeviceCheck. |
+| **Identifiers** | developer.apple.com | ✅ `com.termpolis.remote`, once. |
+| **App Store Connect API keys** | **appstoreconnect.apple.com** | ✅ Team Keys → Admin. Different site. |
+
+⛔ **Never create a distribution certificate or upload a `.p12`**, on expo.dev or
+anywhere else. A certificate is issued against a CSR, and the matching private
+key never leaves the machine that generated the CSR — so a hand-made one is
+useless to EAS *and* burns one of the few distribution slots Apple allows. EAS
+creates the certificate and the provisioning profile from the API key
+(`credentials/ios/actions/CreateProvisioningProfile.js:27`), and registers the
+bundle identifier too (`ensureAppExists.js:53`). expo.dev's credentials UI exists
+for people who already have a Mac-issued certificate. That is not this pipeline.
+
+### Order matters, and only for one reason
+
+The App Store Connect **New App** form picks the bundle ID from a dropdown fed by
+the Developer portal. So:
+
+1. Register the Identifier by hand — 30 seconds.
+2. Create the app record; read `ASC_APP_ID` off App Information → Apple ID.
+3. One workflow run then does build **and** submit.
+
+Letting EAS register the identifier instead also works, but the identifier only
+appears during a **build**, so the record cannot be created until after one has
+finished — costing an extra ~40-minute build before you can submit anything.
+
+`ASC_APP_ID` is not optional either way: without it `eas submit` hard-errors in
+non-interactive mode (`submit/ios/IosSubmitCommand.js:143`), and the auto-create
+path behind that error needs an interactive Apple ID login with 2FA
+(`submit/ios/AppProduce.js`).
+
+Run it with **dry_run** checked first. A dry run deliberately needs only
+`EXPO_TOKEN` -- the credential guard treats the App Store Connect trio as fatal
+only when the run will actually reach Apple, and the `.p8` is not staged at all.
+So the Expo half (token -> account -> project -> link commit) can be proven
+green while the Apple half is still being collected, instead of leaving both to
+fail for the first time on the same run.
 
 Two things it deliberately does not do. It does not answer **export
 compliance** — the build arrives marked *Missing Compliance* because
