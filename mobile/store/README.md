@@ -99,6 +99,57 @@ Everything from section 6 onward (screenshots, listing, forms) is what turns
 this into a public App Store listing. It can now happen while the app is
 already in daily use.
 
+## The hands-off path (GitHub Actions)
+
+The manual path above is written out because it is the one to use when something
+is wrong and you need to see each step fail on its own. For a normal build,
+`.github/workflows/mobile-ios.yml` ("Publish iOS") does sections 2, 6 and 8
+without a machine, an Apple login, or a 2FA prompt: it runs the same gates
+`test.yml` runs, links the EAS project and commits the id, builds on EAS, and
+uploads to App Store Connect.
+
+It needs four secrets and one variable, and nothing else:
+
+| Name | Kind | Where it comes from |
+| --- | --- | --- |
+| `EXPO_TOKEN` | secret | expo.dev → account settings → Access tokens → Create |
+| `ASC_KEY_ID` | secret | App Store Connect → Users and Access → Integrations → App Store Connect API → the key's own row |
+| `ASC_ISSUER_ID` | secret | the same page, above the table |
+| `ASC_KEY_P8` | secret | the `.p8` file that key downloads — **once**, and never again |
+| `ASC_APP_ID` | variable | the digits in the App Store Connect URL for the app (section 1 creates the record) |
+
+```bash
+gh secret   set EXPO_TOKEN     --body '<token>'
+gh secret   set ASC_KEY_ID     --body '<key id>'
+gh secret   set ASC_ISSUER_ID  --body '<issuer id>'
+gh secret   set ASC_KEY_P8     < AuthKey_XXXXXXXXXX.p8
+gh variable set ASC_APP_ID     --body '<digits>'
+```
+
+`APPLE_TEAM_ID` is already set in this repository, from the desktop signing work.
+
+**The App Store Connect API key must have the Admin role.** App Manager is the
+role that looks correct and is not: it can upload a build but cannot create a
+signing certificate, so the submit would work and the *build* would fail — and
+the build is the step that runs first and costs forty minutes.
+
+Why an API key rather than an Apple ID: eas-cli can mint the distribution
+certificate and the provisioning profile from one, with no interactive login
+(`credentials/ios/actions/CreateProvisioningProfile.js:27` names the three
+`EXPO_ASC_*` environment variables as the non-interactive alternative). An Apple
+ID would need a `FASTLANE_SESSION` cookie that expires about a month after
+someone pastes it, which is a pipeline that breaks on a schedule.
+
+Run it with **dry_run** checked first: that runs the gates, resolves the
+credentials and links the project, then stops before spending a build.
+
+Two things it deliberately does not do. It does not answer **export
+compliance** — the build arrives marked *Missing Compliance* because
+`ITSAppUsesNonExemptEncryption` is `true`, and the answer is *Yes, it uses
+encryption* → *Yes, it qualifies for an exemption*. And it does not promote
+anything to the public store; that still needs the screenshots and listing in
+sections 6 and 9.
+
 ---
 
 ## Order of operations
@@ -219,9 +270,20 @@ grep -n REPLACE_WITH mobile/eas.json
 | `REPLACE_WITH_APP_STORE_CONNECT_APP_ID` | App Store Connect → the app → App Information → "Apple ID" (a 10-digit number, not the email) |
 | `REPLACE_WITH_APPLE_TEAM_ID` | The same 10-character value already stored in this repo's `APPLE_TEAM_ID` secret. It is not a credential -- it is embedded in every signed build -- but it cannot be read back out of GitHub, so copy it from the Apple Developer account page. |
 
-Neither is a secret and both belong in the committed file. **The two that are
-credentials -- the App Store Connect API key (`.p8`) and the Play service
-account JSON -- never go in the repo.** They go in EAS:
+Neither is a secret and both belong in the committed file.
+
+Only for the manual path, though. **"Publish iOS" does not need this section
+done** — it writes both values into its own checkout after the build and reverts
+them before the job ends, from the `ASC_APP_ID` variable and the `APPLE_TEAM_ID`
+secret. It has to: `eas submit --non-interactive` refuses to run without
+`ascAppId` (`submit/ios/IosSubmitCommand.js:143`), and `ascAppId` is one of the
+fields eas.json will *not* interpolate an environment variable into — the iOS
+list is `ascApiKeyPath`, `ascApiKeyIssuerId`, `ascApiKeyId` and nothing else
+(`@expo/eas-json`, `submit/types.js`). Writing `"$ASC_APP_ID"` in the file would
+send Apple that literal string.
+
+**The two that are credentials -- the App Store Connect API key (`.p8`) and the
+Play service account JSON -- never go in the repo.** They go in EAS:
 
 ```bash
 eas credentials              # interactive, stores the .p8 with Expo

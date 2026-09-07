@@ -152,6 +152,25 @@ describe('eas.json -- the submit tracks the Play timeline depends on', () => {
     expect(JSON.stringify(easJson)).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY|private_key|\.p8/)
   })
 
+  it('takes build numbers from EAS, not from the checkout', () => {
+    // With "local", `autoIncrement` bumps buildNumber inside app.json during the
+    // build. On a developer's machine that is a file to commit; in CI it is a
+    // build that cannot start, because eas-cli refuses to commit for you:
+    //
+    //   build/utils/repository.js:176
+    //   "Cannot commit changes when --non-interactive is specified."
+    //
+    // Setting EAS_BUILD_AUTOCOMMIT=1 gets past that and quietly makes it worse:
+    // the bump is committed on the runner and thrown away with it, so the next
+    // run builds the same buildNumber again and App Store Connect rejects the
+    // upload as a duplicate -- after the build has already been paid for.
+    //
+    // "remote" puts the counter on EAS, where it is monotonic across runs and no
+    // build writes to the repository at all. eas-cli asks for this setting by
+    // name in non-interactive mode.
+    expect(easJson.cli.appVersionSource).toBe('remote')
+  })
+
   it('builds Android as an app bundle and lets EAS own the build numbers', () => {
     // Play refuses an APK for a new app. autoIncrement is what keeps versionCode
     // and buildNumber monotonic without a human remembering to bump them.

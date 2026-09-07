@@ -1,0 +1,416 @@
+name: Publish iOS
+
+# Termpolis Remote is the one part of this product that cannot ship through
+# `release.yml`. It is not an Electron artifact; it is an Expo app that has to be
+# compiled by Apple's toolchain, signed with an Apple distribution certificate,
+# and handed to App Store Connect. This workflow does all three without a Mac,
+# without an interactive Apple login, and without a human watching it.
+#
+# WHAT MAKES IT NON-INTERACTIVE
+#
+# Two credentials, and the reason for each is worth stating because getting one
+# of them slightly wrong produces an error that reads like something else:
+#
+#   EXPO_TOKEN                 authenticates eas-cli to the Expo account.
+#   EXPO_ASC_API_KEY_PATH  \   an App Store Connect API key. eas-cli uses it for
+#   EXPO_ASC_KEY_ID         >  BOTH halves of the job: minting the distribution
+#   EXPO_ASC_ISSUER_ID     /   certificate and provisioning profile, and the
+#                              upload itself.
+#
+# That the API key covers credential creation is not folklore -- it is what
+# eas-cli says when it refuses:
+#
+#   credentials/ios/actions/CreateProvisioningProfile.js:27
+#   "In order to generate a new Provisioning Profile, authentication with an ASC
+#    API key is required in non-interactive mode. Either set the
+#    EXPO_ASC_API_KEY_PATH/EXPO_ASC_KEY_ID/EXPO_ASC_ISSUER_ID environment
+#    variables, or configure an App Store Connect API Key for submissions..."
+#
+# So no Apple ID, no password, no 2FA code, and no `FASTLANE_SESSION` cookie that
+# silently expires a month after someone pastes it.
+#
+# THE KEY MUST HAVE THE **ADMIN** ROLE. App Manager is the role that looks
+# correct and is not: it can upload builds but cannot create certificates, so the
+# submit step would work and the build step would fail -- in a run where the
+# error appears long after the step that caused it.
+#
+# WHY THE SUBMIT PROFILE IS PATCHED AT RUN TIME
+#
+# `eas submit --non-interactive` requires `ascAppId` in the submit profile:
+#
+#   submit/ios/IosSubmitCommand.js:143
+#   "Set ascAppId in the submit profile (eas.json) or re-run this command in
+#    interactive mode."
+#
+# The obvious fix -- `"ascAppId": "$ASC_APP_ID"` in eas.json -- does not work.
+# eas.json interpolates environment variables into exactly three iOS submit
+# fields (`@expo/eas-json`, `submit/types.js`: `ascApiKeyPath`,
+# `ascApiKeyIssuerId`, `ascApiKeyId`) and `ascAppId` is not one of them; the
+# literal string `$ASC_APP_ID` would reach Apple and fail a digits-only check.
+# So the value is written into the checkout after the build and reverted after
+# the submit. It never reaches a commit.
+#
+# The committed eas.json keeps its documented placeholders, and
+# `mobile/__tests__/appConfig.test.ts` keeps asserting that the file carries the
+# two public identifiers and no credential.
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Build message shown in the EAS dashboard'
+        type: string
+        default: ''
+      submit:
+        description: 'Upload the finished build to App Store Connect'
+        type: boolean
+        default: true
+      what_to_test:
+        description: 'TestFlight "What to Test" notes'
+        type: string
+        default: ''
+      dry_run:
+        description: 'Run the gates and resolve credentials, then stop'
+        type: boolean
+        default: false
+
+# An iOS build takes tens of minutes on EAS's queue and increments a build number
+# that Apple will never accept twice. Two of them racing is how you get a wasted
+# build number and a confusing submission history, so: one at a time, and never
+# cancel one that is already running.
+concurrency:
+  group: mobile-ios
+  cancel-in-progress: false
+
+# Write, because linking the EAS project rewrites app.json and that identity has
+# to survive the runner. Nothing else here commits.
+permissions:
+  contents: write
+
+env:
+  EAS_CLI_VERSION: 23.2.0
+  # Bundle identifier is not re-assignable after the first upload; it is asserted
+  # in mobile/__tests__/appConfig.test.ts and repeated here only for the log.
+  BUNDLE_ID: com.termpolis.remote
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+
+      # The same gates test.yml runs, repeated here on purpose. This workflow can
+      # be dispatched against any commit, including one Tests never saw, and
+      # "someone probably ran the suite" is not a gate. An iOS build that fails
+      # review costs days; a test run costs three minutes.
+      - name: Typecheck mobile
+        run: npm --prefix mobile run typecheck
+
+      # src/wire/ is a second implementation of the same wire format and compiles
+      # under its own tsconfig; the outer typecheck does not reach it.
+      - name: Typecheck the wire types
+        run: npm --prefix mobile run typecheck:wire
+
+      # With --coverage, matching test.yml. The mobile floors are 100 on all four
+      # counters and they live in the coverage run -- without the flag this step
+      # passes on a suite that skipped whole files.
+      - name: Test mobile
+        run: npm --prefix mobile run test:coverage
+
+      # Distinguishes "no credential" from "bad credential" before eas-cli
+      # produces its own, less helpful version of the same message. Each missing
+      # value is named, with where it comes from, because the four of them are
+      # minted in three different places.
+      - name: Check for credentials
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          missing=""
+          [ -n "$EXPO_TOKEN" ]   || missing="$missing EXPO_TOKEN"
+          [ -n "$ASC_KEY_ID" ]   || missing="$missing ASC_KEY_ID"
+          [ -n "$ASC_ISSUER_ID" ] || missing="$missing ASC_ISSUER_ID"
+          [ -n "$ASC_KEY_P8" ]   || missing="$missing ASC_KEY_P8"
+          if [ -z "$missing" ]; then
+            echo "All four credentials are present."
+            exit 0
+          fi
+          echo "Cannot build iOS. Missing:$missing"
+          echo
+          echo "EXPO_TOKEN"
+          echo "  expo.dev -> account settings -> Access tokens -> Create token."
+          echo "  gh secret set EXPO_TOKEN"
+          echo
+          echo "ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8"
+          echo "  appstoreconnect.apple.com -> Users and Access -> Integrations"
+          echo "  -> App Store Connect API -> Team Keys -> +"
+          echo "  Role must be ADMIN. App Manager cannot create signing"
+          echo "  certificates, and the run would fail at the build, not here."
+          echo "  The .p8 downloads exactly once and cannot be re-downloaded."
+          echo
+          echo "  Issuer ID is on that page. Key ID is the row's own column."
+          echo "  gh secret set ASC_KEY_ID    --body '<key id>'"
+          echo "  gh secret set ASC_ISSUER_ID --body '<issuer id>'"
+          echo "  gh secret set ASC_KEY_P8 < AuthKey_XXXXXXXXXX.p8"
+          exit 1
+
+      - name: Install eas-cli
+        run: npm install -g "eas-cli@${EAS_CLI_VERSION}"
+
+      # Written outside the checkout so it cannot be committed by any later step,
+      # and mode 600 so it is not readable by another process on the runner. The
+      # cleanup step below runs even when the build fails.
+      #
+      # `gh secret set ASC_KEY_P8 < AuthKey.p8` stores the PEM verbatim, so the
+      # secret is used as-is. A base64 blob is accepted too, because pasting one
+      # into the web UI is the other way people set this, and a key that arrives
+      # in the wrong encoding otherwise fails inside fastlane with a message
+      # about neither keys nor encodings.
+      - name: Stage the App Store Connect key
+        id: asckey
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -eo pipefail
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          umask 077
+          if printf '%s' "$ASC_KEY_P8" | grep -q 'BEGIN PRIVATE KEY'; then
+            printf '%s\n' "$ASC_KEY_P8" > "$key_path"
+          else
+            printf '%s' "$ASC_KEY_P8" | tr -d '[:space:]' | base64 -d > "$key_path"
+          fi
+          chmod 600 "$key_path"
+          if ! grep -q 'BEGIN PRIVATE KEY' "$key_path"; then
+            echo "ASC_KEY_P8 is neither a PEM private key nor base64 of one."
+            echo "Re-set it with: gh secret set ASC_KEY_P8 < AuthKey_XXXXXXXXXX.p8"
+            exit 1
+          fi
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+          echo "Staged an App Store Connect key ($(wc -c < "$key_path") bytes)."
+
+      # The account that will own the EAS project. Derived rather than configured:
+      # for a personal Expo account it is the username, and asking a human to set
+      # a variable they can only get wrong is a step worth removing.
+      - name: Resolve the Expo account
+        id: account
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          OVERRIDE: ${{ vars.EXPO_ACCOUNT }}
+        run: |
+          set -eo pipefail
+          if [ -n "$OVERRIDE" ]; then
+            account="$OVERRIDE"
+          else
+            account=$(eas whoami 2>/dev/null | tr -d '[:space:]')
+          fi
+          if [ -z "$account" ]; then
+            echo "EXPO_TOKEN did not resolve to an account. It may be revoked or"
+            echo "truncated. Mint a new one at expo.dev -> Access tokens."
+            exit 1
+          fi
+          echo "account=$account" >> "$GITHUB_OUTPUT"
+          echo "Building as @$account"
+
+      # `eas init` mints the project on Expo's side and writes `owner` and
+      # `extra.eas.projectId` into app.json. That identity is permanent and
+      # belongs in the repository, so it is committed rather than regenerated on
+      # every run -- a project id that changes is a build history that splits in
+      # two. Skipped entirely once the file carries one.
+      - name: Link the EAS project
+        id: link
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+        run: |
+          set -eo pipefail
+          cd mobile
+          existing=$(node -p "require('./app.json').expo.extra?.eas?.projectId || ''")
+          if [ -n "$existing" ]; then
+            echo "Already linked to project $existing"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          eas init --account "$ACCOUNT" --non-interactive
+          created=$(node -p "require('./app.json').expo.extra?.eas?.projectId || ''")
+          if [ -z "$created" ]; then
+            echo "eas init reported success but wrote no projectId into app.json."
+            exit 1
+          fi
+          echo "Linked to project $created"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the project link
+        if: steps.link.outputs.committed == 'true'
+        run: |
+          set -eo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add mobile/app.json
+          git commit \
+            -m 'chore(mobile): link the EAS project' \
+            -m 'Written by `eas init` on the first iOS build. The project id is a permanent identity for this app on EAS; regenerating it would split the build history in two.'
+          git push origin HEAD:main
+
+      - name: Stop here
+        if: inputs.dry_run
+        run: |
+          {
+            echo '### Dry run'
+            echo
+            echo 'Gates passed, credentials resolved, project linked. No build was'
+            echo 'started. Re-run with **dry_run** unchecked to build.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # --wait, because a workflow that returns before the build finishes reports
+      # "success" for a build that has not compiled yet, and the submit step below
+      # would have nothing to upload.
+      #
+      # The tree is clean at this point on purpose: eas.json is patched AFTER the
+      # build, since `eas build --non-interactive` refuses to proceed with
+      # uncommitted changes unless EAS_BUILD_AUTOCOMMIT is set, and committing
+      # a credential-shaped edit is exactly what we are avoiding.
+      - name: Build
+        id: build
+        if: ${{ !inputs.dry_run }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          MESSAGE: ${{ inputs.message }}
+        run: |
+          set -eo pipefail
+          cd mobile
+          eas build \
+            --platform ios \
+            --profile production \
+            --non-interactive \
+            --wait \
+            --message "${MESSAGE:-$GITHUB_SHA}"
+
+      # ascAppId cannot come from an environment variable (see the header), so it
+      # is written in here and reverted below. Runner-only: this edit is never
+      # added, never committed, and the revert is unconditional.
+      - name: Point the submit profile at the App Store Connect record
+        id: patch
+        if: ${{ !inputs.dry_run && inputs.submit }}
+        env:
+          ASC_APP_ID: ${{ vars.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -eo pipefail
+          if [ -z "$ASC_APP_ID" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "patched=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::The build is finished and stored on EAS, but it was not uploaded: ASC_APP_ID or APPLE_TEAM_ID is not set."
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs")
+            const p = "mobile/eas.json"
+            const j = JSON.parse(fs.readFileSync(p, "utf8"))
+            j.submit.production.ios.ascAppId = process.env.ASC_APP_ID
+            j.submit.production.ios.appleTeamId = process.env.APPLE_TEAM_ID
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n")
+          '
+          # Apple checks this before it checks anything else, and the failure it
+          # gives for a non-numeric id names neither the field nor the file.
+          node -e '
+            const id = require("./mobile/eas.json").submit.production.ios.ascAppId
+            if (!/^[0-9]+$/.test(id)) {
+              console.error(`ASC_APP_ID must be digits only, got: ${id}`)
+              console.error("It is the number in the App Store Connect URL for the app.")
+              process.exit(1)
+            }
+          '
+          echo "patched=true" >> "$GITHUB_OUTPUT"
+
+      # --latest picks the build that just finished. Separate from the build step
+      # rather than folded into it with --auto-submit, so that a submit failure
+      # (a rejected key, a missing app record) leaves a finished build on EAS to
+      # retry against instead of throwing away forty minutes of compute.
+      - name: Submit to App Store Connect
+        id: submit
+        if: ${{ !inputs.dry_run && inputs.submit && steps.patch.outputs.patched == 'true' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          WHAT_TO_TEST: ${{ inputs.what_to_test }}
+        run: |
+          set -eo pipefail
+          cd mobile
+          args="--platform ios --profile production --latest --non-interactive --wait"
+          if [ -n "$WHAT_TO_TEST" ]; then
+            eas submit $args --what-to-test "$WHAT_TO_TEST"
+          else
+            eas submit $args
+          fi
+
+      # Unconditional, and deliberately not `git checkout` of a path list that
+      # could grow: whatever the run did to the working tree, none of it is
+      # allowed to outlive the job.
+      - name: Revert the submit profile
+        if: always()
+        run: git checkout -- mobile/eas.json || true
+
+      - name: Shred the App Store Connect key
+        if: always()
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          if [ -f "$key_path" ]; then
+            shred -u "$key_path" 2>/dev/null || rm -f "$key_path"
+          fi
+
+      - name: Say what still has to be done by hand
+        if: ${{ !inputs.dry_run && steps.build.outcome == 'success' }}
+        run: |
+          {
+            echo '### iOS build finished'
+            echo
+            if [ "${{ steps.submit.outcome }}" = 'success' ]; then
+              echo 'The build is uploaded and processing in App Store Connect.'
+              echo 'Processing takes roughly 15 minutes; TestFlight shows it after that.'
+              echo
+              echo 'Two things this workflow cannot do:'
+              echo
+              echo '1. **Answer export compliance.** The build lands marked *Missing'
+              echo '   Compliance* because `ITSAppUsesNonExemptEncryption` is `true`,'
+              echo '   which is correct. Answer **Yes, it uses encryption**, then'
+              echo '   **Yes, it qualifies for an exemption** -- standard published'
+              echo '   algorithms (X25519, HKDF-SHA256, ChaCha20-Poly1305) in a'
+              echo '   mass-market app. Answering "no exemption" routes the build'
+              echo '   into export-documentation review and blocks TestFlight for'
+              echo '   as long as that takes.'
+              echo '2. **Add yourself as an internal tester.** TestFlight ->'
+              echo '   Internal Testing -> add your Apple ID, then install the'
+              echo '   TestFlight app on the phone.'
+              echo
+              echo 'A public App Store listing additionally needs the screenshots'
+              echo 'and listing copy described in `mobile/store/screenshots.md` and'
+              echo '`mobile/store/listing.md`. TestFlight needs neither.'
+            else
+              echo 'The build compiled and is stored on EAS, but it was **not**'
+              echo 'uploaded to App Store Connect.'
+              echo
+              echo 'Set the App Store Connect app id and re-run with **submit**'
+              echo 'checked; the finished build is reused, not rebuilt:'
+              echo
+              echo '```'
+              echo 'gh variable set ASC_APP_ID --body "<digits from the App Store Connect URL>"'
+              echo '```'
+              echo
+              echo 'The app record is created at appstoreconnect.apple.com -> Apps'
+              echo "-> + -> New App, with bundle id \`$BUNDLE_ID\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -494,7 +494,7 @@ npx eas-cli submit --profile production --platform android
 `app.json`. The Android track is `internal` with `releaseStatus: draft` — deliberate, so
 the first upload cannot go public by accident.
 
-- [ ] **Step 3: Fill the placeholders** — BLOCKED on David: `ascAppId` does not exist until an App Store Connect app record is created, and `appleTeamId` is only readable from the Apple Developer account (it is in this repo as the write-only `APPLE_TEAM_ID` secret). Documented in `mobile/store/README.md` §2.
+- [x] **Step 3: Fill the placeholders** — superseded for the automated path, still open for the manual one. The placeholders stay in the committed `eas.json`; `.github/workflows/mobile-ios.yml` writes both values into its own checkout after the build and reverts them before the job ends, from the `ASC_APP_ID` variable and the existing `APPLE_TEAM_ID` secret. It cannot use env interpolation for them: `eas submit --non-interactive` requires `ascAppId` (`submit/ios/IosSubmitCommand.js:143`) and `ascAppId` is not in the iOS interpolation list, which is `ascApiKeyPath`/`ascApiKeyIssuerId`/`ascApiKeyId` only (`@expo/eas-json`, `submit/types.js`). Creating the App Store Connect record is still David's, because `eas submit` can only create one with an interactive Apple login (`submit/ios/AppProduce.js`). Documented in `mobile/store/README.md` §2 and "The hands-off path".
 
 Once the app records exist:
 
