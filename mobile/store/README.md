@@ -76,11 +76,19 @@ App Store Connect API key is needed for the first run either:
 npx eas-cli submit --platform ios --profile testflight
 ```
 
-**5. Answer export compliance -- and answer it the right way.** The build will
-land in App Store Connect marked **Missing Compliance**, because `app.json`
-carries no `ITSAppUsesNonExemptEncryption` key.
+**5. Export compliance -- DONE for 1.0.0, and here is why it is worded the
+way it is.** Build 3 landed marked **Missing Compliance**, because `app.json`
+carried no `ITSAppUsesNonExemptEncryption` key at that point. David answered the
+App Encryption Documentation questionnaire on 2026-09-07 -- *standard algorithms
+instead of, or in addition to, Apple's OS encryption*, then *qualifies for a
+Category 5 Part 2 exemption* -- and the build moved to Ready to Submit.
 
-That absence is deliberate, and it is the fix for **ITMS-90592** (2026-09-07).
+`app.json` now carries the key set to **`false`**, which states that same
+answer and stops App Store Connect asking on every version. Do not read that as
+undoing anything: the value that broke the deliveries was `true`.
+
+The absence was deliberate at the time, and it is the fix for **ITMS-90592**
+(2026-09-07).
 The key does not mean "this app uses encryption"; it means "this app uses
 encryption that is NOT exempt", and setting it to `true` obliges Apple to find
 a matching `ITSEncryptionExportComplianceCode` in the same Info.plist. We had
@@ -433,11 +441,15 @@ Some things are permanent from the moment Apple or Google accepts a build.
   fails a test rather than a release.
 - **The app name**, effectively. It can be changed, but it is how people find
   the app again.
-- **`ITSAppUsesNonExemptEncryption` stays OUT of `app.json`.** Test-asserted:
-  `true` is allowed only alongside a non-empty `ITSEncryptionExportComplianceCode`,
-  because Apple rejects the delivery otherwise (ITMS-90592, section 5). Setting it
-  to `false` is the other thing not to do -- that asserts an exemption nobody
-  filed for. Absent is neither claim, and lets a human answer in App Store Connect.
+- **`ITSAppUsesNonExemptEncryption` is `false`, and `true` is the value that
+  must never appear alone.** Test-asserted: `true` is allowed only alongside a
+  non-empty `ITSEncryptionExportComplianceCode`, because Apple rejects the
+  delivery otherwise (ITMS-90592, section 5). `false` was NOT safe to write
+  before 2026-09-07 -- it would have asserted an exemption nobody had claimed --
+  but David has since answered the questionnaire that way in App Store Connect,
+  so the key now restates a declaration that exists. If the crypto ever stops
+  being standard published algorithms, this goes back to absent and the
+  questionnaire gets answered again.
 - **Removing a permission is free; adding one is a review.** The `CAMERA` and
   `INTERNET` pair is what the current listing describes.
 

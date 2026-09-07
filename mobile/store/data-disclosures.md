@@ -66,7 +66,7 @@ infer it.
 
 ### Export compliance
 
-`ITSAppUsesNonExemptEncryption` is **absent from `app.json`**, and deliberately so.
+`ITSAppUsesNonExemptEncryption` is **`false` in `app.json`** as of 2026-09-07, matching the exemption answered in App Store Connect. It was *absent* for the 1.0.0 (3) upload, and deliberately so.
 The pairing channel uses X25519 key agreement, HKDF-SHA256 and ChaCha20-Poly1305, so the
 app plainly uses encryption -- but that key does not ask whether the app uses encryption.
 It asserts that the encryption is NOT exempt, and Apple then requires a matching

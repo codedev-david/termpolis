@@ -33,20 +33,30 @@ describe('app.json -- the fields a store submission turns on', () => {
     // never grows a build -- the only notice is an email to the account
     // holder. Do not diagnose that as slow processing.
     //
-    // With the key absent, the binary is accepted and the build lands in
-    // TestFlight as "Missing Compliance". The declaration is then made by a
-    // human in App Store Connect, which is where an export statement belongs,
-    // rather than asserted by a config file. That is deliberate: the earlier
-    // note here was right that claiming an exemption in code would be a
-    // statement nobody had actually made -- it was wrong only about which
-    // value makes that claim.
+    // With the key absent the binary was accepted, and build 3 landed in
+    // TestFlight as "Missing Compliance" -- which is the state that gets
+    // answered by a human in App Store Connect, where an export statement
+    // belongs.
+    //
+    // The key now reads `false`, and unlike the old `true` that is a claim
+    // somebody actually made: on 2026-09-07 David answered the App Encryption
+    // Documentation questionnaire -- standard algorithms (X25519, HKDF-SHA256
+    // and ChaCha20-Poly1305 via @noble/ciphers, all published IETF standards),
+    // qualifying for a Category 5 Part 2 exemption -- and the build moved to
+    // Ready to Submit. `false` states exactly that and nothing more, and it
+    // stops App Store Connect asking again on every single version.
+    //
+    // So the value to guard against is `true` on its own. It asserts the
+    // encryption is NOT exempt, which is untrue here and which Apple will not
+    // accept without the compliance code it issues for that assertion.
     const info = (ios as { infoPlist?: Record<string, unknown> }).infoPlist
     if (info?.ITSAppUsesNonExemptEncryption === true) {
       // Allowed, but only once a real code exists. Apple checks exactly this.
       expect(typeof info.ITSEncryptionExportComplianceCode).toBe('string')
       expect(info.ITSEncryptionExportComplianceCode).not.toBe('')
     } else {
-      expect(info?.ITSAppUsesNonExemptEncryption).toBeUndefined()
+      // `false` is the declared exemption; absent means ASC asks per version.
+      expect([false, undefined]).toContain(info?.ITSAppUsesNonExemptEncryption)
     }
   })
 
