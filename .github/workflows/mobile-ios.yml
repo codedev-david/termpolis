@@ -213,9 +213,12 @@ jobs:
           echo "path=$key_path" >> "$GITHUB_OUTPUT"
           echo "Staged an App Store Connect key ($(wc -c < "$key_path") bytes)."
 
-      # The account that will own the EAS project. Derived rather than configured:
-      # for a personal Expo account it is the username, and asking a human to set
-      # a variable they can only get wrong is a step worth removing.
+      # eas-cli needs to be told which account owns the project, and the answer
+      # is not in the token, the repository, or app.json. It has to be asked for.
+      #
+      # A repository variable overrides it, for the case of a token that can act
+      # for more than one account. Anything else -- a variable they can only get
+      # wrong -- is a step worth removing.
       - name: Resolve the Expo account
         id: account
         env:
@@ -226,7 +229,40 @@ jobs:
           if [ -n "$OVERRIDE" ]; then
             account="$OVERRIDE"
           else
-            account=$(eas whoami 2>/dev/null | tr -d '[:space:]')
+            # `eas whoami` does not print a bare username. A token minted at
+            # expo.dev authenticates as a ROBOT, and a robot owns no account of
+            # its own -- it acts for the accounts it was granted, listed under a
+            # heading:
+            #
+            #   termpolis-github (robot) (authenticated using EXPO_TOKEN)
+            #   Accounts:
+            #   * davidcodedev-llc (Role: Admin)
+            #
+            # So the account is the bullet, never the first line. Flattening the
+            # whole block into one string produces a name EAS rejects with "You
+            # are not able to create projects in the ... account", which reads
+            # like a permissions problem and is really a parsing one. The bullet
+            # glyph is multibyte, so match the first name-shaped run of
+            # characters after the heading rather than stripping a literal
+            # bullet.
+            raw=$(eas whoami 2>/dev/null || true)
+            names=$(echo "$raw" | awk '
+              /^Accounts:/ { inlist = 1; next }
+              inlist && match($0, /[A-Za-z0-9][A-Za-z0-9._-]*/) {
+                print substr($0, RSTART, RLENGTH)
+              }')
+            account=$(echo "$names" | head -1)
+            # A personal (non-robot) token prints just the username on line one.
+            if [ -z "$account" ]; then
+              account=$(echo "$raw" | head -1 | awk '{print $1}')
+            fi
+            # More than one means the line above picked for you. Say so, and name
+            # the variable that settles it.
+            count=$(echo "$names" | grep -c . || true)
+            if [ "$count" -gt 1 ]; then
+              echo "::warning::EXPO_TOKEN can act for $count accounts; using '$account'."
+              echo "::warning::Set the EXPO_ACCOUNT repository variable to pick another."
+            fi
           fi
           if [ -z "$account" ]; then
             echo "EXPO_TOKEN did not resolve to an account. It may be revoked or"
@@ -235,12 +271,6 @@ jobs:
           fi
           echo "account=$account" >> "$GITHUB_OUTPUT"
           echo "Building as @$account"
-
-      # `eas init` mints the project on Expo's side and writes `owner` and
-      # `extra.eas.projectId` into app.json. That identity is permanent and
-      # belongs in the repository, so it is committed rather than regenerated on
-      # every run -- a project id that changes is a build history that splits in
-      # two. Skipped entirely once the file carries one.
       - name: Link the EAS project
         id: link
         env:
