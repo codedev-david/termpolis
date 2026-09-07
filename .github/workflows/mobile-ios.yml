@@ -546,11 +546,20 @@ jobs:
             shred -u "$key_path" 2>/dev/null || rm -f "$key_path"
           fi
 
+      # Gated on either step, not just the build: under submit_only the build
+      # is skipped, and a skipped outcome is not a successful one, so keying
+      # this on the build alone printed nothing on the one run that finally
+      # uploaded (34148157308) -- precisely the run whose leftover manual steps
+      # someone needs. The heading adapts for the same reason.
       - name: Say what still has to be done by hand
-        if: ${{ !inputs.dry_run && steps.build.outcome == 'success' }}
+        if: ${{ !inputs.dry_run && (steps.build.outcome == 'success' || steps.submit.outcome == 'success') }}
         run: |
           {
-            echo '### iOS build finished'
+            if [ "${{ steps.build.outcome }}" = 'success' ]; then
+              echo '### iOS build finished'
+            else
+              echo '### iOS build submitted'
+            fi
             echo
             if [ "${{ steps.submit.outcome }}" = 'success' ]; then
               echo 'The build is uploaded and processing in App Store Connect.'
