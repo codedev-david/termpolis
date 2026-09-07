@@ -65,10 +65,6 @@ on:
         description: 'Upload the finished build to App Store Connect'
         type: boolean
         default: true
-      what_to_test:
-        description: 'TestFlight "What to Test" notes'
-        type: string
-        default: ''
       submit_only:
         description: 'Skip the build and upload the last one EAS built'
         type: boolean
@@ -519,16 +515,21 @@ jobs:
           # See the build step: without this, TestFlight setup is skipped with
           # a log line and the run still reports success.
           EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WHAT_TO_TEST: ${{ inputs.what_to_test }}
         run: |
           set -eo pipefail
           cd mobile
-          args="--platform ios --profile production --latest --non-interactive --wait"
-          if [ -n "$WHAT_TO_TEST" ]; then
-            eas submit $args --what-to-test "$WHAT_TO_TEST"
-          else
-            eas submit $args
-          fi
+          # No --what-to-test. EAS gates the TestFlight changelog behind its
+          # Enterprise plan, and passing the flag does not degrade -- it fails
+          # the whole submission after the build is already done:
+          #
+          #     This submission specified the `changelog` parameter. Changelog
+          #     submission is currently available for Enterprise plan only.
+          #
+          # (run 34147655565). The notes are typed into App Store Connect >
+          # TestFlight > the build > Test Details instead; the summary step
+          # below says so.
+          eas submit --platform ios --profile production --latest \
+            --non-interactive --wait
 
       # Unconditional, and deliberately not `git checkout` of a path list that
       # could grow: whatever the run did to the working tree, none of it is
@@ -555,7 +556,7 @@ jobs:
               echo 'The build is uploaded and processing in App Store Connect.'
               echo 'Processing takes roughly 15 minutes; TestFlight shows it after that.'
               echo
-              echo 'Two things this workflow cannot do:'
+              echo 'Three things this workflow cannot do:'
               echo
               echo '1. **Answer export compliance.** The build lands marked *Missing'
               echo '   Compliance* because `ITSAppUsesNonExemptEncryption` is `true`,'
@@ -568,6 +569,10 @@ jobs:
               echo '2. **Add yourself as an internal tester.** TestFlight ->'
               echo '   Internal Testing -> add your Apple ID, then install the'
               echo '   TestFlight app on the phone.'
+              echo '3. **Type the What to Test notes.** TestFlight -> the build'
+              echo '   -> Test Details. `eas submit --what-to-test` is not an'
+              echo '   option: EAS gates the changelog behind its Enterprise plan'
+              echo '   and fails the whole submission rather than skipping it.'
               echo
               echo 'A public App Store listing additionally needs the screenshots'
               echo 'and listing copy described in `mobile/store/screenshots.md` and'
