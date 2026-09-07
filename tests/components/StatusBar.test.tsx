@@ -432,6 +432,20 @@ describe('StatusBar', () => {
     expect(screen.getByText(/Context pins/)).toBeInTheDocument()
   })
 
+  // The help modal is where people go looking for a shortcut they half-remember, so
+  // a binding that exists but isn't listed here effectively doesn't exist. Both of
+  // these are v1.39.1 additions and both are one careless line-delete from vanishing.
+  it('keyboard-shortcuts section documents clear-terminal and the app log', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Ctrl+Shift+X')).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Shift+O')).toBeInTheDocument()
+    // ...and says what each one costs you, not just that it exists.
+    expect(screen.getByText(/Clear terminal/)).toBeInTheDocument()
+    expect(screen.getByText(/the agent keeps its own context/)).toBeInTheDocument()
+    expect(screen.getByText(/App log/)).toBeInTheDocument()
+  })
+
   // -- Version display (auto-update verification) --
 
   it('renders installed app version in the footer next to the Apache license', async () => {

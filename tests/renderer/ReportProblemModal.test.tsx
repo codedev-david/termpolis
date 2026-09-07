@@ -185,4 +185,11 @@ describe('ReportProblemModal', () => {
     fireEvent.change(ta, { target: { value: huge } })
     expect(screen.getByTestId('report-submit')).toBeDisabled()
   })
+
+  it('points the reporter at the app log, and says secrets are already redacted', () => {
+    render(<ReportProblemModal onClose={vi.fn()} />)
+    const hint = screen.getByTestId('report-app-log-hint')
+    expect(hint).toHaveTextContent('Ctrl+Shift+O')
+    expect(hint).toHaveTextContent(/API keys and tokens are redacted/)
+  })
 })

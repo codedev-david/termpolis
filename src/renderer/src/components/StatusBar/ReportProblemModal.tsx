@@ -186,6 +186,13 @@ export function ReportProblemModal({ onClose }: { onClose: () => void }) {
             </span>
           </label>
 
+          <p className="text-[11px] text-[#9ca3af] leading-relaxed -mt-1" data-testid="report-app-log-hint">
+            <i className="fa-solid fa-file-lines text-[#61afef] mr-1"></i>
+            Something misbehave? Press <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+O</kbd> for the app
+            log, hit <strong>Copy</strong>, and paste it above — API keys and tokens are redacted before a line is
+            ever written.
+          </p>
+
           <label className="flex items-start gap-3 p-3 rounded border border-[#3c3c3c] bg-[#1e1e1e] cursor-pointer hover:border-[#22D3EE]/40">
             <input
               type="checkbox"

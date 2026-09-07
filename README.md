@@ -475,6 +475,8 @@ All shortcuts are customizable in **Settings → Keybindings**.
 | `Ctrl+Space` | Trigger autocomplete |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Shift+G` | Toggle split view |
+| `Ctrl+Shift+X` | Clear terminal — screen **and** scrollback (nothing is sent to the process, so an agent keeps its own context) |
+| `Ctrl+Shift+O` | App log — what Termpolis itself has printed, secrets redacted on write |
 | `Ctrl+Shift+P` | Prompt templates |
 | `Ctrl+Shift+E` | Smart context panel |
 | `Ctrl+Shift+I` | Conversation history search |
