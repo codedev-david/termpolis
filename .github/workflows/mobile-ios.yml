@@ -287,6 +287,15 @@ jobs:
           EXPO_ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
           EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          # Not optional, and missing it fails differently in each of the two
+          # steps below. At build, resolveCredentials.js:145 resolves the team
+          # id from EXPO_APPLE_TEAM_ID and PROMPTS for it when unset -- and a
+          # prompt under --non-interactive is a dead build. At submit it fails
+          # softer and worse: ensureTestFlightSetup.js:38 sees no team id, logs
+          # "App Store Connect credentials are incomplete, skipping TestFlight
+          # setup" and RETURNS. The upload still succeeds, so the run is green,
+          # and there is no TestFlight group to install the build from.
+          EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           MESSAGE: ${{ inputs.message }}
         run: |
           set -eo pipefail
@@ -346,6 +355,9 @@ jobs:
           EXPO_ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
           EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          # See the build step: without this, TestFlight setup is skipped with
+          # a log line and the run still reports success.
+          EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WHAT_TO_TEST: ${{ inputs.what_to_test }}
         run: |
           set -eo pipefail
