@@ -359,7 +359,15 @@ jobs:
         id: patch
         if: ${{ !inputs.dry_run && inputs.submit }}
         env:
-          ASC_APP_ID: ${{ vars.ASC_APP_ID }}
+          # A variable OR a secret. The App Store Connect app id is public -- it
+          # is the digits in the app's own App Store URL -- so a variable is the
+          # honest home for it and keeps it readable in the run log. But it looks
+          # exactly like the four credentials it is collected alongside, so it
+          # gets set as a secret about half the time, and reading only `vars`
+          # turns that into a build that finishes and then refuses to upload.
+          # Accept either. The digits-only check below is what actually guards
+          # the value.
+          ASC_APP_ID: ${{ vars.ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -eo pipefail
@@ -464,7 +472,7 @@ jobs:
               echo 'checked; the finished build is reused, not rebuilt:'
               echo
               echo '```'
-              echo 'gh variable set ASC_APP_ID --body "<digits from the App Store Connect URL>"'
+              echo 'gh variable set ASC_APP_ID --body "<digits from the App Store Connect URL>"   # or gh secret set'
               echo '```'
               echo
               echo 'The app record is created at appstoreconnect.apple.com -> Apps'
