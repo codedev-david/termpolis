@@ -171,7 +171,12 @@ jest.mock('../src/storage/identity', () => ({
 import { AppState } from 'react-native'
 import { NO_CAPABILITIES } from '../src/wire/protocol'
 import { deriveVerificationPhrase } from '../src/wire/safetyNumber'
-import { FOREGROUND_DEBOUNCE_MS, teardownRemote, useRemoteStore } from '../src/state/remoteStore'
+import {
+  FOREGROUND_DEBOUNCE_MS,
+  MAX_OUTPUT_CHARS,
+  teardownRemote,
+  useRemoteStore,
+} from '../src/state/remoteStore'
 
 function socket(): (typeof mockSockets)[number] {
   return mockSockets[mockSockets.length - 1] as (typeof mockSockets)[number]
@@ -187,7 +192,7 @@ function state(next: RelayState): void {
 }
 
 function chunk(over: Partial<OutputChunk> = {}): OutputChunk {
-  return { terminalId: 't1', chunk: 'hello', missed: 0, marker: null, ...over }
+  return { terminalId: 't1', chunk: 'hello', missed: 0, marker: null, replaceFrom: null, ...over }
 }
 
 async function settle(): Promise<void> {
@@ -503,6 +508,116 @@ describe('output', () => {
   })
 })
 
+/** The desktop's screen flattener re-sends the live region of the screen whenever
+ *  it changes, and says which offset that region starts at. Ignoring the offset is
+ *  what made a redrawn status line arrive as one appended line per animation
+ *  frame -- the agent's verb repeating down the phone's screen.
+ *
+ *  `outputEnd` translates between the two copies. It anchors the END of what this
+ *  phone holds, in the desktop's own offsets, because the phone's copy is not the
+ *  desktop's stream: the head is trimmed at MAX_OUTPUT_CHARS and gap notices are
+ *  spliced in. An anchor at the start would need re-basing on every trim. */
+describe('an edit that replaces what the phone already showed', () => {
+  async function attached(): Promise<void> {
+    mockStorage.paired = PAIRED
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext([])
+    await settle()
+  }
+
+  const view = (): string => useRemoteStore.getState().output.t1 as string
+
+  function feed(...over: Partial<OutputChunk>[]): void {
+    session().output[0]?.(over.map((o) => chunk(o)))
+  }
+
+  it('collapses a redrawn status line to the frame that is current', async () => {
+    await attached()
+    feed({ chunk: 'line 1 thinking (1s)', replaceFrom: 0 })
+    feed({ chunk: 'thinking (2s)', replaceFrom: 7 })
+    feed({ chunk: 'thinking (3s)', replaceFrom: 7 })
+    expect(view()).toBe('line 1 thinking (3s)')
+    expect(view().match(/thinking/g)).toHaveLength(1)
+  })
+
+  it('leaves an ordinary append alone', async () => {
+    await attached()
+    feed({ chunk: 'one ' }, { chunk: 'two' })
+    feed({ chunk: ' three' })
+    expect(view()).toBe('one two three')
+  })
+
+  it('still lands the edit after the head of the scrollback was trimmed away', async () => {
+    // The anchor is on the END of the phone's copy, so trimming the head does not
+    // have to touch it. A missed re-base here would truncate live output.
+    await attached()
+    feed({ chunk: 'x'.repeat(250_000) })
+    feed({ chunk: 'tail', replaceFrom: 250_000 - 4 })
+    expect(view()).toHaveLength(MAX_OUTPUT_CHARS)
+    expect(view().endsWith('xtail')).toBe(true)
+  })
+
+  it('replaces the whole buffer when the edit reaches back past everything it holds', async () => {
+    // Every char this phone still has sits inside the replaced range, so keeping
+    // any of it would duplicate text the desktop has just re-sent.
+    await attached()
+    feed({ chunk: 'a'.repeat(100) })
+    feed({ chunk: 'fresh', replaceFrom: 0 })
+    expect(view()).toBe('fresh')
+  })
+
+  it('degrades to an append when the offset runs past the end of its copy', async () => {
+    // What a phone that subscribed mid-session sees: the desktop counts from the
+    // start of the terminal, this copy starts wherever the phone joined. A
+    // duplicated frame beats truncating output that is still on screen.
+    await attached()
+    feed({ chunk: 'joined late' })
+    feed({ chunk: ' more', replaceFrom: 9_000 })
+    expect(view()).toBe('joined late more')
+  })
+
+  it('re-anchors on the offset it was given, so the next edit lands correctly', async () => {
+    // The anchor is set absolutely from a numeric offset rather than advanced by
+    // the chunk length. That is what stops a single mis-anchored append from
+    // putting every later edit permanently out of step.
+    await attached()
+    feed({ chunk: 'joined late' })
+    feed({ chunk: ' more', replaceFrom: 9_000 })
+    feed({ chunk: 'X', replaceFrom: 9_004 })
+    expect(view()).toBe('joined late morX')
+  })
+
+  it('splices the gap notice between what it keeps and the replacement', async () => {
+    await attached()
+    feed({ chunk: 'held' })
+    feed({ chunk: 'new', missed: 12, marker: '[gap]', replaceFrom: 2 })
+    expect(view()).toBe('he[gap]new')
+  })
+
+  it('anchors each terminal on its own offsets', async () => {
+    await attached()
+    feed({ chunk: 'aaaa' }, { terminalId: 't2', chunk: 'bbbbbbbb' })
+    feed({ chunk: 'A', replaceFrom: 3 }, { terminalId: 't2', chunk: 'B', replaceFrom: 3 })
+    expect(view()).toBe('aaaA')
+    expect(useRemoteStore.getState().output.t2).toBe('bbbB')
+  })
+
+  it('forgets the anchor along with the buffer when a terminal closes', async () => {
+    // A reused terminal id must not be measured against the offsets of the
+    // terminal that had it before.
+    await attached()
+    feed({ chunk: 'x'.repeat(500) })
+    const done = useRemoteStore.getState().closeTerminal('t1')
+    session().resolveNext({ ok: true })
+    await done
+    feed({ chunk: 'reopened', replaceFrom: 480 })
+    expect(view()).toBe('reopened')
+  })
+})
+
 describe('unpairing', () => {
   it('clears storage, closes the socket, and forgets what was on screen', async () => {
     mockStorage.paired = PAIRED
@@ -556,6 +671,52 @@ describe('what this phone may do', () => {
     state('attached')
     await settle()
   }
+
+  // Pins the reported bug: the desktop refuses `listTerminals` without `read`,
+  // so a phone that attached before the grant holds an empty list AND the
+  // refusal that produced it. The push used to set the flag and stop there,
+  // leaving both on screen -- "I gave it read capability but it says there are
+  // not any terminals even though we are in one".
+  it('re-lists the terminals when read is granted after attaching', async () => {
+    await attached()
+    session().resolveNext(NO_CAPABILITIES)
+    session().rejectNext(new Error('remote device lacks the "read" capability'))
+    await settle()
+    expect(useRemoteStore.getState().terminals).toEqual([])
+    expect(useRemoteStore.getState().error).toContain('read')
+
+    const before = session().requests.length
+    for (const cb of session().caps) cb(GRANTS)
+    await settle()
+
+    // The grant alone is not the fix. The refetch it triggers is.
+    expect(session().requests.slice(before)).toContainEqual({ kind: 'listTerminals' })
+    session().resolveNext([{ id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }])
+    await settle()
+    expect(useRemoteStore.getState().terminals).toHaveLength(1)
+    // The stale refusal must go with it, or the list arrives under a banner
+    // still saying the device is not allowed to have it.
+    expect(useRemoteStore.getState().error).toBeNull()
+  })
+
+  it('leaves the retry failure on screen when the re-list fails too', async () => {
+    // The refetch is fire-and-forget, so its rejection has nowhere to go and an
+    // unhandled one crashes the app. `ask` has already written the real reason
+    // to the banner by the time the catch runs -- swallowing it there is what
+    // lets the user see that reason instead of a stale capability message.
+    await attached()
+    session().resolveNext(NO_CAPABILITIES)
+    session().rejectNext(new Error('remote device lacks the "read" capability'))
+    await settle()
+
+    for (const cb of session().caps) cb(GRANTS)
+    await settle()
+    session().rejectNext(new Error('The desktop is busy.'))
+    await settle()
+
+    expect(useRemoteStore.getState().terminals).toEqual([])
+    expect(useRemoteStore.getState().error).toBe('The desktop is busy.')
+  })
 
   it('starts out allowed nothing, because it has not asked yet', () => {
     expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)

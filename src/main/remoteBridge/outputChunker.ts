@@ -64,6 +64,10 @@ function splitChunk(chunk: DrainedChunk, maxBytes: number): DrainedChunk[] {
     chunk: chunk.chunk.slice(cut),
     missed: 0,
     marker: null,
+    // Same reasoning as the gap notice: the rewrite happened once, at the head.
+    // Repeating the offset on every piece would make each one truncate away the
+    // piece before it, leaving only the last fragment of a split redraw.
+    replaceFrom: null,
   }
   return [...splitChunk(head, maxBytes), ...splitChunk(tail, maxBytes)]
 }

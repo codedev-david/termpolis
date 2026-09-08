@@ -78,11 +78,19 @@ export class OutputFanout {
     return [...(this.devices.get(deviceId)?.terminals ?? [])]
   }
 
-  ingest(terminalId: string, slice: { output: string; nextOffset: number; missed: number }): void {
+  ingest(
+    terminalId: string,
+    slice: { output: string; nextOffset: number; missed: number; replaceFrom?: number | null },
+  ): void {
     if (slice.output === '' && slice.missed === 0) return
     for (const d of this.devices.values()) {
       if (!d.terminals.has(terminalId)) continue
-      d.queue.push({ terminalId, chunk: slice.output, missed: slice.missed })
+      d.queue.push({
+        terminalId,
+        chunk: slice.output,
+        missed: slice.missed,
+        replaceFrom: slice.replaceFrom ?? null,
+      })
       this.trim(d.queue)
     }
   }
@@ -103,6 +111,11 @@ export class OutputFanout {
         head.chunk = head.chunk.slice(overshoot)
         evicted += overshoot
         total -= overshoot
+        // The offset counted from the start of text that no longer starts here.
+        // Honouring it now would truncate the receiver back to a point this
+        // shortened chunk can no longer refill, so the piece becomes a plain
+        // append -- the gap it leaves is what the `missed` count below is for.
+        head.replaceFrom = null
       }
     }
     if (evicted > 0 && q.length > 0) q[0].missed += evicted

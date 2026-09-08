@@ -17,7 +17,7 @@ import type { DrainedChunk } from '../../src/main/remoteBridge/outputFanout'
 import type { OutputChunk, RemoteMessage } from '../../src/main/remoteBridge/protocol'
 
 function chunk(over: Partial<DrainedChunk> = {}): DrainedChunk {
-  return { terminalId: 't1', chunk: 'hello', missed: 0, marker: null, ...over }
+  return { terminalId: 't1', chunk: 'hello', missed: 0, marker: null, replaceFrom: null, ...over }
 }
 
 function wireSize(payload: unknown): number {
@@ -264,6 +264,7 @@ describe('output chunker -- packing a reattach backlog', () => {
         chunk: text,
         missed: i % 7 === 0 ? i : 0,
         marker: i % 11 === 0 ? `[${i} lines lost]` : null,
+        replaceFrom: i % 5 === 0 ? i : null,
       }
     })
 

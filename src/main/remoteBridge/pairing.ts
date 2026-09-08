@@ -8,7 +8,7 @@ import {
   FRAME_PAIRING_ACK,
   PROTOCOL_VERSION,
 } from './sessionCrypto'
-import { NO_CAPABILITIES, type PairedDevice } from './protocol'
+import { NO_CAPABILITIES, type Capabilities, type PairedDevice } from './protocol'
 
 const DEFAULT_TTL_MS = 90_000
 
@@ -199,6 +199,9 @@ export class PairingSession {
     oneTimeSecret: string
     devicePublicKey: string
     label: string
+    /** What the user ticked before they showed the QR. Absent means nothing is
+     *  granted, which is what every pairing did before the choice existed. */
+    capabilities?: Capabilities
     now?: number
   }): { device: PairedDevice; verificationPhrase: string } {
     const now = input.now ?? Date.now()
@@ -214,7 +217,7 @@ export class PairingSession {
       label: input.label,
       publicKey: input.devicePublicKey,
       sessionRoomId: deriveSessionRoomId(this.desktopSecretKey, input.devicePublicKey),
-      capabilities: { ...NO_CAPABILITIES },
+      capabilities: { ...NO_CAPABILITIES, ...input.capabilities },
       pairedAt: now,
       lastSeenAt: now,
     }

@@ -134,6 +134,16 @@ export interface OutputChunk {
   missed: number
   /** Rendered gap notice, on the FIRST piece of a split chunk only. */
   marker: string | null
+  /** Truncate this terminal's accumulated text to this many chars before
+   *  appending `chunk`.
+   *
+   *  `null` is append, which is what ordinary output does. A number means the
+   *  desktop redrew part of the screen rather than adding to it: a status line
+   *  ticking in place rewrites the same few dozen chars ten times a second, and
+   *  appending each of those frames is what put sixty copies of "Compacting
+   *  conversation..." on the screen. A desktop older than this field sends
+   *  nothing and the parser reads that as append, which is what it always was. */
+  replaceFrom: number | null
 }
 
 /** Terminal output, batched. Many chunks per frame rather than one frame per
@@ -201,7 +211,15 @@ function isOutputChunk(value: unknown): value is OutputChunk {
     typeof value.terminalId === 'string' &&
     typeof value.chunk === 'string' &&
     typeof value.missed === 'number' &&
-    (value.marker === null || typeof value.marker === 'string')
+    (value.marker === null || typeof value.marker === 'string') &&
+    // Absent is valid: a desktop that predates screen flattening sends only
+    // appends, and rejecting its chunks would black out the terminal entirely
+    // rather than degrade to the behaviour that shipped before.
+    (value.replaceFrom === undefined ||
+      value.replaceFrom === null ||
+      (typeof value.replaceFrom === 'number' &&
+        Number.isInteger(value.replaceFrom) &&
+        value.replaceFrom >= 0))
   )
 }
 
@@ -235,7 +253,13 @@ export function parseRemoteMessage(plaintext: Uint8Array): RemoteMessage | null 
       // The whole batch or none of it. Partial delivery would paint a terminal
       // that is missing a span it never marks as missing -- worse than nothing.
       if (!Array.isArray(chunks) || !chunks.every(isOutputChunk)) return null
-      return { kind: 'output', chunks: chunks as OutputChunk[] }
+      // Normalise the absent field here so nothing downstream has to know that
+      // an older desktop exists: past this point a chunk always says whether it
+      // replaces or appends.
+      return {
+        kind: 'output',
+        chunks: chunks.map((c) => ({ ...c, replaceFrom: c.replaceFrom ?? null })),
+      }
     }
 
     case 'status':

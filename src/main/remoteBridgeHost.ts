@@ -108,7 +108,9 @@ export interface RemoteHost {
   status(): RemoteStatusView
   setEnabled(enabled: boolean): void
   setRelayUrl(url: string): void
-  beginPairing(label: string): void
+  /** `capabilities` is what the user granted before the QR is shown, so the
+   *  device is created with it rather than being granted a moment later. */
+  beginPairing(label: string, capabilities?: Capabilities): void
   cancelPairing(): void
   revokeDevice(deviceId: string): void
   setDeviceCapabilities(deviceId: string, capabilities: Capabilities): void
@@ -332,8 +334,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       emitStatus()
     },
 
-    beginPairing(label: string): void {
-      deps.sendToBridge({ kind: 'beginPairing', label })
+    beginPairing(label: string, capabilities?: Capabilities): void {
+      deps.sendToBridge({ kind: 'beginPairing', label, capabilities })
     },
 
     cancelPairing(): void {

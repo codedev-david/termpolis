@@ -12,7 +12,7 @@ describe('OutputFanout', () => {
     const f = new OutputFanout()
     f.subscribe('phone', 't1')
     f.ingest('t1', { output: 'hello', nextOffset: 5, missed: 0 })
-    expect(f.drain('phone')).toEqual([{ terminalId: 't1', chunk: 'hello', missed: 0, marker: null }])
+    expect(f.drain('phone')).toEqual([{ terminalId: 't1', chunk: 'hello', missed: 0, marker: null, replaceFrom: null }])
   })
 
   it('drains exactly once', () => {

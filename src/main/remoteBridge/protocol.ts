@@ -76,6 +76,15 @@ export interface OutputChunk {
   missed: number
   /** Rendered gap notice, on the FIRST piece of a split chunk only. */
   marker: string | null
+  /** Truncate the receiver's copy to this many chars before appending `chunk`.
+   *
+   *  `null` means append, which is what ordinary output does and what an older
+   *  peer on either side falls back to. A number means the desktop redrew part
+   *  of the screen: a status line ticking in place rewrites the same few dozen
+   *  chars ten times a second, and without this the receiver keeps every frame
+   *  as its own line. On the FIRST piece of a split chunk only -- the rest are
+   *  appends onto the piece before them. */
+  replaceFrom: number | null
 }
 
 /** Terminal output, batched.
@@ -129,7 +138,10 @@ export interface OutputSlice {
 
 export type HostToBridge =
   | { kind: 'init'; mcpPort: number; mcpToken: string; identitySecretKey: string; devices: PairedDevice[] }
-  | { kind: 'beginPairing'; label: string }
+  /** `capabilities` is what the user granted in Settings before the QR was
+   *  shown. Optional so an older host still pairs -- absent means nothing is
+   *  granted, which is what pairing did before the choice existed. */
+  | { kind: 'beginPairing'; label: string; capabilities?: Capabilities }
   | { kind: 'cancelPairing' }
   | { kind: 'revokeDevice'; deviceId: string }
   | { kind: 'setCapabilities'; deviceId: string; capabilities: Capabilities }

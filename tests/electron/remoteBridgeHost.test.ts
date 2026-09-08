@@ -445,6 +445,21 @@ describe('remote bridge host', () => {
     ])
   })
 
+  it('carries the grant chosen before the QR down with the pairing request', () => {
+    // The grant travels WITH the offer rather than as a follow-up, so the device
+    // is never created in the state the user hit: paired, and refusing every
+    // request the phone makes.
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    const granted = { ...NO_CAPABILITIES, read: true, closeTerminal: true }
+    harness.host.beginPairing('iPhone 17', granted)
+    expect(harness.posted.at(-1)).toEqual({
+      kind: 'beginPairing',
+      label: 'iPhone 17',
+      capabilities: granted,
+    })
+  })
+
   it('clears a pending pairing code when pairing is cancelled', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()

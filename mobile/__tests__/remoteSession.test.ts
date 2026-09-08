@@ -140,8 +140,8 @@ describe('timeouts', () => {
 
 describe('pushes', () => {
   const chunks: OutputChunk[] = [
-    { terminalId: 't1', chunk: 'npm test\r\n', missed: 0, marker: null },
-    { terminalId: 't2', chunk: 'ok\r\n', missed: 12, marker: '[12 chars lost]' },
+    { terminalId: 't1', chunk: 'npm test\r\n', missed: 0, marker: null, replaceFrom: null },
+    { terminalId: 't2', chunk: 'ok\r\n', missed: 12, marker: '[12 chars lost]', replaceFrom: null },
   ]
 
   it('routes an output batch to every output subscriber', () => {
@@ -453,11 +453,11 @@ describe('unsubscribing from a stream', () => {
     const stop = h.session.onOutput((chunks) => seen.push(chunks))
 
     h.session.handleFrame(
-      frame({ kind: 'output', chunks: [{ terminalId: 't1', chunk: 'one', missed: 0, marker: null }] }),
+      frame({ kind: 'output', chunks: [{ terminalId: 't1', chunk: 'one', missed: 0, marker: null, replaceFrom: null }] }),
     )
     stop()
     h.session.handleFrame(
-      frame({ kind: 'output', chunks: [{ terminalId: 't1', chunk: 'two', missed: 0, marker: null }] }),
+      frame({ kind: 'output', chunks: [{ terminalId: 't1', chunk: 'two', missed: 0, marker: null, replaceFrom: null }] }),
     )
 
     expect(seen).toHaveLength(1)

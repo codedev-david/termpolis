@@ -190,7 +190,20 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
   ipc.handle('remote:begin-pairing', (_e, input) => {
     if (!host) return err(REMOTE_UNAVAILABLE)
     if (!host.status().running) return err(REMOTE_NOT_RUNNING)
-    host.beginPairing(sanitizeLabel((input as { label?: unknown } | undefined)?.label))
+    // Only when the renderer actually sent a grant. Absent means "grant nothing",
+    // the way pairing behaved before the choice existed; a malformed one is
+    // refused outright rather than silently downgraded, for the same reason
+    // `remote:set-capabilities` refuses it -- this is the other door to
+    // `writeToTerminal`, and answering "granted nothing" would hide both a bug
+    // and an attack.
+    const wanted = (input as { capabilities?: unknown } | undefined)?.capabilities
+    let capabilities: Capabilities | undefined
+    if (wanted !== undefined) {
+      const read = readCapabilities(input)
+      if ('error' in read) return err(read.error)
+      capabilities = read.caps
+    }
+    host.beginPairing(sanitizeLabel((input as { label?: unknown } | undefined)?.label), capabilities)
     return ok(host.status())
   })
 

@@ -277,7 +277,13 @@ describe('stage 6: a request round trip', () => {
 
   it('carries a batched output push the phone can parse', () => {
     const { desktop, phone } = connect()
-    const chunks = [{ terminalId: 't1', chunk: 'npm test\r\n', missed: 0, marker: null }]
+    // Where the flattener's edit lands. A screen redraw arrives as "truncate your
+    // copy to this offset, then append", so the offset has to cross the wire
+    // intact or the phone appends every animation frame of a status line.
+    const chunks = [
+      { terminalId: 't1', chunk: 'npm test\r\n', missed: 0, marker: null, replaceFrom: null },
+      { terminalId: 't1', chunk: 'thinking (2s)', missed: 0, marker: null, replaceFrom: 10 },
+    ]
     const frame = desktop.seal(
       Uint8Array.from([FRAME_SESSION]),
       utf8Encode(JSON.stringify({ kind: 'output', chunks })),
@@ -285,6 +291,27 @@ describe('stage 6: a request round trip', () => {
     expect(parseRemoteMessage(phone.open(frame, SESSION_HEADER_BYTES)!)).toEqual({
       kind: 'output',
       chunks,
+    })
+  })
+
+  it('reads output from a desktop too old to send an offset', () => {
+    // The desktop ships separately from the app the user has installed, so a
+    // phone on this build will meet one that predates `replaceFrom`. Absent has
+    // to mean "append", which is what every chunk did before the field existed --
+    // not a parse failure, which would blank the terminal view outright.
+    const { desktop, phone } = connect()
+    const frame = desktop.seal(
+      Uint8Array.from([FRAME_SESSION]),
+      utf8Encode(
+        JSON.stringify({
+          kind: 'output',
+          chunks: [{ terminalId: 't1', chunk: 'npm test', missed: 0, marker: null }],
+        }),
+      ),
+    )
+    expect(parseRemoteMessage(phone.open(frame, SESSION_HEADER_BYTES)!)).toEqual({
+      kind: 'output',
+      chunks: [{ terminalId: 't1', chunk: 'npm test', missed: 0, marker: null, replaceFrom: null }],
     })
   })
 })

@@ -347,6 +347,57 @@ describe('remote IPC surface', () => {
     expect(harness.child().posted.at(-1)).toEqual({ kind: 'cancelPairing' })
   })
 
+  it('passes a grant chosen in Settings straight through to the bridge', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.start()
+    harness.call('remote:begin-pairing', {
+      label: 'Phone',
+      capabilities: { read: true, createTerminal: true, writeToTerminal: false, closeTerminal: false },
+    })
+    expect(harness.child().posted.at(-1)).toEqual({
+      kind: 'beginPairing',
+      label: 'Phone',
+      capabilities: { read: true, createTerminal: true, writeToTerminal: false, closeTerminal: false },
+    })
+  })
+
+  it('fills in the flags a partial grant left out', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.start()
+    harness.call('remote:begin-pairing', { label: 'Phone', capabilities: { read: true } })
+    expect(harness.child().posted.at(-1)).toEqual({
+      kind: 'beginPairing',
+      label: 'Phone',
+      capabilities: { read: true, createTerminal: false, writeToTerminal: false, closeTerminal: false },
+    })
+  })
+
+  it('refuses a pairing request whose grant is not an object', () => {
+    // This is the other door to `writeToTerminal`. Answering "granted nothing"
+    // to a malformed payload would hide a renderer bug and an attack behind the
+    // same silent downgrade, so it is refused the way set-capabilities is.
+    saveRemoteSettings(dir, { enabled: true })
+    harness.start()
+    const before = harness.child().posted.length
+    const res = harness.call('remote:begin-pairing', { label: 'Phone', capabilities: ['read'] })
+    expect(res.success).toBe(false)
+    expect((res as { error: string }).error).toContain('must be an object')
+    expect(harness.child().posted).toHaveLength(before)
+  })
+
+  it('refuses a pairing request whose grant flags are not booleans', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.start()
+    const before = harness.child().posted.length
+    const res = harness.call('remote:begin-pairing', {
+      label: 'Phone',
+      capabilities: { writeToTerminal: 'yes' },
+    })
+    expect(res.success).toBe(false)
+    expect((res as { error: string }).error).toContain('writeToTerminal')
+    expect(harness.child().posted).toHaveLength(before)
+  })
+
   it('strips control characters out of a device label', () => {
     // The label lands in the device list beside a live terminal. An embedded
     // escape sequence there is a way to redraw a pane it has no business touching.

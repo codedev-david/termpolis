@@ -42,10 +42,36 @@ describe('parseRemoteMessage: the five desktop shapes', () => {
 
   it('reads a batched output payload', () => {
     const chunks = [
-      { terminalId: 't1', chunk: 'hello', missed: 0, marker: null },
-      { terminalId: 't1', chunk: 'world', missed: 12, marker: '[12 chars lost]' },
+      { terminalId: 't1', chunk: 'hello', missed: 0, marker: null, replaceFrom: null },
+      { terminalId: 't1', chunk: 'world', missed: 12, marker: '[12 chars lost]', replaceFrom: 5 },
     ]
     expect(parseJson({ kind: 'output', chunks })).toEqual({ kind: 'output', chunks })
+  })
+
+  it('treats a desktop too old to send replaceFrom as sending an append', () => {
+    // The field arrived after the first shipped desktop. Absent has to mean
+    // "append", not "undefined": the store branches on `=== null`, and a phone
+    // that let undefined through would take the truncating path with no offset
+    // to truncate to.
+    const parsed = parseJson({
+      kind: 'output',
+      chunks: [{ terminalId: 't1', chunk: 'hello', missed: 0, marker: null }],
+    })
+    expect(parsed).toEqual({
+      kind: 'output',
+      chunks: [{ terminalId: 't1', chunk: 'hello', missed: 0, marker: null, replaceFrom: null }],
+    })
+  })
+
+  it('rejects an output chunk whose replaceFrom is not a whole non-negative count', () => {
+    for (const bad of [-1, 1.5, '3', true]) {
+      expect(
+        parseJson({
+          kind: 'output',
+          chunks: [{ terminalId: 't1', chunk: 'x', missed: 0, marker: null, replaceFrom: bad }],
+        }),
+      ).toBeNull()
+    }
   })
 
   it('reads an output payload with no chunks at all', () => {

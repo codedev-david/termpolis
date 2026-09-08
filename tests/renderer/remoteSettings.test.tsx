@@ -149,8 +149,68 @@ describe('RemoteSettings pairing', () => {
     await mount()
     fireEvent.change(screen.getByTestId('remote-pair-label'), { target: { value: 'Work phone' } })
     fireEvent.click(screen.getByTestId('remote-pair-button'))
-    await waitFor(() => expect(api.beginPairing).toHaveBeenCalledWith('Work phone'))
+    await waitFor(() =>
+      expect(api.beginPairing).toHaveBeenCalledWith('Work phone', {
+        read: true,
+        createTerminal: false,
+        writeToTerminal: false,
+        closeTerminal: false,
+      }),
+    )
     expect(await screen.findByTestId('pairing-qr')).toBeTruthy()
+  })
+
+  it('offers read, and only read, before a code is asked for', async () => {
+    // The grant is chosen up front so the phone is never created in the state
+    // the user reported: paired, yet refusing every request it makes.
+    await mount()
+    expect((screen.getByTestId('remote-pair-cap-read') as HTMLInputElement).checked).toBe(true)
+    for (const key of ['createTerminal', 'writeToTerminal', 'closeTerminal']) {
+      expect((screen.getByTestId(`remote-pair-cap-${key}`) as HTMLInputElement).checked).toBe(false)
+    }
+  })
+
+  it('pairs with exactly the boxes that are ticked', async () => {
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-cap-createTerminal'))
+    fireEvent.click(screen.getByTestId('remote-pair-cap-writeToTerminal'))
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    await waitFor(() =>
+      expect(api.beginPairing).toHaveBeenCalledWith('', {
+        read: true,
+        createTerminal: true,
+        writeToTerminal: true,
+        closeTerminal: false,
+      }),
+    )
+  })
+
+  it('lets a box be ticked and unticked again before pairing', async () => {
+    await mount()
+    const read = screen.getByTestId('remote-pair-cap-read') as HTMLInputElement
+    fireEvent.click(read)
+    expect(read.checked).toBe(false)
+    fireEvent.click(screen.getByTestId('remote-pair-cap-closeTerminal'))
+    fireEvent.click(screen.getByTestId('remote-pair-cap-closeTerminal'))
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    await waitFor(() =>
+      expect(api.beginPairing).toHaveBeenCalledWith('', {
+        read: false,
+        createTerminal: false,
+        writeToTerminal: false,
+        closeTerminal: false,
+      }),
+    )
+  })
+
+  it('warns in amber on the one capability that hands over a keyboard', async () => {
+    await mount()
+    const group = screen.getByTestId('remote-pair-capabilities')
+    expect(group.textContent).toContain('bypasses the command checks')
+    const danger = [...group.querySelectorAll('span')].find(
+      (el) => el.textContent === 'Type into terminals',
+    )
+    expect(danger?.className).toContain('e5c07b')
   })
 
   it('shows the safety words once a phone completes the handshake', async () => {
@@ -257,7 +317,10 @@ describe('RemoteSettings devices', () => {
   it('warns that typing bypasses the command checks', async () => {
     api.status.mockResolvedValue(ok(statusView({ devices: [device()] })))
     await mount()
-    expect(screen.getByText(/bypasses the command checks/)).toBeTruthy()
+    // Scoped to the device row: the same warning now also sits above the pair
+    // button, where the grant is chosen before a code is minted.
+    const row = screen.getByTestId('remote-device-dev-1')
+    expect(row.textContent).toContain('bypasses the command checks')
   })
 
   it('takes two clicks to revoke', async () => {

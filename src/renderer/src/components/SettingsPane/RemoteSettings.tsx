@@ -58,6 +58,17 @@ export function RemoteSettings(): JSX.Element {
   // null means "follow the saved value"; a string means the user is mid-edit.
   const [relayDraft, setRelayDraft] = useState<string | null>(null)
   const [label, setLabel] = useState('')
+  // Chosen BEFORE the code is generated, so the phone is created with the grant
+  // its owner meant to give. Pairing first and granting afterwards produced a
+  // device that was paired but refused every request it made -- the phone said
+  // "this desktop has not granted read access" and listed no terminals, which
+  // reads as a broken app rather than a permission that was never ticked.
+  const [pendingCapabilities, setPendingCapabilities] = useState<RemoteCapabilities>({
+    read: true,
+    createTerminal: false,
+    writeToTerminal: false,
+    closeTerminal: false,
+  })
   const [modalOpen, setModalOpen] = useState(false)
   const [paired, setPaired] = useState<PairedResult | null>(null)
   // True only between asking for a code and the bridge producing one. Without
@@ -133,7 +144,7 @@ export function RemoteSettings(): JSX.Element {
 
   const startPairing = async (): Promise<void> => {
     setPaired(null)
-    const res = await window.remote.beginPairing(label)
+    const res = await window.remote.beginPairing(label, pendingCapabilities)
     apply(res)
     // Opened only on success. A refused call means no code is coming, so a modal
     // that opened anyway could only tell the user something untrue -- and the
@@ -273,6 +284,29 @@ export function RemoteSettings(): JSX.Element {
           >
             Pair a device
           </button>
+        </div>
+        <div className="flex flex-col gap-1 mt-2" data-testid="remote-pair-capabilities">
+          <div className="text-xs text-[#6b7280]">What this phone will be allowed to do:</div>
+          {CAPABILITIES.map((cap) => (
+            <label key={cap.key} className="flex items-start gap-2 text-xs text-[#d4d4d4]">
+              <input
+                type="checkbox"
+                data-testid={`remote-pair-cap-${cap.key}`}
+                checked={pendingCapabilities[cap.key]}
+                onChange={() =>
+                  setPendingCapabilities((prev) => ({ ...prev, [cap.key]: !prev[cap.key] }))
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className={cap.danger ? 'text-[#e5c07b]' : ''}>{cap.label}</span>
+                <span className="block text-[#6b7280]">{cap.hint}</span>
+              </span>
+            </label>
+          ))}
+          <div className="text-[#6b7280] text-xs">
+            You can change any of these later, from the device&apos;s own row below.
+          </div>
         </div>
       </div>
 

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { createHash } from 'crypto'
-import { createBridgeCore } from '../../src/main/remoteBridge/entry'
+import { createBridgeCore, type FlattenerLike } from '../../src/main/remoteBridge/entry'
+import { ScreenFlattener } from '../../src/main/remoteBridge/screenFlattener'
 import {
   generateIdentity,
   deriveVerificationPhrase,
@@ -17,6 +18,7 @@ import {
   NO_CAPABILITIES,
   SEEN_ANNOUNCE_INTERVAL_MS,
   type BridgeToHost,
+  type Capabilities,
   type PairedDevice,
   type RemoteRequest,
 } from '../../src/main/remoteBridge/protocol'
@@ -94,7 +96,10 @@ function stubRoom(deps: RelayClientDeps) {
   return room
 }
 
-function core(devices: PairedDevice[] = [], { init = true }: { init?: boolean } = {}) {
+function core(
+  devices: PairedDevice[] = [],
+  { init = true, flattener }: { init?: boolean; flattener?: FlattenerLike } = {},
+) {
   const sent: BridgeToHost[] = []
   const rooms: ReturnType<typeof stubRoom>[] = []
   const callTool = vi.fn().mockResolvedValue({ terminals: [] })
@@ -102,6 +107,7 @@ function core(devices: PairedDevice[] = [], { init = true }: { init?: boolean } 
     send: (m) => sent.push(m),
     mcp: { callTool },
     relayUrl: 'wss://relay.test',
+    flattener,
     openRelay: (d) => {
       const room = stubRoom(d)
       rooms.push(room)
@@ -312,10 +318,12 @@ describe('bridge core', () => {
     const { c } = core([device()])
     await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
+    await c.settled()
     expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['hello'])
 
     await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'more', nextOffset: 9, missed: 0 } })
+    await c.settled()
     expect(c.drainOutput('d1')).toEqual([])
   })
 
@@ -326,6 +334,7 @@ describe('bridge core', () => {
     c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: { ...NO_CAPABILITIES } })
 
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'secret', nextOffset: 6, missed: 0 } })
+    await c.settled()
     expect(c.drainOutput('d1')).toEqual([])
   })
 
@@ -339,6 +348,7 @@ describe('bridge core', () => {
     })
 
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'still here', nextOffset: 10, missed: 0 } })
+    await c.settled()
     expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['still here'])
   })
 })
@@ -363,6 +373,7 @@ describe('capability enforcement precedes side effects', () => {
       terminalId: 't1',
       slice: { output: 'SECRET=hunter2\r\n', nextOffset: 16, missed: 0 },
     })
+    await c.settled()
     expect(c.drainOutput(ungranted.id)).toEqual([])
   })
 
@@ -394,6 +405,7 @@ describe('capability enforcement precedes side effects', () => {
       terminalId: 't1',
       slice: { output: 'still here\r\n', nextOffset: 12, missed: 0 },
     })
+    await c.settled()
     expect(c.drainOutput(granted.id)).toHaveLength(1)
   })
 
@@ -410,6 +422,7 @@ describe('capability enforcement precedes side effects', () => {
       terminalId: 't1',
       slice: { output: 'hello\r\n', nextOffset: 7, missed: 0 },
     })
+    await c.settled()
     expect(c.drainOutput(granted.id)).toHaveLength(1)
   })
 })
@@ -560,6 +573,7 @@ describe('relay rooms', () => {
       terminalId: 't1',
       slice: { output: 'only for d2', nextOffset: 11, missed: 0 },
     })
+    await c.settled()
 
     expect(rooms[0].sent).toHaveLength(0)
     expect(rooms[1].sent[0].chunks[0].chunk).toBe('only for d2')
@@ -607,8 +621,8 @@ describe('relay rooms', () => {
 })
 
 describe('output pump', () => {
-  function subscribed(deviceId = 'd1') {
-    const h = core([device(deviceId)])
+  function subscribed(deviceId = 'd1', flattener?: FlattenerLike) {
+    const h = core([device(deviceId)], { flattener })
     attach(h.rooms[0])
     h.rooms[0].sent.length = 0
     return h
@@ -622,6 +636,7 @@ describe('output pump', () => {
       terminalId: 't1',
       slice: { output: 'compiling...', nextOffset: 12, missed: 0 },
     })
+    await h.c.settled()
 
     expect(h.rooms[0].sent).toHaveLength(1)
     expect(h.rooms[0].sent[0].chunks[0].chunk).toBe('compiling...')
@@ -644,6 +659,7 @@ describe('output pump', () => {
         terminalId: 't1',
         slice: { output: 'built in 4s', nextOffset: 11, missed: 0 },
       })
+      await h.c.settled()
       // Draining is DESTRUCTIVE, so anything short of attached must hold. `online`
       // is the subtle one: the socket is alive and `send` will not throw, but there
       // is no session behind it, so every frame handed over would be dropped
@@ -657,41 +673,156 @@ describe('output pump', () => {
     },
   )
 
-  it('sends nothing for a device that never subscribed', () => {
+  it('sends nothing for a device that never subscribed', async () => {
     const h = subscribed()
     h.c.handleHostMessage({
       kind: 'terminalOutput',
       terminalId: 't1',
       slice: { output: 'SECRET=hunter2', nextOffset: 14, missed: 0 },
     })
+    await h.c.settled()
     expect(h.rooms[0].sent).toHaveLength(0)
   })
 
-  it('splits a burst too large for one relay frame', async () => {
+  it('survives an emulator that throws, and keeps flattening afterwards', async () => {
+    // The chain is fire-and-forget: an unhandled rejection here takes the whole
+    // bridge process down and every paired phone with it. One frame is the right
+    // price -- the next write re-renders the screen from the emulator's own grid.
+    let boom = true
+    const real = new ScreenFlattener()
+    const h = subscribed('d1', {
+      feed: (id, raw) => {
+        if (boom) {
+          boom = false
+          return Promise.reject(new Error('emulator gave up'))
+        }
+        return real.feed(id, raw)
+      },
+      forget: (id) => real.forget(id),
+      forgetAll: () => real.forgetAll(),
+    })
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'lost frame', nextOffset: 10, missed: 0 },
+    })
+    await h.c.settled()
+    expect(h.rooms[0].sent).toHaveLength(0)
+
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'next frame', nextOffset: 20, missed: 0 },
+    })
+    await h.c.settled()
+    expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((x) => x.chunk)).toEqual(['next frame'])
+  })
+
+  it('keeps the emulator alive while another device is still watching', async () => {
+    // Dropping the grid on the first unsubscribe would restart the surviving
+    // phone's scrollback: the next edit would arrive anchored at offset 0 and
+    // wipe everything already on its screen.
+    const h = core([device('d1'), device('d2')])
+    attach(h.rooms[0])
+    attach(h.rooms[1])
+    h.rooms[0].sent.length = 0
+    h.rooms[1].sent.length = 0
+    for (const id of ['d1', 'd2']) {
+      await h.c.handleRemoteRequest(id, { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    }
+
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'line one', nextOffset: 8, missed: 0 },
+    })
+    await h.c.settled()
+    await h.c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
+    h.rooms[1].sent.length = 0
+
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: ' and two', nextOffset: 16, missed: 0 },
+    })
+    await h.c.settled()
+
+    // Incremental: the shared prefix is not re-sent, which is only possible if
+    // the emulator still remembers what it drew for the first write.
+    const chunks = h.rooms[1].sent.flatMap((p) => p.chunks)
+    expect(chunks.map((x) => x.chunk)).toEqual([' and two'])
+    expect(chunks[0].replaceFrom).toBe(8)
+  })
+
+  it('still reports dropped output when the surviving bytes change nothing', async () => {
+    // Main tells the bridge how much it evicted before the bridge could read it.
+    // If that count only rode along with visible text, a gap whose remaining
+    // bytes happen to redraw nothing would vanish silently -- and a silent gap
+    // reads as the agent having gone quiet, which is the one failure the user
+    // cannot detect for themselves.
     const h = subscribed()
     await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
-    // Bare ESC, not a full colour sequence: ESC costs six wire bytes and the
-    // bracket-and-digits cost one each, so '\u001b[31m' averages two bytes per
-    // character and never reaches the cap within the fan-out's 262144-character
-    // queue. The density that overflows is escapes with little text between
-    // them, which is what a progress bar or a spinner actually emits.
-    const burst = '\u001b'.repeat(200_000)
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'ESCAPE'.replace(/[A-Z]+/, () => '\u001b'), nextOffset: 4_096, missed: 4_095 },
+    })
+    await h.c.settled()
+
+    const chunks = h.rooms[0].sent.flatMap((p) => p.chunks)
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].chunk).toBe('')
+    expect(chunks[0].replaceFrom).toBeNull()
+    expect(chunks[0].marker).toContain('skipped')
+  })
+
+  it('consumes an escape-dense burst instead of forwarding it', async () => {
+    const h = subscribed()
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    // Bare ESC, one after another: each starts a sequence the next one aborts, so
+    // the screen never changes. This used to be the shape that overflowed a relay
+    // frame -- ESC costs six wire bytes JSON-encoded, so 200k of them made 1.2 MB
+    // of payload out of nothing the user could see. The emulator eats it now.
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: '\u001b'.repeat(200_000), nextOffset: 200_000, missed: 0 },
+    })
+    await h.c.settled()
+
+    expect(h.rooms[0].sent).toHaveLength(0)
+  })
+
+  it('keeps a burst larger than the fan-out queue inside one relay frame', async () => {
+    const h = subscribed()
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    // 300k characters of ordinary output -- more than the fan-out's 262144-char
+    // queue holds, so this exercises eviction and the gap notice as well.
+    //
+    // It cannot split across frames, and that is now a property rather than an
+    // accident: the queue caps what one drain can carry at 262144 characters, and
+    // the densest thing the flattener emits is a `\u001b[0m` run every four
+    // characters, which JSON-encodes to well under the 1 MiB frame limit. The
+    // split path is still wired in and still tested -- see remoteOutputChunker.
+    const burst = Array.from({ length: 3_000 }, (_, i) => `line ${i} `.padEnd(100, '.')).join('\r\n')
     h.c.handleHostMessage({
       kind: 'terminalOutput',
       terminalId: 't1',
       slice: { output: burst, nextOffset: burst.length, missed: 0 },
     })
+    await h.c.settled()
 
-    // An oversized frame is not truncated by the relay -- the connection is cut.
-    // Escape-dense output is exactly what a build produces, so this is the
-    // ordinary case rather than an adversarial one.
-    expect(h.rooms[0].sent.length).toBeGreaterThan(1)
-    for (const payload of h.rooms[0].sent) {
-      expect(new TextEncoder().encode(JSON.stringify(payload)).length).toBeLessThanOrEqual(
-        MAX_PAYLOAD_BYTES,
-      )
-    }
-    expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((c) => c.chunk).join('')).toBe(burst)
+    expect(h.rooms[0].sent).toHaveLength(1)
+    const chunks = h.rooms[0].sent[0].chunks
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].chunk.length).toBeLessThanOrEqual(262_144)
+    // The tail of the burst is what the user is looking at, so that is the end
+    // that has to survive eviction.
+    expect(chunks[0].chunk.endsWith('.')).toBe(true)
+    expect(chunks[0].chunk).toContain('line 2999')
+    expect(chunks[0].marker).toContain('skipped')
   })
 })
 
@@ -832,9 +963,9 @@ describe('pairing over the relay', () => {
   }
 
   /** Paint a QR, then hand back everything a phone would hold after scanning it. */
-  function begin() {
+  function begin(capabilities?: Capabilities) {
     const ctx = core()
-    ctx.c.handleHostMessage({ kind: 'beginPairing', label: 'desk' })
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: 'desk', capabilities })
     const qr = scan(ctx.sent)
     const phone = generateIdentity()
     const hello = (oneTimeSecret = qr.oneTimeSecret, label = 'Pixel') =>
@@ -922,6 +1053,67 @@ describe('pairing over the relay', () => {
       }),
     )
     expect(message(ctx.sent, 'paired')?.device.label).toBe('Phone')
+  })
+
+  it('pairs the phone with the grant the user ticked before the QR', () => {
+    // The bug this closes: pairing always created a device with NOTHING granted,
+    // so the phone attached, asked for the terminal list and was refused --
+    // which on the phone reads as "this desktop lacks read capability" and an
+    // empty list, not as a switch nobody turned on.
+    const granted: Capabilities = {
+      ...NO_CAPABILITIES,
+      read: true,
+      createTerminal: true,
+    }
+    const { sent, room, hello } = begin(granted)
+    feed(room, hello())
+    expect(message(sent, 'paired')?.device.capabilities).toEqual(granted)
+  })
+
+  it('grants nothing when the offer carried no choice at all', () => {
+    // Absent is not "grant everything": a desktop build that predates the choice,
+    // or a message that lost the field, must land on the closed default.
+    const { sent, room, hello } = begin()
+    feed(room, hello())
+    expect(message(sent, 'paired')?.device.capabilities).toEqual(NO_CAPABILITIES)
+  })
+
+  it('fills in the flags a partial grant left out', () => {
+    // `beginPairing` crosses a process boundary, so the object is whatever the
+    // sender built. Every missing flag has to resolve to false rather than
+    // undefined, which the policy check would read as "not granted" only by luck.
+    const { sent, room, hello } = begin({ writeToTerminal: true } as Capabilities)
+    feed(room, hello())
+    expect(message(sent, 'paired')?.device.capabilities).toEqual({
+      ...NO_CAPABILITIES,
+      writeToTerminal: true,
+    })
+  })
+
+  it('does not carry a grant from one pairing into the next offer', () => {
+    // Consent is per pairing. A grant left standing would silently apply to the
+    // next phone the user pairs, which is the opposite of asking first.
+    const ctx = core()
+    ctx.c.handleHostMessage({
+      kind: 'beginPairing',
+      label: 'first',
+      capabilities: { read: true, createTerminal: true, writeToTerminal: true, closeTerminal: true },
+    })
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: 'second' })
+    const qr = scan(ctx.sent.filter((m) => m.kind === 'pairingCode').slice(-1))
+    const phone = generateIdentity()
+    feed(
+      ctx.rooms[ctx.rooms.length - 1],
+      sealPairingHello({
+        deviceSecretKey: phone.secretKey,
+        devicePublicKey: phone.publicKey,
+        desktopPublicKey: qr.desktopPublicKey,
+        pairingId: qr.pairingId,
+        label: 'Pixel',
+        oneTimeSecret: qr.oneTimeSecret,
+      }),
+    )
+    expect(message(ctx.sent, 'paired')?.device.capabilities).toEqual(NO_CAPABILITIES)
   })
 
   it('opens the room the QR names, in pairing mode', () => {

@@ -44,6 +44,15 @@ interface RemoteState {
    *  control the desktop will refuse is worse than one that offers nothing. */
   capabilities: Capabilities
   output: Record<string, string>
+  /** Per terminal, the desktop-stream offset that `output` currently ends at.
+   *
+   *  The desktop numbers its edits against the whole stream it has produced,
+   *  and this phone's copy is not that stream: its head is trimmed at
+   *  MAX_OUTPUT_CHARS and gap notices are spliced in where output was lost. One
+   *  number is enough to translate between the two, because both only ever grow
+   *  at the end -- and being an END anchor is why trimming the head leaves it
+   *  alone. */
+  outputEnd: Record<string, number>
   agentStatus: Record<string, StatusUpdate>
   /** True whenever what is on screen is not being kept current. */
   stale: boolean
@@ -115,15 +124,38 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     live.onOutput((chunks) => {
       set((prev) => {
         const output = { ...prev.output }
+        const outputEnd = { ...prev.outputEnd }
         for (const c of chunks) {
+          const held = output[c.terminalId] ?? ''
+          const heldEnd = outputEnd[c.terminalId] ?? 0
           // The marker rides on the FIRST piece of a split chunk only, so
           // appending it whenever it is present renders the gap exactly once.
           const gap = c.missed > 0 && c.marker !== null ? c.marker : ''
-          const joined = (output[c.terminalId] ?? '') + gap + c.chunk
+
+          // A numeric `replaceFrom` means the desktop redrew rather than added:
+          // the status line that ticks in place, which appending would stack up
+          // sixty deep. Translate its stream offset into this copy, where the
+          // same position sits `heldEnd - replaceFrom` chars back from the end.
+          // Clamped low because the redraw may reach into a head this phone has
+          // already trimmed, and high because a phone that subscribed late is
+          // holding nothing the offset can point into; both degrade to an
+          // append, which is what this did before the field existed.
+          const keep =
+            c.replaceFrom === null
+              ? held.length
+              : Math.min(held.length, Math.max(0, held.length - (heldEnd - c.replaceFrom)))
+
+          const joined = held.slice(0, keep) + gap + c.chunk
           output[c.terminalId] =
             joined.length > MAX_OUTPUT_CHARS ? joined.slice(joined.length - MAX_OUTPUT_CHARS) : joined
+          // Absolute when the desktop gave an anchor, so a wrong guess corrects
+          // itself on the next redraw instead of drifting for the session.
+          outputEnd[c.terminalId] =
+            c.replaceFrom === null
+              ? heldEnd + c.missed + c.chunk.length
+              : c.replaceFrom + c.chunk.length
         }
-        return { output }
+        return { output, outputEnd }
       })
     })
 
@@ -136,7 +168,24 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     // rather than at whatever moment the user next taps the control and reads a
     // refusal.
     live.onCapabilities((caps) => {
+      // A grant is retroactive, and only `read` gates content this store has
+      // already fetched. The desktop refuses `listTerminals` without it, so a
+      // phone that connected before the grant is holding an empty list AND the
+      // refusal that produced it. Setting the flag alone leaves both on screen
+      // until something unrelated happens to refresh -- which is exactly the
+      // "I gave it read and it still says there are no terminals" report.
+      // createTerminal and writeToTerminal need no equivalent: they gate
+      // controls that read the flag live, so they correct themselves.
+      const gainedRead = caps.read && !get().capabilities.read
       set({ capabilities: caps })
+      if (!gainedRead) return
+      // Clear the refusal before retrying rather than after: if the retry fails
+      // for some other reason, `ask` writes that reason and the user sees the
+      // real one instead of the stale capability message.
+      set({ error: null })
+      void get().refreshTerminals().catch(() => {
+        // `ask` has already put the reason in the banner.
+      })
     })
 
     socket = new RelaySocket({
@@ -219,6 +268,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     // has not been given would offer a control that errors on first use.
     capabilities: { ...NO_CAPABILITIES },
     output: {},
+    outputEnd: {},
     agentStatus: {},
     // Nothing on screen has been confirmed against a live desktop yet, which is
     // exactly what stale means.
@@ -295,6 +345,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
         terminals: [],
         capabilities: { ...NO_CAPABILITIES },
         output: {},
+        outputEnd: {},
         agentStatus: {},
         error: null,
       })
@@ -335,8 +386,14 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       await ask({ kind: 'closeTerminal', terminalId })
       set((prev) => {
         const output = { ...prev.output }
+        const outputEnd = { ...prev.outputEnd }
         delete output[terminalId]
-        return { terminals: prev.terminals.filter((t) => t.id !== terminalId), output }
+        delete outputEnd[terminalId]
+        return {
+          terminals: prev.terminals.filter((t) => t.id !== terminalId),
+          output,
+          outputEnd,
+        }
       })
     },
   }
@@ -367,6 +424,7 @@ export function teardownRemote(): void {
     // some earlier desktop allowed.
     capabilities: { ...NO_CAPABILITIES },
     output: {},
+    outputEnd: {},
     agentStatus: {},
     stale: true,
     error: null,

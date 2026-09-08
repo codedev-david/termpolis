@@ -1,6 +1,7 @@
 import { DeviceRegistry } from './deviceRegistry'
 import { RequestDispatcher } from './dispatcher'
 import { OutputFanout, type DrainedChunk } from './outputFanout'
+import { ScreenFlattener } from './screenFlattener'
 import { LocalMcpClient } from './mcpClient'
 import {
   createPairingOffer,
@@ -16,6 +17,7 @@ import {
   DEFAULT_RELAY_URL,
   DEVICE_EXPIRY_SWEEP_MS,
   DEVICE_IDLE_EXPIRY_MS,
+  NO_CAPABILITIES,
   SEEN_ANNOUNCE_INTERVAL_MS,
 } from './protocol'
 import { sanitizeDeviceLabel } from './deviceLabel'
@@ -23,6 +25,7 @@ import { x25519 } from '@noble/curves/ed25519.js'
 import type { AgentStatus } from '../../shared/agentStatusDetector'
 import type {
   BridgeToHost,
+  Capabilities,
   HostToBridge,
   PairedDevice,
   RemoteEnvelope,
@@ -68,7 +71,14 @@ export interface BridgeCoreDeps {
   relayUrl: string
   /** Injected in tests; production dials the real relay. */
   openRelay?(deps: RelayClientDeps): RelayLike
+  /** Injected in tests; production emulates with xterm. */
+  flattener?: FlattenerLike
 }
+
+/** The part of ScreenFlattener this file uses. Named so a test can stand in for
+ *  a real emulator -- there is no input that makes xterm throw on demand, and the
+ *  handler's promise chain has to survive one that does. */
+export type FlattenerLike = Pick<ScreenFlattener, 'feed' | 'forget' | 'forgetAll'>
 
 export interface BridgeCore {
   handleHostMessage(msg: HostToBridge): void
@@ -77,10 +87,20 @@ export interface BridgeCore {
     oneTimeSecret: string
     devicePublicKey: string
     label: string
+    capabilities?: Capabilities
     now?: number
   }): { device: PairedDevice; verificationPhrase: string }
   /** Pull everything queued for one device. Destructive -- see the implementation. */
   drainOutput(deviceId: string): DrainedChunk[]
+  /** Resolves once every terminal chunk handed over so far has been flattened and
+   *  fanned out.
+   *
+   *  `handleHostMessage` stays synchronous because the host's port has no use for
+   *  a promise, but flattening is not: a chunk is queued behind the emulator write
+   *  that produced it. Anything that needs to observe the fan-out after feeding
+   *  output -- shutdown, and every test that drains -- has to wait for that, and
+   *  the only alternative is polling a queue that may legitimately stay empty. */
+  settled(): Promise<void>
 }
 
 export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
@@ -92,12 +112,31 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  rather than on the offer because the offer is minted before the device
    *  exists, and it is the device row this name ends up on. */
   let requestedLabel = ''
+  /** What the user granted before showing the QR, held for the one pairing it
+   *  belongs to.
+   *
+   *  A phone paired with nothing granted looks broken from the phone's side: it
+   *  attaches, asks for the terminal list, and is refused -- which reads as "this
+   *  app cannot see my terminals" rather than "you have not said it may". The
+   *  grant travels with the offer so the device is never in that state at all,
+   *  instead of being granted a moment later by a follow-up the phone may already
+   *  have raced. Reset with every offer: a grant chosen for one pairing is not
+   *  consent for the next one. */
+  let requestedCapabilities: Capabilities = { ...NO_CAPABILITIES }
   /** Per device, the `lastSeenAt` main was last told about. Throttles the
    *  announcement; see `noteSeen`. */
   const announcedSeenAt = new Map<string, number>()
   let expirySweep: ReturnType<typeof setInterval> | null = null
   let identitySecretKey = ''
   const fanout = new OutputFanout()
+  /** Keeps a real terminal grid per watched terminal so the phone does not have
+   *  to. See screenFlattener.ts for why the phone cannot. */
+  const flattener: FlattenerLike = deps.flattener ?? new ScreenFlattener()
+  /** Serialises flattening. Terminal bytes only mean anything in order, and
+   *  xterm's write completes asynchronously, so overlapping two writes to one
+   *  grid would interleave them. One chain is enough: it preserves order within
+   *  every terminal, which is the only order that matters. */
+  let flattening: Promise<void> = Promise.resolve()
   /** The last status main reported for each watched terminal.
    *
    *  Kept because a status frame is a fact about the present, not an entry in a
@@ -190,6 +229,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // choice entirely. Unsanitised, a paired phone could park an escape
         // sequence or a few kilobytes of text in the desktop's settings file.
         label: requestedLabel || sanitizeDeviceLabel(hello.label) || 'Phone',
+        capabilities: requestedCapabilities,
       })
     } catch (err) {
       // This one IS worth surfacing: the frame opened, so the sender had the QR's
@@ -415,6 +455,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // What the user typed in Settings. It is already sanitised on the way in,
         // but this process does not get to assume that about anything it is sent.
         requestedLabel = sanitizeDeviceLabel(msg.label)
+        requestedCapabilities = { ...NO_CAPABILITIES, ...msg.capabilities }
         const offer = createPairingOffer({ relayUrl: deps.relayUrl, desktopPublicKey: publicKey })
         pairing = new PairingSession(offer, publicKey, identitySecretKey)
         openPairingRoom(offer)
@@ -468,10 +509,35 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         announceDevices()
         announceSubscriptions()
         return
-      case 'terminalOutput':
-        fanout.ingest(msg.terminalId, msg.slice)
-        for (const deviceId of rooms.keys()) pump(deviceId)
+      case 'terminalOutput': {
+        // Flatten before fanning out. What arrives here is raw terminal bytes,
+        // including the cursor motion a TUI agent redraws itself with; what the
+        // phone can render is text and colour. Emulating once, here, is what
+        // stops a status line that ticks in place from reaching the phone as a
+        // thousand separate lines of "Compacting conversation...".
+        //
+        // Serialised through one chain because xterm's write is asynchronous and
+        // a terminal's bytes only mean anything in the order they were written.
+        const { terminalId, slice } = msg
+        flattening = flattening
+          .then(async () => {
+            const edit = await flattener.feed(terminalId, slice.output)
+            if (edit === null && slice.missed === 0) return
+            fanout.ingest(terminalId, {
+              output: edit?.text ?? '',
+              nextOffset: slice.nextOffset,
+              missed: slice.missed,
+              replaceFrom: edit?.replaceFrom ?? null,
+            })
+            for (const deviceId of rooms.keys()) pump(deviceId)
+          })
+          .catch(() => {
+            // A terminal whose emulator threw must not take the bridge with it.
+            // The next write re-renders the whole screen anyway, so the failure
+            // costs at most one frame.
+          })
         return
+      }
       case 'terminalStatus': {
         lastStatus.set(msg.terminalId, { status: msg.status, summary: msg.summary })
         const watched = new Set(fanout.subscribedTerminals())
@@ -493,6 +559,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // Leaving it pumping into a bridge that is going away is the cost this
         // whole mechanism exists to avoid.
         fanout.dropAll()
+        flattener.forgetAll()
         announceSubscriptions()
         return
     }
@@ -529,7 +596,15 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // would otherwise open with a blank label and keep it.
         sendStatus(deviceId, env.request.terminalId)
       }
-      if (env.request.kind === 'unsubscribe') fanout.unsubscribe(deviceId, env.request.terminalId)
+      if (env.request.kind === 'unsubscribe') {
+        fanout.unsubscribe(deviceId, env.request.terminalId)
+        // Only once the last watcher is gone: an emulator kept for a terminal
+        // nobody reads is a grid maintained for no one, but dropping one that
+        // another phone is still watching would restart its scrollback.
+        if (fanout.subscribersOf(env.request.terminalId).length === 0) {
+          flattener.forget(env.request.terminalId)
+        }
+      }
       // After the fan-out, never before: the announcement has to follow what the
       // fan-out actually holds, or main starts pumping a terminal for a device
       // that was refused. `announceSubscriptions` is a no-op when nothing moved.
@@ -555,6 +630,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     oneTimeSecret: string
     devicePublicKey: string
     label: string
+    capabilities?: Capabilities
     now?: number
   }): { device: PairedDevice; verificationPhrase: string } {
     if (!pairing) throw new Error('no pairing offer is open')
@@ -584,7 +660,13 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     return fanout.drain(deviceId)
   }
 
-  return { handleHostMessage, handleRemoteRequest, acceptPairing, drainOutput }
+  return {
+    handleHostMessage,
+    handleRemoteRequest,
+    acceptPairing,
+    drainOutput,
+    settled: () => flattening,
+  }
 }
 
 // ── Child-process bootstrap ──────────────────────────────────────────────────

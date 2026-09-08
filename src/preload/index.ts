@@ -471,7 +471,8 @@ contextBridge.exposeInMainWorld('remote', {
   status: () => ipcRenderer.invoke('remote:status'),
   setEnabled: (enabled: boolean) => ipcRenderer.invoke('remote:set-enabled', { enabled }),
   setRelayUrl: (relayUrl: string) => ipcRenderer.invoke('remote:set-relay-url', { relayUrl }),
-  beginPairing: (label: string) => ipcRenderer.invoke('remote:begin-pairing', { label }),
+  beginPairing: (label: string, capabilities?: RemoteCapabilities) =>
+    ipcRenderer.invoke('remote:begin-pairing', { label, capabilities }),
   cancelPairing: () => ipcRenderer.invoke('remote:cancel-pairing'),
   revokeDevice: (deviceId: string) => ipcRenderer.invoke('remote:revoke-device', { deviceId }),
   setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) =>

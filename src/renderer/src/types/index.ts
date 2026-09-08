@@ -854,7 +854,13 @@ export interface RemoteAPI {
   status: () => Promise<IpcResponse<RemoteStatusView>>
   setEnabled: (enabled: boolean) => Promise<IpcResponse<RemoteStatusView>>
   setRelayUrl: (relayUrl: string) => Promise<IpcResponse<RemoteStatusView>>
-  beginPairing: (label: string) => Promise<IpcResponse<RemoteStatusView>>
+  /** `capabilities` is what the device is granted the moment it pairs. Omitted
+   *  means nothing is granted -- the phone then attaches and is refused, which
+   *  is what it looked like before the Settings pane let the user choose. */
+  beginPairing: (
+    label: string,
+    capabilities?: RemoteCapabilities,
+  ) => Promise<IpcResponse<RemoteStatusView>>
   cancelPairing: () => Promise<IpcResponse<RemoteStatusView>>
   revokeDevice: (deviceId: string) => Promise<IpcResponse<RemoteStatusView>>
   setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) => Promise<IpcResponse<RemoteStatusView>>

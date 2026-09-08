@@ -39,6 +39,31 @@ describe('pairing', () => {
     expect(device.capabilities).toEqual(NO_CAPABILITIES)
   })
 
+  it('creates the device with the grant the user chose before the QR', () => {
+    // Pairing used to hard-code NO_CAPABILITIES, so every phone arrived able to
+    // do nothing and had to be granted a second time. The grant belongs to the
+    // offer the user was looking at when they made it.
+    const o = offer()
+    const granted = { ...NO_CAPABILITIES, read: true, writeToTerminal: true }
+    const { device } = session(o).accept({
+      oneTimeSecret: o.oneTimeSecret, devicePublicKey: phone.publicKey, label: 'Pixel',
+      capabilities: granted, now: 1_500,
+    })
+    expect(device.capabilities).toEqual(granted)
+  })
+
+  it('closes every flag a partial grant left out', () => {
+    // The grant crosses a process boundary, so a missing flag must read as false
+    // rather than undefined -- which a policy check would treat as denied only
+    // by accident.
+    const o = offer()
+    const { device } = session(o).accept({
+      oneTimeSecret: o.oneTimeSecret, devicePublicKey: phone.publicKey, label: 'Pixel',
+      capabilities: { createTerminal: true } as never, now: 1_500,
+    })
+    expect(device.capabilities).toEqual({ ...NO_CAPABILITIES, createTerminal: true })
+  })
+
   it('returns a verification phrase both ends can compare', () => {
     const o = offer()
     const s = session(o)
