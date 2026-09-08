@@ -187,9 +187,22 @@ A review can start days after submission and take a week. These are the things
 that break silently in that window.
 
 - **The relay must be deployed and reachable.** No relay, no pairing, and the
-  reviewer sees an app that cannot connect. This is currently a blocker: the
-  relay in `relay/` has not been deployed, and the hostname the desktop points
-  at by default has to resolve before either store can review anything.
+  reviewer sees an app that cannot connect. **Done as of 2026-09-08**:
+  `wss://relay.termpolis.com` (`DEFAULT_RELAY_URL`, same constant in both
+  trees) is live on Cloudflare and redeployed by the "Deploy relay" workflow on
+  every push that touches `relay/`. Check it the cheap way -- a plain GET must
+  answer **426 Upgrade Required**, which is a WebSocket endpoint saying it is
+  healthy and you did not offer to upgrade:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}
+'     'https://relay.termpolis.com/v1/pair/00000000000000000000000000000001?role=desktop'
+  ```
+
+  A 000/timeout means it is down and a review would fail; anything else means
+  look at the worker. Note this is one of the few termpolis.com hostnames that
+  answers a local curl at all -- it is on Cloudflare, not the GoDaddy shared IP
+  that David's ISP drops (see [[reference_att_blocks_site_ip]]).
 - **The download link must serve a current, notarized build.**
   `releases/latest` is a redirect, so it stays correct on its own -- but the
   build behind it must be one that opens on a clean Mac without a Gatekeeper
@@ -200,11 +213,14 @@ that break silently in that window.
 
 ## Before you submit
 
-- [ ] Record the video and replace `<VIDEO URL>`
-- [x] Contact email decided: `support@termpolis.com` -- confirm it delivers
-- [ ] Choose the public support address and replace `<SUPPORT EMAIL>` (see the
-      open question in `listing.md` -- the same address goes in `privacy.html`)
-- [ ] Deploy the relay and confirm a real phone can pair over it
+- [ ] Record the video and replace `<VIDEO URL>` -- the ONLY placeholder left
+      in this file
+- [x] Contact email decided and placed: `support@termpolis.com` is in
+      `listing.md` and published in `privacy.html` (2026-09-08). Still to do:
+      **send a test message to it and confirm it arrives**. Apple mails this
+      address, and a listing whose contact bounces is a rejection.
+- [x] Deploy the relay (see above)
+- [ ] Confirm a real phone pairs over the deployed relay end to end
 - [ ] Walk the seven steps yourself, on a Mac you have not used for this
       before, from the released `.dmg`. If any step needs knowledge the notes
       do not contain, the notes are wrong, not the reviewer.
