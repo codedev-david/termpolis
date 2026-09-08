@@ -110,7 +110,8 @@ For the free-text and for anyone re-deriving these answers later:
 
 > Termpolis Remote is a viewer and keyboard for a Termpolis desktop app the
 > user already runs. It has no account and no backend of ours. It stores an
-> encryption key and a pairing record in the Android Keystore, on the device.
+> encryption key and a pairing record per paired desktop in the Android
+> Keystore, on the device.
 > Terminal output travels end-to-end encrypted between the desktop and the
 > phone; the relay that carries it holds only the ciphertext and cannot decrypt
 > it. Nothing is written to disk beyond the key and the pairing, and nothing is

@@ -13,6 +13,15 @@ const PAIRED: PairedDesktop = {
   pairedAt: 1_700_000_000_000,
 }
 
+const PAIRED_B: PairedDesktop = {
+  desktopPublicKey: 'b1'.repeat(32),
+  sessionRoomId: 'a1'.repeat(16),
+  relayUrl: 'wss://relay-b.test',
+  deviceId: 'b0'.repeat(8),
+  label: 'Workshop Linux box',
+  pairedAt: 1_700_000_100_000,
+}
+
 /** expo-camera reduced to the two things the screen touches. */
 const mockCamera: {
   permission: { granted: boolean; canAskAgain: boolean; status: string } | null
@@ -40,6 +49,7 @@ jest.mock('../src/state/remoteStore', () => {
   return {
     useRemoteStore: create(() => ({
       paired: null,
+      pairings: [],
       safetyPhrase: null,
       error: null,
       pairFromQr: jest.fn(async () => undefined),
@@ -55,6 +65,15 @@ function pairFn(): jest.Mock {
   return useRemoteStore.getState().pairFromQr as unknown as jest.Mock
 }
 
+/** A pairing attempt that succeeds: the store ends up holding these desktops.
+ *  What the screen watches is the newest `pairedAt`, because that is the only
+ *  signal that survives re-pairing a desktop already on the list. */
+function pairsInto(...pairings: PairedDesktop[]): void {
+  pairFn().mockImplementation(async () => {
+    useRemoteStore.setState({ pairings, paired: pairings[pairings.length - 1] ?? null })
+  })
+}
+
 /** Every 64-hex run the rendered tree contains. The desktop public key is the
  *  only one that may legitimately appear; anything else is a leaked secret. */
 function hexRunsInTree(): string[] {
@@ -67,7 +86,7 @@ beforeEach(() => {
   const fn = pairFn()
   fn.mockReset()
   fn.mockResolvedValue(undefined)
-  useRemoteStore.setState({ paired: null, error: null })
+  useRemoteStore.setState({ paired: null, pairings: [], error: null })
 })
 
 describe('PairScreen — permission not yet granted', () => {
@@ -173,11 +192,48 @@ describe('PairScreen — scanning', () => {
     expect(pairFn()).toHaveBeenCalledTimes(1)
   })
 
-  it('ignores a scan once a desktop is already paired', async () => {
-    useRemoteStore.setState({ paired: PAIRED })
+  it('scans for a phone that is already paired with something else', async () => {
+    // This screen is reached from the switcher as well as from the empty state.
+    // Refusing here is how a phone ends up able to hold exactly one desktop.
+    useRemoteStore.setState({ paired: PAIRED, pairings: [PAIRED] })
     await render(<PairScreen />)
     await fireEvent(screen.getByTestId('camera-view'), 'barcodeScanned', { data: '{"v":1}' })
-    expect(pairFn()).not.toHaveBeenCalled()
+    expect(pairFn()).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops scanning once a code has actually been spent', async () => {
+    // The camera keeps firing while the code is held in frame. Without this the
+    // frame after a success re-submits a code the desktop has already burned,
+    // and the user watches their own success turn into an error banner.
+    pairsInto(PAIRED)
+    await render(<PairScreen />)
+    const view = screen.getByTestId('camera-view')
+    await fireEvent(view, 'barcodeScanned', { data: '{"v":1}' })
+    await fireEvent(view, 'barcodeScanned', { data: '{"v":1}' })
+    expect(pairFn()).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops scanning after re-pairing a desktop it already knew', async () => {
+    // The list is the same length before and after, so a count would read this
+    // as a failure and go on scanning a spent code.
+    useRemoteStore.setState({ paired: PAIRED, pairings: [PAIRED] })
+    pairsInto({ ...PAIRED, pairedAt: PAIRED.pairedAt + 60_000 })
+    await render(<PairScreen />)
+    const view = screen.getByTestId('camera-view')
+    await fireEvent(view, 'barcodeScanned', { data: '{"v":1}' })
+    await fireEvent(view, 'barcodeScanned', { data: '{"v":1}' })
+    expect(pairFn()).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps scanning when the attempt failed', async () => {
+    // `pairFromQr` reports failure through the banner rather than by rejecting,
+    // so a screen that locked itself on the first attempt would need to be
+    // backed out of and re-entered to try a code that timed out.
+    await render(<PairScreen />)
+    const view = screen.getByTestId('camera-view')
+    await fireEvent(view, 'barcodeScanned', { data: '{"v":1}' })
+    await fireEvent(view, 'barcodeScanned', { data: '{"v":1}' })
+    expect(pairFn()).toHaveBeenCalledTimes(2)
   })
 
   it('ignores a scan carrying no data', async () => {
@@ -202,9 +258,24 @@ describe('PairScreen — reporting and secrecy', () => {
 
   it('renders no key material once paired either', async () => {
     mockCamera.permission = { granted: true, canAskAgain: false, status: 'granted' }
-    useRemoteStore.setState({ paired: PAIRED })
+    useRemoteStore.setState({ paired: PAIRED, pairings: [PAIRED] })
     await render(<PairScreen />)
     expect(hexRunsInTree().filter((hex) => hex !== DESKTOP_PK)).toEqual([])
+  })
+})
+
+describe('PairScreen — which pairing this is', () => {
+  it('greets a phone that has never paired', async () => {
+    await render(<PairScreen />)
+    expect(screen.getByText('Pair with your desktop')).toBeTruthy()
+  })
+
+  it('says it is adding another when the phone already has one', async () => {
+    // Reached from the switcher, "Pair with your desktop" reads as though the
+    // desktop already paired is about to be replaced.
+    useRemoteStore.setState({ paired: PAIRED, pairings: [PAIRED, PAIRED_B] })
+    await render(<PairScreen />)
+    expect(screen.getByText('Pair another desktop')).toBeTruthy()
   })
 })
 

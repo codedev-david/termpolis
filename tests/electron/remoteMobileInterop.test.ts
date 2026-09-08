@@ -24,8 +24,17 @@ import {
 // retyped copy is compared against the original rather than against a re-export.
 import type { AgentStatus as DesktopAgentStatus } from '../../src/shared/agentStatusDetector'
 
+import {
+  sanitizeDeviceLabel as desktopSanitizeLabel,
+  MAX_DEVICE_LABEL as DESKTOP_MAX_LABEL,
+} from '../../src/main/remoteBridge/deviceLabel'
+
 // The phone, from a tree that shares no code with the above.
 import * as phonePairing from '../../mobile/src/wire/pairing'
+import {
+  sanitizeDeviceLabel as phoneSanitizeLabel,
+  MAX_DEVICE_LABEL as PHONE_MAX_LABEL,
+} from '../../mobile/src/wire/deviceLabel'
 import { parseQrPayload } from '../../mobile/src/wire/qr'
 import { deriveVerificationPhrase as phonePhrase } from '../../mobile/src/wire/safetyNumber'
 import {
@@ -144,7 +153,49 @@ describe('stage 2: the ack', () => {
         desktopPublicKey: DESKTOP_PK,
         pairingId: offer.pairingId,
       }),
-    ).toEqual({ deviceId })
+    ).toEqual({ deviceId, desktopName: null })
+  })
+
+  it('carries the desktop name across the two implementations', () => {
+    const { offer, deviceId } = pair()
+    const ack = desktopPairing.sealPairingAck({
+      desktopSecretKey: DESKTOP_SK,
+      devicePublicKey: PHONE_PK,
+      pairingId: offer.pairingId,
+      deviceId,
+      name: 'Workshop Linux box',
+    })
+    expect(
+      phonePairing.openPairingAck({
+        frame: ack,
+        deviceSecretKey: PHONE_SK,
+        desktopPublicKey: DESKTOP_PK,
+        pairingId: offer.pairingId,
+      }),
+    ).toEqual({ deviceId, desktopName: 'Workshop Linux box' })
+  })
+
+  it('reads a 1.39 desktop ack, which has no name in it at all', () => {
+    // The whole reason the field is optional instead of a version bump. The
+    // frame below is what a desktop that has never heard of desktop names
+    // produces: `v` and `deviceId`, nothing else. A phone that refused it, or
+    // that showed a blank row for it, would have stranded every desktop that
+    // had not updated yet.
+    const { offer, deviceId } = pair()
+    const ack = desktopPairing.sealPairingAck({
+      desktopSecretKey: DESKTOP_SK,
+      devicePublicKey: PHONE_PK,
+      pairingId: offer.pairingId,
+      deviceId,
+    })
+    expect(
+      phonePairing.openPairingAck({
+        frame: ack,
+        deviceSecretKey: PHONE_SK,
+        desktopPublicKey: DESKTOP_PK,
+        pairingId: offer.pairingId,
+      })?.desktopName,
+    ).toBeNull()
   })
 
   it('the phone refuses an ack from a different pairing', () => {
@@ -164,6 +215,59 @@ describe('stage 2: the ack', () => {
         pairingId: offer.pairingId,
       }),
     ).toBeNull()
+  })
+})
+
+/**
+ * The two sanitisers are separate files in separate trees, and the phone's is a
+ * deliberate mirror of the desktop's. A mirror that has drifted is worse than no
+ * mirror: the desktop would seal a name it considers clean and the phone would
+ * clean it again into something else, so the row in the switcher would not match
+ * the machine's own idea of what it is called.
+ */
+describe('stage 2b: device labels, both implementations', () => {
+  const CASES: string[] = [
+    'Workshop Linux box',
+    '  padded  ',
+    '',
+    ' ',
+    'n'.repeat(200),
+    // Everything the filter exists for: a bell, a newline, a carriage return, a
+    // DEL. Built from code points so this file carries no control character of
+    // its own for an editor or a patch to mangle.
+    `bell${String.fromCharCode(7)}and${String.fromCharCode(10)}line`,
+    `car${String.fromCharCode(13)}riage`,
+    `del${String.fromCharCode(127)}ete`,
+    // A tab, which is a control character and so goes, rather than being turned
+    // into a space by one side and kept by the other.
+    `tab${String.fromCharCode(9)}bed`,
+    // Astral plane: the two implementations iterate differently (spread vs
+    // filter), so a surrogate pair is the case where a drift would show.
+    'desk 🖥 top',
+    // A name that is exactly the limit, and one that is one over it.
+    'x'.repeat(64),
+    'x'.repeat(65),
+  ]
+
+  it('agrees on the limit', () => {
+    expect(PHONE_MAX_LABEL).toBe(DESKTOP_MAX_LABEL)
+    expect(PHONE_MAX_LABEL).toBe(64)
+  })
+
+  it('agrees on every label', () => {
+    for (const raw of CASES) {
+      expect(phoneSanitizeLabel(raw)).toBe(desktopSanitizeLabel(raw))
+    }
+  })
+
+  it('agrees on what is not a string at all', () => {
+    // Both are handed values off a parsed JSON payload, so both have to answer
+    // for a number, a null and an absent field rather than throw inside a
+    // pairing.
+    for (const raw of [undefined, null, 42, {}, []]) {
+      expect(phoneSanitizeLabel(raw)).toBe(desktopSanitizeLabel(raw))
+      expect(phoneSanitizeLabel(raw)).toBe('')
+    }
   })
 })
 

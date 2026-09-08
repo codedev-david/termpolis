@@ -11,9 +11,11 @@ import type { SocketLike } from './relaySocket'
  *  to their desk. */
 export const PAIRING_TIMEOUT_MS = 60_000
 
-/** The QR carries no name for the desktop -- there is nowhere on the wire to put
- *  one -- and the phone pairs with exactly one machine, so the stored label is
- *  decoration until Settings offers a rename. */
+/** Used when the desktop announces no name of its own, which means it is running
+ *  1.39 or older: the name rides in the sealed ack, and that field did not exist
+ *  before 1.40. Deliberately generic, because the user can rename it, and a wrong
+ *  guess sitting in a list of real hostnames reads worse than an obvious
+ *  placeholder. */
 export const DEFAULT_DESKTOP_LABEL = 'Termpolis desktop'
 
 const ROOM_ID_RE = /^[0-9a-f]{32}$/
@@ -150,7 +152,10 @@ export function pairWithDesktop(opts: {
           // The desktop's id for this phone, not one computed here: it is the
           // handle the user revokes by, and it must match what they see.
           deviceId: ack.deviceId,
-          label: DEFAULT_DESKTOP_LABEL,
+          // The desktop's own name for itself where it sent one. This is what
+          // makes a list of paired desktops readable -- "DAVID-DESKTOP" and
+          // "ubuntu-vm" rather than two identical rows.
+          label: ack.desktopName ?? DEFAULT_DESKTOP_LABEL,
           pairedAt: deps.now(),
         },
         safetyPhrase: deriveVerificationPhrase(identity.publicKey, offer.desktopPublicKey),

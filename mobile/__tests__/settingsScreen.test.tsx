@@ -15,6 +15,21 @@ const PAIRED: PairedDesktop = {
   pairedAt: 1_700_000_000_000,
 }
 
+const PAIRED_B: PairedDesktop = {
+  desktopPublicKey: 'b1'.repeat(32),
+  sessionRoomId: 'a1'.repeat(16),
+  relayUrl: 'wss://relay-b.test',
+  deviceId: 'b0'.repeat(8),
+  label: 'Workshop Linux box',
+  pairedAt: 1_700_000_100_000,
+}
+
+const mockNav = { navigate: jest.fn() }
+
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => mockNav,
+}))
+
 const NOTHING: Capabilities = {
   read: false,
   createTerminal: false,
@@ -34,6 +49,7 @@ jest.mock('../src/state/remoteStore', () => {
       status: 'attached',
       stale: false,
       paired: null,
+      pairings: [],
       safetyPhrase: null,
       capabilities: {
         read: false,
@@ -63,6 +79,7 @@ function hexRunsInTree(): string[] {
 }
 
 beforeEach(() => {
+  mockNav.navigate.mockReset()
   const fn = unpairFn()
   fn.mockReset()
   fn.mockResolvedValue(undefined)
@@ -70,6 +87,7 @@ beforeEach(() => {
     status: 'attached',
     stale: false,
     paired: PAIRED,
+    pairings: [PAIRED],
     safetyPhrase: 'denim saddle jade ocean pigeon opal sapphire obsidian',
     capabilities: NOTHING,
     error: null,
@@ -136,10 +154,49 @@ describe('SettingsScreen -- what it reports', () => {
   })
 
   it('says nothing is paired when nothing is', async () => {
-    useRemoteStore.setState({ paired: null, safetyPhrase: null })
+    useRemoteStore.setState({ paired: null, pairings: [], safetyPhrase: null })
     await render(<SettingsScreen />)
     expect(screen.getByTestId('settings-unpaired')).toBeTruthy()
     expect(screen.queryByTestId('settings-unpair')).toBeNull()
+  })
+
+  it('reports what it reports about the desktop on screen, not about all of them', async () => {
+    // The grants and the words belong to ONE pairing. Listed together, they
+    // invite comparing the wrong phrase against the wrong machine -- which is a
+    // verification that proves nothing while looking like it passed.
+    useRemoteStore.setState({ paired: PAIRED, pairings: [PAIRED, PAIRED_B] })
+    await render(<SettingsScreen />)
+    expect(screen.getByText('Termpolis desktop')).toBeTruthy()
+    expect(screen.queryByText('Workshop Linux box')).toBeNull()
+    expect(screen.getByText('wss://relay.test')).toBeTruthy()
+    expect(screen.queryByText('wss://relay-b.test')).toBeNull()
+  })
+})
+
+describe('SettingsScreen -- the way to the other desktops', () => {
+  it('counts what this phone is paired with', async () => {
+    useRemoteStore.setState({ pairings: [PAIRED, PAIRED_B] })
+    await render(<SettingsScreen />)
+    expect(screen.getByTestId('settings-desktops-count').props.children).toBe('2 paired')
+  })
+
+  it('says it in the singular when there is one', async () => {
+    await render(<SettingsScreen />)
+    expect(screen.getByTestId('settings-desktops-count').props.children).toBe('1 paired')
+  })
+
+  it('opens the switcher', async () => {
+    await render(<SettingsScreen />)
+    await fireEvent.press(screen.getByTestId('settings-desktops'))
+    expect(mockNav.navigate).toHaveBeenCalledWith('Desktops')
+  })
+
+  it('offers nothing to switch to while nothing is paired', async () => {
+    // The whole paired half of this screen is gone then, the switcher with it.
+    // Its own route no longer exists either: an unpaired phone has one screen.
+    useRemoteStore.setState({ paired: null, pairings: [], safetyPhrase: null })
+    await render(<SettingsScreen />)
+    expect(screen.queryByTestId('settings-desktops')).toBeNull()
   })
 })
 
@@ -189,6 +246,17 @@ describe('SettingsScreen -- unpairing', () => {
     await fireEvent.press(screen.getByTestId('settings-unpair'))
     expect(unpairFn()).not.toHaveBeenCalled()
     expect(screen.getByTestId('settings-unpair-confirm')).toBeTruthy()
+  })
+
+  it('names the one desktop it ends, and says the others survive', async () => {
+    // A control that read "Unpair this phone" next to a list of four machines
+    // is one nobody can press with any confidence about what it does.
+    useRemoteStore.setState({ pairings: [PAIRED, PAIRED_B] })
+    await render(<SettingsScreen />)
+    expect(screen.getByText('Unpair from this desktop')).toBeTruthy()
+    await fireEvent.press(screen.getByTestId('settings-unpair'))
+    expect(screen.getByText(/Unpair from Termpolis desktop\?/)).toBeTruthy()
+    expect(screen.getByText(/any others stay paired/)).toBeTruthy()
   })
 
   it('unpairs on confirm', async () => {

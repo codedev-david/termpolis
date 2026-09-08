@@ -29,6 +29,7 @@ jest.mock('../src/state/remoteStore', () => {
   return {
     useRemoteStore: create(() => ({
       paired: null,
+      pairings: [],
       safetyPhrase: null,
       error: null,
       pairFromQr: jest.fn(async () => undefined),

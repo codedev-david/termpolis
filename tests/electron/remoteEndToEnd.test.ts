@@ -86,6 +86,10 @@ describe('remote bridge end-to-end', () => {
       mcp: { callTool },
       relayUrl: 'wss://relay.test',
       openRelay,
+      // Pinned rather than read off the machine running the suite: the name
+      // rides in the ack, and an assertion against `os.hostname()` passes on
+      // one developer's laptop and fails on the next.
+      desktopName: 'Workshop desktop',
     })
 
     // 1. Boot with no devices at all. Pairing has to create the only one.
@@ -145,7 +149,8 @@ describe('remote bridge end-to-end', () => {
     expect(device.capabilities).toEqual(NO_CAPABILITIES)
 
     // The answer is sealed to that phone alone and carries the device id it will
-    // quote on every later request.
+    // quote on every later request -- and this machine's name, which is how a
+    // phone paired with several desktops labels the row for this one.
     expect(
       openPairingAck({
         deviceSecretKey: phone.secretKey,
@@ -153,7 +158,7 @@ describe('remote bridge end-to-end', () => {
         pairingId: qr.pairingId,
         frame: pairingRoom.frames[0],
       }),
-    ).toEqual({ deviceId: device.id })
+    ).toEqual({ deviceId: device.id, name: 'Workshop desktop' })
 
     // The room the two ends actually meet in appears in no QR and on no wire: it
     // is a Diffie-Hellman over the two identity keys, and the desktop is seated in

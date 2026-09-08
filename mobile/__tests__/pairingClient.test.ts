@@ -126,10 +126,19 @@ function harness(): Harness {
 }
 
 /** The desktop's half: an ack sealed on a fresh session off the pairing root. */
-function sealAck(deviceId: string, opts: { pairingId?: string; version?: number } = {}): Uint8Array {
+function sealAck(
+  deviceId: string,
+  opts: { pairingId?: string; version?: number; name?: unknown } = {},
+): Uint8Array {
   const root = pairingRoot(DESKTOP_SK, PHONE_PK, opts.pairingId ?? PAIRING_ID)
   const header = new Uint8Array([FRAME_PAIRING_ACK])
-  const payload = { v: opts.version ?? PROTOCOL_VERSION, deviceId }
+  // `name` is omitted entirely unless the test asks for one, so the default
+  // shape stays the one a desktop older than 1.40 sends.
+  const payload = {
+    v: opts.version ?? PROTOCOL_VERSION,
+    deviceId,
+    ...('name' in opts ? { name: opts.name } : {}),
+  }
   return sessionFromRoot(root, 'desktop').seal(header, utf8Encode(JSON.stringify(payload)))
 }
 
@@ -275,6 +284,31 @@ describe('the ack it accepts', () => {
   it('computes the safety phrase both screens must match', async () => {
     const outcome = await paired()
     expect(outcome.safetyPhrase).toBe(deriveVerificationPhrase(PHONE_PK, DESKTOP_PK))
+  })
+
+  it('names the row with the name the desktop announced', async () => {
+    // One phone can hold sixteen of these. Without the desktop's own name the
+    // switcher is sixteen rows reading "Termpolis desktop", and the user picks
+    // which machine to type a command into by position.
+    const h = harness()
+    const p = start(h)
+    h.latest().open()
+    h.latest().control({ kind: 'hello', role: 'device', peer: true })
+    h.latest().binary(sealAck(deviceIdFor(PHONE_PK), { name: 'ubuntu-vm' }))
+    const outcome = (await p) as { desktop: { label: string } }
+    expect(outcome.desktop.label).toBe('ubuntu-vm')
+  })
+
+  it('falls back to a generic name when the desktop sends one made of whitespace', async () => {
+    // Sanitising leaves '', which the ack reports as no name. A row labelled
+    // with the empty string is a row with nothing to tap.
+    const h = harness()
+    const p = start(h)
+    h.latest().open()
+    h.latest().control({ kind: 'hello', role: 'device', peer: true })
+    h.latest().binary(sealAck(deviceIdFor(PHONE_PK), { name: '  \t ' }))
+    const outcome = (await p) as { desktop: { label: string } }
+    expect(outcome.desktop.label).toBe(DEFAULT_DESKTOP_LABEL)
   })
 
   it('leaves the pairing room once it is done with it', async () => {

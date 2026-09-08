@@ -3,6 +3,7 @@ import { RequestDispatcher } from './dispatcher'
 import { OutputFanout, type DrainedChunk } from './outputFanout'
 import { ScreenFlattener } from './screenFlattener'
 import { LocalMcpClient } from './mcpClient'
+import { localDesktopName } from './desktopName'
 import {
   createPairingOffer,
   openPairingHello,
@@ -73,6 +74,11 @@ export interface BridgeCoreDeps {
   openRelay?(deps: RelayClientDeps): RelayLike
   /** Injected in tests; production emulates with xterm. */
   flattener?: FlattenerLike
+  /** What the phone will call this machine in its list of paired desktops.
+   *  Injected in tests; production reads the hostname. Resolved once at
+   *  construction rather than per pairing, so a syscall cannot fail on the one
+   *  code path where a phone is waiting. */
+  desktopName?: string
 }
 
 /** The part of ScreenFlattener this file uses. Named so a test can stand in for
@@ -104,6 +110,7 @@ export interface BridgeCore {
 }
 
 export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
+  const desktopName = deps.desktopName ?? localDesktopName()
   let registry = new DeviceRegistry()
   let dispatcher: RequestDispatcher | null = null
   let pairing: PairingSession | null = null
@@ -249,6 +256,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         devicePublicKey: result.device.publicKey,
         pairingId: offer.pairingId,
         deviceId: result.device.id,
+        name: desktopName,
       }),
     )
     closePairingRoom()

@@ -1,4 +1,5 @@
 import { fromHex, toHex } from '../src/wire/bytes'
+import { MAX_DEVICE_LABEL } from '../src/wire/deviceLabel'
 import { deviceIdFor, openPairingAck, sealPairingHello } from '../src/wire/pairing'
 import { pairingRoot, sessionFromRoot } from '../src/wire/sessionCrypto'
 import { PROTOCOL_VERSION } from '../src/wire/version'
@@ -95,8 +96,10 @@ describe('sealPairingHello', () => {
   })
 })
 
+type Ack = { deviceId: string; desktopName: string | null } | null
+
 describe('openPairingAck', () => {
-  function open(frame: Uint8Array, pairingId = PAIRING_ID): { deviceId: string } | null {
+  function open(frame: Uint8Array, pairingId = PAIRING_ID): Ack {
     return openPairingAck({
       frame,
       deviceSecretKey: DEVICE_ID_SK,
@@ -106,7 +109,9 @@ describe('openPairingAck', () => {
   }
 
   it('opens the golden ack and reads the device id back', () => {
-    expect(open(fromHex(ACK))).toEqual({ deviceId: DEVICE_ID })
+    // The golden vector predates the name field, which is exactly the point:
+    // it is what a 1.39 desktop still sends, and it must still pair.
+    expect(open(fromHex(ACK))).toEqual({ deviceId: DEVICE_ID, desktopName: null })
   })
 
   it('opens without the session the hello was sealed with', () => {
@@ -183,7 +188,7 @@ describe('an ack whose payload is valid JSON but not an object', () => {
     return sessionFromRoot(root, 'desktop').seal(header, utf8Encode(json))
   }
 
-  function open(json: string): { deviceId: string } | null {
+  function open(json: string): Ack {
     return openPairingAck({
       frame: ackOf(json),
       deviceSecretKey: DEVICE_ID_SK,
@@ -210,6 +215,69 @@ describe('an ack whose payload is valid JSON but not an object', () => {
     // everything this helper produced.
     expect(open(JSON.stringify({ v: PROTOCOL_VERSION, deviceId: DEVICE_ID }))).toEqual({
       deviceId: DEVICE_ID,
+      desktopName: null,
     })
+  })
+})
+
+describe('the name the desktop calls itself in its ack', () => {
+  /** The desktop half, with whatever `name` the test wants -- including none. */
+  function ackWith(extra: Record<string, unknown>): Uint8Array {
+    const root = pairingRoot(DESKTOP_ID_SK, DEVICE_ID_PK, PAIRING_ID)
+    const payload = { v: PROTOCOL_VERSION, deviceId: DEVICE_ID, ...extra }
+    return sessionFromRoot(root, 'desktop').seal(
+      Uint8Array.from([0x02]),
+      utf8Encode(JSON.stringify(payload)),
+    )
+  }
+
+  function nameOf(extra: Record<string, unknown>): string | null | undefined {
+    return openPairingAck({
+      frame: ackWith(extra),
+      deviceSecretKey: DEVICE_ID_SK,
+      desktopPublicKey: DESKTOP_ID_PK,
+      pairingId: PAIRING_ID,
+    })?.desktopName
+  }
+
+  it('reads the name the desktop sent', () => {
+    // What makes a switcher with four machines in it usable: the desktop's own
+    // hostname rather than four identical rows.
+    expect(nameOf({ name: 'DAVID-DESKTOP' })).toBe('DAVID-DESKTOP')
+  })
+
+  it('pairs anyway with a desktop too old to send one', () => {
+    // The field is additive on protocol 2 precisely so this holds. Refusing here
+    // would strand every 1.39 desktop behind a phone update.
+    expect(nameOf({})).toBeNull()
+  })
+
+  it('keeps a name with non-ASCII in it whole', () => {
+    expect(nameOf({ name: 'Büro-Rechner — 2' })).toBe('Büro-Rechner — 2')
+  })
+
+  it('strips control characters out of a name before it is ever stored', () => {
+    // The name crosses the relay and lands in the keystore. A stray NUL is not
+    // an injection in a React <Text>, but it is a value that will not survive
+    // the round trip through storage intact.
+    expect(nameOf({ name: 'work\u0000box\u001b[31m' })).toBe('workbox[31m')
+  })
+
+  it('caps a name long enough to push a row off the switcher', () => {
+    expect(nameOf({ name: 'z'.repeat(400) })).toBe('z'.repeat(MAX_DEVICE_LABEL))
+  })
+
+  it('reports whitespace as no name at all, so the caller can pick a fallback', () => {
+    // `null` and `''` have to be told apart: the client turns the first into
+    // "Termpolis desktop" and would otherwise draw a nameless row.
+    expect(nameOf({ name: '   ' })).toBeNull()
+  })
+
+  it('reports a name of the wrong type as no name, without refusing the pairing', () => {
+    // The seal proves WHICH desktop sent this, not that it was running a version
+    // that cared what it put in the field.
+    for (const bad of [42, null, { name: 'nope' }, ['x']]) {
+      expect(nameOf({ name: bad })).toBeNull()
+    }
   })
 })

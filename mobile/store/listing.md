@@ -40,9 +40,9 @@ Encrypted remote for Termpolis
 ### Promotional text — 170 max, editable without a new review
 
 ```
-Pair once by scanning the code on your desktop, then read and type in your terminals from anywhere. End-to-end encrypted. Requires the Termpolis desktop app.
+Pair by scanning the code on your desktop, or on several, then read and type in your terminals from anywhere. End-to-end encrypted. Requires the Termpolis desktop app.
 ```
-157 characters.
+167 characters.
 
 ### Description — 4000 max
 
@@ -57,6 +57,9 @@ Termpolis Remote does nothing on its own. You need Termpolis running on a Mac, W
 PAIRING TAKES ONE SCAN
 Your desktop shows a code. You scan it. Both screens then show the same eight words -- if they match, the two devices agreed on a key nothing in between can derive. If they do not match, something is in between, and the right move is to unpair.
 
+ONE PHONE, SEVERAL DESKTOPS
+Pair with up to 16 computers -- a work machine, a home one, a Linux box in the corner -- and switch between them from the terminal list. Each pairing has its own key and its own name, so each desktop grants what this phone may do on that desktop alone, and unpairing one leaves the others exactly as they were.
+
 END TO END, NOT JUST IN TRANSIT
 Every message between your phone and your desktop is sealed with a key the two of them derived together, using X25519 key agreement and ChaCha20-Poly1305. The relay that carries the traffic sees a room id, a size and a time. It cannot read a single byte of what passes through it, and it keeps nothing.
 
@@ -64,7 +67,7 @@ YOUR DESKTOP DECIDES WHAT THIS PHONE CAN DO
 Reading output, starting terminals, typing, closing terminals -- each is granted on the desktop, in Settings, and each is checked again on the desktop for every request. This app can report what it has been allowed. It cannot grant itself anything.
 
 WHAT IT STORES
-One encryption key and one pairing record, in the iOS keychain, on this device only. No transcript, no scrollback, no cache of what your desktop said. Unpair erases both, and works whether or not the desktop is reachable.
+One encryption key and one pairing record for each desktop you have paired with, in the iOS keychain, on this device only. No transcript, no scrollback, no cache of what your desktop said. Unpairing erases that desktop's key and record, and works whether or not the desktop is reachable.
 
 WHAT IT DOES NOT DO
 No account. No sign-in. No analytics, no crash reporting, no advertising identifier, no tracking of any kind. There is no server of ours that your terminal output ever reaches, because there is nowhere for it to go.
@@ -74,7 +77,7 @@ Used for one thing: reading the pairing code on your desktop screen. Frames are 
 
 Termpolis is open source under the Apache 2.0 licence, and the wire format this app speaks is published in full. Privacy policy: termpolis.com/privacy.html
 ```
-2,428 characters.
+2,833 characters.
 
 ### Keywords — 100 max, comma-separated, no spaces
 
@@ -116,9 +119,9 @@ the questionnaire to imply it.
 ### What's New — 4000 max, first release
 
 ```
-First release. Pair with your Termpolis desktop by scanning the code it shows, then read and type in your running terminals from your phone, end to end encrypted.
+First release. Pair with your Termpolis desktops by scanning the code each one shows, then read and type in your running terminals from your phone, end to end encrypted. Switch between up to 16 paired computers from the terminal list.
 ```
-162 characters.
+234 characters.
 
 ---
 

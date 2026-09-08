@@ -108,6 +108,9 @@ function core(
     mcp: { callTool },
     relayUrl: 'wss://relay.test',
     flattener,
+    // Pinned so the name in the ack is the harness's, not whatever machine is
+    // running the suite.
+    desktopName: 'Bench desktop',
     openRelay: (d) => {
       const room = stubRoom(d)
       rooms.push(room)
@@ -1156,7 +1159,10 @@ describe('pairing over the relay', () => {
         pairingId: qr.pairingId,
         frame: room.frames[0],
       }),
-    ).toEqual({ deviceId: createHash('sha256').update(phone.publicKey).digest('hex').slice(0, 16) })
+    ).toEqual({
+      deviceId: createHash('sha256').update(phone.publicKey).digest('hex').slice(0, 16),
+      name: 'Bench desktop',
+    })
     // Acked, THEN closed. The other order writes into a socket already closing and
     // leaves the phone waiting on an answer that was never sent.
     expect(room.stoppedAtFrame).toBe(1)

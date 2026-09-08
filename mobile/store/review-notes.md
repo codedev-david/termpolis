@@ -86,8 +86,18 @@ app, which is free, open source, and takes about two minutes to set up.
    changed at any time; every request is re-checked against them on the
    desktop, so the phone cannot grant itself anything.
 
-9. To end it, press "Revoke" beside the phone on the desktop. The phone goes
-   offline immediately.
+9. Optional, and only if you have a second computer to hand: the phone can be
+   paired with more than one desktop (up to 16). Tap the desktop name in the
+   header of the terminal list to see the list of paired computers, and "Pair
+   another desktop" to repeat steps 1-7 against a second machine. Each pairing
+   has its own key, so the safety words in step 7 are shown again, and each
+   desktop grants its own permissions. Switching between them is a tap; one is
+   connected at a time. Nothing in the review depends on this step.
+
+10. To end it, press "Revoke" beside the phone on the desktop. The phone goes
+    offline immediately. If several desktops are paired, revoking on one leaves
+    the phone's link to the others alone -- the same is true of "Unpair from
+    this desktop" on the phone.
 
 NO ACCOUNT IS NEEDED ANYWHERE. There is nothing to sign into on either half.
 

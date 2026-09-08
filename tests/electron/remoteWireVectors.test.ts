@@ -234,7 +234,7 @@ describe('wire vectors: pairing', () => {
         pairingId: PAIRING_ID,
         frame,
       }),
-    ).toEqual({ deviceId: DEVICE_ID })
+    ).toEqual({ deviceId: DEVICE_ID, name: null })
   })
 
   it('pins what a pairing produces', () => {

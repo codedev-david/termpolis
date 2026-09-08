@@ -1,9 +1,14 @@
+import { useNavigation } from '@react-navigation/native'
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import Constants from 'expo-constants'
 import React from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
+import type { RootStackParamList } from '../navigation/routes'
 import { useRemoteStore } from '../state/remoteStore'
 import type { Capabilities } from '../wire/protocol'
+
+type Nav = NativeStackNavigationProp<RootStackParamList>
 
 /** The capabilities, in the order they escalate: reading, then starting, then
  *  typing, then closing. Listing them from a literal rather than from
@@ -30,19 +35,27 @@ const CONNECTION_LABEL: Record<string, string> = {
 /**
  * What this phone is paired to, and the one control that ends it.
  *
+ * Everything here is about the desktop currently on screen -- its connection,
+ * its safety words, what it allows. A phone paired with several has one row per
+ * machine on the Desktops screen, which this links to rather than duplicates:
+ * the grants and the phrase are properties of ONE pairing, and a settings page
+ * that listed four desktops' worth of them would invite comparing the wrong
+ * phrase against the wrong machine.
+ *
  * The capabilities are reported, not offered. The desktop grants them and
  * re-checks every request against its own record, so a switch here would be a
  * lie the moment it disagreed. They are text.
  *
- * Unpair is local and unconditional. It drops this phone's key whether or not
- * the relay is reachable -- a phone that can only be unpaired while online is
- * a phone that cannot be unpaired at the moment it matters, which is usually
- * the moment it is not in the owner's hand. The desktop keeps its own revoke,
- * and either side is sufficient: the session key cannot be re-derived without
- * both identities.
+ * Unpair is local and unconditional. It drops this phone's key for THIS desktop
+ * whether or not the relay is reachable -- a phone that can only be unpaired
+ * while online is a phone that cannot be unpaired at the moment it matters,
+ * which is usually the moment it is not in the owner's hand. The desktop keeps
+ * its own revoke, and either side is sufficient: the session key cannot be
+ * re-derived without both identities.
  */
 export default function SettingsScreen(): React.JSX.Element {
   const paired = useRemoteStore((s) => s.paired)
+  const pairings = useRemoteStore((s) => s.pairings)
   const phrase = useRemoteStore((s) => s.safetyPhrase)
   const capabilities = useRemoteStore((s) => s.capabilities)
   const status = useRemoteStore((s) => s.status)
@@ -51,6 +64,7 @@ export default function SettingsScreen(): React.JSX.Element {
 
   const [asking, setAsking] = React.useState(false)
   const version = Constants.expoConfig?.version ?? 'unknown'
+  const nav = useNavigation<Nav>()
 
   function onUnpair(): void {
     setAsking(false)
@@ -91,6 +105,22 @@ export default function SettingsScreen(): React.JSX.Element {
             </Text>
           </View>
 
+          <Pressable
+            testID="settings-desktops"
+            accessibilityRole="button"
+            style={styles.card}
+            onPress={() => nav.navigate('Desktops')}
+          >
+            <Text style={styles.label}>Desktops</Text>
+            <Text testID="settings-desktops-count" style={styles.value}>
+              {pairings.length === 1 ? '1 paired' : `${pairings.length} paired`}
+            </Text>
+            <Text style={styles.hint}>
+              Switch to another desktop, rename one, or pair another machine. Each desktop gets its
+              own key on this phone, so removing one leaves the rest alone.
+            </Text>
+          </Pressable>
+
           <View style={styles.card}>
             <Text style={styles.label}>Safety words</Text>
             <Text testID="settings-safety-phrase" style={styles.mono}>
@@ -123,8 +153,8 @@ export default function SettingsScreen(): React.JSX.Element {
           {asking ? (
             <View style={styles.card}>
               <Text style={styles.body}>
-                Unpair from {paired.label}? This phone will forget its key, and pairing again means
-                scanning a new code on the desktop.
+                Unpair from {paired.label}? This phone forgets its key for that desktop only --
+                any others stay paired -- and pairing it again means scanning a new code on it.
               </Text>
               <Pressable
                 testID="settings-unpair-confirm"
@@ -150,7 +180,7 @@ export default function SettingsScreen(): React.JSX.Element {
               style={styles.danger}
               onPress={() => setAsking(true)}
             >
-              <Text style={styles.dangerText}>Unpair this phone</Text>
+              <Text style={styles.dangerText}>Unpair from this desktop</Text>
             </Pressable>
           )}
         </>

@@ -4,14 +4,22 @@ import { RelaySocket, type RelayState, type SocketLike } from '../net/relaySocke
 import { RemoteSession, type StatusUpdate } from '../net/remoteSession'
 import { pairWithDesktop } from '../net/pairingClient'
 import {
-  loadIdentity,
-  loadPaired,
-  savePaired,
-  wipeIdentity,
+  addPairing,
+  loadBook,
+  newIdentity,
+  publicKeyOf,
+  publicPairing,
+  removePairing,
+  setActivePairing,
+  wipeEverything,
+  writePairing,
+  MAX_PAIRINGS,
   type PairedDesktop,
+  type StoredPairing,
 } from '../storage/identity'
 import { parseQrPayload } from '../wire/qr'
 import { deriveVerificationPhrase } from '../wire/safetyNumber'
+import { sanitizeDeviceLabel } from '../wire/deviceLabel'
 import { Handshake } from '../wire/sessionCrypto'
 import {
   NO_CAPABILITIES,
@@ -34,6 +42,14 @@ export const MAX_OUTPUT_CHARS = 200_000
 interface RemoteState {
   /** The relay connection, as the socket reports it. */
   status: RelayState
+  /** Every desktop this phone is paired with, in the order they were paired.
+   *
+   *  Redacted -- the private keys stay in the vault below. A screen that could
+   *  read one off the store is one `JSON.stringify` away from putting this
+   *  phone's authority into a log. */
+  pairings: PairedDesktop[]
+  /** The one being shown, and the only one with a live connection. Null only
+   *  when `pairings` is empty. */
   paired: PairedDesktop | null
   /** Compare it with the desktop's. Matching phrases are what rule out a relay
    *  that put itself in the middle. */
@@ -60,6 +76,14 @@ interface RemoteState {
 
   boot(): Promise<void>
   pairFromQr(raw: string, label: string): Promise<void>
+  /** Put a different paired desktop on screen. */
+  selectDesktop(desktopPublicKey: string): Promise<void>
+  /** Rename one, for the switcher. Local to this phone; the desktop is not told
+   *  and does not care. */
+  renameDesktop(desktopPublicKey: string, label: string): Promise<void>
+  /** Forget one desktop and erase this phone's key for it. */
+  forgetDesktop(desktopPublicKey: string): Promise<void>
+  /** Forget the desktop currently on screen. What Settings calls unpairing. */
   unpair(): Promise<void>
   refreshTerminals(): Promise<void>
   refreshCapabilities(): Promise<void>
@@ -75,7 +99,17 @@ interface RemoteState {
  *  on its internals would repaint the terminal view on every frame. */
 let socket: RelaySocket | null = null
 let session: RemoteSession | null = null
-let identity: { secretKey: string; publicKey: string } | null = null
+/** Every pairing, secrets included, kept out of the store for the reason given
+ *  on `RemoteState.pairings`. Insertion-ordered, seeded from the stored index,
+ *  and `Map.set` on an existing key keeps its position -- so re-pairing a known
+ *  desktop updates its row in place instead of making the list jump. */
+let vault = new Map<string, StoredPairing>()
+/** The desktop on screen, and the source of truth for which one that is.
+ *
+ *  Held here rather than read back out of `state.paired`, so the connection
+ *  layer never has to ask a React store which machine it is talking to, and so
+ *  the key it needs is one property away. */
+let active: StoredPairing | null = null
 let appStateSub: { remove(): void } | null = null
 let foregroundTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -110,9 +144,8 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     }
   }
 
-  function connect(desktop: PairedDesktop): void {
-    if (socket !== null || identity === null) return
-    const me = identity
+  function connect(desktop: StoredPairing): void {
+    if (socket !== null) return
 
     const live = new RemoteSession({
       send: (plaintext) => socket?.send(plaintext),
@@ -196,7 +229,10 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       open: (url) => new WebSocket(url) as unknown as SocketLike,
       // A factory: one ephemeral key per attachment is what makes a recorded
       // session unreadable after the fact.
-      handshake: () => new Handshake('device', me.secretKey, desktop.desktopPublicKey),
+      // This phone's key for THIS desktop. Each pairing has its own, so the
+      // wrong one here would be a handshake the desktop cannot complete rather
+      // than a silent cross-connection.
+      handshake: () => new Handshake('device', desktop.secretKey, desktop.desktopPublicKey),
       onFrame: (plaintext) => live.handleFrame(plaintext),
       onControl: () => undefined,
       onState: (next) => {
@@ -253,14 +289,61 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       if (foregroundTimer !== null) clearTimeout(foregroundTimer)
       foregroundTimer = setTimeout(() => {
         foregroundTimer = null
-        const { paired } = get()
-        if (paired !== null) connect(paired)
+        if (active !== null) connect(active)
       }, FOREGROUND_DEBOUNCE_MS)
     })
   }
 
+  /** Publish the vault and the active desktop to the screen.
+   *
+   *  The one place `pairings`, `paired` and `safetyPhrase` are written, so they
+   *  cannot drift apart -- a phrase belonging to a desktop that is no longer the
+   *  active one is the exact failure the safety words exist to catch. */
+  function present(): void {
+    set({
+      pairings: [...vault.values()].map(publicPairing),
+      paired: active === null ? null : publicPairing(active),
+      safetyPhrase:
+        active === null
+          ? null
+          : deriveVerificationPhrase(publicKeyOf(active), active.desktopPublicKey),
+    })
+  }
+
+  /** Drop everything on screen that belonged to one desktop.
+   *
+   *  Terminals, buffered output, agent status and grants are all statements
+   *  about a particular machine. Carrying any of them into another desktop's
+   *  view would show somebody else's terminals -- and a grant carried across
+   *  would enable a control the new desktop has not allowed. */
+  function clearDesktopView(): void {
+    set({
+      terminals: [],
+      capabilities: { ...NO_CAPABILITIES },
+      output: {},
+      outputEnd: {},
+      agentStatus: {},
+      error: null,
+    })
+  }
+
+  /** Two machines reporting the same hostname is ordinary -- a laptop and its
+   *  VM, two fresh Ubuntu installs -- and two identical rows is a switcher that
+   *  cannot be used. Numbered rather than refused, because the user can rename
+   *  either one afterwards. */
+  function uniqueLabel(wanted: string, ownKey: string): string {
+    const taken = new Set(
+      [...vault.values()].filter((p) => p.desktopPublicKey !== ownKey).map((p) => p.label),
+    )
+    if (!taken.has(wanted)) return wanted
+    let n = 2
+    while (taken.has(`${wanted} (${n})`)) n += 1
+    return `${wanted} (${n})`
+  }
+
   return {
     status: 'offline',
+    pairings: [],
     paired: null,
     safetyPhrase: null,
     terminals: [],
@@ -276,18 +359,17 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     error: null,
 
     async boot() {
-      identity ??= await loadIdentity()
       watchAppState()
-      const paired = await loadPaired()
-      if (paired === null) {
-        set({ paired: null, safetyPhrase: null })
-        return
-      }
-      set({
-        paired,
-        safetyPhrase: deriveVerificationPhrase(identity.publicKey, paired.desktopPublicKey),
-      })
-      connect(paired)
+      const book = await loadBook()
+      vault = new Map(book.pairings.map((p) => [p.desktopPublicKey, p]))
+      // `loadBook` has already reconciled the stored active desktop against what
+      // actually loaded, so this cannot name a pairing the vault does not hold.
+      // One lookup rather than a null check and then a lookup: the empty book has
+      // to be answered for either way, and a key of `''` is not one any desktop
+      // can have.
+      active = vault.get(book.active ?? '') ?? null
+      present()
+      if (active !== null) connect(active)
     },
 
     async pairFromQr(raw, label) {
@@ -298,11 +380,24 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
         set({ error: 'That is not a Termpolis pairing code. Try scanning it again.' })
         return
       }
-      identity ??= await loadIdentity()
+      // Checked before dialling, so a phone at the ceiling says so instead of
+      // burning the desktop's single-use code to find out. Re-pairing a desktop
+      // already in the list replaces its row and so is always allowed.
+      if (vault.size >= MAX_PAIRINGS && !vault.has(offer.desktopPublicKey)) {
+        set({
+          error: `This phone is paired with ${MAX_PAIRINGS} desktops already. Remove one first.`,
+        })
+        return
+      }
       watchAppState()
       set({ error: null })
+      // A fresh keypair for this desktop and no other. Minted here and written
+      // only if the desktop answers, so an abandoned pairing leaves nothing in
+      // the keystore -- and so no two desktops are ever handed the same public
+      // key to correlate this handset by.
+      const identity = newIdentity()
       try {
-        const { desktop, safetyPhrase } = await pairWithDesktop({
+        const { desktop } = await pairWithDesktop({
           offer,
           identity,
           label,
@@ -313,42 +408,96 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
             clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
           },
         })
+        const record: StoredPairing = {
+          ...desktop,
+          label: uniqueLabel(desktop.label, desktop.desktopPublicKey),
+          secretKey: identity.secretKey,
+        }
         // Stored only once the desktop has answered. A record written earlier
         // would leave a phone that believes it is paired to a machine that
         // never heard of it.
-        await savePaired(desktop)
-        set({ paired: desktop, safetyPhrase, error: null })
-        connect(desktop)
+        await addPairing(record)
+        vault.set(record.desktopPublicKey, record)
+        // The new desktop becomes the one on screen, which means whatever the
+        // last one had showing goes -- including its socket.
+        disconnect()
+        clearDesktopView()
+        active = record
+        present()
+        connect(record)
       } catch (err) {
         set({ error: err instanceof Error ? err.message : 'Pairing failed.' })
       }
     },
 
-    async unpair() {
+    async selectDesktop(desktopPublicKey) {
+      const next = vault.get(desktopPublicKey)
+      // Not an error: a stale row can be tapped once after the pairing behind it
+      // is gone, and throwing inside a list that has already moved on helps
+      // nobody.
+      // Compared by identity, not by key: every value in the vault is replaced
+      // wholesale when it changes -- renamed, re-paired -- and `active` is always
+      // one of them, so the same object IS the same desktop. It also answers the
+      // unpaired case without a null check of its own.
+      if (next === undefined || next === active) return
+      // One connection at a time. Holding several would keep several radios
+      // awake for frames nobody is looking at, and the reconnect and
+      // foreground logic is written per socket.
       disconnect()
-      // The private KEY, not merely the pairing record. That key is this phone's
-      // authority -- a desktop that has not also revoked the device goes on
-      // trusting whoever holds it -- and PRIVACY.md tells the user in as many
-      // words that unpairing erases it. Keeping it to make a re-pair land on the
-      // same desktop entry is a convenience, and it is not worth making a
-      // published promise false.
-      await wipeIdentity()
-      // The keystore is not the only copy. `identity` is cached for the life of
-      // the process, so leaving it set would hand the very next pairing the key
-      // that was just erased: true of the disk, false of the running app.
-      identity = null
-      // Everything on screen belonged to that desktop. Leaving any of it behind
-      // would show the next pairing another machine's terminals.
-      set({
-        paired: null,
-        safetyPhrase: null,
-        terminals: [],
-        capabilities: { ...NO_CAPABILITIES },
-        output: {},
-        outputEnd: {},
-        agentStatus: {},
-        error: null,
-      })
+      clearDesktopView()
+      active = next
+      present()
+      await setActivePairing(desktopPublicKey)
+      connect(next)
+    },
+
+    async renameDesktop(desktopPublicKey, label) {
+      const record = vault.get(desktopPublicKey)
+      if (record === undefined) return
+      const wanted = sanitizeDeviceLabel(label)
+      // An empty rename is a user who cleared the field, not a request for a
+      // blank row in the switcher.
+      if (wanted.length === 0) return
+      const renamed: StoredPairing = {
+        ...record,
+        label: uniqueLabel(wanted, desktopPublicKey),
+      }
+      vault.set(desktopPublicKey, renamed)
+      if (record === active) active = renamed
+      await writePairing(renamed)
+      present()
+    },
+
+    async forgetDesktop(desktopPublicKey) {
+      const record = vault.get(desktopPublicKey)
+      // Two taps on Remove race, and the second must not throw inside a screen
+      // that has already redrawn without the row.
+      if (record === undefined) return
+      const wasActive = record === active
+      vault.delete(desktopPublicKey)
+      if (wasActive) {
+        disconnect()
+        // Everything on screen belonged to that desktop.
+        clearDesktopView()
+        // Straight on to whichever pairing is next rather than a dead screen:
+        // the user removed ONE desktop, and a phone that falls back to the
+        // pairing screen while three others are still paired has lost them as
+        // far as the user can tell.
+        active = vault.values().next().value ?? null
+      }
+      // Erases the record AND this phone's key for that desktop. See
+      // `removePairing` -- PRIVACY.md promises exactly this, and it is now a
+      // promise that can be kept one desktop at a time.
+      await removePairing(desktopPublicKey, active === null ? null : active.desktopPublicKey)
+      present()
+      if (wasActive && active !== null) connect(active)
+    },
+
+    async unpair() {
+      // Unpairing has always meant "this desktop", and Settings still shows one
+      // desktop at a time. Delegating keeps the erase in a single place.
+      if (active === null) return
+      await get().forgetDesktop(active.desktopPublicKey)
     },
 
     async refreshTerminals() {
@@ -407,7 +556,8 @@ export function teardownRemote(): void {
   socket?.close()
   socket = null
   session = null
-  identity = null
+  vault = new Map()
+  active = null
   appStateSub?.remove()
   appStateSub = null
   if (foregroundTimer !== null) {
@@ -416,6 +566,7 @@ export function teardownRemote(): void {
   }
   useRemoteStore.setState({
     status: 'offline',
+    pairings: [],
     paired: null,
     safetyPhrase: null,
     terminals: [],
@@ -429,4 +580,12 @@ export function teardownRemote(): void {
     stale: true,
     error: null,
   })
+}
+
+/** Forget every desktop and erase every key. Not on any screen -- Settings
+ *  unpairs one at a time -- but the promise in PRIVACY.md is that deleting the
+ *  app destroys the key material, and a test proving it needs something to call. */
+export async function forgetEverything(): Promise<void> {
+  teardownRemote()
+  await wipeEverything()
 }

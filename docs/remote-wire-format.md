@@ -433,7 +433,7 @@ because it is only marked used once every check has passed.
 
 ```
 header    = 0x02
-plaintext = {"v":2,"deviceId":"12faa049f0ec7720"}
+plaintext = {"v":2,"deviceId":"12faa049f0ec7720","name":"DAVID-DESKTOP"}
 frame     = seal(pairingRoot(desktopIdSk, deviceIdPk, pairingId) → desktop tx key,
                  counter 0, header, plaintext)
 ```
@@ -441,7 +441,20 @@ frame     = seal(pairingRoot(desktopIdSk, deviceIdPk, pairingId) → desktop tx 
 `deviceId` is `SHA-256(utf8(devicePublicKeyHex))` truncated to the first 8
 bytes, hex — the desktop's stable handle for this phone.
 
-Deliberately thin. Everything the phone needs next — the session room, the
+`name` is **optional**, and that is the whole point of it. One phone may hold up
+to 16 pairings at once, and the switcher on it is a list of names; without one,
+every row reads alike and the user picks which machine to type a command into by
+position. The desktop sends its sanitised hostname (§7.6). It is **omitted
+entirely** when there is nothing usable to send — a blank string would be a name
+the phone still has to draw — and a desktop older than 1.40 never sends it at
+all, so the phone captions that pairing itself.
+
+Adding it was possible only because it is optional. `v` is compared for
+*equality* at both ends, so bumping `PROTOCOL_VERSION` to carry a name would have
+made every 1.39 desktop unpairable from an updated phone and vice versa. A field
+the old readers never look for costs them nothing.
+
+Otherwise deliberately thin. Everything the phone needs next — the session room, the
 safety number — it *derives* from the two identity keys it already holds, and
 sending either would invite a client that trusts the wire value instead. What
 is left is the fact of acceptance, and acceptance has to be authenticated: a
@@ -463,6 +476,29 @@ The phone's private key belongs in the platform keystore —
 the whole of the phone's authority.
 
 ---
+
+### 7.6 Label sanitising
+
+Two names cross this wire in opposite directions and neither is trusted on
+arrival: the phone's `label` in the hello, and the desktop's `name` in the ack.
+Both go through the same rule, implemented once on each side
+(`src/main/remoteBridge/deviceLabel.ts` and `mobile/src/wire/deviceLabel.ts`,
+held to the same answers by `tests/electron/remoteMobileInterop.test.ts`):
+
+```
+drop every code point <= U+001F and U+007F, trim, cut to 64 code points, trim
+```
+
+Iterated by code point, so an astral character survives whole rather than being
+judged one surrogate at a time.
+
+The result may be empty, and empty means *no name*: the sender omits the field
+and the receiver picks its own caption (`Termpolis desktop` on the phone). A
+receiver must not distinguish `''` from absent, because a sanitiser upstream
+turns one into the other.
+
+The 64 code point cap is not cosmetic. Up to 16 pairings live in one keystore
+value on the phone, and `expo-secure-store` refuses a value much over 2 KB.
 
 ## 8. Safety numbers
 

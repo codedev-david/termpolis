@@ -10,11 +10,13 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import type { RootStackParamList } from './navigation/routes'
+import DesktopsScreen from './screens/DesktopsScreen'
 import PairScreen from './screens/PairScreen'
 import SafetyNumberScreen from './screens/SafetyNumberScreen'
 import SettingsScreen from './screens/SettingsScreen'
 import TerminalListScreen from './screens/TerminalListScreen'
 import TerminalScreen from './screens/TerminalScreen'
+import { pairingStamp } from './state/pairingStamp'
 import { useRemoteStore } from './state/remoteStore'
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -34,7 +36,7 @@ const THEME = {
 /**
  * The shell.
  *
- * Which screens exist is decided by whether a desktop is paired, not by
+ * Which screens exist is decided by whether ANY desktop is paired, not by
  * guarding each screen at its own top. An unpaired phone has no terminal
  * screens in its navigator at all, so there is no route for a stale link or a
  * mistimed `navigate` to reach.
@@ -44,21 +46,25 @@ const THEME = {
  * already paired, and a pairing screen is exactly where a phone should not
  * teach its owner to tap through.
  *
- * A pairing that appears while the app is running is one the user just made,
- * so the safety words are pushed on top of the list. A pairing that was already
- * there at boot was compared when it was made, and re-showing it every launch
- * is how a verification step becomes a splash screen.
+ * A pairing that appears while the app is running is one the user just made, so
+ * the safety words are pushed on top of the list. Which pairing is "new" is read
+ * off `pairingStamp` rather than off a single stored key, because pairing a
+ * second desktop -- or re-pairing one already on the list, which mints a fresh
+ * key for it -- has to show its words too. A pairing that was already there at
+ * boot was compared when it was made, and re-showing it every launch is how a
+ * verification step becomes a splash screen.
  */
 export default function App(): React.JSX.Element {
   const paired = useRemoteStore((s) => s.paired)
+  const pairings = useRemoteStore((s) => s.pairings)
   const boot = useRemoteStore((s) => s.boot)
   const navigation = useNavigationContainerRef<RootStackParamList>()
 
   const [ready, setReady] = React.useState(false)
   const started = React.useRef(false)
-  /** The pairing as of the last render, so a new one can be told from a
+  /** The newest pairing as of the last render, so a new one can be told from a
    *  restored one. Seeded when boot answers, before anything is drawn. */
-  const seen = React.useRef<string | null>(null)
+  const seen = React.useRef(0)
 
   React.useEffect(() => {
     if (started.current) return
@@ -68,20 +74,23 @@ export default function App(): React.JSX.Element {
       // dead app. The store recorded the failure; the pairing screen is next.
       .catch(() => undefined)
       .finally(() => {
-        seen.current = useRemoteStore.getState().paired?.desktopPublicKey ?? null
+        seen.current = pairingStamp(useRemoteStore.getState().pairings)
         setReady(true)
       })
   }, [boot])
 
   React.useEffect(() => {
     if (!ready) return
-    const now = paired?.desktopPublicKey ?? null
+    const now = pairingStamp(pairings)
     const before = seen.current
     seen.current = now
-    if (now !== null && before === null && navigation.isReady()) {
-      navigation.navigate('SafetyNumber')
-    }
-  }, [ready, paired, navigation])
+    if (now <= before || !navigation.isReady()) return
+    // Reset rather than push. The new pairing may have been made from the Pair
+    // screen INSIDE the paired stack, and "they match" ends in goBack -- which
+    // would otherwise land the user back on a camera pointed at a code that has
+    // already been spent.
+    navigation.reset({ index: 1, routes: [{ name: 'Terminals' }, { name: 'SafetyNumber' }] })
+  }, [ready, pairings, navigation])
 
   if (!ready) {
     return (
@@ -111,7 +120,19 @@ export default function App(): React.JSX.Element {
                 name="Terminals"
                 component={TerminalListScreen}
                 options={({ navigation: nav }) => ({
+                  // The desktop's own name, so a phone paired with several says
+                  // which one is on screen without being asked.
                   title: paired.label,
+                  headerLeft: () => (
+                    <Pressable
+                      testID="header-desktops"
+                      accessibilityRole="button"
+                      accessibilityLabel="Desktops"
+                      onPress={() => nav.navigate('Desktops')}
+                    >
+                      <Text style={styles.headerAction}>Desktops</Text>
+                    </Pressable>
+                  ),
                   headerRight: () => (
                     <Pressable
                       testID="header-settings"
@@ -138,6 +159,18 @@ export default function App(): React.JSX.Element {
                 name="Settings"
                 component={SettingsScreen}
                 options={{ title: 'Settings' }}
+              />
+              <Stack.Screen
+                name="Desktops"
+                component={DesktopsScreen}
+                options={{ title: 'Desktops' }}
+              />
+              {/* Also in the paired stack, not only the empty one: adding a
+                  second desktop is a thing an already-paired phone does. */}
+              <Stack.Screen
+                name="Pair"
+                component={PairScreen}
+                options={{ title: 'Pair another desktop' }}
               />
             </>
           )}

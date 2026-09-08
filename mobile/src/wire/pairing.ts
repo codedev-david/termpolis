@@ -9,6 +9,7 @@ import {
   sessionFromRoot,
 } from './sessionCrypto'
 import { PROTOCOL_VERSION } from './version'
+import { sanitizeDeviceLabel } from './deviceLabel'
 
 /** The desktop's stable handle for a phone: eight bytes of SHA-256 over the hex
  *  form of its public key. Derived on both ends from the same public value, so
@@ -67,7 +68,7 @@ export function openPairingAck(opts: {
   deviceSecretKey: string
   desktopPublicKey: string
   pairingId: string
-}): { deviceId: string } | null {
+}): { deviceId: string; desktopName: string | null } | null {
   if (opts.frame.length < SESSION_HEADER_BYTES) return null
   if (opts.frame[0] !== FRAME_PAIRING_ACK) return null
 
@@ -83,11 +84,17 @@ export function openPairingAck(opts: {
   }
   if (typeof payload !== 'object' || payload === null) return null
 
-  const { v, deviceId } = payload as Record<string, unknown>
+  const { v, deviceId, name } = payload as Record<string, unknown>
   // The phone is a separate codebase shipped through two app stores, so an older
   // desktop really does answer here. An unrecognised shape is refused rather than
   // half-read: the id becomes the handle the user revokes by.
   if (v !== PROTOCOL_VERSION) return null
   if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) return null
-  return { deviceId }
+  // `name` is the one field an older desktop will not send, so its absence is a
+  // version difference rather than a malformed ack -- refusing the pairing over
+  // a missing caption would strand every 1.39 desktop. Sanitised rather than
+  // trusted: the seal proves which desktop sent it, not that the desktop was
+  // running a version that cared what it put in here.
+  const desktopName = sanitizeDeviceLabel(name)
+  return { deviceId, desktopName: desktopName.length > 0 ? desktopName : null }
 }

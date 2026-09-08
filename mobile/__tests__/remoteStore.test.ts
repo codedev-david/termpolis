@@ -1,12 +1,23 @@
 import type { RelaySocketDeps, RelayState } from '../src/net/relaySocket'
 import type { OutputChunk } from '../src/wire/protocol'
-import type { PairedDesktop } from '../src/storage/identity'
+import type { PairedDesktop, StoredPairing } from '../src/storage/identity'
 
 /** What the desktop answers `getCapabilities` with in these tests. */
 const GRANTS = { read: true, createTerminal: true, writeToTerminal: false, closeTerminal: false }
 
-const PHONE_PK = '0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20'
+/** One private key per desktop, and the public half the real curve maths
+ *  derives from each. Fixed rather than random, because the safety phrase these
+ *  tests assert has to be a phrase that can be written down -- and because a key
+ *  handed to the wrong desktop is exactly the mistake that phrase catches. */
+const PHONE_SK = '22'.repeat(32)
+const PHONE_SK_B = '33'.repeat(32)
+const PHONE_SK_C = '44'.repeat(32)
+const PHONE_PK = publicKeyFor(PHONE_SK)
+const PHONE_PK_B = publicKeyFor(PHONE_SK_B)
+
 const DESKTOP_PK = '7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13'
+const DESKTOP_PK_B = 'b1'.repeat(32)
+const DESKTOP_PK_C = 'c2'.repeat(32)
 
 const PAIRED: PairedDesktop = {
   desktopPublicKey: DESKTOP_PK,
@@ -15,6 +26,48 @@ const PAIRED: PairedDesktop = {
   deviceId: '12faa049f0ec7720',
   label: 'Termpolis desktop',
   pairedAt: 1_700_000_000_000,
+}
+const PAIRED_B: PairedDesktop = {
+  desktopPublicKey: DESKTOP_PK_B,
+  sessionRoomId: 'a1'.repeat(16),
+  relayUrl: 'wss://relay-b.test',
+  deviceId: 'b0'.repeat(8),
+  label: 'Workshop Linux box',
+  pairedAt: 1_700_000_100_000,
+}
+const PAIRED_C: PairedDesktop = {
+  desktopPublicKey: DESKTOP_PK_C,
+  sessionRoomId: 'a2'.repeat(16),
+  relayUrl: 'wss://relay-c.test',
+  deviceId: 'c0'.repeat(8),
+  label: 'Basement server',
+  pairedAt: 1_700_000_200_000,
+}
+
+/** The same desktops as the keystore holds them: with the key that is this
+ *  phone's authority over that ONE machine. */
+const STORED: StoredPairing = { ...PAIRED, secretKey: PHONE_SK }
+const STORED_B: StoredPairing = { ...PAIRED_B, secretKey: PHONE_SK_B }
+const STORED_C: StoredPairing = { ...PAIRED_C, secretKey: PHONE_SK_C }
+
+/** A scanned code offering to pair with one particular desktop. */
+function rawFor(desktopPublicKey: string): string {
+  return JSON.stringify({
+    v: 1,
+    relayUrl: 'wss://relay.test',
+    pairingId: '0123456789abcdef0123456789abcdef',
+    desktopPublicKey,
+    oneTimeSecret: 'aa'.repeat(32),
+  })
+}
+
+/** Enough desktops to reach the ceiling, none of them one the fixtures name. */
+function manyDesktops(n: number): StoredPairing[] {
+  return Array.from({ length: n }, (_, i) => ({
+    ...STORED,
+    desktopPublicKey: i.toString(16).padStart(2, '0').repeat(32),
+    label: `Desktop ${i}`,
+  }))
 }
 
 /** Every fake the store is built on, reachable from the tests. */
@@ -37,15 +90,29 @@ const mockSessions: {
 }[] = []
 const mockAppState: { handlers: ((s: string) => void)[] } = { handlers: [] }
 const mockStorage: {
-  paired: PairedDesktop | null
-  cleared: number
-  saved: PairedDesktop[]
-  identityLoads: number
+  /** The keystore: one record per desktop, key and all. */
+  book: StoredPairing[]
+  active: string | null
+  /** Every call that reached storage, in order. Which desktop a call landed on
+   *  is most of what these tests are about -- and so is which calls did NOT
+   *  happen: rewriting key material to remember a tap would be a great deal of
+   *  keychain churn for a UI detail. */
+  writes: string[]
+  loads: number
+  wipes: number
+  /** Secret keys `newIdentity` hands out, in order, taken from the front. Fixed
+   *  rather than random so a test can say which key a pairing ended up holding
+   *  and check the safety phrase against it. */
+  secrets: string[]
+  minted: string[]
 } = {
-  paired: null,
-  cleared: 0,
-  saved: [],
-  identityLoads: 0,
+  book: [],
+  active: null,
+  writes: [],
+  loads: 0,
+  wipes: 0,
+  secrets: [],
+  minted: [],
 }
 const mockPairing: { result: unknown; error: Error | null; calls: unknown[] } = {
   result: null,
@@ -144,39 +211,129 @@ jest.mock('../src/net/pairingClient', () => ({
   },
 }))
 
-jest.mock('../src/storage/identity', () => ({
-  // Inlined: a jest.mock factory may not reach out-of-scope constants.
-  loadIdentity: async () => {
-    // Counted, not varied: the public key below is the real derivation of the
-    // secret and other tests check the safety phrase against it. What the count
-    // proves is that the store went back to storage for a key rather than
-    // reusing the one it had cached.
-    mockStorage.identityLoads += 1
-    return {
-      secretKey: '22'.repeat(32),
-      publicKey: '0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20',
-    }
-  },
-  loadPaired: async () => mockStorage.paired,
-  savePaired: async (d: PairedDesktop) => {
-    mockStorage.saved.push(d)
-    mockStorage.paired = d
-  },
-  wipeIdentity: async () => {
-    mockStorage.cleared += 1
-    mockStorage.paired = null
-  },
-}))
+jest.mock('../src/storage/identity', () => {
+  // The REAL curve maths. A mocked `publicKeyOf` would make the safety phrase
+  // whatever this file wanted it to be, and the phrase is the one thing on
+  // screen the user is asked to compare by eye: it has to come from the key that
+  // was actually stored for that desktop.
+  const { publicKeyFor: derive } = jest.requireActual('../src/wire/sessionCrypto') as {
+    publicKeyFor: (secretKey: string) => string
+  }
+  // Inlined: a jest.mock factory may not reach out-of-scope constants, and no
+  // annotation inside one may name an imported type -- babel's hoist check reads
+  // that as out-of-scope variable access and refuses. Hence the record shape
+  // written out longhand below. `identity.test.ts` holds the real ceiling.
+  const CEILING = 16
+
+  return {
+    MAX_PAIRINGS: CEILING,
+
+    newIdentity: () => {
+      const secretKey = mockStorage.secrets.shift() ?? '99'.repeat(32)
+      mockStorage.minted.push(secretKey)
+      return { secretKey, publicKey: derive(secretKey) }
+    },
+
+    publicPairing: (p: {
+      desktopPublicKey: string
+      sessionRoomId: string
+      relayUrl: string
+      deviceId: string
+      label: string
+      pairedAt: number
+    }) => ({
+      desktopPublicKey: p.desktopPublicKey,
+      sessionRoomId: p.sessionRoomId,
+      relayUrl: p.relayUrl,
+      deviceId: p.deviceId,
+      label: p.label,
+      pairedAt: p.pairedAt,
+    }),
+
+    publicKeyOf: (p: { secretKey: string }) => derive(p.secretKey),
+
+    loadBook: async () => {
+      mockStorage.loads += 1
+      const pairings = mockStorage.book.map((r) => ({ ...r }))
+      // Mirrors the real `pickActive`, so the store is never handed a book that
+      // names a desktop the book did not also return -- a state storage cannot
+      // produce, and therefore not one worth writing a code path for.
+      const named = pairings.some((r) => r.desktopPublicKey === mockStorage.active)
+      return {
+        pairings,
+        active: named ? mockStorage.active : (pairings[0]?.desktopPublicKey ?? null),
+      }
+    },
+
+    addPairing: async (p: {
+      desktopPublicKey: string
+      sessionRoomId: string
+      relayUrl: string
+      deviceId: string
+      label: string
+      pairedAt: number
+      secretKey: string
+    }) => {
+      mockStorage.writes.push(`add ${p.desktopPublicKey}`)
+      const at = mockStorage.book.findIndex((r) => r.desktopPublicKey === p.desktopPublicKey)
+      if (at === -1) mockStorage.book.push({ ...p })
+      else mockStorage.book[at] = { ...p }
+      mockStorage.active = p.desktopPublicKey
+    },
+
+    writePairing: async (p: {
+      desktopPublicKey: string
+      sessionRoomId: string
+      relayUrl: string
+      deviceId: string
+      label: string
+      pairedAt: number
+      secretKey: string
+    }) => {
+      mockStorage.writes.push(`write ${p.desktopPublicKey}`)
+      const at = mockStorage.book.findIndex((r) => r.desktopPublicKey === p.desktopPublicKey)
+      if (at !== -1) mockStorage.book[at] = { ...p }
+    },
+
+    removePairing: async (desktopPublicKey: string, nextActive: string | null) => {
+      mockStorage.writes.push(`remove ${desktopPublicKey} -> ${nextActive ?? 'null'}`)
+      mockStorage.book = mockStorage.book.filter((r) => r.desktopPublicKey !== desktopPublicKey)
+      mockStorage.active = nextActive
+    },
+
+    setActivePairing: async (desktopPublicKey: string | null) => {
+      mockStorage.writes.push(`active ${desktopPublicKey ?? 'null'}`)
+      mockStorage.active = desktopPublicKey
+    },
+
+    wipeEverything: async () => {
+      mockStorage.writes.push('wipe')
+      mockStorage.wipes += 1
+      mockStorage.book = []
+      mockStorage.active = null
+    },
+  }
+})
 
 import { AppState } from 'react-native'
 import { NO_CAPABILITIES } from '../src/wire/protocol'
 import { deriveVerificationPhrase } from '../src/wire/safetyNumber'
+import { publicKeyFor } from '../src/wire/sessionCrypto'
+import { pairingStamp } from '../src/state/pairingStamp'
 import {
   FOREGROUND_DEBOUNCE_MS,
   MAX_OUTPUT_CHARS,
+  forgetEverything,
   teardownRemote,
   useRemoteStore,
 } from '../src/state/remoteStore'
+
+/** Seed the keystore. The first desktop is the one that was on screen last,
+ *  unless `activeKey` names another. */
+function seed(pairings: StoredPairing[], activeKey?: string): void {
+  mockStorage.book = pairings.map((p) => ({ ...p }))
+  mockStorage.active = activeKey ?? pairings[0]?.desktopPublicKey ?? null
+}
 
 function socket(): (typeof mockSockets)[number] {
   return mockSockets[mockSockets.length - 1] as (typeof mockSockets)[number]
@@ -215,10 +372,13 @@ beforeEach(() => {
   mockSockets.length = 0
   mockSessions.length = 0
   mockAppState.handlers.length = 0
-  mockStorage.paired = null
-  mockStorage.cleared = 0
-  mockStorage.identityLoads = 0
-  mockStorage.saved.length = 0
+  mockStorage.book = []
+  mockStorage.active = null
+  mockStorage.writes.length = 0
+  mockStorage.loads = 0
+  mockStorage.wipes = 0
+  mockStorage.secrets.length = 0
+  mockStorage.minted.length = 0
   mockPairing.result = null
   mockPairing.error = null
   mockPairing.calls.length = 0
@@ -240,7 +400,7 @@ describe('boot', () => {
   it('connects to the STORED session room, not one it recomputes', async () => {
     // The stored room is the one the desktop is sitting in. Recomputing it here
     // would look right until an identity change made the two disagree silently.
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     expect(socket().deps.roomId).toBe(PAIRED.sessionRoomId)
     expect(socket().deps.url).toBe(PAIRED.relayUrl)
@@ -248,7 +408,7 @@ describe('boot', () => {
   })
 
   it('shows the safety phrase for the stored pairing', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     expect(useRemoteStore.getState().safetyPhrase).toBe(
       deriveVerificationPhrase(PHONE_PK, DESKTOP_PK),
@@ -256,42 +416,71 @@ describe('boot', () => {
   })
 
   it('starts stale, because nothing on screen has been confirmed yet', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     expect(useRemoteStore.getState().stale).toBe(true)
   })
 
   it('does not open a second socket when called twice', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
+    await useRemoteStore.getState().boot()
+    expect(mockSockets).toHaveLength(1)
+  })
+
+  it('shows every paired desktop, with no private key among them', async () => {
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+    expect(useRemoteStore.getState().pairings).toEqual([PAIRED, PAIRED_B])
+    // The redaction, checked rather than assumed: a screen that could read a
+    // secret key off the store is one JSON.stringify away from putting this
+    // phone's authority over a desktop into a log.
+    for (const p of useRemoteStore.getState().pairings) {
+      expect(p).not.toHaveProperty('secretKey')
+    }
+  })
+
+  it('comes back to the desktop that was on screen last, not the first paired', async () => {
+    seed([STORED, STORED_B], DESKTOP_PK_B)
+    await useRemoteStore.getState().boot()
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED_B)
+    expect(socket().deps.roomId).toBe(PAIRED_B.sessionRoomId)
+  })
+
+  it('dials the desktop on screen and no other', async () => {
+    // One connection at a time. Several would keep several radios awake for
+    // frames nobody is looking at, and the reconnect and foreground logic is
+    // written per socket.
+    seed([STORED, STORED_B, STORED_C])
     await useRemoteStore.getState().boot()
     expect(mockSockets).toHaveLength(1)
   })
 })
 
 describe('pairing from a scanned code', () => {
-  const RAW = JSON.stringify({
-    v: 1,
-    relayUrl: 'wss://relay.test',
-    pairingId: '0123456789abcdef0123456789abcdef',
-    desktopPublicKey: DESKTOP_PK,
-    oneTimeSecret: 'aa'.repeat(32),
-  })
+  const RAW = rawFor(DESKTOP_PK)
 
   it('refuses a malformed payload without touching storage', async () => {
     await useRemoteStore.getState().pairFromQr('not a qr', 'phone')
     expect(useRemoteStore.getState().error).toMatch(/code/i)
     expect(useRemoteStore.getState().paired).toBeNull()
-    expect(mockStorage.saved).toHaveLength(0)
+    expect(mockStorage.writes).toHaveLength(0)
     expect(mockPairing.calls).toHaveLength(0)
   })
 
-  it('stores the pairing and shows its safety phrase', async () => {
-    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'hurdle desert ember kelp' }
+  it('stores the pairing, key and all, and shows the phrase for the key it stored', async () => {
+    mockStorage.secrets = [PHONE_SK]
+    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'not this one' }
     await useRemoteStore.getState().pairFromQr(RAW, "David's iPhone")
-    expect(mockStorage.saved).toEqual([PAIRED])
+    expect(mockStorage.writes).toEqual([`add ${DESKTOP_PK}`])
+    expect(mockStorage.book).toEqual([{ ...PAIRED, secretKey: PHONE_SK }])
     expect(useRemoteStore.getState().paired).toEqual(PAIRED)
-    expect(useRemoteStore.getState().safetyPhrase).toBe('hurdle desert ember kelp')
+    // Derived from the key that was actually stored, not taken from the pairing
+    // client's word for it. Those two agreeing is the whole point of showing a
+    // phrase: it is a statement about the key this phone will greet with.
+    expect(useRemoteStore.getState().safetyPhrase).toBe(
+      deriveVerificationPhrase(PHONE_PK, DESKTOP_PK),
+    )
   })
 
   it('passes the label the user typed to the desktop', async () => {
@@ -310,14 +499,325 @@ describe('pairing from a scanned code', () => {
     mockPairing.error = new Error('Pairing timed out.')
     await useRemoteStore.getState().pairFromQr(RAW, 'phone')
     expect(useRemoteStore.getState().error).toMatch(/timed out/i)
-    expect(mockStorage.saved).toHaveLength(0)
+    // An abandoned pairing leaves nothing in the keystore -- not even the key it
+    // minted to try with.
+    expect(mockStorage.writes).toHaveLength(0)
     expect(useRemoteStore.getState().paired).toBeNull()
+  })
+
+  it('keeps the desktops already paired and puts the new one on screen', async () => {
+    seed([STORED])
+    await useRemoteStore.getState().boot()
+    mockStorage.secrets = [PHONE_SK_B]
+    mockPairing.result = { desktop: PAIRED_B, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(rawFor(DESKTOP_PK_B), 'phone')
+    expect(useRemoteStore.getState().pairings).toEqual([PAIRED, PAIRED_B])
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED_B)
+  })
+
+  it('mints a key per desktop, so no two are handed the same one', async () => {
+    // Two desktops holding the same public key can compare notes and know they
+    // are talking to one handset -- and since a device id is a hash of that key,
+    // this phone would be the same row on both.
+    mockStorage.secrets = [PHONE_SK, PHONE_SK_B]
+    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    mockPairing.result = { desktop: PAIRED_B, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(rawFor(DESKTOP_PK_B), 'phone')
+    expect(mockStorage.minted).toEqual([PHONE_SK, PHONE_SK_B])
+    expect(new Set(mockStorage.book.map((r) => r.secretKey)).size).toBe(2)
+  })
+
+  it('closes the desktop it was showing and clears what belonged to it', async () => {
+    seed([STORED])
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext([{ id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }])
+    await settle()
+    const first = socket()
+
+    mockStorage.secrets = [PHONE_SK_B]
+    mockPairing.result = { desktop: PAIRED_B, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(rawFor(DESKTOP_PK_B), 'phone')
+
+    expect(first.closed).toBe(true)
+    expect(socket().deps.roomId).toBe(PAIRED_B.sessionRoomId)
+    // Terminals and grants are statements about a particular machine. Carried
+    // across, a grant would enable a control the new desktop has not allowed.
+    expect(useRemoteStore.getState().terminals).toEqual([])
+    expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)
+  })
+
+  it('numbers a second desktop that reports the same name', async () => {
+    // Two machines calling themselves the same thing is ordinary -- a laptop and
+    // its VM, two fresh Ubuntu installs -- and two identical rows is a switcher
+    // that cannot be used. Numbered rather than refused, because the user can
+    // rename either one afterwards.
+    mockStorage.secrets = [PHONE_SK, PHONE_SK_B, PHONE_SK_C]
+    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    mockPairing.result = { desktop: { ...PAIRED_B, label: PAIRED.label }, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(rawFor(DESKTOP_PK_B), 'phone')
+    mockPairing.result = { desktop: { ...PAIRED_C, label: PAIRED.label }, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(rawFor(DESKTOP_PK_C), 'phone')
+    expect(useRemoteStore.getState().pairings.map((d) => d.label)).toEqual([
+      PAIRED.label,
+      `${PAIRED.label} (2)`,
+      `${PAIRED.label} (3)`,
+    ])
+  })
+
+  it('does not number a desktop that is simply being paired again', async () => {
+    // The collision check skips the row being written, so re-pairing a known
+    // desktop keeps its name instead of drifting to "(2)" every time.
+    mockStorage.secrets = [PHONE_SK, PHONE_SK_C]
+    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    expect(useRemoteStore.getState().pairings.map((d) => d.label)).toEqual([PAIRED.label])
+  })
+
+  it('refuses a new desktop at the ceiling without spending the code', async () => {
+    // Checked before dialling. A phone at the ceiling that dialled anyway would
+    // burn the desktop's single-use code to find out, and the user would have to
+    // walk back to the machine for a fresh one.
+    seed(manyDesktops(16))
+    await useRemoteStore.getState().boot()
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    expect(useRemoteStore.getState().error).toMatch(/16 desktops already/)
+    expect(mockPairing.calls).toHaveLength(0)
+    expect(useRemoteStore.getState().pairings).toHaveLength(16)
+  })
+
+  it('still re-pairs a desktop it already knows when the list is full', async () => {
+    seed([...manyDesktops(15), STORED])
+    await useRemoteStore.getState().boot()
+    mockStorage.secrets = [PHONE_SK_C]
+    mockPairing.result = { desktop: PAIRED, safetyPhrase: 'x' }
+    await useRemoteStore.getState().pairFromQr(RAW, 'phone')
+    expect(mockPairing.calls).toHaveLength(1)
+    expect(useRemoteStore.getState().pairings).toHaveLength(16)
+    // Replaced in place, so the switcher does not reorder under the user's
+    // finger while they are looking at it.
+    expect(useRemoteStore.getState().pairings[15]?.desktopPublicKey).toBe(DESKTOP_PK)
+    expect(mockStorage.book[15]?.secretKey).toBe(PHONE_SK_C)
+  })
+})
+
+describe('switching between desktops', () => {
+  async function two(): Promise<void> {
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+  }
+
+  it('puts the other desktop on screen and dials its room', async () => {
+    await two()
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED)
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK_B)
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED_B)
+    expect(socket().deps.roomId).toBe(PAIRED_B.sessionRoomId)
+    expect(socket().deps.url).toBe(PAIRED_B.relayUrl)
+  })
+
+  it('holds one radio awake, not two', async () => {
+    await two()
+    const first = socket()
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK_B)
+    expect(first.closed).toBe(true)
+    expect(mockSockets).toHaveLength(2)
+  })
+
+  it('remembers the choice, and rewrites nothing else to do it', async () => {
+    await two()
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK_B)
+    // The index only. Rewriting a desktop's key material to remember a tap
+    // would be a great deal of keychain churn for a UI detail.
+    expect(mockStorage.writes).toEqual([`active ${DESKTOP_PK_B}`])
+    expect(mockStorage.active).toBe(DESKTOP_PK_B)
+  })
+
+  it('shows the safety phrase of the desktop it moved to', async () => {
+    // Derived from the key stored for THAT desktop. A store that handed the
+    // socket the wrong pairing's key would show the wrong words here -- which is
+    // the one place in the app that mistake is visible to a user.
+    await two()
+    expect(useRemoteStore.getState().safetyPhrase).toBe(
+      deriveVerificationPhrase(PHONE_PK, DESKTOP_PK),
+    )
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK_B)
+    expect(useRemoteStore.getState().safetyPhrase).toBe(
+      deriveVerificationPhrase(PHONE_PK_B, DESKTOP_PK_B),
+    )
+  })
+
+  it('leaves nothing of the desktop it left on screen', async () => {
+    await two()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext([{ id: 't1', name: 'Claude', shellType: 'pwsh', cwd: '/repo' }])
+    await settle()
+    session().output[0]?.([chunk()])
+    session().status[0]?.({ terminalId: 't1', state: 'working', detail: null, at: 1 })
+    expect(useRemoteStore.getState().terminals).toHaveLength(1)
+
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK_B)
+
+    const s = useRemoteStore.getState()
+    // Somebody else's terminals under this desktop's name would be a bad enough
+    // bug on its own; a grant carried across would enable a control the desktop
+    // now on screen has not allowed.
+    expect(s.terminals).toEqual([])
+    expect(s.output).toEqual({})
+    expect(s.outputEnd).toEqual({})
+    expect(s.agentStatus).toEqual({})
+    expect(s.capabilities).toEqual(NO_CAPABILITIES)
+  })
+
+  it('ignores a tap on the desktop already showing', async () => {
+    await two()
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK)
+    expect(mockSockets).toHaveLength(1)
+    expect(mockStorage.writes).toEqual([])
+  })
+
+  it('ignores a tap on a row whose pairing has already gone', async () => {
+    // A stale row can be tapped once after the pairing behind it is removed, and
+    // throwing inside a list that has already moved on helps nobody.
+    await two()
+    await expect(
+      useRemoteStore.getState().selectDesktop('ff'.repeat(32)),
+    ).resolves.toBeUndefined()
+    expect(mockSockets).toHaveLength(1)
+  })
+})
+
+describe('renaming a desktop', () => {
+  async function two(): Promise<void> {
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+  }
+
+  it('writes the new name and shows it', async () => {
+    await two()
+    await useRemoteStore.getState().renameDesktop(DESKTOP_PK_B, 'Basement server')
+    expect(mockStorage.writes).toEqual([`write ${DESKTOP_PK_B}`])
+    expect(mockStorage.book[1]?.label).toBe('Basement server')
+    expect(useRemoteStore.getState().pairings[1]?.label).toBe('Basement server')
+  })
+
+  it('renames the desktop on screen without disturbing the connection', async () => {
+    // The name is this phone's note to itself. The desktop is not told, and the
+    // socket has no reason to notice.
+    await two()
+    await useRemoteStore.getState().renameDesktop(DESKTOP_PK, 'Work laptop')
+    expect(useRemoteStore.getState().paired?.label).toBe('Work laptop')
+    expect(mockSockets).toHaveLength(1)
+    expect(socket().closed).toBe(false)
+  })
+
+  it('cleans what the user typed, exactly as an announced name is cleaned', async () => {
+    await two()
+    await useRemoteStore
+      .getState()
+      .renameDesktop(DESKTOP_PK, `  Work${String.fromCharCode(7)} laptop  `)
+    expect(useRemoteStore.getState().paired?.label).toBe('Work laptop')
+  })
+
+  it('ignores a name that is nothing but spaces, rather than blanking the row', async () => {
+    await two()
+    await useRemoteStore.getState().renameDesktop(DESKTOP_PK, '   ')
+    expect(useRemoteStore.getState().paired?.label).toBe(PAIRED.label)
+    expect(mockStorage.writes).toEqual([])
+  })
+
+  it('ignores a rename of a desktop that is no longer there', async () => {
+    await two()
+    await expect(
+      useRemoteStore.getState().renameDesktop('ff'.repeat(32), 'Ghost'),
+    ).resolves.toBeUndefined()
+    expect(mockStorage.writes).toEqual([])
+  })
+
+  it('numbers a rename that collides with another desktop', async () => {
+    await two()
+    await useRemoteStore.getState().renameDesktop(DESKTOP_PK_B, PAIRED.label)
+    expect(useRemoteStore.getState().pairings[1]?.label).toBe(`${PAIRED.label} (2)`)
+  })
+
+  it('lets a desktop keep the name it already has', async () => {
+    // The collision check skips the row being renamed, so re-typing the same
+    // name is not a collision with itself.
+    await two()
+    await useRemoteStore.getState().renameDesktop(DESKTOP_PK, PAIRED.label)
+    expect(useRemoteStore.getState().paired?.label).toBe(PAIRED.label)
+  })
+})
+
+describe('forgetting one desktop', () => {
+  async function three(): Promise<void> {
+    seed([STORED, STORED_B, STORED_C])
+    await useRemoteStore.getState().boot()
+  }
+
+  it('erases that desktop and its key, and no other', async () => {
+    await three()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK_B)
+    expect(mockStorage.writes).toEqual([`remove ${DESKTOP_PK_B} -> ${DESKTOP_PK}`])
+    expect(mockStorage.book.map((r) => r.desktopPublicKey)).toEqual([DESKTOP_PK, DESKTOP_PK_C])
+    expect(useRemoteStore.getState().pairings).toEqual([PAIRED, PAIRED_C])
+  })
+
+  it('leaves the connection alone when it was not the desktop on screen', async () => {
+    await three()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK_B)
+    expect(mockSockets).toHaveLength(1)
+    expect(socket().closed).toBe(false)
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED)
+  })
+
+  it('moves to another paired desktop rather than to the pair screen', async () => {
+    // The user removed ONE desktop. A phone that falls back to the pairing
+    // screen while two others are still paired has lost them as far as the user
+    // can tell.
+    await three()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED_B)
+    expect(mockSockets).toHaveLength(2)
+    expect(socket().deps.roomId).toBe(PAIRED_B.sessionRoomId)
+    expect(mockStorage.writes).toEqual([`remove ${DESKTOP_PK} -> ${DESKTOP_PK_B}`])
+  })
+
+  it('lands on the pair screen when the last desktop goes', async () => {
+    seed([STORED])
+    await useRemoteStore.getState().boot()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    expect(mockStorage.writes).toEqual([`remove ${DESKTOP_PK} -> null`])
+    const s = useRemoteStore.getState()
+    expect(s.paired).toBeNull()
+    expect(s.pairings).toEqual([])
+    expect(s.safetyPhrase).toBeNull()
+    expect(mockSockets).toHaveLength(1)
+    expect(socket().closed).toBe(true)
+  })
+
+  it('is harmless when the row has already gone', async () => {
+    // Two taps on Remove race, and the second must not throw inside a screen
+    // that has already redrawn without the row.
+    await three()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK_B)
+    await expect(
+      useRemoteStore.getState().forgetDesktop(DESKTOP_PK_B),
+    ).resolves.toBeUndefined()
+    expect(mockStorage.writes).toHaveLength(1)
   })
 })
 
 describe('stale means stale', () => {
   async function attached(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -335,7 +835,7 @@ describe('stale means stale', () => {
   })
 
   it('keeps the list once it arrives', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -385,7 +885,7 @@ describe('stale means stale', () => {
   it('keeps the last-known terminals while stale', async () => {
     // Showing nothing would read as "the desktop has no terminals", which is a
     // different and wrong statement.
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -457,7 +957,7 @@ describe('stale means stale', () => {
 
 describe('output', () => {
   async function attached(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -519,7 +1019,7 @@ describe('output', () => {
  *  spliced in. An anchor at the start would need re-basing on every trim. */
 describe('an edit that replaces what the phone already showed', () => {
   async function attached(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -620,7 +1120,7 @@ describe('an edit that replaces what the phone already showed', () => {
 
 describe('unpairing', () => {
   it('clears storage, closes the socket, and forgets what was on screen', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -632,7 +1132,8 @@ describe('unpairing', () => {
 
     await useRemoteStore.getState().unpair()
 
-    expect(mockStorage.cleared).toBe(1)
+    expect(mockStorage.writes).toEqual([`remove ${DESKTOP_PK} -> null`])
+    expect(mockStorage.book).toEqual([])
     expect(socket().closed).toBe(true)
     const s = useRemoteStore.getState()
     expect(s.paired).toBeNull()
@@ -648,25 +1149,74 @@ describe('unpairing', () => {
   })
 
   it('drops the cached private key as well as the stored one', async () => {
-    // The keystore is not the only copy. `identity` is a module-level cache that
+    // The keystore is not the only copy: the vault is a module-level cache that
     // outlives the store, so an unpair that erased only the keychain would go on
-    // greeting desktops under the key the user just revoked for the rest of the
-    // process -- the promise true of the disk and false of the running app.
-    mockStorage.paired = PAIRED
+    // greeting that desktop under the key the user just revoked for the rest of
+    // the process -- the promise true of the disk and false of the running app.
+    seed([STORED])
     await useRemoteStore.getState().boot()
     await settle()
-    expect(mockStorage.identityLoads).toBe(1)
+    expect(mockStorage.loads).toBe(1)
 
     await useRemoteStore.getState().unpair()
-    await useRemoteStore.getState().boot()
+    // Gone from the cache too, so tapping the row it came from does nothing at
+    // all rather than dialling with a revoked key.
+    await useRemoteStore.getState().selectDesktop(DESKTOP_PK)
+    expect(mockSockets).toHaveLength(1)
 
-    expect(mockStorage.identityLoads).toBe(2)
+    await useRemoteStore.getState().boot()
+    expect(mockStorage.loads).toBe(2)
+    expect(useRemoteStore.getState().pairings).toEqual([])
+  })
+
+  it('unpairs the desktop on screen only, leaving the others paired', async () => {
+    // What Settings promises in so many words: this phone forgets its key for
+    // that desktop, and any others stay paired.
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+    await useRemoteStore.getState().unpair()
+    expect(mockStorage.writes).toEqual([`remove ${DESKTOP_PK} -> ${DESKTOP_PK_B}`])
+    expect(useRemoteStore.getState().pairings).toEqual([PAIRED_B])
+    expect(useRemoteStore.getState().paired).toEqual(PAIRED_B)
+  })
+})
+
+describe('the stamp that says a pairing just happened', () => {
+  it('is zero when nothing is paired', () => {
+    expect(pairingStamp([])).toBe(0)
+  })
+
+  it('is the newest pairing, wherever it sits in the list', () => {
+    // The list is in the order the desktops were paired and a re-pair keeps its
+    // old position, so the newest stamp can be anywhere in it.
+    expect(pairingStamp([{ ...PAIRED, pairedAt: 5 }, { ...PAIRED_B, pairedAt: 3 }])).toBe(5)
+    expect(pairingStamp([{ ...PAIRED, pairedAt: 3 }, { ...PAIRED_B, pairedAt: 5 }])).toBe(5)
+  })
+
+  it('moves when a desktop already in the list is paired again', async () => {
+    // A count would not, and that is the whole reason this exists: a re-pair
+    // mints a fresh key and therefore fresh safety words, which have to be
+    // compared like any other. Verification skipped because the name was already
+    // on the list is verification not done.
+    seed([STORED])
+    await useRemoteStore.getState().boot()
+    const before = pairingStamp(useRemoteStore.getState().pairings)
+
+    mockStorage.secrets = [PHONE_SK_C]
+    mockPairing.result = {
+      desktop: { ...PAIRED, pairedAt: PAIRED.pairedAt + 60_000 },
+      safetyPhrase: 'x',
+    }
+    await useRemoteStore.getState().pairFromQr(rawFor(DESKTOP_PK), 'phone')
+
+    expect(useRemoteStore.getState().pairings).toHaveLength(1)
+    expect(pairingStamp(useRemoteStore.getState().pairings)).toBeGreaterThan(before)
   })
 })
 
 describe('what this phone may do', () => {
   async function attached(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -778,7 +1328,7 @@ describe('what this phone may do', () => {
 
 describe('following the app in and out of the foreground', () => {
   async function booted(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
   }
 
@@ -847,7 +1397,7 @@ describe('following the app in and out of the foreground', () => {
 
 describe('a request the desktop refuses', () => {
   async function attached(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -880,7 +1430,7 @@ describe('a request the desktop refuses', () => {
 
 describe('the wiring the store hands to the socket and the session', () => {
   async function booted(): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
   }
 
@@ -977,7 +1527,7 @@ describe('creating and closing terminals', () => {
   const T2 = { id: 't2', name: 'Codex', shellType: 'pwsh', cwd: '/repo' }
 
   async function attachedWith(terminals: unknown[]): Promise<void> {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -1032,7 +1582,7 @@ describe('creating and closing terminals', () => {
 
 describe('a reconnect the user changed their mind about', () => {
   it('cancels the pending dial when the app goes straight back to the background', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     mockAppState.handlers[0]?.('background')
     mockAppState.handlers[0]?.('active')
@@ -1106,7 +1656,7 @@ describe('the wiring the store hands to the pairing client', () => {
 
 describe('an attach where the desktop answers with a refusal', () => {
   it('swallows both re-asks rather than raising an unhandled rejection', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -1127,7 +1677,7 @@ describe('an attach where the desktop answers with a refusal', () => {
 
 describe('tearing the whole module down', () => {
   it('forgets the grants along with everything else', async () => {
-    mockStorage.paired = PAIRED
+    seed([STORED])
     await useRemoteStore.getState().boot()
     state('attached')
     await settle()
@@ -1144,5 +1694,23 @@ describe('tearing the whole module down', () => {
     expect(useRemoteStore.getState().capabilities).toEqual(NO_CAPABILITIES)
     expect(useRemoteStore.getState().paired).toBeNull()
     expect(useRemoteStore.getState().terminals).toEqual([])
+  })
+
+  it('forgets every desktop and erases every key', async () => {
+    // Not reachable from any screen -- Settings unpairs one at a time -- but
+    // PRIVACY.md promises that deleting the app destroys the key material, and a
+    // test proving it needs something to call.
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+
+    await forgetEverything()
+
+    expect(mockStorage.wipes).toBe(1)
+    expect(mockStorage.book).toEqual([])
+    expect(socket().closed).toBe(true)
+    const s = useRemoteStore.getState()
+    expect(s.pairings).toEqual([])
+    expect(s.paired).toBeNull()
+    expect(s.safetyPhrase).toBeNull()
   })
 })

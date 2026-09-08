@@ -183,7 +183,48 @@ describe('pairing ack', () => {
 
   it('round-trips the device id the desktop settled on', () => {
     const o = offer()
-    expect(open(o, ack(o, 'deadbeef'))).toEqual({ deviceId: 'deadbeef' })
+    // No name was sealed, which is what a 1.39 desktop's ack looks like: null,
+    // not an empty string, so the phone has one absence to handle rather than
+    // two.
+    expect(open(o, ack(o, 'deadbeef'))).toEqual({ deviceId: 'deadbeef', name: null })
+  })
+
+  it('round-trips the desktop name, cleaned at both ends', () => {
+    const o = offer()
+    const frame = sealPairingAck({
+      desktopSecretKey: desktop.secretKey,
+      devicePublicKey: phone.publicKey,
+      pairingId: o.pairingId,
+      deviceId: 'abc123',
+      name: '  Workshop\u0007 Linux box  ',
+    })
+    expect(open(o, frame)).toEqual({ deviceId: 'abc123', name: 'Workshop Linux box' })
+  })
+
+  it('omits a name that sanitises to nothing rather than sealing an empty one', () => {
+    const o = offer()
+    const frame = sealPairingAck({
+      desktopSecretKey: desktop.secretKey,
+      devicePublicKey: phone.publicKey,
+      pairingId: o.pairingId,
+      deviceId: 'abc123',
+      // A hostname of nothing but control characters is not a name. The field
+      // is left out, and the phone reads that as "name it yourself".
+      name: '\u0000\u001f\u007f',
+    })
+    expect(open(o, frame)).toEqual({ deviceId: 'abc123', name: null })
+  })
+
+  it('clips a desktop name to the label limit', () => {
+    const o = offer()
+    const frame = sealPairingAck({
+      desktopSecretKey: desktop.secretKey,
+      devicePublicKey: phone.publicKey,
+      pairingId: o.pairingId,
+      deviceId: 'abc123',
+      name: 'n'.repeat(200),
+    })
+    expect(open(o, frame)).toEqual({ deviceId: 'abc123', name: 'n'.repeat(64) })
   })
 
   it('opens with a session built from scratch, as a real phone must', () => {
@@ -194,8 +235,8 @@ describe('pairing ack', () => {
     // would fail on the phone only -- with the desktop believing it succeeded.
     const o = offer()
     const frame = ack(o)
-    expect(open(o, frame)).toEqual({ deviceId: 'abc123' })
-    expect(open(o, frame)).toEqual({ deviceId: 'abc123' })
+    expect(open(o, frame)).toEqual({ deviceId: 'abc123', name: null })
+    expect(open(o, frame)).toEqual({ deviceId: 'abc123', name: null })
   })
 
   it('is tagged as an ack, not as a hello', () => {

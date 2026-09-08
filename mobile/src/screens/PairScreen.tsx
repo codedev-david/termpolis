@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native'
 
+import { pairingStamp } from '../state/pairingStamp'
 import { useRemoteStore } from '../state/remoteStore'
 
 /** What the desktop's device list will call this phone until it is renamed
@@ -25,10 +26,15 @@ const DEVICE_LABEL = Platform.OS === 'ios' ? 'iPhone' : 'Android phone'
  * for good, and scanning. A permission the hook has not resolved yet reads as
  * "not yet granted", which is what it is; a spinner state would only add a
  * flicker between two screens that say the same thing.
+ *
+ * This screen is reached both from an unpaired phone and from a paired one
+ * adding another desktop, so nothing here refuses to run because a pairing
+ * already exists. What it does refuse is scanning twice: the desktop's code is
+ * single-use, and the camera keeps firing for as long as it is held in frame.
  */
 export default function PairScreen(): React.JSX.Element {
   const [permission, requestPermission] = useCameraPermissions()
-  const paired = useRemoteStore((s) => s.paired)
+  const pairings = useRemoteStore((s) => s.pairings)
   const error = useRemoteStore((s) => s.error)
   const pairFromQr = useRemoteStore((s) => s.pairFromQr)
   const [typed, setTyped] = useState('')
@@ -36,18 +42,28 @@ export default function PairScreen(): React.JSX.Element {
   // A ref, not the state: the scanner fires many times per second and re-renders
   // do not land between two frames.
   const busyRef = useRef(false)
+  // Set once a pairing has actually landed. Without it, the frame after a
+  // successful scan re-submits a code the desktop has already spent, and the
+  // user watches their own success turn into an error banner.
+  const doneRef = useRef(false)
 
   const pair = useCallback(
     (raw: string): void => {
-      if (busyRef.current || paired !== null || raw.length === 0) return
+      if (busyRef.current || doneRef.current || raw.length === 0) return
       busyRef.current = true
       setBusy(true)
+      const before = pairingStamp(useRemoteStore.getState().pairings)
       void pairFromQr(raw, DEVICE_LABEL).finally(() => {
+        // A newer stamp is the only honest signal that the code was spent:
+        // `pairFromQr` reports failure through the banner rather than by
+        // rejecting, and re-pairing a desktop already on the list leaves the
+        // number of pairings exactly where it was.
+        if (pairingStamp(useRemoteStore.getState().pairings) > before) doneRef.current = true
         busyRef.current = false
         setBusy(false)
       })
     },
-    [paired, pairFromQr],
+    [pairFromQr],
   )
 
   const onScan = useCallback(
@@ -67,7 +83,9 @@ export default function PairScreen(): React.JSX.Element {
 
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Pair with your desktop</Text>
+      <Text style={styles.title}>
+        {pairings.length === 0 ? 'Pair with your desktop' : 'Pair another desktop'}
+      </Text>
 
       {error !== null && (
         <Text testID="pair-error" style={styles.error}>

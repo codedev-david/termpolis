@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: September 5, 2026 (Termpolis Remote and the pairing relay)
+Last updated: September 8, 2026 (Termpolis Remote: one phone, several desktops)
 
 ## Overview
 
@@ -136,17 +136,21 @@ that trusting it is not required:
 
 Its own private key, in the operating system's keystore (iOS Keychain /
 Android Keystore), marked available only while the device is unlocked and not
-backed up to another device; and the pairing record — the desktop's public
-key, a session identifier, the relay address, a device id and the label you
-gave the desktop. That is the whole list. Terminal output reaches the phone
+backed up to another device; and one pairing record per desktop — that
+desktop's public key, a session identifier, the relay address, a device id and
+the name shown for it in the app. A phone may be paired with several desktops
+(a work machine and a home one, say) and keeps a separate record, and a
+separate private key, for each; they are written to the keystore individually,
+so forgetting one leaves the others untouched. That is the whole list. Terminal output reaches the phone
 encrypted, is held in memory while the app is open, and is never written to
 disk. The camera is used for exactly one thing, scanning the pairing code your
 desktop displays; frames are decoded on the device and discarded.
 
 The phone app has no account, no analytics SDK, no crash reporter, no
 advertising identifier and no server of ours that it talks to. Unpairing —
-from either end — erases the key material, and the channel cannot be re-opened
-without pairing again.
+from either end — erases the key material for that desktop, and that channel
+cannot be re-opened without pairing again; any other desktops the phone is
+paired with are unaffected.
 
 The combined policy covering the desktop app, the phone app and the relay
 together is published at <https://termpolis.com/privacy.html>.
@@ -226,7 +230,8 @@ the respective provider's privacy policy:
   it in Settings → Remote stops the bridge and closes the relay connection.
 - **Cut a phone off** — revoke the device in Settings → Remote, or unpair from
   the phone. Either end is enough: the channel cannot be re-opened without
-  pairing again from both.
+  pairing again from both. Each desktop is its own pairing, so revoking on one
+  machine does not touch the phone's link to any other.
 - **Use your own relay** — the relay address is a setting. Point it at a
   deployment of `relay/` you run, and no traffic touches ours.
 

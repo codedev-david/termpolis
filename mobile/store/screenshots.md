@@ -25,8 +25,13 @@ a phone screenshot, but the terminal contents do.
 
 ## What to show, in this order
 
-Five screenshots carry the whole story, and the first two are the ones that
-answer "what is this and why does it need my camera."
+Six screenshots carry the whole story, and the first two are the ones that
+answer "what is this and why does it need my camera." Apple takes up to ten
+per size and Play up to eight, so six is inside both.
+
+Nothing real may appear in any of them -- no real path, branch name, prompt or
+hostname. The desktop names in shot 5 are typed by hand on the phone before
+capture, which is exactly what the rename control is for.
 
 | # | Screen | Why it is in the set |
 | --- | --- | --- |
@@ -34,7 +39,8 @@ answer "what is this and why does it need my camera."
 | 2 | Terminal | Reading and typing. Show the scratch project's output and the input bar. |
 | 3 | Pair | Explains the camera before the permission prompt does. |
 | 4 | Safety words | The eight words, on the phone. The security claim, made visible. |
-| 5 | Settings | The capability list, showing that the desktop grants and this app reports. |
+| 5 | Paired desktops | Three named machines, one of them active. Shows that a pairing is per desktop and revocable one at a time. |
+| 6 | Settings | The capability list, showing that the desktop grants and this app reports. |
 
 Portrait only -- `app.json` sets `"orientation": "portrait"`, and a landscape
 screenshot of a portrait-locked app reads as a screenshot from another app.

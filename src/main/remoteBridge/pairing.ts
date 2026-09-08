@@ -9,6 +9,7 @@ import {
   PROTOCOL_VERSION,
 } from './sessionCrypto'
 import { NO_CAPABILITIES, type Capabilities, type PairedDevice } from './protocol'
+import { sanitizeDeviceLabel } from './deviceLabel'
 
 const DEFAULT_TTL_MS = 90_000
 
@@ -124,6 +125,20 @@ const ACK_HEADER_BYTES = 1
 interface AckPayload {
   v: number
   deviceId: string
+  /** What this desktop calls itself, so a phone paired with several of them can
+   *  tell them apart without being made to name each one by hand.
+   *
+   *  Optional, and that is the whole reason it can exist at all. `PROTOCOL_VERSION`
+   *  is checked for equality at both ends, so bumping it to carry a name would
+   *  make every 1.39 phone unable to pair with a 1.40 desktop AND every 1.40
+   *  phone unable to pair with a 1.39 desktop -- for a label. An added optional
+   *  field costs neither: an old desktop simply omits it, and an old phone reads
+   *  `v` and `deviceId` and never looks for it.
+   *
+   *  Sealed rather than put in the QR. The QR is a bearer credential that gets
+   *  photographed and screenshared, and the machine's hostname is one more thing
+   *  a photograph of it should not carry. */
+  name?: string
 }
 
 /** The desktop's answer: `0x02 || sealed`.
@@ -143,9 +158,19 @@ export function sealPairingAck(opts: {
   devicePublicKey: string
   pairingId: string
   deviceId: string
+  /** This machine's name for the phone's desktop list. Omitted from the payload
+   *  rather than sent empty when there is nothing usable: the phone reads absence
+   *  as "name it yourself", and a blank string would be a name it has to
+   *  special-case instead of a field it can ignore. */
+  name?: string
 }): Uint8Array {
   const root = pairingRoot(opts.desktopSecretKey, opts.devicePublicKey, opts.pairingId)
-  const payload: AckPayload = { v: PROTOCOL_VERSION, deviceId: opts.deviceId }
+  const name = sanitizeDeviceLabel(opts.name)
+  const payload: AckPayload = {
+    v: PROTOCOL_VERSION,
+    deviceId: opts.deviceId,
+    ...(name.length > 0 ? { name } : {}),
+  }
   return SealedSession.fromRoot(root, 'desktop').seal(
     new Uint8Array([FRAME_PAIRING_ACK]),
     new TextEncoder().encode(JSON.stringify(payload)),
@@ -160,7 +185,7 @@ export function openPairingAck(opts: {
   desktopPublicKey: string
   pairingId: string
   frame: Uint8Array
-}): { deviceId: string } {
+}): { deviceId: string; name: string | null } {
   if (opts.frame[0] !== FRAME_PAIRING_ACK) throw new Error('not a pairing ack')
   const root = pairingRoot(opts.deviceSecretKey, opts.desktopPublicKey, opts.pairingId)
   const opened = SealedSession.fromRoot(root, 'device').open(opts.frame, ACK_HEADER_BYTES)
@@ -168,7 +193,11 @@ export function openPairingAck(opts: {
   if (payload.v !== PROTOCOL_VERSION) {
     throw new Error(`unsupported pairing version ${payload.v}`)
   }
-  return { deviceId: payload.deviceId }
+  // Sanitised again on the way out even though the sender sanitised it on the
+  // way in. The seal proves the desktop sent it, not that the desktop was
+  // running a version that cared.
+  const name = sanitizeDeviceLabel(payload.name)
+  return { deviceId: payload.deviceId, name: name.length > 0 ? name : null }
 }
 
 function secretsMatch(a: string, b: string): boolean {

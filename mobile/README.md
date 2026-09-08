@@ -31,6 +31,31 @@ scans it, and both ends then display the same eight-word safety phrase. Compare
 the words. If they differ, something is between you and the desktop, and the
 right move is to unpair and try again — not to tap through.
 
+## Several desktops on one phone
+
+The phone holds up to **16 pairings** at once — a work machine, a home one, a
+Linux box in the workshop — and switches between them from the header of the
+terminal list (or Settings → Paired desktops). One is connected at a time;
+picking another closes the first.
+
+Each pairing gets **its own X25519 keypair**, not a shared phone identity. The
+device id a desktop knows this phone by is `sha256(devicePublicKeyHex)[:16]`,
+so per-pairing keys mean each desktop sees a different device, grants
+capabilities to that device alone, and revoking on one machine says nothing
+about any other. It also means one desktop cannot correlate this phone with a
+pairing to someone else's.
+
+Each row is named. The desktop offers its hostname in the pairing ack
+(§7.4 of the wire format, an optional field so 1.39 desktops still pair), and
+the phone renames it locally if you would rather it read "work laptop". Two
+desktops reporting the same hostname are numbered — `ubuntu-vm`, `ubuntu-vm
+(2)` — because a switcher with two identical rows is one where the wrong
+terminal gets the command.
+
+Re-pairing a desktop already on the list is not a no-op: it mints a fresh key
+for it, so the safety phrase changes and the app puts it back in front of you
+to compare.
+
 ## Pointing it at a relay
 
 Nothing here is compiled in. The relay URL travels **inside the QR payload**,
@@ -101,7 +126,7 @@ other on every push, on a Linux runner, in seconds.
 | `src/net/` | The relay socket, the pairing exchange, the session. |
 | `src/storage/` | The identity and the pairing, in `expo-secure-store`. |
 | `src/state/` | The zustand store the screens read. |
-| `src/screens/` | Pair, terminal list, terminal, safety number, settings. |
+| `src/screens/` | Pair, terminal list, terminal, safety number, settings, desktops. |
 | `src/navigation/` | Route names and their parameters. Types only. |
 | `src/App.tsx` | The shell: boots the store, decides which screens exist. |
 | `index.ts` | `registerRootComponent`. |
@@ -115,9 +140,14 @@ order is load-bearing. Leave it at the top.
 
 ## What the phone stores
 
-Its own X25519 secret and the pairing record (the desktop's public key, the
-session room id, the relay URL, a device id and a label), in
-`expo-secure-store` with `WHEN_UNLOCKED_THIS_DEVICE_ONLY`. Nothing else — no
+One X25519 secret and one pairing record **per desktop** (that desktop's public
+key, the session room id, the relay URL, a device id and a label), in
+`expo-secure-store` with `WHEN_UNLOCKED_THIS_DEVICE_ONLY`. Each pairing is its
+own keystore item, under a small index item naming the order and which one is
+active — `expo-secure-store` rejects a value much over 2 KB, and 16 pairings in
+one blob would exceed it. Writes are ordered so a kill between two of them
+leaves nothing dangling: a record lands before the index names it, and the
+index drops it before the record is deleted. Nothing else — no
 transcript, no scrollback, no cache of what the desktop said. Output lives in
 memory for as long as the app does.
 
