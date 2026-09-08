@@ -42,7 +42,17 @@ export default defineConfig({
     // Bundle pngjs INTO the child entry (headroomProxy) rather than externalize it, so the
     // utilityProcess never has to resolve it from node_modules at runtime — a missing/unresolvable
     // dep would crash the child (and silently disable the whole proxy).
-    plugins: [externalizeDepsPlugin({ exclude: ['pngjs'] })]
+    //
+    // @xterm/headless is here for a second reason on top of that one. This bundle is ESM
+    // (package.json says "type": "module") and @xterm/headless is CommonJS with no exports
+    // map, so an externalized `import { Terminal } from '@xterm/headless'` throws
+    // "Named export 'Terminal' not found" the moment the child starts — cjs-module-lexer
+    // cannot see through its bundle to the named export. The child died before it could mint
+    // a pairing code, so Settings opened a modal that never filled in a QR. Nothing in the
+    // unit suite can catch that: vitest interops the import happily, and only the built
+    // child is ESM. Bundling it converts the require at build time and removes both the
+    // resolution and the interop from the runtime.
+    plugins: [externalizeDepsPlugin({ exclude: ['pngjs', '@xterm/headless'] })]
   },
   preload: {
     build: {

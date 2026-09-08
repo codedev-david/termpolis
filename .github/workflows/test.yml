@@ -194,6 +194,13 @@ jobs:
         run: npm run bench:proof
       - name: Build app
         run: npx electron-vite build
+      # The built main entries are ESM and electron-vite leaves real dependencies as
+      # runtime imports, so a CommonJS dep whose named exports Node cannot lex throws
+      # only when the built child STARTS. A utilityProcess that dies on its first line
+      # is silent -- v1.39.2 shipped a Remote bridge that never minted a pairing code
+      # and only an e2e shard noticed. This reads the build itself, before packaging.
+      - name: Verify child entry imports resolve at runtime
+        run: npm run verify:child-imports
       - name: Package (unpacked, no installer, no signing)
         run: npx electron-builder --dir --publish never
       - name: Verify MCP adapter shipped in packaged resources

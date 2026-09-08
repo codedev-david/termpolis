@@ -15,6 +15,7 @@
     "dev": "electron-vite dev",
     "grammars": "node scripts/copy-grammars.cjs",
     "build": "node scripts/copy-grammars.cjs && electron-vite build",
+    "verify:child-imports": "node scripts/verifyChildEntryImports.cjs out/main",
     "gen:icon": "node scripts/gen-icon.cjs",
     "package": "npm run build && electron-builder",
     "test": "vitest run",
