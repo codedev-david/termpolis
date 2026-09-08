@@ -158,7 +158,7 @@ who installed the app with no desktop to pair to.
 | --- | --- |
 | App category | Tools |
 | Tags | Developer tools |
-| Contact email | Required and shown publicly -- see the open question below |
+| Contact email | `support@termpolis.com` |
 | Contact website | `https://termpolis.com` |
 | Privacy policy | `https://termpolis.com/privacy.html` |
 | Content rating | Everyone (IARC questionnaire: no violence, no user interaction, no data collection) |
@@ -168,15 +168,21 @@ who installed the app with no desktop to pair to.
 
 ---
 
-## Open question for David
+## Contact email -- decided
 
-**Both stores require a public contact email.** Play prints it on the listing;
-Apple requires one on the App Information page and uses it for review
-correspondence. No published contact address exists for Termpolis today --
-`privacy.html` deliberately routes to GitHub issues rather than invent one.
+**`support@termpolis.com`** (David, 2026-09-08). Both stores require a public
+contact address: Play prints it on the listing, Apple requires one on the App
+Information page and uses it for review correspondence.
 
-Pick one before submitting. A forwarding alias on the termpolis.com domain
-(`support@termpolis.com`) is the ordinary answer and keeps a personal inbox off
-a public store page. Whatever it is, add it to `privacy.html` at the same time
-so the two agree -- a privacy policy with no contact route and a store listing
-with one is a discrepancy a reviewer can see.
+One thing still has to be true before submission, and it is not a documentation
+step: **the alias must actually deliver.** Apple sends review correspondence to
+it, and a rejection notice that bounces reads as an unresponsive developer. Send
+one message to it from an outside address and confirm it arrives before the
+listing goes in.
+
+It goes in three places, and they must agree -- a privacy policy with no contact
+route beside a store listing that has one is a discrepancy a reviewer can see:
+
+- the App Store listing (App Information -> Contact email)
+- the Play listing (Store settings -> Contact email)
+- `privacy.html` on termpolis.com

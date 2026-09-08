@@ -59,36 +59,40 @@ app, which is free, open source, and takes about two minutes to set up.
 3. Open Settings and choose the Remote tab. Tick "Allow phones to connect".
    Remote is off by default; this is the switch.
 
-4. Press "Pair a device". A QR code appears and is valid for 90 seconds. If it
-   expires, press the button again for a new one.
+4. Under the "Pair a device" button, tick what this phone will be allowed to
+   do. "Read terminal output" is already on; also turn on "Type into
+   terminals". Leave "Start terminals" and "Close terminals" off -- they are
+   not needed to review the app.
 
-5. On the phone, open Termpolis Remote and point it at the QR code. If you
+5. Press "Pair a device". A QR code appears and is valid for 90 seconds. If it
+   expires, press the button again for a new one. The permissions ticked in
+   step 4 are baked into that offer, so a phone is never paired-but-refusing.
+
+6. On the phone, open Termpolis Remote and point it at the QR code. If you
    would rather not use the camera, use the "Paste the pairing code" field on
    the same screen, and paste the text the desktop shows in the box below the
    QR code -- it is the same payload, as JSON.
 
-6. Both screens now show the same eight words. They are derived from the two
+7. Both screens now show the same eight words. They are derived from the two
    devices' keys; matching words mean nothing intercepted the exchange. This
    is a verification step, not a login.
-
-7. IMPORTANT -- a newly paired phone is granted nothing at all. Back on the
-   desktop the phone appears under "Paired devices" with four switches. Turn
-   on "Read terminal output" and "Type into terminals". Leave "Start new AI
-   terminals" and "Close terminals" off; they are not needed to review the
-   app. Every request is re-checked against these switches on the desktop, so
-   the phone cannot grant itself anything.
 
 8. The phone now lists the desktop's terminals. Open one: you are reading that
    terminal's live output. Type "echo hello" and send it -- it runs on the
    computer, and the output comes back to the phone.
+
+   The phone holds exactly the permissions ticked in step 4 and nothing else.
+   They appear as switches beside the phone under "Paired devices" and can be
+   changed at any time; every request is re-checked against them on the
+   desktop, so the phone cannot grant itself anything.
 
 9. To end it, press "Revoke" beside the phone on the desktop. The phone goes
    offline immediately.
 
 NO ACCOUNT IS NEEDED ANYWHERE. There is nothing to sign into on either half.
 
-CAMERA: used only to read the pairing QR code in step 5. Frames are decoded on
-the device and discarded; nothing is stored or uploaded. Step 5 also gives a
+CAMERA: used only to read the pairing QR code in step 6. Frames are decoded on
+the device and discarded; nothing is stored or uploaded. Step 6 also gives a
 manual path that never opens the camera.
 
 ENCRYPTION: the phone and the desktop derive a shared key (X25519 + HKDF-SHA256)
@@ -105,11 +109,11 @@ for users to reach each other.
 If setting up the desktop is not practical, here is a screen recording of the
 whole flow: <VIDEO URL>
 
-Any questions: <SUPPORT EMAIL>
+Any questions: support@termpolis.com
 ```
 
-Two placeholders, both filled before submission: `<VIDEO URL>` and
-`<SUPPORT EMAIL>`. See "Before you submit" below.
+One placeholder left: `<VIDEO URL>`. The contact address is settled --
+`support@termpolis.com`. See "Before you submit" below.
 
 ### Demo account fields
 
@@ -187,6 +191,7 @@ that break silently in that window.
 ## Before you submit
 
 - [ ] Record the video and replace `<VIDEO URL>`
+- [x] Contact email decided: `support@termpolis.com` -- confirm it delivers
 - [ ] Choose the public support address and replace `<SUPPORT EMAIL>` (see the
       open question in `listing.md` -- the same address goes in `privacy.html`)
 - [ ] Deploy the relay and confirm a real phone can pair over it
