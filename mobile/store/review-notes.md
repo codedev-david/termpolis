@@ -216,10 +216,18 @@ that break silently in that window.
 
 - [ ] Record the video and replace `<VIDEO URL>` -- the ONLY placeholder left
       in this file
-- [x] Contact email decided and placed: `support@termpolis.com` is in
-      `listing.md` and published in `privacy.html` (2026-09-08). Still to do:
-      **send a test message to it and confirm it arrives**. Apple mails this
-      address, and a listing whose contact bounces is a rejection.
+- [x] Contact email decided, placed, and **delivery confirmed** (2026-09-08).
+      `support@termpolis.com` is in `listing.md`, published in `privacy.html`,
+      and routed by Cloudflare Email Routing to a real inbox; a test message was
+      sent and read. Apple mails this address, and a listing whose contact
+      bounces is a rejection.
+      ⚠ Testing it FROM the account it forwards TO proves nothing. Gmail
+      deduplicates by Message-ID, so the forwarded copy collapses into the Sent
+      thread and never reaches the inbox -- indistinguishable from a mailbox
+      that does not work. Send from somewhere else, or read Email Routing →
+      Activity Log, which records what happened to every inbound message.
+      ⚠ Email Routing is forward-only. A reply leaves as the personal address,
+      not `support@termpolis.com`.
 - [x] Deploy the relay (see above)
 - [ ] Confirm a real phone pairs over the deployed relay end to end
 - [ ] Walk the seven steps yourself, on a Mac you have not used for this

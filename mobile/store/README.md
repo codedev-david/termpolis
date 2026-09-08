@@ -366,11 +366,20 @@ grep -rn '<VIDEO URL>' mobile/store/
 
 One is left: the review video in `review-notes.md`.
 
-The support address is settled -- **`support@termpolis.com`** (2026-09-08) --
-and is already in `listing.md` and published in `privacy.html` on
-termpolis.com. It has to be in all three, because Apple mails it and a listing
-whose contact bounces is a rejection. What has NOT been proven is that mail
-sent to it arrives: send one and read it before submitting.
+The support address is settled -- **`support@termpolis.com`** (2026-09-08).
+It is in `listing.md`, published in `privacy.html` on termpolis.com, and
+**delivery is confirmed**: Cloudflare Email Routing forwards it to a real
+inbox and a test message arrived. It has to be in all three places, because
+Apple mails it and a listing whose contact bounces is a rejection.
+
+Two things about that mailbox before you rely on it. **Testing it from the
+account it forwards TO proves nothing** -- Gmail deduplicates by Message-ID, so
+the forwarded copy is collapsed into the Sent thread and never appears in the
+inbox, which is indistinguishable from a mailbox that does not work. Send from
+a different address, or read Email Routing → Activity Log, which records the
+disposition of every inbound message. And **Email Routing is forward-only**: it
+receives but never sends, so a reply goes out as the personal address rather
+than `support@termpolis.com`.
 
 ### 5. Deploy the relay (done)
 
