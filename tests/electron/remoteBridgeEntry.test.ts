@@ -1623,3 +1623,65 @@ describe('status survives the phone going through a tunnel', () => {
     expect(rooms[0].sent).toEqual([])
   })
 })
+
+/** A phone leaving, and saying so on the way out.
+ *
+ *  Since v1.40 the phone mints a fresh keypair per desktop, so a handset that
+ *  unpairs and pairs again is a genuinely new device here -- by design, since
+ *  that is what stops two desktops recognising one phone. The consequence is
+ *  that an unpair the desktop never hears about leaves a row nothing can ever
+ *  clear: its key is gone from the phone, so it can neither connect nor be
+ *  recognised on the next pairing. This request is how the row goes too.
+ */
+describe('a device unpairing itself', () => {
+  it('drops the row, and the next request on that id is refused', async () => {
+    const { c, sent, callTool } = core([device('d1')])
+
+    const bye = await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'unpair' } })
+    expect(bye.kind).toBe('ok')
+
+    const after = await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'listTerminals' } })
+    expect(after.kind).toBe('error')
+    // Not "you lack read". The record is gone, so the guard that answers is the
+    // one above the policy -- the same one an id that never paired meets.
+    expect(after).toMatchObject({ message: expect.stringMatching(/unknown or revoked/) })
+    // An unpair is not a way to reach MCP with no grant.
+    expect(callTool).not.toHaveBeenCalled()
+
+    // Main has to hear about it, or the desktop's device list keeps drawing a
+    // row that no longer exists and `remote-devices.json` keeps storing it.
+    const announced = sent.filter((m) => m.kind === 'devicesChanged')
+    expect(announced).not.toHaveLength(0)
+    expect(announced[announced.length - 1]).toEqual({ kind: 'devicesChanged', devices: [] })
+  })
+
+  it('revokes the phone that asked and nobody else', async () => {
+    // The whole request carries no device id. The one it acts on comes from the
+    // sealed session, so there is no field for a paired phone to point at
+    // somebody else's pairing.
+    const { c } = core([device('d1'), device('d2')])
+
+    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'unpair' } })
+
+    expect((await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'listTerminals' } })).kind).toBe('error')
+    expect((await c.handleRemoteRequest('d2', { id: 3, request: { kind: 'listTerminals' } })).kind).toBe('ok')
+  })
+
+  it('works for a phone that was granted nothing at all', () => {
+    // A device can be refused every capability and still has to be able to
+    // leave. Requiring a grant to unpair would mean the phones with the least
+    // access are the ones that cannot clean up after themselves.
+    const ungranted = { ...device('d3'), capabilities: { ...NO_CAPABILITIES } }
+    const { c } = core([ungranted])
+
+    return expect(
+      c.handleRemoteRequest('d3', { id: 1, request: { kind: 'unpair' } }),
+    ).resolves.toMatchObject({ kind: 'ok' })
+  })
+
+  it('is refused for an id that was never paired', async () => {
+    const { c } = core([])
+    const res = await c.handleRemoteRequest('never-paired', { id: 1, request: { kind: 'unpair' } })
+    expect(res.kind).toBe('error')
+  })
+})

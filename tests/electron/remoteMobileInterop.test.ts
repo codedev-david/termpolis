@@ -555,6 +555,29 @@ describe('the constants the two trees each declare for themselves', () => {
     expect(heard.kind).toBe('getCapabilities')
   })
 
+  it('agree that unpair is a request the phone may make', () => {
+    // The phone says it as it forgets a desktop, and it is the only thing that
+    // keeps the desktop's device list honest: per-pairing keys mean a phone
+    // that unpairs can never be that device again, so a row nobody removes is
+    // both unreachable and permanent. A desktop missing the case answers
+    // 'unrecognised request kind', which the phone swallows -- the failure is
+    // silent on both ends, which is exactly why it is asserted here.
+    const said: PhoneRequest = { kind: 'unpair' }
+    const heard: DesktopRequest = said
+    expect(heard.kind).toBe('unpair')
+  })
+
+  it('carry no device id on the unpair request, in either tree', () => {
+    // The desktop takes the id from the sealed session the frame arrived on.
+    // If either union ever grew a field for it, a phone could name somebody
+    // else's pairing and delete it -- so the absence is the security property,
+    // and `Object.keys` is what holds it rather than a comment.
+    const said: PhoneRequest = { kind: 'unpair' }
+    const heard: DesktopRequest = { kind: 'unpair' }
+    expect(Object.keys(said)).toEqual(['kind'])
+    expect(Object.keys(heard)).toEqual(['kind'])
+  })
+
   it('agree on the shape of the capability push', () => {
     const sent: DesktopMessage = {
       kind: 'capabilities',

@@ -80,6 +80,7 @@ const mockSockets: {
 const mockSessions: {
   deps: unknown
   requests: unknown[]
+  timeouts: (number | undefined)[]
   resolveNext: (value: unknown) => void
   output: ((chunks: OutputChunk[]) => void)[]
   status: ((u: unknown) => void)[]
@@ -151,6 +152,7 @@ jest.mock('../src/net/remoteSession', () => ({
   RemoteSession: class {
     deps: unknown
     requests: unknown[] = []
+    timeouts: (number | undefined)[] = []
     output: ((chunks: unknown) => void)[] = []
     status: ((u: unknown) => void)[] = []
     caps: ((c: unknown) => void)[] = []
@@ -163,8 +165,13 @@ jest.mock('../src/net/remoteSession', () => ({
       mockSessions.push(this as never)
     }
 
-    request(req: unknown): Promise<unknown> {
+    request(req: unknown, timeoutMs?: number): Promise<unknown> {
       this.requests.push(req)
+      // Recorded beside `requests` rather than folded into it, so the many
+      // tests that assert an exact request list keep reading as a list of
+      // requests. Only the unpair goodbye passes one -- and that it passes a
+      // SHORT one is the whole reason the request does not hang the button.
+      this.timeouts.push(timeoutMs)
       return new Promise((resolve, reject) => this.pending.push({ resolve, reject }))
     }
 
@@ -322,6 +329,7 @@ import { publicKeyFor } from '../src/wire/sessionCrypto'
 import { pairingStamp } from '../src/state/pairingStamp'
 import {
   FOREGROUND_DEBOUNCE_MS,
+  GOODBYE_TIMEOUT_MS,
   MAX_OUTPUT_CHARS,
   forgetEverything,
   teardownRemote,
@@ -812,6 +820,107 @@ describe('forgetting one desktop', () => {
       useRemoteStore.getState().forgetDesktop(DESKTOP_PK_B),
     ).resolves.toBeUndefined()
     expect(mockStorage.writes).toHaveLength(1)
+  })
+})
+
+describe('the goodbye a phone says on its way out', () => {
+  // Since v1.40 the phone mints a fresh keypair per desktop, which is what stops
+  // two desktops correlating one handset. The cost is that unpairing destroys
+  // this phone's only way of ever being that device again -- so a desktop that
+  // is not told is left holding a row it can never reach and the user can only
+  // remove by hand, guessing which of several look-alike entries is the dead
+  // one. Saying so is the fix; everything below is about it staying a courtesy
+  // rather than becoming a precondition for unpairing.
+
+  /** Paired, connected, and attached, so there is a live desktop to tell. */
+  async function attached(): Promise<void> {
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext([])
+    await settle()
+  }
+
+  it('tells the desktop on screen, and does not wait 20 seconds to hear back', async () => {
+    await attached()
+    const leaving = session()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    expect(leaving.requests).toEqual([
+      { kind: 'getCapabilities' },
+      { kind: 'listTerminals' },
+      { kind: 'unpair' },
+    ])
+    // The two attach requests take the default; only the goodbye asks for a
+    // short one. Nothing on the phone waits for the answer, so this bounds the
+    // pending entry rather than a button -- but a goodbye left outstanding for
+    // the full timeout is a slot held open for a desktop whose key this phone
+    // has already erased.
+    expect(leaving.timeouts).toEqual([undefined, undefined, GOODBYE_TIMEOUT_MS])
+  })
+
+  it('is on the wire before the socket that carries it is closed', async () => {
+    // The ordering is the whole reason the goodbye can be fired and forgotten.
+    // `forgetDesktop` closes this socket on the line after it asks, so if the
+    // request were merely SCHEDULED rather than written, the send would land on
+    // a socket that had already gone.
+    await attached()
+    const leaving = session()
+    const closing = socket()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    expect(leaving.requests).toContainEqual({ kind: 'unpair' })
+    expect(closing.closed).toBe(true)
+  })
+
+  it('forgets the desktop anyway when the goodbye is never answered', async () => {
+    // Unpairing is a local act. A desktop that is switched off, on another
+    // network, or running a build that has never heard of this request must not
+    // be able to keep a phone paired to it.
+    await attached()
+    const leaving = session()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    leaving.rejectNext(new Error('timed out'))
+    await settle()
+    expect(useRemoteStore.getState().pairings).toEqual([PAIRED_B])
+    expect(mockStorage.book.map((r) => r.desktopPublicKey)).toEqual([DESKTOP_PK_B])
+    // And says nothing about it. "The desktop is offline" is a true sentence and
+    // the wrong thing to put in front of someone who just asked to forget it --
+    // the row is gone from this phone either way, which is what they asked for.
+    expect(useRemoteStore.getState().error).toBeNull()
+  })
+
+  it('says nothing to a desktop that is not the one on screen', async () => {
+    // The others have no open session, and dialling one purely to say goodbye
+    // would mean connecting to a machine the user has already decided to
+    // forget. Those leave a row behind, and that is the accepted cost.
+    await attached()
+    const leaving = session()
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK_B)
+    expect(leaving.requests).not.toContainEqual({ kind: 'unpair' })
+  })
+
+  it('says nothing while the desktop is unreachable', async () => {
+    // Booted but never attached: the session object exists, the desktop is not
+    // on the other end of it. A frame written here reaches a relay room with
+    // nobody in it.
+    seed([STORED, STORED_B])
+    await useRemoteStore.getState().boot()
+    expect(useRemoteStore.getState().stale).toBe(true)
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    expect(session().requests).not.toContainEqual({ kind: 'unpair' })
+  })
+
+  it('says nothing when the app is in the background and the socket is gone', async () => {
+    // Backgrounding drops the socket AND the session while the pairing stays
+    // active, so this is the one case where there is no session to ask at all.
+    // Unpairing from the Settings screen the user left open still has to work.
+    await attached()
+    const leaving = session()
+    mockAppState.handlers[0]?.('background')
+    await useRemoteStore.getState().forgetDesktop(DESKTOP_PK)
+    expect(leaving.requests).not.toContainEqual({ kind: 'unpair' })
+    expect(useRemoteStore.getState().pairings).toEqual([PAIRED_B])
   })
 })
 

@@ -539,6 +539,7 @@ standing between a malicious relay and a MITM of the pairing handshake.
 | `kind` | Fields | Capability |
 | --- | --- | --- |
 | `getCapabilities` | — | none |
+| `unpair` | — | none |
 | `listTerminals` | — | `read` |
 | `subscribe` | `terminalId` | `read` |
 | `unsubscribe` | `terminalId` | `read` |
@@ -561,6 +562,36 @@ missing capability by attempting the action and reading the refusal, which means
 offering a control that errors. It is granted by being answered *above* the
 capability check rather than by a rule inside it, so a desktop that loses that
 branch refuses the request instead of admitting it.
+
+`unpair` is the other one, and it is answered the same way and kept out of the
+capability table for the same reason. A phone sends it as it forgets a desktop,
+and the desktop revokes that pairing: the row disappears from Settings and the
+next request on that device id is refused as unknown.
+
+It revokes **the sender and only the sender**. The device id comes from the
+sealed session the request arrived on, never from the payload — there is no
+field here to point at somebody else's pairing — so the worst a phone can do
+with it is delete itself. That is why it needs no grant: a device that could not
+say this could still stop using the pairing, it just could not tidy it away.
+
+It exists because since protocol-2 desktops running v1.40 the phone mints a
+**fresh keypair per desktop**, which is what stops two desktops correlating one
+handset. The cost is that unpairing destroys this phone's only means of ever
+being that device again, so a desktop that is not told keeps a row it can never
+reach and the user can only remove by hand — guessing which of several
+look-alike entries is the dead one.
+
+The phone sends it best-effort and does **not** wait for the answer: unpairing
+is a local act that has to succeed with the desktop switched off, on another
+network, or running a build that predates this request and answers
+*unrecognised request kind*. All three leave a stale row on the desktop and nothing else —
+untidy, not unsafe, since the key that row names is gone from the handset either
+way. A phone only says it to the desktop it is attached to; other pairings it
+forgets in the same breath are not dialled just to say goodbye.
+
+Adding it did **not** bump `PROTOCOL_VERSION`. A new request kind is additive:
+an older desktop refuses it as unrecognised, which is precisely the outcome the
+phone already handles.
 
 A phone should ask on every attach, because grants change while it is away.
 The desktop also **pushes** the record, unprompted, whenever the user edits the

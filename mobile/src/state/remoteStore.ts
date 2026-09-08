@@ -35,6 +35,17 @@ import {
  *  relay that answers 409 to the duplicate. */
 export const FOREGROUND_DEBOUNCE_MS = 250
 
+/** How long the unpair goodbye stays outstanding before the session gives up on
+ *  it.
+ *
+ *  Nothing on this phone waits for it -- see `sayGoodbye` -- so this does not
+ *  bound a button, it bounds the pending-request entry the goodbye leaves
+ *  behind. Far below the 20s a normal request gets, because that entry names a
+ *  desktop this phone has just erased its key for: the reply can no longer be
+ *  read even if it arrives, so holding the slot open for twenty seconds would
+ *  be waiting on something that cannot matter. */
+export const GOODBYE_TIMEOUT_MS = 2_000
+
 /** The view only ever shows the tail, and a phone cannot hold a day of agent
  *  output. Trimming the head is what keeps a long session out of an OOM. */
 export const MAX_OUTPUT_CHARS = 200_000
@@ -142,6 +153,37 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       set({ error: message })
       throw err
     }
+  }
+
+  /** Tell the desktop this phone is unpairing. Best effort, by design.
+   *
+   *  Unpairing is a local act and has to succeed with the desktop switched
+   *  off, on another network, or running a version that has never heard of
+   *  this request. So this never throws, never sets `error`, and never stops
+   *  the erase -- deliberately NOT `ask`, which surfaces a failure to the user.
+   *  "The desktop is offline" is a true sentence and the wrong thing to say to
+   *  someone who just asked to forget it.
+   *
+   *  When it does fail, all that survives is a row on a desktop the phone can
+   *  no longer reach. Untidy, not unsafe: the key that row names is gone from
+   *  this handset either way, so nothing can authenticate as it again. */
+  function sayGoodbye(): void {
+    if (session === null || get().stale) return
+    // NOT awaited, and the ordering that makes that safe is deliberate: the
+    // frame is handed to the socket inside this call, synchronously, before the
+    // promise it returns is ever suspended on. So the goodbye is on the wire
+    // before `disconnect()` runs on the next line of the caller.
+    //
+    // Awaiting instead would mean an Unpair button that sits there while a
+    // desktop that is never going to answer runs down the clock. Nothing about
+    // what happens on this phone depends on the reply.
+    session.request<unknown>({ kind: 'unpair' }, GOODBYE_TIMEOUT_MS).catch(() => {
+      // Offline, timed out, a pre-1.40 desktop answering "unknown request", or
+      // simply the session being torn down underneath it by the disconnect that
+      // follows. All four are expected, and none of them change what happens
+      // next -- but the rejection still has to be caught, or an unpair with the
+      // desktop switched off raises an unhandled rejection.
+    })
   }
 
   function connect(desktop: StoredPairing): void {
@@ -474,6 +516,15 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       // that has already redrawn without the row.
       if (record === undefined) return
       const wasActive = record === active
+      // Said before hanging up, so the desktop drops this phone's row instead
+      // of keeping one whose key is about to stop existing. Only the desktop
+      // on screen can be told -- the rest have no open session, and dialling
+      // one purely to say goodbye would mean connecting to a machine the user
+      // has already decided to forget. Those still leave a row behind.
+      //
+      // Not awaited: the frame is written inside the call, and the answer
+      // cannot change anything below it. See `sayGoodbye`.
+      if (wasActive) sayGoodbye()
       vault.delete(desktopPublicKey)
       if (wasActive) {
         disconnect()

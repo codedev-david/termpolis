@@ -105,10 +105,15 @@ export function parseCapabilities(data: unknown): Capabilities {
 
 /** Requests a remote device may send. */
 export type RemoteRequest =
-  // The one request that needs no grant. A phone that could not ask this could
-  // only discover a missing capability by attempting the action and reading the
-  // refusal -- which means offering a control that errors.
+  // The two requests that need no grant. A phone that could not ask the first
+  // could only discover a missing capability by attempting the action and
+  // reading the refusal -- which means offering a control that errors.
   | { kind: 'getCapabilities' }
+  // Said on the way out, so the desktop drops this phone's row instead of
+  // keeping a dead one forever. It revokes the sender and nobody else -- the
+  // device id comes from the sealed session, not from the payload, so there is
+  // no field here to point at somebody else's pairing.
+  | { kind: 'unpair' }
   | { kind: 'listTerminals' }
   | { kind: 'createTerminal'; name: string; cwd?: string }
   | { kind: 'runCommand'; terminalId: string; command: string }

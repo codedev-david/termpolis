@@ -589,6 +589,35 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       return { kind: 'ok', id: env.id, data: device.capabilities }
     }
 
+    // A phone leaving, saying so. Answered here for the same reason as the
+    // request above -- it needs no grant, and is absent from
+    // `requiredCapability` so that losing this branch fails closed.
+    //
+    // Since v1.40 the phone mints a fresh keypair per desktop, which is what
+    // stops two desktops correlating one handset. The cost is that a phone
+    // which unpairs and pairs again arrives as a genuinely different device,
+    // and the desktop has no way to recognise it as the same handset -- that
+    // is the point of per-pairing keys, not an oversight. Without this request
+    // every unpair would leave a row behind that nothing can ever remove
+    // except the user, by hand, guessing which of several identical-looking
+    // entries is the dead one.
+    //
+    // Deliberately no `closeRoom` here, unlike the host-initiated
+    // `revokeDevice`. There the user removed a device that may still be
+    // holding a live socket, so the socket has to die with the record. Here
+    // the phone is hanging up on itself the moment this returns, and the
+    // registry row is already gone -- so anything further arriving on that
+    // socket meets the `!device` guard at the top of this function and is
+    // refused. Closing it first would only cost us the ability to answer.
+    if (env.request.kind === 'unpair') {
+      registry.revoke(deviceId)
+      announcedSeenAt.delete(deviceId)
+      fanout.dropDevice(deviceId)
+      announceDevices()
+      announceSubscriptions()
+      return { kind: 'ok', id: env.id, data: null }
+    }
+
     try {
       const data = await dispatcher.dispatch(env.request, device.capabilities, deviceId)
       // Fan-out state changes only AFTER dispatch has returned without throwing.

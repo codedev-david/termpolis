@@ -57,6 +57,13 @@ export type RemoteRequest =
   // if that interception is ever lost, the policy's default arm refuses it
   // rather than waving an ungranted kind through.
   | { kind: 'getCapabilities' }
+  // Also answered above the dispatcher, and also deliberately absent from
+  // `requiredCapability`. A phone says this as it unpairs so the desktop drops
+  // its row rather than keeping one that can never connect again: the phone
+  // destroys its half of the keypair on the way out, so without this the entry
+  // is unreachable AND permanent. It revokes the sender and only the sender --
+  // the device id comes from the sealed session, never from the payload.
+  | { kind: 'unpair' }
   | { kind: 'listTerminals' }
   | { kind: 'createTerminal'; name: string; cwd?: string }
   | { kind: 'runCommand'; terminalId: string; command: string }

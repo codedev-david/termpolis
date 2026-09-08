@@ -114,4 +114,15 @@ describe('runCommand is shell execution, not terminal creation', () => {
     expect(isAllowed({ kind: 'getCapabilities' }, all)).toBe(false)
     expect(() => assertAllowed({ kind: 'getCapabilities' }, all)).toThrow(CapabilityError)
   })
+
+  // Same arrangement, same reason. `unpair` revokes the device that sent it, so
+  // a version of this policy that waved it through on the strength of some
+  // unrelated grant would be handing every paired phone a way to delete its own
+  // row through the dispatcher instead of through the one branch that means to
+  // allow it.
+  it('has no rule for unpair either', () => {
+    expect(requiredCapability({ kind: 'unpair' })).toBeNull()
+    expect(isAllowed({ kind: 'unpair' }, all)).toBe(false)
+    expect(() => assertAllowed({ kind: 'unpair' }, all)).toThrow(CapabilityError)
+  })
 })
