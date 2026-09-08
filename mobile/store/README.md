@@ -207,12 +207,16 @@ So the Expo half (token -> account -> project -> link commit) can be proven
 green while the Apple half is still being collected, instead of leaving both to
 fail for the first time on the same run.
 
-Two things it deliberately does not do. It does not answer **export
-compliance** — the build arrives marked *Missing Compliance* because `app.json`
-carries no `ITSAppUsesNonExemptEncryption` key (section 5), and the answer is
-*Yes, it uses encryption* → *Yes, it qualifies for an exemption*. And it does not promote
-anything to the public store; that still needs the screenshots and listing in
-sections 6 and 9.
+One thing it deliberately does not do: it does not promote anything to the
+public store. That still needs the screenshots and listing in sections 6 and 9.
+
+Export compliance it no longer has to do either, and this changed after the
+paragraph above was first written. `app.json` now carries
+`ITSAppUsesNonExemptEncryption: false` (section 5), so the build arrives
+**Ready to Submit** rather than *Missing Compliance* and App Store Connect asks
+nothing. If you go looking for the encryption questionnaire on a new build, the
+reason you cannot find it is that it has already been answered -- in the binary.
+Do not try to answer it somewhere else.
 
 ---
 
@@ -354,15 +358,19 @@ eas credentials              # interactive, stores the .p8 with Expo
 eas secret:create --scope project --name GOOGLE_SERVICE_ACCOUNT_KEY --type file --value ./play-service-account.json
 ```
 
-### 4. Fill the two content placeholders
+### 4. Fill the content placeholders
 
 ```bash
-grep -rn '<VIDEO URL>\|<SUPPORT EMAIL>' mobile/store/
+grep -rn '<VIDEO URL>' mobile/store/
 ```
 
-The support address is an open decision -- see the bottom of `listing.md`.
-Whatever it becomes, it goes in three places at once: the App Store listing,
-the Play listing, and `privacy.html` on termpolis.com.
+One is left: the review video in `review-notes.md`.
+
+The support address is settled -- **`support@termpolis.com`** (2026-09-08) --
+and is already in `listing.md` and published in `privacy.html` on
+termpolis.com. It has to be in all three, because Apple mails it and a listing
+whose contact bounces is a rejection. What has NOT been proven is that mail
+sent to it arrives: send one and read it before submitting.
 
 ### 5. Deploy the relay (done)
 
