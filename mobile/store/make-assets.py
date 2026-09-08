@@ -1,27 +1,40 @@
 #!/usr/bin/env python3
 """Turn raw iPhone captures into App Store assets of exactly the right size.
 
-Why this exists: an iPhone 14 screenshots at 1170x2532 and App Store Connect
-will not accept that. It accepts 1242x2688 (the "6.5-inch" slot) and 1290x2796
-(the "6.9-inch" slot). 1170x2532 and 1242x2688 are BOTH 19.5:9 to within a
-rounding error, so the 6.5-inch conversion is a pure resample -- nothing is
-cropped, nothing is padded, no content moves. That is why 6.5 is the default
-here and 6.9 is opt-in: 6.9 is 1290x2796, very slightly taller than 19.5:9, so
-it cannot be reached without either shaving pixels or adding bars.
+Why this exists: a base iPhone 14 screenshots at 1170x2532 and App Store
+Connect will not accept that. It accepts 1242x2688 (the "6.5-inch" slot) and
+1290x2796 (the "6.9-inch" slot). 1170x2532 and 1242x2688 are BOTH 19.5:9 to
+within a rounding error, so the 6.5-inch conversion is a pure resample --
+nothing is cropped, nothing is padded, no content moves. That is why 6.5 is the
+default here and 6.9 is opt-in: 6.9 is 1290x2796, very slightly taller than
+19.5:9, so it cannot be reached without either shaving pixels or adding bars.
+
+READ THIS BEFORE RUNNING IT ON SCREENSHOTS: the phone actually being used here
+is an iPhone 14 **Plus**, not a base 14, and it shoots 1284x2778 -- which is
+Apple's PRIMARY 6.5-inch size, not something needing conversion. Those files
+are ready to upload as they are. Resampling them down to the 1242x2688
+alternate would trade real sharpness for nothing, so the script now detects any
+already-accepted size and copies it through untouched (see ACCEPTED below).
+Running this on a 14 Plus set is therefore harmless but pointless; what it is
+still needed for is the App Preview video, and any phone that shoots a size
+Apple does not take.
 
 Usage:
     python mobile/store/make-assets.py            # screenshots only
     python mobile/store/make-assets.py --video    # also build the App Preview
 
 Drop the captures in mobile/store/raw/ and name them so they sort into the
-order the listing wants:
+order the listing wants. That order is set by `screenshots.md`, and the
+filenames are the only thing controlling it -- the script sorts and numbers
+whatever it finds:
 
-    01-pair.png  02-safety.png  03-list.png  04-terminal.png  05-settings.png
+    01-terminals.png  02-terminal.png  03-pair.png
+    04-safety.png     05-desktops.png  06-settings.png
     preview.mov  (or .mp4 -- any screen recording from the phone)
 
-Both raw/ and out/ are gitignored. That is deliberate: a capture off a real
-machine can carry a real path, a real branch name or a real prompt, and the
-store rule is that none of those ever ship. Capture against a scratch
+raw/, out/ and shots/ are all gitignored. That is deliberate: a capture off a
+real machine can carry a real path, a real branch name or a real prompt, and
+the store rule is that none of those ever ship. Capture against a scratch
 repository, not against this one.
 """
 
@@ -42,6 +55,18 @@ OUT = HERE / "out"
 # Apple's accepted iPhone portrait sizes. The tuple is (width, height).
 SIZE_65 = (1242, 2688)
 SIZE_69 = (1290, 2796)
+
+# Every size Apple takes in each slot, including the one this script resamples
+# to. A capture that already IS one of them is passed through rather than
+# resized, because the slot is not a single size -- 6.5 also takes 1284x2778,
+# which is bigger than the 1242x2688 targeted above and is what the iPhone
+# 14 Plus produces on its own. Downscaling into the smaller accepted size would
+# be a pure loss: both are equally acceptable to Apple, and the larger is the
+# one Apple's own scaling cascade renders every smaller class from.
+ACCEPTED: dict[tuple[int, int], set[tuple[int, int]]] = {
+    SIZE_65: {(1284, 2778), (1242, 2688)},
+    SIZE_69: {(1320, 2868), (1290, 2796), (1260, 2736)},
+}
 
 # App Preview: 15-30 s, H.264, and the same frame size as the screenshot slot.
 PREVIEW_MIN_S = 15.0
@@ -86,6 +111,20 @@ def convert_screenshots(size: tuple[int, int], label: str) -> int:
     for i, src in enumerate(shots, start=1):
         with Image.open(src) as im:
             im = im.convert("RGB")
+
+            # Already a size this slot accepts: ship the pixels as captured.
+            # Checked before the ratio warning below, which only exists to
+            # describe what a RESIZE would do to this image.
+            if (im.width, im.height) in ACCEPTED.get(size, set()):
+                dst = OUT / f"{label}-{i:02d}.png"
+                im.save(dst, "PNG", optimize=True)
+                print(
+                    f"  {src.name}  ->  {dst.name}  "
+                    f"{im.width}x{im.height}  (accepted as captured, not resampled)"
+                )
+                written += 1
+                continue
+
             ratio = im.width / im.height
             # A phone screenshot is portrait 19.5:9. Anything else is either a
             # landscape grab (the app is portrait-locked, so that reads as a

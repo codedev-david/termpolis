@@ -183,15 +183,20 @@ in `app.json` under `android.adaptiveIcon.backgroundColor`.
 
 ```
 mobile/store/shots/
-  ios-6.5/        1284 x 2778, five files  <- the iPhone 14 Plus set
+  ios-6.5/        1284 x 2778, six files  <- the iPhone 14 Plus set
   ios-6.9/        1320 x 2868 (or 1290 x 2796) -- only if a 6.9" set is ever taken
-  android-phone/  five files
+  android-phone/  six files
   android-tablet-7/
   android-tablet-10/
   feature-graphic.png   1024 x 500, no alpha
 ```
 
+Six, not five: the "Paired desktops" shot joined the set when one phone could
+hold more than one desktop. Apple takes ten and Play eight, so the set has room.
+
 `mobile/store/shots/` is **not committed** -- it is binary, it is regenerated
-per release, and a repository is not an asset pipeline. Add it to
-`.gitignore` when the first set is taken, and keep the shipped copies wherever
-the other release artefacts live.
+per release, and a repository is not an asset pipeline. It is in `.gitignore`
+alongside `raw/` and `out/`, which matters more than tidiness here: a capture
+can carry a real path or prompt, and an ignored directory cannot be committed
+by a careless `git add -A`. Keep the shipped copies wherever the other release
+artefacts live.
