@@ -72,7 +72,7 @@ import {
   clearOutput,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, computeWindowsPty } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -3611,6 +3611,7 @@ if (!gotTheLock) {
           sendStatus: (status) => { try { mainWindow?.webContents.send('remote:status-changed', status) } catch { /* window gone */ } },
           sendEvent: (event) => { try { mainWindow?.webContents.send('remote:event', event) } catch { /* window gone */ } },
           readOutput: (terminalId, fromOffset) => readOutputFrom(terminalOutputBuffers, terminalId, fromOffset),
+          terminalSize: (terminalId) => getTerminalSize(terminalId),
           readRecent: (terminalId) =>
             terminalOutputBuffers.has(terminalId)
               ? { output: readOutput(terminalOutputBuffers, terminalId), name: terminalDisplayName(terminalId) }

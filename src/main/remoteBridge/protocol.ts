@@ -143,6 +143,12 @@ export interface OutputSlice {
   missed: number
 }
 
+/** A terminal's grid size, as the child currently believes it to be. */
+export interface TerminalSize {
+  cols: number
+  rows: number
+}
+
 export type HostToBridge =
   | { kind: 'init'; mcpPort: number; mcpToken: string; identitySecretKey: string; devices: PairedDevice[] }
   /** `capabilities` is what the user granted in Settings before the QR was
@@ -155,7 +161,14 @@ export type HostToBridge =
   // PTY output, pushed down from main. Main already owns the rolling window and the
   // per-terminal offsets (terminalOutputBuffer.ts), so the bridge is handed slices
   // rather than reaching back for them -- it never touches the PTY.
-  | { kind: 'terminalOutput'; terminalId: string; slice: OutputSlice }
+  //
+  // `size` is the geometry the child was drawing for when it wrote these bytes.
+  // A TUI redraws by addressing cells -- move to row 4, erase to end of line --
+  // so the same bytes replayed into a grid of a different width do not merely
+  // wrap differently, they land on different cells. Optional because it is
+  // unknown for a terminal that has already gone; the bridge keeps whatever size
+  // it had rather than guessing a new one.
+  | { kind: 'terminalOutput'; terminalId: string; slice: OutputSlice; size?: TerminalSize }
   // Agent status, derived in main from the same rolling buffer the slices come
   // from. It is computed there rather than here because the detector needs the
   // WINDOW and the bridge is only ever handed increments -- and because the

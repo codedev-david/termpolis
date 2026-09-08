@@ -1,3 +1,4 @@
+import { HeaderHeightContext } from '@react-navigation/elements'
 import { useRoute } from '@react-navigation/native'
 import type { RouteProp } from '@react-navigation/native'
 import React from 'react'
@@ -15,6 +16,7 @@ import {
 import OutputView from '../components/OutputView'
 import type { RootStackParamList } from '../navigation/routes'
 import { useRemoteStore } from '../state/remoteStore'
+import { toTerminalSubmit } from '../terminal/submitText'
 
 /** How the desktop's agent states read on a phone. See TerminalListScreen: an
  *  unnamed state falls back to the raw word rather than to nothing, because a
@@ -59,6 +61,14 @@ export const KEYBOARD_BEHAVIOR = Platform.OS === 'ios' ? 'padding' : undefined
 export default function TerminalScreen(): React.JSX.Element {
   const route = useRoute<RouteProp<RootStackParamList, 'Terminal'>>()
   const { terminalId } = route.params
+  // `padding` is measured from the top of this view, but the view starts under
+  // the navigation header -- so without the header's own height the padding
+  // stops that many points short and the keyboard still covers the composer.
+  //
+  // Read from the context rather than through useHeaderHeight, which throws
+  // when there is no header above it. A screen with no header needs no offset,
+  // which is a fine answer, not a crash.
+  const headerHeight = React.useContext(HeaderHeightContext) ?? 0
 
   const text = useRemoteStore((s) => s.output[terminalId] ?? '')
   const status = useRemoteStore((s) => s.agentStatus[terminalId])
@@ -82,9 +92,10 @@ export default function TerminalScreen(): React.JSX.Element {
 
   function onSend(): void {
     if (draft.length === 0 || stale) return
-    const outgoing = draft
-    // Sent exactly as typed. A terminal is not a form: indentation is meaningful
-    // to whatever REPL is on the far end, so nothing here trims it.
+    // Sent exactly as typed, plus the carriage return that submits it. A
+    // terminal is not a form: indentation is meaningful to whatever REPL is on
+    // the far end, so nothing here trims it.
+    const outgoing = toTerminalSubmit(draft)
     send(terminalId, outgoing)
       .then(() => setDraft(''))
       // Left in the box on failure -- clearing it would lose the text at the one
@@ -93,7 +104,11 @@ export default function TerminalScreen(): React.JSX.Element {
   }
 
   return (
-    <KeyboardAvoidingView style={styles.page} behavior={KEYBOARD_BEHAVIOR}>
+    <KeyboardAvoidingView
+      style={styles.page}
+      behavior={KEYBOARD_BEHAVIOR}
+      keyboardVerticalOffset={headerHeight}
+    >
       {stale ? (
         <Text testID="terminal-offline" style={styles.offline}>
           The desktop is offline. This is the last thing it sent.

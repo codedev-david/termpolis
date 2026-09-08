@@ -8,7 +8,13 @@ import {
   generateIdentity,
 } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
-import { NO_CAPABILITIES, type BridgeToHost, type HostToBridge, type PairedDevice } from '../../src/main/remoteBridge/protocol'
+import {
+  NO_CAPABILITIES,
+  type BridgeToHost,
+  type HostToBridge,
+  type PairedDevice,
+  type TerminalSize,
+} from '../../src/main/remoteBridge/protocol'
 import { loadRemoteDevices, saveRemoteDevices } from '../../src/main/remoteDeviceStore'
 import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
 import { loadRemoteSettings, saveRemoteSettings } from '../../src/main/remoteSettings'
@@ -59,6 +65,7 @@ function makeHarness() {
   let disabled = false
   let cleared = 0
   const text: Record<string, string> = {}
+  let size: TerminalSize | null = { cols: 80, rows: 24 }
 
   const host: RemoteHost = createRemoteHost({
     userDataDir: dir,
@@ -71,6 +78,7 @@ function makeHarness() {
       return { output: all.slice(from), nextOffset: all.length, missed: 0 }
     },
     readRecent: (id) => (id in text ? { output: text[id], name: id } : null),
+    terminalSize: () => size,
     startBridge: (init, relayUrl) => {
       started.push({ init, relayUrl })
       running = true
@@ -118,6 +126,10 @@ function makeHarness() {
     trip: () => {
       disabled = true
       running = false
+    },
+    /** Stand in for a resized pane, or for a terminal that has already gone. */
+    setSize: (next: TerminalSize | null) => {
+      size = next
     },
     get running() {
       return running
@@ -377,12 +389,40 @@ describe('remote bridge host', () => {
     harness.host.noteTerminalOutput('t2')
     harness.tick()
     expect(harness.posted.filter((m) => m.kind === 'terminalOutput')).toEqual([
-      { kind: 'terminalOutput', terminalId: 't1', slice: { output: 'watched', nextOffset: 7, missed: 0 } },
+      {
+        kind: 'terminalOutput',
+        terminalId: 't1',
+        slice: { output: 'watched', nextOffset: 7, missed: 0 },
+        size: { cols: 80, rows: 24 },
+      },
     ])
     // Nothing about the unwatched terminal crosses at all -- not its bytes and
     // not its status. Two pumps read the same subscription set, and a scope test
     // that only checked one of them would pass while the other leaked.
     expect(harness.posted.some((m) => JSON.stringify(m).includes('t2'))).toBe(false)
+  })
+
+  it('sends the geometry the bytes were drawn for, and omits it once there is none', () => {
+    // The bridge emulates these bytes to flatten them for the phone, and a TUI
+    // addresses cells by number -- a redraw meant for a 203-column grid replayed
+    // into some other width lands on the wrong cells. A terminal that has
+    // already closed has no size to report, and the field is left off rather
+    // than guessed at.
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+    harness.setSize({ cols: 203, rows: 51 })
+    harness.write('t1', 'wide')
+    harness.host.noteTerminalOutput('t1')
+    harness.tick()
+    harness.setSize(null)
+    harness.write('t1', ' gone')
+    harness.host.noteTerminalOutput('t1')
+    harness.tick()
+    const sizes = harness.posted
+      .filter((m): m is Extract<HostToBridge, { kind: 'terminalOutput' }> => m.kind === 'terminalOutput')
+      .map((m) => m.size)
+    expect(sizes).toEqual([{ cols: 203, rows: 51 }, undefined])
   })
 
   it('does not read terminals at all while remote is off', () => {
@@ -397,6 +437,7 @@ describe('remote bridge host', () => {
       sendEvent: () => {},
       readOutput: read,
       readRecent: () => null,
+      terminalSize: () => null,
       startBridge: () => {},
       stopBridge: () => {},
       sendToBridge: () => {},
@@ -513,6 +554,7 @@ describe('remote bridge host', () => {
       },
       readOutput: () => ({ output: '', nextOffset: 0, missed: 0 }),
       readRecent: () => null,
+      terminalSize: () => null,
       startBridge: () => {},
       stopBridge: () => {},
       sendToBridge: () => {},

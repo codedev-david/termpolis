@@ -5,6 +5,7 @@ import {
   type HostToBridge,
   type OutputSlice,
   type PairedDevice,
+  type TerminalSize,
 } from './remoteBridge/protocol'
 import { deriveVerificationPhrase } from './remoteBridge/sealedChannel'
 import { getOrCreateRemoteIdentity, type RemoteIdentity } from './remoteIdentityStore'
@@ -34,6 +35,12 @@ export interface RemoteHostDeps {
   /** Push one thing that just happened, for a toast or a modal. */
   sendEvent(event: RemoteEvent): void
   readOutput(terminalId: string, fromOffset: number): OutputSlice
+  /** The terminal's current grid size, or null when it is gone.
+   *
+   *  Sent down with every slice rather than on resize alone: the bridge may
+   *  start watching a terminal that was sized long ago, and a resize message it
+   *  was not running to hear would leave it emulating the wrong grid forever. */
+  terminalSize(terminalId: string): TerminalSize | null
   /** The whole rolling window plus the terminal's name, for status detection.
    *  Separate from `readOutput` because that one is an incremental read that
    *  advances an offset, and the detector needs the window every time. */
@@ -200,7 +207,15 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   function newPump(): OutputPump {
     return createOutputPump({
       read: (terminalId, fromOffset) => deps.readOutput(terminalId, fromOffset),
-      send: (terminalId, slice) => deps.sendToBridge({ kind: 'terminalOutput', terminalId, slice }),
+      send: (terminalId, slice) => {
+        const size = deps.terminalSize(terminalId)
+        deps.sendToBridge({
+          kind: 'terminalOutput',
+          terminalId,
+          slice,
+          ...(size === null ? {} : { size }),
+        })
+      },
       setTimer: (fn, ms) => deps.setTimer(fn, ms),
       clearTimer: (handle) => deps.clearTimer(handle),
     })

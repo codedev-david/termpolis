@@ -128,6 +128,7 @@ describe('package.json -- what makes "collects no data" true', () => {
       '@noble/ciphers',
       '@noble/curves',
       '@noble/hashes',
+      '@react-navigation/elements',
       '@react-navigation/native',
       '@react-navigation/native-stack',
       'expo',

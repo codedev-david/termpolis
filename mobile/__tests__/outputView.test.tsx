@@ -57,7 +57,7 @@ describe('OutputView', () => {
 
   it('is monospaced, because column alignment is most of what output means', async () => {
     await render(<OutputView text="a b" />)
-    expect(JSON.stringify(screen.getByTestId('output-view').props.style)).toContain('monospace')
+    expect(JSON.stringify(screen.getByTestId('output-row-0').props.style)).toContain('monospace')
   })
 
   it('re-renders when the scrollback grows', async () => {
@@ -65,6 +65,48 @@ describe('OutputView', () => {
     await view.rerender(<OutputView text="first second" />)
     expect(screen.getByText('first second')).toBeTruthy()
     expect(screen.queryByText('first')).toBeNull()
+  })
+})
+
+describe('OutputView -- the desktop grid, not a paragraph', () => {
+  it('gives every row of the desktop grid a row of its own', async () => {
+    await render(<OutputView text={'one\ntwo\nthree'} />)
+    expect(screen.getByTestId('output-row-0')).toBeTruthy()
+    expect(screen.getByTestId('output-row-2')).toBeTruthy()
+    expect(screen.queryByTestId('output-row-3')).toBeNull()
+  })
+
+  it('never re-wraps a row to the phone width', async () => {
+    // This is the whole bug: the desktop drew one input-box border across its
+    // own width, the phone reflowed it as prose, and nine dashed rules came out
+    // where the desktop has one. A row stays one row and the grid scrolls
+    // sideways instead.
+    const rule = '-'.repeat(148)
+    await render(<OutputView text={rule} />)
+    expect(screen.getByTestId('output-row-0').props.numberOfLines).toBe(1)
+    expect(screen.queryByTestId('output-row-1')).toBeNull()
+    expect(screen.getByTestId('output-scroll').props.horizontal).toBe(true)
+  })
+
+  it('keeps a blank row blank rather than closing the gap', async () => {
+    // The vertical space an agent leaves between its status line and its input
+    // box is part of the screen. Dropping empty rows makes the phone a
+    // different layout, which is the thing being fixed.
+    await render(<OutputView text={'top\n\nbottom'} />)
+    expect(screen.getByTestId('output-row-1')).toBeTruthy()
+    expect(screen.getByText('bottom')).toBeTruthy()
+  })
+
+  it('does not add a blank row for the newline that ended the last one', async () => {
+    await render(<OutputView text={'done\n'} />)
+    expect(screen.queryByTestId('output-row-1')).toBeNull()
+  })
+
+  it('splits a styled run that straddles a newline, keeping its style', async () => {
+    await render(<OutputView text={`${ESC}[31mred one\nred two`} />)
+    expect(JSON.stringify(screen.getByTestId('output-segment-0').props.style)).toContain('#cd3131')
+    expect(JSON.stringify(screen.getByTestId('output-segment-1').props.style)).toContain('#cd3131')
+    expect(screen.getByText('red two')).toBeTruthy()
   })
 })
 

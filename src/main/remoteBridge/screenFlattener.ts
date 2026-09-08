@@ -47,6 +47,7 @@
 
 import { Terminal } from '@xterm/headless'
 import type { IBuffer, IBufferCell, IBufferLine } from '@xterm/headless'
+import type { TerminalSize } from './protocol'
 
 /** Lines the emulator may hold before we rebuild it from its viewport.
  *
@@ -71,13 +72,23 @@ const SEGMENT_LINES = 1000
 
 /** Emulator geometry when main has not told us the real one.
  *
- *  Width matters more than height and is worth getting right: it decides where
- *  lines wrap, and a phone showing different wrap points than the desktop is a
- *  quieter version of the same bug this module exists to fix. */
+ *  A fallback and nothing more: main sends the terminal's real size down with
+ *  every slice, and guessing is the bug this default used to BE. A TUI addresses
+ *  cells by number, so a redraw meant for a 150-column grid replayed into a
+ *  120-column one does not merely wrap differently -- `move to column 130` lands
+ *  somewhere else entirely, which is how "that cleared on its own" arrived on the
+ *  phone as "tclearedo". Height is no safer: a viewport shorter than the real one
+ *  scrolls rows out early, and a row that scrolls out here has been SETTLED --
+ *  sent as permanent -- while the real terminal is still painting over it. That
+ *  is the duplicated spinner, one frame frozen above the live one. */
 const DEFAULT_COLS = 120
 const DEFAULT_ROWS = 30
 
 const RESET = '\x1b[0m'
+/** DECSC/DECRC. Used to mark a spot mid-replay and come back to it once
+ *  the emulator has laid the rest of the text out for itself. */
+const SAVE_CURSOR = '\x1b7'
+const RESTORE_CURSOR = '\x1b8'
 
 /** One flattened update, in terms of the stream the phone has already applied.
  *
@@ -94,6 +105,10 @@ export interface FlatEdit {
 
 interface Screen {
   term: Terminal
+  /** The geometry this emulator is currently running at, which is main's answer
+   *  for the real terminal and not a guess of ours. */
+  cols: number
+  rows: number
   /** Total length of everything settled so far. The offset the live region
    *  starts at, which is what every `replaceFrom` is measured against. */
   settledLen: number
@@ -106,6 +121,18 @@ interface Screen {
   inAlt: boolean
   /** The live region exactly as the phone last received it. */
   live: string
+}
+
+/** A reported geometry, or undefined when it is not one we can draw on.
+ *
+ *  A pane still being laid out reports zero, and xterm silently clamps a zero
+ *  width to a two-column grid rather than refusing it -- which shreds the output
+ *  into a two-character-wide column instead of failing loudly. The last known
+ *  geometry is a better answer than either, so an implausible size is dropped
+ *  here, once, before anything can be built at it. */
+function usable(size: TerminalSize | undefined): TerminalSize | undefined {
+  if (size === undefined) return undefined
+  return size.cols >= 1 && size.rows >= 1 ? size : undefined
 }
 
 /** How many leading chars two strings share. */
@@ -146,11 +173,20 @@ function sgrOf(cell: IBufferCell): string {
  *  `trimTrailing` drops the unwritten remainder of the row. A grid row is always
  *  the full width, so without this every line would arrive padded to 120 columns
  *  -- but a cell with a background set is painted rather than empty, so only
- *  blank cells in the default background count as unwritten. */
-function encodeLine(line: IBufferLine, cell: IBufferCell, trimTrailing: boolean): string {
-  let end = line.length
+ *  blank cells in the default background count as unwritten.
+ *
+ *  `from`/`to` cut the row down to a span of it. Only a rebuild needs that, to
+ *  split the cursor's own row at the cursor. */
+function encodeLine(
+  line: IBufferLine,
+  cell: IBufferCell,
+  trimTrailing: boolean,
+  from = 0,
+  to = line.length,
+): string {
+  let end = to
   if (trimTrailing) {
-    while (end > 0) {
+    while (end > from) {
       line.getCell(end - 1, cell)
       const chars = cell.getChars()
       if ((chars !== '' && chars !== ' ') || !cell.isBgDefault()) break
@@ -160,7 +196,7 @@ function encodeLine(line: IBufferLine, cell: IBufferCell, trimTrailing: boolean)
 
   let out = ''
   let open = ''
-  for (let x = 0; x < end; x += 1) {
+  for (let x = from; x < end; x += 1) {
     line.getCell(x, cell)
     // Width 0 is the second half of a double-width glyph: the character was
     // already emitted with its first cell, and emitting it again would double it.
@@ -190,9 +226,13 @@ export class ScreenFlattener {
    *
    *  Returns null when nothing observable changed, which is the common case for
    *  a redraw that repaints the same frame -- the spinner between ticks, say. */
-  async feed(terminalId: string, raw: string): Promise<FlatEdit | null> {
+  async feed(terminalId: string, raw: string, size?: TerminalSize): Promise<FlatEdit | null> {
     if (raw === '') return null
-    const screen = this.screenFor(terminalId)
+    const wanted = usable(size)
+    const screen = this.screenFor(terminalId, wanted)
+    // Before the bytes, never after: these bytes were drawn for this geometry,
+    // and applying the resize afterwards would emulate them against the old one.
+    if (wanted !== undefined) this.applySize(screen, wanted)
 
     const base = screen.settledLen
     const before = screen.live
@@ -202,7 +242,7 @@ export class ScreenFlattener {
       await write(screen.term, segment)
       settled += this.settle(screen)
       if (screen.term.buffer.active.length >= RECYCLE_AT_LINES) {
-        this.recycle(screen)
+        this.rebuild(screen, screen.cols, screen.rows)
       }
     }
 
@@ -232,11 +272,17 @@ export class ScreenFlattener {
     for (const id of [...this.screens.keys()]) this.forget(id)
   }
 
-  private screenFor(terminalId: string): Screen {
+  private screenFor(terminalId: string, size?: TerminalSize): Screen {
     const existing = this.screens.get(terminalId)
     if (existing !== undefined) return existing
+    // Born at the real size when it is known, so the very first frame is
+    // emulated against the right grid rather than rebuilt a moment later.
+    const cols = size?.cols ?? this.cols
+    const rows = size?.rows ?? this.rows
     const screen: Screen = {
-      term: this.newTerminal(),
+      term: this.newTerminal(cols, rows),
+      cols,
+      rows,
       settledLen: 0,
       settledCount: 0,
       normalSettledCount: 0,
@@ -247,10 +293,10 @@ export class ScreenFlattener {
     return screen
   }
 
-  private newTerminal(): Terminal {
+  private newTerminal(cols: number, rows: number): Terminal {
     return new Terminal({
-      cols: this.cols,
-      rows: this.rows,
+      cols,
+      rows,
       scrollback: SCROLLBACK_LINES,
       // The phone never types into this emulator and never reads a reply from
       // it; it exists only to be looked at. Leaving conversion off keeps what we
@@ -285,22 +331,15 @@ export class ScreenFlattener {
     const top = buf.baseY
     if (top < screen.settledCount) screen.settledCount = top
 
-    // Hold back a logical line that is still being wrapped across the boundary,
-    // or the phone gets a hard break in the middle of a sentence at column 120.
-    let end = top
-    while (end > screen.settledCount) {
-      const row = buf.getLine(end)
-      /* v8 ignore next -- every index here is inside the buffer's own bounds;
-         the guard exists because getLine is typed for out-of-range reads */
-      if (row === undefined) break
-      if (!row.isWrapped) break
-      end -= 1
-    }
-
+    // Every row above the viewport settles, wrapped continuations included. An
+    // earlier draft held a wrapping line back so the phone could re-wrap it to
+    // its own width; the phone no longer re-wraps anything, because matching the
+    // desktop's grid IS the requirement now, and a row held back here is a row
+    // the desktop has already scrolled past.
     let out = ''
-    for (const line of this.encodeRows(buf, screen.settledCount, end)) out += `${line}\n`
-    screen.settledCount = end
-    screen.normalSettledCount = end
+    for (const line of this.encodeRows(buf, screen.settledCount, top)) out += `${line}\n`
+    screen.settledCount = top
+    screen.normalSettledCount = top
     return out
   }
 
@@ -315,28 +354,36 @@ export class ScreenFlattener {
     return rows.join('\n')
   }
 
-  /** Rows `[from, to)` as logical lines: wrapped continuations are rejoined
-   *  with the row above rather than becoming their own line, because the phone
-   *  is narrower than the emulator and wraps to its own width. */
+  /** The rows in `[from, to)`, one string each, blank-padding trimmed.
+   *
+   *  One string per grid row, never rejoined: everything bound for the phone
+   *  keeps the rows as the desktop drew them. Rejoining used to let the phone
+   *  re-wrap to its own width, which is reasonable for `ls` output and wrong for
+   *  a TUI -- a box ruled across 120 columns came apart into three ragged phone
+   *  rows, and three ragged rows per border is exactly the mess a desktop
+   *  screenshot of the same moment does not have. */
   private encodeRows(buf: IBuffer, from: number, to: number): string[] {
     const cell = buf.getNullCell()
     const out: string[] = []
-    let acc = ''
     for (let y = from; y < to; y += 1) {
       const line = buf.getLine(y)
       /* v8 ignore next -- y is bounded by buf.length, so the undefined arm is
          unreachable; it exists because getLine is typed for out-of-range reads */
       if (line === undefined) continue
-      const next = y + 1 < to ? buf.getLine(y + 1) : undefined
-      const continues = next !== undefined && next.isWrapped
-      acc += encodeLine(line, cell, !continues)
-      // The last row in the range never continues, so `acc` is always flushed.
-      if (!continues) {
-        out.push(acc)
-        acc = ''
-      }
+      out.push(encodeLine(line, cell, true))
     }
     return out
+  }
+
+  /** Adopt the terminal's real geometry, rebuilding if it actually changed.
+   *
+   *  `xterm`'s own `resize` reflows the buffer, which would silently rewrite rows
+   *  the phone has already been sent as settled -- permanent text, by definition.
+   *  Rebuilding from the viewport instead touches only the live region, and the
+   *  live region is re-diffed on this same feed anyway. */
+  private applySize(screen: Screen, size: TerminalSize): void {
+    if (size.cols === screen.cols && size.rows === screen.rows) return
+    this.rebuild(screen, size.cols, size.rows)
   }
 
   /** Rebuild the emulator from its own viewport, dropping the scrollback.
@@ -345,17 +392,44 @@ export class ScreenFlattener {
    *  emulator is holding it for nobody. Replaying the viewport into a fresh
    *  terminal keeps the grid a redraw is about to address -- including where the
    *  cursor sits, which is what a differential repaint moves relative to. */
-  private recycle(screen: Screen): void {
+  private rebuild(screen: Screen, cols: number, rows: number): void {
     const buf = screen.term.buffer.active
-    const rows = this.encodeRows(buf, buf.baseY, buf.length)
-    const cursor = `\x1b[${buf.cursorY + 1};${buf.cursorX + 1}H`
+    const cell = buf.getNullCell()
+    const cursorRow = buf.baseY + buf.cursorY
+    const parts: string[] = []
+    for (let y = buf.baseY; y < buf.length; y += 1) {
+      const line = buf.getLine(y)
+      /* v8 ignore next -- y is bounded by buf.length, so the undefined arm is
+         unreachable; it exists because getLine is typed for out-of-range reads */
+      if (line === undefined) continue
+      const next = y + 1 < buf.length ? buf.getLine(y + 1) : undefined
+      // Rejoined, unlike anything sent to the phone: a wrap is a break the OLD
+      // width imposed, and replaying it would freeze that break into a grid that
+      // may no longer have it.
+      const continues = next !== undefined && next.isWrapped
+      if (y === cursorRow) {
+        // Split at the cursor's own cell and mark the spot, so the emulator is
+        // the one that works out where the cursor lands at the new width -- the
+        // old row and column name a cell the reflow has moved. Nothing is
+        // trimmed to the left of the mark: those blank cells are what put the
+        // cursor where it is.
+        parts.push(encodeLine(line, cell, false, 0, buf.cursorX), SAVE_CURSOR)
+        parts.push(encodeLine(line, cell, !continues, buf.cursorX))
+      } else {
+        parts.push(encodeLine(line, cell, !continues))
+      }
+      // Carriage return as well as newline: a row filled to the last column
+      // leaves the cursor pending a wrap, and a bare newline would carry that
+      // column down with it. Never after the last row -- that would scroll the
+      // grid, and the replay is meant to reproduce it, not extend it.
+      if (!continues && y + 1 < buf.length) parts.push('\r\n')
+    }
 
     screen.term.dispose()
-    screen.term = this.newTerminal()
-    // Carriage returns as well as newlines: a row filled to the last column
-    // leaves the cursor pending a wrap, and a bare newline would carry that
-    // column down to the next row.
-    screen.term.write(`${rows.join('\r\n')}${cursor}`)
+    screen.term = this.newTerminal(cols, rows)
+    screen.cols = cols
+    screen.rows = rows
+    screen.term.write(`${parts.join('')}${RESTORE_CURSOR}`)
     screen.settledCount = 0
     screen.normalSettledCount = 0
     screen.inAlt = false

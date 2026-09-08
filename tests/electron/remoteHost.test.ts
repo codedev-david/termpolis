@@ -87,6 +87,7 @@ function makeHarness() {
       // Null for a terminal with nothing in it: `starting` derived from an empty
       // buffer would be a guess presented to the phone as a reading.
       readRecent: (id) => (text[id] === undefined ? null : { output: text[id], name: id }),
+      terminalSize: () => ({ cols: 80, rows: 24 }),
       createTransport: (relayUrl) => {
         const child = {
           relayUrl,

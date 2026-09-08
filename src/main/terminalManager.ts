@@ -12,9 +12,34 @@ interface PtyProcess {
   /** Batches this terminal's output before it crosses to the renderer. Disposed on
    *  exit and on kill so trailing output is delivered, never dropped. */
   coalescer: OutputCoalescer
+  /** The geometry the child believes it is drawing for.
+   *
+   *  node-pty exposes `cols`/`rows` on the process, but only as the values it was
+   *  constructed with -- a later `resize` does not update them. Anything that has
+   *  to reproduce this terminal's grid elsewhere (the phone bridge does) needs the
+   *  CURRENT size, so it is recorded on the way through instead. */
+  cols: number
+  rows: number
+}
+
+/** A terminal's current geometry, or null when there is no such terminal.
+ *
+ *  Exists for the remote bridge: it replays these bytes into its own emulator,
+ *  and a TUI addresses cells by number. Replaying a 150-column redraw into a
+ *  120-column grid puts the cursor on the wrong cell, which is not a cosmetic
+ *  difference -- it drops characters out of the middle of words and leaves
+ *  frames behind that the real terminal has already painted over. */
+export function getTerminalSize(id: string): { cols: number; rows: number } | null {
+  const proc = processes.get(id)
+  return proc === undefined ? null : { cols: proc.cols, rows: proc.rows }
 }
 
 const processes = new Map<string, PtyProcess>()
+
+/** Geometry a terminal is born with, before the renderer's fit reports the real
+ *  one. Only ever visible for the first instant of a terminal's life. */
+const SPAWN_COLS = 80
+const SPAWN_ROWS = 24
 
 // Trust prompt detection is handled by timed Enter sends in the renderer
 // (AIProfiles.tsx, App.tsx, StartSwarmModal.tsx) since Claude Code's TUI
@@ -126,8 +151,8 @@ export function spawnTerminal(
   try {
     proc = pty.spawn(executable, getShellArgs(executable), {
       name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
+      cols: SPAWN_COLS,
+      rows: SPAWN_ROWS,
       cwd: resolvedCwd,
       env,
     })
@@ -146,7 +171,7 @@ export function spawnTerminal(
     try { coalescer.dispose() } catch {}
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
-  processes.set(id, { pty: proc, coalescer })
+  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS })
 }
 
 export function killTerminal(id: string): void {
@@ -164,7 +189,15 @@ export function writeToTerminal(id: string, data: string): void {
 }
 
 export function resizeTerminal(id: string, cols: number, rows: number): void {
-  try { processes.get(id)?.pty.resize(cols, rows) } catch {}
+  const proc = processes.get(id)
+  if (proc === undefined) return
+  // Recorded even if the resize throws. A failed resize leaves the child drawing
+  // for whatever size it last accepted, and that is still `cols`/`rows` as far as
+  // every reader is concerned -- node-pty throws here for a closed pty, not for a
+  // rejected geometry.
+  proc.cols = cols
+  proc.rows = rows
+  try { proc.pty.resize(cols, rows) } catch {}
 }
 
 export function killAll(): void {

@@ -21,6 +21,7 @@ import {
   type Capabilities,
   type PairedDevice,
   type RemoteRequest,
+  type TerminalSize,
 } from '../../src/main/remoteBridge/protocol'
 import type {
   PairingRelayDeps,
@@ -685,6 +686,33 @@ describe('output pump', () => {
     })
     await h.c.settled()
     expect(h.rooms[0].sent).toHaveLength(0)
+  })
+
+  it('hands the emulator the geometry the host reported', async () => {
+    // Everything the flattener does is grid arithmetic, so the width and height
+    // have to be the pty's rather than a default. Dropping them here is
+    // invisible for `ls` and shreds a TUI: a redraw addressed to column 130 of a
+    // 203-column screen lands somewhere else entirely in a 120-column one.
+    const seen: Array<TerminalSize | undefined> = []
+    const real = new ScreenFlattener()
+    const h = subscribed('d1', {
+      feed: (id, raw, size) => {
+        seen.push(size)
+        return real.feed(id, raw, size)
+      },
+      forget: (id) => real.forget(id),
+      forgetAll: () => real.forgetAll(),
+    })
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'frame', nextOffset: 5, missed: 0 },
+      size: { cols: 203, rows: 51 },
+    })
+    await h.c.settled()
+    expect(seen).toEqual([{ cols: 203, rows: 51 }])
   })
 
   it('survives an emulator that throws, and keeps flattening afterwards', async () => {

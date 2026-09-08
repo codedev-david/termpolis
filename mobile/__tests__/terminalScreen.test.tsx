@@ -21,6 +21,7 @@ const mockRoute = { params: { terminalId: 't1', name: 'claude' } }
 
 /** The escape byte itself, built rather than typed so the source stays ASCII. */
 const ESC = String.fromCharCode(27)
+const CR = String.fromCharCode(13)
 
 jest.mock('@react-navigation/native', () => ({
   __esModule: true,
@@ -167,11 +168,14 @@ describe('TerminalScreen -- the composer', () => {
     expect(screen.queryByTestId('terminal-input')).toBeNull()
   })
 
-  it('sends exactly what was typed and clears the box', async () => {
+  it('sends what was typed, submits it, and clears the box', async () => {
+    // The trailing CR is the whole point: `write_to_terminal` is raw by
+    // contract, so text alone lands in the agent's input line and sits there --
+    // which is exactly what the phone used to look like it was doing.
     await render(<TerminalScreen />)
     await fireEvent.changeText(screen.getByTestId('terminal-input'), 'npm test')
     await fireEvent.press(screen.getByTestId('terminal-send'))
-    expect(fn('send')).toHaveBeenCalledWith('t1', 'npm test')
+    expect(fn('send')).toHaveBeenCalledWith('t1', `npm test${CR}`)
     expect(screen.getByTestId('terminal-input').props.value).toBe('')
   })
 
@@ -181,7 +185,17 @@ describe('TerminalScreen -- the composer', () => {
     await render(<TerminalScreen />)
     await fireEvent.changeText(screen.getByTestId('terminal-input'), '  indented  ')
     await fireEvent.press(screen.getByTestId('terminal-send'))
-    expect(fn('send')).toHaveBeenCalledWith('t1', '  indented  ')
+    expect(fn('send')).toHaveBeenCalledWith('t1', `  indented  ${CR}`)
+  })
+
+  it('sends a multi-line draft as one paste rather than as several prompts', async () => {
+    await render(<TerminalScreen />)
+    await fireEvent.changeText(screen.getByTestId('terminal-input'), 'first\nsecond')
+    await fireEvent.press(screen.getByTestId('terminal-send'))
+    expect(fn('send')).toHaveBeenCalledWith(
+      't1',
+      `${ESC}[200~first${CR}second${ESC}[201~${CR}`,
+    )
   })
 
   it('sends nothing when the box is empty', async () => {

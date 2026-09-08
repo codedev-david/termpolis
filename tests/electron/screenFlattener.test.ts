@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { ScreenFlattener, type FlatEdit } from '../../src/main/remoteBridge/screenFlattener'
+import type { TerminalSize } from '../../src/main/remoteBridge/protocol'
 
 /** How Claude Code draws one frame of its status line: return to column zero,
  *  erase what is there, write the frame. Ten times a second, in place. */
@@ -44,8 +45,8 @@ function plain(text: string): string {
 class Phone {
   view = ''
   constructor(private readonly flat: ScreenFlattener) {}
-  async feed(raw: string, terminalId = 't1'): Promise<FlatEdit | null> {
-    const edit = await this.flat.feed(terminalId, raw)
+  async feed(raw: string, size?: TerminalSize, terminalId = 't1'): Promise<FlatEdit | null> {
+    const edit = await this.flat.feed(terminalId, raw, size)
     this.view = apply(this.view, edit)
     return edit
   }
@@ -239,25 +240,75 @@ describe('colour survives the flattening', () => {
 })
 
 describe('lines longer than the emulator is wide', () => {
-  it('hands the phone one logical line, not one line per wrap', async () => {
+  it('breaks where the terminal broke, not where the phone would', async () => {
     const flat = new ScreenFlattener(20, 6)
     const long = 'abcdefghijklmnopqrstuvwxyz0123456789'
     const edit = await flat.feed('t1', long)
-    // The phone is far narrower than the emulator and wraps to its own width.
-    // A hard break at the emulator's column 20 would show up as a ragged edge
-    // in the middle of the text.
-    expect(plain(edit?.text ?? '')).toBe(long)
+    // Grid rows, not logical lines. Rejoining the wrap here would leave the
+    // phone free to re-wrap at its own much narrower width -- fine for `ls`
+    // output, and the reason a desktop-width box border used to arrive as three
+    // ragged rows per side.
+    expect(plain(edit?.text ?? '')).toBe('abcdefghijklmnopqrst\nuvwxyz0123456789')
   })
 
-  it('does not settle half of a wrapped line as it scrolls', async () => {
+  it('settles a wrapped continuation as its own row', async () => {
     const phone = new Phone(new ScreenFlattener(20, 4))
     const long = 'wrapped-line-that-keeps-going-past-the-edge'
     await phone.feed(`${long}\r\n`)
     for (let i = 0; i < 6; i += 1) await phone.feed(`filler ${i}\r\n`)
-    // Once the wrapped line has scrolled out of the viewport it is settled and
-    // can never be corrected, so it has to be settled whole.
-    expect(phone.text).toContain(long)
-    expect(phone.text.startsWith(`${long}\nfiller 0`)).toBe(true)
+    // Scrolled past, so settled forever -- and settled exactly as the terminal
+    // laid it out, three rows of twenty columns.
+    const rows = (long.match(/.{1,20}/g) ?? []).join('\n')
+    expect(phone.text.startsWith(`${rows}\nfiller 0`)).toBe(true)
+  })
+})
+
+describe('the geometry main reports', () => {
+  it('builds the emulator at the real size the first time it hears one', async () => {
+    // The constructor default is a fallback; a terminal 40 columns wide must
+    // wrap at 40 even on the very first slice, because that first slice may
+    // already be a full TUI frame.
+    const flat = new ScreenFlattener(120, 30)
+    const edit = await flat.feed('t1', 'x'.repeat(45), { cols: 40, rows: 10 })
+    expect(plain(edit?.text ?? '')).toBe(`${'x'.repeat(40)}\n${'x'.repeat(5)}`)
+  })
+
+  it('adopts a resize, keeping what had already settled', async () => {
+    const phone = new Phone(new ScreenFlattener(120, 30))
+    await phone.feed('first line\r\n', { cols: 40, rows: 4 })
+    await phone.feed('y'.repeat(30), { cols: 20, rows: 4 })
+    // The already-sent line is untouched -- it is permanent by definition -- and
+    // the new bytes wrap at the NEW width, which is where the desktop wrapped
+    // them too.
+    expect(phone.text).toBe(`first line\n${'y'.repeat(20)}\n${'y'.repeat(10)}`)
+  })
+
+  it('rejoins a wrapped row before replaying it into a wider grid', async () => {
+    // The break exists only because of the OLD width. Replaying it verbatim
+    // would freeze it into a grid that no longer has it, leaving the phone with
+    // a hard break the desktop does not show -- and the cursor has to survive
+    // the reflow too, or the next byte lands in the wrong cell.
+    const phone = new Phone(new ScreenFlattener(20, 6))
+    const long = 'wrapped-line-that-keeps-going-past-the-edge'
+    await phone.feed(long)
+    expect(phone.text).toBe([long.slice(0, 20), long.slice(20, 40), long.slice(40)].join('\n'))
+    await phone.feed('!', { cols: 60, rows: 6 })
+    expect(phone.text).toBe(`${long}!`)
+  })
+
+  it('ignores an implausible size rather than killing the emulator', async () => {
+    // A pane mid-layout can report zero, and xterm throws on a zero dimension.
+    // Holding the last known geometry beats losing the screen.
+    const phone = new Phone(new ScreenFlattener(20, 6))
+    await phone.feed('z'.repeat(25), { cols: 0, rows: 0 })
+    expect(phone.text).toBe(`${'z'.repeat(20)}\n${'z'.repeat(5)}`)
+  })
+
+  it('does not rebuild when the size has not moved', async () => {
+    const phone = new Phone(new ScreenFlattener(20, 6))
+    await phone.feed('kept\r\n', { cols: 20, rows: 6 })
+    await phone.feed('after', { cols: 20, rows: 6 })
+    expect(phone.text).toBe('kept\nafter')
   })
 })
 

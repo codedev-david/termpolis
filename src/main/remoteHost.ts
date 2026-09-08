@@ -17,7 +17,13 @@ import {
   type BridgeHandle,
 } from './remoteBridgeSupervisor'
 import { coerceCapabilities } from './remoteDeviceStore'
-import { NO_CAPABILITIES, type BridgeToHost, type Capabilities, type OutputSlice } from './remoteBridge/protocol'
+import {
+  NO_CAPABILITIES,
+  type BridgeToHost,
+  type Capabilities,
+  type OutputSlice,
+  type TerminalSize,
+} from './remoteBridge/protocol'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import type { TerminalSnapshot } from './remoteStatusPump'
 import { ok, err } from './ipcResult'
@@ -38,6 +44,11 @@ export interface RemoteHostBinding {
   sendEvent(event: RemoteEvent): void
   readOutput(terminalId: string, fromOffset: number): OutputSlice
   readRecent(terminalId: string): TerminalSnapshot | null
+  /** The geometry the terminal is actually running at, or null once it has
+   *  closed. It rides along with every slice because the bridge emulates those
+   *  bytes, and a redraw meant for one grid replayed into another lands on the
+   *  wrong cells. */
+  terminalSize(terminalId: string): TerminalSize | null
   /** How a bridge child is forked. Injected so tests never fork anything; the
    *  app passes `realBridgeTransport`. */
   createTransport(relayUrl: string): BridgeHandle
@@ -78,6 +89,7 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
     sendEvent: binding.sendEvent,
     readOutput: binding.readOutput,
     readRecent: binding.readRecent,
+    terminalSize: binding.terminalSize,
     startBridge: (init, relayUrl) => {
       // Re-armed on every launch: the spawner closes over the relay URL, and the
       // supervisor calls it again on a crash restart. Wiring it once at bootstrap

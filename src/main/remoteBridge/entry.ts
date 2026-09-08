@@ -526,10 +526,15 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         //
         // Serialised through one chain because xterm's write is asynchronous and
         // a terminal's bytes only mean anything in the order they were written.
-        const { terminalId, slice } = msg
+        // `size` is the geometry these bytes were drawn for, straight from the
+        // pty. Without it the emulator here guesses, and a TUI redraw replayed
+        // into a grid of the wrong width lands on the wrong cells -- holes
+        // punched through words, and a spinner frame settled as permanent text
+        // while the real terminal is still painting over it.
+        const { terminalId, slice, size } = msg
         flattening = flattening
           .then(async () => {
-            const edit = await flattener.feed(terminalId, slice.output)
+            const edit = await flattener.feed(terminalId, slice.output, size)
             if (edit === null && slice.missed === 0) return
             fanout.ingest(terminalId, {
               output: edit?.text ?? '',

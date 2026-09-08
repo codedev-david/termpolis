@@ -38,6 +38,7 @@ const {
   killAll,
   getTerminalPid,
   getTerminalCwd,
+  getTerminalSize,
   computeWindowsPty,
 } = await import('../../src/main/terminalManager')
 
@@ -162,6 +163,20 @@ describe('terminalManager', () => {
     spawnTerminal('t9', '/bin/bash', '/tmp', vi.fn())
     resizeTerminal('t9', 120, 40)
     expect(mockPty.resize).toHaveBeenCalledWith(120, 40)
+  })
+
+  it('getTerminalSize reports the geometry the pty is actually drawing for', () => {
+    // node-pty does not update the child's reported cols/rows after a resize, so
+    // this is the only record of the grid the bytes were drawn against. The
+    // phone emulates against it; guessing punches holes through words.
+    spawnTerminal('t9b', '/bin/bash', '/tmp', vi.fn())
+    expect(getTerminalSize('t9b')).toEqual({ cols: 80, rows: 24 })
+    resizeTerminal('t9b', 148, 41)
+    expect(getTerminalSize('t9b')).toEqual({ cols: 148, rows: 41 })
+  })
+
+  it('getTerminalSize returns null for a non-existent terminal', () => {
+    expect(getTerminalSize('ghost')).toBeNull()
   })
 
   // 10. killAll kills all spawned terminals

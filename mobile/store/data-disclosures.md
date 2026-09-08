@@ -17,7 +17,7 @@ the working that supports it.
 
 | Claim | Where it is true in the code |
 | --- | --- |
-| No analytics, crash reporting or attribution SDK | `mobile/package.json` — the whole dependency list is 17 entries, frozen by `mobile/__tests__/appConfig.test.ts` |
+| No analytics, crash reporting or attribution SDK | `mobile/package.json` — the whole dependency list is 18 entries, frozen by `mobile/__tests__/appConfig.test.ts` |
 | No account, no sign-in, no server of ours the app talks to | `mobile/src/net/` speaks only to the relay named in the pairing payload |
 | No advertising identifier | Nothing imports one; iOS shows no ATT prompt because there is nothing to track |
 | Nothing written to disk but the key and the pairing | `mobile/src/storage/identity.ts` — two `expo-secure-store` entries, `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
