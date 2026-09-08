@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { hostname } from 'os'
 
 import { localDesktopName } from '../../src/main/remoteBridge/desktopName'
-import { MAX_DEVICE_LABEL } from '../../src/main/remoteBridge/deviceLabel'
+import { MAX_DEVICE_LABEL, sanitizeDeviceLabel } from '../../src/main/remoteBridge/deviceLabel'
 
 /**
  * What this machine tells a phone to call it.
@@ -15,7 +15,14 @@ import { MAX_DEVICE_LABEL } from '../../src/main/remoteBridge/deviceLabel'
  */
 describe('localDesktopName', () => {
   it('reads the machine name', () => {
-    expect(localDesktopName()).toBe(hostname())
+    // Sanitised, not raw: a real machine name can exceed the cap. GitHub's macOS
+    // runners are called things like
+    // 'sjc22-bt151-<uuid>-EA5DC68AD7E4.local' -- 67 characters, three past
+    // MAX_DEVICE_LABEL -- so asserting raw equality here tested that this box's
+    // hostname happens to be short, and went red the first time it wasn't.
+    // What the assertion is for is that the default reader is os.hostname and
+    // nothing else; the clipping is the next test's business.
+    expect(localDesktopName()).toBe(sanitizeDeviceLabel(hostname()))
   })
 
   it('cleans and clips what the OS reports', () => {
