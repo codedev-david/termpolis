@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { RequestDispatcher } from '../../src/main/remoteBridge/dispatcher'
+import { RequestDispatcher, SUBMIT_SETTLE_MS } from '../../src/main/remoteBridge/dispatcher'
 import { CapabilityError } from '../../src/main/remoteBridge/remotePolicy'
 import { NO_CAPABILITIES, type Capabilities, type RemoteRequest } from '../../src/main/remoteBridge/protocol'
 
@@ -142,5 +142,159 @@ describe('RequestDispatcher — who asked', () => {
     const mcp = fakeMcp()
     await new RequestDispatcher(mcp).dispatch({ kind: 'listTerminals' }, all, 'ffffffffffffffff')
     expect(mcp.callTool.mock.calls[0][2]).toBe('ffffffffffffffff')
+  })
+})
+
+describe('RequestDispatcher — typing, then Enter', () => {
+  /** Records the pauses instead of taking them, so the suite does not sleep. */
+  const fakeSettle = () => {
+    const slept: number[] = []
+    return { slept, settle: async (ms: number) => { slept.push(ms) } }
+  }
+
+  it('sends the carriage return as a separate write from the message', async () => {
+    // The whole point of the dispatcher's SUBMIT_SETTLE_MS comment: fused into
+    // one write, Codex reads `hello\r` as a single pasted burst and leaves it in
+    // the composer unsent. Two writes are two stdin reads, which is what a
+    // person typing looks like. Asserting the CALL COUNT is what pins that -- an
+    // "optimisation" back to a single call is the bug returning.
+    const mcp = fakeMcp()
+    const { settle } = fakeSettle()
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hello\r' }, all, DEVICE)
+
+    expect(mcp.callTool).toHaveBeenCalledTimes(2)
+    expect(mcp.callTool).toHaveBeenNthCalledWith(1, 'write_to_terminal', { terminalId: 't1', text: 'hello' }, DEVICE)
+    expect(mcp.callTool).toHaveBeenNthCalledWith(2, 'write_to_terminal', { terminalId: 't1', text: '\r' }, DEVICE)
+  })
+
+  it('waits between the two, and does not press Enter before the text has been sent', async () => {
+    // Ordering, not just presence. A settle that ran after both writes, or
+    // writes issued concurrently, would satisfy a count assertion and still
+    // deliver one burst to the pty.
+    const order: string[] = []
+    const mcp = {
+      callTool: vi.fn(async (_n: string, args: Record<string, unknown>) => {
+        order.push(`write:${JSON.stringify(args.text)}`)
+        return { ok: true }
+      }),
+    }
+    const settle = async (ms: number): Promise<void> => { order.push(`settle:${ms}`) }
+
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hi\r' }, all, DEVICE)
+
+    expect(order).toEqual(['write:"hi"', `settle:${SUBMIT_SETTLE_MS}`, 'write:"\\r"'])
+  })
+
+  it('pauses long enough to clear a paste-burst window', async () => {
+    const mcp = fakeMcp()
+    const { slept, settle } = fakeSettle()
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'x\r' }, all, DEVICE)
+    // The exact number is empirical; what must not happen is it drifting down
+    // into the tens of milliseconds those TUIs treat as a single burst.
+    expect(slept).toEqual([SUBMIT_SETTLE_MS])
+    expect(SUBMIT_SETTLE_MS).toBeGreaterThanOrEqual(100)
+  })
+
+  it('keeps a multi-line paste whole, splitting only the final Enter', async () => {
+    // The phone wraps multi-line text in a bracketed paste and puts ONE carriage
+    // return after the closing marker. Splitting on an interior newline would
+    // submit half a message; splitting inside the markers would leave the
+    // terminal stuck in paste mode.
+    const mcp = fakeMcp()
+    const { settle } = fakeSettle()
+    const pasted = '\x1b[200~one\rtwo\x1b[201~\r'
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: pasted }, all, DEVICE)
+
+    expect(mcp.callTool.mock.calls[0][1]).toEqual({ terminalId: 't1', text: '\x1b[200~one\rtwo\x1b[201~' })
+    expect(mcp.callTool.mock.calls[1][1]).toEqual({ terminalId: 't1', text: '\r' })
+  })
+
+  it('forwards text with no trailing newline untouched, in a single write', async () => {
+    // Raw keystrokes stay raw. A client steering a TUI one key at a time must
+    // not have a 150ms pause spliced into its stream.
+    const mcp = fakeMcp()
+    const { slept, settle } = fakeSettle()
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: '\x1b[B' }, all, DEVICE)
+
+    expect(mcp.callTool).toHaveBeenCalledTimes(1)
+    expect(mcp.callTool).toHaveBeenCalledWith('write_to_terminal', { terminalId: 't1', text: '\x1b[B' }, DEVICE)
+    expect(slept).toEqual([])
+  })
+
+  it('sends a bare Enter as one write, with nothing to settle behind', async () => {
+    // Answering a y/n prompt is a real use. There is no body, so there is no
+    // burst to break up -- and a needless pause would just make the phone feel
+    // slow.
+    const mcp = fakeMcp()
+    const { slept, settle } = fakeSettle()
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: '\r' }, all, DEVICE)
+
+    expect(mcp.callTool).toHaveBeenCalledTimes(1)
+    expect(mcp.callTool).toHaveBeenCalledWith('write_to_terminal', { terminalId: 't1', text: '\r' }, DEVICE)
+    expect(slept).toEqual([])
+  })
+
+  it('splits a bare newline terminator too, not just a carriage return', async () => {
+    // toTerminalSubmit sends \r, but the dispatcher is the desktop's edge and an
+    // older or third-party client may terminate with \n. Both mean submit.
+    const mcp = fakeMcp()
+    const { settle } = fakeSettle()
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'ship it\n' }, all, DEVICE)
+
+    expect(mcp.callTool).toHaveBeenCalledTimes(2)
+    expect(mcp.callTool.mock.calls[1][1]).toEqual({ terminalId: 't1', text: '\n' })
+  })
+
+  it('reports failure when the Enter fails, even though the text got through', async () => {
+    // The phone clears the composer on success. Calling this a success would
+    // lose the message: the text is on the desktop, unsent, and the only copy
+    // the user could resend has just been wiped from their screen.
+    const mcp = {
+      callTool: vi.fn()
+        .mockResolvedValueOnce({ ok: true })
+        .mockRejectedValueOnce(new Error('terminal is gone')),
+    }
+    const { settle } = fakeSettle()
+    await expect(
+      new RequestDispatcher(mcp, settle)
+        .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hello\r' }, all, DEVICE),
+    ).rejects.toThrow(/terminal is gone/)
+  })
+
+  it('does not press Enter at all if the text never landed', async () => {
+    const mcp = { callTool: vi.fn().mockRejectedValue(new Error('mcp down')) }
+    const { settle } = fakeSettle()
+    await expect(
+      new RequestDispatcher(mcp, settle)
+        .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hello\r' }, all, DEVICE),
+    ).rejects.toThrow(/mcp down/)
+    expect(mcp.callTool).toHaveBeenCalledTimes(1)
+  })
+
+  it('tags both halves with the device that asked', async () => {
+    // Two writes are two audit lines. Neither of them may be anonymous.
+    const mcp = fakeMcp()
+    const { settle } = fakeSettle()
+    await new RequestDispatcher(mcp, settle)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hello\r' }, all, DEVICE)
+    expect(mcp.callTool.mock.calls.map((c) => c[2])).toEqual([DEVICE, DEVICE])
+  })
+
+  it('really does wait when nothing is injected', async () => {
+    // The default argument is the only thing that makes this work in production.
+    // A suite that always injects a fake would never notice it going missing.
+    const mcp = fakeMcp()
+    const started = Date.now()
+    await new RequestDispatcher(mcp)
+      .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hello\r' }, all, DEVICE)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(SUBMIT_SETTLE_MS - 25)
+    expect(mcp.callTool).toHaveBeenCalledTimes(2)
   })
 })

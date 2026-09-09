@@ -11,6 +11,7 @@ import {
   primeOnLaunch,
   PRIMER_GATE_POLL_MS,
   PRIMER_GATE_MAX_WAIT_MS,
+  PRIMER_SUBMIT_SETTLE_MS,
   type PrimerGate,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
@@ -576,5 +577,86 @@ describe('the compaction re-primer is wired to reprimeAfterCompaction, not a raw
     await vi.advanceTimersByTimeAsync(5000)
     // The regression, pinned: this used to paste the primer pointer into Claude's input box.
     expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+})
+
+// The Codex-on-Linux report: "this paragraph keeps getting repeated in the input area".
+// Two independent causes, one symptom — the pointer was pasted but never submitted, so it
+// sat in the composer; and the "prime once" guard was a per-mount ref, so every pane
+// remount pasted another copy on top of the one already sitting there.
+describe('the launch pointer is submitted, once', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    ;(window as any).termpolis = {
+      memoryBuildPrimer: vi.fn(async () => ({ success: true, data: 'MEMORY DIGEST' })),
+      writeToTerminal: vi.fn(),
+    }
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    useTerminalStore.setState({ terminals: [] })
+  })
+
+  it('presses Enter as a SEPARATE write, after a settling pause', async () => {
+    // Fused into the pasted string, `\r` is just more paste content: a TUI that
+    // detects paste bursts (Codex does) deliberately does not submit on it. Two
+    // writes with a gap between them are two reads at the pty, which is what a
+    // person pressing Return looks like. Asserting the call count is what pins
+    // that down — collapsing it back to one write is the bug returning.
+    const slept: number[] = []
+    const ok = await injectAutoPrimer('t1', '/home/me/proj', false, false, async (ms) => { slept.push(ms) })
+    expect(ok).toBe(true)
+    const w = (window as any).termpolis.writeToTerminal
+    expect(w).toHaveBeenCalledTimes(2)
+    expect(w.mock.calls[0][1]).toContain('\x1b[201~') // the bracketed paste, whole
+    expect(w.mock.calls[0][1]).not.toContain('\r')
+    expect(w.mock.calls[1][1]).toBe('\r')
+    expect(slept).toEqual([PRIMER_SUBMIT_SETTLE_MS])
+  })
+
+  it('waits long enough that the paste burst has closed', async () => {
+    expect(PRIMER_SUBMIT_SETTLE_MS).toBeGreaterThanOrEqual(100)
+  })
+
+  it('does not press Enter when there was nothing worth pasting', async () => {
+    ;(window as any).termpolis.memoryBuildPrimer = vi.fn(async () => ({ success: false }))
+    expect(await injectAutoPrimer('t1', '/p', false, false, async () => {})).toBe(false)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('pastes only once across a pane remount', async () => {
+    // A TerminalPane is remounted by anything that rebuilds the layout: toggling
+    // split view, hiding a terminal, switching workspaces. The guard has to live
+    // on the terminal, because the component does not survive any of those.
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 'term-remount', agentCommand: 'codex' } as any] })
+    const first = renderHook(() => useAutoPrimer('term-remount', agent, '/home/me/proj', openGate()))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    expect(useTerminalStore.getState().terminals[0].primerPointed).toBe(true)
+
+    first.unmount()
+    renderHook(() => useAutoPrimer('term-remount', agent, '/home/me/proj', openGate()))
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks a launch-seeded terminal as pointed so remounts stay quiet too', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 'term-seeded', launchPrimed: true } as any] })
+    renderHook(() => useAutoPrimer('term-seeded', agent, '/home/me/proj', openGate()))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    expect(useTerminalStore.getState().terminals[0].primerPointed).toBe(true)
+  })
+
+  it('still primes a terminal the store has no record of', async () => {
+    // Belt and braces: no record means nothing to mark, and the per-mount ref is
+    // all that is left. It must not turn into "never prime".
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [] })
+    renderHook(() => useAutoPrimer('term-ghost', agent, '/home/me/proj', openGate()))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
   })
 })

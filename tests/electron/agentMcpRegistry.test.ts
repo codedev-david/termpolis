@@ -14,6 +14,7 @@ import {
   registerInCodex,
   registerInGemini,
   resolveNodeCommand,
+  resolveNodeRunner,
 } from '../../src/main/agentMcpRegistry'
 
 const ADAPTER = '/path/to/stdio-adapter.cjs'
@@ -334,12 +335,24 @@ describe('agentMcpRegistry', () => {
       expect(content).toMatch(/command = "node"/)
     })
 
-    it('is idempotent when already registered', () => {
+    it('is idempotent when the section already says exactly what we would write', () => {
       const p = join(dir, 'config.toml')
-      writeFileSync(p, '[mcp_servers.termpolis]\ncommand = "node"\n')
+      writeFileSync(p, `[mcp_servers.termpolis]\ncommand = "node"\nargs = ["${ADAPTER}"]\n`)
       const r = registerInCodex(p, ADAPTER)
       expect(r.changed).toBe(false)
       expect(r.skipped).toBe('already-registered')
+    })
+
+    it('repairs a half-written section rather than trusting the header alone', () => {
+      // Presence of `[mcp_servers.termpolis]` used to be enough to skip. It is
+      // not: a section can name the wrong interpreter, point at an adapter path
+      // from a previous install location, or — as here — be missing `args`
+      // entirely, in which case Codex spawns node with no script and the MCP
+      // server never comes up.
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, '[mcp_servers.termpolis]\ncommand = "node"\n')
+      expect(registerInCodex(p, ADAPTER).changed).toBe(true)
+      expect(readFileSync(p, 'utf-8')).toContain(`args = ["${ADAPTER}"]`)
     })
 
     it('escapes backslashes in Windows adapter paths', () => {
@@ -502,6 +515,153 @@ describe('agentMcpRegistry', () => {
       const r = registerInClaudeSettings(p, ADAPTER, undefined, NODE)
       expect(r.changed).toBe(true)
       expect(JSON.parse(readFileSync(p, 'utf-8')).mcpServers.termpolis.command).toBe(NODE)
+    })
+  })
+  // The Linux bug report behind all of this: Codex on a .deb install showed
+  //   MCP client for `termpolis` failed to start: No such file or directory
+  // because the config said `command = "node"` and the app — launched from a
+  // desktop file, and shipping Electron rather than Node — had no such binary
+  // on its PATH to hand the agent.
+  describe('resolveNodeRunner', () => {
+    const ELECTRON = process.platform === 'win32' ? 'C:/apps/Termpolis/Termpolis.exe' : '/opt/Termpolis/termpolis'
+
+    it('uses a real node when one exists, with no environment of its own', () => {
+      const bin = process.platform === 'win32' ? 'node.exe' : 'node'
+      const nodeDir = join(dir, 'nodedir')
+      const runner = resolveNodeRunner(
+        { PATH: nodeDir } as NodeJS.ProcessEnv,
+        (p) => p === join(nodeDir, bin),
+        ELECTRON,
+      )
+      expect(runner).toEqual({ command: join(nodeDir, bin) })
+    })
+
+    it('falls back to Termpolis\u2019s own Electron in node mode when no node exists', () => {
+      // Not a nicety: the .deb depends on GTK, not on nodejs, so "there is no
+      // node anywhere" is the DEFAULT state of a fresh Linux install. The one
+      // interpreter we can prove exists is the binary currently running.
+      const runner = resolveNodeRunner({ PATH: '' } as NodeJS.ProcessEnv, (p) => p === ELECTRON, ELECTRON)
+      expect(runner).toEqual({ command: ELECTRON, env: { ELECTRON_RUN_AS_NODE: '1' } })
+    })
+
+    it('never writes a path that does not exist \u2014 bare node is the last resort', () => {
+      // A non-existent absolute path fails exactly as loudly as bare `node`,
+      // but is far harder for a user to diagnose. If we cannot prove a file is
+      // there, we say `node` and let PATH have the last word.
+      expect(resolveNodeRunner({ PATH: '' } as NodeJS.ProcessEnv, () => false, ELECTRON)).toEqual({ command: 'node' })
+    })
+  })
+
+  describe('registerInCodex \u2014 interpreter repair', () => {
+    const NODE = '/usr/local/bin/node'
+    const ELECTRON = { command: '/opt/Termpolis/termpolis', env: { ELECTRON_RUN_AS_NODE: '1' } }
+
+    it('rewrites a stale bare-node section instead of calling it already-registered', () => {
+      // THE upgrade bug. Every Linux user who ran an older build has this exact
+      // file on disk. A short-circuit on "section present" leaves them broken
+      // through every future update, because the section is always present.
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, '[mcp_servers.termpolis]\ncommand = "node"\nargs = ["' + ADAPTER + '"]\n')
+      const r = registerInCodex(p, ADAPTER, NODE)
+      expect(r.changed).toBe(true)
+      const out = readFileSync(p, 'utf-8')
+      expect(out).toContain(`command = "${NODE}"`)
+      expect(out).not.toContain('command = "node"')
+      expect(out.match(/\[mcp_servers\.termpolis\]/g)).toHaveLength(1)
+    })
+
+    it('emits the interpreter environment as a TOML inline table', () => {
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, '')
+      expect(registerInCodex(p, ADAPTER, ELECTRON).changed).toBe(true)
+      const out = readFileSync(p, 'utf-8')
+      expect(out).toContain(`command = "${ELECTRON.command}"`)
+      expect(out).toContain('env = { ELECTRON_RUN_AS_NODE = "1" }')
+    })
+
+    it('leaves an identical section untouched', () => {
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, '')
+      registerInCodex(p, ADAPTER, NODE)
+      const before = readFileSync(p, 'utf-8')
+      expect(registerInCodex(p, ADAPTER, NODE)).toEqual({ changed: false, skipped: 'already-registered' })
+      expect(readFileSync(p, 'utf-8')).toBe(before)
+    })
+
+    it('replaces only its own section, leaving the rest of the config intact', () => {
+      // Text-blob editing has one job it must not get wrong: the user's model
+      // settings and other MCP servers live in this file too.
+      const p = join(dir, 'config.toml')
+      writeFileSync(
+        p,
+        'model = "gpt-5"\n\n[mcp_servers.termpolis]\ncommand = "node"\nargs = ["old.cjs"]\n\n[mcp_servers.other]\ncommand = "other"\n',
+      )
+      expect(registerInCodex(p, ADAPTER, NODE).changed).toBe(true)
+      const out = readFileSync(p, 'utf-8')
+      expect(out).toContain('model = "gpt-5"')
+      expect(out).toContain('[mcp_servers.other]\ncommand = "other"')
+      expect(out).toContain(`args = ["${ADAPTER}"]`)
+      expect(out).not.toContain('old.cjs')
+    })
+
+    it('drops a stale env when the interpreter no longer needs one', () => {
+      // The reverse upgrade: a user who installed Node after the Electron
+      // fallback was written must not keep ELECTRON_RUN_AS_NODE aimed at a
+      // real node, where it means nothing, or at a stale Electron path.
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, '')
+      registerInCodex(p, ADAPTER, ELECTRON)
+      expect(registerInCodex(p, ADAPTER, NODE).changed).toBe(true)
+      expect(readFileSync(p, 'utf-8')).not.toContain('ELECTRON_RUN_AS_NODE')
+    })
+  })
+
+  describe('registerInGemini / registerInClaudeSettings \u2014 runner env', () => {
+    const ELECTRON = { command: '/opt/Termpolis/termpolis', env: { ELECTRON_RUN_AS_NODE: '1' } }
+
+    it('stores the environment alongside the command for Gemini', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{}')
+      expect(registerInGemini(p, ADAPTER, ELECTRON).changed).toBe(true)
+      expect(JSON.parse(readFileSync(p, 'utf-8')).mcpServers.termpolis).toEqual({
+        command: ELECTRON.command,
+        env: { ELECTRON_RUN_AS_NODE: '1' },
+        args: [ADAPTER],
+      })
+      expect(registerInGemini(p, ADAPTER, ELECTRON)).toEqual({ changed: false, skipped: 'already-registered' })
+    })
+
+    it('repairs a Gemini entry that has the right command but lost its env', () => {
+      // Without ELECTRON_RUN_AS_NODE this command launches a second Termpolis
+      // window instead of an MCP server, so the command matching is not enough.
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, JSON.stringify({ mcpServers: { termpolis: { command: ELECTRON.command, args: [ADAPTER] } } }))
+      expect(registerInGemini(p, ADAPTER, ELECTRON).changed).toBe(true)
+      expect(JSON.parse(readFileSync(p, 'utf-8')).mcpServers.termpolis.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+    })
+
+    it('prefixes the Claude SessionStart hook with the interpreter environment', () => {
+      // Hook commands are shell strings — POSIX sh, Git Bash included — so
+      // `K=V cmd` is how the variable reaches the process.
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{}')
+      registerInClaudeSettings(p, ADAPTER, HOOK, ELECTRON)
+      const s = JSON.parse(readFileSync(p, 'utf-8'))
+      const cmd = s.hooks.SessionStart.flatMap((g: any) => g.hooks).map((h: any) => h.command)[0]
+      expect(cmd).toBe(`ELECTRON_RUN_AS_NODE=1 "${ELECTRON.command}" "${HOOK}"`)
+      expect(s.mcpServers.termpolis.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+    })
+
+    it('normalizes a Windows interpreter path in the hook command', () => {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, '{}')
+      registerInClaudeSettings(p, ADAPTER, WIN_HOOK, 'C:\\Program Files\\nodejs\\node.exe')
+      const s = JSON.parse(readFileSync(p, 'utf-8'))
+      const cmd = s.hooks.SessionStart.flatMap((g: any) => g.hooks).map((h: any) => h.command)[0]
+      expect(cmd).toBe('"C:/Program Files/nodejs/node.exe" "' + WIN_HOOK.replace(/\\/g, '/') + '"')
+      // The MCP entry keeps the native path — that one is spawned directly, not
+      // through a shell, so it is never re-parsed.
+      expect(s.mcpServers.termpolis.command).toBe('C:\\Program Files\\nodejs\\node.exe')
     })
   })
 })

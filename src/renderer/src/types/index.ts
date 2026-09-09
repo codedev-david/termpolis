@@ -30,6 +30,11 @@ export interface TerminalSession {
   /** Set when the terminal was seeded with project memory at launch (e.g. Claude
    *  via --append-system-prompt-file), so useAutoPrimer skips the typed pointer. */
   launchPrimed?: boolean
+  /** Set once the launch memory pointer has been pasted into THIS terminal. Lives
+   *  on the terminal rather than in the pane's React state because the pane
+   *  remounts — on a view-mode toggle, a hide/unhide, a workspace switch — and a
+   *  per-mount guard let every remount paste the pointer again. */
+  primerPointed?: boolean
 }
 
 export interface Workspace {

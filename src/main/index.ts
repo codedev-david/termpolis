@@ -498,6 +498,7 @@ import {
   registerInCodex,
   registerInGemini,
   resolveNodeCommand,
+  resolveNodeRunner,
 } from './agentMcpRegistry'
 import { repairWindowsShortcuts, defaultShortcutPaths } from './windowsShortcutRepair'
 
@@ -3630,6 +3631,13 @@ if (!gotTheLock) {
       ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.cjs')
       : join(__dirname, '../../src/mcp-adapter/stdio-adapter.cjs')
 
+    // One interpreter decision for all three agents. Codex and Gemini used to
+    // hardcode `command = "node"`, which on Linux is an outright ENOENT whenever
+    // Termpolis was started from a desktop launcher (a GUI PATH has no nvm) or on
+    // a machine with no Node at all — the .deb ships Electron, not Node. Reported
+    // from Codex on Linux as: MCP startup failed: No such file or directory.
+    const nodeRunner = resolveNodeRunner()
+
     // Preflight — if the adapter file isn't on disk, EVERY Claude Code session
     // will silently fail to register the Termpolis MCP server, and the
     // conductor will bypass the swarm. Logging this loudly on startup turns
@@ -3665,7 +3673,7 @@ if (!gotTheLock) {
       const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
       // Normalize to forward slashes for the embedded command string (node
       // accepts them on every OS; the registry also normalizes defensively).
-      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath, hookPath.replace(/\\/g, '/'), resolveNodeCommand())
+      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath, hookPath.replace(/\\/g, '/'), nodeRunner)
       if (r.changed) console.log('Auto-registered Termpolis MCP server, tool permissions, and memory hook in Claude Code settings')
       else if (r.error) console.log('Could not auto-register in Claude Code settings (non-fatal):', r.skipped, r.error)
     }
@@ -3770,7 +3778,7 @@ if (!gotTheLock) {
     // Auto-register in Codex CLI (~/.codex/config.toml)
     {
       const codexConfigPath = join(homedir(), '.codex', 'config.toml')
-      const r = registerInCodex(codexConfigPath, adapterPath)
+      const r = registerInCodex(codexConfigPath, adapterPath, nodeRunner)
       if (r.changed) console.log('Auto-registered Termpolis MCP server in Codex CLI config')
       else if (r.error) console.log('Could not register in Codex config (non-fatal):', r.skipped, r.error)
     }
@@ -3778,7 +3786,7 @@ if (!gotTheLock) {
     // Auto-register in Gemini CLI (~/.gemini/settings.json)
     {
       const geminiSettingsPath = join(homedir(), '.gemini', 'settings.json')
-      const r = registerInGemini(geminiSettingsPath, adapterPath)
+      const r = registerInGemini(geminiSettingsPath, adapterPath, nodeRunner)
       if (r.changed) console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
       else if (r.error) console.log('Could not register in Gemini settings (non-fatal):', r.skipped, r.error)
     }

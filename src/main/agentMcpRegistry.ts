@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'fs'
 import { join } from 'path'
+import { getAgentExtraPaths } from './agentPaths'
 
 export interface RegistryResult {
   changed: boolean
@@ -61,22 +62,93 @@ function collectSessionStartCommands(sessionStart: unknown[]): string[] {
 }
 
 /**
+ * How an agent's MCP config should spawn the stdio adapter.
+ *
+ * A bare `node` is not a safe thing to write into these files. The agent CLI
+ * spawns this command DIRECTLY (no shell), so the OS resolves it against the
+ * PATH the agent inherited — which is Termpolis's PATH, and Termpolis is
+ * usually started from a desktop launcher rather than a login shell. On Linux
+ * that PATH is typically just /usr/bin:/bin, so a Node installed by nvm/fnm/
+ * volta is invisible and the spawn fails with ENOENT, surfacing inside the
+ * agent as:
+ *
+ *   MCP client for `termpolis` failed to start: MCP startup failed:
+ *   No such file or directory (os error 2)
+ *
+ * — reported on Linux against Codex, whose config had `command = "node"`
+ * hardcoded (Claude's had been resolved since the same bug hit it there).
+ */
+export interface NodeRunner {
+  command: string
+  /** Extra environment the command needs; omitted when it needs none. */
+  env?: Record<string, string>
+}
+
+/** Accept either shape at a call site, so a plain 'node' string still works. */
+export type NodeSpec = string | NodeRunner
+
+function toRunner(spec: NodeSpec): NodeRunner {
+  return typeof spec === 'string' ? { command: spec } : spec
+}
+
+/**
+ * The runner rendered as a shell command prefix for a Claude Code hook.
+ *
+ * Hooks are `command` strings run through a shell — POSIX sh everywhere,
+ * including Windows, where Claude Code shells out to Git Bash — so `K=V cmd`
+ * is the portable way to hand the process an environment variable. That matters
+ * for the Electron fallback: without ELECTRON_RUN_AS_NODE the same binary opens
+ * a second Termpolis window instead of running the hook script.
+ *
+ * A bare `node` stays bare (unquoted) so the shell resolves it on PATH; an
+ * absolute path is quoted, with backslashes normalized, because Windows paths
+ * contain spaces (`C:/Program Files/...`).
+ */
+function hookCommand(runner: NodeRunner): string {
+  const bin = runner.command === 'node' ? 'node' : `"${runner.command.replace(/\\/g, '/')}"`
+  if (!runner.env) return bin
+  const prefix = Object.entries(runner.env).map(([k, v]) => `${k}=${v}`).join(' ')
+  return `${prefix} ${bin}`
+}
+
+/** Same runner, compared the way a config file stores it. */
+function runnerMatches(existing: any, runner: NodeRunner): boolean {
+  if (!existing || existing.command !== runner.command) return false
+  const want = runner.env ?? null
+  const have = existing.env && typeof existing.env === 'object' ? existing.env : null
+  if (want === null) return have === null || Object.keys(have).length === 0
+  if (have === null) return false
+  return Object.entries(want).every(([k, v]) => have[k] === v)
+}
+
+/**
  * Resolve an absolute `node` executable so the SessionStart memory hook and the
  * MCP adapter still run when the shell Claude Code uses to launch them has a PATH
  * without node — the GUI-launch-vs-login-shell discrepancy, and version managers
  * (nvm / fnm / volta) whose node isn't on the non-interactive PATH. Scans this
- * process's PATH plus a few well-known install dirs and returns the first node
- * that ACTUALLY EXISTS on disk; falls back to the bare `node` command (the prior
- * behavior — no regression) when none resolves, so a non-existent path is never
- * baked into the user's config. Pure: env + a file-existence probe are injectable.
+ * process's PATH, the same version-manager directories agent CLIs are found in,
+ * plus a few well-known install dirs, and returns the first node that ACTUALLY
+ * EXISTS on disk; falls back to the bare `node` command (the prior behavior — no
+ * regression) when none resolves, so a non-existent path is never baked into the
+ * user's config. Pure: env + a file-existence probe are injectable.
  */
 export function resolveNodeCommand(
   env: NodeJS.ProcessEnv = process.env,
   fileExists: (p: string) => boolean = existsSync,
+  extraDirs: () => string[] = getAgentExtraPaths,
 ): string {
   const win = process.platform === 'win32'
   const exe = win ? 'node.exe' : 'node'
   const dirs = (env.PATH || env.Path || '').split(win ? ';' : ':').map((d) => d.trim()).filter(Boolean)
+  // The version-manager dirs agent CLIs are already hunted through. nvm installs
+  // node and the globally-installed agent side by side, so if `codex` was found
+  // under ~/.nvm/versions/node/<v>/bin, node is in that same directory.
+  try {
+    for (const d of extraDirs()) dirs.push(d)
+  } catch {
+    // Probing version managers touches the filesystem; a failure there must not
+    // cost us the PATH candidates we already have.
+  }
   // Well-known absolute install locations as a backstop for stripped PATHs.
   if (win) {
     if (env.ProgramFiles) dirs.push(join(env.ProgramFiles, 'nodejs'))
@@ -91,11 +163,37 @@ export function resolveNodeCommand(
   return 'node'
 }
 
+/**
+ * The runner to write into agent MCP configs: a real node when one can be found,
+ * and otherwise Termpolis's own Electron binary in Node mode.
+ *
+ * The fallback matters because Node is not a dependency of the installed app —
+ * the .deb and the Windows installer ship Electron and nothing else. On a machine
+ * with no Node at all, `command = "node"` is not a best-effort guess, it is a
+ * guaranteed ENOENT. `ELECTRON_RUN_AS_NODE=1` makes process.execPath behave as a
+ * plain Node interpreter (Chromium never starts), and that binary is the one file
+ * we can be certain exists, since it is the process writing the config.
+ */
+export function resolveNodeRunner(
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (p: string) => boolean = existsSync,
+  electronPath: string = process.execPath,
+): NodeRunner {
+  const node = resolveNodeCommand(env, fileExists)
+  if (node !== 'node') return { command: node }
+  // Bare 'node' means nothing was found on disk. Prefer the binary we are.
+  if (electronPath && fileExists(electronPath)) {
+    return { command: electronPath, env: { ELECTRON_RUN_AS_NODE: '1' } }
+  }
+  return { command: 'node' }
+}
+
 // Register MCP server in Claude Code's global settings.json + auto-trust
 // the termpolis tool wildcard. When hookScriptPath is provided, ALSO register
 // the portable SessionStart memory-primer hook (deterministic memory recall).
 // Returns changed=true if anything was written.
-export function registerInClaudeSettings(settingsPath: string, adapterPath: string, hookScriptPath?: string, nodeCommand: string = 'node'): RegistryResult {
+export function registerInClaudeSettings(settingsPath: string, adapterPath: string, hookScriptPath?: string, node: NodeSpec = 'node'): RegistryResult {
+  const runner = toRunner(node)
   const read = safeReadJson(settingsPath)
   if (!read.ok) {
     if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
@@ -113,8 +211,8 @@ export function registerInClaudeSettings(settingsPath: string, adapterPath: stri
     changed = true
   }
   const existing = settings.mcpServers.termpolis
-  if (!existing || existing.args?.[0] !== adapterPath || (existing.command && existing.command !== nodeCommand)) {
-    settings.mcpServers.termpolis = { command: nodeCommand, args: [adapterPath] }
+  if (!existing || existing.args?.[0] !== adapterPath || !runnerMatches(existing, runner)) {
+    settings.mcpServers.termpolis = { ...runner, args: [adapterPath] }
     changed = true
   }
 
@@ -159,11 +257,11 @@ export function registerInClaudeSettings(settingsPath: string, adapterPath: stri
     if (!alreadyHooked) {
       // Path normalized to forward slashes — node accepts them on Windows and
       // they avoid backslash-escaping ambiguity in the JSON command string.
-      // nodeCommand is an absolute node path when resolvable (so the hook runs
-      // even when the hook shell's PATH lacks node — nvm/fnm installs), else the
-      // bare `node`. An absolute path is quoted (it may contain spaces).
+      // The runner is an absolute node path when resolvable (so the hook runs even
+      // when the hook shell's PATH lacks node — nvm/fnm installs), else Termpolis's
+      // own Electron in node mode, else the bare `node`. See hookCommand.
       const portableHookPath = hookScriptPath.replace(/\\/g, '/')
-      const nodeForHook = nodeCommand === 'node' ? 'node' : `"${nodeCommand.replace(/\\/g, '/')}"`
+      const nodeForHook = hookCommand(runner)
       settings.hooks.SessionStart.push({
         hooks: [{ type: 'command', command: `${nodeForHook} "${portableHookPath}"` }],
       })
@@ -215,7 +313,7 @@ export function registerInGlobalMcp(mcpJsonPath: string, adapterPath: string): R
 // Codex config is TOML — we append a section if it's not already present.
 // Treating the file as a text blob is deliberate: a proper TOML parser would
 // choke on any user-made syntax error and block registration.
-export function registerInCodex(codexTomlPath: string, adapterPath: string): RegistryResult {
+export function registerInCodex(codexTomlPath: string, adapterPath: string, node: NodeSpec = 'node'): RegistryResult {
   if (!existsSync(codexTomlPath)) return { changed: false, skipped: 'missing' }
   let content: string
   try {
@@ -223,20 +321,57 @@ export function registerInCodex(codexTomlPath: string, adapterPath: string): Reg
   } catch (e: any) {
     return { changed: false, skipped: 'corrupt', error: e?.message || String(e) }
   }
-  if (content.includes('[mcp_servers.termpolis]')) {
-    return { changed: false, skipped: 'already-registered' }
+  const entry = codexEntry(adapterPath, toRunner(node))
+  const existing = extractCodexSection(content)
+  if (existing !== null) {
+    // An entry we already wrote, still naming the same interpreter and adapter:
+    // leave the file alone. Anything else is STALE and must be REPLACED, not
+    // skipped — the ENOENT this fixes comes from configs an older build wrote
+    // with `command = "node"` hardcoded, and those files already contain the
+    // section, so a plain already-registered short-circuit would leave every
+    // upgraded install broken forever.
+    if (existing.trim() === entry.trim()) return { changed: false, skipped: 'already-registered' }
+    try {
+      writeFileSync(codexTomlPath, content.replace(existing, entry), 'utf-8')
+      return { changed: true }
+    } catch (e: any) {
+      return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
+    }
   }
-  const escaped = adapterPath.replace(/\\/g, '\\\\')
-  const entry = `\n[mcp_servers.termpolis]\ncommand = "node"\nargs = ["${escaped}"]\n`
   try {
-    appendFileSync(codexTomlPath, entry, 'utf-8')
+    appendFileSync(codexTomlPath, '\n' + entry, 'utf-8')
     return { changed: true }
   } catch (e: any) {
     return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
   }
 }
 
-export function registerInGemini(settingsPath: string, adapterPath: string): RegistryResult {
+/** The `[mcp_servers.termpolis]` block as TOML. Backslashes are escaped because a
+ *  Windows adapter path lands inside a basic (quoted) TOML string. */
+function codexEntry(adapterPath: string, runner: NodeRunner): string {
+  const q = (v: string): string => `"${v.replace(/\\/g, '\\\\')}"`
+  let out = `[mcp_servers.termpolis]\ncommand = ${q(runner.command)}\nargs = [${q(adapterPath)}]\n`
+  if (runner.env) {
+    const pairs = Object.entries(runner.env).map(([k, v]) => `${k} = ${q(v)}`).join(', ')
+    out += `env = { ${pairs} }\n`
+  }
+  return out
+}
+
+/** The existing termpolis section verbatim, or null when there is none. Text-blob
+ *  editing, matching this file's reasoning about TOML: a real parser would refuse
+ *  the whole config over an unrelated syntax error elsewhere in it. The section
+ *  runs to the next table header or to end of file. */
+function extractCodexSection(content: string): string | null {
+  const start = content.indexOf('[mcp_servers.termpolis]')
+  if (start === -1) return null
+  const rest = content.slice(start + 1)
+  const nextHeader = rest.search(/^[ \t]*\[/m)
+  return nextHeader === -1 ? content.slice(start) : content.slice(start, start + 1 + nextHeader)
+}
+
+export function registerInGemini(settingsPath: string, adapterPath: string, node: NodeSpec = 'node'): RegistryResult {
+  const runner = toRunner(node)
   const read = safeReadJson(settingsPath)
   if (!read.ok) {
     if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
@@ -248,11 +383,11 @@ export function registerInGemini(settingsPath: string, adapterPath: string): Reg
   if (!settings.mcpServers || typeof settings.mcpServers !== 'object') settings.mcpServers = {}
 
   const existing = settings.mcpServers.termpolis
-  if (existing && existing.args?.[0] === adapterPath) {
+  if (existing && existing.args?.[0] === adapterPath && runnerMatches(existing, runner)) {
     return { changed: false, skipped: 'already-registered' }
   }
 
-  settings.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
+  settings.mcpServers.termpolis = { ...runner, args: [adapterPath] }
   try {
     atomicWriteJson(settingsPath, settings)
     return { changed: true }

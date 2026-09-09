@@ -1486,13 +1486,18 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await settle(10_000)
 
       expect(mockMemoryBuildPrimer).toHaveBeenCalledTimes(1)
-      expect(mockWriteToTerminal).toHaveBeenCalledTimes(1)
+      // Paste, then Enter — two writes, because a `\r` fused onto the paste is read
+      // as part of the burst and does not submit (Codex). Leaving it unsubmitted is
+      // what put the pointer permanently in the composer, where the next compaction
+      // pasted a second copy on top of it.
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(2)
       const [id, seq] = mockWriteToTerminal.mock.calls[0]
       expect(id).toBe('term-1')
       expect(seq).toContain('memory_primer')          // routed to the MCP tool…
       expect(seq.startsWith('\x1b[200~')).toBe(true)  // …as ONE bracketed paste
       expect(seq.endsWith('\x1b[201~')).toBe(true)
-      expect(seq).not.toContain('\r')                 // never auto-submitted
+      expect(seq).not.toContain('\r')                 // …with the Return kept out of it
+      expect(mockWriteToTerminal.mock.calls[1]).toEqual(['term-1', '\r'])
     })
 
     it('does not re-prime over an un-submitted draft in the input line', async () => {

@@ -31,9 +31,14 @@ const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
 
 // Bracketed-paste markers so the pointer lands as ONE paste in the agent's
-// input — not auto-submitted, not interpreted by shell completion.
+// input — not interpreted by shell completion, and not split across lines.
 const BP_START = '\x1b[200~'
 const BP_END = '\x1b[201~'
+
+/** Pause between the pasted pointer and the Enter that submits it. Long enough
+ *  that a TUI's paste-burst detector has closed the burst and reads the Return
+ *  as a keystroke. Mirrors SUBMIT_SETTLE_MS in src/main/remoteBridge/dispatcher. */
+export const PRIMER_SUBMIT_SETTLE_MS = 150
 
 // The behavioral contract pasted into the agent's input. Single line, paste-safe
 // (no backticks/newlines). It must (1) route the agent to the MCP tool so the
@@ -86,7 +91,13 @@ function countPrimerMemories(digest: string): number {
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
 // Best-effort and silent: a no-op if the API is unavailable or there is no
 // relevant memory yet. Returns whether it injected.
-export async function injectAutoPrimer(terminalId: string, cwd: string, selfRecord = false, notify = false): Promise<boolean> {
+export async function injectAutoPrimer(
+  terminalId: string,
+  cwd: string,
+  selfRecord = false,
+  notify = false,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+): Promise<boolean> {
   try {
     const api = window.termpolis
     if (!api?.memoryBuildPrimer || !api?.writeToTerminal) return false
@@ -108,6 +119,20 @@ export async function injectAutoPrimer(terminalId: string, cwd: string, selfReco
     }
     const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
+    // Then submit it. Pasting alone left the pointer sitting in the agent's
+    // composer forever — the "this paragraph keeps getting repeated in the input
+    // area" report from Codex on Linux — where it is in the way of everything
+    // the user types next, and where a later prime appends to it rather than
+    // replacing it.
+    //
+    // The Enter MUST be a separate write, after a pause. Fused as one string, a
+    // TUI's paste-burst heuristic reads `<paste>\r` as part of the paste and
+    // deliberately does NOT submit (Codex behaves exactly this way); two writes
+    // separated by ~150 ms read as a human pressing Return. Same reasoning, and
+    // the same constant, as SUBMIT_SETTLE_MS in the remote dispatcher, which
+    // fixed the identical symptom for messages sent from the phone.
+    await sleep(PRIMER_SUBMIT_SETTLE_MS)
+    api.writeToTerminal(terminalId, '\r')
     return true
   } catch {
     return false
@@ -249,9 +274,17 @@ export async function primeOnLaunch(
 }
 
 // Fire injectAutoPrimer once per terminal, on the first output that looks like an agent — but
-// only once PrimerGate says an agent was really launched AND the input line is idle. One
-// TerminalPane mounts this per terminal, so the ref scopes the "prime once" guard to that
-// terminal's lifetime.
+// only once PrimerGate says an agent was really launched AND the input line is idle.
+//
+// "Once per terminal" is enforced on the TERMINAL, not on this hook's mount. One TerminalPane
+// mounts this per terminal, but that pane is remounted whenever the layout changes — toggling
+// split view, hiding/unhiding a terminal, switching workspaces — and a useRef guard resets with
+// it. That is the "this paragraph keeps getting repeated in the input area" bug: every remount
+// pasted the pointer again, each one stacking onto the last in the agent's composer.
+//
+// The flag is set BEFORE the attempt rather than after it lands, so a pane that unmounts
+// mid-wait cannot leave a second attempt behind. A prime lost that way is a nuisance; a prompt
+// box full of duplicated pointer text is a bug — the same trade this file makes everywhere.
 export function useAutoPrimer(
   terminalId: string,
   detectedAgent: AgentInfo | null,
@@ -267,14 +300,19 @@ export function useAutoPrimer(
     if (!agentName || !terminalId) return
     if (primedRef.current) return
     if (!isAutoPrimerEnabled()) return
+    const store = useTerminalStore.getState()
+    const term = store.terminals.find(t => t.id === terminalId)
+    if (term?.primerPointed) return
+    primedRef.current = true
+    // The ref above only survives this mount; the flag is what survives the pane.
+    // Best-effort on purpose: if there is no record to mark, or the store this is
+    // running against has no setter, the ref still holds for the life of the mount
+    // — exactly the old behavior, never worse.
+    if (term) store.updateTerminal?.(terminalId, { primerPointed: true })
     // Skip the typed launch pointer if this terminal was already seeded at launch
     // (e.g. Claude via --append-system-prompt-file). Compaction re-prime is a
     // separate path and still runs.
-    if (useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.launchPrimed) {
-      primedRef.current = true
-      return
-    }
-    primedRef.current = true
+    if (term?.launchPrimed) return
 
     // Without a gate from the pane, fall back to the one signal this hook can read on its own:
     // the launch command Termpolis recorded for the terminal. Still authoritative, just blind

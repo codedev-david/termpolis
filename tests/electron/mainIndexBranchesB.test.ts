@@ -536,7 +536,9 @@ describe('MCP adapter + memory-primer hook preflight', () => {
       join(M.home, '.claude', 'settings.json'),
       DEV_ADAPTER,
       expect.any(String),
-      expect.any(String),
+      // The interpreter is resolved once for all three agents now, so this is a
+      // runner object ({ command, env? }), not the bare string 'node' it used to be.
+      expect.objectContaining({ command: expect.any(String) }),
     )
   })
 
