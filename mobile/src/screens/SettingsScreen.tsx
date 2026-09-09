@@ -4,6 +4,8 @@ import Constants from 'expo-constants'
 import React from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
+import { formatBuildIdentity } from '../app/buildIdentity'
+
 import type { RootStackParamList } from '../navigation/routes'
 import { useRemoteStore } from '../state/remoteStore'
 import type { Capabilities } from '../wire/protocol'
@@ -63,7 +65,7 @@ export default function SettingsScreen(): React.JSX.Element {
   const unpair = useRemoteStore((s) => s.unpair)
 
   const [asking, setAsking] = React.useState(false)
-  const version = Constants.expoConfig?.version ?? 'unknown'
+  const version = formatBuildIdentity(Constants)
   const nav = useNavigation<Nav>()
 
   function onUnpair(): void {

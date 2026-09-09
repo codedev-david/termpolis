@@ -123,9 +123,9 @@ describe('SettingsScreen -- what it reports', () => {
     expect(screen.getByTestId('settings-offline')).toBeTruthy()
   })
 
-  it('shows the app version', async () => {
+  it('shows the app version alongside the build', async () => {
     await render(<SettingsScreen />)
-    expect(screen.getByText('1.0.0')).toBeTruthy()
+    expect(screen.getByText(/^1\.0\.0 \(build /)).toBeTruthy()
   })
 
   it('shows the relay state verbatim when it is one this build does not name', async () => {
@@ -142,12 +142,27 @@ describe('SettingsScreen -- what it reports', () => {
     expect(screen.getByTestId('settings-safety-phrase').props.children).toMatch(/not derived/i)
   })
 
+  it('shows the embedded build number, which is what identifies a binary', async () => {
+    // The marketing version is the same string in every build ever shipped, so
+    // on its own it cannot answer "does this build have the fix?". The build
+    // number can, and it has to come from the embedded manifest -- app.json's
+    // ios.buildNumber is pinned to "1" while EAS increments the real one.
+    const real = Constants.platform
+    ;(Constants as { platform: unknown }).platform = { ios: { buildNumber: '7' } }
+    try {
+      await render(<SettingsScreen />)
+      expect(screen.getByText(/\(build 7\)/)).toBeTruthy()
+    } finally {
+      ;(Constants as { platform: unknown }).platform = real
+    }
+  })
+
   it('says the version is unknown when the manifest is missing', async () => {
     const real = Constants.expoConfig
     ;(Constants as { expoConfig: unknown }).expoConfig = null
     try {
       await render(<SettingsScreen />)
-      expect(screen.getByText('unknown')).toBeTruthy()
+      expect(screen.getByText('unknown (build unknown)')).toBeTruthy()
     } finally {
       ;(Constants as { expoConfig: unknown }).expoConfig = real
     }
