@@ -75,11 +75,12 @@ PREVIEW_MAX_S = 30.0
 # What each numbered slot is meant to show, in listing order. Printed on every
 # run so the shot list does not live only in someone's head.
 SHOT_LIST = [
-    ("01", "Pairing screen -- the QR scanner, before any device is paired"),
-    ("02", "Safety number -- the eight words, matching the desktop's"),
-    ("03", "Terminal list -- the sessions the desktop has granted"),
-    ("04", "Terminal output -- scrollback from the SCRATCH repo only"),
-    ("05", "Settings -- the permissions the desktop controls"),
+    ("01", "Terminal list -- the payoff first; SCRATCH project names only"),
+    ("02", "Terminal -- scrollback and the input bar, SCRATCH repo only"),
+    ("03", "Pair -- the QR scanner, explaining the camera before iOS asks"),
+    ("04", "Safety words -- the eight words, the security claim made visible"),
+    ("05", "Paired desktops -- three RENAMED machines, one of them active"),
+    ("06", "Settings -- the capability list the desktop grants and this reports"),
 ]
 
 

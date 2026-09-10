@@ -95,12 +95,20 @@ indexes those anyway, and the field is small.
 
 | Field | Value |
 | --- | --- |
-| Support URL | `https://github.com/codedev-david/termpolis/issues` |
+| Support URL | `https://termpolis.com/mobile/` |
 | Marketing URL | `https://termpolis.com` |
 | Privacy Policy URL | `https://termpolis.com/privacy.html` |
 
 Both hosts must be reachable at submission. A support URL that 404s is a
 rejection on its own.
+
+The support URL is `termpolis.com/mobile/`, not the GitHub issue tracker
+(David, 2026-09-09). A reviewer opening a bare issue list sees a bug queue, not
+support: no setup instructions, no troubleshooting, no contact address, and
+whatever happens to be at the top of the list that day. The page carries the
+"requires the desktop app" disclosure, the pairing steps, a troubleshooting
+section for the things that actually go wrong, and both contact routes -- the
+address and the issue tracker. Play's *Contact website* points at the same page.
 
 ### Category and rating
 
@@ -162,7 +170,7 @@ who installed the app with no desktop to pair to.
 | App category | Tools |
 | Tags | Developer tools |
 | Contact email | `support@termpolis.com` |
-| Contact website | `https://termpolis.com` |
+| Contact website | `https://termpolis.com/mobile/` |
 | Privacy policy | `https://termpolis.com/privacy.html` |
 | Content rating | Everyone (IARC questionnaire: no violence, no user interaction, no data collection) |
 | Ads | No |
