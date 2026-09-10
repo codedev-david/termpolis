@@ -85,29 +85,43 @@ does not, and which is the route actually being used:
 **Screenshot the TestFlight build on a real iPhone.** Side button + volume up,
 then AirDrop or iCloud the PNGs across.
 
-David's phone is an **iPhone 14 Plus**, which shoots **1284 × 2778** natively --
-the 6.5" class, and a complete iPhone submission on its own. Put those files in
-`shots/ios-6.5/` and fill the 6.5" slot in App Store Connect; leave the 6.9"
-slot empty. Apple scales down from whichever class you provide.
+David's phone is an **iPhone 14 Pro**, which shoots **1179 × 2556** natively.
+That is the 6.3" class, and it fills **neither** App Store slot on its own, so
+every shot has to be resampled. (This file previously recorded the phone as an
+iPhone 14 Plus at 1284 × 2778, which would have needed no resampling at all --
+corrected 2026-09-09, after a capture set arrived at 1179 × 2556.)
 
-**Do not upscale to reach 6.9".** Apple rejects the soft result, and there is
-nothing to gain: 6.5" already satisfies the requirement. The only reason to
-want 6.9" is that it is the class Apple scales *from*, so a 6.9" set renders
-marginally sharper on the largest phones. That is a cosmetic difference, not a
-gate, and it is not worth renting a Mac for.
+**Resample to 6.9" (1290 × 2796)**, which is what `make-assets.py --size 6.9`
+does. It is a 9.4% upscale, and the two aspect ratios differ by 0.0001 --
+0.461268 against 0.461373 -- so it is a pure resample with no geometric
+distortion at all. Nine percent of LANCZOS on flat dark UI with large text does
+not read as soft.
+
+6.5" (1242 × 2688) is the gentler upscale at 5.3%, but its aspect delta is
+0.0008, about two pixels of stretch down the height, and it leans on a
+6.5"-only set still counting as a complete iPhone submission. 6.9" is the class
+Apple scales *down* from, so filling that one leaves nothing to argue about.
+
+**Do not upscale past this.** A 6.3" capture stretched beyond 6.9" is the soft
+result Apple actually rejects. A set with no resampling at all needs a phone
+whose native size is already 1290 × 2796 or 1284 × 2778 -- not this one.
 
 Check what a file actually is before uploading -- the phone's own screenshot
 size is the one fact worth verifying rather than trusting:
 
 ```bash
 python -c "import struct,sys;d=open(sys.argv[1],'rb').read(24);print(struct.unpack('>II',d[16:24]))" \
-  mobile/store/shots/ios-6.5/1-terminals.png
+  mobile/store/raw/IMG_1234.PNG
 ```
 
-Sizes that are **not** accepted for either slot, so do not photograph on these:
-a 6.3" iPhone (1179 × 2556 / 1206 × 2622) or a 6.1" iPhone (1170 × 2532).
-Those classes exist in App Store Connect but only as optional extras below a
-6.9" or 6.5" set.
+Neither slot accepts a 6.3" iPhone frame (1179 × 2556 / 1206 × 2622) or a
+6.1" one (1170 × 2532) as-is. Those classes exist in App Store Connect, but
+only as optional extras underneath a 6.9" or 6.5" set -- they cannot be the
+set. That is the situation here, and `make-assets.py` resamples for it. The
+reason to check the size is to catch the opposite surprise: a capture that is
+already an accepted size passes through untouched, and one that is not gets
+resampled, so knowing which happened tells you whether the output was
+resampled at all.
 
 The simulator route below stays here for the case where a 6.9" set is wanted
 later, or where iPad support is turned on and its screenshots become mandatory.
