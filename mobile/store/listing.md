@@ -124,7 +124,7 @@ computer the user paired with by hand, there is no browser, and there is
 nothing shared between users. Say so in the review notes rather than leaving
 the questionnaire to imply it.
 
-### App Review Information -- Notes
+### App Review Information -- Notes -- 4000 max
 
 Sign-in required: **off**. There is no account in either app.
 
@@ -145,6 +145,7 @@ AGE RATING QUESTIONNAIRE. No unrestricted web access: there is no browser, and t
 
 WHAT THE APP SHOWS. Terminal output from the user's own computer, forwarded over a relay that only ever sees ciphertext. Pairing derives a per-desktop key, and one phone can hold up to 16 desktops, each with its own key, each revocable on its own.
 ```
+1594 characters.
 
 ### What's New — 4000 max, first release
 
