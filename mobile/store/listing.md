@@ -124,6 +124,28 @@ computer the user paired with by hand, there is no browser, and there is
 nothing shared between users. Say so in the review notes rather than leaving
 the questionnaire to imply it.
 
+### App Review Information -- Notes
+
+Sign-in required: **off**. There is no account in either app.
+
+```
+Termpolis Remote is a companion app. It has no standalone function by design: it is a viewer and a keyboard for terminals running in the Termpolis desktop app, which the user installs separately on their own computer. This is stated in the first line of the store description.
+
+TO EXERCISE THE APP you will need the desktop app. It is free and needs no account:
+
+1. Download Termpolis for macOS, Windows or Linux from https://termpolis.com (Downloads section).
+2. Launch it and start a terminal from the sidebar.
+3. Open Settings > Remote > Pair a device. A QR code appears, with the same code in text underneath it.
+4. In Termpolis Remote, tap Pair and scan the code. If you would rather not grant camera access, decline the camera prompt -- a "Paste the pairing code" field appears in its place, and the text code from step 3 pairs the same way.
+5. The phone now lists the terminals running on that desktop. Tap one to read its output and type into it.
+
+NO CREDENTIALS TO PROVIDE. There is no account, no sign-in and no server-side identity anywhere in either app.
+
+AGE RATING QUESTIONNAIRE. No unrestricted web access: there is no browser, and the app renders output only from a computer the user paired with by hand. No user-generated content shared between users: nothing typed on one pairing is visible to anyone else. Both answers are no.
+
+WHAT THE APP SHOWS. Terminal output from the user's own computer, forwarded over a relay that only ever sees ciphertext. Pairing derives a per-desktop key, and one phone can hold up to 16 desktops, each with its own key, each revocable on its own.
+```
+
 ### What's New — 4000 max, first release
 
 ```
