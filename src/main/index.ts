@@ -2426,6 +2426,13 @@ function findAgentInstalled(command: string): boolean {
         join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin', `${command}${ext}`),
         join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin', `${command}.exe`),
         join(home, 'AppData', 'Local', 'Programs', command, `${command}.exe`),
+        // Antigravity's installer drops `agy` here. getExtendedPath() already
+        // covers it for the `where` probe above, but this fallback list is
+        // hand-rolled rather than derived from getAgentExtraPaths(), so it has
+        // to be named again or a `where`-less box reports an installed agy as
+        // missing — a red x on an agent that is actually there.
+        join(home, 'AppData', 'Local', 'agy', 'bin', `${command}.exe`),
+        join(home, 'AppData', 'Local', 'agy', 'bin', `${command}${ext}`),
       ]
     : getAgentExtraPaths().map((dir) => join(dir, command))
   for (const p of candidates) {

@@ -1,5 +1,6 @@
 import React from 'react'
 import { copyText } from '../../lib/clipboard'
+import { hostPlatform } from '../../lib/platform'
 
 interface InstallHintProps {
   agentId: string
@@ -24,6 +25,20 @@ function getInstallInstructions(agentId: string): InstallInstructions {
           'claude --version  (to verify)',
         ],
         warning: 'The Claude Desktop app (GUI) is NOT the same as the Claude Code CLI. Termpolis needs the CLI above — installing only the Desktop app will not work.',
+        // The native installer is Anthropic's recommended path now and needs no
+        // Node. findAgentInstalled() already probes its target
+        // (AppData\Local\Programs\claude\claude.exe), so this route detects fine.
+        sections: [
+          {
+            title: 'Or install without Node.js (Anthropic’s recommended path)',
+            lines: [
+              hostPlatform() === 'win32'
+                ? 'irm https://claude.ai/install.ps1 | iex'
+                : 'curl -fsSL https://claude.ai/install.sh | bash',
+              'Self-updating, and Termpolis detects this install location too.',
+            ],
+          },
+        ],
         url: 'https://docs.anthropic.com/en/docs/claude-code',
         pricing: 'Requires an Anthropic API plan or Claude Pro/Max subscription.',
       }
@@ -33,19 +48,66 @@ function getInstallInstructions(agentId: string): InstallInstructions {
           'npm install -g @openai/codex',
           'codex --version  (to verify)',
         ],
+        sections: [
+          {
+            title: 'Sign in',
+            lines: [
+              'codex login --device-auth',
+              'Uses the Codex usage already included in a ChatGPT Plus/Pro/Business plan. An OpenAI API key is only needed for automation — it bills separately at API rates.',
+            ],
+          },
+        ],
         url: 'https://github.com/openai/codex',
-        pricing: 'Requires an OpenAI API key with active billing.',
+        // Was "Requires an OpenAI API key with active billing" — untrue since
+        // ChatGPT sign-in landed, and it pushed users onto a billed API key
+        // they don't need.
+        pricing: 'Included with a ChatGPT Plus/Pro/Business plan, or bring an OpenAI API key.',
       }
-    case 'gemini':
+    // Google retired the standalone Gemini CLI for individual accounts; the
+    // replacement is the Antigravity CLI, whose binary is `agy`. Termpolis
+    // detects and launches `agy` (agents:detect in main/index.ts aliases
+    // results.gemini -> results.agy, and DEFAULT_AI_PROFILES runs `agy`), so
+    // the old `npm i -g @google/gemini-cli` text here was a dead end: it
+    // installed a binary nothing looks for, the red x never cleared, and
+    // clicking through launched `agy` -> command not found.
+    //
+    // Antigravity ships as a Go binary from an install script. There is no
+    // npm package, so do NOT "restore" an npm line here.
+    case 'gemini': {
+      const win = hostPlatform() === 'win32'
+      const PS = 'irm https://antigravity.google/cli/install.ps1 | iex'
+      const SH = 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
       return {
         steps: [
-          'npm install -g @google/gemini-cli',
-          'Or: npx @google/gemini-cli',
-          'gemini --version  (to verify)',
+          win ? PS : SH,
+          'agy --version  (to verify)',
         ],
-        url: 'https://github.com/google-gemini/gemini-cli',
-        pricing: 'Free tier available. Paid Google AI API plan for higher usage.',
+        warning: 'Termpolis launches Google’s Antigravity CLI (binary: agy), which replaced the standalone Gemini CLI. The old npm package @google/gemini-cli installs a `gemini` binary that nothing here looks for — it will NOT clear the red ×.',
+        // Only the OTHER platforms go in sections — repeating the primary
+        // command here renders it twice in the modal.
+        sections: [
+          win
+            ? {
+                title: 'Windows (cmd, if not using PowerShell)',
+                lines: ['curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd'],
+              }
+            : {
+                title: 'Windows',
+                lines: [PS],
+              },
+          {
+            title: 'First run',
+            lines: [
+              'agy',
+              'Sign in with your Google account when prompted — credentials are cached in your system keyring.',
+              'Already had Gemini CLI? Antigravity reuses ~/.gemini and offers to import your MCP servers, keybindings and theme.',
+            ],
+          },
+        ],
+        url: 'https://antigravity.google/docs/cli/install/',
+        pricing: 'Free tier available with a Google account. Google AI Pro/Ultra for higher limits.',
       }
+    }
     default:
       return {
         steps: ['Check the documentation for install instructions.'],
@@ -123,7 +185,10 @@ export function InstallHint({ agentId, agentName, onClose }: InstallHintProps) {
               {section.title}
             </h3>
             {section.lines.map((line, li) => {
-              const isCommand = /^(npm|pip|npx|claude|codex|gemini|setx|sudo|apt|brew)\b/.test(line.trim())
+              // Antigravity/Claude ship as install SCRIPTS, not npm packages, so a
+              // section line can start with irm/curl/powershell — without those the
+              // one command the user most needs renders as un-copyable prose.
+              const isCommand = /^(npm|pip|npx|claude|codex|gemini|agy|irm|curl|powershell|setx|sudo|apt|brew)\b/.test(line.trim())
               if (isCommand) {
                 return (
                   <div key={li} className="flex items-center gap-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2">
