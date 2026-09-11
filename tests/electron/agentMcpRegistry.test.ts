@@ -317,6 +317,32 @@ describe('agentMcpRegistry', () => {
       expect(r2.changed).toBe(false)
       expect(r2.skipped).toBe('already-registered')
     })
+
+    it('writes the resolved runner, not a bare node', () => {
+      const p = join(dir, '.mcp.json')
+      registerInGlobalMcp(p, ADAPTER, { command: '/opt/electron', env: { ELECTRON_RUN_AS_NODE: '1' } })
+      const v = JSON.parse(readFileSync(p, 'utf-8'))
+      expect(v.mcpServers.termpolis.command).toBe('/opt/electron')
+      expect(v.mcpServers.termpolis.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+    })
+
+    it('rewrites a stale entry left by a build that hardcoded node', () => {
+      // The ENOENT case: the file already names this adapter, so the old
+      // already-registered short-circuit would have left `node` in place forever
+      // on a machine that has no node on PATH.
+      const p = join(dir, '.mcp.json')
+      writeFileSync(p, JSON.stringify({ mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } } }))
+      const r = registerInGlobalMcp(p, ADAPTER, { command: '/opt/electron' })
+      expect(r.changed).toBe(true)
+      expect(JSON.parse(readFileSync(p, 'utf-8')).mcpServers.termpolis.command).toBe('/opt/electron')
+    })
+
+    it('is still idempotent once the runner matches', () => {
+      const p = join(dir, '.mcp.json')
+      const node = { command: '/opt/electron', env: { ELECTRON_RUN_AS_NODE: '1' } }
+      expect(registerInGlobalMcp(p, ADAPTER, node).changed).toBe(true)
+      expect(registerInGlobalMcp(p, ADAPTER, node).skipped).toBe('already-registered')
+    })
   })
 
   describe('registerInCodex', () => {
@@ -333,6 +359,27 @@ describe('agentMcpRegistry', () => {
       const content = readFileSync(p, 'utf-8')
       expect(content).toMatch(/\[mcp_servers\.termpolis\]/)
       expect(content).toMatch(/command = "node"/)
+    })
+
+    it('writes atomically, leaving no temp file and the rest of the config intact', () => {
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, '# user config\nmodel = "gpt-5"\n')
+      expect(registerInCodex(p, ADAPTER).changed).toBe(true)
+      const content = readFileSync(p, 'utf-8')
+      expect(content).toContain('model = "gpt-5"')
+      expect(content).toContain('[mcp_servers.termpolis]')
+      expect(existsSync(p + '.tmp')).toBe(false)
+    })
+
+    it('replaces a stale section without treating $& in the entry as a substitution', () => {
+      const p = join(dir, 'config.toml')
+      writeFileSync(p, `[mcp_servers.termpolis]\ncommand = "node"\nargs = ["/old"]\n\n[profile]\nx = 1\n`)
+      expect(registerInCodex(p, ADAPTER, { command: "$&'" }).changed).toBe(true)
+      const content = readFileSync(p, 'utf-8')
+      expect(content).toContain(`command = "$&'"`)
+      expect(content).not.toContain('/old')
+      expect(content).toContain('[profile]')
+      expect(existsSync(p + '.tmp')).toBe(false)
     })
 
     it('is idempotent when the section already says exactly what we would write', () => {

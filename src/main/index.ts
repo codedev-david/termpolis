@@ -169,6 +169,7 @@ import {
   type ContextPin,
 } from './contextPinStore'
 import { initMcpGateway, gatewayListTools, gatewayCall } from './mcpGatewayRuntime'
+import { registerMcpIpc } from './mcpIpc'
 import { initMemoryCorrections, correctMemory, applyCorrections } from './memoryCorrectionStore'
 import { runHeadless, type ExecAgent } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -3086,6 +3087,7 @@ if (!gotTheLock) {
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
     initMcpGateway(app.getPath('userData'))
+    registerMcpIpc(ipcMain)
     initMemoryCorrections(app.getPath('userData'))
     initReceiptIdentity(app.getPath('userData'))
     initRecallBench(app.getPath('userData'))
@@ -3688,7 +3690,7 @@ if (!gotTheLock) {
     // Also write to ~/.mcp.json (global MCP config that Claude Code actually loads).
     {
       const globalMcpPath = join(homedir(), '.mcp.json')
-      const r = registerInGlobalMcp(globalMcpPath, adapterPath)
+      const r = registerInGlobalMcp(globalMcpPath, adapterPath, nodeRunner)
       if (r.changed) console.log('Auto-registered Termpolis in global ~/.mcp.json')
       else if (r.error) console.log('Could not write ~/.mcp.json (non-fatal):', r.skipped, r.error)
     }

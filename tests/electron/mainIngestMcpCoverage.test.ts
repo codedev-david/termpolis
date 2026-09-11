@@ -513,11 +513,13 @@ describe('agentMcpRegistry — a config we cannot write must be REPORTED, never 
     expect(r.error).toMatch(OS_ERRNO)
   })
 
-  it('codex config.toml: a failing append is reported as write-failed and the file is left intact', () => {
+  it('codex config.toml: a failing write is reported as write-failed and the file is left intact', () => {
     const p = join(dir, 'config.toml')
     const before = 'model = "gpt-5"\n'
     realFs.writeFileSync(p, before)
-    fsCtl.rules.push({ op: 'append', match: 'config.toml', err: new Error('EACCES: permission denied') })
+    // Codex is written tmp+rename like the other three, so the fault lands on the tmp
+    // file and the user's real config is untouched — not merely un-appended-to.
+    fsCtl.rules.push({ op: 'write', match: 'config.toml', err: new Error('EACCES: permission denied') })
     const r = registerInCodex(p, ADAPTER)
     expect(r).toMatchObject({ changed: false, skipped: 'write-failed' })
     expect(r.error).toContain('EACCES')
@@ -532,12 +534,16 @@ describe('agentMcpRegistry — a config we cannot write must be REPORTED, never 
     realFs.writeFileSync(toml, '')
 
     fsCtl.rules.push({ op: 'write', match: dir, err: 'raw string blew up' })
+    // Kept as a REGRESSION guard: no registration path may append to a live config any
+    // more. If this rule ever fires again, an atomic write has been reverted to an append.
     fsCtl.rules.push({ op: 'append', match: dir, err: 'raw append blew up' })
 
     expect(registerInClaudeSettings(settings, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
     expect(registerInGemini(gem, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
     expect(registerInGlobalMcp(join(dir, '.mcp.json'), ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
-    expect(registerInCodex(toml, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw append blew up' })
+    // Codex goes through the same atomic tmp+rename as the other three, so the fault it
+    // reports is the WRITE, not an append.
+    expect(registerInCodex(toml, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
   })
 
   it('a NON-Error read failure is reported as corrupt with the raw value as the message', () => {

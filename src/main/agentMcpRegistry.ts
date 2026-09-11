@@ -5,7 +5,7 @@
 // / missing / truncated" paths in isolation. Each function is defensive:
 // a broken config file should log-and-skip, never crash the main process.
 
-import { existsSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { getAgentExtraPaths } from './agentPaths'
 
@@ -28,8 +28,15 @@ function safeReadJson(path: string): { ok: true; value: any } | { ok: false; rea
 }
 
 function atomicWriteJson(path: string, value: any): void {
+  atomicWriteText(path, JSON.stringify(value, null, 2))
+}
+
+/** tmp+rename, so a crash mid-write leaves the original config intact rather than a
+ *  truncated one. Claude and Gemini already got this through atomicWriteJson; Codex is
+ *  TOML and so wrote straight to the live file until it was routed through here. */
+function atomicWriteText(path: string, content: string): void {
   const tmp = path + '.tmp'
-  writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf-8')
+  writeFileSync(tmp, content, 'utf-8')
   renameSync(tmp, path)
 }
 
@@ -282,7 +289,8 @@ export function registerInClaudeSettings(settingsPath: string, adapterPath: stri
 // Write the global Claude MCP manifest at ~/.mcp.json. Unlike the
 // settings.json path this one is created if absent — Claude Code
 // honors it even when the user has no settings file.
-export function registerInGlobalMcp(mcpJsonPath: string, adapterPath: string): RegistryResult {
+export function registerInGlobalMcp(mcpJsonPath: string, adapterPath: string, node: NodeSpec = 'node'): RegistryResult {
+  const runner = toRunner(node)
   let globalMcp: any = {}
   if (existsSync(mcpJsonPath)) {
     const read = safeReadJson(mcpJsonPath)
@@ -294,12 +302,17 @@ export function registerInGlobalMcp(mcpJsonPath: string, adapterPath: string): R
   if (!globalMcp.mcpServers || typeof globalMcp.mcpServers !== 'object') globalMcp.mcpServers = {}
 
   const existing = globalMcp.mcpServers.termpolis
-  if (existing && existing.args?.[0] === adapterPath) {
+  if (existing && existing.args?.[0] === adapterPath && runnerMatches(existing, runner)) {
     // Clean up older root-level entry once, but don't rewrite disk if nothing else changed.
     if (!('termpolis' in globalMcp)) return { changed: false, skipped: 'already-registered' }
   }
 
-  globalMcp.mcpServers.termpolis = { command: 'node', args: [adapterPath] }
+  // The runner, not a bare `node`. Hardcoding it was the same ENOENT bug the comment
+  // blocks at :64-80 and :166-176 describe fixing for the other three agents: a machine
+  // with no `node` on PATH gets the Electron binary in ELECTRON_RUN_AS_NODE mode instead.
+  // `runnerMatches` above is load-bearing for the fix — without it an install whose file
+  // still says `command: "node"` would short-circuit as already-registered and stay broken.
+  globalMcp.mcpServers.termpolis = { ...runner, args: [adapterPath] }
   delete globalMcp.termpolis
 
   try {
@@ -332,14 +345,16 @@ export function registerInCodex(codexTomlPath: string, adapterPath: string, node
     // upgraded install broken forever.
     if (existing.trim() === entry.trim()) return { changed: false, skipped: 'already-registered' }
     try {
-      writeFileSync(codexTomlPath, content.replace(existing, entry), 'utf-8')
+      // split/join, not String.replace: a `$&` or `$'` inside the generated entry is a
+      // substitution pattern to `replace`, and a Windows adapter path can contain one.
+      atomicWriteText(codexTomlPath, content.split(existing).join(entry))
       return { changed: true }
     } catch (e: any) {
       return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
     }
   }
   try {
-    appendFileSync(codexTomlPath, '\n' + entry, 'utf-8')
+    atomicWriteText(codexTomlPath, content + '\n' + entry)
     return { changed: true }
   } catch (e: any) {
     return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
