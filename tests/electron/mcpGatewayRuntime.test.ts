@@ -33,6 +33,7 @@ import {
   removeGatewayServer,
   gatewayListTools,
   gatewayCall,
+  setGatewayPrompt,
   disposeGateway,
 } from '../../src/main/mcpGatewayRuntime'
 import { defaultPolicy } from '../../src/main/mcpGateway'
@@ -188,6 +189,58 @@ describe('mcpGatewayRuntime/calls', () => {
   it('refuses a call to an unknown server', async () => {
     setGatewayPolicy(allowAll)
     expect(await gatewayCall({ tool: 'ghost/echo' })).toMatchObject({ ok: false })
+  })
+
+  describe('the human in the loop', () => {
+    // The seam that makes `defaultDecision: 'ask'` mean something. Registered by
+    // index.ts once a window exists; absent everywhere else, which must stay closed.
+    afterEach(() => setGatewayPrompt(null))
+
+    it('asks the registered prompter and forwards an allowed call', async () => {
+      addGatewayServer({ id: 'files', command: 'srv' })
+      const prompt = vi.fn().mockResolvedValue('allow' as const)
+      setGatewayPrompt(prompt)
+      expect(await gatewayCall({ tool: 'files/echo', arguments: { q: 1 } }))
+        .toEqual({ ok: true, text: 'called with {"q":1}' })
+      expect(prompt).toHaveBeenCalledWith('files', 'echo', expect.any(Array))
+    })
+
+    it('denies when the human says no', async () => {
+      addGatewayServer({ id: 'files', command: 'srv' })
+      setGatewayPrompt(async () => 'deny')
+      expect(await gatewayCall({ tool: 'files/echo' })).toMatchObject({ ok: false })
+    })
+
+    it('hands the prompter the secret findings, not the secret', async () => {
+      addGatewayServer({ id: 'files', command: 'srv' })
+      const seen: unknown[] = []
+      setGatewayPrompt(async (_s, _t, findings) => {
+        seen.push(findings)
+        return 'deny'
+      })
+      const secret = `sk-ant-${'a'.repeat(64)}`
+      await gatewayCall({ tool: 'files/echo', arguments: { token: secret } })
+      expect(JSON.stringify(seen)).not.toContain('a'.repeat(64))
+      expect(seen[0]).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: 'token', label: expect.any(String) })]),
+      )
+    })
+
+    it('fails CLOSED when the prompter throws — a dialog that cannot open is not consent', async () => {
+      addGatewayServer({ id: 'files', command: 'srv' })
+      setGatewayPrompt(async () => {
+        throw new Error('no window to ask')
+      })
+      expect(await gatewayCall({ tool: 'files/echo' })).toMatchObject({ ok: false })
+    })
+
+    it('goes back to denying once the prompter is unregistered', async () => {
+      addGatewayServer({ id: 'files', command: 'srv' })
+      setGatewayPrompt(async () => 'allow')
+      expect(await gatewayCall({ tool: 'files/echo' })).toMatchObject({ ok: true })
+      setGatewayPrompt(null)
+      expect(await gatewayCall({ tool: 'files/echo' })).toMatchObject({ ok: false })
+    })
   })
 
   it('writes the audit trail to disk without ever writing a secret value', async () => {

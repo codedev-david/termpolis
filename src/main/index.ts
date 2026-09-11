@@ -168,8 +168,16 @@ import {
   listPins, addPin, removePin, updatePin, clearPins,
   type ContextPin,
 } from './contextPinStore'
-import { initMcpGateway, gatewayListTools, gatewayCall } from './mcpGatewayRuntime'
+import {
+  initMcpGateway,
+  gatewayListTools,
+  gatewayCall,
+  setGatewayPrompt,
+  getGatewayPolicy,
+  setGatewayPolicy,
+} from './mcpGatewayRuntime'
 import { registerMcpIpc } from './mcpIpc'
+import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections } from './memoryCorrectionStore'
 import { runHeadless, type ExecAgent } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -3088,6 +3096,31 @@ if (!gotTheLock) {
     initContextPinStore(app.getPath('userData'))
     initMcpGateway(app.getPath('userData'))
     registerMcpIpc(ipcMain)
+
+    // The human in the gateway's loop. Without this, `defaultDecision: 'ask'` resolves
+    // to deny for want of anyone to ask -- which is how the whole subsystem shipped
+    // inert. A modal (rather than a renderer round trip) because the answer gates a
+    // call that is already in flight, and because a headless or unfocused window must
+    // still fail closed rather than hang: no window, no dialog, throw, deny.
+    setGatewayPrompt(async (server, tool, findings) => {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      if (!win) throw new Error('no window to ask')
+      const detail = findings.length
+        ? `Its arguments look like they contain: ${[...new Set(findings.map(f => f.label))].join(', ')}.`
+        : 'No secrets were detected in its arguments.'
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['Deny', 'Allow once', 'Always allow'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'MCP tool request',
+        message: `An agent wants to call "${tool}" on the MCP server "${server}".`,
+        detail,
+      })
+      // Remembering writes a rule, so the next identical call never reaches this dialog.
+      if (response === 2) setGatewayPolicy(remember(getGatewayPolicy(), server, tool, 'allow'))
+      return response === 0 ? 'deny' : 'allow'
+    })
     initMemoryCorrections(app.getPath('userData'))
     initReceiptIdentity(app.getPath('userData'))
     initRecallBench(app.getPath('userData'))

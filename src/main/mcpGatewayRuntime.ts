@@ -11,6 +11,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
 import { join } from 'path'
 import { createGateway, defaultPolicy, type GatewayPolicy, type Transport } from './mcpGateway'
+import type { GateDecision } from './mcpGateway/policy'
+import type { ArgFinding } from './mcpGateway/guard'
 import { transportFor, type ServerSpec } from './mcpGateway/client'
 import { setGatewayAuditSink, type GatewayAuditEntry } from './mcpGateway/audit'
 import { scanText } from './aiSecurity'
@@ -119,14 +121,35 @@ function liveTransports(): Transport[] {
   return out
 }
 
+export type GatewayPrompt = (server: string, tool: string, findings: ArgFinding[]) => Promise<GateDecision>
+
+let promptHandler: GatewayPrompt | null = null
+
+/**
+ * Install the human in the loop.
+ *
+ * Injected rather than imported so this module stays free of `electron` — everything
+ * here is testable in a bare node process, and reaching for `dialog` directly would end
+ * that. `index.ts` registers the real one once a window exists.
+ *
+ * Until something registers one, `defaultDecision: 'ask'` still resolves to deny: the
+ * wrapper below THROWS when no handler is set, and `resolveAsk` treats a throwing prompt
+ * as "no human available", which fails closed. That is the same guarantee the previous
+ * `prompt`-less construction gave, kept deliberately — a headless run must not silently
+ * grant an external server everything.
+ */
+export function setGatewayPrompt(fn: GatewayPrompt | null): void {
+  promptHandler = fn
+}
+
 const gateway = createGateway({
   getPolicy: () => config.policy,
   transports: liveTransports,
   scanSecrets: scanText,
-  // No `prompt` wired yet: with none, `resolveAsk` denies. That is the correct default
-  // for the first release — the gateway starts closed and the user opens it explicitly
-  // through settings, rather than a dialog appearing the first time some agent probes
-  // an upstream server.
+  prompt: async (server, tool, findings) => {
+    if (!promptHandler) throw new Error('mcp gateway: no prompt handler registered')
+    return await promptHandler(server, tool, findings)
+  },
 })
 
 export async function gatewayListTools(): Promise<unknown> {
