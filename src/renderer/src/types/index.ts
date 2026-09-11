@@ -446,6 +446,16 @@ export interface TermpolisAPI {
   groqClearApiKey: () => Promise<IpcResponse<{ connected: boolean; hint: string }>>
   voiceTranscribe: (pcm: Float32Array, model?: string) => Promise<IpcResponse<{ text: string }>>
 
+  // MCP. Every `env` value that crosses this bridge is already masked in main —
+  // see src/main/mcpIpc.ts. The renderer never holds an upstream credential.
+  mcpInventory: () => Promise<IpcResponse<McpInventoryView>>
+  mcpGatewayServers: () => Promise<IpcResponse<McpServerSpecView[]>>
+  mcpGatewayAddServer: (spec: McpServerSpecView) => Promise<IpcResponse<McpServerSpecView[]>>
+  mcpGatewayRemoveServer: (id: string) => Promise<IpcResponse<McpServerSpecView[]>>
+  mcpGatewayPolicy: () => Promise<IpcResponse<McpGatewayPolicyView>>
+  mcpGatewaySetPolicy: (policy: McpGatewayPolicyView) => Promise<IpcResponse<McpGatewayPolicyView>>
+  mcpGatewayTest: (id: string) => Promise<IpcResponse<McpGatewayTestView>>
+
   // Test-only seams (inert in production — main handlers registered only under
   // NODE_ENV=test). Used by e2e/compaction-reprime.spec.ts.
   __testTerminalData?: (id: string, data: string) => Promise<IpcResponse<boolean>>
@@ -465,6 +475,63 @@ export interface TermpolisAPI {
   listAISessions: () => Promise<IpcResponse<AISessionSummary[]>>
   digestAISession: (filePath: string) => Promise<IpcResponse<{ digest: AISessionDigest; prompt: string }>>
   readActiveConversation: (cwd: string, agentType: string) => Promise<IpcResponse<{ role: 'user' | 'assistant'; text: string; ts: number }[]>>
+}
+
+/** Which config a server was found in. `gateway` is Termpolis's own list — the only
+ *  one this app writes; the other four are read-only mirrors of the agents' configs. */
+export type McpSourceId = 'claude' | 'globalMcp' | 'codex' | 'gemini' | 'gateway'
+
+export interface McpSourceView {
+  id: McpSourceId
+  label: string
+  path: string
+  status: 'ok' | 'missing' | 'corrupt'
+  error?: string
+}
+
+export interface McpServerView {
+  name: string
+  transport: 'stdio' | 'http'
+  command?: string
+  args?: string[]
+  url?: string
+  /** Keys as written; every value already masked in main. */
+  env?: Record<string, string>
+  sources: Record<McpSourceId, boolean>
+  /** Configured in some agents but not all. */
+  drift: boolean
+}
+
+export interface McpInventoryView {
+  sources: McpSourceView[]
+  servers: McpServerView[]
+}
+
+export interface McpServerSpecView {
+  id: string
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+}
+
+export interface McpToolRuleView {
+  server: string
+  tool: string
+  decision: 'allow' | 'deny' | 'ask'
+}
+
+export interface McpGatewayPolicyView {
+  enabled: boolean
+  defaultDecision: 'allow' | 'deny' | 'ask'
+  strict: boolean
+  rules: McpToolRuleView[]
+}
+
+export interface McpGatewayTestView {
+  ok: boolean
+  tools?: number
+  error?: string
 }
 
 export interface AISessionSummary {

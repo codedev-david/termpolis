@@ -6,6 +6,8 @@ import type {
   RemoteCapabilities,
   RemoteEvent,
   RemoteStatusView,
+  McpServerSpecView,
+  McpGatewayPolicyView,
 } from '../renderer/src/types'
 
 const api: TermpolisAPI = {
@@ -256,6 +258,14 @@ const api: TermpolisAPI = {
   groqGetKeyStatus: () => ipcRenderer.invoke('groq:get-key-status'),
   groqClearApiKey: () => ipcRenderer.invoke('groq:clear-api-key'),
   voiceTranscribe: (pcm: Float32Array, model?: string) => ipcRenderer.invoke('voice:transcribe', { pcm, model }),
+
+  mcpInventory: () => ipcRenderer.invoke('mcp:inventory'),
+  mcpGatewayServers: () => ipcRenderer.invoke('mcp:gateway-servers'),
+  mcpGatewayAddServer: (spec: McpServerSpecView) => ipcRenderer.invoke('mcp:gateway-add-server', { spec }),
+  mcpGatewayRemoveServer: (id: string) => ipcRenderer.invoke('mcp:gateway-remove-server', { id }),
+  mcpGatewayPolicy: () => ipcRenderer.invoke('mcp:gateway-policy'),
+  mcpGatewaySetPolicy: (policy: McpGatewayPolicyView) => ipcRenderer.invoke('mcp:gateway-set-policy', { policy }),
+  mcpGatewayTest: (id: string) => ipcRenderer.invoke('mcp:gateway-test', { id }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

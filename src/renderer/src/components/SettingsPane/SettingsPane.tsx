@@ -11,6 +11,7 @@ import { SafeImportPanel } from './SafeImportPanel'
 import { VoiceSettings } from './VoiceSettings'
 import { TokenSavingsSettings } from './TokenSavingsSettings'
 import { RemoteSettings } from './RemoteSettings'
+import { McpServersSettings } from './McpServersSettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
@@ -239,6 +240,7 @@ export function SettingsPane() {
           { id: 'shell', label: 'Shell Config' },
           { id: 'tokenSavings', label: 'Token Savings' },
           { id: 'remote', label: 'Remote' },
+          { id: 'mcp', label: 'MCP Servers' },
         ].map(t => (
           <button
             key={t.id}
@@ -609,6 +611,8 @@ export function SettingsPane() {
       {activeTab === 'agents' && <AgentRatingsSettings />}
       {activeTab === 'tokenSavings' && <TokenSavingsSettings />}
       {activeTab === 'remote' && <RemoteSettings />}
+
+      {activeTab === 'mcp' && <McpServersSettings />}
 
       {activeTab === 'shell' && (
         <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>
