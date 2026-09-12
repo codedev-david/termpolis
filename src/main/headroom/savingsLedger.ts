@@ -23,15 +23,24 @@ export interface SavingsTotals {
   origTokens: number
   givebackTokens: number
   retrieves: number
-  /** retrieve_full calls that resolved nothing — an elision we could not honour. Must stay 0. */
+  /** retrieve_full calls for content this store HELD and then destroyed — an elision we could
+   *  not honour. Must stay 0, and now says so on evidence rather than on the token's shape. */
   retrieveMisses: number
   /** retrieve_full calls for a token shape we never mint. Not lost content; a prompting artefact. */
   retrieveBadTokens: number
+  /** retrieve_full calls for a well-shaped token we have no record of ever holding: a typo of a
+   *  live token, a handle the model invented, or a stash that never landed. Tokens are content
+   *  hashes, so this is indistinguishable BY SHAPE from a real one — which is exactly why it needs
+   *  its own bucket instead of being counted as destroyed content. */
+  retrieveUnknownTokens: number
+  /** retrieve_full calls for content the disk cap aged out. A real loss, but a designed one —
+   *  kept out of `retrieveMisses` so a cache that simply filled up cannot read as a defect. */
+  retrieveExpired: number
 }
 export interface SavingsReceipt { session: SavingsTotals; cumulative: SavingsTotals }
 
 function emptyTotals(): SavingsTotals {
-  return { netSaved: 0, events: 0, byTool: {}, origTokens: 0, givebackTokens: 0, retrieves: 0, retrieveMisses: 0, retrieveBadTokens: 0 }
+  return { netSaved: 0, events: 0, byTool: {}, origTokens: 0, givebackTokens: 0, retrieves: 0, retrieveMisses: 0, retrieveBadTokens: 0, retrieveUnknownTokens: 0, retrieveExpired: 0 }
 }
 
 let session: SavingsTotals = emptyTotals()
@@ -61,6 +70,16 @@ export function loadCumulativeBase(base: Partial<SavingsTotals>): void {
       delete next.byTool.retrieve_full
     }
   }
+  // Pre-1.41.1 files counted a miss for ANY token of an issuable shape. That test cannot tell a
+  // broken promise from a typo of a live token or from a stash that landed late — one recorded
+  // miss on this install was booked at 22:37:20.889Z for content written at 22:37:20.891Z, two
+  // milliseconds behind its own commit. Those counts are not evidence that anything was destroyed,
+  // so they are re-filed under the bucket that matches what they actually prove rather than being
+  // carried forward as an alarm or quietly dropped.
+  if (base.retrieveUnknownTokens === undefined) {
+    next.retrieveUnknownTokens = next.retrieveMisses
+    next.retrieveMisses = 0
+  }
   cumulativeBase = next
 }
 
@@ -83,9 +102,11 @@ export function recordEvent(ev: LedgerEvent): void {
  * cumulative columns mean what they say: a process-lifetime counter shown under "all time" made
  * every restart look like a clean slate, and every miss look like it had just happened.
  */
-export function recordRetrieveFailure(kind: 'miss' | 'badToken'): void {
+export function recordRetrieveFailure(kind: 'miss' | 'badToken' | 'unknown' | 'expired'): void {
   if (kind === 'miss') session.retrieveMisses += 1
-  else session.retrieveBadTokens += 1
+  else if (kind === 'badToken') session.retrieveBadTokens += 1
+  else if (kind === 'expired') session.retrieveExpired += 1
+  else session.retrieveUnknownTokens += 1
   try { flush?.() } catch { /* best effort */ }
 }
 
@@ -99,6 +120,8 @@ export function summarizeSavings(): SavingsReceipt {
     retrieves: cumulativeBase.retrieves + session.retrieves,
     retrieveMisses: cumulativeBase.retrieveMisses + session.retrieveMisses,
     retrieveBadTokens: cumulativeBase.retrieveBadTokens + session.retrieveBadTokens,
+    retrieveUnknownTokens: cumulativeBase.retrieveUnknownTokens + session.retrieveUnknownTokens,
+    retrieveExpired: cumulativeBase.retrieveExpired + session.retrieveExpired,
   }
   for (const [k, v] of Object.entries(session.byTool)) {
     cumulative.byTool[k] = (cumulative.byTool[k] ?? 0) + v

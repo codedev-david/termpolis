@@ -134,12 +134,26 @@ describe('unified receipt — both wire surfaces', () => {
   it('reports retrieve misses per-session AND all-time, which were once the same number', () => {
     // The count came off a module-global that resets with the process, and it was injected into
     // BOTH columns — so "all time" silently meant "since launch" and every restart read clean.
-    loadCumulativeBase({ retrieveMisses: 3 })
+    // Post-migration base: retrieveUnknownTokens present, so the counts are carried as written.
+    loadCumulativeBase({ retrieveMisses: 3, retrieveUnknownTokens: 0 })
     recordRetrieveFailure('miss')
     recordRetrieveFailure('badToken')
     const r = summarizeUnifiedSavings()
     expect(r.session.retrieveMisses).toBe(1)
     expect(r.cumulative.retrieveMisses).toBe(4)
     expect(r.session.retrieveBadTokens).toBe(1)
+  })
+
+  it('re-files a pre-1.41.1 miss count, which proved nothing was destroyed, under the honest bucket', () => {
+    // Before 1.41.1 a miss was booked for ANY token of an issuable shape. Tokens are content hashes,
+    // so that test cannot tell a broken promise from a typo of a live token or from a stash that
+    // landed late — one recorded miss on the reporting install was booked at 22:37:20.889Z for
+    // content written at 22:37:20.891Z. Carrying those forward would keep an alarm lit over
+    // evidence that never existed; dropping them would hide that the calls happened at all.
+    loadCumulativeBase({ retrieveMisses: 4, retrieveBadTokens: 1 })
+    const r = summarizeUnifiedSavings()
+    expect(r.cumulative.retrieveMisses).toBe(0)
+    expect(r.cumulative.retrieveUnknownTokens).toBe(4)
+    expect(r.cumulative.retrieveBadTokens).toBe(1) // an unissuable shape was always honest
   })
 })

@@ -83,6 +83,79 @@ let badTokens = 0
 // Times the LRU had to drop a record with no disk copy behind it. The only way this store can
 // actually destroy content, so it is counted instead of being left to inference.
 let unbackedEvictions = 0
+// Redemptions of a well-shaped token this store has no record of ever holding. Tokens are content
+// hashes, so this space and the space of real tokens are the SAME space: a one-character typo of a
+// live token is indistinguishable from a handle the model invented. Counting these as misses is
+// what made the "should never happen" alarm fire over four calls that destroyed nothing.
+let unknownTokens = 0
+// Redemptions of content the disk cap aged out. Real losses, but designed ones: counted apart so
+// a full cache cannot masquerade as a defect the user is told to report.
+let expiredTokens = 0
+
+/** WHY a token's content is gone, which decides whether anyone should be told to report it. */
+export type CcrLossCause =
+  /** The 200 MB disk cap aged it out. Designed behaviour for a bounded cache: the content is
+   *  really unrecoverable, but nothing is broken and there is nothing to report. */
+  | 'expired'
+  /** It was never durable and the memory LRU rolled over it, or its file would not read back.
+   *  The store destroyed something it had no intention of destroying — the real alarm. */
+  | 'evicted'
+
+/**
+ * Tokens this store HELD and then destroyed — the only positive evidence that an elision stopped
+ * being reversible. Shape cannot supply that evidence and never could; this map can, so the alarm
+ * rests on something the store actually witnessed. Persisted beside the entries themselves: a
+ * broken promise that healed at the next launch would be worse than no alarm at all.
+ */
+const forgotten = new Map<string, CcrLossCause>()
+const FORGOTTEN_FILE = '_forgotten.json'
+/** Bounded so a pathological session cannot grow the file without limit; oldest drop out first. */
+const FORGOTTEN_MAX = 4096
+
+/** The last few failed redemptions, with the token that failed. Before this the token was dropped
+ *  on the floor and a miss could only be investigated by reconstructing it from agent transcripts. */
+export interface CcrFailure { token: string; kind: CcrMissKind }
+const RECENT_FAILURES_MAX = 20
+const recentFailures: CcrFailure[] = []
+
+function saveForgotten(): void {
+  if (!dir) return
+  try { writeFileSync(join(dir, FORGOTTEN_FILE), JSON.stringify(Object.fromEntries(forgotten)), 'utf8') } catch { /* best effort */ }
+}
+
+function loadForgotten(): void {
+  forgotten.clear()
+  if (!dir) return
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, FORGOTTEN_FILE), 'utf8')) as unknown
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [t, cause] of Object.entries(raw as Record<string, unknown>)) {
+        // An unrecognised cause is read as the milder one. Guessing "defect" from a file this
+        // version does not understand would raise exactly the unfounded alarm all this is about.
+        if (typeof t === 'string') forgotten.set(t, cause === 'evicted' ? 'evicted' : 'expired')
+      }
+    }
+  } catch { /* none recorded yet */ }
+}
+
+/** In-memory half of forget(). Returns whether anything changed, so a batch can flush once. */
+function forgetOnly(token: string, cause: CcrLossCause): boolean {
+  // 'evicted' is the louder verdict and outranks 'expired' — a token the cap aged out and that
+  // later proves corrupt is still a defect, and downgrading it would silence the alarm.
+  if (forgotten.get(token) === cause || (forgotten.has(token) && cause === 'expired')) return false
+  forgotten.set(token, cause)
+  while (forgotten.size > FORGOTTEN_MAX) {
+    const oldest = forgotten.keys().next().value
+    if (oldest === undefined) break
+    forgotten.delete(oldest)
+  }
+  return true
+}
+
+/** Record that a token's content is gone. Idempotent, and durable as soon as a dir is configured. */
+function forget(token: string, cause: CcrLossCause): void {
+  if (forgetOnly(token, cause)) saveForgotten()
+}
 
 /**
  * Tokens the durable tier refused (over the entry cap, non-serializable, or an I/O failure). For
@@ -92,6 +165,7 @@ let unbackedEvictions = 0
 const memoryOnly = new Set<string>()
 
 function memPut(token: string, rec: CcrRecord): void {
+  let dirty = false
   if (store.has(token)) store.delete(token) // re-insert at end → LRU
   store.set(token, rec)
   while (store.size > CCR_MAX_ENTRIES) {
@@ -100,11 +174,12 @@ function memPut(token: string, rec: CcrRecord): void {
     for (const k of store.keys()) { if (!memoryOnly.has(k)) { victim = k; break } }
     // Every resident is unbacked: the cap still wins (an unbounded map is its own outage), but this
     // is the one path that can actually lose content, so it is counted rather than left silent.
-    if (victim === undefined) { victim = store.keys().next().value; if (victim !== undefined) unbackedEvictions++ }
+    if (victim === undefined) { victim = store.keys().next().value; if (victim !== undefined) { unbackedEvictions++; if (forgetOnly(victim, 'evicted')) dirty = true } }
     if (victim === undefined) break
     store.delete(victim)
     memoryOnly.delete(victim)
   }
+  if (dirty) saveForgotten() // once, not once per evicted record
 }
 
 function fileFor(token: string): string | null {
@@ -114,6 +189,7 @@ function fileFor(token: string): string | null {
 
 /** Drop oldest-indexed files until the disk tier is back under the byte cap. */
 function evictDisk(): void {
+  let dirty = false
   if (diskBytes <= diskCapBytes) return
   const bySeq = [...diskIndex.entries()].sort((a, b) => a[1].seq - b[1].seq)
   for (const [token, entry] of bySeq) {
@@ -122,8 +198,14 @@ function evictDisk(): void {
     if (f) { try { unlinkSync(f) } catch { /* already gone */ } }
     diskIndex.delete(token)
     diskBytes -= entry.bytes
+    // The durable copy is gone. Any resident copy is now the ONLY one, so pin it against the LRU —
+    // leaving it unpinned would let the next eviction pass pick it as a cheap, "backed" victim and
+    // destroy it silently. With no resident copy the content is already gone.
+    if (store.has(token)) memoryOnly.add(token)
+    else if (forgetOnly(token, 'expired')) dirty = true
   }
   if (diskBytes < 0) diskBytes = 0
+  if (dirty) saveForgotten() // once, not once per evicted entry
 }
 
 /** True once the record is durable on disk; false means the memory copy is the only one left. */
@@ -155,9 +237,12 @@ function diskPut(token: string, rec: CcrRecord): boolean {
 function put(token: string, rec: CcrRecord): void {
   // Durability is decided BEFORE the memory insert: memPut's eviction pass reads `memoryOnly`, and
   // an entry not yet marked would look backed and be chosen as its own victim the moment it lands.
-  // With no dir configured there is no durable tier to refuse anything — that is a memory-only
-  // store by configuration, not a lost promise, so nothing is pinned and nothing is counted.
-  if (diskPut(token, rec) || dir === null) memoryOnly.delete(token)
+  // A record with no durable copy is pinned whether the durable tier REFUSED it or does not
+  // exist. "Memory-only by configuration" still destroys content when the LRU rolls over, and a
+  // null dir is not always configuration: setCcrDir falls back to null on any mkdir/readdir
+  // failure, so one transient EPERM at launch would otherwise make a whole session quietly lossy
+  // while every counter that is supposed to notice stayed at zero.
+  if (diskPut(token, rec)) memoryOnly.delete(token)
   else memoryOnly.add(token)
   memPut(token, rec)
 }
@@ -167,9 +252,19 @@ function diskGet(token: string): CcrRecord | undefined {
   if (!f || !diskIndex.has(token)) return undefined
   try {
     const rec = JSON.parse(readFileSync(f, 'utf8')) as CcrRecord
-    if (!rec || typeof rec !== 'object' || !('value' in rec)) return undefined
+    if (!rec || typeof rec !== 'object' || !('value' in rec)) throw new Error('not a record')
     return { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp' }
-  } catch { return undefined }
+  } catch {
+    // Indexed but unreadable — truncated by a hard kill mid-write, or corrupted underneath us.
+    // Leaving it indexed makes the damage PERMANENT: diskPut short-circuits on `diskIndex.has` for
+    // hash tokens, so no future stash of the identical original would ever rewrite the file. Drop
+    // the index entry and the file so the next stash heals it, and count what was lost.
+    const entry = diskIndex.get(token)
+    if (entry) { diskIndex.delete(token); diskBytes -= entry.bytes; if (diskBytes < 0) diskBytes = 0 }
+    try { unlinkSync(f) } catch { /* already gone */ }
+    if (!store.has(token)) forget(token, 'evicted')
+    return undefined
+  }
 }
 
 /**
@@ -193,6 +288,7 @@ export function setCcrDir(d: string | null): void {
     }
     found.sort((a, b) => a.mtime - b.mtime)
     dir = d
+    loadForgotten() // before evictDisk below, which may add to it
     for (const f of found) { diskIndex.set(f.token, { bytes: f.bytes, seq: ++seq }); diskBytes += f.bytes }
     evictDisk()
   } catch { dir = null }
@@ -223,17 +319,61 @@ export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy
   put(token, rec)
 }
 
-/** Full record (value + issuing layer), memory first then disk. */
+/**
+ * Full record (value + issuing layer), memory first then disk. A pure lookup: it counts hits but
+ * never judges a failure, because one failed lookup is not yet a failed redemption. The wire proxy
+ * commits originals from the CHILD process over parentPort while `retrieve_full` arrives on a
+ * loopback socket into MAIN — two queues with no ordering between them — so a caller is entitled
+ * to look again before concluding anything. Classification lives in ccrNoteMiss, called once.
+ */
 export function ccrRetrieveRecord(token: string): CcrRecord | undefined {
   const hit = store.get(token)
   if (hit) { memHits++; memPut(token, hit); return hit } // touch → stays hot
   const fromDisk = diskGet(token)
   if (fromDisk) { diskHits++; memPut(token, fromDisk); return fromDisk }
-  // Classified only after both tiers came up empty, so a caller-supplied token that IS resolvable
-  // still resolves. A shape we never mint cannot name content we removed.
-  if (!ISSUABLE_RE.test(token)) badTokens++
-  else misses++
   return undefined
+}
+
+/** What a redemption that resolved nothing actually means. */
+export type CcrMissKind =
+  /** This store held the content and destroyed it without meaning to. The only real alarm. */
+  | 'forgotten'
+  /** This store held the content and the disk cap aged it out. Unrecoverable, but working as
+   *  designed — the honest response is a bigger cap, not a bug report. */
+  | 'expired'
+  /** Well-shaped, but no record of ever holding it: a typo of a live token, a handle the model
+   *  invented, or a stash that never arrived. Says nothing about content this app removed. */
+  | 'unknown'
+  /** Not a shape this store can mint, so it cannot name anything we elided. */
+  | 'badShape'
+
+/**
+ * Classify and count ONE failed redemption.
+ *
+ * Split from the lookup so a caller may retry without booking a miss per attempt, and so the alarm
+ * rests on evidence instead of on the token's shape. Shape can never supply that evidence: tokens
+ * ARE content hashes, so every real token and every plausible typo of one live in the same 16-hex
+ * space. Treating that space as proof of issuance is what reported four destroyed elisions on an
+ * install where the store had never destroyed anything.
+ */
+export function ccrNoteMiss(token: string): CcrMissKind {
+  const cause = forgotten.get(token)
+  const kind: CcrMissKind = !ISSUABLE_RE.test(token)
+    ? 'badShape'
+    : cause === 'evicted'
+      ? 'forgotten'
+      : cause === 'expired'
+        ? 'expired'
+        : 'unknown'
+  if (kind === 'badShape') badTokens++
+  else if (kind === 'forgotten') misses++
+  else if (kind === 'expired') expiredTokens++
+  else unknownTokens++
+  // No timestamp: this module is swept by the cache-safety guard and may not read a clock at
+  // all. retrieveFull logs each failure through appLog, which stamps it from outside the sweep.
+  recentFailures.push({ token, kind })
+  while (recentFailures.length > RECENT_FAILURES_MAX) recentFailures.shift()
+  return kind
 }
 
 /** Whether a token has a shape this store could ever have minted. */
@@ -262,6 +402,14 @@ export interface CcrStats {
   misses: number
   /** Redemptions of a token shape this store never mints — a prompting artefact, not lost content. */
   badTokens: number
+  /** Redemptions of a well-shaped token with no record of ever being held here. Not lost content. */
+  unknownTokens: number
+  /** Redemptions of content the disk cap aged out. Lost, but by design — not a defect. */
+  expiredTokens: number
+  /** Tokens known to have been destroyed — what `misses` is measured against. */
+  forgottenEntries: number
+  /** The last few failed redemptions, token included, so the next one is diagnosable in place. */
+  recentFailures: CcrFailure[]
   /** Resident records with no disk copy behind them; pinned against LRU eviction. */
   memoryOnlyEntries: number
   /** Pinned records the LRU still had to drop. Non-zero means content really was lost. */
@@ -275,14 +423,18 @@ export interface CcrStats {
  * then unrecoverable — and before this counter existed it was invisible. It should stay at 0.
  */
 export function ccrStats(): CcrStats {
-  return { memEntries: store.size, diskEntries: diskIndex.size, diskBytes, dir, memHits, diskHits, misses, badTokens, memoryOnlyEntries: memoryOnly.size, unbackedEvictions }
+  return {
+    memEntries: store.size, diskEntries: diskIndex.size, diskBytes, dir, memHits, diskHits, misses,
+    badTokens, unknownTokens, expiredTokens, memoryOnlyEntries: memoryOnly.size, unbackedEvictions,
+    forgottenEntries: forgotten.size, recentFailures: [...recentFailures],
+  }
 }
 
 export function resetCcr(): void {
   store.clear(); diskIndex.clear(); redeemed.clear(); diskBytes = 0; seq = 0; fallbackCounter = 0; dir = null
   diskCapBytes = CCR_MAX_BYTES; entryCapBytes = CCR_MAX_ENTRY_BYTES
-  memHits = 0; diskHits = 0; misses = 0; badTokens = 0; unbackedEvictions = 0
-  memoryOnly.clear()
+  memHits = 0; diskHits = 0; misses = 0; badTokens = 0; unknownTokens = 0; expiredTokens = 0; unbackedEvictions = 0
+  memoryOnly.clear(); forgotten.clear(); recentFailures.length = 0
 }
 
 /** Test-only: shrink the disk caps so eviction is exercisable without writing 200 MB. */

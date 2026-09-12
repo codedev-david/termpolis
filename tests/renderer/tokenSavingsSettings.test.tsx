@@ -178,10 +178,45 @@ describe('TokenSavingsSettings — honest reporting', () => {
     expect(screen.queryByTestId('hr-steering-observed')).toBeNull()
   })
 
-  it('raises an alarm when a retrieve_full found nothing', async () => {
+  it('raises an alarm when content this app had cached was destroyed', async () => {
     withData({}, { retrieveMisses: 3 })
     render(<TokenSavingsSettings />)
-    expect(await screen.findByTestId('hr-retrieve-misses')).toHaveTextContent('3 retrieve_full calls found nothing')
+    expect(await screen.findByTestId('hr-retrieve-misses')).toHaveTextContent(
+      '3 retrieve_full calls asked for content this app had cached and then dropped'
+    )
+  })
+
+  it('does NOT raise the alarm for a handle it has no record of issuing', async () => {
+    // The reported defect. Tokens are content hashes, so a typo of a live token is the same shape
+    // as the real one; reading shape as proof of issuance put "should never happen" in front of
+    // four calls that had destroyed nothing. These belong in the quiet line, alarm dark.
+    withData({}, { retrieveUnknownTokens: 4, retrieveBadTokens: 1 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-retrieve-bad-tokens')).toHaveTextContent(
+      '5 retrieve_full calls used a handle this app has no record of issuing'
+    )
+    expect(screen.queryByTestId('hr-retrieve-misses')).toBeNull()
+  })
+
+  it('raises the alarm on a destroyed record even before anyone asks for it back', async () => {
+    // An unbacked eviction is the same broken promise caught a step earlier: the store dropped the
+    // only copy. Waiting for a retrieve_full to fail would report the loss only if someone happened
+    // to ask, which is the difference between a measurement and a coincidence.
+    withData({}, { unbackedEvictions: 2 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-unbacked-evictions')).toHaveTextContent(
+      '2 cached originals were dropped this session with no copy on disk behind them'
+    )
+  })
+
+  it('reports content the cache aged out as gone, without telling anyone to report it', async () => {
+    // A bounded cache doing its job is not a defect. Wording this like the loss alarm would send
+    // the user to file a bug about the 200 MB limit working exactly as specified.
+    withData({}, { retrieveExpired: 3 })
+    render(<TokenSavingsSettings />)
+    const el = await screen.findByTestId('hr-retrieve-expired')
+    expect(el).toHaveTextContent('3 retrieve_full calls asked for content the cache had already aged out')
+    expect(el.textContent).not.toMatch(/[Rr]eport this/)
   })
 
   it('says nothing about retrieval when every token resolved', async () => {

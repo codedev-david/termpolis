@@ -136,7 +136,18 @@ if (parentPort) {
         useHttps: true,
         // Request-path commit — the main process must be able to answer retrieve_full for a token
         // that is already on the wire, not only once the response has finished streaming.
-        onStash: (stashes) => { try { parentPort.postMessage({ kind: 'stash', stashes }) } catch { /* ignore */ } },
+        onStash: (stashes) => {
+          try { parentPort.postMessage({ kind: 'stash', stashes }) } catch (err) {
+            // The tokens for these originals are ALREADY in the body heading upstream. If the
+            // commit cannot cross to MAIN, every one of them is a handle nothing can ever redeem —
+            // the only way this proxy can mint an unredeemable token. It still must not fail the
+            // request, but swallowing it turned a proxy fault into phantom retrieve_full misses
+            // with no trace on either side; the existing error channel gives it one.
+            try {
+              parentPort.postMessage({ kind: 'error', message: `stash commit dropped (${stashes.length} originals): ${String((err as Error)?.message ?? err)}` })
+            } catch { /* parent is gone; the supervisor's exit path takes over */ }
+          }
+        },
         // Still carried on the result as an idempotent backstop: ccrPut is content-hash keyed, so
         // a re-put of the same original is a no-op.
         onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } },

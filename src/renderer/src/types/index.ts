@@ -242,6 +242,15 @@ export interface UnifiedTotalsView {
   /** `retrieve_full` calls for a token shape the app never mints — a mistyped or invented handle.
    *  Separate from `retrieveMisses`: it says nothing about whether content survived. */
   retrieveBadTokens: number
+  /** `retrieve_full` calls for a well-shaped token the app has no record of ever holding. Tokens
+   *  are content hashes, so a typo of a live one is indistinguishable by shape from the real one —
+   *  which is why this is reported separately and never as lost content. */
+  retrieveUnknownTokens: number
+  /** `retrieve_full` calls for content the 200 MB disk cap aged out. Really gone, but working as
+   *  designed — the answer is a bigger cap, not a bug report. */
+  retrieveExpired: number
+  /** Records dropped by the LRU with no durable copy behind them — content the app destroyed. */
+  unbackedEvictions: number
   /** Prefix head (system prompt + tool schemas), per request, in tokens — the slice no
    *  compression layer touches. Shown so the receipt states its own limits. */
   sysTokensPerRequest: number

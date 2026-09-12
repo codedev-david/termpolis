@@ -583,7 +583,9 @@ export interface McpToolHandlers {
   memoryCorrect: (opts: { id: string; kind: string; reason?: string; replacement?: string }) => unknown
   gatewayListTools: () => Promise<unknown>
   gatewayCall: (opts: { tool: string; arguments?: unknown }) => Promise<unknown>
-  retrieveFull: (token: string) => unknown
+  /** Async since 1.41: a redemption waits out a stash that may still be crossing from the proxy
+   *  child, so an in-flight original is not reported as content this app destroyed. */
+  retrieveFull: (token: string) => Promise<unknown>
   // Operator verbs. Deliberately absent from TOOLS: the tool list is re-sent on every
   // request of every session, so a diagnostic no agent will ever call is a permanent tax
   // on the exact token budget this app exists to protect. `executeTool` dispatches by
@@ -726,7 +728,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
     case 'gateway_call':
       return await handlers.gatewayCall({ tool: args.tool, arguments: args.arguments })
     case 'retrieve_full':
-      return handlers.retrieveFull(args.token)
+      return await handlers.retrieveFull(args.token)
     // --- operator verbs (CLI-only; see McpToolHandlers) ---
     case 'agent_exec':
       return await handlers.agentExec({

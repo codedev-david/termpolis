@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView, DepthAdviceView } from '../../types'
 
+/** Mirrors CCR_MAX_BYTES in src/main/headroom/ccrStore.ts — the pane names the real limit. */
+const CCR_CAP_MB = 200
+
 type Mode = 'conservative' | 'balanced' | 'aggressive' | 'max'
 type Settings = HeadroomSettingsView
 interface Totals { netSaved: number; events: number; byTool: Record<string, number> }
@@ -177,18 +180,46 @@ export function TokenSavingsSettings() {
         )}
 
         {/* The falsifier. Every elision promises the original can be brought back; a miss is that
-            promise broken. It is never rolled into a percentage — one is worth seeing. */}
+            promise broken. It is never rolled into a percentage — one is worth seeing.
+            It fires only on evidence the store itself recorded: content it held and then dropped.
+            Shape is not evidence — tokens are content hashes, so a one-character typo of a live
+            token is indistinguishable from a real one, and reading shape as proof is what put
+            "should never happen" in front of four calls that had destroyed nothing. */}
         {(unified?.cumulative.retrieveMisses ?? 0) > 0 && (
           <div style={{ marginTop: 10, fontSize: 13, color: '#f87171' }} data-testid="hr-retrieve-misses">
-            <b>{fmt(unified?.cumulative.retrieveMisses ?? 0)}</b> retrieve_full {(unified?.cumulative.retrieveMisses ?? 0) === 1 ? 'call' : 'calls'} found nothing, all time
-            ({fmt(unified?.session.retrieveMisses ?? 0)} this session) — compressed content could not be restored. Report this; it should never happen.
+            <b>{fmt(unified?.cumulative.retrieveMisses ?? 0)}</b> retrieve_full {(unified?.cumulative.retrieveMisses ?? 0) === 1 ? 'call' : 'calls'} asked for content this
+            app had cached and then dropped, all time ({fmt(unified?.session.retrieveMisses ?? 0)} this session). Compressed content really was lost.
+            Report this; it should never happen.
           </div>
         )}
 
-        {(unified?.cumulative.retrieveBadTokens ?? 0) > 0 && (
+        {/* The same broken promise, caught one step earlier: the store destroyed a record with no
+            durable copy behind it, whether or not anyone has asked for it back yet. Reported from
+            the session column on purpose — it counts since launch, and labelling a since-launch
+            number "all time" is the exact lie the two retrieve columns above exist to undo. */}
+        {(unified?.session.unbackedEvictions ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 13, color: '#f87171' }} data-testid="hr-unbacked-evictions">
+            <b>{fmt(unified?.session.unbackedEvictions ?? 0)}</b> cached {(unified?.session.unbackedEvictions ?? 0) === 1 ? 'original was' : 'originals were'} dropped this
+            session with no copy on disk behind them — those elisions can no longer be reversed. Report this; it should never happen.
+          </div>
+        )}
+
+        {/* Content that really is gone, reported WITHOUT "report this". The 200 MB cap is supposed
+            to age old originals out; saying "it should never happen" about the cache doing its job
+            is the same false alarm as the shape test, just with a different trigger. */}
+        {(unified?.cumulative.retrieveExpired ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }} data-testid="hr-retrieve-expired">
+            {fmt(unified?.cumulative.retrieveExpired ?? 0)} <code>retrieve_full</code>{' '}
+            {(unified?.cumulative.retrieveExpired ?? 0) === 1 ? 'call asked' : 'calls asked'} for content the cache had already aged out
+            to stay under its {CCR_CAP_MB} MB limit. Gone, but working as designed — nothing to report.
+          </div>
+        )}
+
+        {((unified?.cumulative.retrieveUnknownTokens ?? 0) + (unified?.cumulative.retrieveBadTokens ?? 0)) > 0 && (
           <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }} data-testid="hr-retrieve-bad-tokens">
-            {fmt(unified?.cumulative.retrieveBadTokens ?? 0)} <code>retrieve_full</code> calls used a token this app never issued — a
-            mistyped or invented handle, not lost content. Nothing to report.
+            {fmt((unified?.cumulative.retrieveUnknownTokens ?? 0) + (unified?.cumulative.retrieveBadTokens ?? 0))} <code>retrieve_full</code>{' '}
+            {((unified?.cumulative.retrieveUnknownTokens ?? 0) + (unified?.cumulative.retrieveBadTokens ?? 0)) === 1 ? 'call used a handle' : 'calls used a handle'} this app has no
+            record of issuing — a mistyped or invented token, not lost content. Nothing to report.
           </div>
         )}
 

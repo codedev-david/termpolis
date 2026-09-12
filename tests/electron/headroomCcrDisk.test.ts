@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-const { ccrStash, ccrPut, ccrRetrieve, ccrRetrieveRecord, ccrStats, resetCcr, setCcrDir, _setCcrLimits, CCR_MAX_ENTRIES, CCR_MAX_BYTES, CCR_MAX_ENTRY_BYTES } =
+const { ccrStash, ccrPut, ccrRetrieve, ccrRetrieveRecord, ccrNoteMiss, ccrStats, resetCcr, setCcrDir, _setCcrLimits, CCR_MAX_ENTRIES, CCR_MAX_BYTES, CCR_MAX_ENTRY_BYTES } =
   await import('../../src/main/headroom/ccrStore')
 
 /**
@@ -165,7 +165,11 @@ describe('ccr store — byte cap', () => {
     resetCcr(); setCcrDir(dir)
     _setCcrLimits(4000, 8 * 1024 * 1024)
     expect(ccrStats().diskBytes).toBeLessThanOrEqual(4000)
-    expect(fs.readdirSync(dir).length).toBe(ccrStats().diskEntries)
+    // Entry files only: the store also keeps a _forgotten.json sidecar beside them.
+    expect(fs.readdirSync(dir).filter((n) => n.startsWith('hr_')).length).toBe(ccrStats().diskEntries)
+    // The trim destroyed content that existed nowhere else, and the store records exactly that —
+    // so redeeming one of these tokens later is a real miss, not an unrecognised handle.
+    expect(ccrStats().forgottenEntries).toBeGreaterThan(0)
   })
 
   it('keeps an oversized entry in MEMORY only rather than stalling the hot path on it', () => {
@@ -228,16 +232,52 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().misses).toBe(0)
   })
 
-  it('records a miss when a token redeems nothing', () => {
-    // The number that can falsify the whole scheme. An elision the store cannot reverse is
-    // content destroyed, and without this counter it would be destroyed silently.
-    ccrRetrieve('hr_0123456789abcdef')
+  it('books a miss ONLY for a token it held and then destroyed', () => {
+    // The number that can falsify the whole scheme — but it only means that if it rests on
+    // evidence. Tokens are content hashes, so "looks like one of ours" is a property that a
+    // one-character typo of a real token has too. Shape cannot tell a broken promise apart from
+    // a handle we never issued, and reading it as proof is what fired the "should never happen"
+    // banner over four calls that had destroyed nothing.
+    _setCcrLimits(CCR_MAX_BYTES, 8) // 8-byte entry cap: nothing reaches the durable tier
+    const doomed = ccrStash({ v: 'the only copy' })
+    for (let i = 0; i <= CCR_MAX_ENTRIES; i++) ccrStash({ filler: i })
+    expect(ccrRetrieve(doomed)).toBeUndefined()
+    expect(ccrNoteMiss(doomed)).toBe('forgotten')
     expect(ccrStats().misses).toBe(1)
-    expect(ccrStats().memHits + ccrStats().diskHits).toBe(0)
+    expect(ccrStats().unbackedEvictions).toBeGreaterThan(0)
+  })
+
+  it('does NOT book a miss for a well-shaped token it never held', () => {
+    expect(ccrNoteMiss('hr_0123456789abcdef')).toBe('unknown')
+    expect(ccrStats().misses).toBe(0)
+    expect(ccrStats().unknownTokens).toBe(1)
+  })
+
+  it('remembers what it destroyed across a restart', () => {
+    // A forgotten token that stops being forgotten at the next launch would let the one honest
+    // alarm this store can raise evaporate on restart.
+    _setCcrLimits(CCR_MAX_BYTES, 8)
+    const doomed = ccrStash({ v: 'the only copy' })
+    for (let i = 0; i <= CCR_MAX_ENTRIES; i++) ccrStash({ filler: i })
+    expect(ccrNoteMiss(doomed)).toBe('forgotten')
+    setCcrDir(dir) // relaunch against the same directory
+    expect(ccrNoteMiss(doomed)).toBe('forgotten')
+  })
+
+  it('heals an indexed file it cannot read back, and counts the loss', () => {
+    const t = ccrStash({ v: 'truncated by a hard kill' })
+    for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_${i.toString(16).padStart(16, '0')}`, i)
+    fs.writeFileSync(path.join(dir, `${t}.json`), '{ truncated', 'utf8')
+    expect(ccrRetrieve(t)).toBeUndefined()
+    expect(ccrNoteMiss(t)).toBe('forgotten')
+    // Left indexed, diskPut's hash short-circuit would never rewrite it and the damage would be
+    // permanent. Dropping the index entry lets an identical original heal the file.
+    ccrPut(t, { v: 'truncated by a hard kill' })
+    expect(ccrRetrieve(t)).toEqual({ v: 'truncated by a hard kill' })
   })
 
   it('does NOT count a token shape it never mints as a miss', () => {
-    ccrRetrieve('hr_NotAShapeWeMint')
+    expect(ccrNoteMiss('hr_NotAShapeWeMint')).toBe('badShape')
     expect(ccrStats().badTokens).toBe(1)
     expect(ccrStats().misses).toBe(0)
   })
@@ -246,6 +286,51 @@ describe('ccr store — byte cap', () => {
     ccrPut('hr_legacyCallerToken', { v: 1 })
     expect(ccrRetrieve('hr_legacyCallerToken')).toEqual({ v: 1 })
     expect(ccrStats().badTokens).toBe(0)
+  })
+
+  it('ignores a forgotten-set file it cannot make sense of, rather than failing the launch', () => {
+    // The sidecar sits in a directory users can open. A hand-edited or half-written file must cost
+    // at most the memory of what was destroyed — never the ability to start the durable tier.
+    _setCcrLimits(CCR_MAX_BYTES, 8) // 8-byte entry cap: nothing reaches disk, so the LRU destroys
+    const doomed = ccrStash({ v: 'the only copy' })
+    for (let i = 0; i <= CCR_MAX_ENTRIES; i++) ccrStash({ filler: i })
+    expect(ccrNoteMiss(doomed)).toBe('forgotten')
+    fs.writeFileSync(path.join(dir, '_forgotten.json'), '{ not an array', 'utf8')
+    setCcrDir(dir)
+    expect(ccrStats().forgottenEntries).toBe(0)
+    expect(ccrStats().dir).toBe(dir) // the tier still came up
+    fs.writeFileSync(path.join(dir, '_forgotten.json'), JSON.stringify(['hr_aaaaaaaaaaaaaaaa']), 'utf8')
+    setCcrDir(dir)
+    expect(ccrStats().forgottenEntries).toBe(0) // an array is the pre-cause shape: no causes in it
+    const map = { hr_aaaaaaaaaaaaaaaa: 'evicted', hr_bbbbbbbbbbbbbbbb: 'expired', hr_cccccccccccccccc: 'gibberish' }
+    fs.writeFileSync(path.join(dir, '_forgotten.json'), JSON.stringify(map), 'utf8')
+    setCcrDir(dir)
+    expect(ccrStats().forgottenEntries).toBe(3)
+    expect(ccrNoteMiss('hr_aaaaaaaaaaaaaaaa')).toBe('forgotten')
+    expect(ccrNoteMiss('hr_bbbbbbbbbbbbbbbb')).toBe('expired')
+    // A cause this build does not understand reads as the MILDER one. Guessing "defect" from a
+    // file we cannot parse would raise exactly the unfounded alarm this whole change exists to end.
+    expect(ccrNoteMiss('hr_cccccccccccccccc')).toBe('expired')
+  })
+
+  it('caps the forgotten set, so a pathological session cannot grow the sidecar without limit', () => {
+    // Memory-only (no dir): every stash is unbacked, so the LRU destroys one per insert once full.
+    setCcrDir(null)
+    const first = ccrStash({ first: true })
+    for (let i = 0; i < 5200; i++) ccrStash({ filler: i })
+    expect(ccrStats().forgottenEntries).toBeLessThanOrEqual(4096)
+    expect(ccrStats().forgottenEntries).toBeGreaterThan(4000)
+    // Oldest drop out first, so the earliest casualty is the one that stops being remembered.
+    expect(ccrNoteMiss(first)).toBe('unknown')
+  })
+
+  it('keeps only the most recent failures, with the token that failed', () => {
+    for (let i = 0; i < 25; i++) ccrNoteMiss(`hr_${i.toString(16).padStart(16, '0')}`)
+    const recent = ccrStats().recentFailures
+    expect(recent.length).toBe(20)
+    expect(recent[0].token).toBe('hr_' + (5).toString(16).padStart(16, '0')) // 0-4 aged out
+    expect(recent[19].token).toBe('hr_' + (24).toString(16).padStart(16, '0'))
+    expect(recent.every((r) => r.kind === 'unknown')).toBe(true)
   })
 
   it('pins an entry the disk refused, so the LRU cannot drop the only copy', () => {
@@ -257,5 +342,49 @@ describe('ccr store — byte cap', () => {
     for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_${i.toString(16).padStart(16, '0')}`, i)
     expect(ccrRetrieve(t)).toEqual({ v: 'too big for the disk cap' })
     expect(ccrStats().unbackedEvictions).toBe(0)
+  })
+
+  it('files a disk-cap trim as expiry, not as a defect anyone should report', () => {
+    // Measured on the reporting install: 85.5 MB of the 200 MB cap and climbing. Once it fills,
+    // every ordinary trim would have raised "Report this; it should never happen" — the same false
+    // alarm that started all this, arriving through a different door.
+    const doomed = ccrStash({ v: 'x'.repeat(400) }) // oldest and fattest: first out, and enough
+    for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_${i.toString(16).padStart(16, '0')}`, i)
+    // Checked on disk, not through ccrRetrieve: a retrieve would pull it back into memory and the
+    // memory copy would then answer after the trim, hiding the very loss this test is about.
+    expect(fs.existsSync(path.join(dir, `${doomed}.json`))).toBe(true)
+
+    // A cap just under what is already stored, so the next write trims the oldest entry and stops.
+    // A cap of zero would sweep the whole tier and pin every resident record, which measures the
+    // LRU's reaction to an absurd setting rather than what a full cache does.
+    _setCcrLimits(ccrStats().diskBytes - 1, CCR_MAX_ENTRY_BYTES)
+    ccrPut('hr_' + 'ff'.repeat(8), 1)
+
+    expect(ccrRetrieve(doomed)).toBeUndefined() // really gone — the cap is not a soft limit
+    expect(ccrNoteMiss(doomed)).toBe('expired')
+    expect(ccrStats().expiredTokens).toBe(1)
+    expect(ccrStats().misses).toBe(0)            // ...and the alarm stayed silent
+    expect(ccrStats().unbackedEvictions).toBe(0)
+  })
+
+  it('never downgrades a recorded defect to expiry when the cap later sweeps the same token', () => {
+    // Tokens are content hashes, so a handle the store destroyed once can be minted again by the
+    // same original and then destroyed a second way. The louder verdict has to win, or a routine
+    // cap sweep quietly launders a defect the store already caught itself committing.
+    _setCcrLimits(CCR_MAX_BYTES, 8) // 8-byte entry cap: nothing is durable, so the LRU destroys
+    const doomed = ccrStash({ v: 'x'.repeat(400) })
+    for (let i = 0; i <= CCR_MAX_ENTRIES; i++) ccrStash({ filler: i })
+    expect(ccrStats().unbackedEvictions).toBeGreaterThan(0)
+    expect(ccrNoteMiss(doomed)).toBe('forgotten')
+
+    _setCcrLimits(CCR_MAX_BYTES, CCR_MAX_ENTRY_BYTES) // durable again
+    ccrPut(doomed, { v: 'x'.repeat(400) })            // same content, same token, back on disk
+    for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_a${i.toString(16).padStart(15, '0')}`, i)
+    _setCcrLimits(ccrStats().diskBytes - 1, CCR_MAX_ENTRY_BYTES)
+    ccrPut('hr_' + 'ee'.repeat(8), 1)
+
+    expect(ccrRetrieve(doomed)).toBeUndefined()
+    expect(ccrNoteMiss(doomed)).toBe('forgotten') // still the alarm, not 'expired'
+    expect(ccrStats().expiredTokens).toBe(0)
   })
 })

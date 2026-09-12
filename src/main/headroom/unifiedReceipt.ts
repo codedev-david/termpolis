@@ -2,6 +2,7 @@ import { summarizeSavings, type SavingsTotals } from './savingsLedger'
 import { summarizeProxySavings, type ProxyTotals } from '../headroomProxy/proxyLedger'
 import { billBreakdown, type BillBreakdown } from './effectiveUnits'
 import { depthAdvice, type DepthAdvice } from './sessionDepth'
+import { ccrStats } from './ccrStore'
 
 /**
  * ONE honest savings number.
@@ -58,6 +59,14 @@ export interface UnifiedTotals {
   /** `retrieve_full` calls for a token shape this app never mints — a mistyped or invented handle.
    *  Kept apart from `retrieveMisses` because it says nothing about whether content survived. */
   retrieveBadTokens: number
+  /** `retrieve_full` calls for a well-shaped token the app has no record of ever holding — a typo
+   *  of a live token, an invented handle, or a stash that never landed. Not destroyed content. */
+  retrieveUnknownTokens: number
+  /** `retrieve_full` calls for content the disk cap aged out — lost, but by design. */
+  retrieveExpired: number
+  /** Records the LRU had to drop with no durable copy behind them. The store's own account of
+   *  content it destroyed, and the second half of the only honest loss alarm this app can raise. */
+  unbackedEvictions: number
   /** The prefix head, per request, in tokens: the system prompt and the tool schemas that sit in
    *  front of `messages` and are re-sent every turn. No compression layer touches them, which is
    *  precisely why they belong on the receipt — this is the part of the bill Headroom does NOT
@@ -136,6 +145,9 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     bill: billBreakdown(proxy, netSavedTokens),
     retrieveMisses: tool.retrieveMisses,
     retrieveBadTokens: tool.retrieveBadTokens,
+    retrieveUnknownTokens: tool.retrieveUnknownTokens,
+    retrieveExpired: tool.retrieveExpired,
+    unbackedEvictions: ccrStats().unbackedEvictions,
     sysTokensPerRequest: perRequestTokens(proxy.sysChars, proxy.requests),
     toolsTokensPerRequest: perRequestTokens(proxy.toolsChars, proxy.requests),
     tpToolsTokensPerRequest: perRequestTokens(proxy.tpToolsChars, proxy.requests),
