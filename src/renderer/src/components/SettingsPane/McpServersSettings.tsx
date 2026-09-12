@@ -6,6 +6,7 @@ import type {
   McpSourceId,
   McpGatewayTestView,
 } from '../../types'
+import { InfoTip } from './InfoTip'
 
 /**
  * MCP servers — the human-facing half of the gateway.
@@ -179,7 +180,8 @@ export function McpServersSettings(): JSX.Element {
       </div>
       <p className="text-xs text-[#9ca3af] mb-4">
         Tools your agents reach through Termpolis, and what every agent on this machine has configured
-        for itself. Credentials are never sent to this screen.
+        for itself. Add a server once here and every connected agent can call it — no editing three
+        config files by hand. Credentials are never sent to this screen.
       </p>
 
       {error && (
@@ -190,7 +192,10 @@ export function McpServersSettings(): JSX.Element {
 
       {policy && (
         <div className="mb-6" data-testid="mcp-policy">
-          <h3 className="text-xs font-semibold text-[#e0e0e0] mb-2">Gateway policy</h3>
+          <h3 className="text-xs font-semibold text-[#e0e0e0] mb-1">Gateway policy</h3>
+          <p className="text-xs text-[#9ca3af] mb-2">
+            What happens when an agent calls a tool from one of the upstream servers below.
+          </p>
           <label className="flex items-center gap-2 text-xs text-[#d4d4d4] mb-2">
             <input
               type="checkbox"
@@ -231,10 +236,34 @@ export function McpServersSettings(): JSX.Element {
 
       {servers && (
         <div className="mb-6" data-testid="mcp-gateway">
-          <h3 className="text-xs font-semibold text-[#e0e0e0] mb-2">Through Termpolis</h3>
+          <h3 className="text-xs font-semibold text-[#e0e0e0] mb-1 inline-flex items-center">
+            Through Termpolis
+            <InfoTip testId="mcp-gateway-info" label="What upstream MCP servers are">
+              <p className="mb-2">
+                An <span className="text-[#d4d4d4]">upstream MCP server</span> is a separate program that
+                publishes tools — a GitHub client, a database browser, a docs index. Termpolis starts it
+                when it is first needed and relays your agents&apos; tool calls to it.
+              </p>
+              <p className="mb-2">
+                Add one by <span className="text-[#d4d4d4]">name</span> (yours to choose), the{' '}
+                <span className="text-[#d4d4d4]">command</span> that launches it, and its{' '}
+                <span className="text-[#d4d4d4]">args</span> — e.g. <code>github</code>,{' '}
+                <code>npx</code>, <code>-y @modelcontextprotocol/server-github</code>.
+              </p>
+              <p>
+                It does not need to be in Claude&apos;s, Codex&apos;s or Gemini&apos;s own config: that is the
+                point. Anything listed here reaches every agent connected to Termpolis at once, under the
+                policy above. Keys and tokens stay in your environment — this list holds none.
+              </p>
+            </InfoTip>
+          </h3>
+          <p className="text-xs text-[#9ca3af] mb-2">
+            Servers Termpolis connects to on your agents&apos; behalf. One entry is reachable from Claude
+            Code, Codex and Gemini alike, because each of them only ever talks to Termpolis.
+          </p>
           {servers.length === 0 && (
             <p className="text-xs text-[#9ca3af] mb-2" data-testid="mcp-gateway-empty">
-              No upstream servers yet. Add one and every agent connected to Termpolis can reach its tools.
+              None configured yet. Add one below and it is live for every connected agent.
             </p>
           )}
           {servers.map((s) => {
@@ -311,12 +340,31 @@ export function McpServersSettings(): JSX.Element {
               Add
             </button>
           </div>
+          <p className="text-xs text-[#6b7280] mt-1.5" data-testid="mcp-add-hint">
+            name, command, args — e.g. <code className="text-[#9ca3af]">github</code>{' '}
+            <code className="text-[#9ca3af]">npx</code>{' '}
+            <code className="text-[#9ca3af]">-y @modelcontextprotocol/server-github</code>. Args split on
+            spaces; set any API keys in your environment before launching Termpolis.
+          </p>
         </div>
       )}
 
       {inventory && (
         <div data-testid="mcp-inventory">
-          <h3 className="text-xs font-semibold text-[#e0e0e0] mb-2">Configured across your agents</h3>
+          <h3 className="text-xs font-semibold text-[#e0e0e0] mb-2 inline-flex items-center">
+            Configured across your agents
+            <InfoTip testId="mcp-inventory-info" label="What this table shows">
+              <p className="mb-2">
+                Every MCP server each agent CLI has in its <span className="text-[#d4d4d4]">own</span>{' '}
+                config file, merged into the one view no single CLI can give you.
+              </p>
+              <p>
+                A ⚠ marks a server some agents have and others do not. Termpolis reads these files and
+                never writes them, so close the gap by adding the server above — through Termpolis it
+                reaches all of them at once — or by editing that agent&apos;s config yourself.
+              </p>
+            </InfoTip>
+          </h3>
           <div className="overflow-x-auto">
             <table className="text-xs w-full">
               <thead>

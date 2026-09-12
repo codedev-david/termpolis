@@ -89,6 +89,53 @@ describe('McpServersSettings', () => {
     expect(screen.getByTestId('mcp-source-codex').textContent).toContain('missing')
   })
 
+  it('explains what an upstream server is without spending panel space on it', async () => {
+    // The panel's own words never say what an MCP server IS — which is exactly what someone
+    // opening this screen for the first time does not know. The tip carries that, folded away.
+    mockApi()
+    render(<McpServersSettings />)
+    await screen.findByTestId('mcp-gateway')
+
+    expect(screen.queryByTestId('mcp-gateway-info-text')).toBeNull()
+    fireEvent.click(screen.getByTestId('mcp-gateway-info'))
+    const tip = screen.getByTestId('mcp-gateway-info-text')
+    expect(tip.textContent).toContain('separate program that publishes tools')
+    // A worked example beats a field named "args": the three inputs are meaningless alone.
+    expect(tip.textContent).toContain('-y @modelcontextprotocol/server-github')
+    // The whole reason to use the gateway rather than three config files.
+    expect(tip.textContent).toContain('reaches every agent connected to Termpolis at once')
+  })
+
+  it('says a gateway server needs no entry in any agent config', async () => {
+    mockApi()
+    render(<McpServersSettings />)
+    await screen.findByTestId('mcp-gateway')
+    fireEvent.click(screen.getByTestId('mcp-gateway-info'))
+    expect(screen.getByTestId('mcp-gateway-info-text').textContent).toContain(
+      'does not need to be in Claude',
+    )
+  })
+
+  it('spells out the three add fields where they are, not only in the tip', async () => {
+    // A tip nobody opens is copy nobody reads; the row itself has to be usable on sight.
+    mockApi()
+    render(<McpServersSettings />)
+    const hint = await screen.findByTestId('mcp-add-hint')
+    expect(hint.textContent).toContain('name, command, args')
+    expect(hint.textContent).toContain('Args split on spaces')
+  })
+
+  it('explains the drift mark in the inventory rather than leaving a bare warning glyph', async () => {
+    mockApi()
+    render(<McpServersSettings />)
+    await screen.findByTestId('mcp-inventory')
+    fireEvent.click(screen.getByTestId('mcp-inventory-info'))
+    const tip = screen.getByTestId('mcp-inventory-info-text')
+    expect(tip.textContent).toContain('some agents have and others do not')
+    // The read-only promise is load-bearing: these are hand-edited files.
+    expect(tip.textContent).toContain('never writes them')
+  })
+
   it('does NOT probe any upstream server on mount', async () => {
     const api = mockApi({ mcpGatewayServers: vi.fn().mockResolvedValue(ok([{ id: 'local', command: 'npx' }])) })
     render(<McpServersSettings />)

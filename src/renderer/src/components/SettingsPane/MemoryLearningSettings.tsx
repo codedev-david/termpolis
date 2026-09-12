@@ -21,35 +21,9 @@ import {
 import { ConnectionsGraph } from './ConnectionsGraph'
 import { VectorRamPanel } from './VectorRamPanel'
 import { BrainProcessPanel } from './BrainProcessPanel'
+import { InfoTip } from './InfoTip'
 
 const STATUS_COLOR: Record<SliStatus, string> = { good: '#7ee2a3', warn: '#e2c08d', bad: '#f48771', idle: '#9ca3af' }
-
-/** A small "ⓘ" affordance that reveals an explanatory tooltip on hover/focus and toggles
- *  on click (touch-friendly). `align="right"` anchors it to the right edge for right-hand
- *  panels so the tooltip never runs off-screen. */
-function InfoTip({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <span className="relative inline-flex align-middle">
-      <button
-        type="button"
-        aria-label="What this means"
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o) }}
-        className="ml-1.5 w-[15px] h-[15px] inline-flex items-center justify-center rounded-full border border-[#3c3c3c] bg-[#2d2d2d] text-[#9ca3af] text-[9px] font-mono leading-none hover:text-[#22D3EE] hover:border-[#22D3EE]"
-      >i</button>
-      {open && (
-        <span
-          role="tooltip"
-          className={`absolute z-50 top-[calc(100%+8px)] ${align === 'right' ? 'right-0' : 'left-0'} w-64 max-w-[74vw] rounded-lg border border-[#3c3c3c] bg-[#1e1e1e] p-2.5 text-[11px] font-sans font-normal normal-case leading-relaxed tracking-normal text-[#9ca3af] shadow-xl`}
-        >{children}</span>
-      )}
-    </span>
-  )
-}
 
 function Panel({ title, hint, testId, info, infoAlign, children }: { title: string; hint?: string; testId?: string; info?: React.ReactNode; infoAlign?: 'left' | 'right'; children: React.ReactNode }) {
   return (
