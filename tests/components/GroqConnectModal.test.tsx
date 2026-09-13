@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { GroqConnectModal } from '../../src/renderer/src/components/SettingsPane/GroqConnectModal'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -130,5 +130,140 @@ describe('GroqConnectModal', () => {
     expect(await screen.findByTestId('groq-disconnect-btn')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('groq-disconnect-btn'))
     await waitFor(() => expect(api.groqClearApiKey).toHaveBeenCalled())
+  })
+
+  it('opens the Groq data-settings page from the connected state', async () => {
+    const api = stub({
+      groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_••••7777' } })),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    await screen.findByTestId('groq-connected-status')
+    fireEvent.click(screen.getByText(/Review Groq data settings/))
+    expect(api.openExternal).toHaveBeenCalledWith('https://console.groq.com/docs/your-data')
+  })
+
+  it('counts the key as connected when the store succeeds without a payload', async () => {
+    stub({ groqSetApiKey: vi.fn(async () => ({ success: true })) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_nodata' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    const status = await screen.findByTestId('groq-connected-status')
+    expect(status).toHaveTextContent('Connected to Groq')
+    // No hint came back, so no masked-key chip is rendered.
+    expect(status.querySelector('.font-mono')).toBeNull()
+    expect(useTerminalStore.getState().voiceSettings.consentAccepted).toBe(true)
+  })
+
+  it('reports the top-level error when validation fails with no data payload', async () => {
+    const api = stub({ groqValidateKey: vi.fn(async () => ({ success: false, error: 'rate limited' })) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_x' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    expect(await screen.findByTestId('groq-error')).toHaveTextContent(/rate limited/)
+    expect(api.groqSetApiKey).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a generic message when storing the key fails with no reason', async () => {
+    stub({ groqSetApiKey: vi.fn(async () => ({ success: false })) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_x' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    expect(await screen.findByTestId('groq-error')).toHaveTextContent('Failed to store the key.')
+    expect(screen.queryByTestId('groq-connected-status')).not.toBeInTheDocument()
+  })
+
+  it('surfaces a non-Error rejection from validation as its string form', async () => {
+    const api = stub({ groqValidateKey: vi.fn(() => Promise.reject('gateway exploded')) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_x' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    expect(await screen.findByTestId('groq-error')).toHaveTextContent('gateway exploded')
+    expect(api.groqSetApiKey).not.toHaveBeenCalled()
+  })
+
+  it('returns to the setup form when clearing the key reports no payload', async () => {
+    const api = stub({
+      groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_••••1' } })),
+      groqClearApiKey: vi.fn(async () => ({ success: true })),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(await screen.findByTestId('groq-disconnect-btn'))
+    expect(await screen.findByTestId('groq-consent-checkbox')).toBeInTheDocument()
+    expect(api.groqClearApiKey).toHaveBeenCalled()
+    expect(screen.queryByTestId('groq-connected-status')).not.toBeInTheDocument()
+  })
+
+  it('keeps the key connected when disconnecting rejects with a non-Error', async () => {
+    const api = stub({
+      groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_••••2' } })),
+      groqClearApiKey: vi.fn(() => Promise.reject('keychain busy')),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(await screen.findByTestId('groq-disconnect-btn'))
+    await waitFor(() => expect(api.groqClearApiKey).toHaveBeenCalled())
+    // The removal failed, so the modal must stay in its connected state and
+    // release the busy lock (the button is clickable again for a retry).
+    await waitFor(() =>
+      expect((screen.getByTestId('groq-disconnect-btn') as HTMLButtonElement).disabled).toBe(false),
+    )
+    expect(screen.getByTestId('groq-connected-status')).toBeInTheDocument()
+  })
+
+  it('stays on the setup form when the key status resolves without a payload', async () => {
+    const api = stub({ groqGetKeyStatus: vi.fn(async () => ({ success: true })) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    await waitFor(() => expect(api.groqGetKeyStatus).toHaveBeenCalled())
+    expect(screen.getByTestId('groq-consent-checkbox')).toBeInTheDocument()
+    expect(screen.queryByTestId('groq-connected-status')).not.toBeInTheDocument()
+  })
+
+  it('closes from both the × and the Done button', () => {
+    const onClose = vi.fn()
+    render(<GroqConnectModal onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('Close'))
+    fireEvent.click(screen.getByText('Done'))
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows a verifying state and refuses a second submit while the key is in flight', async () => {
+    let release: (v: unknown) => void = () => {}
+    const gate = new Promise((r) => {
+      release = r
+    })
+    const api = stub({
+      groqValidateKey: vi.fn(async () => {
+        await gate
+        return { success: true, data: { ok: true } }
+      }),
+    })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_slow' } })
+    fireEvent.click(screen.getByTestId('groq-connect-btn'))
+    const btn = (await screen.findByText('Verifying…')) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    // Clicking again mid-flight must not fire a second validation.
+    fireEvent.click(btn)
+    expect(api.groqValidateKey).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      release(null)
+      await gate
+    })
+    expect(await screen.findByTestId('groq-connected-status')).toBeInTheDocument()
+  })
+
+  it('stays usable when the shell refuses to open an external link', async () => {
+    const api = stub({ openExternal: vi.fn(() => Promise.reject(new Error('no browser'))) })
+    render(<GroqConnectModal onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('groq-open-console'))
+    await waitFor(() => expect(api.openExternal).toHaveBeenCalledWith('https://console.groq.com/keys'))
+    // The rejection is swallowed, so the setup flow still works afterwards.
+    fireEvent.click(screen.getByTestId('groq-consent-checkbox'))
+    fireEvent.change(screen.getByTestId('groq-key-input'), { target: { value: 'gsk_ok' } })
+    expect((screen.getByTestId('groq-connect-btn') as HTMLButtonElement).disabled).toBe(false)
   })
 })

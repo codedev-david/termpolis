@@ -105,3 +105,106 @@ describe('TerminalSearch — in-terminal find bar', () => {
     expect(screen.getByTestId('terminal-search-count')).toHaveTextContent('')
   })
 })
+
+describe('TerminalSearch — event isolation from the terminal underneath', () => {
+  const props = (): React.ComponentProps<typeof TerminalSearch> => ({
+    onSearch: vi.fn(),
+    onNext: vi.fn(),
+    onPrevious: vi.fn(),
+    onClose: vi.fn(),
+    resultIndex: -1,
+    resultCount: 0,
+  })
+
+  it('swallows mousedown/contextmenu raised inside the bar so the terminal never sees them', () => {
+    // The find bar floats ON TOP of the terminal pane, whose own mousedown handler
+    // refocuses xterm and whose contextmenu handler opens the terminal menu. Either
+    // one firing would steal focus out of the search box mid-typing.
+    const paneMouseDown = vi.fn()
+    const paneContextMenu = vi.fn()
+    render(
+      <div data-testid="pane" onMouseDown={paneMouseDown} onContextMenu={paneContextMenu}>
+        <span data-testid="pane-body">terminal body</span>
+        <TerminalSearch {...props()} />
+      </div>
+    )
+
+    // Control: the pane really is listening — events raised outside the bar reach it.
+    fireEvent.mouseDown(screen.getByTestId('pane-body'))
+    fireEvent.contextMenu(screen.getByTestId('pane-body'))
+    expect(paneMouseDown).toHaveBeenCalledTimes(1)
+    expect(paneContextMenu).toHaveBeenCalledTimes(1)
+
+    // ...but the identical events inside the bar (chrome and input alike) are stopped.
+    fireEvent.mouseDown(screen.getByTestId('terminal-search'))
+    fireEvent.contextMenu(screen.getByTestId('terminal-search'))
+    fireEvent.mouseDown(screen.getByTestId('terminal-search-input'))
+    fireEvent.contextMenu(screen.getByTestId('terminal-search-input'))
+    expect(paneMouseDown).toHaveBeenCalledTimes(1)
+    expect(paneContextMenu).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('TerminalSearch — empty-query and unhandled-key no-ops', () => {
+  const props = (): React.ComponentProps<typeof TerminalSearch> => ({
+    onSearch: vi.fn(),
+    onNext: vi.fn(),
+    onPrevious: vi.fn(),
+    onClose: vi.fn(),
+    resultIndex: -1,
+    resultCount: 0,
+  })
+
+  it('the ▲ button and Shift+Enter are no-ops while the query is empty', () => {
+    const p = props()
+    render(<TerminalSearch {...p} />)
+    fireEvent.click(screen.getByTestId('terminal-search-prev'))
+    fireEvent.keyDown(screen.getByTestId('terminal-search-input'), { key: 'Enter', shiftKey: true })
+    expect(p.onPrevious).not.toHaveBeenCalled()
+    expect(p.onNext).not.toHaveBeenCalled()
+    expect(p.onSearch).not.toHaveBeenCalled()
+  })
+
+  it('clearing the query back to empty stops re-running the search', () => {
+    // Searching for '' would make SearchAddon re-highlight everything, so the
+    // effect has to bail on an empty term rather than forward it.
+    const p = props()
+    render(<TerminalSearch {...p} />)
+    const input = screen.getByTestId('terminal-search-input')
+    fireEvent.change(input, { target: { value: 'abc' } })
+    expect(p.onSearch).toHaveBeenCalledTimes(1)
+    fireEvent.change(input, { target: { value: '' } })
+    expect(p.onSearch).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('terminal-search-count')).toHaveTextContent('')
+  })
+
+  it('toggling an option with an empty query does not fire a search either', () => {
+    const p = props()
+    render(<TerminalSearch {...p} />)
+    fireEvent.click(screen.getByTestId('terminal-search-word'))
+    expect(screen.getByTestId('terminal-search-word')).toHaveAttribute('aria-pressed', 'true')
+    expect(p.onSearch).not.toHaveBeenCalled()
+  })
+
+  it('leaves keys other than Enter/Escape to the input instead of swallowing them', () => {
+    const p = props()
+    render(<TerminalSearch {...p} />)
+    const input = screen.getByTestId('terminal-search-input')
+    fireEvent.change(input, { target: { value: 'foo' } })
+
+    // fireEvent returns false when a handler called preventDefault — ordinary typing
+    // must stay un-prevented or the user could not type into the box at all.
+    expect(fireEvent.keyDown(input, { key: 'a' })).toBe(true)
+    expect(fireEvent.keyDown(input, { key: 'Tab' })).toBe(true)
+    expect(fireEvent.keyDown(input, { key: 'ArrowLeft' })).toBe(true)
+    expect(p.onNext).not.toHaveBeenCalled()
+    expect(p.onPrevious).not.toHaveBeenCalled()
+    expect(p.onClose).not.toHaveBeenCalled()
+
+    // ...while Enter and Escape are claimed by the bar.
+    expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false)
+    expect(fireEvent.keyDown(input, { key: 'Escape' })).toBe(false)
+    expect(p.onNext).toHaveBeenCalledTimes(1)
+    expect(p.onClose).toHaveBeenCalledTimes(1)
+  })
+})

@@ -74,6 +74,12 @@ export default defineConfig({
         'src/renderer/src/lib/outputPatterns.ts',
         'src/renderer/src/lib/homedir.ts',
         'src/renderer/src/components/TitleBar/TitleBar.tsx',
+        // Types only — `import type` / `export type` / `export interface` and nothing
+        // else, so the emitted JS is empty and v8 scores the file 0/0/0/0. That 0 was
+        // not untested code, it was no code: there is no statement a test could reach.
+        // Same reason `**/types/**` and src/main/types.ts are already excluded above;
+        // leaving it in only drags the gate down with a number no test can ever move.
+        'src/main/workflow/contracts.ts',
       ],
       thresholds: {
         // Gates apply to Windows CI only (see .github/workflows/test.yml).

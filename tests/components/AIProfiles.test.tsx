@@ -359,6 +359,73 @@ describe('AIProfiles', () => {
     })
   })
 
+  describe('shell dropdown offers only installed shells', () => {
+    const optionsOf = (el: HTMLElement) =>
+      [...el.querySelectorAll('option')].map(o => o.textContent)
+
+    const openModal = (shells: typeof defaultShells) => {
+      render(<AIProfiles availableShells={shells} />)
+      fireEvent.click(screen.getByTitle('Add custom AI profile'))
+      return screen.getByTestId('profile-shell-select') as HTMLSelectElement
+    }
+
+    it('lists exactly the detected shells, not a hardcoded five', () => {
+      const sel = openModal(defaultShells)
+      expect(optionsOf(sel)).toEqual(['Bash', 'Git Bash'])
+    })
+
+    it('omits shells this machine does not have', () => {
+      // The reported defect: PowerShell/CMD/Zsh were always offered regardless of
+      // what was installed, so a profile could name a shell that never existed here.
+      const sel = openModal(defaultShells)
+      const labels = optionsOf(sel)
+      expect(labels).not.toContain('PowerShell')
+      expect(labels).not.toContain('CMD')
+      expect(labels).not.toContain('Zsh')
+    })
+
+    it('offers the Windows set when that is what was detected', () => {
+      const sel = openModal([
+        { type: 'powershell' as const, label: 'PowerShell', executable: 'pwsh.exe' },
+        { type: 'cmd' as const, label: 'Command Prompt', executable: 'cmd.exe' },
+      ])
+      expect(optionsOf(sel)).toEqual(['PowerShell', 'Command Prompt'])
+      expect(optionsOf(sel)).not.toContain('Bash')
+    })
+
+    it('saves against a detected shell rather than the old hardcoded bash', () => {
+      const sel = openModal([
+        { type: 'powershell' as const, label: 'PowerShell', executable: 'pwsh.exe' },
+        { type: 'cmd' as const, label: 'Command Prompt', executable: 'cmd.exe' },
+      ])
+      expect(sel.value).toBe('powershell')
+      fireEvent.change(screen.getByPlaceholderText(/name/i), { target: { value: 'Win Agent' } })
+      fireEvent.change(screen.getByPlaceholderText(/command/i), { target: { value: 'my-agent' } })
+      fireEvent.click(screen.getByText('Add'))
+      expect(mockAddAIProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Win Agent', shell: 'powershell' }),
+      )
+    })
+
+    it('honours an explicit pick from the detected list', () => {
+      const sel = openModal([
+        { type: 'powershell' as const, label: 'PowerShell', executable: 'pwsh.exe' },
+        { type: 'cmd' as const, label: 'Command Prompt', executable: 'cmd.exe' },
+      ])
+      fireEvent.change(sel, { target: { value: 'cmd' } })
+      fireEvent.change(screen.getByPlaceholderText(/name/i), { target: { value: 'Cmd Agent' } })
+      fireEvent.change(screen.getByPlaceholderText(/command/i), { target: { value: 'my-agent' } })
+      fireEvent.click(screen.getByText('Add'))
+      expect(mockAddAIProfile).toHaveBeenCalledWith(expect.objectContaining({ shell: 'cmd' }))
+    })
+
+    it('shows a placeholder while shell detection is still pending', () => {
+      // Shells arrive over async IPC; an empty list must not render a blank control.
+      const sel = openModal([])
+      expect(optionsOf(sel)).toEqual(['Detecting shells…'])
+    })
+  })
+
   describe('additional branch coverage', () => {
     it('handles detectAgents rejection gracefully', async () => {
       ;(window as any).termpolis.detectAgents = vi.fn().mockRejectedValue(new Error('boom'))
@@ -412,5 +479,95 @@ describe('AIProfiles', () => {
       render(<AIProfiles availableShells={defaultShells} />)
       expect(screen.queryByTitle('Remove profile')).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('AIProfiles — model pick, colour pick and logo/detection branches', () => {
+  const openModal = () => {
+    render(<AIProfiles availableShells={defaultShells} />)
+    fireEvent.click(screen.getByTitle('Add custom AI profile'))
+  }
+
+  const fillNameAndCommand = (name: string, command: string) => {
+    fireEvent.change(screen.getByPlaceholderText(/name/i), { target: { value: name } })
+    fireEvent.change(screen.getByPlaceholderText(/command/i), { target: { value: command } })
+  }
+
+  it('saves the picked Claude model alias onto the profile', () => {
+    openModal()
+    const select = screen.getByTestId('profile-model-select') as HTMLSelectElement
+    // The first non-empty option is a real alias from CLAUDE_MODEL_OPTIONS; read
+    // it off the DOM so the test tracks the picker instead of a hardcoded name.
+    const alias = [...select.querySelectorAll('option')].map(o => o.value).find(Boolean)!
+    expect(alias).toBeTruthy()
+
+    fireEvent.change(select, { target: { value: alias } })
+    fillNameAndCommand('Tuned Agent', 'claude')
+    fireEvent.click(screen.getByText('Add'))
+
+    expect(mockAddAIProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Tuned Agent', model: alias }),
+    )
+  })
+
+  it('omits the model key entirely when the default model is kept', () => {
+    openModal()
+    fillNameAndCommand('Plain Agent', 'my-agent')
+    fireEvent.click(screen.getByText('Add'))
+
+    // Not merely undefined: the conditional spread must leave the key off, or a
+    // blank --model would be appended at launch.
+    const saved = mockAddAIProfile.mock.calls[0][0]
+    expect(saved.name).toBe('Plain Agent')
+    expect(saved).not.toHaveProperty('model')
+  })
+
+  it('saves the colour chosen in the picker', () => {
+    openModal()
+    const colorInput = document.querySelector('input[type="color"]') as HTMLInputElement
+    expect(colorInput.value).toBe('#22d3ee')
+
+    fireEvent.change(colorInput, { target: { value: '#ff00ff' } })
+    fillNameAndCommand('Pink Agent', 'my-agent')
+    fireEvent.click(screen.getByText('Add'))
+
+    expect(mockAddAIProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Pink Agent', color: '#ff00ff' }),
+    )
+  })
+
+  it('renders a profile logo image in place of the icon glyph when one is set', () => {
+    mockAiProfiles = [
+      {
+        id: 'logo1',
+        name: 'Logo Agent',
+        icon: 'fa-solid fa-star',
+        iconImage: 'data:image/png;base64,AAAA',
+        command: 'logo-agent',
+        shell: 'bash',
+        color: '#FF0000',
+      },
+    ]
+    render(<AIProfiles availableShells={defaultShells} />)
+
+    const img = screen.getByAltText('Logo Agent')
+    expect(img.tagName).toBe('IMG')
+    expect(img.getAttribute('src')).toBe('data:image/png;base64,AAAA')
+    // The glyph arm is the alternative, not an addition.
+    expect(document.querySelector('.fa-star')).toBeNull()
+  })
+
+  it('treats every agent as present when the detection probe itself fails', async () => {
+    ;(window as any).termpolis.detectAgents = vi
+      .fn()
+      .mockResolvedValue({ success: false, error: 'probe failed' })
+    render(<AIProfiles availableShells={defaultShells} />)
+
+    // Detection finished (so indicators render) but reported nothing, so no agent
+    // is flagged missing — a failed probe must not accuse an installed agent.
+    await waitFor(() => {
+      expect(document.querySelectorAll('.fa-circle-check').length).toBe(3)
+    })
+    expect(document.querySelectorAll('.fa-circle-xmark').length).toBe(0)
   })
 })

@@ -14,6 +14,14 @@ import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
 
+// Cold-boot retry budget for the workflow IPC. Main registers `workflow:list`
+// and `workflow:watch-project` deep inside whenReady() — ~840 lines and several
+// un-awaited async starts after createWindow() — so this sidebar can reach
+// ipcRenderer before those handlers exist. Five attempts on a linear backoff
+// span 1.5s, which covers the gap without making a healthy boot wait for it.
+const WORKFLOW_IPC_RETRIES = 5
+const WORKFLOW_IPC_RETRY_MS = 100
+
 export function Sidebar() {
   // useShallow so the sidebar re-renders only when a field it actually reads changes — not on every
   // store write (conversations, notifications, cwd churn). Store actions are stable references, so
@@ -64,18 +72,44 @@ export function Sidebar() {
 
   // Load the current project's saved workflows into the store so the sidebar
   // section lists them; re-runs when the project changes or after a save.
+  //
+  // Both calls RETRY on rejection, because "the handler isn't registered yet" is
+  // a real state on a cold boot (see the budget above). Without the retry that
+  // failure was permanent AND silent for the whole session: the list stayed
+  // empty, watchWorkflowProject never armed the project's cron/git/file
+  // triggers, and the uncaught rejection went to Sentry instead of to the user.
+  // Only a REJECTION retries — an `err()` response is main answering, so it is
+  // honoured as an answer rather than hammered.
   useEffect(() => {
     let alive = true
-    // Register the project with main so its schedule/git/file triggers arm for
-    // the directory the user is actually working in, not just the home store.
-    if (workflowCwd) window.termpolis.watchWorkflowProject?.(workflowCwd)
-    // Without a cwd the list still runs: global workflows are offered in every
-    // project, so they must show before any terminal has resolved a directory.
-    window.termpolis.listWorkflows(workflowCwd ?? '').then(res => {
-      if (alive && res.success && res.data) setWorkflows(res.data)
-    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let attempt = 0
+
+    const retry = () => {
+      if (!alive || attempt >= WORKFLOW_IPC_RETRIES) return
+      attempt += 1
+      timer = setTimeout(load, attempt * WORKFLOW_IPC_RETRY_MS)
+    }
+
+    function load() {
+      if (!alive) return
+      // Register the project with main so its schedule/git/file triggers arm for
+      // the directory the user is actually working in, not just the home store.
+      // Re-armed on every attempt: the lost call is the one worth repeating.
+      if (workflowCwd) window.termpolis.watchWorkflowProject?.(workflowCwd)?.catch?.(() => {})
+      // Without a cwd the list still runs: global workflows are offered in every
+      // project, so they must show before any terminal has resolved a directory.
+      window.termpolis.listWorkflows(workflowCwd ?? '')
+        .then(res => {
+          if (alive && res.success && res.data) setWorkflows(res.data)
+        })
+        .catch(retry)
+    }
+
+    load()
     return () => {
       alive = false
+      if (timer) clearTimeout(timer)
     }
   }, [workflowCwd, workflowNonce, setWorkflows])
 

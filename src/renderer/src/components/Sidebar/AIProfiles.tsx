@@ -2,21 +2,34 @@ import React, { useState, useEffect } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
 import { InstallHint } from '../InstallHint/InstallHint'
-import type { AIProfile, ShellInfo } from '../../types'
-import { DEFAULT_AI_PROFILES, launchAgentProfile } from '../../lib/aiProfiles'
+import type { AIProfile, ShellInfo, ShellType } from '../../types'
+import { DEFAULT_AI_PROFILES, launchAgentProfile, resolveShellType } from '../../lib/aiProfiles'
 import { CLAUDE_MODEL_OPTIONS } from '../../lib/modelBroker'
 
 interface AddProfileModalProps {
+  availableShells: ShellInfo[]
   onSave: (profile: AIProfile) => void
   onCancel: () => void
 }
 
-function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
+function AddProfileModal({ availableShells, onSave, onCancel }: AddProfileModalProps) {
   const [name, setName] = useState('')
   const [command, setCommand] = useState('')
-  const [shell, setShell] = useState('bash')
+  // The shells offered are the ones this machine actually has — the same probe
+  // that feeds the New Terminal dialog — not a fixed list of five. Offering an
+  // uninstalled shell was a lie the launch then quietly corrected: a profile
+  // saved as 'zsh' on Windows never ran in zsh, it fell through
+  // resolveShellType() into Git Bash without ever saying so.
+  const [shell, setShell] = useState<ShellType | ''>('')
   const [color, setColor] = useState('#22D3EE')
   const [model, setModel] = useState('')
+  // Detection is async, so the modal can open before the list lands. Resolving
+  // the displayed value the same way a launch resolves it keeps the control
+  // from showing a shell it does not offer, without an effect to sync state.
+  const effectiveShell: ShellType =
+    shell && availableShells.some(s => s.type === shell)
+      ? shell
+      : resolveShellType('bash', availableShells)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -26,7 +39,7 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
       name: name.trim(),
       icon: 'fa-solid fa-terminal',
       command: command.trim(),
-      shell,
+      shell: effectiveShell,
       color,
       ...(model && { model }),
     })
@@ -55,14 +68,16 @@ function AddProfileModal({ onSave, onCancel }: AddProfileModalProps) {
         />
         <select
           className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
-          value={shell}
-          onChange={e => setShell(e.target.value)}
+          value={effectiveShell}
+          onChange={e => setShell(e.target.value as ShellType)}
+          title="Shells detected on this machine"
+          data-testid="profile-shell-select"
         >
-          <option value="bash">Bash</option>
-          <option value="powershell">PowerShell</option>
-          <option value="cmd">CMD</option>
-          <option value="zsh">Zsh</option>
-          <option value="gitbash">Git Bash</option>
+          {availableShells.length === 0 ? (
+            <option value={effectiveShell}>Detecting shells…</option>
+          ) : (
+            availableShells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)
+          )}
         </select>
         <select
           className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
@@ -197,7 +212,7 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
           })}
         </div>
       )}
-      {showAddModal && <AddProfileModal onSave={handleAddProfile} onCancel={() => setShowAddModal(false)} />}
+      {showAddModal && <AddProfileModal availableShells={availableShells} onSave={handleAddProfile} onCancel={() => setShowAddModal(false)} />}
       {installHint && <InstallHint agentId={installHint.id} agentName={installHint.name} onClose={() => setInstallHint(null)} />}
     </>
   )

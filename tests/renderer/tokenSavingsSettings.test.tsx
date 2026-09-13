@@ -299,3 +299,288 @@ describe('TokenSavingsSettings - session depth advisory', () => {
   })
 })
 
+// ===========================================================================
+// The write path: every control on this pane, and what it actually sends.
+// ===========================================================================
+
+type Api = Record<string, ReturnType<typeof vi.fn>>
+const tpApi = (): Api => (window as unknown as { termpolis: Api }).termpolis
+
+const BASE_SETTINGS = {
+  enabled: true, mode: 'balanced' as const, steering: true,
+  thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false,
+}
+
+/**
+ * The real handler merges the patch into the stored settings and hands the whole record back, so
+ * the pane re-renders from what was actually persisted. The default mock at the top of this file
+ * resolves to a FIXED object instead, which cannot tell "the box mirrors the write" from "the box
+ * mirrors a constant" — and it would mask the failure mode that matters here, a control sending a
+ * whole-settings overwrite that silently reverts its neighbours. So these tests write against a
+ * store that really applies the patch.
+ */
+const echoSettings = (): void => {
+  let current: Record<string, unknown> = { ...BASE_SETTINGS }
+  tpApi().tokenSavingsGetSettings = vi.fn().mockResolvedValue({ success: true, data: { ...current } })
+  tpApi().tokenSavingsSetSettings = vi.fn(async (patch: Record<string, unknown>) => {
+    current = { ...current, ...patch }
+    return { success: true, data: { ...current } }
+  })
+}
+
+const lastPatch = (): Record<string, unknown> => {
+  const calls = tpApi().tokenSavingsSetSettings.mock.calls
+  return calls[calls.length - 1][0] as Record<string, unknown>
+}
+
+describe('TokenSavingsSettings — what each control writes', () => {
+  it('sends only the changed tier, and shows the tier that came back', async () => {
+    echoSettings()
+    render(<TokenSavingsSettings />)
+    const sel = (await screen.findByTestId('hr-mode')) as HTMLSelectElement
+    expect(sel.value).toBe('balanced')
+
+    fireEvent.change(sel, { target: { value: 'aggressive' } })
+
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalled())
+    // A partial patch, not the whole record: main merges, so sending the rest would race any
+    // change the floor controller made since this pane last read the store.
+    expect(lastPatch()).toEqual({ mode: 'aggressive' })
+    await waitFor(() => expect((screen.getByTestId('hr-mode') as HTMLSelectElement).value).toBe('aggressive'))
+  })
+
+  it('sends the inverse of the floor box without disturbing the other toggles', async () => {
+    echoSettings()
+    render(<TokenSavingsSettings />)
+    const floor = (await screen.findByTestId('hr-toggle-floor')) as HTMLInputElement
+    expect(floor.checked).toBe(true)
+
+    fireEvent.click(floor)
+
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalledWith({ floorControl: false }))
+    await waitFor(() => expect((screen.getByTestId('hr-toggle-floor') as HTMLInputElement).checked).toBe(false))
+    // The neighbours are read back from the SAME response — a control that shipped the whole
+    // settings object would have reset these to its own stale copy.
+    expect((screen.getByTestId('hr-toggle-enabled') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByTestId('hr-toggle-steering') as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('turning steering off greys out the adaptive-strength box that depends on it', async () => {
+    echoSettings()
+    render(<TokenSavingsSettings />)
+    const steering = (await screen.findByTestId('hr-toggle-steering')) as HTMLInputElement
+    expect((screen.getByTestId('hr-toggle-adaptive') as HTMLInputElement).disabled).toBe(false)
+
+    fireEvent.click(steering)
+
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalledWith({ steering: false }))
+    // Adapting the strength of steering that is off is not a setting, it is a contradiction.
+    await waitFor(() => expect((screen.getByTestId('hr-toggle-adaptive') as HTMLInputElement).disabled).toBe(true))
+    expect((screen.getByTestId('hr-toggle-steering') as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('sends the inverse of the adaptive-steering box while steering is on', async () => {
+    echoSettings()
+    render(<TokenSavingsSettings />)
+    const adaptive = (await screen.findByTestId('hr-toggle-adaptive')) as HTMLInputElement
+    expect(adaptive.checked).toBe(true)
+
+    fireEvent.click(adaptive)
+
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalledWith({ adaptiveSteering: false }))
+    await waitFor(() => expect((screen.getByTestId('hr-toggle-adaptive') as HTMLInputElement).checked).toBe(false))
+  })
+
+  it('sends the thinking cap as a NUMBER, not the string the select hands over', async () => {
+    echoSettings()
+    render(<TokenSavingsSettings />)
+    const cap = (await screen.findByTestId('hr-thinking-cap')) as HTMLSelectElement
+    expect(cap.value).toBe('0') // 0 = off, the shipped default
+
+    fireEvent.change(cap, { target: { value: '8000' } })
+
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalled())
+    // The wire clamp compares this against Anthropic's 1024 floor. A string '8000' would sort
+    // wrong there and serialise into the request body as a string, so the conversion is the
+    // whole job of this handler.
+    expect(lastPatch()).toEqual({ thinkingCap: 8000 })
+    expect(typeof lastPatch().thinkingCap).toBe('number')
+    await waitFor(() => expect((screen.getByTestId('hr-thinking-cap') as HTMLSelectElement).value).toBe('8000'))
+  })
+
+  it('offers off plus four ceilings, none of them under Anthropic own 1024 floor', async () => {
+    echoSettings()
+    render(<TokenSavingsSettings />)
+    const cap = (await screen.findByTestId('hr-thinking-cap')) as HTMLSelectElement
+    const values = [...cap.querySelectorAll('option')].map((o) => Number(o.getAttribute('value')))
+    expect(values).toEqual([0, 16000, 8000, 4000, 2000])
+    // Anything between 1 and 1023 would be silently raised by the wire clamp, so listing it
+    // would promise a budget the proxy never applies.
+    expect(values.filter((v) => v > 0 && v < 1024)).toEqual([])
+  })
+})
+
+// ===========================================================================
+// Receipts from a main process older than one of the counters.
+//
+// Every figure on this pane arrives over IPC from a main process that may predate the counter
+// being rendered — an app updated while a receipt was already on disk is the ordinary case, not
+// a hypothetical. The `?? 0` arms are the whole of what stands between that and a dashboard
+// reading "undefined tokens" or "NaN%", so they are asserted on rendered text.
+// ===========================================================================
+
+/** Spread into a fixture to OMIT a counter rather than zero it: `undefined` is what an older
+ *  main process sends, and it is the only input that reaches the fallback arms at all. */
+const partial = (over: Record<string, unknown>): Record<string, number> => over as Record<string, number>
+
+const withReceipts = (o: {
+  proxySession?: Record<string, unknown>
+  proxyCumulative?: Record<string, unknown>
+  unifiedSession?: Record<string, unknown>
+  unifiedCumulative?: Record<string, unknown>
+}): void => {
+  tpApi().tokenSavingsGetProxyReceipt = vi.fn().mockResolvedValue({
+    success: true,
+    data: {
+      session: proxyTotals(partial(o.proxySession ?? {})),
+      cumulative: proxyTotals(partial(o.proxyCumulative ?? {})),
+    },
+  })
+  tpApi().tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+    success: true,
+    data: {
+      session: unifiedTotals(partial(o.unifiedSession ?? {})),
+      cumulative: unifiedTotals(partial(o.unifiedCumulative ?? {})),
+    },
+  })
+}
+
+describe('TokenSavingsSettings — counters an older receipt never wrote', () => {
+  it('renders the floor evidence with zeros when the per-request columns are missing', async () => {
+    withReceipts({ unifiedCumulative: { floorEligibleRequests: 400 } }) // worst/below never written
+    render(<TokenSavingsSettings />)
+
+    const ev = await screen.findByTestId('hr-floor-evidence')
+    expect(screen.getByTestId('hr-floor-worst')).toHaveTextContent('0%')
+    expect(screen.getByTestId('hr-floor-below')).toHaveTextContent('0')
+    expect(ev).toHaveTextContent('of 400 substantial requests')
+    expect(ev.textContent).not.toMatch(/undefined|NaN/)
+  })
+
+  it('renders the untouched-prefix line with zeros for the fields an older receipt omits', async () => {
+    withReceipts({
+      unifiedCumulative: {
+        toolsTokensPerRequest: 9400,
+        sysTokensPerRequest: undefined,
+        tpToolsTokensPerRequest: undefined,
+        toolCount: undefined,
+      },
+    })
+    render(<TokenSavingsSettings />)
+
+    const head = await screen.findByTestId('hr-prefix-head')
+    expect(head).toHaveTextContent('about 0 tokens of system prompt')
+    expect(head).toHaveTextContent('9,400 tokens of tool schemas')
+    expect(head).toHaveTextContent('0 tools')
+    expect(screen.getByTestId('hr-prefix-tp')).toHaveTextContent('0')
+    expect(head.textContent).not.toMatch(/undefined|NaN/)
+  })
+
+  it('renders both steering means as 0 when the averages are missing but the arms are not', async () => {
+    withReceipts({
+      unifiedCumulative: {
+        steeredRequests: 900, unsteeredRequests: 120,
+        steeredAvgOutput: undefined, unsteeredAvgOutput: undefined,
+      },
+    })
+    render(<TokenSavingsSettings />)
+
+    expect(await screen.findByTestId('hr-steer-on')).toHaveTextContent('0')
+    expect(screen.getByTestId('hr-steer-off')).toHaveTextContent('0')
+    const obs = screen.getByTestId('hr-steering-observed')
+    expect(obs).toHaveTextContent('across 900')
+    expect(obs).toHaveTextContent('across 120')
+    expect(obs.textContent).not.toMatch(/undefined|NaN/)
+  })
+
+  it('says "call", singular, for exactly one destroyed retrieve, and 0 for a session that never counted', async () => {
+    // One lost original is the whole point of this alarm — it must not read "1 ... calls asked".
+    withReceipts({ unifiedCumulative: { retrieveMisses: 1 }, unifiedSession: { retrieveMisses: undefined } })
+    render(<TokenSavingsSettings />)
+
+    const el = await screen.findByTestId('hr-retrieve-misses')
+    expect(el).toHaveTextContent('1 retrieve_full call asked for content this app had cached and then dropped')
+    expect(el.textContent).not.toMatch(/\bcalls\b/)
+    expect(el).toHaveTextContent('(0 this session)')
+  })
+
+  it('says "original was", singular, for exactly one unbacked eviction', async () => {
+    withReceipts({ unifiedSession: { unbackedEvictions: 1 } })
+    render(<TokenSavingsSettings />)
+
+    const el = await screen.findByTestId('hr-unbacked-evictions')
+    expect(el).toHaveTextContent('1 cached original was dropped this session with no copy on disk behind them')
+    expect(el.textContent).not.toMatch(/originals were/)
+  })
+
+  it('says "call asked", singular, for one expired retrieve — and still does not tell anyone to report it', async () => {
+    withReceipts({ unifiedCumulative: { retrieveExpired: 1 } })
+    render(<TokenSavingsSettings />)
+
+    const el = await screen.findByTestId('hr-retrieve-expired')
+    expect(el).toHaveTextContent('1 retrieve_full call asked for content the cache had already aged out')
+    expect(el).toHaveTextContent('working as designed')
+    expect(el.textContent).not.toMatch(/[Rr]eport this/)
+  })
+
+  it('counts a lone bad-token call when the unknown-token counter was never written', async () => {
+    // The two columns are summed. Missing one must not take the other down with it, or a
+    // mistyped-handle report disappears the moment either counter is absent.
+    withReceipts({ unifiedCumulative: { retrieveBadTokens: 1, retrieveUnknownTokens: undefined } })
+    render(<TokenSavingsSettings />)
+
+    const el = await screen.findByTestId('hr-retrieve-bad-tokens')
+    expect(el).toHaveTextContent('1 retrieve_full call used a handle this app has no record of issuing')
+    expect(el.textContent).not.toMatch(/\bcalls\b/)
+    // Still not lost content — the alarm stays dark.
+    expect(screen.queryByTestId('hr-retrieve-misses')).toBeNull()
+  })
+
+  it('counts unknown-token calls when the bad-token counter was never written', async () => {
+    withReceipts({ unifiedCumulative: { retrieveUnknownTokens: 2, retrieveBadTokens: undefined } })
+    render(<TokenSavingsSettings />)
+
+    expect(await screen.findByTestId('hr-retrieve-bad-tokens'))
+      .toHaveTextContent('2 retrieve_full calls used a handle this app has no record of issuing')
+    expect(screen.queryByTestId('hr-retrieve-misses')).toBeNull()
+  })
+
+  it('reports 0 KB rather than NaN when images were counted but their bytes were not', async () => {
+    withReceipts({ proxyCumulative: { images: 3, imageSavedBytes: undefined } })
+    render(<TokenSavingsSettings />)
+
+    const kb = await screen.findByTestId('hr-image-bytes')
+    expect(kb).toHaveTextContent('0 KB of upload saved')
+    expect(kb.textContent).not.toMatch(/NaN/)
+  })
+
+  it('still splits the two wire surfaces when only the tool-input columns exist', async () => {
+    // tool_result counters absent, tool_use present: the split has to keep showing the half it
+    // has rather than hiding both, because that half is the one billed on every later turn.
+    withReceipts({
+      proxyCumulative: {
+        textOrigTokens: undefined, textSavedTokens: undefined,
+        toolUseOrigTokens: 80000, toolUseSavedTokens: 60000,
+      },
+    })
+    render(<TokenSavingsSettings />)
+
+    const split = await screen.findByTestId('hr-surface-split')
+    expect(screen.getByTestId('hr-surface-tr')).toHaveTextContent('0')
+    expect(split).toHaveTextContent('0 of 0 tokens removed')
+    expect(screen.getByTestId('hr-surface-tu')).toHaveTextContent('60,000')
+    expect(split).toHaveTextContent('60,000 of 80,000 tokens removed')
+    expect(split.textContent).not.toMatch(/undefined|NaN/)
+  })
+})
+

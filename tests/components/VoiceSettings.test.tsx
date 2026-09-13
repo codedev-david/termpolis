@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { VoiceSettings } from '../../src/renderer/src/components/SettingsPane/VoiceSettings'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -107,5 +107,115 @@ describe('VoiceSettings', () => {
     render(<VoiceSettings />)
     fireEvent.click(screen.getByTestId('voice-enable-toggle'))
     expect(await screen.findByTestId('groq-connect-open-btn')).toBeInTheDocument()
+  })
+
+  it('opens the connect modal from Manage when a key is already stored', async () => {
+    stubTermpolis({ connected: true, hint: 'gsk_••••9999' })
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    fireEvent.click(await screen.findByTestId('groq-manage-btn'))
+    expect(screen.getByTestId('groq-connect-modal')).toBeInTheDocument()
+  })
+
+  it('re-reads the key status when the connect modal closes, flipping the card to Connected', async () => {
+    let status = { connected: false, hint: '' }
+    const groqGetKeyStatus = vi.fn(async () => ({ success: true, data: status }))
+    ;(window as unknown as { termpolis: unknown }).termpolis = { groqGetKeyStatus }
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    fireEvent.click(await screen.findByTestId('groq-connect-open-btn'))
+    expect(screen.getByTestId('groq-connect-modal')).toBeInTheDocument()
+    const callsBeforeClose = groqGetKeyStatus.mock.calls.length
+    // A key gets stored while the modal is open — the card only learns about it
+    // because closing the modal re-runs the status read.
+    status = { connected: true, hint: 'gsk_••••4242' }
+    fireEvent.click(screen.getByText('Done'))
+    expect(await screen.findByTestId('groq-manage-btn')).toBeInTheDocument()
+    expect(screen.getByText('gsk_••••4242')).toBeInTheDocument()
+    expect(screen.queryByTestId('groq-connect-modal')).not.toBeInTheDocument()
+    expect(groqGetKeyStatus.mock.calls.length).toBeGreaterThan(callsBeforeClose)
+  })
+
+  it('treats an unsuccessful key-status response as not connected', async () => {
+    const groqGetKeyStatus = vi.fn(async () => ({ success: false, error: 'keychain locked' }))
+    ;(window as unknown as { termpolis: unknown }).termpolis = { groqGetKeyStatus }
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    await waitFor(() => expect(groqGetKeyStatus).toHaveBeenCalled())
+    expect(screen.getByTestId('groq-connect-open-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('groq-manage-btn')).not.toBeInTheDocument()
+  })
+
+  it('treats a successful key-status response with no payload as not connected', async () => {
+    const groqGetKeyStatus = vi.fn(async () => ({ success: true }))
+    ;(window as unknown as { termpolis: unknown }).termpolis = { groqGetKeyStatus }
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    await waitFor(() => expect(groqGetKeyStatus).toHaveBeenCalled())
+    expect(screen.getByTestId('groq-connect-open-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('groq-manage-btn')).not.toBeInTheDocument()
+  })
+
+  it('still renders and edits settings when the preload bridge is missing entirely', () => {
+    delete (window as unknown as { termpolis?: unknown }).termpolis
+    expect(() => render(<VoiceSettings />)).not.toThrow()
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    expect(useTerminalStore.getState().voiceSettings.enabled).toBe(true)
+    expect(screen.getByTestId('groq-connect-open-btn')).toBeInTheDocument()
+  })
+
+  it('survives a preload bridge that exposes no groqGetKeyStatus method', () => {
+    ;(window as unknown as { termpolis: unknown }).termpolis = {}
+    expect(() => render(<VoiceSettings />)).not.toThrow()
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    expect(screen.getByTestId('groq-connect-open-btn')).toBeInTheDocument()
+  })
+
+  it('shows Connected without a masked-key chip when the status carries no hint', async () => {
+    stubTermpolis({ connected: true, hint: '' })
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    expect(await screen.findByTestId('groq-manage-btn')).toBeInTheDocument()
+    expect(screen.getByText('Connected')).toBeInTheDocument()
+    expect(screen.getByText('· key in OS keychain')).toBeInTheDocument()
+    // No hint from the main process => no masked-key chip at all.
+    expect(screen.queryByText(/gsk_/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a modifier-only keypress when rebinding the send key', () => {
+    useTerminalStore.setState({
+      voiceSettings: { ...DEFAULT_VOICE_SETTINGS, enabled: true, pushToTalkMode: 'tapSpace' },
+    })
+    render(<VoiceSettings />)
+    const input = screen.getByTestId('voice-sendkey-input')
+    // Shift/Control alone are not a binding — the existing send key must survive.
+    fireEvent.keyDown(input, { key: 'Shift', shiftKey: true })
+    expect(useTerminalStore.getState().voiceSettings.sendKey).toBe('Space')
+    fireEvent.keyDown(input, { key: 'Control', ctrlKey: true })
+    expect(useTerminalStore.getState().voiceSettings.sendKey).toBe('Space')
+    // ...but a real key still rebinds it.
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(useTerminalStore.getState().voiceSettings.sendKey).toBe('Escape')
+  })
+
+  it('describes the send key as Space when none is bound', () => {
+    useTerminalStore.setState({
+      voiceSettings: { ...DEFAULT_VOICE_SETTINGS, enabled: true, pushToTalkMode: 'tapSpace', sendKey: '' },
+    })
+    render(<VoiceSettings />)
+    expect(screen.getByTestId('voice-settings').textContent).toContain('(press Space to send)')
+  })
+
+  it('toggles auto-submit and LLM cleanup independently of each other', () => {
+    render(<VoiceSettings />)
+    fireEvent.click(screen.getByTestId('voice-enable-toggle'))
+    expect(useTerminalStore.getState().voiceSettings.autoSubmitInAgent).toBe(false)
+    fireEvent.click(screen.getByTestId('voice-autosubmit-toggle'))
+    expect(useTerminalStore.getState().voiceSettings.autoSubmitInAgent).toBe(true)
+    // Cleanup defaults ON and is a separate setting.
+    expect(useTerminalStore.getState().voiceSettings.correctionEnabled).toBe(true)
+    fireEvent.click(screen.getByTestId('voice-correction-toggle'))
+    expect(useTerminalStore.getState().voiceSettings.correctionEnabled).toBe(false)
+    expect(useTerminalStore.getState().voiceSettings.autoSubmitInAgent).toBe(true)
   })
 })

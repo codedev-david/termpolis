@@ -10,6 +10,8 @@ import {
   rerankByScorer,
   setRerankScorer,
   getRerankScorer,
+  setRerankEnabled,
+  rerankEnabled,
   _resetRerankForTests,
   _setRerankModelPresentForTests,
   type RerankScorer,
@@ -90,5 +92,77 @@ describe('cross-encoder reranker (Tier-1)', () => {
     const on = await memorySearch({ query: 'aaa first note', limit: 4, rerank: true })
     expect(on.map((r) => r.id)).toEqual(off.map((r) => r.id))
     void ids
+  })
+})
+
+// ── The arms a happy three-document reorder never reaches ────────────────────────────────────────
+// The suite above proves the mechanism end-to-end. What it never touches is the global gate, the
+// ≤1-candidate short-circuit, and a scorer that rejects for exactly ONE pair — and each of those is
+// a place where a regression is silent rather than loud.
+
+describe('cross-encoder reranker — the global opt-in gate', () => {
+  beforeEach(() => _resetRerankForTests())
+  afterEach(() => _resetRerankForTests())
+
+  it('setRerankEnabled flips the gate, and the reset seam puts it back OFF', () => {
+    // OFF by default is the whole safety story: a cross-encoder re-reads every (query, doc) pair,
+    // so a gate that defaulted ON would silently add per-pair model latency to every recall.
+    expect(rerankEnabled()).toBe(false)
+    setRerankEnabled(true)
+    expect(rerankEnabled()).toBe(true)
+    setRerankEnabled(false)
+    expect(rerankEnabled()).toBe(false)
+
+    setRerankEnabled(true)
+    _resetRerankForTests()
+    // The reset seam clears `enabled` too — otherwise a suite that opted in would leak the flag
+    // into every later suite in the same worker and rerank searches nobody asked to rerank.
+    expect(rerankEnabled()).toBe(false)
+  })
+})
+
+describe('rerankByScorer — short-circuit and per-item failure', () => {
+  it('scores nothing for 0 or 1 candidates, and hands back a COPY rather than the input array', async () => {
+    const scorer = vi.fn(async () => 1)
+    const empty: Array<{ id: string; content: string }> = []
+    const one = [{ id: 'a', content: 'alpha' }]
+
+    const outEmpty = await rerankByScorer('q', empty, scorer)
+    const outOne = await rerankByScorer('q', one, scorer)
+
+    expect(outEmpty).toEqual([])
+    expect(outOne).toEqual([{ id: 'a', content: 'alpha' }])
+    // `candidates.slice()`, not `candidates`: the result is sorted/spliced downstream, and returning
+    // the caller's own array would make the single-hit case alias the caller's recall list.
+    expect(outEmpty).not.toBe(empty)
+    expect(outOne).not.toBe(one)
+    // A list of one cannot be reordered, so a model round trip for it is pure latency.
+    expect(scorer).not.toHaveBeenCalled()
+  })
+
+  it('a scorer that REJECTS on one document degrades that document to 0, not the whole rerank', async () => {
+    const cands = [
+      { id: 'poison', content: 'poison' },
+      { id: 'low', content: 'low' },
+      { id: 'high', content: 'high' },
+    ]
+    const scorer: RerankScorer = async (_q, doc) => {
+      if (doc === 'poison') throw new Error('tokenizer blew up on this pair')
+      return doc === 'high' ? 0.9 : 0.4
+    }
+
+    const out = await rerankByScorer('q', cands, scorer)
+
+    // Without the per-item `.catch(() => 0)` a single bad pair rejects the Promise.all and sinks the
+    // entire rerank — the caller loses the ordering for every OTHER candidate because of one doc.
+    expect(out.map((c) => c.id)).toEqual(['high', 'low', 'poison'])
+  })
+
+  it('equal scores keep the first-stage bi-encoder order (the sort must be stable)', async () => {
+    // A model that cannot separate the candidates must not shuffle them: the bi-encoder ranking is
+    // the fallback signal, and an unstable sort would throw it away for no gain.
+    const cands = ['a', 'b', 'c', 'd'].map((id) => ({ id, content: id }))
+    const out = await rerankByScorer('q', cands, async () => 0.5)
+    expect(out.map((c) => c.id)).toEqual(['a', 'b', 'c', 'd'])
   })
 })

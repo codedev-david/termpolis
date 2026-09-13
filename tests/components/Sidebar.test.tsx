@@ -1,6 +1,6 @@
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 
 const mockSetActiveTerminal = vi.fn()
 const mockSetShowSettings = vi.fn()
@@ -508,5 +508,100 @@ describe('Sidebar', () => {
     await waitFor(() =>
       expect((window as any).termpolis.readWorkflow).toHaveBeenCalledWith('/proj', 'p1', 'project'),
     )
+  })
+
+  // -- Workflow IPC cold-boot race (GitHub #25 / #26) --
+  //
+  // Main registers `workflow:list` / `workflow:watch-project` far later in
+  // whenReady() than it creates the window, so ipcRenderer.invoke can REJECT
+  // with "No handler registered". That is a rejection, not an err() response —
+  // these tests pin that distinction, because retrying an err() would hammer a
+  // main process that is answering perfectly well.
+
+  describe('workflow IPC cold-boot race', () => {
+    const noHandler = () => new Error("Error invoking remote method 'workflow:list': Error: No handler registered for 'workflow:list'")
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+      ;(window as any).termpolis.listWorkflows = vi.fn().mockResolvedValue({ success: true, data: [] })
+      delete (window as any).termpolis.watchWorkflowProject
+    })
+
+    it('retries listWorkflows until main registers the handler, then loads', async () => {
+      const listWorkflows = vi.fn()
+        .mockRejectedValueOnce(noHandler())
+        .mockRejectedValueOnce(noHandler())
+        .mockResolvedValue({ success: true, data: [{ id: 'w1', name: 'Deploy' }] })
+      ;(window as any).termpolis.listWorkflows = listWorkflows
+      mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
+
+      render(<Sidebar />)
+      expect(listWorkflows).toHaveBeenCalledTimes(1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+
+      expect(listWorkflows).toHaveBeenCalledTimes(3)
+      expect(mockSetWorkflows).toHaveBeenCalledWith([{ id: 'w1', name: 'Deploy' }])
+    })
+
+    it('re-arms the project watcher on every retry, and swallows its rejection', async () => {
+      const watch = vi.fn().mockRejectedValue(new Error("No handler registered for 'workflow:watch-project'"))
+      ;(window as any).termpolis.watchWorkflowProject = watch
+      ;(window as any).termpolis.listWorkflows = vi.fn()
+        .mockRejectedValueOnce(noHandler())
+        .mockResolvedValue({ success: true, data: [] })
+      mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
+
+      render(<Sidebar />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+
+      // Twice: the lost first call is exactly the one worth repeating, or the
+      // project's cron/git/file triggers stay unarmed for the whole session.
+      expect(watch).toHaveBeenCalledTimes(2)
+      expect(watch).toHaveBeenCalledWith('/proj')
+    })
+
+    it('stops after the retry budget instead of hammering main forever', async () => {
+      const listWorkflows = vi.fn().mockRejectedValue(noHandler())
+      ;(window as any).termpolis.listWorkflows = listWorkflows
+      // Pin a terminal cwd so the effect does not re-run when homedir resolves —
+      // otherwise the count under test measures the cwd change, not the retries.
+      mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
+
+      render(<Sidebar />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      // 1 initial attempt + WORKFLOW_IPC_RETRIES (5).
+      expect(listWorkflows).toHaveBeenCalledTimes(6)
+      expect(mockSetWorkflows).not.toHaveBeenCalled()
+    })
+
+    it('does NOT retry an err() response — that is main answering', async () => {
+      const listWorkflows = vi.fn().mockResolvedValue({ success: false, error: 'workflow dir unreadable' })
+      ;(window as any).termpolis.listWorkflows = listWorkflows
+      mockState = { ...getDefaultState(), terminals: [{ id: 't1', cwd: '/proj' }], activeTerminalId: 't1' }
+
+      render(<Sidebar />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      expect(listWorkflows).toHaveBeenCalledTimes(1)
+      expect(mockSetWorkflows).not.toHaveBeenCalled()
+    })
+
+    it('cancels a pending retry when the sidebar unmounts', async () => {
+      const listWorkflows = vi.fn().mockRejectedValue(noHandler())
+      ;(window as any).termpolis.listWorkflows = listWorkflows
+
+      const { unmount } = render(<Sidebar />)
+      expect(listWorkflows).toHaveBeenCalledTimes(1)
+      unmount()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      expect(listWorkflows).toHaveBeenCalledTimes(1)
+    })
   })
 })

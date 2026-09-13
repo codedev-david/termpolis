@@ -68,5 +68,70 @@ describe('conversationParser', () => {
       const turns = parseConversation(output, 't1', 'Term 1', 'gemini')
       expect(turns.every(t => t.agentName === 'gemini')).toBe(true)
     })
+
+    it('parses user turn from a ❯ starship/fish prompt', () => {
+      const turns = parseConversation('❯ deploy staging', 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(1)
+      expect(turns[0].role).toBe('user')
+      expect(turns[0].content).toBe('deploy staging')
+    })
+
+    it('strips an OSC title sequence before parsing', () => {
+      // \x1b]0;title\x07 is what a shell emits to set the window title; it must
+      // not stop the `> ` prompt on the same chunk from being recognised.
+      const turns = parseConversation('\x1b]0;~/repo\x07> run the tests', 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(1)
+      expect(turns[0].content).toBe('run the tests')
+    })
+
+    // ---- box-drawing markers contribute a role but no text ----
+
+    it('treats a Claude Code ╭─ border as a user marker and keeps the border out of the content', () => {
+      const output = ['╭──────────────────────────────╮', 'what does this function do?'].join('\n')
+      const turns = parseConversation(output, 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(1)
+      expect(turns[0].role).toBe('user')
+      expect(turns[0].content).toBe('what does this function do?')
+      expect(turns[0].content).not.toContain('╭')
+    })
+
+    it('treats a ╰─ border as an assistant marker and keeps the border out of the content', () => {
+      const output = [
+        'Assistant: here is the answer',
+        '╰──────────────────────────────╯',
+        'trailing note',
+      ].join('\n')
+      const turns = parseConversation(output, 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(2)
+      expect(turns[0].role).toBe('assistant')
+      expect(turns[0].content).toBe('here is the answer')
+      expect(turns[1].role).toBe('assistant')
+      expect(turns[1].content).toBe('trailing note')
+      expect(turns.some(t => t.content.includes('╰'))).toBe(false)
+    })
+
+    // ---- empty turns are dropped, not emitted as blanks ----
+
+    it('drops a prompt whose only continuation lines are whitespace', () => {
+      const output = ['> ', '   ', '\t', '> real question'].join('\n')
+      const turns = parseConversation(output, 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(1)
+      expect(turns[0].content).toBe('real question')
+    })
+
+    it('drops bare prompts that have no content at all', () => {
+      const turns = parseConversation('> \n> \n> actual', 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(1)
+      expect(turns[0].content).toBe('actual')
+    })
+
+    it('ignores output that precedes the first prompt', () => {
+      // Nothing has a role yet, so the banner lines are discarded entirely.
+      const output = ['Welcome to the shell', 'Loading profile...', '> first command'].join('\n')
+      const turns = parseConversation(output, 't1', 'Term 1', 'claude')
+      expect(turns).toHaveLength(1)
+      expect(turns[0].content).toBe('first command')
+      expect(turns[0].content).not.toContain('Welcome')
+    })
   })
 })

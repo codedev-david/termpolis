@@ -146,4 +146,17 @@ describe('AddTerminalModal', () => {
       expect.objectContaining({ fontFamily: 'JetBrains Mono, monospace' }),
     )
   })
+
+  it('falls back to the indexed default name when the name is blanked out', () => {
+    const onCreate = vi.fn()
+    render(<AddTerminalModal shells={shells} nextIndex={7} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
+    const nameInput = screen.getByDisplayValue('Terminal 7')
+
+    // Whitespace only: trim() leaves an empty string, so the || fallback must
+    // re-supply the indexed name rather than creating a nameless terminal.
+    fireEvent.change(nameInput, { target: { value: '   ' } })
+    fireEvent.click(screen.getByText('Create'))
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Terminal 7' }))
+  })
 })

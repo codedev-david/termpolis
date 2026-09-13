@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { InstallHint } from '../../src/renderer/src/components/InstallHint/InstallHint'
 import { __setPlatformForTests } from '../../src/renderer/src/lib/platform'
@@ -234,5 +234,98 @@ describe('InstallHint', () => {
     const modal = screen.getByTestId('install-hint-modal')
     expect(modal.className).toMatch(/max-h-/)
     expect(modal.className).toMatch(/overflow-y-auto/)
+  })
+
+  // -----------------------------------------------------------------------
+  // Copy buttons inside SECTIONS (not just the primary steps)
+  // -----------------------------------------------------------------------
+  const stubClipboard = () => {
+    const clipboardWriteText = vi.fn().mockResolvedValue({ success: true })
+    ;(window as any).termpolis = { ...(window as any).termpolis, clipboardWriteText }
+    return clipboardWriteText
+  }
+
+  it('copies a section command line and checks only that button', () => {
+    const clipboardWriteText = stubClipboard()
+    __setPlatformForTests('win32')
+    render(<InstallHint agentId="gemini" agentName="Gemini CLI" onClose={vi.fn()} />)
+
+    const btn = within(screen.getByTestId('install-hint-section-0')).getByTitle('Copy to clipboard')
+    fireEvent.click(btn)
+
+    expect(clipboardWriteText).toHaveBeenCalledWith(
+      'curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd'
+    )
+    expect(btn.querySelector('.fa-check')).toBeTruthy()
+    // Copying a section line must not light up the primary step buttons.
+    within(screen.getByTestId('install-hint-steps'))
+      .getAllByTitle('Copy to clipboard')
+      .forEach(b => expect(b.querySelector('.fa-check')).toBeNull())
+  })
+
+  // handleCopy keys the checkmark off a single copiedIndex, so section buttons
+  // are offset by 1000 + si*100 + li. If that arithmetic ever collided, two
+  // buttons would show "copied" at once — or the wrong one would.
+  it('gives each section button a distinct copied index', () => {
+    const clipboardWriteText = stubClipboard()
+    __setPlatformForTests('win32')
+    render(<InstallHint agentId="gemini" agentName="Gemini CLI" onClose={vi.fn()} />)
+
+    const first = within(screen.getByTestId('install-hint-section-0')).getByTitle('Copy to clipboard')
+    const second = within(screen.getByTestId('install-hint-section-1')).getByTitle('Copy to clipboard')
+
+    fireEvent.click(second)
+
+    expect(clipboardWriteText).toHaveBeenCalledWith('agy')
+    expect(second.querySelector('.fa-check')).toBeTruthy()
+    expect(first.querySelector('.fa-check')).toBeNull()
+  })
+
+  it('treats only the command line in a section as copyable, leaving prose as text', () => {
+    __setPlatformForTests('win32')
+    render(<InstallHint agentId="gemini" agentName="Gemini CLI" onClose={vi.fn()} />)
+
+    const section1 = within(screen.getByTestId('install-hint-section-1'))
+    // Three lines: `agy` is a command, the other two are prose.
+    expect(section1.getAllByTitle('Copy to clipboard')).toHaveLength(1)
+    expect(section1.getByText(/Sign in with your Google account/).tagName).toBe('P')
+    expect(section1.getByText(/Already had Gemini CLI/).tagName).toBe('P')
+  })
+
+  it('clears the copied checkmark after 2 seconds', () => {
+    vi.useFakeTimers()
+    try {
+      stubClipboard()
+      render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+
+      const btn = within(screen.getByTestId('install-hint-steps')).getAllByTitle('Copy to clipboard')[0]
+      fireEvent.click(btn)
+      expect(btn.querySelector('.fa-check')).toBeTruthy()
+
+      act(() => { vi.advanceTimersByTime(2000) })
+
+      expect(btn.querySelector('.fa-check')).toBeNull()
+      expect(btn.querySelector('.fa-copy')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // Claude's Node-free installer is platform-branched — the wrong shell's
+  // one-liner is useless to the user staring at it.
+  // -----------------------------------------------------------------------
+  it('offers the PowerShell one-liner for claude on Windows', () => {
+    __setPlatformForTests('win32')
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    expect(screen.getByText('irm https://claude.ai/install.ps1 | iex')).toBeInTheDocument()
+    expect(screen.queryByText('curl -fsSL https://claude.ai/install.sh | bash')).toBeNull()
+  })
+
+  it('offers the shell one-liner for claude off Windows', () => {
+    __setPlatformForTests('darwin')
+    render(<InstallHint agentId="claude" agentName="Claude Code" onClose={vi.fn()} />)
+    expect(screen.getByText('curl -fsSL https://claude.ai/install.sh | bash')).toBeInTheDocument()
+    expect(screen.queryByText('irm https://claude.ai/install.ps1 | iex')).toBeNull()
   })
 })

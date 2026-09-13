@@ -469,3 +469,116 @@ describe('StatusBar', () => {
     expect(screen.queryByTestId('footer-app-version')).not.toBeInTheDocument()
   })
 })
+
+// -- Help → bug reporter hand-off --
+//
+// "Report a problem" lives in the help modal footer, so the only way to reach the
+// bug reporter is through this swap. If the help modal failed to close first the
+// two dialogs would stack on top of each other.
+
+describe('StatusBar — bug reporter hand-off', () => {
+  it('swaps the help modal for the bug reporter when Report a problem is clicked', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('help-report-problem'))
+
+    expect(screen.queryByText('Quick Start Guide')).not.toBeInTheDocument()
+    expect(screen.getByTestId('report-problem-modal')).toBeInTheDocument()
+  })
+
+  it('closing the bug reporter leaves no modal behind', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    fireEvent.click(screen.getByTestId('help-report-problem'))
+
+    fireEvent.click(screen.getByLabelText('Close report problem'))
+
+    expect(screen.queryByTestId('report-problem-modal')).not.toBeInTheDocument()
+    expect(screen.queryByText('Quick Start Guide')).not.toBeInTheDocument()
+    // ...and the status bar is still there to re-open either dialog from.
+    expect(screen.getByText('Help / Support')).toBeInTheDocument()
+  })
+
+  it('re-opening help after the reporter was cancelled starts at the help modal again', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    fireEvent.click(screen.getByTestId('help-report-problem'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    fireEvent.click(screen.getByText('Help / Support'))
+
+    expect(screen.getByText('Quick Start Guide')).toBeInTheDocument()
+    expect(screen.queryByTestId('report-problem-modal')).not.toBeInTheDocument()
+  })
+})
+
+// -- Version lookup failure modes --
+//
+// getAppVersion is an IPC round trip. Every failure shape has to degrade to "no
+// version chip" rather than throwing inside an effect and blanking the renderer.
+
+describe('StatusBar — app version lookup failures', () => {
+  async function renderWithVersionResult(getAppVersion: ReturnType<typeof vi.fn>) {
+    ;(window as any).termpolis = { getAppVersion }
+    render(<StatusBar />)
+    await waitFor(() => expect(getAppVersion).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByTestId('footer-app-version')).not.toBeInTheDocument())
+  }
+
+  it('stays silent when getAppVersion rejects', async () => {
+    await renderWithVersionResult(vi.fn().mockRejectedValue(new Error('ipc channel closed')))
+    // The whole status bar must survive the rejection, not just the version chip.
+    expect(screen.getByText('MCP: localhost:9315')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.queryByTestId('help-app-version')).not.toBeInTheDocument()
+  })
+
+  it('stays silent when getAppVersion reports failure', async () => {
+    // Note the payload IS present — success:false alone must suppress it.
+    await renderWithVersionResult(
+      vi.fn().mockResolvedValue({ success: false, error: 'not packaged', data: { version: '1.2.3' } })
+    )
+    expect(screen.queryByText(/v1\.2\.3/)).not.toBeInTheDocument()
+  })
+
+  it('stays silent when getAppVersion succeeds with no payload', async () => {
+    await renderWithVersionResult(vi.fn().mockResolvedValue({ success: true }))
+  })
+
+  it('stays silent when getAppVersion resolves nothing at all', async () => {
+    await renderWithVersionResult(vi.fn().mockResolvedValue(undefined))
+  })
+
+  it('drops the "in vX" suffix from the What\'s New heading when the version is unknown', () => {
+    ;(window as any).termpolis = {}
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(screen.queryByTestId('help-app-version')).not.toBeInTheDocument()
+    expect(screen.getByText(/^What.s New$/)).toBeInTheDocument()
+  })
+
+  it('stamps the version into the What\'s New heading once it is known', async () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    expect(await screen.findByText(/^What.s New in v9\.9\.9$/)).toBeInTheDocument()
+  })
+})
+
+// -- Running-agent tally --
+
+describe('StatusBar — running agent tally', () => {
+  it('counts thinking agents as running and ignores idle/done ones', () => {
+    mockSwarmActive = true
+    mockSwarmAgents = [
+      { terminalId: 't1', agentName: 'Claude', role: 'Plan', status: 'thinking' },
+      { terminalId: 't2', agentName: 'Codex', role: 'Build', status: 'working' },
+      { terminalId: 't3', agentName: 'Gemini', role: 'Docs', status: 'idle' },
+      { terminalId: 't4', agentName: 'Claude', role: 'Review', status: 'done' },
+    ]
+    render(<StatusBar />)
+    expect(screen.getByText('(2/4)')).toBeInTheDocument()
+    expect(screen.queryByText(/err/)).not.toBeInTheDocument()
+  })
+})

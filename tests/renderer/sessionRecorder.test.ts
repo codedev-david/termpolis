@@ -158,3 +158,105 @@ describe('generateRecordingFilename', () => {
     expect(name).toMatch(/X_recording_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.txt/)
   })
 })
+
+describe('formatRecording — input edge cases', () => {
+  const commandRows = (rec: SessionRecording): string[] =>
+    formatRecording(rec).split('\n').filter(l => l.includes('] $ '))
+
+  it('flushes a half-typed command that was never submitted', () => {
+    // The user was still typing when the recording stopped: no \r ever arrived,
+    // so the only way `npm` reaches the log is the trailing flush at the end.
+    const rec = createSessionRecorder('T', 'bash')
+    appendEntry(rec, 'input', 'n')
+    appendEntry(rec, 'input', 'p')
+    appendEntry(rec, 'input', 'm')
+    const rows = commandRows(rec)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].endsWith('$ npm')).toBe(true)
+  })
+
+  it('treats a bare newline as a submit, exactly like a carriage return', () => {
+    const rec = createSessionRecorder('T', 'bash')
+    appendEntry(rec, 'input', 'p')
+    appendEntry(rec, 'input', 'w')
+    appendEntry(rec, 'input', 'd')
+    appendEntry(rec, 'input', '\n')
+    const rows = commandRows(rec)
+    // Submitted once by the \n — and NOT a second time by the trailing flush.
+    expect(rows).toHaveLength(1)
+    expect(rows[0].endsWith('$ pwd')).toBe(true)
+  })
+
+  it('emits nothing for a carriage return with no accumulated input', () => {
+    // Pressing Enter at an empty prompt must not produce a blank "$ " row.
+    const rec = createSessionRecorder('T', 'bash')
+    appendEntry(rec, 'input', '\r')
+    appendEntry(rec, 'input', '\r')
+    expect(commandRows(rec)).toHaveLength(0)
+    expect(formatRecording(rec)).not.toContain('$ ')
+  })
+
+  it('drops raw escape input (the Escape key) instead of typing it into the command', () => {
+    // A lone \x1b survives stripAnsi (it is not a complete sequence), so the
+    // explicit startsWith('\x1b') guard is the only thing keeping it out.
+    const rec = createSessionRecorder('T', 'bash')
+    appendEntry(rec, 'input', 'l')
+    appendEntry(rec, 'input', '\x1b')
+    appendEntry(rec, 'input', 's')
+    appendEntry(rec, 'input', '\r')
+    const rows = commandRows(rec)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].endsWith('$ ls')).toBe(true)
+    expect(rows[0]).not.toContain('\x1b')
+  })
+
+  it('backspace at an empty prompt is a no-op rather than corrupting the line', () => {
+    const rec = createSessionRecorder('T', 'bash')
+    appendEntry(rec, 'input', '')
+    appendEntry(rec, 'input', 'h')
+    appendEntry(rec, 'input', 'i')
+    appendEntry(rec, 'input', '\r')
+    const rows = commandRows(rec)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].endsWith('$ hi')).toBe(true)
+  })
+})
+
+describe('formatRecording — output and duration edge cases', () => {
+  it('skips blank output lines so the log has no empty timestamped rows', () => {
+    const rec = createSessionRecorder('T', 'bash')
+    appendEntry(rec, 'output', 'first\n\n   \r\nsecond')
+    const rows = formatRecording(rec).split('\n').filter(l => l.startsWith('['))
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toContain('first')
+    expect(rows[1]).toContain('second')
+  })
+
+  it('formats a recording longer than an hour as Xh Ym Zs', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const rec = createSessionRecorder('T', 'bash')
+      vi.setSystemTime(new Date('2026-01-01T02:03:04Z'))
+      appendEntry(rec, 'output', 'done')
+      expect(formatRecording(rec)).toContain('Duration: 2h 3m 4s')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('measures duration to the LAST entry, not to now', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const rec = createSessionRecorder('T', 'bash')
+      vi.setSystemTime(new Date('2026-01-01T00:00:42Z'))
+      appendEntry(rec, 'output', 'last line')
+      // Clock keeps running after the recording stopped — duration must not grow.
+      vi.setSystemTime(new Date('2026-01-01T09:59:00Z'))
+      expect(formatRecording(rec)).toContain('Duration: 42s')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

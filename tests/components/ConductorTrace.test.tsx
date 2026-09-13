@@ -3,6 +3,21 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import { ConductorTrace } from '../../src/renderer/src/components/ConductorTrace/ConductorTrace'
 import type { AgentActivityEvent } from '../../src/renderer/src/types'
+import type { TraceEntry } from '../../src/renderer/src/lib/conductorTraceParser'
+
+// Seam for the badge FALLBACKS. Every kind the real parser emits is present in both
+// KIND_COLOR and KIND_LABEL, so `?? '#cccccc'` / `?? e.kind` cannot be reached through it.
+// While `traceOverride.entries` is null the REAL parser is used, so every other test in this
+// file is unaffected; exactly one test hands the component an unmapped kind.
+const traceOverride = vi.hoisted(() => ({ entries: null as TraceEntry[] | null }))
+vi.mock('../../src/renderer/src/lib/conductorTraceParser', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('../../src/renderer/src/lib/conductorTraceParser')
+  return {
+    ...actual,
+    parseEventsToTrace: (events: AgentActivityEvent[]) =>
+      traceOverride.entries ?? actual.parseEventsToTrace(events),
+  }
+})
 
 type API = {
   query: ReturnType<typeof vi.fn>
@@ -178,5 +193,128 @@ describe('ConductorTrace', () => {
       )
     })
     expect(true).toBe(true)
+  })
+
+  it('shows "loading…" while the seed query is still in flight', async () => {
+    api.query.mockReturnValueOnce(new Promise(() => {})) // never settles
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(screen.getByText('loading…')).toBeInTheDocument())
+    // The "no activity yet" placeholder must stay hidden until loading finishes.
+    expect(screen.queryByText(/No activity from the conductor yet/i)).toBeNull()
+  })
+
+  it('treats a nullish query result as zero events', async () => {
+    api.query.mockResolvedValueOnce(undefined)
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(screen.getByText('0 events')).toBeInTheDocument())
+    expect(screen.queryAllByTestId('trace-entry')).toHaveLength(0)
+    expect(screen.getByText(/No activity from the conductor yet/i)).toBeInTheDocument()
+  })
+
+  it('drops a seed result that lands after unmount', async () => {
+    let settle!: (v: unknown) => void
+    api.query.mockReturnValueOnce(new Promise((resolve) => { settle = resolve }))
+    const { unmount } = render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    unmount()
+    await act(async () => {
+      settle({ success: true, data: [mk({ id: 'late', ts: 1, kind: 'message', payload: { text: 'too late' } })] })
+      await Promise.resolve()
+    })
+    expect(screen.queryByText('too late')).toBeNull()
+  })
+
+  it('drops a seed REJECTION that lands after unmount', async () => {
+    let fail!: (e: unknown) => void
+    api.query.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
+    const { unmount } = render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    unmount()
+    await act(async () => {
+      fail(new Error('network died after unmount'))
+      await Promise.resolve()
+    })
+    expect(screen.queryAllByTestId('trace-entry')).toHaveLength(0)
+  })
+
+  it('ignores a pushed event that arrives after unmount', async () => {
+    let pushed!: (e: AgentActivityEvent) => void
+    api.onEvent.mockImplementationOnce((cb: (e: AgentActivityEvent) => void) => {
+      pushed = cb
+      return () => {} // deliberately does NOT detach, so the stale callback can still fire
+    })
+    const { unmount } = render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    unmount()
+    expect(() =>
+      pushed(mk({ id: 'after', ts: 9, kind: 'message', payload: { text: 'after unmount' } })),
+    ).not.toThrow()
+    expect(screen.queryByText('after unmount')).toBeNull()
+  })
+
+  it('works with an activity api that exposes no onEvent subscription', async () => {
+    ;(window as any).agentActivity = {
+      query: vi.fn().mockResolvedValue({
+        success: true,
+        data: [mk({ id: 's', ts: 1, kind: 'message', payload: { text: 'seeded only' } })],
+      }),
+    }
+    const { unmount } = render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(screen.getByText('seeded only')).toBeInTheDocument())
+    expect(() => unmount()).not.toThrow() // cleanup must tolerate having no unsubscribe
+  })
+
+  it('survives an unsubscribe that throws during cleanup', async () => {
+    api.onEvent.mockImplementationOnce(() => () => { throw new Error('unsub boom') })
+    const { unmount } = render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(api.query).toHaveBeenCalled())
+    expect(() => unmount()).not.toThrow()
+  })
+
+  it('renders an empty timestamp when the locale formatter throws', async () => {
+    const spy = vi.spyOn(Date.prototype, 'toLocaleTimeString').mockImplementation(() => {
+      throw new Error('no Intl data')
+    })
+    try {
+      api.query.mockResolvedValueOnce({
+        success: true,
+        data: [mk({ id: '1', ts: 1, kind: 'message', payload: { text: 'still rendered' } })],
+      })
+      render(<ConductorTrace conductorTerminalId="c1" />)
+      await waitFor(() => expect(screen.getByText('still rendered')).toBeInTheDocument())
+      const spans = screen.getByTestId('trace-entry').querySelectorAll('span')
+      expect(spans[1].textContent).toBe('') // time column degrades to blank, row still shown
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('renders an unmapped trace kind with its raw label and the neutral colour', async () => {
+    traceOverride.entries = [
+      { id: 'x', ts: 1_700_000_000_000, kind: 'mystery' as TraceEntry['kind'], title: 'something new' },
+    ]
+    try {
+      render(<ConductorTrace conductorTerminalId="c1" />)
+      await waitFor(() => expect(screen.getByText('something new')).toBeInTheDocument())
+      const badge = screen.getByTestId('trace-entry').querySelector('span') as HTMLElement
+      expect(badge.textContent).toBe('mystery') // KIND_LABEL fallback → the raw kind
+      expect(badge.style.color).toBe('rgb(204, 204, 204)') // KIND_COLOR fallback → #cccccc
+      expect(badge.style.borderColor).toBe('rgb(204, 204, 204)')
+    } finally {
+      traceOverride.entries = null
+    }
+  })
+
+  it('renders the handoff target arrow for an assignment entry', async () => {
+    api.query.mockResolvedValueOnce({
+      success: true,
+      data: [mk({ id: 'a1', ts: 1, kind: 'message', payload: { text: 'Assigning task to reviewer-two' } })],
+    })
+    render(<ConductorTrace conductorTerminalId="c1" />)
+    await waitFor(() => expect(screen.getByTestId('trace-entry')).toBeInTheDocument())
+    const badge = screen.getByTestId('trace-entry').querySelector('span') as HTMLElement
+    expect(badge.textContent).toBe('ASSIGN')
+    expect(badge.style.color).toBe('rgb(34, 211, 238)') // task_assigned → #22d3ee
+    expect(screen.getByText(/→ reviewer-two/)).toBeInTheDocument()
   })
 })

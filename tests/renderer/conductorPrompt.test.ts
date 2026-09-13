@@ -240,4 +240,43 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('OpenAI Codex')
     expect(prompt).toContain('Gemini CLI')
   })
+
+  it('labels each agent with its token cost tier', () => {
+    // All three ternary arms in one prompt: gemini=low, codex=medium, claude=high.
+    const prompt = buildDefault()
+    expect(prompt).toMatch(/Claude Code \(claude\):.*High cost\./)
+    expect(prompt).toMatch(/OpenAI Codex \(codex\):.*Medium cost\./)
+    expect(prompt).toMatch(/Gemini CLI \(gemini\):.*Low cost\./)
+  })
+
+  it('renders an empty INSTALLED AGENTS section when every agent is marked uninstalled', () => {
+    const prompt = buildDefault({ installedAgents: { claude: false, codex: false, gemini: false } })
+    const section = prompt.split('INSTALLED AGENTS:\n')[1].split('\n\nYOUR MCP TOOLS:')[0]
+    expect(section).toBe('')
+    // The rest of the prompt is unaffected — tools and steps still ship.
+    expect(prompt).toContain('swarm_create_task')
+    expect(prompt).toContain('Begin now')
+  })
+})
+
+describe('buildConductorPrompt — model guidance seam', () => {
+  // The guidance block is spliced in between STEP 4's command list and the
+  // "Then post a status update" line. The FALSE arm of that splice (broker has
+  // no Claude tiers) needs the broker mocked and lives in
+  // cov-renderer-lib-no-model-tiers.test.ts — vi.mock is file-scoped, so keeping
+  // it out of this file is what makes every test here genuinely unmocked.
+  it('splices the real broker guidance in at the STEP 4 seam', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain("Gemini CLI  → 'agy --dangerously-skip-permissions'\n  MODEL SELECTION")
+    expect(prompt).toContain("'--model haiku'")
+    expect(prompt).toContain('Then post a status update via swarm_send_message.')
+  })
+
+  it('reports every shipped agent as MCP-capable', () => {
+    // The "No MCP (use swarm bridge)" arm needs a capability roster that does
+    // not exist in the shipped defaults — see cov-renderer-lib-no-mcp.test.ts.
+    const prompt = buildDefault()
+    expect(prompt).toContain('Has MCP')
+    expect(prompt).not.toContain('No MCP (use swarm bridge)')
+  })
 })
