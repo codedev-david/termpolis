@@ -355,7 +355,19 @@ describe('sentryOrNull — the resolver is not trusted', () => {
     expect(() => mod.recordUpdaterEvent({ status: 'checking' })).not.toThrow()
     expect(mockAddBreadcrumb).not.toHaveBeenCalled() // the fake is NOT wired on this instance
     expect(mod.isEnabled()).toBe(true) // the gate itself is unaffected by Sentry being absent
-  })
+    // This test gets its own budget because it is genuinely the most expensive one in the suite,
+    // and for a reason that is the whole point of it. Every OTHER test here injects a stub through
+    // __setSentryProviderForTests, so @sentry/electron is never actually loaded. This one
+    // deliberately does not — and @sentry/electron IS a real installed dependency (7.10.0), so the
+    // shipped `require('@sentry/electron/main')` RESOLVES and drags the entire real Sentry SDK
+    // through vite's transform pipeline, cold, on first touch.
+    //
+    // Uncontended that costs ~5s. With 344 files competing for the transformer it went past the 30s
+    // global budget, failed, and looked exactly like a flake — the same lie the global testTimeout
+    // comment in vitest.config.ts was written about. It was never flaky: it was being cut off
+    // part-way through work it was always going to do. Raising the GLOBAL budget to cover one
+    // known-expensive test would blunt it for the other ~11,000, so the budget goes here instead.
+  }, 180_000)
 })
 
 describe('a Sentry module that lacks the method being called', () => {

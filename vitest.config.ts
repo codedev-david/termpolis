@@ -50,6 +50,12 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
+      // Vitest defaults this to false, which means ONE failing test — a flake, a timeout,
+      // anything — silently suppresses the entire coverage report. That is backwards: the
+      // run where something broke is exactly the run where you want to see whether the
+      // gate still holds, and a missing table reads as "coverage did not run" rather than
+      // "coverage was withheld". Thresholds are still enforced either way.
+      reportOnFailure: true,
       include: [
         'src/renderer/src/lib/**/*.ts',
         'src/renderer/src/components/**/*.tsx',
