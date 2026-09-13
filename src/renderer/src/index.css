@@ -32,6 +32,23 @@ button, [role="button"] {
   animation: pulse-border 2s ease-in-out infinite;
 }
 
+/* Pulsing amber — the per-terminal git dot, when that repo has work you haven't
+   dealt with: something staged, modified, untracked, conflicted, or committed but
+   not pushed. Clean AND pushed = no animation at all, so a still sidebar genuinely
+   means "nothing outstanding" and the movement only ever earns attention.
+   Opacity + colour rather than box-shadow: this sits inside a 2px-gap flex row, and
+   a glow would bleed onto the tab's name. */
+@keyframes pulse-git {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.animate-pulse-git {
+  animation: pulse-git 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-git { animation: none; }
+}
+
 /* Shimmer — horizontal moving highlight across the top of in-progress cards */
 @keyframes shimmer {
   0% { transform: translateX(-100%); }

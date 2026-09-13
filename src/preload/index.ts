@@ -138,6 +138,15 @@ const api: TermpolisAPI = {
   gitFileDiff: (cwd, file) =>
     ipcRenderer.invoke('git:file-diff', { cwd, file }),
 
+  // Changes rail. Additive rather than widening gitFileDiff: that bridge's payload
+  // shape is asserted structurally in preload.test.ts, so a third key would fail it.
+  gitChanges: (cwd) =>
+    ipcRenderer.invoke('git:changes', { cwd }),
+  gitChangeCounts: (cwd) =>
+    ipcRenderer.invoke('git:change-counts', { cwd }),
+  gitChangeDiff: (cwd, file, mode) =>
+    ipcRenderer.invoke('git:change-diff', { cwd, file, mode }),
+
   // Swarm Review
   gitRevParseHead: (cwd) =>
     ipcRenderer.invoke('git:rev-parse-head', { cwd }),

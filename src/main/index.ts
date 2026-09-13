@@ -112,6 +112,9 @@ import {
 import { readZip } from './zipArchive'
 import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists } from 'node:fs'
 import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
+import {
+  buildChanges, countChanges, resolveInsideRepo, synthesizeUntrackedDiff, type ChangeMode,
+} from './gitChanges'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (resolveNodeCommand is already imported above for the MCP registration.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
@@ -1567,6 +1570,66 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
     const root = safeGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }).trim()
     return ok(root)
   } catch { return ok(null) }
+})
+
+// ── Changes rail + the per-terminal git dot ───────────────────────────────────
+// Three new channels rather than widening git:status-parsed and git:file-diff.
+// Not squeamishness about the existing tests: status-parsed splits porcelain on
+// newlines and does `.slice(3).trim()`, which cannot represent a rename's old path
+// or a filename ending in a space no matter what is bolted onto it. The -z forms
+// can. All parsing lives in ./gitChanges so it is testable as plain functions;
+// these handlers only run git and hand over the bytes.
+//
+// safeGitAsync throughout, never safeGit: every one of these sits on a poll, and
+// execFileSync blocks the thread pumping every PTY for the whole spawn (~106 ms of
+// process-creation tax alone, on Windows, before git reads an object).
+
+ipcMain.handle('git:changes', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const opts = { cwd, timeout: 8000, maxBuffer: 8 * 1024 * 1024 }
+    const [status, unstaged, staged] = await Promise.all([
+      safeGitAsync(['status', '--porcelain', '-b', '-z'], opts),
+      // Line counts are decoration; the file list is the payload. A repo with no
+      // commits yet has no index to diff against, so let those two fail quietly
+      // rather than blanking the whole rail.
+      safeGitAsync(['diff', '--numstat', '-z'], opts).catch(() => ''),
+      safeGitAsync(['diff', '--cached', '--numstat', '-z'], opts).catch(() => ''),
+    ])
+    return ok(buildChanges(status, unstaged, staged))
+  } catch (e: any) { return err(e.message) }
+})
+
+// One spawn per terminal per tick. The rail's three would buy nothing a dot can show.
+// Returns null outside a repo (or with no git at all) so the dot simply stays hidden
+// instead of painting an error onto a sidebar row.
+ipcMain.handle('git:change-counts', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const status = await safeGitAsync(
+      ['status', '--porcelain', '-b', '-z'],
+      { cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
+    )
+    return ok(countChanges(status))
+  } catch { return ok(null) }
+})
+
+ipcMain.handle('git:change-diff', async (
+  _,
+  { cwd, file, mode }: { cwd: string; file: string; mode: ChangeMode },
+) => {
+  try {
+    if (mode === 'untracked') {
+      // git will not diff a file it does not track, and `diff --no-index` is the wrong
+      // tool: it exits 1 whenever the files differ, so execFile rejects on every
+      // success. Read the bytes and synthesise the diff instead — see gitChanges.ts.
+      // The path came from git one poll ago, but it arrives from the renderer, so it
+      // is re-checked against the repo root before anything is opened.
+      const target = resolveInsideRepo(cwd, file)
+      if (!target) return err('Refusing to read a path outside the repository')
+      return ok(synthesizeUntrackedDiff(file, ipRead(target)))
+    }
+    const args = mode === 'staged' ? ['diff', '--cached', '--', file] : ['diff', '--', file]
+    return ok(await safeGitAsync(args, { cwd, timeout: 8000, maxBuffer: 8 * 1024 * 1024 }))
+  } catch (e: any) { return err(e.message) }
 })
 
 // Swarm Review: capture the HEAD SHA at a point in time so we can diff the full

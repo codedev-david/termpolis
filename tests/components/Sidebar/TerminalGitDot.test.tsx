@@ -1,0 +1,191 @@
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+vi.mock('../../../src/renderer/src/lib/pollingService', () => ({
+  subscribe: vi.fn(),
+  unsubscribe: vi.fn(),
+}))
+
+import { subscribe, unsubscribe } from '../../../src/renderer/src/lib/pollingService'
+import { TerminalGitDot, isDirty, summarize } from '../../../src/renderer/src/components/Sidebar/TerminalGitDot'
+
+const counts = (patch: Partial<Record<string, any>> = {}) => ({
+  branch: 'main', ahead: 0, behind: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, ...patch,
+})
+
+const gitChangeCounts = vi.fn()
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  ;(window as any).termpolis = { gitChangeCounts }
+  gitChangeCounts.mockResolvedValue({ success: true, data: counts() })
+})
+
+afterEach(() => {
+  delete (window as any).termpolis
+})
+
+const dot = () => screen.queryByTestId('git-dot-t1')
+
+describe('TerminalGitDot — when it appears at all', () => {
+  it('renders nothing before the first result arrives', () => {
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    expect(dot()).not.toBeInTheDocument()
+  })
+
+  it('renders nothing outside a repo (handler returns null)', async () => {
+    gitChangeCounts.mockResolvedValue({ success: true, data: null })
+    render(<TerminalGitDot terminalId="t1" cwd="/not-a-repo" />)
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
+    expect(dot()).not.toBeInTheDocument()
+  })
+
+  it('renders nothing when the call fails', async () => {
+    gitChangeCounts.mockResolvedValue({ success: false, error: 'boom' })
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
+    expect(dot()).not.toBeInTheDocument()
+  })
+
+  it('renders nothing when the promise rejects', async () => {
+    gitChangeCounts.mockRejectedValue(new Error('git missing'))
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
+    expect(dot()).not.toBeInTheDocument()
+  })
+
+  it('never calls the bridge without a cwd', () => {
+    render(<TerminalGitDot terminalId="t1" cwd="" />)
+    expect(gitChangeCounts).not.toHaveBeenCalled()
+  })
+
+  it('never calls the bridge when the preload API is absent', () => {
+    // Checked synchronously, so no promise is started and no setState can land
+    // after unmount in a host that has no bridge yet.
+    delete (window as any).termpolis
+    expect(() => render(<TerminalGitDot terminalId="t1" cwd="/repo" />)).not.toThrow()
+    expect(dot()).not.toBeInTheDocument()
+  })
+})
+
+describe('TerminalGitDot — grey vs pulsing', () => {
+  it('is grey and still on a clean, pushed repo', async () => {
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    const el = await screen.findByTestId('git-dot-t1')
+    expect(el).toHaveAttribute('data-dirty', 'false')
+    expect(el.className).not.toContain('animate-pulse-git')
+    expect(el).toHaveAttribute('title', 'main — Nothing to commit or push')
+  })
+
+  it.each([
+    ['staged', { staged: 1 }],
+    ['unstaged', { unstaged: 1 }],
+    ['untracked', { untracked: 1 }],
+    ['conflicted', { conflicted: 1 }],
+    ['unpushed commits', { ahead: 1 }],
+  ])('pulses amber for %s', async (_label, patch) => {
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts(patch) })
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    const el = await screen.findByTestId('git-dot-t1')
+    expect(el).toHaveAttribute('data-dirty', 'true')
+    expect(el.className).toContain('animate-pulse-git')
+    expect(el.className).toContain('#e5c07b')
+  })
+
+  it('does NOT pulse when merely behind the remote', async () => {
+    // Someone else's work arriving is not your work waiting; pulsing on it would
+    // leave the dot lit permanently on a busy shared repo.
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts({ behind: 7 }) })
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    const el = await screen.findByTestId('git-dot-t1')
+    expect(el).toHaveAttribute('data-dirty', 'false')
+    expect(el).toHaveAttribute('title', 'main — 7 to pull')
+  })
+
+  it('falls back to "detached HEAD" when there is no branch name', async () => {
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts({ branch: '', unstaged: 1 }) })
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    expect((await screen.findByTestId('git-dot-t1')).getAttribute('title'))
+      .toBe('detached HEAD — 1 modified')
+  })
+})
+
+describe('TerminalGitDot — opening the rail', () => {
+  it('dispatches termpolis:openChanges carrying its own terminal id', async () => {
+    const onEvent = vi.fn()
+    window.addEventListener('termpolis:openChanges', onEvent)
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts({ unstaged: 2 }) })
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    fireEvent.click(await screen.findByTestId('git-dot-t1'))
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    expect(onEvent.mock.calls[0][0].detail).toEqual({ terminalId: 't1' })
+    window.removeEventListener('termpolis:openChanges', onEvent)
+  })
+
+  it('does not select the terminal when the dot is clicked', async () => {
+    const rowClick = vi.fn()
+    render(
+      <div onClick={rowClick}>
+        <TerminalGitDot terminalId="t1" cwd="/repo" />
+      </div>,
+    )
+    fireEvent.click(await screen.findByTestId('git-dot-t1'))
+    expect(rowClick).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalGitDot — polling', () => {
+  it('subscribes under a per-terminal id so two terminals in one repo both update', () => {
+    // pollingService ids are global: a duplicate silently replaces the previous
+    // subscriber, so keying by cwd would freeze one of the two rows.
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    render(<TerminalGitDot terminalId="t2" cwd="/repo" />)
+    const ids = (subscribe as any).mock.calls.map((c: any[]) => c[0])
+    expect(ids).toEqual(['git-dot-t1', 'git-dot-t2'])
+    expect((subscribe as any).mock.calls[0][2]).toBe(5000)
+  })
+
+  it('unsubscribes on unmount', () => {
+    const { unmount } = render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    unmount()
+    expect(unsubscribe).toHaveBeenCalledWith('git-dot-t1')
+  })
+
+  it('re-reads when the polling callback fires', async () => {
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalledTimes(1))
+    const cb = (subscribe as any).mock.calls[0][1]
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts({ untracked: 3 }) })
+    cb()
+    expect((await screen.findByTestId('git-dot-t1'))).toHaveAttribute('data-dirty', 'true')
+  })
+})
+
+describe('isDirty', () => {
+  it('is false only when nothing is outstanding', () => {
+    expect(isDirty(counts() as any)).toBe(false)
+    expect(isDirty(counts({ behind: 9 }) as any)).toBe(false)
+  })
+
+  it.each(['staged', 'unstaged', 'untracked', 'conflicted', 'ahead'])(
+    'is true when %s is non-zero', key => {
+      expect(isDirty(counts({ [key]: 1 }) as any)).toBe(true)
+    },
+  )
+})
+
+describe('summarize', () => {
+  it('says so plainly when there is nothing to do', () => {
+    expect(summarize(counts() as any)).toBe('Nothing to commit or push')
+  })
+
+  it('lists every outstanding category in a fixed order', () => {
+    expect(summarize(counts({ staged: 1, unstaged: 2, untracked: 3, conflicted: 4, ahead: 5, behind: 6 }) as any))
+      .toBe('1 staged, 2 modified, 3 untracked, 4 conflicted, 5 to push, 6 to pull')
+  })
+
+  it('names unpushed commits, which no other part of the UI shows', () => {
+    expect(summarize(counts({ ahead: 2 }) as any)).toBe('2 to push')
+  })
+})

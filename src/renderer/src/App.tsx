@@ -21,6 +21,7 @@ const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/Redundan
 const EfficiencyPanel = lazy(() => import('./components/EfficiencyPanel/EfficiencyPanel').then(m => ({ default: m.EfficiencyPanel })))
 const CommandPalette = lazy(() => import('./components/CommandPalette/CommandPalette').then(m => ({ default: m.CommandPalette })))
 const ConversationSearch = lazy(() => import('./components/ConversationSearch/ConversationSearch').then(m => ({ default: m.ConversationSearch })))
+const ChangesPanel = lazy(() => import('./components/ChangesPanel/ChangesPanel').then(m => ({ default: m.ChangesPanel })))
 const SwarmDashboard = lazy(() => import('./components/SwarmDashboard/SwarmDashboard').then(m => ({ default: m.SwarmDashboard })))
 const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/SwarmCompleteDialog').then(m => ({ default: m.SwarmCompleteDialog })))
 const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
@@ -74,6 +75,12 @@ export default function App() {
   const [showPrompts, setShowPrompts] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showContextPanel, setShowContextPanel] = useState(false)
+  const [showChangesPanel, setShowChangesPanel] = useState(false)
+  // Which terminal's repo the Changes rail is showing. Set when a sidebar git dot is
+  // clicked, so the rail follows the row you pointed at rather than snapping to the
+  // active terminal; null means "follow the active terminal", which is what the
+  // keyboard shortcut wants.
+  const [changesTerminalId, setChangesTerminalId] = useState<string | null>(null)
   const [showActivityFeed, setShowActivityFeed] = useState(false)
   const [showContextPins, setShowContextPins] = useState(false)
   const [showRedundancyPanel, setShowRedundancyPanel] = useState(false)
@@ -397,6 +404,14 @@ export default function App() {
         return
       }
 
+      // Ctrl+Shift+J to toggle the changes rail (J was free; see keybindings.ts)
+      if (primaryMod && e.shiftKey && e.key === 'J') {
+        e.preventDefault()
+        setChangesTerminalId(null)
+        setShowChangesPanel(v => !v)
+        return
+      }
+
       // Ctrl+Shift+D to toggle duplicate-work / redundancy panel
       if (primaryMod && e.shiftKey && e.key === 'D') {
         e.preventDefault()
@@ -488,6 +503,15 @@ export default function App() {
     const onOpenPins = () => setShowContextPins(true)
     window.addEventListener('termpolis:openContextPins', onOpenPins)
 
+    // Same bridge for the per-terminal git dot, which sits three components deep
+    // (Sidebar → TerminalTab → TerminalGitDot). It carries the terminal id so the
+    // rail opens on the repo whose dot was clicked.
+    const onOpenChanges = (e: Event) => {
+      setChangesTerminalId((e as CustomEvent<{ terminalId?: string }>).detail?.terminalId ?? null)
+      setShowChangesPanel(true)
+    }
+    window.addEventListener('termpolis:openChanges', onOpenChanges)
+
     // Listen for "Show tour again" from the Help modal
     const onReopenOnboarding = () => setShowOnboarding(true)
     window.addEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
@@ -506,6 +530,7 @@ export default function App() {
       window.removeEventListener('keydown', handler)
       window.removeEventListener('termpolis:launch-agent-slot', onLaunchSlot)
       window.removeEventListener('termpolis:openContextPins', onOpenPins)
+      window.removeEventListener('termpolis:openChanges', onOpenChanges)
       window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
       window.removeEventListener('termpolis:openMemory', onOpenMemory)
       window.removeEventListener('termpolis:openAppLog', onOpenAppLog)
@@ -939,6 +964,12 @@ export default function App() {
             <ContextPanel
               cwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
               onClose={() => setShowContextPanel(false)}
+            />
+          )}
+          {showChangesPanel && (
+            <ChangesPanel
+              cwd={terminals.find(t => t.id === (changesTerminalId ?? activeTerminalId))?.cwd ?? ''}
+              onClose={() => setShowChangesPanel(false)}
             />
           )}
           {showActivityFeed && (

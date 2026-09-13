@@ -360,6 +360,13 @@ export interface TermpolisAPI {
   gitPush: (cwd: string) => Promise<IpcResponse<string>>
   gitFileDiff: (cwd: string, file: string) => Promise<IpcResponse<string>>
 
+  // Changes rail — separate from gitStatusParsed above, which cannot represent a
+  // rename's old path or a filename with a trailing space (it splits on newlines
+  // and trims). These read the -z forms instead. See src/main/gitChanges.ts.
+  gitChanges: (cwd: string) => Promise<IpcResponse<GitChangesResult>>
+  gitChangeCounts: (cwd: string) => Promise<IpcResponse<GitChangeCounts | null>>
+  gitChangeDiff: (cwd: string, file: string, mode: GitChangeMode) => Promise<IpcResponse<string>>
+
   // Swarm Review
   gitRevParseHead: (cwd: string) => Promise<IpcResponse<string | null>>
   gitDiffRange: (cwd: string, from: string, to?: string) => Promise<IpcResponse<string>>
@@ -948,6 +955,41 @@ export interface RemoteAPI {
   verificationPhrase: (deviceId: string) => Promise<IpcResponse<{ deviceId: string; phrase: string }>>
   onStatus: (cb: (status: RemoteStatusView) => void) => () => void
   onEvent: (cb: (event: RemoteEvent) => void) => () => void
+}
+
+/** Which of the three diffs a Changes-rail row refers to. */
+export type GitChangeMode = 'staged' | 'unstaged' | 'untracked'
+
+export interface GitChangeEntry {
+  file: string
+  /** Pre-rename path, present only on an R/C entry. */
+  oldFile?: string
+  /** Porcelain shorthand: M, A, D, R, C, T, U (unmerged) or ?? (untracked). */
+  status: string
+  added: number
+  removed: number
+  binary: boolean
+}
+
+export interface GitChangesResult {
+  branch: string
+  /** Commits HEAD has that the upstream does not — i.e. "needs pushing". */
+  ahead: number
+  behind: number
+  staged: GitChangeEntry[]
+  unstaged: GitChangeEntry[]
+  untracked: GitChangeEntry[]
+}
+
+/** The per-terminal dot's payload: counts only, from one status spawn. */
+export interface GitChangeCounts {
+  branch: string
+  ahead: number
+  behind: number
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
 }
 
 declare global {

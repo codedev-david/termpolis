@@ -1035,3 +1035,182 @@ describe('git:status-parsed', () => {
     expect(r.error).toContain('not a git repository')
   })
 })
+
+// ---------------------------------------------------------------------------
+// The Changes rail: git:changes / git:change-counts / git:change-diff
+// ---------------------------------------------------------------------------
+// These are ADDITIVE channels, deliberately not extensions of git:status-parsed. That handler
+// splits on newlines and does `.slice(3).trim()`, which structurally cannot carry a rename's old
+// path or a filename with a trailing space — and four suites pin its shape. So the rail gets -z
+// porcelain of its own. The parsing itself is unit-tested in gitChanges.test.ts; what is tested
+// here is the wiring: which argv runs, how many spawns, and what each failure mode returns.
+
+/** Build NUL-terminated porcelain, the way git actually writes it. */
+const zrec = (...recs: string[]): string => recs.map((r) => `${r}\0`).join('')
+
+describe('git:changes', () => {
+  // The shared beforeEach resets execFileSync but not execFile — the async path is the
+  // newer one — so anything asserting on spawn COUNT has to clear it itself.
+  beforeEach(() => { H.execFile.mockClear() })
+
+  it('reads status and both numstats in one round trip', async () => {
+    gitAsync((argv) => {
+      if (argv[0] === 'status') return zrec('## main...origin/main', 'M  a.ts', ' M b.ts', '?? c.ts')
+      if (argv.includes('--cached')) return '3\t1\ta.ts\0'
+      return '7\t2\tb.ts\0'
+    })
+    const r = await invoke('git:changes', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data.branch).toBe('main')
+    expect(r.data.staged).toEqual([
+      { file: 'a.ts', status: 'M', added: 3, removed: 1, binary: false },
+    ])
+    expect(r.data.unstaged).toEqual([
+      { file: 'b.ts', status: 'M', added: 7, removed: 2, binary: false },
+    ])
+    expect(r.data.untracked).toEqual([
+      { file: 'c.ts', status: '??', added: 0, removed: 0, binary: false },
+    ])
+  })
+
+  it('asks git for -z porcelain with the branch header, never newline-delimited output', async () => {
+    gitAsync(() => zrec('## main'))
+    await invoke('git:changes', { cwd: '/repo' })
+    expect(gitAsyncCalls()).toContain('status --porcelain -b -z')
+    expect(gitAsyncCalls()).toContain('diff --numstat -z')
+    expect(gitAsyncCalls()).toContain('diff --cached --numstat -z')
+  })
+
+  it('runs entirely off the async path, so a slow spawn cannot stall the PTY pump', async () => {
+    gitAsync(() => zrec('## main'))
+    await invoke('git:changes', { cwd: '/repo' })
+    expect(H.execFileSync).not.toHaveBeenCalled()
+  })
+
+  it('carries ahead/behind through, so the UI can flag unpushed work', async () => {
+    gitAsync(() => zrec('## main...origin/main [ahead 2, behind 5]'))
+    const r = await invoke('git:changes', { cwd: '/repo' })
+    expect(r.data).toMatchObject({ ahead: 2, behind: 5 })
+  })
+
+  it('still lists files when the numstats fail (a fresh repo has no diffable HEAD)', async () => {
+    // The .catch(() => '') on each numstat is the point: line counts are a nicety,
+    // the file list is not.
+    gitAsync((argv) => (argv[0] === 'diff' ? new Error('fatal: bad revision') : zrec('## main', 'A  new.ts')))
+    const r = await invoke('git:changes', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data.staged).toEqual([{ file: 'new.ts', status: 'A', added: 0, removed: 0, binary: false }])
+  })
+
+  it('returns an error envelope when status itself fails', async () => {
+    gitAsync(() => new Error('fatal: not a git repository'))
+    const r = await invoke('git:changes', { cwd: '/tmp' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('not a git repository')
+  })
+})
+
+describe('git:change-counts', () => {
+  beforeEach(() => { H.execFile.mockClear() })
+
+  it('counts every outstanding category from a single spawn', async () => {
+    gitAsync(() => zrec(
+      '## main...origin/main [ahead 1]',
+      'M  staged.ts', ' M dirty.ts', '?? new.ts', 'UU conflict.ts',
+    ))
+    const r = await invoke('git:change-counts', { cwd: '/repo' })
+    expect(r.data).toEqual({
+      branch: 'main', ahead: 1, behind: 0,
+      staged: 1, unstaged: 1, untracked: 1, conflicted: 1,
+    })
+    // One spawn is the whole reason for `-b`: this handler runs per terminal row on a
+    // 5s poll, and Windows charges ~100ms of pure process-creation tax per git call.
+    expect(gitAsyncCalls()).toEqual(['status --porcelain -b -z'])
+  })
+
+  it('counts a staged-and-then-modified file on both sides', async () => {
+    gitAsync(() => zrec('## main', 'MM both.ts'))
+    const r = await invoke('git:change-counts', { cwd: '/repo' })
+    expect(r.data).toMatchObject({ staged: 1, unstaged: 1 })
+  })
+
+  it('reports a clean, pushed repo as all zeroes rather than as nothing', async () => {
+    gitAsync(() => zrec('## main...origin/main'))
+    const r = await invoke('git:change-counts', { cwd: '/repo' })
+    expect(r.data).toMatchObject({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0, ahead: 0 })
+  })
+
+  it('succeeds with null outside a repo, so the sidebar dot simply stays hidden', async () => {
+    // Deliberately NOT an error envelope: most terminals are not in a repo, and an
+    // error per terminal per poll would be noise, not information.
+    gitAsync(() => new Error('fatal: not a git repository'))
+    const r = await invoke('git:change-counts', { cwd: '/tmp' })
+    expect(r.success).toBe(true)
+    expect(r.data).toBeNull()
+  })
+})
+
+describe('git:change-diff', () => {
+  // readFileSync is not cleared globally either, and module startup alone has already
+  // called it ~37 times, so the untracked-mode assertions clear it first.
+  beforeEach(() => { H.execFile.mockClear(); H.fs.readFileSync.mockClear() })
+
+  it('diffs the index for a staged file', async () => {
+    gitAsync(() => 'diff --git a/a.ts b/a.ts\n')
+    const r = await invoke('git:change-diff', { cwd: '/repo', file: 'a.ts', mode: 'staged' })
+    expect(r.success).toBe(true)
+    expect(gitAsyncCalls()).toEqual(['diff --cached -- a.ts'])
+  })
+
+  it('diffs the working tree for an unstaged file', async () => {
+    gitAsync(() => 'diff --git a/a.ts b/a.ts\n')
+    await invoke('git:change-diff', { cwd: '/repo', file: 'a.ts', mode: 'unstaged' })
+    expect(gitAsyncCalls()).toEqual(['diff -- a.ts'])
+  })
+
+  it('passes a filename with spaces as one argv element, never as shell text', async () => {
+    gitAsync(() => '')
+    await invoke('git:change-diff', { cwd: '/repo', file: 'my notes.ts', mode: 'unstaged' })
+    expect(H.execFile.mock.calls[0][1]).toEqual(['diff', '--', 'my notes.ts'])
+  })
+
+  it('stops a leading-dash filename being read as a flag', async () => {
+    gitAsync(() => '')
+    await invoke('git:change-diff', { cwd: '/repo', file: '--upload-pack=evil', mode: 'unstaged' })
+    // The `--` separator is what makes this safe; assert it is still there.
+    expect(H.execFile.mock.calls[0][1]).toEqual(['diff', '--', '--upload-pack=evil'])
+  })
+
+  it('synthesizes a diff for an untracked file, which git itself will not diff', async () => {
+    H.fs.readFileSync.mockReturnValueOnce(Buffer.from('alpha\nbeta\n'))
+    const r = await invoke('git:change-diff', { cwd: '/repo', file: 'new.ts', mode: 'untracked' })
+    expect(r.success).toBe(true)
+    expect(r.data).toContain('new file mode 100644')
+    expect(r.data).toContain('@@ -0,0 +1,2 @@')
+    expect(r.data).toContain('+alpha')
+    expect(H.execFile).not.toHaveBeenCalled()   // no spawn at all for this mode
+  })
+
+  it('refuses to read a path that escapes the repository', async () => {
+    const r = await invoke('git:change-diff', {
+      cwd: '/repo', file: '../../../Windows/System32/drivers/etc/hosts', mode: 'untracked',
+    })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('outside the repository')
+    expect(H.fs.readFileSync).not.toHaveBeenCalled()
+  })
+
+  it('returns an error envelope when the untracked file has vanished mid-poll', async () => {
+    H.fs.readFileSync.mockImplementationOnce(() => { throw new Error('ENOENT: no such file') })
+    const r = await invoke('git:change-diff', { cwd: '/repo', file: 'gone.ts', mode: 'untracked' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('ENOENT')
+  })
+
+  it('returns an error envelope when git diff fails', async () => {
+    gitAsync(() => new Error('fatal: ambiguous argument'))
+    const r = await invoke('git:change-diff', { cwd: '/repo', file: 'a.ts', mode: 'unstaged' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('ambiguous argument')
+  })
+})

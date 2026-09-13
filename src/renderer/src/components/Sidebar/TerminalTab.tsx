@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { TabPopover } from '../TabPopover/TabPopover'
+import { TerminalGitDot } from './TerminalGitDot'
 import type { TerminalSession } from '../../types'
 
 const SHELL_ICON: Record<string, string> = {
@@ -35,6 +36,9 @@ export function TerminalTab({ terminal, index, isActive, onClick, onClose, onUpd
         {SHELL_ICON[terminal.shellType] ?? '$'}
       </span>
       <span className="flex-1 text-sm truncate" title={index < 9 ? `${terminal.name} — Alt+${index + 1} to switch` : terminal.name}>{terminal.name}</span>
+      {/* Always visible, unlike ✎ — a dot you have to hover to find cannot be an
+          indicator. It renders nothing when this terminal is not in a repo. */}
+      <TerminalGitDot terminalId={terminal.id} cwd={terminal.cwd} />
       <button
         onClick={e => { e.stopPropagation(); setPopoverOpen(true) }}
         className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-white text-xs px-1"
