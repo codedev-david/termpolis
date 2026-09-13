@@ -396,7 +396,13 @@ function compressImageBlock(block: { source?: { type?: string; media_type?: stri
  * the compaction floor already excludes them; the explicit skip is defense-in-depth, because a
  * truncated path or glob would be actively misleading rather than merely elided.
  */
-const TOOL_USE_SKIP = new Set(['file_path', 'path', 'notebook_path', 'url', 'pattern', 'glob'])
+export const TOOL_USE_SKIP = new Set([
+  'file_path', 'path', 'notebook_path', 'url', 'pattern', 'glob',
+  // PATH_KEYS above claims every key it reads is in this set. Until now `filePath` and `file` were
+  // not, so the claim was false and those two were compressible by a route the comment said was
+  // closed. Both name a file; neither carries content.
+  'filePath', 'file',
+])
 
 /**
  * Fields whose bytes the agent COPIES FORWARD into the real world, and which therefore must survive
@@ -423,7 +429,7 @@ const TOOL_USE_SKIP = new Set(['file_path', 'path', 'notebook_path', 'url', 'pat
  * removes the entire failure class. The remaining tool_use fields — descriptions, prompts, MCP tool
  * bodies — are still compressed, and identifiers are still skipped above.
  */
-const TOOL_USE_VERBATIM = new Set([
+export const TOOL_USE_VERBATIM = new Set([
   'content',      // Write — the file body, replayed onto disk
   'command',      // Bash — replayed into a shell, heredocs and all
   'old_string',   // Edit — must match the file EXACTLY or the edit fails
@@ -573,11 +579,17 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
     // later block must not be encoded as a patch against something no longer on the wire.
     if (opts.decay) {
       const d = applyPrefixDecay(obj.messages as Array<{ content?: unknown }>, stashes)
-      if (d.blocks > 0) {
+      if (d.blocks > 0 || d.tuBlocks > 0) {
         changed = true
         stats.trBlocks += d.blocks
         stats.trOrigChars += d.origChars
         stats.trCompChars += d.compChars
+        // Decay's tool_use bytes bill to the tool_use bucket. They used to be added to trOrigChars
+        // with everything else, which credited tool_result compression with work it never did —
+        // the exact blend the WireStats comment above says these two counters exist to prevent.
+        stats.tuBlocks += d.tuBlocks
+        stats.tuOrigChars += d.tuOrigChars
+        stats.tuCompChars += d.tuCompChars
       }
     }
     for (const m of obj.messages as Array<{ content?: unknown }>) {

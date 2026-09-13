@@ -200,11 +200,35 @@ describe('wire window — mode-driven, validated, fail-safe (v1.30)', () => {
   })
 
   it('default window is the aggressive profile — head 12 + tail 6, middle elided', () => {
+    // maxChars is lifted so that the LINE window is what this case actually measures. BIG windows
+    // down to ~1021 chars — just over aggressive's 1000-char field bound — so at the true default
+    // the char clamp fires on top and cuts the head at 600 chars, which lands mid-way through
+    // line 10, before line 11 ever starts. That is correct: aggressive promises <=1000 chars per
+    // field, and the case below locks it. It simply isn't what "head 12 + tail 6" describes, and
+    // before v1.41.4 the two steps could not both fire because maxChars was only a trigger.
+    setWireWindow({ ...windowForMode('aggressive')!, maxChars: 1_000_000 })
     const out = compactToolText(BIG).text
     expect(out).toContain('line number 11 with')     // 12th head line kept
     expect(out).not.toContain('line number 12 with') // 13th line elided
     expect(out).toContain('line number 119 with')    // last tail line kept
     expect(out).toContain('lines elided')
+  })
+
+  it('composes the char clamp on top of the line window at the real aggressive bound', () => {
+    // The counterpart to the case above, at the untouched default. Both steps fire: the line
+    // window cuts 120 lines to 18, and the clamp then holds the body to the mode's 1000-char
+    // bound (budget = maxChars - CHAR_ELISION.length, so head + marker + tail lands at exactly
+    // maxChars). The retrieve notice is appended AFTER the clamp and is deliberately outside that
+    // bound, so this asserts on the markers and on tail survival rather than a raw length.
+    const res = compactToolText(BIG)
+    const body = res.text.split('\n\n[headroom]')[0]
+    expect(body.length).toBeLessThanOrEqual(1000)
+    expect(res.text).toContain('lines elided') // step 2 fired
+    expect(res.text).toContain('chars elided') // ...and the clamp fired on top of it
+    // The clamp keeps a head AND a tail precisely so the END of a result survives; a plain
+    // slice(0, maxChars) would drop the exit status, the error, the answer.
+    expect(res.text).toContain('line number 119 with')
+    expect(res.text.length).toBeLessThan(BIG.length)
   })
 
   it('setWireWindow makes compression follow the mode: aggressive << balanced << conservative', () => {

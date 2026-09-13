@@ -535,12 +535,16 @@ describe('claudeCodeWatcher — malformed transcript entries', () => {
 import {
   compactToolText,
   rewriteMessagesBody,
+  setWireWindow,
   windowForMode,
   type ImageCompressor,
 } from '../../src/main/headroomProxy/wireCompress'
 
+/** The real default window. Cases that hold the char clamp off restore to exactly this. */
+const AGGRESSIVE = windowForMode('aggressive')!
+
 /** The default (aggressive) compaction floor — a block has to clear it to reach the pre-pass. */
-const FLOOR = windowForMode('aggressive')!.floorChars
+const FLOOR = AGGRESSIVE.floorChars
 
 /** A body that round-trips byte-identically through JSON — rewriteMessagesBody requires it. */
 function messagesBody(content: unknown[]): string {
@@ -548,9 +552,20 @@ function messagesBody(content: unknown[]): string {
 }
 
 describe('wireCompress — HTML pre-pass and odd content blocks', () => {
+  // Two cases below lift maxChars to isolate the pre-pass. Put the real window back afterwards so
+  // that widening cannot leak into anything else in this file.
+  afterEach(() => { setWireWindow(AGGRESSIVE) })
+
   it('forwards markup-looking text unchanged when the HTML pre-pass cannot shrink it', () => {
     // 120 unclosed "<div …" tokens: looksLikeHtml says yes, but there is not a single ">" for
     // compactWeb to strip and no whitespace to collapse, so the reduction is a no-op.
+    // maxChars is lifted past this block on purpose. It used to be only a TRIGGER for the
+    // head/tail window and never a bound, so a single line that cleared the floor still rode
+    // through untouched. It is a real bound now — and because floorChars (1600) is LARGER than
+    // the default maxChars (1000), every block that reaches the pre-pass at all is longer than
+    // the bound. So the "pre-pass cannot shrink it, forward unchanged" arm this case exists to
+    // cover is only reachable with a window that cannot fire.
+    setWireWindow({ ...AGGRESSIVE, maxChars: 1_000_000 })
     const text = Array.from({ length: 120 }, (_, i) => `<div data-row-${i}`).join(' ')
     expect(text.length).toBeGreaterThan(FLOOR)
 
@@ -588,16 +603,29 @@ describe('wireCompress — HTML pre-pass and odd content blocks', () => {
   })
 
   it('returns the original untouched when the retrieve notice would cost more than the pre-pass saved', () => {
-    // Markup-light: twelve bare <p> wrappers strip to roughly what the ~110-char retrieve_full
-    // notice costs. Handing back the "compressed" block anyway would put a LARGER block into the
-    // cached prefix and re-read it at that size every later turn — a pure loss, and the exact
-    // inverse of what this layer is for. Shrink-only has to hold after the notice, not before.
+    // Markup-LIGHT on purpose: two <p> wrappers inside one <html><body>, so compactWeb can delete
+    // only 40 chars of tags — comfortably less than the ~107-char retrieve_full notice. Handing
+    // back the "compressed" block anyway would put a LARGER block into the cached prefix and
+    // re-read it at that size every later turn: a pure loss, and the exact inverse of what this
+    // layer is for. Shrink-only has to hold AFTER the notice is added, not before.
+    //
+    // The old fixture used twelve <p> wrappers plus a doctype and head, under a comment claiming
+    // they stripped "roughly what the notice costs". They did not — that stripped ~157 chars
+    // against a ~107-char notice, so the guard named here could never fire. The case passed
+    // anyway because compactText's head/tail window used to OVERLAP on a block this short and
+    // hand back text LONGER than its input, which tripped the net-no-shrink return at
+    // wireCompress.ts:285. It was passing on the bug, one return statement above the one it names.
+    //
+    // maxChars is lifted for the same reason as the case above: at the default window the char
+    // clamp fires first, shrinks the body far below the notice cost, and masks this guard.
+    setWireWindow({ ...AGGRESSIVE, maxChars: 1_000_000 })
     const text =
-      '<!doctype html><html><head><title>Docs</title></head><body>' +
+      '<html><body>' +
       Array.from(
-        { length: 12 },
-        (_, i) => `<p>Paragraph number ${i} with several readable words in it, padded out far` +
-          ' enough that the whole document clears the compaction floor on its own.</p>',
+        { length: 2 },
+        (_, i) => `<p>Paragraph number ${i} ` +
+          'with several readable words in it, '.repeat(23) +
+          'padded out far enough that the document clears the compaction floor.</p>',
       ).join('') +
       '</body></html>'
     expect(text.length).toBeGreaterThan(FLOOR)

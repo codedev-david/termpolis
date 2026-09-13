@@ -16,8 +16,16 @@ afterEach(() => { setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000, f
 
 describe('wire rewrite — no-shrink and pure-dedup paths', () => {
   it('forwards the original when compaction yields no net shrink', () => {
-    // Past the mode floor (short-circuit) but a single line: nothing to dedup,
-    // nothing to elide — compaction can only break even, so the original wins.
+    // Past the mode floor (short-circuit) but a single line: nothing to dedup and nothing to
+    // elide, so compaction can only break even and the original wins.
+    //
+    // The window is widened for this case. maxChars used to be only a TRIGGER for the head/tail
+    // window and never a bound, so a single 2000-char line rode through untouched at the default
+    // of 1000 and this case passed by accident. maxChars is a real bound now, so at the default
+    // that line is clamped — correctly, since one enormous line is exactly the minified-payload
+    // class the clamp exists for. The no-net-shrink fail-open asserted here is a different path,
+    // and it needs a window that cannot fire in order to be tested at all.
+    setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1_000_000, floorChars: 1600 })
     const oneLongLine = 'x'.repeat(2000)
     const raw = bodyWith(oneLongLine)
     const r = rewriteMessagesBody(raw)

@@ -15,6 +15,27 @@ const proxyResult = (origChars: number, compChars: number): ProxyResultMsg =>
 describe('unified savings receipt', () => {
   beforeEach(() => { resetLedger(); resetProxyLedger() })
 
+  it('divides the prefix head by the population that recorded it, not by every request ever', () => {
+    // sysChars/toolsChars/tpToolsChars have only been written since v1.36.0; `requests` counts back
+    // to v1.29. Dividing the newer numerator by the older denominator understated this install's
+    // system prompt by ~3.2x, in the panel the user reads to decide what to trim.
+    loadProxyBase({
+      requests: 182_529,          // v1.29+ population
+      steeredRequests: 40_991,    // v1.36+ population...
+      unsteeredRequests: 16_327,  // ...summing to 57,318 — the requests that actually contributed
+      sysChars: 565_353_369,
+    })
+    const c = summarizeUnifiedSavings().cumulative
+    expect(c.sysTokensPerRequest).toBe(Math.round(565_353_369 / 57_318 / 4))
+    // The old denominator reported less than a third of the true figure.
+    expect(c.sysTokensPerRequest).toBeGreaterThan(Math.round(565_353_369 / 182_529 / 4) * 3)
+  })
+
+  it('falls back to `requests` for a pre-v1.36 totals file with no steering split', () => {
+    loadProxyBase({ requests: 1000, sysChars: 400_000 })
+    expect(summarizeUnifiedSavings().cumulative.sysTokensPerRequest).toBe(100)
+  })
+
   it('sums both layers into one gross figure', () => {
     recordProxyResult(proxyResult(4000, 1000))        // 1000 orig tokens, 750 saved
     recordEvent({ tool: 'code_search', kind: 'compress', savedTokens: 250, origTokens: 400 })

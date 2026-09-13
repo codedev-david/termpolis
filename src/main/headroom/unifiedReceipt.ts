@@ -96,6 +96,20 @@ function perRequestTokens(chars: number, requests: number): number {
   if (!(requests > 0)) return 0
   return Math.round(chars / requests / 4)
 }
+
+/**
+ * The population that actually contributed prefix-head chars.
+ *
+ * `requests` has counted every request since v1.29; sysChars/toolsChars/tpToolsChars have only been
+ * recorded since v1.36.0. Dividing the newer numerator by the older denominator is a category
+ * error, and on this install it is a 3.2x one. The steered/unsteered split was added in the same
+ * release as the char counters, so their sum is the right denominator — it grows in lockstep.
+ * Falls back to `requests` only if that sum is empty, which is the pre-v1.36 shape.
+ */
+function prefixHeadRequests(proxy: { requests: number; steeredRequests?: number; unsteeredRequests?: number }): number {
+  const n = (proxy.steeredRequests || 0) + (proxy.unsteeredRequests || 0)
+  return n > 0 ? n : proxy.requests
+}
 function mean(total: number, n: number): number {
   return n > 0 ? Math.round(total / n) : 0
 }
@@ -148,9 +162,13 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     retrieveUnknownTokens: tool.retrieveUnknownTokens,
     retrieveExpired: tool.retrieveExpired,
     unbackedEvictions: ccrStats().unbackedEvictions,
-    sysTokensPerRequest: perRequestTokens(proxy.sysChars, proxy.requests),
-    toolsTokensPerRequest: perRequestTokens(proxy.toolsChars, proxy.requests),
-    tpToolsTokensPerRequest: perRequestTokens(proxy.tpToolsChars, proxy.requests),
+    // Divided by the PREFIX-HEAD population, not by `requests`. sysChars/toolsChars/tpToolsChars
+    // have only been recorded since v1.36.0, while `requests` counts every request since v1.29 —
+    // 182.5k against 57.3k on this install, so the old denominator understated the prefix head by
+    // ~3.2x and the panel reported a system prompt roughly a third of its real size.
+    sysTokensPerRequest: perRequestTokens(proxy.sysChars, prefixHeadRequests(proxy)),
+    toolsTokensPerRequest: perRequestTokens(proxy.toolsChars, prefixHeadRequests(proxy)),
+    tpToolsTokensPerRequest: perRequestTokens(proxy.tpToolsChars, prefixHeadRequests(proxy)),
     toolCount: proxy.maxToolCount,
     steeredRequests: proxy.steeredRequests,
     unsteeredRequests: proxy.unsteeredRequests,

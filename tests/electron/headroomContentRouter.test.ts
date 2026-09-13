@@ -134,12 +134,18 @@ describe('content router — JSON', () => {
     expect(r.text.length).toBeLessThan(pretty.length / 10)
   })
 
-  it('REFUSES a payload with an unsafe integer and falls back to the line window', () => {
+  it('REFUSES a payload with an unsafe integer, and the char bound takes over', () => {
     const raw = `{"id":12345678901234567890,"rows":[${Array.from({ length: 200 }, (_, i) => `{"i":${i}}`).join(',')}]}`
     const r = compactToolText(raw)
-    // Fallback is the plain window; on a single line it cannot win, so the block is forwarded whole.
-    expect(r.text).toBe(raw)
-    expect(r.stash).toBeUndefined()
+    // The JSON branch must still refuse: reserializing 12345678901234567890 silently yields
+    // 12345678901234567000. Whatever survives is SLICED, never reformatted.
+    expect(r.text).toContain('12345678901234567890')
+    // This used to assert the block was forwarded WHOLE, because the line window cannot win on a
+    // single line. That was the defect, not the contract — a minified payload is one line, so the
+    // entire class rode the wire uncompressed. maxChars is a bound now, not just a trigger.
+    expect(r.text.length).toBeLessThan(raw.length)
+    // ...and because bytes were dropped, the original stays recoverable.
+    expect(r.stash?.original).toBe(raw)
   })
 
   it('adds no retrieve token when the only saving was whitespace', () => {

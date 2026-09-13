@@ -50,17 +50,26 @@
  */
 
 import crypto from 'crypto'
+import { isExempt } from '../headroom/router'
+import { TOOL_USE_SKIP, TOOL_USE_VERBATIM } from './wireCompress'
 
 /** Messages before which decay starts applying at all. Below this a break can't repay itself. */
 export const DECAY_FIRST_THRESHOLD = 128
 /** Blocks smaller than this are left alone: the stub itself costs ~30 tokens. */
 export const DECAY_MIN_CHARS = 600
 /**
- * tool_use keys that NAME a thing rather than carry content. Same exclusion the live compressor
- * makes: a truncated path or URL is actively misleading, where an aged-out file body is merely
- * shorter and recoverable.
+ * The tool_use exclusions are IMPORTED from the live compressor rather than restated here.
+ *
+ * They used to be a local copy of TOOL_USE_SKIP alone, under a comment claiming it was "the same
+ * exclusion the live compressor makes". It was not. The compressor applies three rules — skip the
+ * naming keys, skip exempt tools, and never touch TOOL_USE_VERBATIM — and decay applied only the
+ * first, so a Write `content`, a Bash `command` or an Edit `old_string` old enough to age out was
+ * replaced wholesale by a 134-char stub. That is not a shorter history, it is a REWRITTEN one: the
+ * model replays its own prior tool input byte-for-byte, so the stub text lands in a real file or a
+ * real shell. See the failure transcript at wireCompress.ts:412-420.
+ *
+ * Sharing the sets is the point. Two lists that must agree will drift; one list cannot.
  */
-const DECAY_SKIP_KEYS = new Set(['file_path', 'path', 'notebook_path', 'url', 'pattern', 'glob'])
 
 /** Effective-cost weights, from Anthropic's published multipliers. */
 const CACHE_READ_W = 0.1
@@ -97,7 +106,11 @@ function stubFor(text: string, stashes: Array<{ token: string; original: string 
   return `[headroom] Aged out of this conversation's active context — call the retrieve_full tool with token "${token}" to expand it.`
 }
 
-export interface DecayCounts { blocks: number; origChars: number; compChars: number }
+export interface DecayCounts {
+  blocks: number; origChars: number; compChars: number
+  /** tool_use input bytes, counted apart from tool_result so each bucket is billed its own work. */
+  tuBlocks: number; tuOrigChars: number; tuCompChars: number
+}
 
 /**
  * Replace large text in messages older than the cutoff with a retrievable stub, in place.
@@ -108,7 +121,9 @@ export function applyPrefixDecay(
   messages: Array<{ content?: unknown }>,
   stashes: Array<{ token: string; original: string }>,
 ): DecayCounts {
-  const counts: DecayCounts = { blocks: 0, origChars: 0, compChars: 0 }
+  const counts: DecayCounts = {
+    blocks: 0, origChars: 0, compChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
+  }
   const cutoff = decayCutoff(messages.length)
   for (let i = 0; i < cutoff; i++) {
     const m = messages[i]
@@ -131,14 +146,18 @@ export function applyPrefixDecay(
           }
         }
       } else if (b.type === 'tool_use' && b.input && typeof b.input === 'object' && !Array.isArray(b.input)) {
+        // An exempt tool's input is never touched, at any age. memory_*/swarm_* carry the brain's
+        // own full-fidelity record; aging it out would corrupt what the app learns from.
+        if (isExempt(typeof b.name === 'string' ? b.name : '')) continue
         const rec = b.input as Record<string, unknown>
         for (const k of Object.keys(rec)) {
-          if (DECAY_SKIP_KEYS.has(k)) continue
+          // Age is no defence for an artifact-bearing field: see the note above the imports.
+          if (TOOL_USE_SKIP.has(k) || TOOL_USE_VERBATIM.has(k)) continue
           const v = rec[k]
           if (typeof v === 'string' && v.length >= DECAY_MIN_CHARS) {
-            counts.blocks++; counts.origChars += v.length
+            counts.tuBlocks++; counts.tuOrigChars += v.length
             rec[k] = stubFor(v, stashes)
-            counts.compChars += (rec[k] as string).length
+            counts.tuCompChars += (rec[k] as string).length
           }
         }
       }
