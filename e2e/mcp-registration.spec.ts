@@ -221,7 +221,11 @@ test('Codex CLI: config.toml has termpolis MCP server', () => {
   if (fs.existsSync(configPath)) {
     const content = fs.readFileSync(configPath, 'utf-8')
     expect(content).toContain('[mcp_servers.termpolis]')
-    expect(content).toContain('command = "node"')
+    // The command may be the bare `node` (relying on PATH) or an absolute
+    // interpreter path — registration writes whichever it resolved, and on
+    // Windows that is typically `C:\\Program Files\\nodejs\\node.exe`.
+    // What matters is that it IS node, not how it was spelled.
+    expect(content).toMatch(/command = "(?:[^"]*[\\/])?node(?:\.exe)?"/)
     expect(content).toContain('stdio-adapter.cjs')
   }
 })
@@ -235,7 +239,8 @@ test('Gemini CLI: settings.json has termpolis MCP server', () => {
   if (fs.existsSync(settingsPath)) {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
     expect(settings.mcpServers?.termpolis).toBeTruthy()
-    expect(settings.mcpServers.termpolis.command).toBe('node')
+    // Bare `node` or an absolute interpreter path — see the Codex test above.
+    expect(settings.mcpServers.termpolis.command).toMatch(/(?:^|[\\/])node(?:\.exe)?$/)
     expect(settings.mcpServers.termpolis.args[0]).toContain('stdio-adapter.cjs')
   }
 })
