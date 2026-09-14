@@ -1,0 +1,23 @@
+// Where a newly created terminal should start.
+//
+// This is not cosmetic. A terminal's git dot and its Changes rail both read the
+// LAUNCH directory (`TerminalSession.cwd`), and on Windows there is no way to follow a
+// `cd` afterwards — getTerminalCwdAsync returns null there and the app has no shell
+// integration. So a terminal launched in the home directory can never show a git dot,
+// no matter which repo you change into. Defaulting every "+ Add Terminal" terminal to
+// the home directory is what made the dot invisible for every non-agent terminal.
+//
+// Order: the folder explicitly chosen in the New Terminal modal, then the directory the
+// active terminal was launched in (so a new tab opens where you already are, as every
+// other terminal app does), and only then the home directory.
+export function resolveNewTerminalCwd(
+  chosen: string | undefined,
+  activeCwd: string | undefined,
+  homedir: string,
+): string {
+  const picked = chosen?.trim()
+  if (picked) return picked
+  const active = activeCwd?.trim()
+  if (active) return active
+  return homedir
+}

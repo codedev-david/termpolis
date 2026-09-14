@@ -10,6 +10,7 @@ import { GitPanel } from '../GitPanel/GitPanel'
 import { WorkflowSidebarSection } from '../Workflow/WorkflowSidebarSection'
 import { WorkflowOverlayBody, type WorkflowOverlayView } from '../Workflow/WorkflowOverlayBody'
 import { getHomedir } from '../../lib/homedir'
+import { resolveNewTerminalCwd } from '../../lib/newTerminalCwd'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from '../../types'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
@@ -113,9 +114,13 @@ export function Sidebar() {
     }
   }, [workflowCwd, workflowNonce, setWorkflows])
 
-  const handleCreate = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
+  const handleCreate = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string; cwd?: string }) => {
     const id = uuid()
-    const cwd = await getHomedir()
+    // This launch directory is the ONLY thing the git dot and the Changes rail ever see
+    // (Windows cannot follow a `cd`), so pinning every new terminal to the home
+    // directory left both permanently blank. See newTerminalCwd.ts.
+    const activeCwd = terminals.find(t => t.id === activeTerminalId)?.cwd
+    const cwd = resolveNewTerminalCwd(opts.cwd, activeCwd, await getHomedir())
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) { alert(`Failed to open terminal: ${res.error}`); return }
     const defaults = getTerminalDefaults()
@@ -239,6 +244,7 @@ export function Sidebar() {
           shells={availableShells}
           nextIndex={terminals.length + 1}
           defaultShell={defaultShell}
+          defaultCwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
           onCreate={handleCreate}
           onCancel={() => setShowAddModal(false)}
         />

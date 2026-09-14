@@ -73,12 +73,13 @@ vi.mock('../../src/renderer/src/components/Sidebar/TerminalTab', () => ({
 // This stub passes the appearance fields the sibling suite's stub omits, so the
 // left-hand side of handleCreate's `??` fallbacks is reached.
 vi.mock('../../src/renderer/src/components/Sidebar/AddTerminalModal', () => ({
-  AddTerminalModal: ({ shells, nextIndex, defaultShell, onCreate }: any) => (
+  AddTerminalModal: ({ shells, nextIndex, defaultShell, defaultCwd, onCreate }: any) => (
     <div
       data-testid="add-modal"
       data-shell-count={shells.length}
       data-next-index={nextIndex}
       data-default-shell={defaultShell}
+      data-default-cwd={defaultCwd ?? ''}
     >
       <button
         data-testid="create-full"
@@ -176,11 +177,52 @@ describe('Sidebar — tab write-back, appearance overrides and cwd fallbacks', (
         fontSize: 22,
         theme: 'nord',
         fontFamily: 'Fira Code, monospace',
-        cwd: '/home/user',
+        // Inherited from the active terminal (/proj), NOT the home directory. Pinning
+        // every new terminal to home is what left its git dot blank for good.
+        cwd: '/proj',
       }),
     )
     // A successful create dismisses the modal.
     expect(screen.queryByTestId('add-modal')).not.toBeInTheDocument()
+  })
+
+  // The regression that made the git dot invisible: handleCreate called getHomedir()
+  // unconditionally, so every terminal it made launched in the home directory — never a
+  // repo — and the dot, which can only ever read the LAUNCH directory (Windows cannot
+  // follow a `cd`), rendered nothing for the life of that terminal.
+  it('launches a new terminal where the active one is, not in the home directory', async () => {
+    mockState = withProject()
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('+ Add Terminal'))
+
+    fireEvent.click(screen.getByTestId('create-full'))
+
+    await waitFor(() => expect(mockAddTerminal).toHaveBeenCalled())
+    expect(mockAddTerminal).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/proj' }))
+    // The pty must be spawned there too, or the dot would describe a repo the shell
+    // is not actually sitting in.
+    expect((window as any).termpolis.createTerminal).toHaveBeenCalledWith(
+      expect.any(String), 'zsh', '/proj',
+    )
+  })
+
+  it('falls back to the home directory when there is no active terminal to inherit from', async () => {
+    mockState = baseState()
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('+ Add Terminal'))
+
+    fireEvent.click(screen.getByTestId('create-full'))
+
+    await waitFor(() => expect(mockAddTerminal).toHaveBeenCalled())
+    expect(mockAddTerminal).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/home/user' }))
+  })
+
+  it('offers the active terminal directory as the modal default folder', () => {
+    mockState = withProject()
+    render(<Sidebar />)
+    fireEvent.click(screen.getByText('+ Add Terminal'))
+
+    expect(screen.getByTestId('add-modal').dataset.defaultCwd).toBe('/proj')
   })
 
   it('saving in the workflow overlay re-reads the project workflow list', async () => {

@@ -41,6 +41,7 @@ import { primaryModifier } from './lib/platform'
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
 import { sanitizeVoiceSettings } from './lib/voice/voicePipeline'
 import { getHomedir } from './lib/homedir'
+import { resolveNewTerminalCwd } from './lib/newTerminalCwd'
 import { getTerminalDefaults, agentTerminalName } from './lib/terminalDefaults'
 import { v4 as uuid } from 'uuid'
 import type { ShellInfo } from './types'
@@ -736,9 +737,13 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [memoryNotice, setMemoryNotice])
 
-  const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string }) => {
+  const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string; cwd?: string }) => {
     const id = uuid()
-    const cwd = await getHomedir()
+    // Not merely a nicety: this launch directory is the ONLY thing the git dot and the
+    // Changes rail ever see (Windows cannot follow a `cd`), so pinning every new
+    // terminal to the home directory left both permanently blank. See newTerminalCwd.ts.
+    const activeCwd = terminals.find(t => t.id === activeTerminalId)?.cwd
+    const cwd = resolveNewTerminalCwd(opts.cwd, activeCwd, await getHomedir())
     const res = await window.termpolis.createTerminal(id, opts.shellType, cwd)
     if (!res.success) { alert(`Failed to open terminal: ${res.error}`); return }
     const defaults = getTerminalDefaults()
@@ -1012,6 +1017,7 @@ export default function App() {
             shells={availableShells}
             nextIndex={terminals.length + 1}
             defaultShell={defaultShell}
+            defaultCwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
             onCreate={handleCreateTerminal}
             onCancel={() => setShowAddModal(false)}
           />

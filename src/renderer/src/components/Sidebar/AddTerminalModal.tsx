@@ -12,11 +12,13 @@ interface Props {
   shells: ShellInfo[]
   nextIndex: number
   defaultShell: ShellType
-  onCreate: (opts: { name: string; shellType: ShellType; color: string; fontSize: number; theme: string; fontFamily: string }) => void
+  /** Where the terminal should start; '' means the home directory. */
+  defaultCwd?: string
+  onCreate: (opts: { name: string; shellType: ShellType; color: string; fontSize: number; theme: string; fontFamily: string; cwd: string }) => void
   onCancel: () => void
 }
 
-export function AddTerminalModal({ shells, nextIndex, defaultShell, onCreate, onCancel }: Props) {
+export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, onCreate, onCancel }: Props) {
   // Seed from the user's saved Terminal Defaults (Settings → General); anything
   // changed here overrides the defaults for this one terminal.
   const [defaults] = useState(() => getTerminalDefaults())
@@ -26,11 +28,26 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, onCreate, on
   const [fontSize, setFontSize] = useState(defaults.fontSize)
   const [theme, setTheme] = useState(defaults.theme)
   const [fontFamily, setFontFamily] = useState(defaults.fontFamily)
+  const [cwd, setCwd] = useState(defaultCwd ?? '')
 
   const selectedTheme = getTheme(theme)
 
   const handleFontSizeChange = (value: number) => {
     setFontSize(Math.min(32, Math.max(8, value)))
+  }
+
+  const handleBrowse = async () => {
+    const pick = window.termpolis?.pickDirectory
+    // Checked synchronously so the button is inert rather than throwing in a host
+    // with no bridge (tests, the pre-preload first paint).
+    if (typeof pick !== 'function') return
+    try {
+      const res = await pick(cwd || undefined)
+      // A dismissed picker resolves with no path: keep whatever was already chosen.
+      if (res?.success && res.data) setCwd(res.data)
+    } catch {
+      /* picker unavailable — leave the folder as it is */
+    }
   }
 
   return (
@@ -46,6 +63,26 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, onCreate, on
             onChange={e => setName(e.target.value)}
             className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none focus:border-[#0078d4]"
           />
+        </label>
+
+        {/* Folder. The one field that decides whether this terminal can ever show a git
+            dot: the dot and the Changes rail both read the launch directory, and on
+            Windows nothing can follow a `cd` afterwards. */}
+        <label className="flex flex-col gap-1 text-sm">
+          Folder
+          <div className="flex items-center gap-2">
+            <input
+              value={cwd}
+              onChange={e => setCwd(e.target.value)}
+              placeholder="Home directory"
+              spellCheck={false}
+              className="flex-1 min-w-0 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none focus:border-[#0078d4]"
+            />
+            <button
+              onClick={handleBrowse}
+              className="px-2 py-1 text-sm rounded border border-[#3c3c3c] hover:bg-[#3c3c3c] whitespace-nowrap"
+            >Browse…</button>
+          </div>
         </label>
 
         {/* Shell + Font Size side by side */}
@@ -169,6 +206,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, onCreate, on
               fontSize,
               theme,
               fontFamily,
+              cwd: cwd.trim(),
             })}
             className="px-3 py-1 text-sm rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
           >Create</button>
