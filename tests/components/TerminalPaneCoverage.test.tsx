@@ -43,7 +43,7 @@ const H = vi.hoisted(() => {
     selectAll: vi.fn(),
     select: vi.fn(),
     loadAddon: vi.fn(),
-    parser: { registerCsiHandler: vi.fn() },
+    parser: { registerCsiHandler: vi.fn(), registerOscHandler: vi.fn() },
     unicode: { activeVersion: '11', register: vi.fn() },
     options: {} as Record<string, any>,
     cols: 80,
@@ -1164,13 +1164,18 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
   // =========================================================================
   describe('prompt parsing', () => {
     it('a parsed prompt publishes cwd + branch to the status bar and back into the store', () => {
+      // Platform-pinned the way cwdPath's own suite does it (see its "defaults to the
+      // host platform" case): the normalizer turns C:/repo/app into a native
+      // C:\repo\app on Windows, while off Windows it is not a path at all and falls
+      // back to the shell's own text.
+      const expected = process.platform === 'win32' ? 'C:\\repo\\app' : 'C:/repo/app'
       H.parsePrompt.mockReturnValue({ cwd: 'C:/repo/app', gitBranch: 'feature/x' })
       render(<TerminalPane {...defaultProps} />)
 
       emitPty('user@host MINGW64 /c/repo/app (feature/x)\n$ ')
 
-      expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: 'C:/repo/app' })
-      expect(screen.getByTestId('sb-cwd')).toHaveTextContent('C:/repo/app')
+      expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: expected })
+      expect(screen.getByTestId('sb-cwd')).toHaveTextContent(expected)
       expect(screen.getByTestId('sb-branch')).toHaveTextContent('feature/x')
     })
 
@@ -1547,6 +1552,82 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
   //     pasted at the cursor 1.5s later, on top of a command that was never submitted.
   //     The pane must gate on a SUBMITTED launch command and an EMPTY input line.
   // =========================================================================
+  // =========================================================================
+  // 12b. OSC shell integration → store cwd (the mechanism that follows a `cd`)
+  // =========================================================================
+  describe('OSC cwd reporting', () => {
+    /** The callback TerminalPane registered for an OSC identifier. */
+    const oscHandler = (ident: number): ((payload: string) => boolean) => {
+      const calls = H.term.parser.registerOscHandler.mock.calls as Array<[number, (p: string) => boolean]>
+      const hit = [...calls].reverse().find((c) => c[0] === ident)
+      if (!hit) throw new Error(`no OSC ${ident} handler was registered`)
+      return hit[1]
+    }
+
+    it('OSC 7 publishes the reported directory and swallows the payload', () => {
+      // Pinned per platform: C:/repo/app is a native path on Windows and not a path at
+      // all elsewhere, where it falls back to the shell's own text.
+      const expected = process.platform === 'win32' ? 'C:\\repo\\app' : '/C:/repo/app'
+      render(<TerminalPane {...defaultProps} />)
+
+      expect(oscHandler(7)('file:///C:/repo/app')).toBe(true)
+
+      expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: expected })
+    })
+
+    it('OSC 7 falls back to the raw path when the platform cannot open it', () => {
+      // WSL inside a Windows build. decodeOsc7 answers null, but the shell really is
+      // there — dropping it would strand the mark on the directory just left.
+      render(<TerminalPane {...defaultProps} />)
+
+      expect(oscHandler(7)('file://wsl/home/dev/repo')).toBe(true)
+
+      expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: '/home/dev/repo' })
+    })
+
+    it('OSC 7 ignores a payload that is not a file URI', () => {
+      render(<TerminalPane {...defaultProps} />)
+      H.updateTerminal.mockClear()
+
+      expect(oscHandler(7)('https://example.com/x')).toBe(true)
+
+      expect(H.updateTerminal).not.toHaveBeenCalled()
+    })
+
+    it('OSC 9 claims the "9;<path>" directory form', () => {
+      const expected = process.platform === 'win32' ? 'C:\\repo\\app' : 'C:/repo/app'
+      render(<TerminalPane {...defaultProps} />)
+
+      expect(oscHandler(9)('9;C:/repo/app')).toBe(true)
+
+      expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: expected })
+    })
+
+    it('OSC 9 hands the progress and notification forms back to xterm', () => {
+      // Returning true here would eat ConEmu progress reports and desktop
+      // notifications, which share OSC 9 with the directory form.
+      render(<TerminalPane {...defaultProps} />)
+      H.updateTerminal.mockClear()
+
+      expect(oscHandler(9)('4;50')).toBe(false)
+      expect(oscHandler(9)('Build finished')).toBe(false)
+
+      expect(H.updateTerminal).not.toHaveBeenCalled()
+    })
+
+    it('does NOT write to the store when the reported cwd is the current one', () => {
+      // Same perf guard as the prompt path: a shell re-reports its directory on every
+      // prompt, and each write replaces the whole terminals array.
+      setStore({ terminals: [{ id: 'term-1', isSwarm: false, cwd: '/home/dev/repo' }] })
+      render(<TerminalPane {...defaultProps} />)
+      H.updateTerminal.mockClear()
+
+      expect(oscHandler(7)('file:///home/dev/repo')).toBe(true)
+
+      expect(H.updateTerminal).not.toHaveBeenCalled()
+    })
+  })
+
   describe('launch primer gate wiring', () => {
     const settle = async (ms: number): Promise<void> => {
       await act(async () => { await vi.advanceTimersByTimeAsync(ms) })

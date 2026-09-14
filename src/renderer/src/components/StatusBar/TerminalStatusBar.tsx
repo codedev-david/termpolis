@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { ShellType } from '../../types'
 import type { AgentInfo } from '../../lib/agentDetector'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
+import { useTerminalStore } from '../../store/terminalStore'
+import { normalizeShellPath, samePath } from '../../../../shared/cwdPath'
 
 interface Props {
   terminalId: string
@@ -22,9 +24,24 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
     const fetchStatus = async () => {
       try {
         const res = await window.termpolis.getTerminalStatus(terminalId, cwd)
-        if (!disposed && res.success && res.data) {
-          setIpcBranch(res.data.gitBranch)
-        }
+        if (disposed || !res.success || !res.data) return
+        setIpcBranch(res.data.gitBranch)
+
+        // Publish the live cwd this poll has ALREADY paid for.
+        //
+        // main resolves it from the shell's own process (/proc/<pid>/cwd, or lsof on
+        // macOS), so it needs no cooperation from the shell — which makes it the one
+        // mechanism that survives the shells we cannot inject into. zsh and fish get no
+        // OSC 7 from us, and on any shell a user's own PROMPT_COMMAND/PROMPT can replace
+        // ours. This value was being fetched every 5s and dropped on the floor, which is
+        // why a `cd` never reached the git mark on POSIX.
+        //
+        // On Windows the probe returns null and main echoes back the cwd we passed in,
+        // so the guard below makes this a no-op there rather than a wrong answer.
+        const live = normalizeShellPath(res.data.cwd ?? '')
+        const store = useTerminalStore.getState()
+        const known = store.terminals.find(t => t.id === terminalId)?.cwd
+        if (live && !samePath(known, live)) store.updateTerminal(terminalId, { cwd: live })
       } catch {}
     }
 

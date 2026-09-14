@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => {
     // fakes because nothing before v1.39.1 called them.
     reset: vi.fn(),
     scrollToBottom: vi.fn(),
-    parser: { registerCsiHandler: vi.fn() },
+    parser: { registerCsiHandler: vi.fn(), registerOscHandler: vi.fn() },
     unicode: { activeVersion: '11', register: vi.fn() },
     options: {} as Record<string, any>,
     cols: 80,

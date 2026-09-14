@@ -19,6 +19,7 @@ import { getSuggestion } from '../../corrections/correctionEngine'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
+import { decodeOsc7, normalizeShellPath, osc7PathPart, samePath } from '../../../../shared/cwdPath'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { VoiceGroqGate } from './VoiceGroqGate'
@@ -824,6 +825,48 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
       return false
     })
+
+    // --- Shell integration: the shell announces its directory on every prompt ---
+    //
+    // Registered on the PARSER, not matched against a `data` chunk. The PTY splits its
+    // output at arbitrary byte boundaries, so a sequence straddling two chunks is
+    // invisible to a regex over either half — the OSC 633 matcher further down in this
+    // same handler has exactly that flaw. xterm's parser reassembles across chunks, so
+    // this is the only form that cannot silently miss a report.
+    //
+    // Deliberately runs for AI terminals too. Prompt-TEXT parsing is skipped while an
+    // agent owns the terminal, because agent output is full of path-shaped text that is
+    // not a live prompt — but an OSC payload is unambiguous, so there is nothing here to
+    // be fooled by, and an agent that cd's is exactly when you want the mark to follow.
+    const reportCwd = (resolved: string | null): void => {
+      if (!resolved || disposed) return
+      setParsedCwd(resolved)
+      const store = useTerminalStore.getState()
+      const current = store.terminals.find((t) => t.id === terminalId)?.cwd
+      // Guarded by samePath, not !==: updateTerminal replaces the whole terminals array
+      // and re-renders every subscriber, this fires on every prompt, and the same shell
+      // will report C:\Repo and C:/repo across two prompts.
+      if (!samePath(current, resolved)) store.updateTerminal(terminalId, { cwd: resolved })
+    }
+    term.parser.registerOscHandler(7, (payload) => {
+      // Falls back to the undecoded path on purpose. decodeOsc7 answers null both for a
+      // payload that was never a URI and for a real directory this platform cannot open
+      // — WSL inside a Windows build reports file://host/home/dev exactly so. Dropping
+      // the second would leave the mark on the directory the shell has just LEFT, which
+      // reports the old directory's changes as the new one's. The raw path fails git
+      // cleanly instead, so the mark blanks honestly rather than lying.
+      reportCwd(decodeOsc7(payload) ?? osc7PathPart(payload))
+      return true // consumed — the payload must never reach the screen
+    })
+    term.parser.registerOscHandler(9, (payload) => {
+      // OSC 9 is shared ground: ConEmu/Windows Terminal use "9;<path>" for the working
+      // directory, "4;<state>" for a progress bar, and a bare string for a desktop
+      // notification. Claim only the directory form; hand the rest back to xterm.
+      if (!payload.startsWith('9;')) return false
+      const raw = payload.slice(2)
+      reportCwd(normalizeShellPath(raw) ?? raw)
+      return true
+    })
     // Wheel forwarding. When we swallowed the app's mouse tracking, xterm no longer
     // delivers wheel events to the app — so synthesize wheel reports to the pty here so
     // the app can scroll its own content (Claude Code's transcript, vim, lazygit, htop).
@@ -1328,16 +1371,25 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       if (!agent.agentDetectedRef.current && now - lastPromptParseRef.current > 500) {
         lastPromptParseRef.current = now
         const promptInfo = parsePromptFromOutput(stripped, shellType)
-        if (promptInfo.cwd && !disposed) {
-          setParsedCwd(promptInfo.cwd)
+        // A prompt reports the shell's OWN dialect: Git Bash says /c/Users/dev, and any
+        // shell whose prompt abbreviates home says ~/repo. Neither is a path git can
+        // open — and git:change-counts answers null for an unusable path exactly as it
+        // does for "not a repo", so the mark would blank with nothing to show why.
+        // Normalize before anything stores it.
+        // Keeps the shell's own text when no native form exists (an MSYS /usr/bin, a WSL
+        // /home/dev): it fails git cleanly, so the mark blanks — whereas dropping the
+        // report would strand the mark on the directory the shell has already left.
+        const promptCwd = promptInfo.cwd ? (normalizeShellPath(promptInfo.cwd) ?? promptInfo.cwd) : null
+        if (promptCwd && !disposed) {
+          setParsedCwd(promptCwd)
           // Write live cwd back to the store so Git Panel and other components can use it — but ONLY
           // when it actually changed. updateTerminal replaces the whole terminals array (a new
           // reference), which re-renders every store subscriber; a plain shell re-emits the same
           // prompt ~twice a second, so an unconditional write was a full re-render for no change.
           // (setParsedCwd above already no-ops on an unchanged string — the store write did not.)
           const store = useTerminalStore.getState()
-          if (store.terminals.find(t => t.id === terminalId)?.cwd !== promptInfo.cwd) {
-            store.updateTerminal(terminalId, { cwd: promptInfo.cwd })
+          if (!samePath(store.terminals.find(t => t.id === terminalId)?.cwd, promptCwd)) {
+            store.updateTerminal(terminalId, { cwd: promptCwd })
           }
         }
         if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)

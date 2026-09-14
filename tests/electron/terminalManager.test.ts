@@ -15,7 +15,9 @@ vi.mock('node-pty', () => ({ spawn: vi.fn(() => mockPty) }))
 vi.mock('electron', () => ({ app: { isPackaged: false } }))
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal() as any
-  return { ...actual, existsSync: vi.fn(() => true) }
+  // writeFileSync is stubbed so spawning a PowerShell terminal in a unit test does
+  // not drop a real integration script into the machine's temp directory.
+  return { ...actual, existsSync: vi.fn(() => true), writeFileSync: vi.fn() }
 })
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal() as any
@@ -26,7 +28,7 @@ vi.mock('child_process', async (importOriginal) => {
   return { ...actual, execSync: vi.fn() }
 })
 
-const { existsSync } = await import('fs')
+const { existsSync, writeFileSync } = await import('fs')
 const { execSync } = await import('child_process')
 const pty = await import('node-pty')
 
@@ -107,6 +109,66 @@ describe('terminalManager', () => {
   it('spawnTerminal passes empty args for other shells', () => {
     spawnTerminal('t3c', '/usr/bin/fish', '/tmp', vi.fn())
     expect(pty.spawn).toHaveBeenCalledWith('/usr/bin/fish', [], expect.any(Object))
+  })
+
+  // --- Shell integration: making the working directory observable ---
+  //
+  // Without these the git mark is frozen at whatever directory the terminal was
+  // launched in, because Windows offers no way to read a live child's cwd.
+
+  it('spawnTerminal dot-sources the integration script for PowerShell', () => {
+    spawnTerminal('si1', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', '/tmp', vi.fn())
+    const args = vi.mocked(pty.spawn).mock.calls[0][1] as string[]
+    expect(args[0]).toBe('-NoExit')
+    expect(args[1]).toBe('-Command')
+    expect(args[2]).toContain('termpolis-shell-integration.ps1')
+  })
+
+  it('spawnTerminal gives bash a prompt hook without touching its argv', () => {
+    spawnTerminal('si2', '/bin/bash', '/tmp', vi.fn())
+    const call = vi.mocked(pty.spawn).mock.calls[0]
+    // --login must survive: losing it would stop the user's profile from loading.
+    expect(call[1]).toEqual(['--login'])
+    expect((call[2]?.env as Record<string, string>).PROMPT_COMMAND).toContain(']7;file://')
+  })
+
+  it('spawnTerminal gives cmd a PROMPT carrying the directory', () => {
+    spawnTerminal('si3', 'C:\\Windows\\System32\\cmd.exe', '/tmp', vi.fn())
+    const env = vi.mocked(pty.spawn).mock.calls[0][2]?.env as Record<string, string>
+    expect(env.PROMPT).toContain(']9;9;$p')
+  })
+
+  it("spawnTerminal chains onto a caller-supplied PROMPT_COMMAND", () => {
+    spawnTerminal('si4', '/bin/bash', '/tmp', vi.fn(), undefined, { PROMPT_COMMAND: 'history -a' })
+    const env = vi.mocked(pty.spawn).mock.calls[0][2]?.env as Record<string, string>
+    expect(env.PROMPT_COMMAND).toContain(']7;file://')
+    expect(env.PROMPT_COMMAND).toContain('history -a')
+  })
+
+  it('spawnTerminal leaves the spawn untouched when integration is disabled', () => {
+    // The escape hatch has to restore the exact previous behaviour, or it is not an
+    // escape hatch.
+    process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION = '1'
+    try {
+      spawnTerminal('si5', '/bin/bash', '/tmp', vi.fn())
+      const call = vi.mocked(pty.spawn).mock.calls[0]
+      expect(call[1]).toEqual(['--login'])
+      expect((call[2]?.env as Record<string, string>).PROMPT_COMMAND).toBeUndefined()
+
+      vi.mocked(pty.spawn).mockClear()
+      spawnTerminal('si6', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', '/tmp', vi.fn())
+      expect(vi.mocked(pty.spawn).mock.calls[0][1]).toEqual([])
+    } finally {
+      delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION
+    }
+  })
+
+  it('spawnTerminal still opens a terminal when the script cannot be written', () => {
+    // A locked-down temp directory must cost the git mark, not the terminal.
+    vi.mocked(writeFileSync).mockImplementationOnce(() => { throw new Error('EACCES') })
+    vi.mocked(existsSync).mockReturnValue(false)
+    expect(() => spawnTerminal('si7', 'pwsh', '/tmp', vi.fn())).not.toThrow()
+    expect(getTerminalPid('si7')).toBe(12345)
   })
 
   // 4. spawnTerminal prepends bundled tools dir to PATH when tools are not installed
@@ -537,22 +599,28 @@ describe('terminalManager', () => {
       expect(env.PATH).toContain('C:\\Windows\\System32')
     })
 
-    it('PowerShell 5 (powershell.exe) launches with no args and PS1.0 dir on PATH', () => {
+    it('PowerShell 5 (powershell.exe) launches with shell integration and PS1.0 dir on PATH', () => {
       const ps5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
       spawnTerminal('sv-ps5', ps5, 'C:\\tmp', vi.fn())
       const call = lastCall()
       expect(call[0]).toBe(ps5)
-      expect(call[1]).toEqual([])
+      // PowerShell is the one shell with no environment-side prompt hook, so the
+      // directory reporter has to be dot-sourced from argv. -NoExit is what keeps the
+      // session interactive after the script runs.
+      expect(call[1][0]).toBe('-NoExit')
+      expect(call[1][1]).toBe('-Command')
+      expect(call[1][2]).toContain('termpolis-shell-integration.ps1')
       const env = (call[2]?.env as Record<string, string>)
       expect(env.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
     })
 
-    it('PowerShell 7 (pwsh.exe) launches with no args', () => {
+    it('PowerShell 7 (pwsh.exe) launches with shell integration', () => {
       const ps7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
       spawnTerminal('sv-ps7', ps7, 'C:\\tmp', vi.fn())
       const call = lastCall()
       expect(call[0]).toBe(ps7)
-      expect(call[1]).toEqual([])
+      expect(call[1][0]).toBe('-NoExit')
+      expect(call[1][2]).toContain('termpolis-shell-integration.ps1')
       const env = (call[2]?.env as Record<string, string>)
       // System32 still injected — pwsh needs it for net/wmi helpers
       expect(env.PATH).toContain('C:\\Windows\\System32')

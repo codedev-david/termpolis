@@ -28,31 +28,68 @@ afterEach(() => {
 
 const dot = () => screen.queryByTestId('git-dot-t1')
 
-describe('TerminalGitDot — when it appears at all', () => {
-  it('renders nothing before the first result arrives', () => {
+/**
+ * Wait for the LIVE mark.
+ *
+ * The inert mark renders synchronously on every terminal, so findByTestId resolves
+ * instantly and proves nothing about whether the git result arrived — every assertion
+ * about grey-vs-pulsing has to wait for data-repo to flip or it silently tests the
+ * pre-data state instead.
+ */
+const liveDot = async (): Promise<HTMLElement> => {
+  await waitFor(() => expect(dot()).toHaveAttribute('data-repo', 'true'))
+  return dot() as HTMLElement
+}
+
+describe('TerminalGitDot — the inert mark', () => {
+  // The mark exists on every terminal so people learn where to look. Outside a repo it
+  // is a dim glyph with no click target, rather than a button onto an empty panel.
+  const expectInert = () => {
+    const el = dot()
+    expect(el).toBeInTheDocument()
+    expect(el).toHaveAttribute('data-repo', 'false')
+    expect(el).toHaveAttribute('data-dirty', 'false')
+    expect(el!.tagName).toBe('SPAN')
+    expect(el!.className).not.toContain('animate-pulse-git')
+  }
+
+  it('shows the inert mark before the first result arrives', () => {
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    expect(dot()).not.toBeInTheDocument()
+    expectInert()
   })
 
-  it('renders nothing outside a repo (handler returns null)', async () => {
+  it('shows the inert mark outside a repo (handler returns null)', async () => {
     gitChangeCounts.mockResolvedValue({ success: true, data: null })
     render(<TerminalGitDot terminalId="t1" cwd="/not-a-repo" />)
     await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
-    expect(dot()).not.toBeInTheDocument()
+    expectInert()
   })
 
-  it('renders nothing when the call fails', async () => {
+  it('shows the inert mark when the call fails', async () => {
     gitChangeCounts.mockResolvedValue({ success: false, error: 'boom' })
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
     await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
-    expect(dot()).not.toBeInTheDocument()
+    expectInert()
   })
 
-  it('renders nothing when the promise rejects', async () => {
+  it('shows the inert mark when the promise rejects', async () => {
     gitChangeCounts.mockRejectedValue(new Error('git missing'))
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
     await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
-    expect(dot()).not.toBeInTheDocument()
+    expectInert()
+  })
+
+  it('does not open the Changes rail when the inert mark is clicked', async () => {
+    // Nothing to show, so clicking must do nothing at all rather than open an
+    // empty panel and make people doubt the feature.
+    const onEvent = vi.fn()
+    window.addEventListener('termpolis:openChanges', onEvent)
+    gitChangeCounts.mockResolvedValue({ success: true, data: null })
+    render(<TerminalGitDot terminalId="t1" cwd="/not-a-repo" />)
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
+    fireEvent.click(dot()!)
+    expect(onEvent).not.toHaveBeenCalled()
+    window.removeEventListener('termpolis:openChanges', onEvent)
   })
 
   it('never calls the bridge without a cwd', () => {
@@ -65,14 +102,14 @@ describe('TerminalGitDot — when it appears at all', () => {
     // after unmount in a host that has no bridge yet.
     delete (window as any).termpolis
     expect(() => render(<TerminalGitDot terminalId="t1" cwd="/repo" />)).not.toThrow()
-    expect(dot()).not.toBeInTheDocument()
+    expectInert()
   })
 })
 
 describe('TerminalGitDot — grey vs pulsing', () => {
   it('is grey and still on a clean, pushed repo', async () => {
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    const el = await screen.findByTestId('git-dot-t1')
+    const el = await liveDot()
     expect(el).toHaveAttribute('data-dirty', 'false')
     expect(el.className).not.toContain('animate-pulse-git')
     expect(el).toHaveAttribute('title', 'main — Nothing to commit or push')
@@ -87,7 +124,7 @@ describe('TerminalGitDot — grey vs pulsing', () => {
   ])('pulses amber for %s', async (_label, patch) => {
     gitChangeCounts.mockResolvedValue({ success: true, data: counts(patch) })
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    const el = await screen.findByTestId('git-dot-t1')
+    const el = await liveDot()
     expect(el).toHaveAttribute('data-dirty', 'true')
     expect(el.className).toContain('animate-pulse-git')
     expect(el.className).toContain('#e5c07b')
@@ -98,7 +135,7 @@ describe('TerminalGitDot — grey vs pulsing', () => {
     // leave the dot lit permanently on a busy shared repo.
     gitChangeCounts.mockResolvedValue({ success: true, data: counts({ behind: 7 }) })
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    const el = await screen.findByTestId('git-dot-t1')
+    const el = await liveDot()
     expect(el).toHaveAttribute('data-dirty', 'false')
     expect(el).toHaveAttribute('title', 'main — 7 to pull')
   })
@@ -106,8 +143,7 @@ describe('TerminalGitDot — grey vs pulsing', () => {
   it('falls back to "detached HEAD" when there is no branch name', async () => {
     gitChangeCounts.mockResolvedValue({ success: true, data: counts({ branch: '', unstaged: 1 }) })
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    expect((await screen.findByTestId('git-dot-t1')).getAttribute('title'))
-      .toBe('detached HEAD — 1 modified')
+    expect((await liveDot()).getAttribute('title')).toBe('detached HEAD — 1 modified')
   })
 })
 
@@ -117,7 +153,7 @@ describe('TerminalGitDot — opening the rail', () => {
     window.addEventListener('termpolis:openChanges', onEvent)
     gitChangeCounts.mockResolvedValue({ success: true, data: counts({ unstaged: 2 }) })
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    fireEvent.click(await screen.findByTestId('git-dot-t1'))
+    fireEvent.click(await liveDot())
     expect(onEvent).toHaveBeenCalledTimes(1)
     expect(onEvent.mock.calls[0][0].detail).toEqual({ terminalId: 't1' })
     window.removeEventListener('termpolis:openChanges', onEvent)
@@ -130,7 +166,7 @@ describe('TerminalGitDot — opening the rail', () => {
         <TerminalGitDot terminalId="t1" cwd="/repo" />
       </div>,
     )
-    fireEvent.click(await screen.findByTestId('git-dot-t1'))
+    fireEvent.click(await liveDot())
     expect(rowClick).not.toHaveBeenCalled()
   })
 })
@@ -158,7 +194,10 @@ describe('TerminalGitDot — polling', () => {
     const cb = (subscribe as any).mock.calls[0][1]
     gitChangeCounts.mockResolvedValue({ success: true, data: counts({ untracked: 3 }) })
     cb()
-    expect((await screen.findByTestId('git-dot-t1'))).toHaveAttribute('data-dirty', 'true')
+    // waitFor, not findByTestId: the live mark is already on screen carrying the PREVIOUS
+    // result, so a query that only waits for existence would assert against stale data
+    // and pass whether or not the poll ever landed.
+    await waitFor(() => expect(dot()).toHaveAttribute('data-dirty', 'true'))
   })
 })
 

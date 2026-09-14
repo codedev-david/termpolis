@@ -8,7 +8,11 @@
 // not yours waiting, and on a busy shared repo it would leave the dot pulsing forever,
 // which trains people to ignore it.
 //
-// Nothing renders at all outside a repo, so a sidebar full of plain shells stays plain.
+// The mark is present on EVERY terminal — plain shells, AI terminals, PowerShell, zsh,
+// Git Bash alike — because a control that only sometimes exists is a control nobody
+// learns to look at. Outside a repo it is a dim, inert glyph with no click target: it
+// says "this is where git status would appear", without offering to open a panel that
+// would have nothing in it.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
@@ -72,13 +76,31 @@ export function TerminalGitDot({ terminalId, cwd }: Props) {
     }
   }, [refresh, terminalId])
 
-  if (!counts) return null
+  // No repo here (or no answer yet). Render the glyph anyway, dimmed and inert, so the
+  // sidebar's shape does not change the instant someone cd's into a repo — the mark
+  // lights up in place instead of appearing from nowhere.
+  if (!counts) {
+    return (
+      <span
+        data-testid={`git-dot-${terminalId}`}
+        data-repo="false"
+        data-dirty="false"
+        role="img"
+        aria-label="Not a git repository"
+        title="Not a git repository"
+        className="text-[10px] px-1 leading-none text-[#3a3f4a]"
+      >
+        <i className="fa-solid fa-code-branch"></i>
+      </span>
+    )
+  }
 
   const dirty = isDirty(counts)
   const branch = counts.branch || 'detached HEAD'
 
   return (
     <button
+      data-repo="true"
       onClick={e => {
         e.stopPropagation()
         window.dispatchEvent(new CustomEvent('termpolis:openChanges', { detail: { terminalId } }))

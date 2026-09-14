@@ -1,11 +1,19 @@
 import * as pty from 'node-pty'
-import { homedir } from 'os'
-import { existsSync } from 'fs'
+import { homedir, tmpdir } from 'os'
+import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { execSync, exec } from 'child_process'
 import { app } from 'electron'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
+import {
+  detectShellKind,
+  integrationArgs,
+  integrationEnv,
+  integrationDisabled,
+  needsScriptFile,
+  POWERSHELL_INTEGRATION_SCRIPT,
+} from './shellIntegration'
 
 interface PtyProcess {
   pty: pty.IPty
@@ -139,7 +147,7 @@ export function spawnTerminal(
   const testShimPath = process.env.TERMPOLIS_TEST_SHIM_DIR
     ? `${process.env.TERMPOLIS_TEST_SHIM_DIR}${sep}`
     : ''
-  const env = {
+  const baseEnv = {
     ...process.env,
     PATH: `${testShimPath}${extraPathStr}${basePath}`,
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
@@ -147,9 +155,31 @@ export function spawnTerminal(
     ...(extraEnv || {}),
   } as Record<string, string>
 
+  // Shell integration: teach the shell to announce its working directory every time it
+  // draws a prompt, so the git mark follows `cd` instead of freezing at the directory
+  // the terminal was launched in.
+  //
+  // Computed against baseEnv rather than process.env so a caller-supplied
+  // PROMPT_COMMAND/PROMPT is chained onto rather than clobbered, and applied last so
+  // the chained value wins (nothing is lost — the prior value is inside it).
+  //
+  // Every failure path here degrades to the pre-integration spawn: a git mark that
+  // does not update is a small loss, a terminal that does not open is a broken app.
+  const shellKind = detectShellKind(executable)
+  const integrate = !integrationDisabled()
+  const scriptPath = integrate && needsScriptFile(shellKind) ? ensureIntegrationScript() : null
+  const env = {
+    ...baseEnv,
+    ...(integrate ? integrationEnv(shellKind, baseEnv) : {}),
+  } as Record<string, string>
+  const args = [
+    ...getShellArgs(executable),
+    ...(integrate ? integrationArgs(shellKind, scriptPath) : []),
+  ]
+
   let proc: pty.IPty
   try {
-    proc = pty.spawn(executable, getShellArgs(executable), {
+    proc = pty.spawn(executable, args, {
       name: 'xterm-256color',
       cols: SPAWN_COLS,
       rows: SPAWN_ROWS,
@@ -250,6 +280,30 @@ export function getTerminalCwdAsync(id: string): Promise<string | null> {
       resolve(cwd || null)
     })
   })
+}
+
+/**
+ * Put the PowerShell integration script on disk, once per app run.
+ *
+ * PowerShell is the only shell whose integration cannot travel in the environment — it
+ * has no PROMPT_COMMAND equivalent — so the wrapper needs a real file to dot-source.
+ * It goes in the temp dir, never anywhere the user owns, and is rewritten if something
+ * cleaned it up mid-session.
+ *
+ * Returns null on any failure, which the caller reads as "spawn exactly as before".
+ */
+let integrationScriptPath: string | null = null
+function ensureIntegrationScript(): string | null {
+  try {
+    const p = integrationScriptPath ?? join(tmpdir(), 'termpolis-shell-integration.ps1')
+    if (integrationScriptPath === null || !existsSync(p)) {
+      writeFileSync(p, POWERSHELL_INTEGRATION_SCRIPT, 'utf8')
+    }
+    integrationScriptPath = p
+    return p
+  } catch {
+    return null
+  }
 }
 
 function getShellArgs(executable: string): string[] {

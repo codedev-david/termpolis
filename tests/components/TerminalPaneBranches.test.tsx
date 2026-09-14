@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => {
     selectAll: vi.fn(),
     select: vi.fn(),
     loadAddon: vi.fn(),
-    parser: { registerCsiHandler: vi.fn() },
+    parser: { registerCsiHandler: vi.fn(), registerOscHandler: vi.fn() },
     unicode: { activeVersion: '11', register: vi.fn() },
     options: {} as Record<string, any>,
     cols: 80,
