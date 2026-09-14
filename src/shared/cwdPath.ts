@@ -48,7 +48,11 @@ function hostPlatform(): NodeJS.Platform {
   }
   // Best available guess in a browser-like host. Wrong only for the separator and
   // case rules, never for whether a path is returned at all.
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  // Reached through globalThis rather than as a bare identifier: this module is compiled
+  // under the MAIN-process tsconfig as well, which carries no DOM lib, so `navigator` is
+  // not a known name there even though it exists at runtime wherever this branch runs.
+  const nav = (globalThis as unknown as { navigator?: { userAgent?: string } }).navigator
+  const ua = nav?.userAgent ?? ''
   if (/Windows/i.test(ua)) return 'win32'
   if (/Mac OS X|Macintosh/i.test(ua)) return 'darwin'
   return 'linux'
@@ -139,7 +143,6 @@ export function normalizeShellPath(raw: string, opts: PathOptions = {}): string 
 
   // NUL or control characters mean we are looking at mis-framed terminal bytes, not a
   // path. Accepting them would write junk into the store and poll git with it forever.
-  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f]/.test(p)) return null
 
   // `~` and `~/x` — but NOT `~user/x`, whose home we cannot resolve without a lookup

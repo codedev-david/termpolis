@@ -262,9 +262,39 @@ describe('the host-platform backstop when there is no process', () => {
       return run()
     } finally {
       ;(globalThis as unknown as { process?: unknown }).process = realProcess
+      // jsdom keeps userAgent on Navigator.PROTOTYPE, so there is normally no own property
+      // to put back: defineProperty above added one that shadows the getter, and only a
+      // delete removes it. Without this the last stub leaks into every later test here.
       if (realUa) Object.defineProperty(globalThis.navigator, 'userAgent', realUa)
+      else delete (globalThis.navigator as { userAgent?: string }).userAgent
     }
   }
+
+  /**
+   * The bottom rung: a host with neither `process` NOR `navigator` — a sandboxed worker,
+   * a bare V8 context, any embedder that is not a browser. Nothing is left to read, so
+   * the guess has to resolve to a value rather than throw; `navigator.userAgent` written
+   * as a bare identifier would be the same ReferenceError this whole ladder exists to
+   * avoid, just one rung further down.
+   */
+  const withoutProcessOrNavigator = <T>(run: () => T): T => {
+    const realProcess = globalThis.process
+    const realNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    ;(globalThis as unknown as { process?: unknown }).process = undefined
+    Object.defineProperty(globalThis, 'navigator', { value: undefined, configurable: true })
+    try {
+      return run()
+    } finally {
+      ;(globalThis as unknown as { process?: unknown }).process = realProcess
+      if (realNav) Object.defineProperty(globalThis, 'navigator', realNav)
+      else delete (globalThis as { navigator?: unknown }).navigator
+    }
+  }
+
+  it('answers instead of throwing when there is no navigator either', () => {
+    const got = withoutProcessOrNavigator(() => normalizeShellPath('/home/dev/repo'))
+    expect(got).toBe('/home/dev/repo')
+  })
 
   it('reads Windows out of the user agent and applies the Windows dialects', () => {
     const got = withoutProcess('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Electron/32', () =>
