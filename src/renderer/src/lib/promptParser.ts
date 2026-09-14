@@ -28,6 +28,28 @@ export interface PromptInfo {
 // Detect "cd <path>" commands to track directory changes
 const CD_COMMAND = /[$>]\s*cd\s+(.+?)\s*$/
 
+// zsh. Every pattern above terminates on `$` or `>`, and zsh's default prompt
+// ends in `%` (`#` when root) — so a zsh terminal matches NONE of them and
+// loses the path, the branch and the `cd` fallback together. That matters more
+// than it looks: zsh is the DEFAULT shell on macOS, and under MSYS zsh on
+// Windows the pid probe is unavailable, which leaves the prompt as the only
+// cwd reporter there at all.
+//
+// The path stays `~`/`/`-anchored, exactly like GENERIC_PROMPT, and that anchor
+// is load-bearing rather than cosmetic. macOS's stock prompt (`%n@%m %1~ %#`)
+// abbreviates the directory to its BASENAME — "dave@mac repo %" — and a bare
+// "repo" must match NOTHING here: normalizeShellPath rejects a relative POSIX
+// path, TerminalPane falls back to the raw string, and git would then resolve
+// "repo" against the app's own working directory and report some OTHER
+// repository's changes as this terminal's. Matching nothing leaves the pid
+// probe in charge, which is the honest answer.
+const ZSH_PROMPT = /([~/][^\s%#]+)\s*[%#]\s*$/
+const ZSH_BRANCH_IN_PARENS = /\(([A-Za-z0-9][\w./-]*)\)\s*[%#]?\s*$/
+// `#` is deliberately NOT a prompt marker here: "# cd /somewhere" is an
+// ordinary shell comment in printed docs and READMEs, and honouring it would
+// invent a directory change that never happened.
+const ZSH_CD_COMMAND = /%\s*cd\s+(.+?)\s*$/
+
 export function parsePromptFromOutput(output: string, shellType: string): PromptInfo {
   // Take the last ~2000 chars to find the most recent prompt
   const recent = output.slice(-2000)
@@ -57,6 +79,34 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
       if (psMatch) {
         cwd = psMatch[1]
         break
+      }
+    }
+
+    // zsh, tried before the generic patterns and deliberately NOT breaking out:
+    // a zsh user whose custom prompt ends in `$` or `>` still falls through to
+    // the generic ones below, which remain their best match.
+    if (shellType === 'zsh') {
+      if (!gitBranch) {
+        const zshBranch = line.match(ZSH_BRANCH_IN_PARENS)
+        if (zshBranch) {
+          gitBranch = zshBranch[1]
+        }
+      }
+      if (!cwd) {
+        const zshMatch = line.match(ZSH_PROMPT)
+        if (zshMatch) {
+          if (!lastCdTarget) {
+            cwd = zshMatch[1]
+          } else {
+            lastKnownPath = zshMatch[1]
+          }
+        }
+      }
+      if (!cwd && !lastCdTarget) {
+        const zshCd = line.match(ZSH_CD_COMMAND)
+        if (zshCd) {
+          lastCdTarget = zshCd[1].trim()
+        }
       }
     }
 

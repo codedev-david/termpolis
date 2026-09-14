@@ -158,5 +158,63 @@ describe('promptParser', () => {
       expect(parsePromptFromOutput('Try this: PS C:\\other> npm i', 'powershell').cwd).toBeNull()
       expect(parsePromptFromOutput('PS C:\\repos\\app>', 'powershell').cwd).toBe('C:\\repos\\app')
     })
+
+    // -----------------------------------------------------------------
+    // zsh — the default shell on macOS, and the one shell whose prompt
+    // terminator (`%`, or `#` as root) appears in none of the generic
+    // patterns, which keyed only on `$` and `>`.
+    // -----------------------------------------------------------------
+    it('parses a zsh prompt ending in %', () => {
+      const result = parsePromptFromOutput('dave@mac ~/repos/project %', 'zsh')
+      expect(result.cwd).toBe('~/repos/project')
+    })
+
+    it('parses an absolute path from a root zsh prompt ending in #', () => {
+      expect(parsePromptFromOutput('root@mac /var/log #', 'zsh').cwd).toBe('/var/log')
+    })
+
+    // The safety property. macOS ships `%n@%m %1~ %#`, which prints only the
+    // LAST component of the directory. A bare "repo" is not a path: it would
+    // survive to git as a relative one, resolve against the app's own cwd and
+    // report a different repository's changes as this terminal's. Matching
+    // nothing is what hands the job to the pid probe instead.
+    it('refuses a zsh prompt that abbreviates the directory to its basename', () => {
+      expect(parsePromptFromOutput('dave@mac repo %', 'zsh').cwd).toBeNull()
+    })
+
+    it('detects a git branch in parens on a %-terminated zsh prompt', () => {
+      expect(parsePromptFromOutput('~/repos/app (feature/x-1.2) %', 'zsh').gitBranch).toBe('feature/x-1.2')
+    })
+
+    it('resolves a relative cd target from a zsh prompt', () => {
+      expect(parsePromptFromOutput('~/project %\n% cd src\n', 'zsh').cwd).toBe('~/project/src')
+    })
+
+    it('resolves an absolute cd target from a zsh prompt', () => {
+      expect(parsePromptFromOutput('~/old %\n% cd /home/user/new\n', 'zsh').cwd).toBe('/home/user/new')
+    })
+
+    // `#` marks a comment far more often than a root prompt, and printed
+    // READMEs are full of "# cd somewhere". Honouring it would invent a move.
+    it('does not read a commented-out cd as a directory change', () => {
+      expect(parsePromptFromOutput('~/project %\n# cd /etc\n', 'zsh').cwd).toBe('~/project')
+    })
+
+    it('still uses the generic patterns for a zsh prompt customised to end in $', () => {
+      expect(parsePromptFromOutput('/home/user/project $', 'zsh').cwd).toBe('/home/user/project')
+    })
+
+    it('does not apply the zsh patterns to other shells', () => {
+      expect(parsePromptFromOutput('dave@mac ~/repos/project %', 'bash').cwd).toBeNull()
+    })
+
+    // Lines are scanned bottom-up, so a two-line prompt can carry the branch
+    // BELOW the path. The pass that reaches the path must keep the branch it
+    // already has rather than re-reading the line it came from.
+    it('keeps a branch found on a lower line while finding the path above it', () => {
+      const result = parsePromptFromOutput('/home/user/project %\n(main) %', 'zsh')
+      expect(result.cwd).toBe('/home/user/project')
+      expect(result.gitBranch).toBe('main')
+    })
   })
 })
