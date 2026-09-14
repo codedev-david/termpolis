@@ -23,19 +23,27 @@ const result = (patch: Record<string, any> = {}) => ({
 const gitFindRoot = vi.fn()
 const gitChanges = vi.fn()
 const gitChangeDiff = vi.fn()
+const coverageForFile = vi.fn()
+const gitApplyPatch = vi.fn()
+const writeToTerminal = vi.fn()
 const onClose = vi.fn()
 
 beforeEach(() => {
   vi.clearAllMocks()
-  ;(window as any).termpolis = { gitFindRoot, gitChanges, gitChangeDiff }
+  ;(window as any).termpolis = {
+    gitFindRoot, gitChanges, gitChangeDiff, coverageForFile, gitApplyPatch, writeToTerminal,
+  }
   gitFindRoot.mockResolvedValue({ success: true, data: '/repo' })
   gitChanges.mockResolvedValue({ success: true, data: result() })
   gitChangeDiff.mockResolvedValue({ success: true, data: 'diff --git a/a b/a\n' })
+  coverageForFile.mockResolvedValue({ success: true, data: null })
+  gitApplyPatch.mockResolvedValue({ success: true })
 })
 
 afterEach(() => { delete (window as any).termpolis })
 
-const mount = (cwd = '/repo/src') => render(<ChangesPanel cwd={cwd} onClose={onClose} />)
+const mount = (cwd = '/repo/src', terminalId: string | null = null) =>
+  render(<ChangesPanel cwd={cwd} onClose={onClose} terminalId={terminalId} />)
 
 describe('ChangesPanel — finding the repo', () => {
   it('resolves the repo root from the terminal cwd, which is usually a subdirectory', async () => {
@@ -107,7 +115,10 @@ describe('ChangesPanel — the file list', () => {
     untracked: [entry('new.ts', '??')],
   })
 
-  beforeEach(() => gitChanges.mockResolvedValue({ success: true, data: populated }))
+  // Block body: a concise arrow returns the mock (mockResolvedValue chains), and Vitest
+  // treats a function returned from beforeEach as that test's teardown — it would call
+  // gitChanges again after every test. Harmless while it resolves, fatal once it rejects.
+  beforeEach(() => { gitChanges.mockResolvedValue({ success: true, data: populated }) })
 
   it('groups files under Staged, Changes and Untracked', async () => {
     mount()
@@ -206,14 +217,16 @@ describe('ChangesPanel — branch line', () => {
 })
 
 describe('ChangesPanel — opening a diff', () => {
-  beforeEach(() => gitChanges.mockResolvedValue({
-    success: true,
-    data: result({
-      staged: [entry('s.ts', 'M')],
-      unstaged: [entry('u.ts', 'M')],
-      untracked: [entry('n.ts', '??')],
-    }),
-  }))
+  beforeEach(() => {
+    gitChanges.mockResolvedValue({
+      success: true,
+      data: result({
+        staged: [entry('s.ts', 'M')],
+        unstaged: [entry('u.ts', 'M')],
+        untracked: [entry('n.ts', '??')],
+      }),
+    })
+  })
 
   it.each([
     ['s.ts', 'staged'],
@@ -376,5 +389,109 @@ describe('splitPath', () => {
 
   it('handles Windows separators, which git can emit on this platform', () => {
     expect(splitPath('src\\a.ts')).toEqual({ dir: 'src\\', base: 'a.ts' })
+  })
+})
+
+describe('ChangesPanel — coverage and hunk actions', () => {
+  const UDIFF = 'diff --git a/u.ts b/u.ts\n--- a/u.ts\n+++ b/u.ts\n@@ -1,1 +1,2 @@\n ctx\n+added\n'
+  const HUNK_ID = 'u.ts::0'
+
+  beforeEach(() => {
+    gitChanges.mockResolvedValue({ success: true, data: result({ unstaged: [entry('u.ts', 'M')] }) })
+    gitChangeDiff.mockResolvedValue({ success: true, data: UDIFF })
+  })
+
+  const openDiff = async (cwd = '/repo/src', terminalId: string | null = null) => {
+    mount(cwd, terminalId)
+    fireEvent.click(await screen.findByTestId('change-row-u.ts'))
+    return screen.findByTestId('file-diff-modal')
+  }
+
+  it('asks for coverage on the repo root, not the terminal cwd', async () => {
+    await openDiff('/repo/src/deep')
+    await waitFor(() => expect(coverageForFile).toHaveBeenCalledWith('/repo', 'u.ts'))
+  })
+
+  it('shows the coverage badge against the hunk', async () => {
+    coverageForFile.mockResolvedValue({
+      success: true,
+      data: { source: '/repo/coverage/lcov.info', lines: { 2: 1 }, stale: false },
+    })
+    await openDiff()
+    expect(await screen.findByTestId(`hunk-coverage-${HUNK_ID}`)).toHaveTextContent('100% tested')
+  })
+
+  it('treats a coverage failure as "no coverage", never as an error', async () => {
+    // Coverage is decoration. A repo without it is the common case, not a fault.
+    coverageForFile.mockResolvedValue({ success: false, error: 'nope' })
+    await openDiff()
+    expect(screen.queryByTestId('changes-error')).not.toBeInTheDocument()
+    expect(screen.queryByTestId(`hunk-coverage-${HUNK_ID}`)).not.toBeInTheDocument()
+  })
+
+  it('survives the coverage lookup rejecting', async () => {
+    coverageForFile.mockRejectedValue(new Error('bridge died'))
+    expect(await openDiff()).toBeInTheDocument()
+    expect(screen.queryByTestId(`hunk-coverage-${HUNK_ID}`)).not.toBeInTheDocument()
+  })
+
+  it('opens the diff even when the bridge predates coverageForFile', async () => {
+    ;(window as any).termpolis = { gitFindRoot, gitChanges, gitChangeDiff }
+    expect(await openDiff()).toBeInTheDocument()
+  })
+
+  it('reverts a hunk through the bridge and reloads BOTH views', async () => {
+    await openDiff()
+    fireEvent.click(await screen.findByTestId(`hunk-menu-button-${HUNK_ID}`))
+    fireEvent.click(screen.getByTestId('hunk-menu-revert'))
+    await waitFor(() => expect(gitApplyPatch).toHaveBeenCalledTimes(1))
+    const [root, patch, reverse] = gitApplyPatch.mock.calls[0]
+    expect(root).toBe('/repo')
+    expect(reverse).toBe(true)
+    expect(patch).toContain('+added')
+    // A diff still showing a hunk you just reverted is the lie that loses trust.
+    await waitFor(() => expect(gitChangeDiff).toHaveBeenCalledTimes(2))
+    expect(gitChanges.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it('surfaces a refused patch instead of pretending it worked', async () => {
+    gitApplyPatch.mockResolvedValue({ success: false, error: 'error: patch does not apply' })
+    await openDiff()
+    fireEvent.click(await screen.findByTestId(`hunk-menu-button-${HUNK_ID}`))
+    fireEvent.click(screen.getByTestId('hunk-menu-revert'))
+    expect(await screen.findByTestId('file-diff-action-error'))
+      .toHaveTextContent('error: patch does not apply')
+  })
+
+  it('names a refusal that carries no error text', async () => {
+    gitApplyPatch.mockResolvedValue({ success: false })
+    await openDiff()
+    fireEvent.click(await screen.findByTestId(`hunk-menu-button-${HUNK_ID}`))
+    fireEvent.click(screen.getByTestId('hunk-menu-revert'))
+    expect(await screen.findByTestId('file-diff-action-error'))
+      .toHaveTextContent('git apply refused the patch')
+  })
+
+  it('surfaces a thrown apply failure', async () => {
+    gitApplyPatch.mockRejectedValue(new Error('bridge died'))
+    await openDiff()
+    fireEvent.click(await screen.findByTestId(`hunk-menu-button-${HUNK_ID}`))
+    fireEvent.click(screen.getByTestId('hunk-menu-revert'))
+    expect(await screen.findByTestId('file-diff-action-error')).toHaveTextContent('bridge died')
+  })
+
+  it('passes the terminal through so Explain can reach the agent', async () => {
+    await openDiff('/repo/src', 'term-1')
+    fireEvent.click(await screen.findByTestId(`hunk-menu-button-${HUNK_ID}`))
+    fireEvent.click(screen.getByTestId('hunk-menu-explain'))
+    await waitFor(() => expect(writeToTerminal).toHaveBeenCalled())
+    expect(writeToTerminal.mock.calls[0][0]).toBe('term-1')
+    expect(writeToTerminal.mock.calls[0][1]).toContain('Explain this change to u.ts')
+  })
+
+  it('disables Explain when the panel has no terminal', async () => {
+    await openDiff('/repo/src', null)
+    fireEvent.click(await screen.findByTestId(`hunk-menu-button-${HUNK_ID}`))
+    expect(screen.getByTestId('hunk-menu-explain')).toBeDisabled()
   })
 })

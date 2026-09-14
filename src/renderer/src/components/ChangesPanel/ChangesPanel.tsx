@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
+import type { DiffHunk } from '../../lib/diffParser'
 import { FileDiffModal } from './FileDiffModal'
 
 export type ChangeMode = 'staged' | 'unstaged' | 'untracked'
@@ -31,9 +32,18 @@ interface ChangesResult {
   untracked: ChangeEntry[]
 }
 
+/** Mirrors the payload of src/main/coverageReader.ts. */
+interface FileCoverage {
+  source: string
+  lines: Record<number, number>
+  stale: boolean
+}
+
 interface Props {
   cwd: string
   onClose: () => void
+  /** Terminal this rail reports on. Explain / Discuss write the hunk into it. */
+  terminalId?: string | null
 }
 
 // Git's own porcelain shorthand, not a re-spelling of it: ?? is untracked and U is
@@ -78,7 +88,7 @@ export function splitPath(file: string): { dir: string; base: string } {
   return idx < 0 ? { dir: '', base: file } : { dir: file.slice(0, idx + 1), base: file.slice(idx + 1) }
 }
 
-export function ChangesPanel({ cwd, onClose }: Props) {
+export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
   const [root, setRoot] = useState<string | null>(null)
   const [detecting, setDetecting] = useState(true)
   const [changes, setChanges] = useState<ChangesResult | null>(null)
@@ -89,6 +99,7 @@ export function ChangesPanel({ cwd, onClose }: Props) {
   const [diff, setDiff] = useState('')
   const [diffLoading, setDiffLoading] = useState(false)
   const [diffError, setDiffError] = useState<string | null>(null)
+  const [coverage, setCoverage] = useState<FileCoverage | null>(null)
 
   // Resolve the repo root from the active terminal's cwd. A cwd deep inside a repo is
   // the normal case, so this is not optional.
@@ -138,6 +149,15 @@ export function ChangesPanel({ cwd, onClose }: Props) {
     setDiff('')
     setDiffError(null)
     setDiffLoading(true)
+    setCoverage(null)
+    // Fired alongside the diff rather than awaited before it: coverage is decoration,
+    // and a monorepo's lcov must never delay the thing that was actually clicked.
+    const readCoverage = window.termpolis?.coverageForFile
+    if (root && typeof readCoverage === 'function') {
+      readCoverage(root, file)
+        .then(res => setCoverage(res?.success ? res.data ?? null : null))
+        .catch(() => setCoverage(null))
+    }
     try {
       const res = await window.termpolis.gitChangeDiff(root!, file, mode)
       if (res.success) setDiff(res.data ?? '')
@@ -148,6 +168,24 @@ export function ChangesPanel({ cwd, onClose }: Props) {
       setDiffLoading(false)
     }
   }, [root])
+
+  // Reverse-apply one hunk to revert it, or forward-apply the same patch to undo that
+  // revert. Both the open diff and the file list now describe a worktree that has just
+  // changed underneath them, so both are reloaded immediately rather than left to the
+  // 3-second poll: a diff still showing a hunk you just reverted is exactly the kind of
+  // lie that stops people trusting the panel.
+  const applyHunk = useCallback(async (hunk: DiffHunk, reverse: boolean) => {
+    if (!root) return { ok: false, error: 'No repository' }
+    try {
+      const res = await window.termpolis.gitApplyPatch(root, hunk.patch, reverse)
+      if (!res.success) return { ok: false, error: res.error ?? 'git apply refused the patch' }
+      if (openFile) await openDiff(openFile.file, openFile.mode)
+      await refresh()
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? 'git apply refused the patch' }
+    }
+  }, [root, openFile, openDiff, refresh])
 
   const toggle = (key: string) => setCollapsed(p => ({ ...p, [key]: !p[key] }))
 
@@ -279,6 +317,10 @@ export function ChangesPanel({ cwd, onClose }: Props) {
           diff={diff}
           loading={diffLoading}
           error={diffError}
+          mode={openFile.mode}
+          terminalId={terminalId}
+          coverage={coverage}
+          onApplyHunk={applyHunk}
           onClose={() => setOpenFile(null)}
         />
       )}

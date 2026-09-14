@@ -146,6 +146,8 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('git:change-counts', { cwd }),
   gitChangeDiff: (cwd, file, mode) =>
     ipcRenderer.invoke('git:change-diff', { cwd, file, mode }),
+  coverageForFile: (cwd, file) =>
+    ipcRenderer.invoke('coverage:for-file', { cwd, file }),
 
   // Swarm Review
   gitRevParseHead: (cwd) =>

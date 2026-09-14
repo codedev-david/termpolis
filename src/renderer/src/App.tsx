@@ -974,6 +974,7 @@ export default function App() {
           {showChangesPanel && (
             <ChangesPanel
               cwd={terminals.find(t => t.id === (changesTerminalId ?? activeTerminalId))?.cwd ?? ''}
+              terminalId={changesTerminalId ?? activeTerminalId}
               onClose={() => setShowChangesPanel(false)}
             />
           )}

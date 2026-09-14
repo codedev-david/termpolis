@@ -115,6 +115,7 @@ import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node
 import {
   buildChanges, countChanges, resolveInsideRepo, synthesizeUntrackedDiff, type ChangeMode,
 } from './gitChanges'
+import { readFileCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (resolveNodeCommand is already imported above for the MCP registration.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
@@ -1583,6 +1584,20 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
 // safeGitAsync throughout, never safeGit: every one of these sits on a poll, and
 // execFileSync blocks the thread pumping every PTY for the whole spawn (~106 ms of
 // process-creation tax alone, on Windows, before git reads an object).
+
+// Per-hunk test coverage for the diff view: reads whatever lcov the project's OWN
+// test run last left behind. A repo that has never produced one answers null, and
+// that is not an error — the diff simply shows no percentage rather than a zero.
+ipcMain.handle('coverage:for-file', async (_, { cwd, file }: { cwd: string; file: string }) => {
+  try {
+    // The path came from the renderer. Every legitimate value came from git one poll
+    // earlier, which is exactly why the illegitimate one has to be refused here.
+    if (!resolveInsideRepo(cwd, file)) return err('Path escapes the repository')
+    return ok(readFileCoverage(cwd, file))
+  } catch (e: any) {
+    return err(e.message)
+  }
+})
 
 ipcMain.handle('git:changes', async (_, { cwd }: { cwd: string }) => {
   try {
