@@ -43,27 +43,7 @@ import { useSessionRecording } from '../../hooks/useSessionRecording'
 import type { ShellType } from '../../types'
 import '@xterm/xterm/css/xterm.css'
 
-// True only when a real, hardware-accelerated WebGL2 context is available. Gates
-// xterm's WebGL renderer: under software GL (headless CI, VMs, old/blocked
-// drivers) the addon initializes but then throws ASYNCHRONOUSLY (undefined render
-// dimensions / `_isDisposed` on teardown) — a crash that escapes the synchronous
-// guard around loadAddon — so we never load it there and keep the robust DOM
-// renderer. Returns false in non-DOM/jsdom environments too.
-function hasHardwareWebgl(): boolean {
-  try {
-    if (typeof document === 'undefined') return false
-    const probe = document.createElement('canvas')
-    const gl = probe.getContext('webgl2') as WebGL2RenderingContext | null
-    if (!gl) return false
-    const dbg = gl.getExtension('WEBGL_debug_renderer_info')
-    const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : ''
-    // SwiftShader / llvmpipe / softpipe / ANGLE-software / Microsoft Basic Render
-    // are the software rasterizers where the async crash happens.
-    return !/swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/i.test(renderer)
-  } catch {
-    return false
-  }
-}
+import { hasHardwareWebgl } from '../../lib/webglSupport'
 
 interface Props {
   terminalId: string
