@@ -1,0 +1,86 @@
+{
+  "name": "gradle",
+  "description": "Gradle build tool",
+  "subcommands": [
+    { "name": "build", "description": "Assemble and test the project", "options": [] },
+    {
+      "name": "test",
+      "description": "Run the unit tests",
+      "options": [
+        { "name": ["--tests"], "description": "Run only tests matching the pattern" },
+        { "name": ["--fail-fast"], "description": "Stop after the first test failure" }
+      ]
+    },
+    { "name": "clean", "description": "Delete the build directory", "options": [] },
+    { "name": "assemble", "description": "Assemble the outputs without testing", "options": [] },
+    { "name": "check", "description": "Run all verification tasks", "options": [] },
+    {
+      "name": "run",
+      "description": "Run the application main class",
+      "options": [
+        { "name": ["--args"], "description": "Arguments to pass to the application" }
+      ]
+    },
+    {
+      "name": "tasks",
+      "description": "List the available tasks",
+      "options": [
+        { "name": ["--all"], "description": "Include tasks in every group" },
+        { "name": ["--group"], "description": "List tasks in this group only" }
+      ]
+    },
+    {
+      "name": "init",
+      "description": "Scaffold a new Gradle build",
+      "options": [
+        { "name": ["--type"], "description": "Project type to generate" },
+        { "name": ["--dsl"], "description": "Build script DSL: groovy or kotlin" },
+        { "name": ["--project-name"], "description": "Name for the generated project" },
+        { "name": ["--package"], "description": "Package for the generated sources" }
+      ]
+    },
+    {
+      "name": "wrapper",
+      "description": "Generate the Gradle wrapper scripts",
+      "options": [
+        { "name": ["--gradle-version"], "description": "Gradle version for the wrapper" },
+        { "name": ["--distribution-type"], "description": "Distribution type: bin or all" }
+      ]
+    },
+    {
+      "name": "dependencies",
+      "description": "Show the project dependency tree",
+      "options": [
+        { "name": ["--configuration"], "description": "Show one configuration only" }
+      ]
+    },
+    { "name": "publish", "description": "Publish the artifacts to a repository", "options": [] },
+    {
+      "name": "bootRun",
+      "description": "Run the Spring Boot application",
+      "options": [
+        { "name": ["--args"], "description": "Arguments to pass to the application" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["-i", "--info"], "description": "Set log level to info" },
+    { "name": ["-d", "--debug"], "description": "Set log level to debug" },
+    { "name": ["-q", "--quiet"], "description": "Log errors only" },
+    { "name": ["-s", "--stacktrace"], "description": "Print a stack trace on failure" },
+    { "name": ["--offline"], "description": "Build without accessing the network" },
+    { "name": ["--refresh-dependencies"], "description": "Re-resolve all cached dependencies" },
+    { "name": ["--parallel"], "description": "Build projects in parallel" },
+    { "name": ["--continue"], "description": "Keep going after a task failure" },
+    { "name": ["-x", "--exclude-task"], "description": "Exclude a task from the build" },
+    { "name": ["--daemon"], "description": "Run the build in a background daemon" },
+    { "name": ["--no-daemon"], "description": "Run the build in a single-use process" },
+    { "name": ["--build-cache"], "description": "Reuse outputs from the build cache" },
+    { "name": ["--scan"], "description": "Generate a build scan" },
+    { "name": ["-P", "--project-prop"], "description": "Set a project property" },
+    { "name": ["-D", "--system-prop"], "description": "Set a system property" },
+    { "name": ["-m", "--dry-run"], "description": "Show the task graph without running it" },
+    { "name": ["-v", "--version"], "description": "Print the Gradle version" },
+    { "name": ["-h", "--help"], "description": "Show help" }
+  ]
+}

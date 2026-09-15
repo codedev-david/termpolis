@@ -1,0 +1,113 @@
+{
+  "name": "bun",
+  "description": "All-in-one JavaScript runtime and toolkit",
+  "subcommands": [
+    {
+      "name": "run",
+      "description": "Run a file or a package.json script",
+      "options": [
+        { "name": ["--watch"], "description": "Restart on file changes" },
+        { "name": ["--hot"], "description": "Hot reload without restarting" },
+        { "name": ["--bun"], "description": "Force the bun runtime over Node" },
+        { "name": ["--smol"], "description": "Run with a smaller memory footprint" },
+        { "name": ["--silent"], "description": "Do not echo the command" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run tests with the bun test runner",
+      "options": [
+        { "name": ["--watch"], "description": "Rerun on file changes" },
+        { "name": ["--coverage"], "description": "Report test coverage" },
+        { "name": ["-t", "--test-name-pattern"], "description": "Run only tests matching the pattern" },
+        { "name": ["--timeout"], "description": "Per-test timeout in milliseconds" },
+        { "name": ["--bail"], "description": "Stop after the given number of failures" },
+        { "name": ["-u", "--update-snapshots"], "description": "Rewrite failing snapshots" }
+      ]
+    },
+    {
+      "name": "install",
+      "description": "Install all dependencies",
+      "options": [
+        { "name": ["-p", "--production"], "description": "Skip devDependencies" },
+        { "name": ["--frozen-lockfile"], "description": "Fail if the lockfile needs updating" },
+        { "name": ["-g", "--global"], "description": "Install globally" },
+        { "name": ["--no-save"], "description": "Do not update package.json" },
+        { "name": ["-f", "--force"], "description": "Reinstall every package" },
+        { "name": ["--dry-run"], "description": "Resolve without installing" }
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add a package to dependencies",
+      "options": [
+        { "name": ["-d", "--dev", "--development"], "description": "Add to devDependencies" },
+        { "name": ["--optional"], "description": "Add to optionalDependencies" },
+        { "name": ["--peer"], "description": "Add to peerDependencies" },
+        { "name": ["-E", "--exact"], "description": "Add the exact version" },
+        { "name": ["-g", "--global"], "description": "Install the package globally" }
+      ]
+    },
+    {
+      "name": "remove",
+      "description": "Remove a package from dependencies",
+      "options": [
+        { "name": ["-g", "--global"], "description": "Remove a global package" }
+      ]
+    },
+    {
+      "name": "build",
+      "description": "Bundle files for production",
+      "options": [
+        { "name": ["--outdir"], "description": "Directory to write the bundle into" },
+        { "name": ["--outfile"], "description": "File to write a single bundle to" },
+        { "name": ["--target"], "description": "Build target: browser/bun/node" },
+        { "name": ["--minify"], "description": "Minify the output" },
+        { "name": ["--sourcemap"], "description": "Emit a source map" },
+        { "name": ["--splitting"], "description": "Enable code splitting" },
+        { "name": ["--external"], "description": "Exclude a package from the bundle" },
+        { "name": ["--compile"], "description": "Compile into a standalone executable" },
+        { "name": ["--watch"], "description": "Rebuild on file changes" }
+      ]
+    },
+    {
+      "name": "x",
+      "description": "Run a package binary, installing if needed",
+      "options": [
+        { "name": ["--bun"], "description": "Force the bun runtime over Node" }
+      ]
+    },
+    {
+      "name": "create",
+      "description": "Scaffold a project from a template",
+      "options": [
+        { "name": ["--force"], "description": "Overwrite existing files" },
+        { "name": ["--no-install"], "description": "Skip installing dependencies" },
+        { "name": ["--no-git"], "description": "Skip initializing a git repository" },
+        { "name": ["--open"], "description": "Open the project when done" }
+      ]
+    },
+    {
+      "name": "upgrade",
+      "description": "Upgrade bun to the latest version",
+      "options": [
+        { "name": ["--canary"], "description": "Upgrade to the canary build" },
+        { "name": ["--stable"], "description": "Upgrade to the latest stable build" }
+      ]
+    },
+    {
+      "name": "link",
+      "description": "Link a local package for development",
+      "options": [
+        { "name": ["--save"], "description": "Record the link in package.json" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["-v", "--version"], "description": "Print the bun version" },
+    { "name": ["-h", "--help"], "description": "Show help" },
+    { "name": ["-b", "--bun"], "description": "Force the bun runtime over Node" },
+    { "name": ["-c", "--config"], "description": "Path to the bunfig.toml to use" },
+    { "name": ["--cwd"], "description": "Directory to run the command in" }
+  ]
+}

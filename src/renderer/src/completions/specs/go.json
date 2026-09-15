@@ -1,0 +1,184 @@
+{
+  "name": "go",
+  "description": "Go language build tool",
+  "subcommands": [
+    {
+      "name": "build",
+      "description": "Compile packages and dependencies",
+      "options": [
+        { "name": ["-o"], "description": "Write the result to the named file" },
+        { "name": ["-v"], "description": "Print package names as they compile" },
+        { "name": ["-race"], "description": "Enable the data race detector" },
+        { "name": ["-tags"], "description": "Comma separated build tags" },
+        { "name": ["-ldflags"], "description": "Flags to pass to the linker" },
+        { "name": ["-a"], "description": "Force rebuild of all packages" }
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Compile and run a program",
+      "options": [
+        { "name": ["-v"], "description": "Print package names as they compile" },
+        { "name": ["-race"], "description": "Enable the data race detector" },
+        { "name": ["-tags"], "description": "Comma separated build tags" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run package tests",
+      "options": [
+        { "name": ["-v"], "description": "Verbose test output" },
+        { "name": ["-run"], "description": "Run only tests matching the pattern" },
+        { "name": ["-bench"], "description": "Run benchmarks matching the pattern" },
+        { "name": ["-cover"], "description": "Report test coverage" },
+        { "name": ["-coverprofile"], "description": "Write a coverage profile to a file" },
+        { "name": ["-race"], "description": "Enable the data race detector" },
+        { "name": ["-short"], "description": "Skip long-running tests" },
+        { "name": ["-count"], "description": "Run each test this many times" },
+        { "name": ["-timeout"], "description": "Panic after this test duration" },
+        { "name": ["-tags"], "description": "Comma separated build tags" }
+      ]
+    },
+    {
+      "name": "get",
+      "description": "Add dependencies to the module",
+      "options": [
+        { "name": ["-u"], "description": "Update to newer minor or patch releases" },
+        { "name": ["-t"], "description": "Also resolve test dependencies" },
+        { "name": ["-x"], "description": "Print the commands as they run" }
+      ]
+    },
+    {
+      "name": "mod",
+      "description": "Module maintenance",
+      "subcommands": [
+        {
+          "name": "init",
+          "description": "Initialize a new module in this directory",
+          "options": []
+        },
+        {
+          "name": "tidy",
+          "description": "Add missing and remove unused modules",
+          "options": [
+            { "name": ["-v"], "description": "Print removed modules to stderr" },
+            { "name": ["-go"], "description": "Update the go directive to this version" }
+          ]
+        },
+        {
+          "name": "download",
+          "description": "Download modules to the local cache",
+          "options": [
+            { "name": ["-x"], "description": "Print the commands as they run" },
+            { "name": ["-json"], "description": "Print results as JSON" }
+          ]
+        },
+        {
+          "name": "vendor",
+          "description": "Copy dependencies into the vendor directory",
+          "options": [
+            { "name": ["-v"], "description": "Print vendored modules to stderr" },
+            { "name": ["-e"], "description": "Continue past package loading errors" }
+          ]
+        },
+        {
+          "name": "why",
+          "description": "Explain why a package or module is needed",
+          "options": [
+            { "name": ["-m"], "description": "Treat the arguments as modules" },
+            { "name": ["-vendor"], "description": "Ignore test-only dependencies" }
+          ]
+        },
+        {
+          "name": "graph",
+          "description": "Print the module requirement graph",
+          "options": [
+            { "name": ["-go"], "description": "Report the graph as this Go version sees it" }
+          ]
+        }
+      ],
+      "options": []
+    },
+    {
+      "name": "fmt",
+      "description": "Reformat package sources with gofmt",
+      "options": [
+        { "name": ["-n"], "description": "Print the commands without running them" },
+        { "name": ["-x"], "description": "Print the commands as they run" }
+      ]
+    },
+    {
+      "name": "vet",
+      "description": "Report likely mistakes in packages",
+      "options": [
+        { "name": ["-n"], "description": "Print the commands without running them" },
+        { "name": ["-x"], "description": "Print the commands as they run" },
+        { "name": ["-tags"], "description": "Comma separated build tags" }
+      ]
+    },
+    {
+      "name": "install",
+      "description": "Compile and install packages",
+      "options": [
+        { "name": ["-v"], "description": "Print package names as they compile" },
+        { "name": ["-race"], "description": "Enable the data race detector" },
+        { "name": ["-tags"], "description": "Comma separated build tags" }
+      ]
+    },
+    {
+      "name": "clean",
+      "description": "Remove object and cached files",
+      "options": [
+        { "name": ["-cache"], "description": "Remove the entire build cache" },
+        { "name": ["-modcache"], "description": "Remove the entire module cache" },
+        { "name": ["-testcache"], "description": "Expire cached test results" },
+        { "name": ["-r"], "description": "Clean dependencies recursively" },
+        { "name": ["-n"], "description": "Print the commands without running them" },
+        { "name": ["-x"], "description": "Print the commands as they run" }
+      ]
+    },
+    {
+      "name": "generate",
+      "description": "Run go:generate directives",
+      "options": [
+        { "name": ["-run"], "description": "Run only directives matching the pattern" },
+        { "name": ["-v"], "description": "Print processed files and directives" },
+        { "name": ["-n"], "description": "Print the commands without running them" },
+        { "name": ["-x"], "description": "Print the commands as they run" },
+        { "name": ["-tags"], "description": "Comma separated build tags" }
+      ]
+    },
+    {
+      "name": "work",
+      "description": "Workspace maintenance",
+      "subcommands": [
+        { "name": "init", "description": "Initialize a go.work workspace file", "options": [] },
+        { "name": "use", "description": "Add modules to the workspace", "options": [] },
+        { "name": "edit", "description": "Edit go.work from tooling", "options": [] },
+        { "name": "sync", "description": "Sync workspace builds into the modules", "options": [] },
+        { "name": "vendor", "description": "Vendor the workspace dependencies", "options": [] }
+      ],
+      "options": []
+    },
+    {
+      "name": "version",
+      "description": "Print the Go version",
+      "options": [
+        { "name": ["-m"], "description": "Print module info for the named binaries" }
+      ]
+    },
+    {
+      "name": "env",
+      "description": "Print Go environment information",
+      "options": [
+        { "name": ["-json"], "description": "Print the environment as JSON" },
+        { "name": ["-w"], "description": "Set the named environment variables" },
+        { "name": ["-u"], "description": "Unset the named environment variables" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["-C"], "description": "Change to this directory before running" },
+    { "name": ["-h"], "description": "Show usage" }
+  ]
+}

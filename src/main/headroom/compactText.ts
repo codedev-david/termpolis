@@ -12,6 +12,25 @@ const HEAD_BUDGET_SHARE = 0.6
 const CHAR_ELISION = '\n… [chars elided] …\n'
 
 /**
+ * Lines that name a failure. The window in step 2 keeps the head (what ran) and the tail (how it
+ * ended) and cuts everything between them blind — which on a failing build is exactly where the
+ * stack trace, the assertion and the compiler diagnostic live. An agent handed a blind window
+ * reads "tests failed", learns nothing about why, and goes back to re-read the terminal; the
+ * round trip costs far more than the handful of lines kept here.
+ *
+ * Deliberately narrow. Every pattern costs tokens on every compacted block, so this covers the
+ * failure vocabulary the popular toolchains actually emit and stops. No `warning`, and no bare
+ * `at ` stack frames — both fire constantly on healthy output, which would spend the budget
+ * precisely when there is nothing worth keeping.
+ *
+ * No `g` flag: `test()` on a global regex carries `lastIndex` between calls, so the same line
+ * would match or not depending on what was scanned before it. That is exactly the kind of
+ * order-dependence noNondeterministicCompression.test.ts exists to prevent.
+ */
+const SALIENT =
+  /\b(?:err(?:ors?|s)?|fail(?:ed|ing|s|ure|ures)?|panic(?:ked)?|traceback|fatal|unhandled|refused|denied|timed?\s?out|segfault|segmentation fault|core dumped|exit (?:code|status))\b|(?:Error|Exception|Panic)\b|^\s*(?:[✗×✘]|--- FAIL)/i
+
+/**
  * Back `i` off so `s.slice(0, i)` cannot end on a high surrogate whose pair is being cut. Slicing
  * a JS string is a UTF-16 code-unit operation, so an emoji or any astral character straddling the
  * boundary would otherwise ship as a lone surrogate — invalid UTF-8 on the wire.
@@ -54,10 +73,38 @@ export function compactText(s: string, opts: CompactTextOpts): { text: string; e
   // help — few lines, each enormous. Those are now the char clamp's job, in step 3.
   let text = collapsed.join('\n')
   if (collapsed.length > opts.headLines + opts.tailLines) {
-    const head = collapsed.slice(0, opts.headLines)
-    const tail = collapsed.slice(collapsed.length - opts.tailLines)
-    text = [...head, `… [${collapsed.length - head.length - tail.length} lines elided] …`, ...tail].join('\n')
-    elided = true
+    const tailStart = collapsed.length - opts.tailLines
+    const keep = new Set<number>()
+    for (let i = 0; i < opts.headLines; i++) keep.add(i)
+    for (let i = tailStart; i < collapsed.length; i++) keep.add(i)
+
+    // Error-biased retention: rescue the lines in the middle that name a failure, in document
+    // order. Bounded by the tail budget, so a failing run can never cost more than the window
+    // already spends on its own tail — and on a CLEAN run nothing matches, the budget goes
+    // unspent, and the output is byte-identical to the plain head/tail window. The feature is
+    // free until the moment it is needed.
+    let budget = opts.tailLines
+    for (let i = opts.headLines; i < tailStart && budget > 0; i++) {
+      if (SALIENT.test(collapsed[i])) { keep.add(i); budget-- }
+    }
+
+    // Emit kept lines in order, collapsing each run of dropped lines into one marker. Counting
+    // per gap rather than once overall is what keeps the markers honest when a rescued line
+    // splits the middle in two.
+    const out: string[] = []
+    let gap = 0
+    let dropped = 0
+    for (let i = 0; i < collapsed.length; i++) {
+      if (keep.has(i)) {
+        if (gap > 0) { out.push(`… [${gap} lines elided] …`); gap = 0 }
+        out.push(collapsed[i])
+      } else { gap++; dropped++ }
+    }
+    if (gap > 0) out.push(`… [${gap} lines elided] …`)
+    // A short middle can be rescued in full, leaving nothing dropped. Claiming `elided` there
+    // would stash a retrieve token for content that is already present, and bill a give-back
+    // for a block that never shrank.
+    if (dropped > 0) { text = out.join('\n'); elided = true }
   }
 
   // 3) Character clamp. maxChars used to be only a trigger for step 2 and never a bound, so a

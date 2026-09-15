@@ -1,0 +1,139 @@
+{
+  "name": "pnpm",
+  "description": "Fast, disk-efficient Node package manager",
+  "subcommands": [
+    {
+      "name": "install",
+      "description": "Install all dependencies",
+      "options": [
+        { "name": ["--frozen-lockfile"], "description": "Fail if the lockfile needs updating" },
+        { "name": ["-P", "--prod"], "description": "Skip devDependencies" },
+        { "name": ["-D", "--dev"], "description": "Install only devDependencies" },
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" },
+        { "name": ["--offline"], "description": "Install from the store only" },
+        { "name": ["--ignore-scripts"], "description": "Do not run lifecycle scripts" }
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add a package to dependencies",
+      "options": [
+        { "name": ["-D", "--save-dev"], "description": "Save as a devDependency" },
+        { "name": ["-P", "--save-prod"], "description": "Save as a regular dependency" },
+        { "name": ["-O", "--save-optional"], "description": "Save as an optionalDependency" },
+        { "name": ["-E", "--save-exact"], "description": "Save the exact version" },
+        { "name": ["-g", "--global"], "description": "Install the package globally" },
+        { "name": ["-w", "--workspace-root"], "description": "Add to the workspace root package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" }
+      ]
+    },
+    {
+      "name": "remove",
+      "description": "Remove a package from dependencies",
+      "options": [
+        { "name": ["-D", "--save-dev"], "description": "Remove from devDependencies" },
+        { "name": ["-g", "--global"], "description": "Remove a global package" },
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" }
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run a script from package.json",
+      "options": [
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" },
+        { "name": ["--parallel"], "description": "Run in all packages at once" },
+        { "name": ["--stream"], "description": "Stream output as it is produced" },
+        { "name": ["--if-present"], "description": "Do not error if the script is missing" },
+        { "name": ["--silent"], "description": "Suppress pnpm log output" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run the test script",
+      "options": [
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" }
+      ]
+    },
+    {
+      "name": "build",
+      "description": "Run the build script",
+      "options": [
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" }
+      ]
+    },
+    {
+      "name": "update",
+      "description": "Update packages to newer versions",
+      "options": [
+        { "name": ["-L", "--latest"], "description": "Ignore the range in package.json" },
+        { "name": ["-i", "--interactive"], "description": "Choose updates interactively" },
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["-g", "--global"], "description": "Update global packages" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" }
+      ]
+    },
+    {
+      "name": "exec",
+      "description": "Run a command from node_modules/.bin",
+      "options": [
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--filter"], "description": "Limit to matching workspace packages" },
+        { "name": ["--parallel"], "description": "Run in all packages at once" }
+      ]
+    },
+    {
+      "name": "dlx",
+      "description": "Fetch a package and run its binary",
+      "options": [
+        { "name": ["-p", "--package"], "description": "Package to install before running" },
+        { "name": ["--silent"], "description": "Suppress pnpm log output" }
+      ]
+    },
+    {
+      "name": "why",
+      "description": "Show why a package is installed",
+      "options": [
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--prod"], "description": "Only look at regular dependencies" },
+        { "name": ["--dev"], "description": "Only look at devDependencies" },
+        { "name": ["--json"], "description": "Output as JSON" }
+      ]
+    },
+    {
+      "name": "list",
+      "description": "List installed packages",
+      "options": [
+        { "name": ["--depth"], "description": "Max depth of the dependency tree" },
+        { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+        { "name": ["--prod"], "description": "Only list regular dependencies" },
+        { "name": ["--dev"], "description": "Only list devDependencies" },
+        { "name": ["--json"], "description": "Output as JSON" }
+      ]
+    },
+    {
+      "name": "publish",
+      "description": "Publish a package to the registry",
+      "options": [
+        { "name": ["--access"], "description": "Set the package access level" },
+        { "name": ["--tag"], "description": "Publish with a dist-tag" },
+        { "name": ["--dry-run"], "description": "Simulate publish without uploading" },
+        { "name": ["--no-git-checks"], "description": "Skip the branch and cleanliness checks" },
+        { "name": ["-r", "--recursive"], "description": "Publish every workspace package" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["-v", "--version"], "description": "Print pnpm version" },
+    { "name": ["-h", "--help"], "description": "Show help" },
+    { "name": ["-C", "--dir"], "description": "Directory to run the command in" },
+    { "name": ["-w", "--workspace-root"], "description": "Run against the workspace root" },
+    { "name": ["-r", "--recursive"], "description": "Run in every workspace package" },
+    { "name": ["--filter"], "description": "Limit to matching workspace packages" },
+    { "name": ["--loglevel"], "description": "Set the log level" }
+  ]
+}

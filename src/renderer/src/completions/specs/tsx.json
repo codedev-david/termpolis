@@ -1,0 +1,14 @@
+{
+  "name": "tsx",
+  "description": "Run TypeScript files directly in Node",
+  "subcommands": [],
+  "options": [
+    { "name": ["--watch"], "description": "Rerun on file changes" },
+    { "name": ["--inspect"], "description": "Start the Node inspector" },
+    { "name": ["--inspect-brk"], "description": "Start the inspector and break on first line" },
+    { "name": ["--tsconfig"], "description": "Path to the tsconfig.json to use" },
+    { "name": ["--no-cache"], "description": "Disable the transform cache" },
+    { "name": ["--version"], "description": "Print the tsx version" },
+    { "name": ["--help"], "description": "Show help" }
+  ]
+}

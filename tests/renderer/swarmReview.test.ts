@@ -126,8 +126,24 @@ describe('runTests', () => {
 })
 
 describe('detectTestCommand', () => {
-  it('returns npm test when package.json has a test script', async () => {
-    termpolis.readConfigFile.mockResolvedValue({ success: true, data: JSON.stringify({ scripts: { test: 'vitest' } }) })
+  /**
+   * Detection now probes lockfiles as well as package.json, so a mock has to
+   * answer per path. A path-blind mockResolvedValue would serve the
+   * package.json body to a lockfile probe and make every lockfile "present".
+   */
+  function mockRepo(files: Record<string, string>): void {
+    termpolis.readConfigFile.mockImplementation(async (path: string) => {
+      const name = path.slice(path.lastIndexOf('/') + 1)
+      return name in files
+        ? { success: true, data: files[name] }
+        : { success: true, data: '' }
+    })
+  }
+
+  const WITH_TEST_SCRIPT = JSON.stringify({ scripts: { test: 'vitest' } })
+
+  it('returns npm test when a test script exists but no lockfile does', async () => {
+    mockRepo({ 'package.json': WITH_TEST_SCRIPT })
     expect(await detectTestCommand('/repo')).toBe('npm test')
   })
 
@@ -143,6 +159,32 @@ describe('detectTestCommand', () => {
 
   it('tolerates malformed JSON', async () => {
     termpolis.readConfigFile.mockResolvedValue({ success: true, data: 'not json' })
+    expect(await detectTestCommand('/repo')).toBe('npm test')
+  })
+
+  it.each([
+    ['pnpm-lock.yaml', 'pnpm test'],
+    ['yarn.lock', 'yarn test'],
+    ['bun.lockb', 'bun test'],
+    ['bun.lock', 'bun test'],
+    ['package-lock.json', 'npm test'],
+  ])('runs the manager that wrote %s', async (lockfile, expected) => {
+    mockRepo({ 'package.json': WITH_TEST_SCRIPT, [lockfile]: 'lock' })
+    expect(await detectTestCommand('/repo')).toBe(expected)
+  })
+
+  it('resolves deterministically when a repo carries two lockfiles', async () => {
+    mockRepo({ 'package.json': WITH_TEST_SCRIPT, 'pnpm-lock.yaml': 'lock', 'yarn.lock': 'lock' })
+    expect(await detectTestCommand('/repo')).toBe('pnpm test')
+  })
+
+  it('ignores a lockfile when there is no test script to run', async () => {
+    mockRepo({ 'package.json': JSON.stringify({}), 'pnpm-lock.yaml': 'lock' })
+    expect(await detectTestCommand('/repo')).toBe('npm test')
+  })
+
+  it('treats a zero-byte lockfile as absent', async () => {
+    mockRepo({ 'package.json': WITH_TEST_SCRIPT, 'yarn.lock': '' })
     expect(await detectTestCommand('/repo')).toBe('npm test')
   })
 })

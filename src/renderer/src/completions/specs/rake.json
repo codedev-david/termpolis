@@ -1,0 +1,19 @@
+{
+  "name": "rake",
+  "description": "Ruby build and task runner",
+  "subcommands": [],
+  "options": [
+    { "name": ["-T", "--tasks"], "description": "List tasks with descriptions" },
+    { "name": ["-D", "--describe"], "description": "Describe tasks in full" },
+    { "name": ["-f", "--rakefile"], "description": "Rakefile to use" },
+    { "name": ["-I", "--libdir"], "description": "Add a directory to the load path" },
+    { "name": ["-r", "--require"], "description": "Require a module before running" },
+    { "name": ["-t", "--trace"], "description": "Turn on invoke and execute tracing" },
+    { "name": ["-n", "--dry-run"], "description": "Print tasks without running them" },
+    { "name": ["-P", "--prereqs"], "description": "Show task prerequisites" },
+    { "name": ["-v", "--verbose"], "description": "Log commands to standard output" },
+    { "name": ["-q", "--quiet"], "description": "Do not log commands" },
+    { "name": ["-V", "--version"], "description": "Print the rake version" },
+    { "name": ["-h", "--help"], "description": "Show help" }
+  ]
+}

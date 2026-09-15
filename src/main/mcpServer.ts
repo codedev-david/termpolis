@@ -184,6 +184,20 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'run_and_wait',
+    description: 'Run a command to completion and return its exit code and output. Use this to build, test or lint — run_command only types keystrokes and never reports whether they worked',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Command to run' },
+        cwd: { type: 'string', description: 'Working directory (default: the app cwd)' },
+        shell: { type: 'string', description: 'Shell to run it in (default: the OS default)' },
+        timeoutMs: { type: 'number', description: 'Give up after this long (default 120000, max 600000)' },
+      },
+      required: ['command'],
+    },
+  },
+  {
     name: 'close_terminal',
     description: 'Close a terminal by ID',
     inputSchema: {
@@ -551,6 +565,7 @@ export interface McpToolHandlers {
   listTerminals: () => { id: string; name: string; shellType: string; cwd: string }[]
   createTerminal: (name: string, shell: string, cwd: string) => Promise<string>
   runCommand: (terminalId: string, command: string) => void
+  runAndWait: (opts: { command: string; cwd?: string; shell?: string; timeoutMs?: number }) => Promise<{ exitCode: number; output: string; timedOut?: boolean }>
   readOutput: (terminalId: string, lines: number) => string
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
@@ -608,6 +623,16 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return { success: true, terminalId: args.terminalId, command: args.command }
     case 'read_output':
       return { output: handlers.readOutput(args.terminalId, args.lines || 50) }
+    case 'run_and_wait':
+      // Deliberately not in EXEMPT_TOOLS. `output` is a string field and gets compacted with
+      // error-biased retention; `exitCode` is a number, which compressObject never touches. The
+      // agent therefore always sees pass/fail intact and stops pulling tails to guess at it.
+      return handlers.runAndWait({
+        command: args.command,
+        cwd: args.cwd,
+        shell: args.shell,
+        timeoutMs: args.timeoutMs,
+      })
     case 'close_terminal':
       handlers.closeTerminal(args.terminalId)
       return { success: true }

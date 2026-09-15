@@ -2790,6 +2790,16 @@ if (!gotTheLock) {
 
   let mcpServer: ReturnType<typeof startMcpServer> | null = null
 
+  // The workflow command runner, reused by the run_and_wait MCP tool so an agent gets the same
+  // real exit codes the Run button already gets. Assigned during app init, far below where
+  // mcpHandlers is built, so the handler reads it at call time rather than closing over null.
+  //
+  // Deliberately NOT runSafeCommand: that one is execSync on the main thread and freezes every
+  // PTY and IPC call in the process for as long as it runs.
+  let mcpExecRunner: ReturnType<typeof makeTerminalRunner> | null = null
+  let mcpExecShell = 'bash'
+  let mcpExecSeq = 0
+
   app.whenReady().then(() => {
     // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
     // macOS, without which Cmd+Q and copy/paste in native inputs do not work. See appMenu.ts.
@@ -2877,6 +2887,26 @@ if (!gotTheLock) {
       },
       readOutput: (terminalId, lines) => {
         return readOutputTail(terminalOutputBuffers, terminalId, lines)
+      },
+      runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
+        if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
+        // stepId only keys the runner's in-flight map, so per-call uniqueness is all it needs.
+        const stepId = `mcp-exec-${++mcpExecSeq}`
+        const res = await mcpExecRunner.run({
+          stepId,
+          command,
+          shell: shell || mcpExecShell,
+          cwd: cwd || process.cwd(),
+          // Clamped both ways: an agent-supplied timeout must not be able to pin a PTY open
+          // indefinitely, nor round down to something that kills a legitimate build.
+          timeoutMs: Math.min(Math.max(timeoutMs ?? 120_000, 1_000), 600_000),
+          // visible:false is load-bearing, not a display preference. The runner only appends
+          // `exit $?\n` for a non-visible spawn; a visible PTY keeps an interactive shell alive
+          // after the command finishes, so onExit never fires and the whole point of this tool —
+          // an exit code — would arrive only as a timeout.
+          visible: false,
+        })
+        return { exitCode: res.exitCode, output: res.output, timedOut: res.timedOut }
       },
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
@@ -3603,6 +3633,9 @@ if (!gotTheLock) {
           spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit),
       }
       const wfTerminal = makeTerminalRunner(wfCommandSpawn)
+      // Same runner, same PTY plumbing, same exit-code semantics for the run_and_wait MCP tool.
+      mcpExecRunner = wfTerminal
+      mcpExecShell = wfDefaultShellType
       const wfAgentLaunch: Record<'claude' | 'codex' | 'gemini', string> = { claude: 'claude', codex: 'codex', gemini: 'agy' }
       const wfAgent = makeAgentRunner(
         wfSpawn,

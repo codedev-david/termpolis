@@ -1,0 +1,25 @@
+{
+  "name": "tsc",
+  "description": "TypeScript compiler",
+  "subcommands": [],
+  "options": [
+    { "name": ["--watch", "-w"], "description": "Recompile on file changes" },
+    { "name": ["--project", "-p"], "description": "Compile using this tsconfig.json" },
+    { "name": ["--build", "-b"], "description": "Build project references" },
+    { "name": ["--init"], "description": "Create a starter tsconfig.json" },
+    { "name": ["--noEmit"], "description": "Type-check without emitting files" },
+    { "name": ["--strict"], "description": "Enable all strict type-check options" },
+    { "name": ["--declaration", "-d"], "description": "Emit .d.ts declaration files" },
+    { "name": ["--outDir"], "description": "Directory to emit output into" },
+    { "name": ["--outFile"], "description": "Concatenate output into a single file" },
+    { "name": ["--target"], "description": "ECMAScript target version" },
+    { "name": ["--module"], "description": "Module system for generated code" },
+    { "name": ["--sourceMap"], "description": "Emit source map files" },
+    { "name": ["--incremental"], "description": "Reuse build info for faster rebuilds" },
+    { "name": ["--pretty"], "description": "Use color and formatting in errors" },
+    { "name": ["--listFiles"], "description": "Print every file read by the compile" },
+    { "name": ["--traceResolution"], "description": "Log module resolution steps" },
+    { "name": ["--version", "-v"], "description": "Print the TypeScript version" },
+    { "name": ["--help", "-h"], "description": "Show help" }
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "name": "deno",
+  "description": "Secure runtime for JavaScript and TypeScript",
+  "subcommands": [
+    {
+      "name": "run",
+      "description": "Run a script",
+      "options": [
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" },
+        { "name": ["--allow-net"], "description": "Allow network access" },
+        { "name": ["--allow-read"], "description": "Allow file system read access" },
+        { "name": ["--allow-write"], "description": "Allow file system write access" },
+        { "name": ["--allow-env"], "description": "Allow environment variable access" },
+        { "name": ["--allow-run"], "description": "Allow running subprocesses" },
+        { "name": ["--watch"], "description": "Restart on file changes" },
+        { "name": ["--reload", "-r"], "description": "Reload cached source code" },
+        { "name": ["--unstable"], "description": "Enable unstable APIs" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run tests",
+      "options": [
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" },
+        { "name": ["--coverage"], "description": "Collect coverage into a directory" },
+        { "name": ["--filter"], "description": "Run only tests matching the pattern" },
+        { "name": ["--watch"], "description": "Rerun on file changes" },
+        { "name": ["--parallel"], "description": "Run test modules in parallel" },
+        { "name": ["--fail-fast"], "description": "Stop after the first failure" }
+      ]
+    },
+    {
+      "name": "fmt",
+      "description": "Format source files",
+      "options": [
+        { "name": ["--check"], "description": "Report formatting diffs without writing" },
+        { "name": ["--watch"], "description": "Reformat on file changes" },
+        { "name": ["--ext"], "description": "File extension to treat the input as" }
+      ]
+    },
+    {
+      "name": "lint",
+      "description": "Lint source files",
+      "options": [
+        { "name": ["--fix"], "description": "Apply automatic lint fixes" },
+        { "name": ["--rules"], "description": "List the available lint rules" },
+        { "name": ["--watch"], "description": "Relint on file changes" },
+        { "name": ["--json"], "description": "Output diagnostics as JSON" }
+      ]
+    },
+    {
+      "name": "check",
+      "description": "Type-check without running",
+      "options": [
+        { "name": ["--all"], "description": "Also type-check remote modules" },
+        { "name": ["--doc"], "description": "Type-check code in JSDoc examples" },
+        { "name": ["--reload", "-r"], "description": "Reload cached source code" }
+      ]
+    },
+    {
+      "name": "compile",
+      "description": "Compile a script into a standalone executable",
+      "options": [
+        { "name": ["-o", "--output"], "description": "Path for the output executable" },
+        { "name": ["--target"], "description": "Target OS and architecture" },
+        { "name": ["--include"], "description": "Include extra files in the binary" },
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" }
+      ]
+    },
+    {
+      "name": "bundle",
+      "description": "Bundle a module and its dependencies",
+      "options": [
+        { "name": ["-o", "--output"], "description": "Path for the bundled output" },
+        { "name": ["--watch"], "description": "Rebundle on file changes" }
+      ]
+    },
+    {
+      "name": "task",
+      "description": "Run a task defined in the config file",
+      "options": [
+        { "name": ["--cwd"], "description": "Directory to run the task in" }
+      ]
+    },
+    {
+      "name": "install",
+      "description": "Install dependencies or a script as an executable",
+      "options": [
+        { "name": ["-g", "--global"], "description": "Install as a global executable" },
+        { "name": ["-n", "--name"], "description": "Name of the installed executable" },
+        { "name": ["-f", "--force"], "description": "Overwrite an existing installation" },
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" },
+        { "name": ["--root"], "description": "Installation root directory" }
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add dependencies to the config file",
+      "options": [
+        { "name": ["--dev"], "description": "Add as a development dependency" }
+      ]
+    },
+    {
+      "name": "serve",
+      "description": "Run a server from a default export",
+      "options": [
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" },
+        { "name": ["--port"], "description": "Port to listen on" },
+        { "name": ["--host"], "description": "Host to bind to" },
+        { "name": ["--watch"], "description": "Restart on file changes" },
+        { "name": ["--parallel"], "description": "Serve from multiple workers" }
+      ]
+    },
+    {
+      "name": "bench",
+      "description": "Run benchmarks",
+      "options": [
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" },
+        { "name": ["--filter"], "description": "Run only benchmarks matching the pattern" },
+        { "name": ["--watch"], "description": "Rerun on file changes" },
+        { "name": ["--no-run"], "description": "Type-check benchmarks without running" }
+      ]
+    },
+    {
+      "name": "doc",
+      "description": "Show or generate module documentation",
+      "options": [
+        { "name": ["--html"], "description": "Generate a static HTML doc site" },
+        { "name": ["--json"], "description": "Output documentation as JSON" },
+        { "name": ["--lint"], "description": "Report documentation problems" },
+        { "name": ["--filter"], "description": "Show only matching symbols" },
+        { "name": ["--private"], "description": "Include private symbols" }
+      ]
+    },
+    {
+      "name": "repl",
+      "description": "Start an interactive session",
+      "options": [
+        { "name": ["-A", "--allow-all"], "description": "Grant every permission" },
+        { "name": ["--eval"], "description": "Evaluate code before the prompt" },
+        { "name": ["--eval-file"], "description": "Evaluate files before the prompt" }
+      ]
+    },
+    {
+      "name": "init",
+      "description": "Scaffold a new project",
+      "options": [
+        { "name": ["--lib"], "description": "Scaffold a library project" },
+        { "name": ["--serve"], "description": "Scaffold a server project" },
+        { "name": ["--npm"], "description": "Scaffold from an npm create package" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["--version", "-V"], "description": "Print the Deno version" },
+    { "name": ["--help", "-h"], "description": "Show help" },
+    { "name": ["--quiet", "-q"], "description": "Suppress diagnostic output" },
+    { "name": ["--config", "-c"], "description": "Path to the config file" },
+    { "name": ["--no-config"], "description": "Ignore any config file" },
+    { "name": ["--log-level"], "description": "Set the log level" }
+  ]
+}

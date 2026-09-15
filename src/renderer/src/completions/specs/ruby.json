@@ -1,0 +1,17 @@
+{
+  "name": "ruby",
+  "description": "Ruby interpreter",
+  "subcommands": [],
+  "options": [
+    { "name": ["-e"], "description": "Run one line of script" },
+    { "name": ["-c"], "description": "Check syntax only" },
+    { "name": ["-w"], "description": "Turn warnings on" },
+    { "name": ["-I"], "description": "Add a directory to the load path" },
+    { "name": ["-r"], "description": "Require a library before executing" },
+    { "name": ["-n"], "description": "Wrap the script in a gets loop" },
+    { "name": ["-p"], "description": "Like -n but print each line" },
+    { "name": ["-d", "--debug"], "description": "Set debugging flags" },
+    { "name": ["-v", "--version"], "description": "Print the Ruby version" },
+    { "name": ["-h", "--help"], "description": "Show help" }
+  ]
+}

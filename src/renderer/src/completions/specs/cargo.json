@@ -1,0 +1,195 @@
+{
+  "name": "cargo",
+  "description": "Rust package manager and build tool",
+  "subcommands": [
+    {
+      "name": "build",
+      "description": "Compile the current package",
+      "options": [
+        { "name": ["--release"], "description": "Build with optimizations" },
+        { "name": ["-p", "--package"], "description": "Build only the given package" },
+        { "name": ["--workspace"], "description": "Build all workspace members" },
+        { "name": ["-F", "--features"], "description": "Space or comma separated features to activate" },
+        { "name": ["--all-features"], "description": "Activate all available features" },
+        { "name": ["--no-default-features"], "description": "Do not activate default features" },
+        { "name": ["--target"], "description": "Build for the given target triple" },
+        { "name": ["--bin"], "description": "Build only the given binary" },
+        { "name": ["--lib"], "description": "Build only the library" },
+        { "name": ["--example"], "description": "Build only the given example" }
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Build and run a binary",
+      "options": [
+        { "name": ["--release"], "description": "Run with optimizations" },
+        { "name": ["--bin"], "description": "Run the given binary" },
+        { "name": ["--example"], "description": "Run the given example" },
+        { "name": ["-p", "--package"], "description": "Run from the given package" },
+        { "name": ["-F", "--features"], "description": "Features to activate" },
+        { "name": ["--target"], "description": "Run for the given target triple" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run the tests",
+      "options": [
+        { "name": ["--release"], "description": "Test with optimizations" },
+        { "name": ["--no-run"], "description": "Compile tests but do not run them" },
+        { "name": ["--nocapture"], "description": "Do not capture test stdout and stderr" },
+        { "name": ["--no-fail-fast"], "description": "Run all tests even after a failure" },
+        { "name": ["-p", "--package"], "description": "Test only the given package" },
+        { "name": ["--workspace"], "description": "Test all workspace members" },
+        { "name": ["--all-features"], "description": "Activate all available features" },
+        { "name": ["--lib"], "description": "Test only the library" }
+      ]
+    },
+    {
+      "name": "check",
+      "description": "Type-check without producing binaries",
+      "options": [
+        { "name": ["--release"], "description": "Check with optimizations" },
+        { "name": ["--all-targets"], "description": "Check all targets" },
+        { "name": ["--workspace"], "description": "Check all workspace members" },
+        { "name": ["-p", "--package"], "description": "Check only the given package" },
+        { "name": ["-F", "--features"], "description": "Features to activate" }
+      ]
+    },
+    {
+      "name": "clippy",
+      "description": "Lint with the clippy analyzer",
+      "options": [
+        { "name": ["--fix"], "description": "Automatically apply lint suggestions" },
+        { "name": ["--all-targets"], "description": "Lint all targets" },
+        { "name": ["--workspace"], "description": "Lint all workspace members" },
+        { "name": ["--allow-dirty"], "description": "Fix even with uncommitted changes" },
+        { "name": ["--no-default-features"], "description": "Do not activate default features" }
+      ]
+    },
+    {
+      "name": "fmt",
+      "description": "Format source with rustfmt",
+      "options": [
+        { "name": ["--check"], "description": "Report formatting diffs without writing" },
+        { "name": ["--all"], "description": "Format all workspace members" },
+        { "name": ["-p", "--package"], "description": "Format only the given package" }
+      ]
+    },
+    {
+      "name": "doc",
+      "description": "Build package documentation",
+      "options": [
+        { "name": ["--open"], "description": "Open the docs in a browser" },
+        { "name": ["--no-deps"], "description": "Do not document dependencies" },
+        { "name": ["--document-private-items"], "description": "Include private items in the docs" },
+        { "name": ["--release"], "description": "Document with optimizations" },
+        { "name": ["-p", "--package"], "description": "Document only the given package" }
+      ]
+    },
+    {
+      "name": "new",
+      "description": "Create a new cargo package",
+      "options": [
+        { "name": ["--lib"], "description": "Create a library package" },
+        { "name": ["--bin"], "description": "Create a binary package" },
+        { "name": ["--name"], "description": "Set the package name" },
+        { "name": ["--edition"], "description": "Rust edition to use" },
+        { "name": ["--vcs"], "description": "Version control system to initialize" }
+      ]
+    },
+    {
+      "name": "init",
+      "description": "Create a package in an existing directory",
+      "options": [
+        { "name": ["--lib"], "description": "Create a library package" },
+        { "name": ["--bin"], "description": "Create a binary package" },
+        { "name": ["--name"], "description": "Set the package name" },
+        { "name": ["--edition"], "description": "Rust edition to use" }
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add a dependency to Cargo.toml",
+      "options": [
+        { "name": ["--dev"], "description": "Add as a dev dependency" },
+        { "name": ["--build"], "description": "Add as a build dependency" },
+        { "name": ["-F", "--features"], "description": "Features to enable for the dependency" },
+        { "name": ["--no-default-features"], "description": "Disable the dependency default features" },
+        { "name": ["--optional"], "description": "Mark the dependency optional" },
+        { "name": ["-p", "--package"], "description": "Add to the given package" },
+        { "name": ["--git"], "description": "Add from a git repository" },
+        { "name": ["--path"], "description": "Add from a local path" }
+      ]
+    },
+    {
+      "name": "remove",
+      "description": "Remove a dependency from Cargo.toml",
+      "options": [
+        { "name": ["--dev"], "description": "Remove a dev dependency" },
+        { "name": ["--build"], "description": "Remove a build dependency" },
+        { "name": ["-p", "--package"], "description": "Remove from the given package" }
+      ]
+    },
+    {
+      "name": "update",
+      "description": "Update dependencies in Cargo.lock",
+      "options": [
+        { "name": ["-p", "--package"], "description": "Update only the given package" },
+        { "name": ["--workspace"], "description": "Update only workspace members" },
+        { "name": ["--dry-run"], "description": "Show what would change without writing" }
+      ]
+    },
+    {
+      "name": "bench",
+      "description": "Run the benchmarks",
+      "options": [
+        { "name": ["--bench"], "description": "Run only the given benchmark target" },
+        { "name": ["--no-run"], "description": "Compile benchmarks but do not run them" },
+        { "name": ["-p", "--package"], "description": "Benchmark only the given package" },
+        { "name": ["-F", "--features"], "description": "Features to activate" }
+      ]
+    },
+    {
+      "name": "clean",
+      "description": "Remove the target directory",
+      "options": [
+        { "name": ["--release"], "description": "Clean release artifacts only" },
+        { "name": ["--doc"], "description": "Clean documentation output only" },
+        { "name": ["-p", "--package"], "description": "Clean only the given package" },
+        { "name": ["--target"], "description": "Clean for the given target triple" }
+      ]
+    },
+    {
+      "name": "publish",
+      "description": "Publish the package to a registry",
+      "options": [
+        { "name": ["--dry-run"], "description": "Prepare the package without uploading" },
+        { "name": ["--allow-dirty"], "description": "Publish with uncommitted changes" },
+        { "name": ["--no-verify"], "description": "Skip building before publishing" },
+        { "name": ["--token"], "description": "Registry token to authenticate with" },
+        { "name": ["-p", "--package"], "description": "Publish the given package" }
+      ]
+    },
+    {
+      "name": "install",
+      "description": "Install a Rust binary",
+      "options": [
+        { "name": ["--path"], "description": "Install from a local path" },
+        { "name": ["--git"], "description": "Install from a git repository" },
+        { "name": ["--version"], "description": "Version to install" },
+        { "name": ["--locked"], "description": "Use the bundled Cargo.lock" },
+        { "name": ["--force"], "description": "Overwrite an existing installation" },
+        { "name": ["--bin"], "description": "Install only the given binary" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["-V", "--version"], "description": "Print cargo version" },
+    { "name": ["-h", "--help"], "description": "Show help" },
+    { "name": ["-v", "--verbose"], "description": "Use verbose output" },
+    { "name": ["-q", "--quiet"], "description": "Do not print cargo log messages" },
+    { "name": ["--offline"], "description": "Run without accessing the network" },
+    { "name": ["--locked"], "description": "Fail if Cargo.lock needs updating" },
+    { "name": ["--color"], "description": "Coloring: auto/always/never" }
+  ]
+}

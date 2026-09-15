@@ -1,0 +1,116 @@
+{
+  "name": "bundle",
+  "description": "Ruby dependency manager",
+  "subcommands": [
+    {
+      "name": "install",
+      "description": "Install the gems from the Gemfile",
+      "options": [
+        { "name": ["--path"], "description": "Directory to install gems into" },
+        { "name": ["--without"], "description": "Groups to skip installing" },
+        { "name": ["--with"], "description": "Optional groups to include" },
+        { "name": ["-j", "--jobs"], "description": "Number of parallel install jobs" },
+        { "name": ["--deployment"], "description": "Install in deployment mode" },
+        { "name": ["--frozen"], "description": "Fail if the Gemfile.lock needs updating" },
+        { "name": ["--gemfile"], "description": "Path to the Gemfile to use" },
+        { "name": ["--local"], "description": "Install from the local gem cache only" },
+        { "name": ["--quiet"], "description": "Suppress progress output" }
+      ]
+    },
+    {
+      "name": "update",
+      "description": "Update gems to newer versions",
+      "options": [
+        { "name": ["--all"], "description": "Update every gem in the Gemfile" },
+        { "name": ["-g", "--group"], "description": "Update only gems in this group" },
+        { "name": ["--conservative"], "description": "Do not update shared dependencies" },
+        { "name": ["--patch"], "description": "Prefer patch-level updates" },
+        { "name": ["--minor"], "description": "Prefer minor-level updates" },
+        { "name": ["--local"], "description": "Resolve from the local cache only" },
+        { "name": ["-j", "--jobs"], "description": "Number of parallel install jobs" }
+      ]
+    },
+    {
+      "name": "exec",
+      "description": "Run a command in the bundle context",
+      "options": [
+        { "name": ["--gemfile"], "description": "Path to the Gemfile to use" },
+        { "name": ["--keep-file-descriptors"], "description": "Pass open file descriptors through" }
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add a gem to the Gemfile",
+      "options": [
+        { "name": ["-v", "--version"], "description": "Version requirement for the gem" },
+        { "name": ["-g", "--group"], "description": "Group to add the gem to" },
+        { "name": ["-s", "--source"], "description": "Gem source to fetch from" },
+        { "name": ["--git"], "description": "Git repository to fetch the gem from" },
+        { "name": ["--skip-install"], "description": "Add to the Gemfile without installing" }
+      ]
+    },
+    {
+      "name": "remove",
+      "description": "Remove a gem from the Gemfile",
+      "options": [
+        { "name": ["--install"], "description": "Run install after removing" }
+      ]
+    },
+    {
+      "name": "init",
+      "description": "Create an empty Gemfile",
+      "options": [
+        { "name": ["--gemspec"], "description": "Seed the Gemfile from a gemspec" },
+        { "name": ["--gemfile"], "description": "Name for the created Gemfile" }
+      ]
+    },
+    {
+      "name": "show",
+      "description": "Show the source location of a bundled gem",
+      "options": [
+        { "name": ["--paths"], "description": "List the paths of all bundled gems" }
+      ]
+    },
+    {
+      "name": "outdated",
+      "description": "List gems with newer versions available",
+      "options": [
+        { "name": ["--local"], "description": "Check against the local cache only" },
+        { "name": ["--pre"], "description": "Include prerelease versions" },
+        { "name": ["--groups"], "description": "Group the output by gem group" },
+        { "name": ["--strict"], "description": "Only allow versions the Gemfile permits" }
+      ]
+    },
+    {
+      "name": "clean",
+      "description": "Remove unused installed gems",
+      "options": [
+        { "name": ["--dry-run"], "description": "List gems without removing them" },
+        { "name": ["--force"], "description": "Clean even outside a bundle path" }
+      ]
+    },
+    {
+      "name": "console",
+      "description": "Open an IRB session with the bundle loaded",
+      "options": []
+    },
+    {
+      "name": "lock",
+      "description": "Resolve and write the Gemfile.lock",
+      "options": [
+        { "name": ["--update"], "description": "Re-resolve the named gems" },
+        { "name": ["--local"], "description": "Resolve from the local cache only" },
+        { "name": ["--print"], "description": "Print the lockfile instead of writing" },
+        { "name": ["--lockfile"], "description": "Path to the lockfile to write" },
+        { "name": ["--add-platform"], "description": "Add a platform to the lockfile" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["-v", "--version"], "description": "Print the Bundler version" },
+    { "name": ["-h", "--help"], "description": "Show help" },
+    { "name": ["-V", "--verbose"], "description": "Enable verbose output" },
+    { "name": ["--no-color"], "description": "Disable colored output" },
+    { "name": ["-r", "--retry"], "description": "Retry failed network requests" }
+  ]
+}

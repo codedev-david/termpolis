@@ -1,0 +1,33 @@
+{
+  "name": "mvn",
+  "description": "Apache Maven build tool",
+  "subcommands": [
+    { "name": "validate", "description": "Validate the project is correct", "options": [] },
+    { "name": "compile", "description": "Compile the project sources", "options": [] },
+    { "name": "test", "description": "Run the unit tests", "options": [] },
+    { "name": "package", "description": "Package the compiled code", "options": [] },
+    { "name": "verify", "description": "Run integration tests and checks", "options": [] },
+    { "name": "install", "description": "Install the package into the local repository", "options": [] },
+    { "name": "deploy", "description": "Deploy the package to a remote repository", "options": [] },
+    { "name": "clean", "description": "Delete the build output directory", "options": [] },
+    { "name": "site", "description": "Generate the project site", "options": [] }
+  ],
+  "options": [
+    { "name": ["-D", "--define"], "description": "Define a system property" },
+    { "name": ["-DskipTests"], "description": "Compile tests but do not run them" },
+    { "name": ["-P", "--activate-profiles"], "description": "Comma separated profiles to activate" },
+    { "name": ["-o", "--offline"], "description": "Work offline" },
+    { "name": ["-U", "--update-snapshots"], "description": "Force a check for updated snapshots" },
+    { "name": ["-X", "--debug"], "description": "Produce debug output" },
+    { "name": ["-q", "--quiet"], "description": "Show errors only" },
+    { "name": ["-e", "--errors"], "description": "Show full error stack traces" },
+    { "name": ["-B", "--batch-mode"], "description": "Run in non-interactive batch mode" },
+    { "name": ["-T", "--threads"], "description": "Thread count, e.g. 4 or 1C" },
+    { "name": ["-f", "--file"], "description": "POM file to build" },
+    { "name": ["-pl", "--projects"], "description": "Comma separated modules to build" },
+    { "name": ["-am", "--also-make"], "description": "Also build the selected modules dependencies" },
+    { "name": ["-s", "--settings"], "description": "Alternate user settings file" },
+    { "name": ["-v", "--version"], "description": "Print the Maven version" },
+    { "name": ["-h", "--help"], "description": "Show help" }
+  ]
+}

@@ -44,4 +44,14 @@ describe('compressObject', () => {
     expect(r.offload).toBeUndefined()
     expect(r.text).toBe('{"status":"clean","branch":"main"}')
   })
+
+  it('never compacts a numeric field, however aggressive the mode', () => {
+    // run_and_wait leans on this: `output` is a string and gets compacted, but `exitCode` is a
+    // number, and compressObject only ever touches strings and arrays. Pass/fail therefore
+    // survives intact at every mode, so the agent never pulls a tail just to guess at it — which
+    // is why the tool needs no EXEMPT_TOOLS entry.
+    const obj = { exitCode: 1, output: Array.from({ length: 500 }, (_, i) => `line${i}`).join('\n') }
+    const r = compressObject(obj, thresholdsFor('max'))
+    expect(JSON.parse(r.text).exitCode).toBe(1)
+  })
 })

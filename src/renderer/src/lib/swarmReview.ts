@@ -86,6 +86,33 @@ export async function runTests(cwd: string, command: string): Promise<TestResult
 /**
  * Best-effort detection of the project test command. Falls back to `npm test`.
  */
+/**
+ * Lockfile → the manager that wrote it, in probe order. First match wins, so
+ * a repo carrying more than one lockfile resolves deterministically rather
+ * than by whichever read happened to land first.
+ */
+const LOCKFILES: ReadonlyArray<readonly [file: string, manager: string]> = [
+  ['pnpm-lock.yaml', 'pnpm'],
+  ['yarn.lock', 'yarn'],
+  ['bun.lockb', 'bun'],
+  ['bun.lock', 'bun'],
+  ['package-lock.json', 'npm'],
+]
+
+/**
+ * readConfigFile hands back '' for a path that does not exist, so non-empty
+ * content is the existence test. A zero-byte lockfile therefore reads as
+ * absent — harmless, since the npm default is what we would fall back to.
+ */
+async function lockfilePresent(path: string): Promise<boolean> {
+  try {
+    const res = await window.termpolis.readConfigFile(path)
+    return Boolean(res.success && res.data)
+  } catch {
+    return false
+  }
+}
+
 export async function detectTestCommand(cwd: string): Promise<string> {
   // Quick heuristic: look for common package manager lockfiles + scripts.
   try {
@@ -93,7 +120,11 @@ export async function detectTestCommand(cwd: string): Promise<string> {
     if (pkgRes.success && pkgRes.data) {
       const pkg = JSON.parse(pkgRes.data)
       if (pkg?.scripts?.test) {
-        // Prefer pnpm/yarn/npm based on lockfile presence. Default: npm.
+        // Every manager below is in SAFE_RUNNERS, so whatever we return here
+        // still passes swarm:run-command's allowlist.
+        for (const [file, manager] of LOCKFILES) {
+          if (await lockfilePresent(`${cwd}/${file}`)) return `${manager} test`
+        }
         return 'npm test'
       }
     }

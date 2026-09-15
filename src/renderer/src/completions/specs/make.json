@@ -1,0 +1,17 @@
+{
+  "name": "make",
+  "description": "Build automation tool",
+  "subcommands": [],
+  "options": [
+    { "name": ["-j", "--jobs"], "description": "Number of jobs to run in parallel" },
+    { "name": ["-f", "--file"], "description": "Makefile to read" },
+    { "name": ["-C", "--directory"], "description": "Change to this directory first" },
+    { "name": ["-k", "--keep-going"], "description": "Keep going after a target fails" },
+    { "name": ["-n", "--dry-run"], "description": "Print recipes without running them" },
+    { "name": ["-B", "--always-make"], "description": "Rebuild targets unconditionally" },
+    { "name": ["-s", "--silent"], "description": "Do not echo recipes" },
+    { "name": ["-i", "--ignore-errors"], "description": "Ignore errors from recipes" },
+    { "name": ["-v", "--version"], "description": "Print the make version" },
+    { "name": ["-h", "--help"], "description": "Show help" }
+  ]
+}

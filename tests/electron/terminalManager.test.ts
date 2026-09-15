@@ -148,6 +148,18 @@ describe('terminalManager', () => {
   it('spawnTerminal leaves the spawn untouched when integration is disabled', () => {
     // The escape hatch has to restore the exact previous behaviour, or it is not an
     // escape hatch.
+    //
+    // PROMPT_COMMAND and PROMPT are cleared for the duration because spawnTerminal spreads
+    // process.env into the child. The claim under test is that we inject nothing when
+    // integration is off — not that whoever runs the suite happens to have no prompt hook
+    // of their own. PROMPT_COMMAND is a standard bash variable, so an inherited one failed
+    // this assertion for a reason that had nothing to do with the product.
+    //
+    // Saved and restored rather than just deleted: the enabled-path test above asserts our
+    // marker is CHAINED onto an existing value, and that needs the real environment back.
+    const priorEnv = { PROMPT_COMMAND: process.env.PROMPT_COMMAND, PROMPT: process.env.PROMPT }
+    delete process.env.PROMPT_COMMAND
+    delete process.env.PROMPT
     process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION = '1'
     try {
       spawnTerminal('si5', '/bin/bash', '/tmp', vi.fn())
@@ -160,6 +172,10 @@ describe('terminalManager', () => {
       expect(vi.mocked(pty.spawn).mock.calls[0][1]).toEqual([])
     } finally {
       delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION
+      for (const [k, v] of Object.entries(priorEnv)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
     }
   })
 

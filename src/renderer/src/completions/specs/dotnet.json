@@ -1,0 +1,257 @@
+{
+  "name": "dotnet",
+  "description": ".NET SDK command-line interface",
+  "subcommands": [
+    {
+      "name": "build",
+      "description": "Build a project and its dependencies",
+      "options": [
+        { "name": ["-c", "--configuration"], "description": "Build configuration: Debug or Release" },
+        { "name": ["-f", "--framework"], "description": "Target framework to build for" },
+        { "name": ["-r", "--runtime"], "description": "Target runtime identifier" },
+        { "name": ["-o", "--output"], "description": "Directory to place build output" },
+        { "name": ["--no-restore"], "description": "Do not restore before building" },
+        { "name": ["--no-incremental"], "description": "Force a full rebuild" },
+        { "name": ["-v", "--verbosity"], "description": "MSBuild verbosity level" }
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Build and run a project",
+      "options": [
+        { "name": ["-c", "--configuration"], "description": "Build configuration: Debug or Release" },
+        { "name": ["-f", "--framework"], "description": "Target framework to run for" },
+        { "name": ["--project"], "description": "Path to the project file to run" },
+        { "name": ["--no-build"], "description": "Do not build before running" },
+        { "name": ["--no-restore"], "description": "Do not restore before running" },
+        { "name": ["--launch-profile"], "description": "launchSettings.json profile to use" }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run unit tests in a project or solution",
+      "options": [
+        { "name": ["-c", "--configuration"], "description": "Build configuration: Debug or Release" },
+        { "name": ["-f", "--framework"], "description": "Target framework to test" },
+        { "name": ["--filter"], "description": "Filter which tests run by expression" },
+        { "name": ["-l", "--logger"], "description": "Test results logger, e.g. trx" },
+        { "name": ["--collect"], "description": "Data collector, e.g. XPlat Code Coverage" },
+        { "name": ["-r", "--results-directory"], "description": "Directory to write test results to" },
+        { "name": ["--no-build"], "description": "Do not build before testing" },
+        { "name": ["--no-restore"], "description": "Do not restore before testing" },
+        { "name": ["-v", "--verbosity"], "description": "MSBuild verbosity level" }
+      ]
+    },
+    {
+      "name": "restore",
+      "description": "Restore NuGet dependencies",
+      "options": [
+        { "name": ["-r", "--runtime"], "description": "Target runtime to restore for" },
+        { "name": ["-s", "--source"], "description": "NuGet package source to use" },
+        { "name": ["--no-cache"], "description": "Do not cache packages and requests" },
+        { "name": ["--force"], "description": "Re-resolve all dependencies" },
+        { "name": ["-v", "--verbosity"], "description": "MSBuild verbosity level" }
+      ]
+    },
+    {
+      "name": "publish",
+      "description": "Publish an app and its dependencies",
+      "options": [
+        { "name": ["-c", "--configuration"], "description": "Build configuration: Debug or Release" },
+        { "name": ["-f", "--framework"], "description": "Target framework to publish for" },
+        { "name": ["-r", "--runtime"], "description": "Target runtime identifier" },
+        { "name": ["-o", "--output"], "description": "Directory to place published output" },
+        { "name": ["--self-contained"], "description": "Publish the runtime alongside the app" },
+        { "name": ["--no-build"], "description": "Do not build before publishing" },
+        { "name": ["--no-restore"], "description": "Do not restore before publishing" }
+      ]
+    },
+    {
+      "name": "clean",
+      "description": "Clean build outputs",
+      "options": [
+        { "name": ["-c", "--configuration"], "description": "Configuration to clean" },
+        { "name": ["-f", "--framework"], "description": "Framework to clean" },
+        { "name": ["-o", "--output"], "description": "Directory holding artifacts to clean" },
+        { "name": ["-v", "--verbosity"], "description": "MSBuild verbosity level" }
+      ]
+    },
+    {
+      "name": "new",
+      "description": "Create a project or file from a template",
+      "options": [
+        { "name": ["-n", "--name"], "description": "Name for the created output" },
+        { "name": ["-o", "--output"], "description": "Directory to place the output in" },
+        { "name": ["-f", "--framework"], "description": "Target framework for the template" },
+        { "name": ["--force"], "description": "Overwrite existing files" },
+        { "name": ["--dry-run"], "description": "Show what would be created" }
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add a package or project reference",
+      "subcommands": [
+        {
+          "name": "package",
+          "description": "Add a NuGet package reference",
+          "options": [
+            { "name": ["-v", "--version"], "description": "Package version to add" },
+            { "name": ["-f", "--framework"], "description": "Add the reference for this framework only" },
+            { "name": ["-s", "--source"], "description": "NuGet source to use" },
+            { "name": ["--prerelease"], "description": "Allow prerelease package versions" },
+            { "name": ["--no-restore"], "description": "Do not restore after adding" }
+          ]
+        },
+        {
+          "name": "reference",
+          "description": "Add a project-to-project reference",
+          "options": [
+            { "name": ["-f", "--framework"], "description": "Add the reference for this framework only" }
+          ]
+        }
+      ],
+      "options": []
+    },
+    {
+      "name": "remove",
+      "description": "Remove a package or project reference",
+      "subcommands": [
+        {
+          "name": "package",
+          "description": "Remove a NuGet package reference",
+          "options": []
+        },
+        {
+          "name": "reference",
+          "description": "Remove a project-to-project reference",
+          "options": []
+        }
+      ],
+      "options": []
+    },
+    {
+      "name": "watch",
+      "description": "Rerun a command when source files change",
+      "options": [
+        { "name": ["--project"], "description": "Path to the project file to watch" },
+        { "name": ["--no-hot-reload"], "description": "Restart instead of applying hot reload" },
+        { "name": ["--list"], "description": "List every watched file" },
+        { "name": ["-v", "--verbose"], "description": "Show verbose watch output" },
+        { "name": ["-q", "--quiet"], "description": "Suppress watch output" }
+      ]
+    },
+    {
+      "name": "format",
+      "description": "Format code to match editorconfig settings",
+      "options": [
+        { "name": ["--verify-no-changes"], "description": "Fail if any file would be changed" },
+        { "name": ["--include"], "description": "Paths to include when formatting" },
+        { "name": ["--exclude"], "description": "Paths to exclude when formatting" },
+        { "name": ["--severity"], "description": "Minimum diagnostic severity to fix" },
+        { "name": ["--no-restore"], "description": "Do not restore before formatting" },
+        { "name": ["-v", "--verbosity"], "description": "Logging verbosity level" }
+      ]
+    },
+    {
+      "name": "sln",
+      "description": "Modify a solution file",
+      "subcommands": [
+        { "name": "add", "description": "Add projects to the solution", "options": [] },
+        { "name": "remove", "description": "Remove projects from the solution", "options": [] },
+        { "name": "list", "description": "List projects in the solution", "options": [] }
+      ],
+      "options": []
+    },
+    {
+      "name": "nuget",
+      "description": "Work with NuGet packages and sources",
+      "subcommands": [
+        {
+          "name": "push",
+          "description": "Push a package to a server",
+          "options": [
+            { "name": ["-s", "--source"], "description": "Server URL to push to" },
+            { "name": ["-k", "--api-key"], "description": "API key for the server" },
+            { "name": ["--skip-duplicate"], "description": "Treat already-published as success" }
+          ]
+        },
+        {
+          "name": "delete",
+          "description": "Delete or unlist a package from a server",
+          "options": [
+            { "name": ["-s", "--source"], "description": "Server URL to delete from" },
+            { "name": ["-k", "--api-key"], "description": "API key for the server" }
+          ]
+        },
+        {
+          "name": "locals",
+          "description": "List or clear local NuGet caches",
+          "options": [
+            { "name": ["-c", "--clear"], "description": "Clear the selected cache" },
+            { "name": ["-l", "--list"], "description": "List the selected cache location" }
+          ]
+        }
+      ],
+      "options": []
+    },
+    {
+      "name": "tool",
+      "description": "Install and manage .NET tools",
+      "subcommands": [
+        {
+          "name": "install",
+          "description": "Install a .NET tool",
+          "options": [
+            { "name": ["-g", "--global"], "description": "Install as a global tool" },
+            { "name": ["--local"], "description": "Install into the local tool manifest" },
+            { "name": ["--tool-path"], "description": "Directory to install the tool into" },
+            { "name": ["--version"], "description": "Tool version to install" }
+          ]
+        },
+        {
+          "name": "uninstall",
+          "description": "Uninstall a .NET tool",
+          "options": [
+            { "name": ["-g", "--global"], "description": "Uninstall a global tool" }
+          ]
+        },
+        {
+          "name": "update",
+          "description": "Update an installed .NET tool",
+          "options": [
+            { "name": ["-g", "--global"], "description": "Update a global tool" }
+          ]
+        },
+        {
+          "name": "list",
+          "description": "List installed .NET tools",
+          "options": [
+            { "name": ["-g", "--global"], "description": "List global tools" }
+          ]
+        },
+        { "name": "restore", "description": "Restore tools from the manifest", "options": [] },
+        { "name": "run", "description": "Run a local tool", "options": [] }
+      ],
+      "options": []
+    },
+    {
+      "name": "pack",
+      "description": "Create a NuGet package",
+      "options": [
+        { "name": ["-c", "--configuration"], "description": "Build configuration: Debug or Release" },
+        { "name": ["-o", "--output"], "description": "Directory to place the package in" },
+        { "name": ["-r", "--runtime"], "description": "Target runtime to restore for" },
+        { "name": ["--include-symbols"], "description": "Also produce a symbols package" },
+        { "name": ["--no-build"], "description": "Do not build before packing" },
+        { "name": ["--no-restore"], "description": "Do not restore before packing" }
+      ]
+    }
+  ],
+  "options": [
+    { "name": ["--version"], "description": "Print the .NET SDK version" },
+    { "name": ["--info"], "description": "Print detailed .NET information" },
+    { "name": ["--list-sdks"], "description": "List installed SDKs" },
+    { "name": ["--list-runtimes"], "description": "List installed runtimes" },
+    { "name": ["-h", "--help"], "description": "Show help" }
+  ]
+}
