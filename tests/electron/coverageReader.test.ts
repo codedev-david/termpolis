@@ -142,6 +142,74 @@ describe('findLcov', () => {
     findLcov('/repo', p => { tried.push(p); return false })
     expect(tried).toHaveLength(LCOV_CANDIDATES.length)
   })
+
+  it('looks for the .NET and Python filenames, not only lcov.info', () => {
+    // The whole non-JS world is why this list exists in more than one shape: coverlet
+    // names its lcov output coverage.info and coverage.py names it coverage.lcov, so a
+    // list of lcov.info paths finds nothing in a correctly instrumented repo.
+    expect(LCOV_CANDIDATES).toContain('coverage.info')
+    expect(LCOV_CANDIDATES).toContain('coverage.lcov')
+  })
+})
+
+describe('findLcov, for paths that cannot be fixed strings', () => {
+  const dirsFrom = (dirs: Record<string, string[]>) => (p: string) => dirs[p] ?? []
+
+  it('finds coverlet collector output under a per-run guid directory', () => {
+    const readDir = dirsFrom({
+      [join('/repo', 'TestResults')]: ['8f3c4a21-0b19-4e77-9f2d-5c1a7e6b3d40'],
+      [join('/repo', 'TestResults', '8f3c4a21-0b19-4e77-9f2d-5c1a7e6b3d40')]: ['coverage.info'],
+    })
+    expect(findLcov('/repo', () => false, readDir))
+      .toBe(join('/repo', 'TestResults', '8f3c4a21-0b19-4e77-9f2d-5c1a7e6b3d40', 'coverage.info'))
+  })
+
+  it('ignores a guid directory holding some other coverage format', () => {
+    const readDir = dirsFrom({
+      [join('/repo', 'TestResults')]: ['abc'],
+      [join('/repo', 'TestResults', 'abc')]: ['coverage.cobertura.xml'],
+    })
+    expect(findLcov('/repo', () => false, readDir)).toBeNull()
+  })
+
+  it('takes a single simplecov tracefile whatever the project named it', () => {
+    const readDir = dirsFrom({ [join('/repo', 'coverage', 'lcov')]: ['my_app.lcov'] })
+    expect(findLcov('/repo', () => false, readDir))
+      .toBe(join('/repo', 'coverage', 'lcov', 'my_app.lcov'))
+  })
+
+  it('refuses simplecov per-file fragments rather than passing one off as the repo', () => {
+    // simplecov-lcov's default mode writes one .lcov per source file. Returning any one of
+    // them would report that single file's coverage as the whole repository's — wrong in
+    // the direction that still looks like a plausible number.
+    const readDir = dirsFrom({
+      [join('/repo', 'coverage', 'lcov')]: ['lib-foo.lcov', 'lib-bar.lcov'],
+    })
+    expect(findLcov('/repo', () => false, readDir)).toBeNull()
+  })
+
+  it('prefers a fixed candidate over anything found by scanning', () => {
+    const present = join('/repo', 'coverage', 'lcov.info')
+    const readDir = dirsFrom({
+      [join('/repo', 'TestResults')]: ['x'],
+      [join('/repo', 'TestResults', 'x')]: ['coverage.info'],
+    })
+    expect(findLcov('/repo', p => p === present, readDir)).toBe(present)
+  })
+
+  it('does not scan at all when a fixed candidate hits', () => {
+    // The cost claim in the doc comment: an ordinary repo pays the stat calls it always
+    // paid, and nothing else.
+    const present = join('/repo', 'coverage', 'lcov.info')
+    const scanned: string[] = []
+    findLcov('/repo', p => p === present, p => { scanned.push(p); return [] })
+    expect(scanned).toEqual([])
+  })
+
+  it('treats an unreadable directory as empty rather than throwing', () => {
+    // The default readDir hits the real filesystem, and /repo does not exist.
+    expect(findLcov('/repo', () => false)).toBeNull()
+  })
 })
 
 describe('readFileCoverage', () => {

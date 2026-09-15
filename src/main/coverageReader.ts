@@ -9,7 +9,7 @@
 // Pure functions plus a couple of fs reads, deliberately kept out of index.ts for the
 // same reason gitChanges.ts is: it stays testable with no Electron and no spawning.
 
-import { existsSync, readFileSync, statSync } from 'fs'
+import { existsSync, readFileSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
 
 /**
@@ -18,6 +18,15 @@ import { join } from 'path'
  * Ordered by how strongly each implies "this is the current run": a bare
  * `coverage/lcov.info` is the default for jest/vitest/nyc, while the deeper paths are
  * what a project produces once it has configured a reporter directory.
+ *
+ * The second group is the non-JS toolchains, and the point of it is that they mostly do
+ * NOT use the name lcov.info: coverlet (.NET) writes coverage.info, and coverage.py
+ * (Python, under pytest-cov) writes coverage.lcov. Matching only lcov.info is why a
+ * correctly instrumented .NET or Python repo would otherwise report no coverage at all.
+ *
+ * Rust needs nothing here: cargo-llvm-cov has no default output path — it prints to
+ * stdout unless given --output-path — and its documented invocation writes lcov.info at
+ * the root, which the first group already covers.
  */
 export const LCOV_CANDIDATES = [
   'coverage/lcov.info',
@@ -27,6 +36,10 @@ export const LCOV_CANDIDATES = [
   'lcov.info',
   'build/coverage/lcov.info',
   'target/coverage/lcov.info',
+  'coverage.info',
+  'coverage/coverage.info',
+  'TestResults/coverage.info',
+  'coverage.lcov',
 ]
 
 /** lcov files above this are not worth blocking the main process to parse. */
@@ -118,12 +131,63 @@ export function parseLcovForFile(text: string, target: string): Record<number, n
   return found
 }
 
-/** First existing lcov candidate under `root`, or null. */
-export function findLcov(root: string, exists: (p: string) => boolean = existsSync): string | null {
+/**
+ * Directory listing that answers "nothing here" rather than throwing.
+ *
+ * Every call site below is speculative — it asks about a directory most repositories do
+ * not have — so ENOENT is the expected answer, not an exceptional one. ENOTDIR matters
+ * too: a plain file named TestResults is listed like a directory and must read as empty.
+ */
+function safeReadDir(p: string): string[] {
+  try {
+    return readdirSync(p)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * First existing lcov artifact under `root`, or null.
+ *
+ * The fixed candidates come first: cheap, ordered, and enough for every toolchain that
+ * writes to a predictable path. Two do not, and cannot be expressed as fixed strings at
+ * all, because each embeds a segment that varies per run or per project:
+ *
+ *  - coverlet's VSTest collector writes TestResults/<guid>/coverage.info, the guid being
+ *    generated fresh on every `dotnet test`.
+ *  - simplecov-lcov's single-file mode writes coverage/lcov/<project-name>.lcov.
+ *
+ * Those two get a bounded scan, one directory deep, and only once every fixed candidate
+ * has missed — so a repo that has a normal artifact still costs exactly the stat calls
+ * it cost before, and a repo with no coverage costs a handful of failed readdirs.
+ */
+export function findLcov(
+  root: string,
+  exists: (p: string) => boolean = existsSync,
+  readDir: (p: string) => string[] = safeReadDir,
+): string | null {
   for (const rel of LCOV_CANDIDATES) {
     const p = join(root, rel)
     if (exists(p)) return p
   }
+
+  // Listing the guid directory is itself what establishes the file is there; probing with
+  // `exists` afterwards would be a second syscall for an answer readdir already gave.
+  const testResults = join(root, 'TestResults')
+  for (const entry of readDir(testResults)) {
+    const dir = join(testResults, entry)
+    if (readDir(dir).includes('coverage.info')) return join(dir, 'coverage.info')
+  }
+
+  // simplecov-lcov's DEFAULT mode writes one .lcov per SOURCE FILE, named after the path
+  // it came from. Returning any one of those would report a single file's coverage as if
+  // it were the whole repository's — badly wrong, and wrong in the direction that looks
+  // plausible. Exactly one match means single-file mode, which is a real tracefile; more
+  // than one means fragments, and the honest answer there is that we found nothing.
+  const lcovDir = join(root, 'coverage', 'lcov')
+  const tracefiles = readDir(lcovDir).filter((f) => f.endsWith('.lcov'))
+  if (tracefiles.length === 1) return join(lcovDir, tracefiles[0])
+
   return null
 }
 
