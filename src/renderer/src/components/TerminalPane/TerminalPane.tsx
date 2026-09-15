@@ -20,6 +20,7 @@ import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
 import { decodeOsc7, normalizeShellPath, osc7PathPart, samePath } from '../../../../shared/cwdPath'
+import { hostHomedir } from '../../lib/platform'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { VoiceGroqGate } from './VoiceGroqGate'
@@ -864,7 +865,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // notification. Claim only the directory form; hand the rest back to xterm.
       if (!payload.startsWith('9;')) return false
       const raw = payload.slice(2)
-      reportCwd(normalizeShellPath(raw) ?? raw)
+      reportCwd(normalizeShellPath(raw, { homedir: hostHomedir() }) ?? raw)
       return true
     })
     // Wheel forwarding. When we swallowed the app's mouse tracking, xterm no longer
@@ -1379,7 +1380,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         // Keeps the shell's own text when no native form exists (an MSYS /usr/bin, a WSL
         // /home/dev): it fails git cleanly, so the mark blanks — whereas dropping the
         // report would strand the mark on the directory the shell has already left.
-        const promptCwd = promptInfo.cwd ? (normalizeShellPath(promptInfo.cwd) ?? promptInfo.cwd) : null
+        // The homedir matters most here: a Git Bash prompt abbreviates to `~/repos/x`, and
+        // without an expansion target the tilde reached the store verbatim, so git could not
+        // chdir to it and the dot reported "not a repository" inside a real repo.
+        const promptCwd = promptInfo.cwd
+          ? (normalizeShellPath(promptInfo.cwd, { homedir: hostHomedir() }) ?? promptInfo.cwd)
+          : null
         if (promptCwd && !disposed) {
           setParsedCwd(promptCwd)
           // Write live cwd back to the store so Git Panel and other components can use it — but ONLY

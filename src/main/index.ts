@@ -1054,6 +1054,10 @@ ipcMain.on('app:platform-info-sync', (e) => {
   e.returnValue = {
     platform: process.platform,
     windowsPty: computeWindowsPty(process.platform, release()),
+    // Shipped on the same synchronous payload because the renderer needs it before the
+    // first prompt is parsed. `fs:homedir` exists but is async, and a cwd that arrives
+    // one tick late is a cwd the git mark has already polled with a tilde in it.
+    homedir: homedir(),
   }
 })
 

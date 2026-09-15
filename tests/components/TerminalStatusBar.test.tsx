@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { TerminalStatusBar } from '../../src/renderer/src/components/StatusBar/TerminalStatusBar'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { __setHomedirForTests } from '../../src/renderer/src/lib/platform'
 
 // Mock the pollingService module to avoid real subscriptions
 vi.mock('../../src/renderer/src/lib/pollingService', () => ({
@@ -19,6 +20,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Left set, a forced home would silently change how every later path normalizes.
+  __setHomedirForTests(null)
 })
 
 describe('TerminalStatusBar', () => {
@@ -228,5 +231,21 @@ describe('TerminalStatusBar — publishing the live cwd', () => {
       render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/start" />)
       await waitFor(() => expect(screen.getByText('main')).toBeInTheDocument())
       expect(useTerminalStore.getState().terminals[0].cwd).toBe('/start')
+    }))
+
+  // The regression this pins is not in the normalizer — cwdPath already expanded `~` when handed
+  // a homedir — but in the CALL SITE failing to hand it one. The renderer has no `process`, so
+  // every consumer omitted the option, the tilde reached the store verbatim, `git -C '~/repos/x'`
+  // could not chdir, and the terminal tab's git mark sat dim and inert inside a repository full
+  // of uncommitted changes. Asserting an absolute result is what proves the target was supplied.
+  it('expands a tilde from the probe, so git can chdir to what it stores', () =>
+    withPlatform('linux', async () => {
+      __setHomedirForTests('/home/dev')
+      seed('/start')
+      statusMock().mockResolvedValueOnce({ success: true, data: { gitBranch: '', cwd: '~/repos/x' } })
+      render(<TerminalStatusBar terminalId="t1" shellType="bash" cwd="/start" />)
+      await waitFor(() => {
+        expect(useTerminalStore.getState().terminals[0].cwd).toBe('/home/dev/repos/x')
+      })
     }))
 })

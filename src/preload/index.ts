@@ -247,8 +247,12 @@ const api: TermpolisAPI = {
   // windowsPty before it constructs the first xterm Terminal (the option must be
   // set at construction). Tiny one-shot payload from main; falls back to a safe
   // default when the channel is unavailable (e.g. unit tests with no sendSync).
+  // The fallback runs only when sendSync is unavailable (tests, a stubbed bridge), so it states
+  // what is actually known rather than guessing: empty homedir, like its null windowsPty sibling,
+  // means "unknown", and normalizeShellPath reads an absent homedir as "leave the tilde alone".
+  // Deliberately not os.homedir() — importing node into preload breaks under sandbox: true.
   platformInfo: (ipcRenderer.sendSync?.('app:platform-info-sync') as PlatformInfo | undefined)
-    ?? { platform: process.platform, windowsPty: null },
+    ?? { platform: process.platform, windowsPty: null, homedir: '' },
 
   listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
   digestAISession: (filePath: string) => ipcRenderer.invoke('aiSessions:digest', filePath),

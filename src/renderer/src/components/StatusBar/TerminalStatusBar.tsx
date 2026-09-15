@@ -4,6 +4,7 @@ import type { AgentInfo } from '../../lib/agentDetector'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { useTerminalStore } from '../../store/terminalStore'
 import { normalizeShellPath, samePath } from '../../../../shared/cwdPath'
+import { hostHomedir } from '../../lib/platform'
 
 interface Props {
   terminalId: string
@@ -38,7 +39,7 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
         //
         // On Windows the probe returns null and main echoes back the cwd we passed in,
         // so the guard below makes this a no-op there rather than a wrong answer.
-        const live = normalizeShellPath(res.data.cwd ?? '')
+        const live = normalizeShellPath(res.data.cwd ?? '', { homedir: hostHomedir() })
         const store = useTerminalStore.getState()
         const known = store.terminals.find(t => t.id === terminalId)?.cwd
         if (live && !samePath(known, live)) store.updateTerminal(terminalId, { cwd: live })

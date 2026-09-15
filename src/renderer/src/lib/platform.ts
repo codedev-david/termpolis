@@ -12,6 +12,7 @@
 import type { PlatformInfo } from '../types'
 
 let cached: string | null = null
+let cachedHome: string | null = null
 
 /** Test seam: force the platform. Pass null to fall back to the live bridge value again. */
 export function __setPlatformForTests(platform: string | null): void {
@@ -24,6 +25,25 @@ export function hostPlatform(): string {
   try {
     const info = (window as { termpolis?: { platformInfo?: PlatformInfo } }).termpolis?.platformInfo
     return info?.platform ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Test seam: force the home directory. Pass null to fall back to the live bridge value. */
+export function __setHomedirForTests(home: string | null): void {
+  cachedHome = home
+}
+
+/** The host's home directory, for expanding a leading `~` in a shell-reported path.
+ *  Empty string if unknown — and `normalizeShellPath` treats an absent homedir as
+ *  "leave the tilde alone", so an unknown home degrades to today's behaviour rather
+ *  than inventing a wrong path. */
+export function hostHomedir(): string {
+  if (cachedHome !== null) return cachedHome
+  try {
+    const info = (window as { termpolis?: { platformInfo?: PlatformInfo } }).termpolis?.platformInfo
+    return info?.homedir ?? ''
   } catch {
     return ''
   }

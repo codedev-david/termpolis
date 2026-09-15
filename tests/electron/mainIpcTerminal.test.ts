@@ -1221,7 +1221,7 @@ describe('fs + app info IPC', () => {
   })
 
   it('app:platform-info-sync answers SYNCHRONOUSLY — xterm needs windowsPty at construction time', async () => {
-    const { release } = await vi.importActual<typeof import('os')>('os')
+    const { release, homedir } = await vi.importActual<typeof import('os')>('os')
     const e: { returnValue?: any } = {}
     // Registered with ipcMain.on and replies via e.returnValue (sendSync), because an
     // async round-trip would land after the first Terminal is already constructed.
@@ -1230,6 +1230,12 @@ describe('fs + app info IPC', () => {
     expect(e.returnValue).toEqual({
       platform: process.platform,
       windowsPty: { backend: 'conpty', buildNumber: 22631 },
+      // The home directory rides this same synchronous reply because the renderer needs it
+      // before the first prompt is parsed. A Git Bash prompt reports `~/repos/x`, and with no
+      // expansion target the tilde reached the store verbatim, so git could not chdir to it and
+      // the terminal tab's git mark read a dirty repo as "not a repository". `fs:homedir` exists
+      // but is async, and a cwd that arrives a tick late is one the mark has already polled.
+      homedir: homedir(),
     })
     expect(mockComputeWindowsPty).toHaveBeenCalledWith(process.platform, release())
   })

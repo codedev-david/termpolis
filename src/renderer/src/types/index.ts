@@ -135,6 +135,12 @@ export interface PlatformInfo {
   /** xterm.js `windowsPty` option on Windows (backend + OS build) so the
    *  emulator's reflow/scrollback match ConPTY; null off Windows. */
   windowsPty: { backend: 'conpty' | 'winpty'; buildNumber: number } | null
+  /** The host's home directory, so the renderer can expand a leading `~`.
+   *  A Git Bash prompt reports `~/repos/x`, and the renderer has no `process`
+   *  to resolve it with: without this, `normalizeShellPath` leaves the tilde
+   *  verbatim, the store holds a path git cannot chdir to, and every consumer
+   *  (git dot, Changes panel, status bar) reads it as "not a repository". */
+  homedir: string
 }
 
 export interface CodeGraphStats {
