@@ -49,7 +49,16 @@ export default defineConfig({
     ],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html'],
+      // 'lcov' is not for humans — nothing reads coverage/lcov.info by eye. It is the format
+      // coverageReader.ts parses, which is what the in-app features are built on: the coverage
+      // gutter on a diff hunk, its coverage:for-file IPC channel, and the test_coverage MCP
+      // tool. Without it those all answer "no coverage artifact found" on this very repo,
+      // immediately after a full `npm run test:coverage` — the one answer guaranteed to be
+      // read as "the feature is broken" rather than "the reporter is not emitting it".
+      //
+      // Additive: thresholds are enforced from the separate `thresholds` key below, so adding
+      // an output format cannot move the gate.
+      reporter: ['text', 'html', 'lcov'],
       // Vitest defaults this to false, which means ONE failing test — a flake, a timeout,
       // anything — silently suppresses the entire coverage report. That is backwards: the
       // run where something broke is exactly the run where you want to see whether the

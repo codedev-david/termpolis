@@ -164,3 +164,53 @@ export function readFileCoverage(root: string, file: string): FileCoverage | nul
   }
   return { source: lcovPath, lines, stale }
 }
+
+/**
+ * The verdict for one file (or one hunk of it), condensed from the line-hit map.
+ *
+ * `percent` is null rather than 0 when the range holds no executable lines: a hunk that
+ * changed only comments or braces is not 0% covered, it is not a question. Reporting 0
+ * there reads as a failure to fix, and there is nothing to fix.
+ */
+export interface CoverageSummary {
+  covered: number
+  total: number
+  percent: number | null
+  /** Executable lines recorded with zero hits, ascending — the actionable part. */
+  uncovered: number[]
+  stale: boolean
+  source: string
+}
+
+/**
+ * Condense a FileCoverage into something an agent can act on.
+ *
+ * The raw `lines` map is the right shape for painting a gutter and the wrong shape for
+ * answering "is my change tested": a 500-line file is a 500-entry object the caller must
+ * scan before it learns anything. This answers directly, and answers in NUMBERS plus a
+ * short list — which is what survives tool-output compaction intact, where a large map
+ * would be top-K'd into uselessness.
+ *
+ * startLine/endLine narrow it to a single hunk, so the question can be "is the code I just
+ * changed tested" rather than the much weaker "is this file tested".
+ */
+export function summarizeCoverage(
+  cov: FileCoverage,
+  startLine?: number,
+  endLine?: number,
+): CoverageSummary {
+  const inRange = (n: number): boolean =>
+    (startLine === undefined || n >= startLine) && (endLine === undefined || n <= endLine)
+  const nums = Object.keys(cov.lines).map(Number).filter((n) => Number.isFinite(n) && inRange(n))
+  const uncovered = nums.filter((n) => cov.lines[n] === 0).sort((a, b) => a - b)
+  const total = nums.length
+  const covered = total - uncovered.length
+  return {
+    covered,
+    total,
+    percent: total === 0 ? null : Math.round((covered / total) * 1000) / 10,
+    uncovered,
+    stale: cov.stale,
+    source: cov.source,
+  }
+}

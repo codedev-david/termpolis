@@ -115,7 +115,7 @@ import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node
 import {
   buildChanges, countChanges, resolveInsideRepo, synthesizeUntrackedDiff, type ChangeMode,
 } from './gitChanges'
-import { readFileCoverage } from './coverageReader'
+import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (resolveNodeCommand is already imported above for the MCP registration.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
@@ -2907,6 +2907,23 @@ if (!gotTheLock) {
           visible: false,
         })
         return { exitCode: res.exitCode, output: res.output, timedOut: res.timedOut }
+      },
+      testCoverage: ({ file, cwd, startLine, endLine }) => {
+        const root = cwd || process.cwd()
+        // The same guard the coverage:for-file channel uses. There the path came from git one
+        // poll earlier; here it is supplied by an agent, which makes refusing it more important
+        // rather than less.
+        if (!resolveInsideRepo(root, file)) {
+          return { file, hasCoverage: false, hint: 'Path escapes the repository' }
+        }
+        const cov = readFileCoverage(root, file)
+        // Null is the ordinary answer for a repo that has never produced an lcov file, not a
+        // fault. Naming the remedy is what stops an agent retrying the same call and then
+        // reporting the tool as broken.
+        if (!cov) {
+          return { file, hasCoverage: false, hint: 'No coverage artifact found — run the test suite with coverage enabled first' }
+        }
+        return { file, hasCoverage: true, ...summarizeCoverage(cov, startLine, endLine) }
       },
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)

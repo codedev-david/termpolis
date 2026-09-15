@@ -198,6 +198,20 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'test_coverage',
+    description: 'Which lines of a file are covered by its own test suite, from the coverage the project last produced. Use it to check whether code you just changed is tested; pass startLine/endLine to ask about one hunk',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Repo-relative path, e.g. src/main/index.ts' },
+        cwd: { type: 'string', description: 'Repository root (default: the app cwd)' },
+        startLine: { type: 'number', description: 'Only count lines at or after this one' },
+        endLine: { type: 'number', description: 'Only count lines at or before this one' },
+      },
+      required: ['file'],
+    },
+  },
+  {
     name: 'close_terminal',
     description: 'Close a terminal by ID',
     inputSchema: {
@@ -566,6 +580,7 @@ export interface McpToolHandlers {
   createTerminal: (name: string, shell: string, cwd: string) => Promise<string>
   runCommand: (terminalId: string, command: string) => void
   runAndWait: (opts: { command: string; cwd?: string; shell?: string; timeoutMs?: number }) => Promise<{ exitCode: number; output: string; timedOut?: boolean }>
+  testCoverage: (opts: { file: string; cwd?: string; startLine?: number; endLine?: number }) => { file: string; hasCoverage: boolean; hint?: string; covered?: number; total?: number; percent?: number | null; uncovered?: number[]; stale?: boolean; source?: string }
   readOutput: (terminalId: string, lines: number) => string
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
@@ -632,6 +647,16 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
         cwd: args.cwd,
         shell: args.shell,
         timeoutMs: args.timeoutMs,
+      })
+    case 'test_coverage':
+      // Like run_and_wait, deliberately not exempt. Everything load-bearing here is a number
+      // or a short array, and compressObject never touches numbers — so the verdict survives
+      // even at max, which is precisely why the raw line-hit map is not what gets returned.
+      return handlers.testCoverage({
+        file: args.file,
+        cwd: args.cwd,
+        startLine: args.startLine,
+        endLine: args.endLine,
       })
     case 'close_terminal':
       handlers.closeTerminal(args.terminalId)
