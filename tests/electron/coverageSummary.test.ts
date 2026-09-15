@@ -6,7 +6,10 @@ import { summarizeCoverage, type FileCoverage } from '../../src/main/coverageRea
  * shape an agent reads: numbers plus a short list of misses, never the raw line-hit map.
  */
 function cov(lines: Record<number, number>, stale = false): FileCoverage {
-  return { source: '/repo/coverage/lcov.info', lines, stale }
+  // The format is irrelevant to summarizing — by the time a FileCoverage exists, every
+  // format has been flattened to the same line→hits map. That is the whole point of
+  // doing the format work in the parser and not here.
+  return { source: '/repo/coverage/lcov.info', format: 'lcov', lines, stale }
 }
 
 describe('summarizeCoverage', () => {

@@ -35,6 +35,8 @@ interface ChangesResult {
 /** Mirrors the payload of src/main/coverageReader.ts. */
 interface FileCoverage {
   source: string
+  /** Which artifact format the numbers came from — lcov, cobertura, jacoco, clover, gocover. */
+  format: string
   lines: Record<number, number>
   stale: boolean
 }

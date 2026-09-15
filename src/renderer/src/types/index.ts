@@ -372,8 +372,12 @@ export interface TermpolisAPI {
   gitChanges: (cwd: string) => Promise<IpcResponse<GitChangesResult>>
   gitChangeCounts: (cwd: string) => Promise<IpcResponse<GitChangeCounts | null>>
   gitChangeDiff: (cwd: string, file: string, mode: GitChangeMode) => Promise<IpcResponse<string>>
-  /** Per-hunk test coverage for the diff view. Null when the repo has no lcov artifact. */
-  coverageForFile: (cwd: string, file: string) => Promise<IpcResponse<{ source: string; lines: Record<number, number>; stale: boolean } | null>>
+  /**
+   * Per-hunk test coverage for the diff view, read from whatever format the project's own
+   * test run produced (lcov, Cobertura, JaCoCo, Clover, Go coverprofile). Null when the
+   * repo has no coverage artifact at all — the common case, and not an error.
+   */
+  coverageForFile: (cwd: string, file: string) => Promise<IpcResponse<{ source: string; format: string; lines: Record<number, number>; stale: boolean } | null>>
 
   // Swarm Review
   gitRevParseHead: (cwd: string) => Promise<IpcResponse<string | null>>

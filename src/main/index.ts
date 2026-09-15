@@ -120,7 +120,7 @@ import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // (resolveNodeCommand is already imported above for the MCP registration.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
-import { appendCommand, searchHistory } from './historyStore'
+import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeTool, type McpToolHandlers } from './mcpServer'
@@ -1589,9 +1589,11 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
 // execFileSync blocks the thread pumping every PTY for the whole spawn (~106 ms of
 // process-creation tax alone, on Windows, before git reads an object).
 
-// Per-hunk test coverage for the diff view: reads whatever lcov the project's OWN
-// test run last left behind. A repo that has never produced one answers null, and
-// that is not an error — the diff simply shows no percentage rather than a zero.
+// Per-hunk test coverage for the diff view: reads whatever artifact the project's OWN
+// test run last left behind, in any of the five formats coverageReader parses — so this
+// answers for .NET, Java, Kotlin, Go, PHP and Python as well as for JS/TS. A repo that
+// has never produced one answers null, and that is not an error — the diff simply shows
+// no percentage rather than a zero.
 ipcMain.handle('coverage:for-file', async (_, { cwd, file }: { cwd: string; file: string }) => {
   try {
     // The path came from the renderer. Every legitimate value came from git one poll
@@ -2453,16 +2455,17 @@ ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+// safeGitAsync, never safeGit, for the same reason as the handlers above: ContextPanel puts
+// this on a 5-second poll, and two *synchronous* spawns here froze the main thread — and with
+// it the pump that forwards every PTY chunk to the renderer — for twice Windows' process-
+// creation tax, on a repeating timer. That reads as the terminal stuttering while you type.
+// The two spawns are independent, so they overlap rather than queue.
 ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
   try {
-    let status = ''
-    let recentCommits = ''
-    try {
-      status = safeGit(['status', '--short'], { cwd, timeout: 3000 }).trim()
-    } catch {}
-    try {
-      recentCommits = safeGit(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).trim()
-    } catch {}
+    const [status, recentCommits] = await Promise.all([
+      safeGitAsync(['status', '--short'], { cwd, timeout: 3000 }).then(s => s.trim()).catch(() => ''),
+      safeGitAsync(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).then(s => s.trim()).catch(() => ''),
+    ])
     return ok({ status, recentCommits })
   } catch (e: any) { return err(e.message) }
 })
@@ -2921,7 +2924,7 @@ if (!gotTheLock) {
         // fault. Naming the remedy is what stops an agent retrying the same call and then
         // reporting the tool as broken.
         if (!cov) {
-          return { file, hasCoverage: false, hint: 'No coverage artifact found — run the test suite with coverage enabled first' }
+          return { file, hasCoverage: false, hint: 'No coverage artifact found (lcov/cobertura/jacoco/clover/go) — run the test suite with coverage enabled first' }
         }
         return { file, hasCoverage: true, ...summarizeCoverage(cov, startLine, endLine) }
       },
@@ -3998,6 +4001,10 @@ if (!gotTheLock) {
     try { stopRepoWatches() } catch {}
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
+    // Command history is written in the background and debounced, so a quit can land
+    // between the last Enter and its flush. This is the one place a blocking write is
+    // correct: there is no event loop left to await on.
+    try { flushHistorySync() } catch {}
     // Reap the memory process. The store is already durable on disk (every write is appended before
     // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
     try { stopMemoryHost() } catch {}

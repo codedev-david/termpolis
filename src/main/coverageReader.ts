@@ -1,34 +1,47 @@
 // Reads a repository's OWN test-coverage artifact, so the diff view can say how much
 // of a changed hunk is actually covered by tests.
 //
-// lcov is the one format worth parsing: jest, vitest, nyc, c8, pytest-cov, karma and
-// (via gcov2lcov) go all emit it, so a single parser covers most repos without
-// Termpolis needing to know which test runner a project uses. Nothing here runs the
-// tests — it reads what the project's own last run left behind, or reports nothing.
+// It parses FIVE formats, because parsing one was the thing standing between this feature
+// and most of the world's code. lcov is the JS/TS default and Rust, C and C++ can all be
+// made to emit it — but .NET defaults to Cobertura, Java and Kotlin to JaCoCo, Go to its
+// own coverprofile text, and PHP to Clover. A repo in any of those languages had run its
+// tests with coverage on and still been told "no coverage artifact found".
 //
-// Pure functions plus a couple of fs reads, deliberately kept out of index.ts for the
-// same reason gitChanges.ts is: it stays testable with no Electron and no spawning.
+// Nothing here runs the tests — it reads what the project's own last run left behind, or
+// reports nothing. Pure functions plus a couple of fs reads, deliberately kept out of
+// index.ts for the same reason gitChanges.ts is: it stays testable with no Electron and
+// no spawning.
 
 import { existsSync, readFileSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
 
+/** The coverage formats worth parsing, which between them cover every popular language. */
+export type CoverageFormat = 'lcov' | 'cobertura' | 'jacoco' | 'clover' | 'gocover'
+
 /**
  * Where coverage artifacts actually land, in the order worth trying.
  *
- * Ordered by how strongly each implies "this is the current run": a bare
- * `coverage/lcov.info` is the default for jest/vitest/nyc, while the deeper paths are
- * what a project produces once it has configured a reporter directory.
+ * Grouped by ecosystem rather than by format, because that is how they appear in the wild.
+ * Ordered so that the formats carrying per-line hit counts for a whole repo come before the
+ * ones that are more often partial.
  *
- * The second group is the non-JS toolchains, and the point of it is that they mostly do
- * NOT use the name lcov.info: coverlet (.NET) writes coverage.info, and coverage.py
- * (Python, under pytest-cov) writes coverage.lcov. Matching only lcov.info is why a
- * correctly instrumented .NET or Python repo would otherwise report no coverage at all.
+ * The non-JS entries are the point of this list. Each toolchain names its output something
+ * different, and matching only `lcov.info` is why a correctly instrumented .NET, Go, Java
+ * or PHP repo would otherwise report no coverage at all:
  *
- * Rust needs nothing here: cargo-llvm-cov has no default output path — it prints to
- * stdout unless given --output-path — and its documented invocation writes lcov.info at
- * the root, which the first group already covers.
+ *  - coverlet (.NET) writes `coverage.cobertura.xml` BY DEFAULT, and `coverage.info` only
+ *    when asked for lcov. The default is the case that matters.
+ *  - coverage.py writes `coverage.lcov` for `coverage lcov`, `coverage.xml` for `coverage xml`.
+ *  - `go test -coverprofile` writes Go's own text format, conventionally `coverage.out`.
+ *  - JaCoCo writes `jacoco.xml` under target/ (Maven) or build/reports/ (Gradle).
+ *  - PHPUnit writes Clover to `clover.xml`.
+ *
+ * Rust needs nothing of its own: cargo-llvm-cov has no default output path — it prints to
+ * stdout unless given --output-path — and its documented invocation writes lcov.info at the
+ * root, which the first group already covers.
  */
-export const LCOV_CANDIDATES = [
+export const COVERAGE_CANDIDATES = [
+  // lcov: JS/TS by default, and Rust/C/C++ when pointed at a file.
   'coverage/lcov.info',
   'coverage/lcov-report/lcov.info',
   'coverage/lcov/lcov.info',
@@ -36,18 +49,38 @@ export const LCOV_CANDIDATES = [
   'lcov.info',
   'build/coverage/lcov.info',
   'target/coverage/lcov.info',
+  // lcov under the names .NET and Python give it.
   'coverage.info',
   'coverage/coverage.info',
   'TestResults/coverage.info',
   'coverage.lcov',
+  // Cobertura: coverlet's DEFAULT, and `coverage xml` for Python.
+  'coverage.cobertura.xml',
+  'coverage/coverage.cobertura.xml',
+  'TestResults/coverage.cobertura.xml',
+  'coverage.xml',
+  'coverage/coverage.xml',
+  'coverage/cobertura-coverage.xml',
+  // Go coverprofile.
+  'coverage.out',
+  'cover.out',
+  'profile.cov',
+  // JaCoCo: Maven layout, then Gradle.
+  'target/site/jacoco/jacoco.xml',
+  'build/reports/jacoco/test/jacocoTestReport.xml',
+  // Clover: PHPUnit.
+  'clover.xml',
+  'build/logs/clover.xml',
 ]
 
-/** lcov files above this are not worth blocking the main process to parse. */
-export const MAX_LCOV_BYTES = 32 * 1024 * 1024
+/** Artifacts above this are not worth blocking the main process to parse. */
+export const MAX_COVERAGE_BYTES = 32 * 1024 * 1024
 
 export interface FileCoverage {
   /** Absolute path of the artifact the numbers came from. */
   source: string
+  /** Which format that artifact turned out to be, decided by content and not by name. */
+  format: CoverageFormat
   /** Executable line number → hit count, for the requested file only. */
   lines: Record<number, number>
   /**
@@ -69,13 +102,26 @@ export function normalizeForMatch(p: string): string {
 }
 
 /**
- * Does an lcov `SF:` path refer to the repo-relative file we asked about?
+ * Does a path recorded in an artifact refer to the repo-relative file we asked about?
  *
- * lcov writers disagree about what goes in SF: an absolute path, a repo-relative one,
- * or one relative to some intermediate directory. Matching on the SUFFIX covers all
- * three. The boundary check requires the character before the match to be a separator,
- * so `src/a.ts` does not match `foosrc/a.ts` — a path that merely ends in the same
- * characters without ending in the same PATH.
+ * Coverage writers disagree about what they record: an absolute path, a repo-relative one,
+ * one relative to some intermediate directory, or — in Go's case — a full module import
+ * path. Matching on the SUFFIX covers all of them. The boundary check requires the
+ * character before the match to be a separator, so `src/a.ts` does not match `foosrc/a.ts`
+ * — a path that merely ends in the same characters without ending in the same PATH.
+ *
+ * The match runs in BOTH directions, because the recorded path can be either longer or
+ * shorter than the repo-relative one:
+ *
+ *  - LONGER is the absolute-path case — lcov's `/home/me/repo/src/a.ts` for `src/a.ts`.
+ *  - SHORTER is the source-root-relative case, and it is why Java works at all. JaCoCo
+ *    records `com/example/A.java`, relative to the source root, while the diff view asks
+ *    about `src/main/java/com/example/A.java`. Checking only the longer direction reports
+ *    "no coverage" for every correctly instrumented Maven and Gradle project.
+ *
+ * The shorter direction additionally requires a separator in the recorded path, so a bare
+ * basename never matches. `A.java` on its own would otherwise claim every A.java in the
+ * repository — the one case where suffix matching stops being merely imprecise.
  *
  * It does NOT disambiguate a genuinely nested copy: `vendor/other/src/a.ts` ends with
  * `/src/a.ts` and so does match. That is inherent to suffix matching and is the right
@@ -87,8 +133,51 @@ export function sfMatches(sf: string, target: string): boolean {
   const a = normalizeForMatch(sf)
   const b = normalizeForMatch(target)
   if (a === b) return true
-  if (!a.endsWith(b)) return false
-  return a[a.length - b.length - 1] === '/'
+  if (a.endsWith(b)) return a[a.length - b.length - 1] === '/'
+  if (b.endsWith(a) && a.includes('/')) return b[b.length - a.length - 1] === '/'
+  return false
+}
+
+/**
+ * Decide the format from the artifact's CONTENT, never from its filename.
+ *
+ * Filenames are ambiguous in exactly the cases that matter: `coverage.info` is lcov from
+ * coverlet, `coverage.xml` is Cobertura from coverage.py but could be Clover from another
+ * tool, and any of them can be renamed by a CI script. Every one of these formats has an
+ * unmistakable signature in its first few hundred bytes, so reading those is both cheaper
+ * and more reliable than maintaining a filename-to-format table.
+ *
+ * Cobertura and Clover both use a `<coverage>` root element and are told apart by their
+ * attributes: Cobertura carries `line-rate`, Clover carries `generated` plus a `<project>`.
+ */
+export function sniffFormat(text: string): CoverageFormat | null {
+  const head = text.slice(0, 8192)
+  // Go first: a bare `mode:` line is unambiguous and cheap to test for.
+  if (/^mode:\s*(set|count|atomic)\s*$/m.test(head)) return 'gocover'
+  if (/^(SF:|TN:)/m.test(head)) return 'lcov'
+  // JaCoCo's root element is <report>, which neither of the others uses. The DOCTYPE names
+  // JaCoCo outright, but some pipelines strip it, so the child elements stand in — without
+  // that fallback a perfectly good Java report would sniff as null and read as "no coverage".
+  if (/<\s*report\b/.test(head) && (/jacoco/i.test(head) || /<\s*(counter|sourcefile)\b/.test(head))) {
+    return 'jacoco'
+  }
+  // Cobertura and Clover share a <coverage> root and are told apart by attributes only.
+  if (/<!DOCTYPE\s+coverage/i.test(head)) return 'cobertura'
+  if (/<\s*coverage\b[^>]*\bline-rate\s*=/.test(head)) return 'cobertura'
+  if (/<\s*coverage\b[^>]*\bclover\s*=/.test(head)) return 'clover'
+  if (/<\s*coverage\b[^>]*\bgenerated\s*=/.test(head) && /<\s*project\b/.test(head)) return 'clover'
+  return null
+}
+
+/** Pull the attributes out of one XML start-tag's body. */
+function attrs(tagBody: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  // Built per call rather than hoisted: a module-level /g regex carries lastIndex between
+  // calls, which silently drops attributes on the second document parsed.
+  const re = /([\w:.-]+)\s*=\s*"([^"]*)"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(tagBody))) out[m[1]] = m[2]
+  return out
 }
 
 /**
@@ -132,6 +221,159 @@ export function parseLcovForFile(text: string, target: string): Record<number, n
 }
 
 /**
+ * Pull one file's lines out of a Cobertura document — coverlet's default, so this is the
+ * parser that makes .NET and C# work.
+ *
+ * Takes the MAX hit count per line rather than the sum, which is the opposite of lcov and
+ * deliberately so. Cobertura nests a copy of each method's `<line>` elements inside
+ * `<methods>` AND lists them again in the class's own `<lines>`, so every covered line is
+ * reported at least twice. Summing would roughly double every hit count in the file —
+ * still a plausible-looking number, which is the worst kind of wrong.
+ */
+export function parseCoberturaForFile(text: string, target: string): Record<number, number> | null {
+  const tag = /<\s*(class|line)\b([^>]*)>/g
+  let found: Record<number, number> | null = null
+  let inMatch = false
+  let m: RegExpExecArray | null
+  while ((m = tag.exec(text))) {
+    if (m[1] === 'class') {
+      const filename = attrs(m[2]).filename
+      inMatch = filename ? sfMatches(filename, target) : false
+      if (inMatch && !found) found = {}
+      continue
+    }
+    if (!inMatch || !found) continue
+    const a = attrs(m[2])
+    const lineNo = parseInt(a.number, 10)
+    const hits = parseInt(a.hits, 10)
+    if (!Number.isFinite(lineNo) || !Number.isFinite(hits)) continue
+    found[lineNo] = Math.max(found[lineNo] ?? 0, hits)
+  }
+  return found
+}
+
+/**
+ * Pull one file's lines out of a JaCoCo report — Java, Kotlin and Android.
+ *
+ * JaCoCo splits the path in two: `<package name="com/example">` holds the directory and
+ * `<sourcefile name="Foo.java">` the basename, so neither alone can be matched against a
+ * repo-relative path. `ci` is covered INSTRUCTIONS, not executions — a positive value means
+ * the line ran, which is all the gutter needs, and zero means it did not.
+ */
+export function parseJacocoForFile(text: string, target: string): Record<number, number> | null {
+  const tag = /<\s*(package|sourcefile|line)\b([^>]*)>/g
+  let pkg = ''
+  let inMatch = false
+  let found: Record<number, number> | null = null
+  let m: RegExpExecArray | null
+  while ((m = tag.exec(text))) {
+    const a = attrs(m[2])
+    if (m[1] === 'package') {
+      pkg = a.name ?? ''
+      inMatch = false
+      continue
+    }
+    if (m[1] === 'sourcefile') {
+      inMatch = a.name ? sfMatches(pkg ? `${pkg}/${a.name}` : a.name, target) : false
+      if (inMatch && !found) found = {}
+      continue
+    }
+    if (!inMatch || !found) continue
+    const lineNo = parseInt(a.nr, 10)
+    if (!Number.isFinite(lineNo)) continue
+    const ci = parseInt(a.ci ?? '0', 10)
+    found[lineNo] = Math.max(found[lineNo] ?? 0, Number.isFinite(ci) ? ci : 0)
+  }
+  return found
+}
+
+/**
+ * Pull one file's lines out of a Clover report — PHPUnit's format.
+ *
+ * Clover records the path on the `<file>` element, as `path` (absolute) when the writer
+ * supplies one and `name` otherwise; older PHPUnit versions put the absolute path in
+ * `name`, so both are tried. Statement, condition and method lines all carry `count`, and
+ * all three are worth showing — a `cond` line that never ran is exactly what the gutter
+ * exists to point at.
+ */
+export function parseCloverForFile(text: string, target: string): Record<number, number> | null {
+  const tag = /<\s*(file|line)\b([^>]*)>/g
+  let inMatch = false
+  let found: Record<number, number> | null = null
+  let m: RegExpExecArray | null
+  while ((m = tag.exec(text))) {
+    const a = attrs(m[2])
+    if (m[1] === 'file') {
+      const path = a.path || a.name
+      inMatch = path ? sfMatches(path, target) : false
+      if (inMatch && !found) found = {}
+      continue
+    }
+    if (!inMatch || !found) continue
+    const lineNo = parseInt(a.num, 10)
+    const count = parseInt(a.count, 10)
+    if (!Number.isFinite(lineNo) || !Number.isFinite(count)) continue
+    found[lineNo] = Math.max(found[lineNo] ?? 0, count)
+  }
+  return found
+}
+
+/** A Go coverprofile block spanning more lines than this is taken as corrupt, not expanded. */
+const MAX_GO_BLOCK_LINES = 10_000
+
+/**
+ * Pull one file's lines out of a Go coverprofile — what `go test -coverprofile` writes.
+ *
+ * Go is the one format here that does NOT record per-line hits. Each row is a BLOCK:
+ * `import/path/file.go:12.34,15.2 3 1` — start line.column, end line.column, statement
+ * count, execution count. Every line in the block gets the block's count, so the resulting
+ * percentage is block-based where lcov's is line-based. That is a real difference in
+ * meaning, and it is the honest translation: Go genuinely does not know which individual
+ * lines ran.
+ *
+ * The file field is a module import path (`github.com/you/proj/pkg/file.go`), which suffix
+ * matching handles without needing to know the module name.
+ */
+export function parseGoCoverForFile(text: string, target: string): Record<number, number> | null {
+  const row = /^(.+):(\d+)\.\d+,(\d+)\.\d+\s+\d+\s+(\d+)$/
+  let found: Record<number, number> | null = null
+  for (const raw of text.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    if (!line || line.startsWith('mode:')) continue
+    const m = row.exec(line)
+    if (!m) continue
+    if (!sfMatches(m[1], target)) continue
+    if (!found) found = {}
+    const start = parseInt(m[2], 10)
+    const end = parseInt(m[3], 10)
+    const count = parseInt(m[4], 10)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue
+    if (end - start > MAX_GO_BLOCK_LINES) continue
+    for (let n = start; n <= end; n++) {
+      // Blocks overlap on the lines that open and close them, so MAX rather than sum:
+      // a line shared by a covered and an uncovered block did run.
+      found[n] = Math.max(found[n] ?? 0, count)
+    }
+  }
+  return found
+}
+
+/** Dispatch to whichever parser matches the sniffed format. */
+export function parseCoverageForFile(
+  text: string,
+  target: string,
+  format: CoverageFormat,
+): Record<number, number> | null {
+  switch (format) {
+    case 'lcov': return parseLcovForFile(text, target)
+    case 'cobertura': return parseCoberturaForFile(text, target)
+    case 'jacoco': return parseJacocoForFile(text, target)
+    case 'clover': return parseCloverForFile(text, target)
+    case 'gocover': return parseGoCoverForFile(text, target)
+  }
+}
+
+/**
  * Directory listing that answers "nothing here" rather than throwing.
  *
  * Every call site below is speculative — it asks about a directory most repositories do
@@ -146,27 +388,30 @@ function safeReadDir(p: string): string[] {
   }
 }
 
+/** What coverlet's VSTest collector may leave in its per-run directory, either format. */
+const COLLECTOR_FILENAMES = ['coverage.info', 'coverage.cobertura.xml']
+
 /**
- * First existing lcov artifact under `root`, or null.
+ * First existing coverage artifact under `root`, or null.
  *
  * The fixed candidates come first: cheap, ordered, and enough for every toolchain that
  * writes to a predictable path. Two do not, and cannot be expressed as fixed strings at
  * all, because each embeds a segment that varies per run or per project:
  *
- *  - coverlet's VSTest collector writes TestResults/<guid>/coverage.info, the guid being
- *    generated fresh on every `dotnet test`.
+ *  - coverlet's VSTest collector writes TestResults/<guid>/coverage.cobertura.xml, the guid
+ *    being generated fresh on every `dotnet test`.
  *  - simplecov-lcov's single-file mode writes coverage/lcov/<project-name>.lcov.
  *
  * Those two get a bounded scan, one directory deep, and only once every fixed candidate
  * has missed — so a repo that has a normal artifact still costs exactly the stat calls
  * it cost before, and a repo with no coverage costs a handful of failed readdirs.
  */
-export function findLcov(
+export function findCoverageArtifact(
   root: string,
   exists: (p: string) => boolean = existsSync,
   readDir: (p: string) => string[] = safeReadDir,
 ): string | null {
-  for (const rel of LCOV_CANDIDATES) {
+  for (const rel of COVERAGE_CANDIDATES) {
     const p = join(root, rel)
     if (exists(p)) return p
   }
@@ -176,7 +421,9 @@ export function findLcov(
   const testResults = join(root, 'TestResults')
   for (const entry of readDir(testResults)) {
     const dir = join(testResults, entry)
-    if (readDir(dir).includes('coverage.info')) return join(dir, 'coverage.info')
+    const names = readDir(dir)
+    const hit = COLLECTOR_FILENAMES.find((n) => names.includes(n))
+    if (hit) return join(dir, hit)
   }
 
   // simplecov-lcov's DEFAULT mode writes one .lcov per SOURCE FILE, named after the path
@@ -194,30 +441,34 @@ export function findLcov(
 /**
  * Coverage for one repo-relative file, or null when this repo has none.
  *
- * Null is the overwhelmingly common answer — most repositories have never produced an
- * lcov file — and it is not an error state. The caller shows nothing at all, rather
- * than a zero.
+ * Null is the overwhelmingly common answer — most repositories have never produced a
+ * coverage artifact — and it is not an error state. The caller shows nothing at all,
+ * rather than a zero.
  */
 export function readFileCoverage(root: string, file: string): FileCoverage | null {
-  const lcovPath = findLcov(root)
-  if (!lcovPath) return null
+  const artifactPath = findCoverageArtifact(root)
+  if (!artifactPath) return null
   let artifactMtime: number
   let size: number
   try {
-    const st = statSync(lcovPath)
+    const st = statSync(artifactPath)
     artifactMtime = st.mtimeMs
     size = st.size
   } catch {
     return null
   }
-  if (size > MAX_LCOV_BYTES) return null
+  if (size > MAX_COVERAGE_BYTES) return null
   let text: string
   try {
-    text = readFileSync(lcovPath, 'utf8')
+    text = readFileSync(artifactPath, 'utf8')
   } catch {
     return null
   }
-  const lines = parseLcovForFile(text, file)
+  // An artifact we cannot identify is the same answer as no artifact: show nothing.
+  // Guessing a parser here would produce numbers from a document we do not understand.
+  const format = sniffFormat(text)
+  if (!format) return null
+  const lines = parseCoverageForFile(text, file, format)
   if (!lines) return null
   let stale = false
   try {
@@ -226,7 +477,7 @@ export function readFileCoverage(root: string, file: string): FileCoverage | nul
     // The file is gone (a delete), so nothing can be shown against it anyway.
     stale = true
   }
-  return { source: lcovPath, lines, stale }
+  return { source: artifactPath, format, lines, stale }
 }
 
 /**

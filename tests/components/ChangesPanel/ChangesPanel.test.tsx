@@ -415,10 +415,22 @@ describe('ChangesPanel — coverage and hunk actions', () => {
   it('shows the coverage badge against the hunk', async () => {
     coverageForFile.mockResolvedValue({
       success: true,
-      data: { source: '/repo/coverage/lcov.info', lines: { 2: 1 }, stale: false },
+      data: { source: '/repo/coverage/lcov.info', format: 'lcov', lines: { 2: 1 }, stale: false },
     })
     await openDiff()
     expect(await screen.findByTestId(`hunk-coverage-${HUNK_ID}`)).toHaveTextContent('100% tested')
+  })
+
+  it('shows the same badge for a language that does not produce lcov', async () => {
+    // The gutter never learns what format it is looking at — the main process flattens all
+    // five to one line→hits map. This pins that: a Go coverprofile renders identically, so
+    // "open a diff and see coverage" is not a JS-only promise.
+    coverageForFile.mockResolvedValue({
+      success: true,
+      data: { source: '/repo/coverage.out', format: 'gocover', lines: { 2: 0 }, stale: false },
+    })
+    await openDiff()
+    expect(await screen.findByTestId(`hunk-coverage-${HUNK_ID}`)).toHaveTextContent('0% tested')
   })
 
   it('treats a coverage failure as "no coverage", never as an error', async () => {

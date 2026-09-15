@@ -1218,25 +1218,33 @@ describe('git:change-diff', () => {
 // ---------------------------------------------------------------------------
 // coverage:for-file — the handler's own wiring
 //
-// The substance it delegates to is covered elsewhere and directly: parseLcovForFile,
-// findLcov and readFileCoverage in coverageReader.test.ts, resolveInsideRepo in
-// gitChanges.test.ts. What had no test was this handler — the three things it decides
-// on its own: that an escaping path is refused BEFORE anything is read, that a repo
-// which never produced an artifact is a success carrying null rather than an error,
-// and that a throw becomes an envelope instead of a rejection the renderer never hears.
+// The substance it delegates to is covered elsewhere and directly: the per-format
+// parsers, findCoverageArtifact and readFileCoverage in coverageReader.test.ts,
+// resolveInsideRepo in gitChanges.test.ts. What had no test was this handler — the three
+// things it decides on its own: that an escaping path is refused BEFORE anything is read,
+// that a repo which never produced an artifact is a success carrying null rather than an
+// error, and that a throw becomes an envelope instead of a rejection the renderer never
+// hears.
 // ---------------------------------------------------------------------------
 describe('coverage:for-file', () => {
   const LCOV = '/repo/coverage/lcov.info'
 
-  /** beforeEach resets mocks, not the virtual fs — so each test clears its own artifact. */
-  const clearLcov = (): void => {
+  /**
+   * beforeEach resets mocks, not the virtual fs — so each test clears its own artifact.
+   *
+   * Matches on the whole candidate vocabulary rather than just 'lcov.info'. The virtual fs
+   * is shared by every test in this file, and now that coverage.xml and coverage.out are
+   * discoverable, a file seeded by some unrelated test could otherwise be picked up as this
+   * repo's coverage and quietly break the "carries null" case below.
+   */
+  const clearCoverage = (): void => {
     for (const key of Array.from(H.files.keys())) {
-      if (key.includes('lcov.info')) H.files.delete(key)
+      if (/lcov|coverage|clover|jacoco|\.out$|\.cov$/i.test(key)) H.files.delete(key)
     }
   }
 
   it('refuses a path that escapes the repository, and reads nothing to decide it', async () => {
-    clearLcov()
+    clearCoverage()
     seed(LCOV, 'SF:src/a.ts\nDA:1,1\nend_of_record\n')
     H.fs.readFileSync.mockClear()
 
@@ -1250,7 +1258,7 @@ describe('coverage:for-file', () => {
   })
 
   it('answers with the coverage the artifact records for that one file', async () => {
-    clearLcov()
+    clearCoverage()
     seed(
       LCOV,
       ['SF:src/a.ts', 'DA:1,4', 'DA:2,0', 'end_of_record', 'SF:src/b.ts', 'DA:9,7', 'end_of_record', ''].join('\n'),
@@ -1265,8 +1273,32 @@ describe('coverage:for-file', () => {
     expect(r.data.stale).toBe(false)
   })
 
-  it('treats a repo that never produced an lcov file as success carrying null, not an error', async () => {
-    clearLcov()
+  it('serves a .NET repo whose only artifact is Cobertura, not lcov', async () => {
+    clearCoverage()
+    // coverlet's DEFAULT output, at coverlet's default name. This is the end-to-end proof
+    // that the handler is no longer JS-only: nothing named lcov exists anywhere here.
+    seed(
+      '/repo/coverage.cobertura.xml',
+      [
+        '<?xml version="1.0"?>',
+        '<coverage line-rate="0.5" version="1.9">',
+        '<packages><package name="App"><classes>',
+        '<class name="App.A" filename="src/a.ts">',
+        '<lines><line number="1" hits="4"/><line number="2" hits="0"/></lines>',
+        '</class></classes></package></packages>',
+        '</coverage>',
+      ].join('\n'),
+    )
+
+    const r = await invoke('coverage:for-file', { cwd: REPO, file: 'src/a.ts' })
+
+    expect(r.success).toBe(true)
+    expect(r.data.format).toBe('cobertura')
+    expect(r.data.lines).toEqual({ 1: 4, 2: 0 })
+  })
+
+  it('treats a repo that never produced any coverage artifact as success carrying null, not an error', async () => {
+    clearCoverage()
 
     const r = await invoke('coverage:for-file', { cwd: REPO, file: 'src/a.ts' })
 
@@ -1277,7 +1309,7 @@ describe('coverage:for-file', () => {
   })
 
   it('turns a throw into an error envelope rather than a rejected promise', async () => {
-    clearLcov()
+    clearCoverage()
     // A non-string cwd makes path.resolve throw inside the guard — the one route into
     // the catch, and the one the renderer would otherwise never be told about.
     const r = await invoke('coverage:for-file', { cwd: undefined, file: 'src/a.ts' })
