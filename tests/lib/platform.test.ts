@@ -87,4 +87,25 @@ describe('home directory — the expansion target for a shell-reported `~`', () 
       delete w.termpolis
     }
   })
+
+  // Both accessors wrap the bridge read in try/catch, and nothing in jsdom throws there, so the
+  // guard shipped unexercised. It is worth a test because the fallback VALUE is load-bearing:
+  // returning anything other than '' here would have normalizeShellPath expand `~` against a
+  // bogus home and hand git a path in someone else's tree. A throwing getter stands in for a
+  // bridge that is gone — a revoked contextBridge handle, or a renderer torn down mid-poll.
+  it('degrades to empty strings when reading the bridge throws', () => {
+    __setPlatformForTests(null)
+    __setHomedirForTests(null)
+    Object.defineProperty(window, 'termpolis', {
+      get() { throw new Error('bridge revoked') },
+      configurable: true,
+    })
+    try {
+      expect(hostHomedir()).toBe('')
+      expect(hostPlatform()).toBe('')
+      expect(isMac()).toBe(false)
+    } finally {
+      delete (window as unknown as { termpolis?: unknown }).termpolis
+    }
+  })
 })

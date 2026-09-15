@@ -1214,3 +1214,76 @@ describe('git:change-diff', () => {
     expect(r.error).toContain('ambiguous argument')
   })
 })
+
+// ---------------------------------------------------------------------------
+// coverage:for-file — the handler's own wiring
+//
+// The substance it delegates to is covered elsewhere and directly: parseLcovForFile,
+// findLcov and readFileCoverage in coverageReader.test.ts, resolveInsideRepo in
+// gitChanges.test.ts. What had no test was this handler — the three things it decides
+// on its own: that an escaping path is refused BEFORE anything is read, that a repo
+// which never produced an artifact is a success carrying null rather than an error,
+// and that a throw becomes an envelope instead of a rejection the renderer never hears.
+// ---------------------------------------------------------------------------
+describe('coverage:for-file', () => {
+  const LCOV = '/repo/coverage/lcov.info'
+
+  /** beforeEach resets mocks, not the virtual fs — so each test clears its own artifact. */
+  const clearLcov = (): void => {
+    for (const key of Array.from(H.files.keys())) {
+      if (key.includes('lcov.info')) H.files.delete(key)
+    }
+  }
+
+  it('refuses a path that escapes the repository, and reads nothing to decide it', async () => {
+    clearLcov()
+    seed(LCOV, 'SF:src/a.ts\nDA:1,1\nend_of_record\n')
+    H.fs.readFileSync.mockClear()
+
+    const r = await invoke('coverage:for-file', { cwd: REPO, file: '../../secrets.ts' })
+
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('Path escapes the repository')
+    // Order matters as much as the verdict: refusing only after reading would still
+    // have read the file it was refusing to serve.
+    expect(H.fs.readFileSync).not.toHaveBeenCalled()
+  })
+
+  it('answers with the coverage the artifact records for that one file', async () => {
+    clearLcov()
+    seed(
+      LCOV,
+      ['SF:src/a.ts', 'DA:1,4', 'DA:2,0', 'end_of_record', 'SF:src/b.ts', 'DA:9,7', 'end_of_record', ''].join('\n'),
+    )
+
+    const r = await invoke('coverage:for-file', { cwd: REPO, file: 'src/a.ts' })
+
+    expect(r.success).toBe(true)
+    expect(r.data.lines).toEqual({ 1: 4, 2: 0 })
+    // A second record in the same artifact must not bleed into this file's answer.
+    expect(r.data.lines[9]).toBeUndefined()
+    expect(r.data.stale).toBe(false)
+  })
+
+  it('treats a repo that never produced an lcov file as success carrying null, not an error', async () => {
+    clearLcov()
+
+    const r = await invoke('coverage:for-file', { cwd: REPO, file: 'src/a.ts' })
+
+    // The distinction the diff view is built on: null renders no percentage at all,
+    // where an error envelope would surface to the user as a failure.
+    expect(r.success).toBe(true)
+    expect(r.data).toBeNull()
+  })
+
+  it('turns a throw into an error envelope rather than a rejected promise', async () => {
+    clearLcov()
+    // A non-string cwd makes path.resolve throw inside the guard — the one route into
+    // the catch, and the one the renderer would otherwise never be told about.
+    const r = await invoke('coverage:for-file', { cwd: undefined, file: 'src/a.ts' })
+
+    expect(r.success).toBe(false)
+    expect(typeof r.error).toBe('string')
+    expect(r.error.length).toBeGreaterThan(0)
+  })
+})

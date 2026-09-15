@@ -231,3 +231,31 @@ test('committing the work stops the pulse and reports a clean tree', async () =>
   await dot.click()
   await expect(page.locator('[data-testid="changes-clean"]')).toBeVisible({ timeout: 30000 })
 })
+
+/**
+ * The payload the `~` fix actually added, read back out of the live bridge.
+ *
+ * Every unit test in this repo stubs `window.termpolis`, so not one of them can prove the real
+ * preload puts a home directory on that object at all — and that omission WAS the bug. The
+ * renderer has no `process`, so with no homedir to expand against, `normalizeShellPath` left a
+ * shell-reported `~/repos/x` verbatim, `git -C '~/repos/x'` could not chdir, and the mark read a
+ * dirty repository as "not a repository". This asserts the real main -> preload -> renderer hop
+ * carries it, and carries it absolute, which is the only form git can open.
+ */
+test('the live bridge hands the renderer an absolute home directory to expand `~` against', async () => {
+  const fromApp = await page.evaluate(
+    () =>
+      (window as unknown as { termpolis?: { platformInfo?: { homedir?: string } } }).termpolis
+        ?.platformInfo?.homedir,
+  )
+  expect(fromApp).toBe(os.homedir())
+  expect(path.isAbsolute(String(fromApp))).toBe(true)
+})
+
+/**
+ * The `~`-abbreviated case — the other half of what that homedir is FOR — lives in
+ * git-dot-tilde.spec.ts rather than here. It has to run with shell integration switched off,
+ * because integration reports an absolute path on every prompt and would hand the app a good
+ * cwd whether or not the tilde was ever expanded; the `cd` test above asserts the opposite
+ * arrangement on purpose, so the two cannot share this app instance.
+ */
