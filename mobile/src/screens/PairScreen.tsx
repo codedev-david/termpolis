@@ -141,13 +141,19 @@ export default function PairScreen(): React.JSX.Element {
             Termpolis Remote uses the camera for one thing: reading the pairing code on your
             desktop. Nothing is recorded, and no image leaves this phone.
           </Text>
+          {/*
+            The label must not be the system alert's own word. Apple rejected build 7 under
+            guideline 5.1.1(iv) for "Allow camera access" here: a pre-prompt that says Allow
+            reads as the grant itself, and the only thing that grants is the alert this button
+            opens. "Continue" is one of the two words the rejection names.
+          */}
           <Pressable
             testID="pair-request-permission"
             accessibilityRole="button"
             style={styles.button}
             onPress={() => void requestPermission()}
           >
-            <Text style={styles.buttonText}>Allow camera access</Text>
+            <Text style={styles.buttonText}>Continue</Text>
           </Pressable>
         </View>
       )}

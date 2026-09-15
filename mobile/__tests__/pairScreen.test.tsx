@@ -97,6 +97,15 @@ describe('PairScreen — permission not yet granted', () => {
     expect(screen.queryByTestId('camera-view')).toBeNull()
   })
 
+  // Guideline 5.1.1(iv), which rejected build 7: our pre-prompt may explain the camera but
+  // must not wear the system alert's word, because only the alert grants. The assertion is
+  // on the visible label rather than the testID precisely because the label is the finding.
+  it('labels the button so it does not impersonate the system prompt', async () => {
+    await render(<PairScreen />)
+    expect(screen.getByTestId('pair-request-permission')).toHaveTextContent('Continue')
+    expect(screen.queryByText(/allow/i)).toBeNull()
+  })
+
   it('treats a still-loading permission as not yet granted', async () => {
     mockCamera.permission = null
     await render(<PairScreen />)
