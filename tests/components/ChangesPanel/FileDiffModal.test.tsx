@@ -561,6 +561,19 @@ describe('FileDiffModal — Revert', () => {
     expect(onApplyHunk).not.toHaveBeenCalled()
   })
 
+  it('refuses a COMMITTED hunk, which history already owns', () => {
+    // The Unpushed section opens real commits in this modal. Reverse-applying one of
+    // their hunks would edit the worktree while leaving the commit in place, so the
+    // repo would disagree with itself — `git revert` is the operation that exists for
+    // this, and it is not one a hunk menu should perform behind someone's back.
+    openMenu({ mode: 'commit' })
+    const revert = screen.getByTestId('hunk-menu-revert')
+    expect(revert).toBeDisabled()
+    expect(revert.getAttribute('title')).toContain('git revert')
+    fireEvent.click(revert)
+    expect(onApplyHunk).not.toHaveBeenCalled()
+  })
+
   it('is unavailable when the panel passed no apply function', () => {
     mountModal({ mode: 'unstaged', onApplyHunk: undefined })
     fireEvent.click(screen.getByTestId(`hunk-menu-button-${HUNK_ID}`))

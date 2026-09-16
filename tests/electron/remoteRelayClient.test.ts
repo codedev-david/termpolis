@@ -105,11 +105,21 @@ function build(p: ReturnType<typeof pair>, open: Deps['openSocket'], extra: Part
     onRequest: vi.fn(),
     onStateChange: () => {},
     openSocket: open,
+    // Jitter pinned to the top of its range. Left to Math.random, every
+    // `advanceTimersByTime(rung(n))` below would be racing a delay drawn
+    // independently of the one the client armed, and the suite would fail
+    // roughly half the time for no reason a reader could see.
+    random: () => 1,
     ...extra,
   })
   live.push(c)
   return c
 }
+
+/** How long a client built by `build` actually waits before redial n.
+ *
+ *  Its jitter is pinned to the top of the range, so a rung is its full width. */
+const rung = (attempt: number): number => backoffDelay(attempt, () => 1)
 
 function client(
   sock: ReturnType<typeof fakeSocket>,
@@ -292,7 +302,7 @@ describe('relay client', () => {
       const first = o.sockets[0].sent[0]
 
       o.sockets[0].emit('close')
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
       o.sockets[1].emit('open')
       seat(o.sockets[1], true)
 
@@ -320,7 +330,7 @@ describe('relay client', () => {
       const stale = first.seal(H, envelope(1))
 
       o.sockets[0].emit('close')
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
 
       // The second connection has to complete a handshake of its own. Carrying
       // the first one's session across is not a cosmetic leak: the message
@@ -531,7 +541,7 @@ describe('relay client', () => {
 
       control(o.sockets[0], { kind: 'quota-exceeded', limit })
       o.sockets[0].emit('close')
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
 
       expect(o.sockets.length).toBe(2)
     } finally {
@@ -571,14 +581,14 @@ describe('relay client', () => {
       o.sockets[0].emit('close')
       expect(o.sockets.length).toBe(1)
 
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
       expect(o.sockets.length).toBe(2)
 
       o.sockets[1].emit('open')
       o.sockets[1].emit('close')
       // A connection that opened resets the attempt count, so a long-lived session
       // that drops once does not inherit last week's backoff.
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
       expect(o.sockets.length).toBe(3)
     } finally {
       vi.useRealTimers()
@@ -593,16 +603,16 @@ describe('relay client', () => {
       const c = build(p, o.open)
       c.start()
       o.sockets[0].emit('close')
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
       expect(o.sockets.length).toBe(2)
 
       // Never opened, so the second failure must wait longer than the first. A flat
       // retry from a fleet of desktops is a self-inflicted flood the moment the
       // relay restarts.
       o.sockets[1].emit('close')
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
       expect(o.sockets.length).toBe(2)
-      vi.advanceTimersByTime(backoffDelay(1) - backoffDelay(0))
+      vi.advanceTimersByTime(rung(1) - rung(0))
       expect(o.sockets.length).toBe(3)
     } finally {
       vi.useRealTimers()
@@ -696,11 +706,59 @@ describe('relay client', () => {
   })
 
   it('backs off exponentially with a ceiling', () => {
-    expect(backoffDelay(0)).toBe(1000)
-    expect(backoffDelay(1)).toBe(2000)
-    expect(backoffDelay(2)).toBe(4000)
-    expect(backoffDelay(10)).toBe(60_000) // ceiling
-    expect(backoffDelay(100)).toBe(60_000)
+    // Jitter pinned to the top of its range, so the rungs stay readable. This
+    // asserts the curve; the spread around it is the test below.
+    expect(rung(0)).toBe(1000)
+    expect(rung(1)).toBe(2000)
+    expect(rung(2)).toBe(4000)
+    expect(rung(10)).toBe(60_000) // ceiling
+    expect(rung(100)).toBe(60_000)
+  })
+
+  it('jitters, so a relay deploy does not bring every desktop back in the same millisecond', () => {
+    // A deploy drops every live connection at once, and the reconnects meet a
+    // limiter of 30 per 60 s keyed by SOURCE ADDRESS -- which behind CGNAT or an
+    // office NAT is shared with strangers. Redialing on one deterministic
+    // schedule is what turns that shared allowance into a lockout from your own
+    // desktop, and the ceiling makes it worse: every client that has been down a
+    // while is pinned to the SAME rung.
+    const low = backoffDelay(3, () => 0)
+    const high = backoffDelay(3, () => 1)
+    expect(low).toBeLessThan(high)
+  })
+
+  it('never returns a delay of zero, however the jitter falls', () => {
+    for (const r of [0, 0.5, 1]) expect(backoffDelay(0, () => r)).toBeGreaterThan(0)
+  })
+
+  it('jitters with Math.random when the caller injects nothing', () => {
+    // Production injects no random -- every RelayClient in the bridge uses the
+    // default. A default left unwired would leave the whole fleet on one
+    // schedule while the tests above still passed.
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      expect(backoffDelay(0)).toBe(backoffDelay(0, () => 0))
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('draws the reconnect delay through the injected random, not around it', () => {
+    // `backoffDelay` jittering is worth nothing if `retry` calls it without the
+    // random. This is the only test that reads the wiring rather than the curve.
+    const draws: number[] = []
+    const p = pair()
+    const o = opener()
+    const c = build(p, o.open, {
+      random: () => {
+        draws.push(0)
+        return 0
+      },
+    })
+    c.start()
+    o.sockets[0].emit('close')
+    expect(draws).toHaveLength(1)
   })
 })
 
@@ -760,7 +818,7 @@ describe('relay client keepalive', () => {
       // not a logged warning.
       expect(o.sockets[0].sent).toHaveLength(0)
 
-      vi.advanceTimersByTime(backoffDelay(0))
+      vi.advanceTimersByTime(rung(0))
       o.sockets[1].emit('open')
       seat(o.sockets[1], false)
       c.stop()

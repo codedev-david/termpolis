@@ -21,43 +21,31 @@ export interface GeminiWatcherHandle {
 }
 
 export function findLatestGeminiSessionFile(): string | null {
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(GEMINI_DIR)
-  } catch {
-    return null
-  }
-
   const candidates: { path: string; mtime: number }[] = []
 
-  const walk = (dir: string, depth: number) => {
+  // As in codexWatcher: readdir already reports the entry type and the name already says
+  // whether it could be a transcript, so the only stat left is the one fetching the
+  // mtime we sort by.
+  //
+  // The separate "flat layout" pass that used to follow this walk is gone. Depth 0 IS
+  // the top level, so that pass re-stat'd and re-collected every .jsonl sitting directly
+  // in ~/.gemini — duplicating both the syscalls and the candidate entries.
+  const walk = (dir: string, depth: number): void => {
     if (depth > 2) return // cap recursion — don't scan whole home dir
-    let items: string[]
-    try { items = fs.readdirSync(dir) } catch { return }
+    let items: fs.Dirent[]
+    try { items = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const item of items) {
-      const full = path.join(dir, item)
+      const full = path.join(dir, item.name)
       try { resolvePathWithinRoot(GEMINI_DIR, full) } catch { continue }
-      let stat: fs.Stats
-      try { stat = fs.statSync(full) } catch { continue }
-      if (stat.isFile() && full.endsWith('.jsonl')) {
-        candidates.push({ path: full, mtime: stat.mtimeMs })
-      } else if (stat.isDirectory()) {
-        walk(full, depth + 1)
-      }
+      if (item.isDirectory()) { walk(full, depth + 1); continue }
+      if (!item.isFile() || !item.name.endsWith('.jsonl')) continue
+      try {
+        candidates.push({ path: full, mtime: fs.statSync(full).mtimeMs })
+      } catch { /* vanished between readdir and stat */ }
     }
   }
 
   walk(GEMINI_DIR, 0)
-  // Consume top-level entries too (fallback for flat layouts)
-  for (const entry of entries) {
-    if (entry.endsWith('.jsonl')) {
-      const full = path.join(GEMINI_DIR, entry)
-      try {
-        const st = fs.statSync(full)
-        if (st.isFile()) candidates.push({ path: full, mtime: st.mtimeMs })
-      } catch {}
-    }
-  }
 
   candidates.sort((a, b) => b.mtime - a.mtime)
   return candidates.length > 0 ? candidates[0].path : null

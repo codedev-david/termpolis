@@ -837,12 +837,12 @@ describe('codeGraph — loading a persisted graph', () => {
 })
 
 describe('codeGraph — indexing edges', () => {
-  it('extracts and PERSISTS a file\'s imports alongside its symbols', () => {
+  it('extracts and PERSISTS a file\'s imports alongside its symbols', async () => {
     const dir = tmp('cg')
     initCodeGraph(dir)
     const n = indexFileContent('/r/m.ts', "import { helper } from './helper'\nexport function main() {\n  return helper()\n}\n")
     expect(n).toBeGreaterThan(0)
-    persistCodeGraph()
+    await persistCodeGraph()
 
     const data = JSON.parse(readSync(join(dir, 'code-graph.json'), 'utf8'))
     expect(data.imports).toEqual([['/r/m.ts', ['./helper']]])

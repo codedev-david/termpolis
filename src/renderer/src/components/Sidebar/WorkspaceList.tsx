@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
 import { isClaudeCommand } from '../../lib/testAgents'
@@ -6,7 +7,19 @@ import { agentTargets, launchAgents } from '../../lib/agentLaunch'
 import { v4 as uuid } from 'uuid'
 
 export function WorkspaceList() {
-  const { workspaces, addWorkspace, renameWorkspace, updateWorkspace, removeWorkspace, terminals, setLaunchingAgent } = useTerminalStore()
+  // useShallow: this list stays mounted for the life of the sidebar, so a bare useTerminalStore()
+  // re-rendered it on EVERY store write — including the ~twice-a-second cwd churn from each live
+  // shell. Note terminalCount, not terminals: updateTerminal rebuilds that array on each of those
+  // cwd writes, so selecting the array would keep re-rendering for a value this component only ever
+  // reads as a length. Actions are stable references and never trigger a render.
+  const {
+    workspaces, terminalCount,
+    addWorkspace, renameWorkspace, updateWorkspace, removeWorkspace, setLaunchingAgent,
+  } = useTerminalStore(useShallow(s => ({
+    workspaces: s.workspaces, terminalCount: s.terminals.length,
+    addWorkspace: s.addWorkspace, renameWorkspace: s.renameWorkspace, updateWorkspace: s.updateWorkspace,
+    removeWorkspace: s.removeWorkspace, setLaunchingAgent: s.setLaunchingAgent,
+  })))
   const [saving, setSaving] = useState(false)
   const [wsName, setWsName] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -189,8 +202,8 @@ export function WorkspaceList() {
         ) : (
           <button
             onClick={() => { setSaving(true); setWsName('') }}
-            disabled={terminals.length === 0}
-            title={terminals.length === 0 ? 'Open a terminal first to save it as a workspace' : 'Save the current terminal layout as a reusable workspace'}
+            disabled={terminalCount === 0}
+            title={terminalCount === 0 ? 'Open a terminal first to save it as a workspace' : 'Save the current terminal layout as a reusable workspace'}
             className="w-full text-left text-sm text-[#9ca3af] hover:text-[#d4d4d4] hover:bg-[#37373d] px-3 py-2.5 rounded disabled:opacity-40"
           >+ Save Workspace</button>
         )

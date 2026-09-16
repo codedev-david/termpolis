@@ -25,15 +25,35 @@ export const FRAME_BURST = 40
  *  heavy terminal output; past it, something is wrong. */
 export const CONNECTION_BYTE_BUDGET = 256 * 1024 * 1024
 
+/** A bucket mid-flight.
+ *
+ *  Two plain numbers rather than the instance itself, because this is what gets
+ *  handed to `serializeAttachment`: that takes structured-clonable data, and a
+ *  class instance comes back from it as an object with no `take` on it. */
+export interface BucketState {
+  tokens: number
+  last: number
+}
+
 export class TokenBucket {
   private tokens: number
-  private last = 0
+  private last: number
 
+  /** `restored` is how a bucket survives an isolate eviction. Without it a
+   *  hibernating room rebuilds every connection at a FULL allowance on each
+   *  wake-up, which is a rate limit that an idle-then-flood client never meets. */
   constructor(
     private readonly capacity: number,
     private readonly refillPerMs: number,
+    restored?: BucketState,
   ) {
-    this.tokens = capacity
+    this.tokens = restored ? restored.tokens : capacity
+    this.last = restored ? restored.last : 0
+  }
+
+  /** The whole of the bucket, for a caller that has to persist it. */
+  snapshot(): BucketState {
+    return { tokens: this.tokens, last: this.last }
   }
 
   /** Take one token, refilling for elapsed time first.
@@ -55,8 +75,18 @@ export class TokenBucket {
 }
 
 export class ByteBudget {
-  private spent = 0
-  constructor(private readonly limit: number) {}
+  /** `spent` is a constructor parameter for the same reason `TokenBucket` takes
+   *  a snapshot: a budget rebuilt from zero on every wake-up is a 256 MiB cap
+   *  that nothing can ever reach. */
+  constructor(
+    private readonly limit: number,
+    private spent = 0,
+  ) {}
+
+  /** What has been spent, for a caller that has to persist it. */
+  get used(): number {
+    return this.spent
+  }
 
   /** Spend n bytes, or refuse without debiting. A refused spend that still
    *  debited would let a caller drain the budget with frames never forwarded. */

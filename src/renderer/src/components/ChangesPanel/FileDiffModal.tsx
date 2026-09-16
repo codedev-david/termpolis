@@ -25,7 +25,7 @@ const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 
 export type LineKind = 'add' | 'del' | 'ctx' | 'hunk' | 'meta'
 
-export type DiffMode = 'staged' | 'unstaged' | 'untracked'
+export type DiffMode = 'staged' | 'unstaged' | 'untracked' | 'commit'
 
 export interface RenderLine {
   kind: LineKind
@@ -323,7 +323,9 @@ export function FileDiffModal({
         ? 'Unstage this file first — reverting a staged hunk would discard newer edits'
         : mode === 'untracked'
           ? 'This file is untracked, so git has no copy to restore it from'
-          : null
+          : mode === 'commit'
+            ? 'This hunk is already committed — undo it with git revert, not by editing the worktree'
+            : null
 
   const items: HunkMenuItem[] = useMemo(() => {
     const hunk = menu ? hunksById.get(menu.hunkId) : undefined

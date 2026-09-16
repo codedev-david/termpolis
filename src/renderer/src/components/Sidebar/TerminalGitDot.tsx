@@ -14,12 +14,9 @@
 // says "this is where git status would appear", without offering to open a panel that
 // would have nothing in it.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { subscribe, unsubscribe } from '../../lib/pollingService'
+import { useEffect, useState } from 'react'
+import { subscribeCounts } from '../../lib/gitCountsCache'
 import type { GitChangeCounts } from '../../types'
-
-/** One status spawn per terminal per tick — slow enough to stay off the PTY thread. */
-const POLL_MS = 5000
 
 export function isDirty(c: GitChangeCounts): boolean {
   return c.staged + c.unstaged + c.untracked + c.conflicted + c.ahead > 0
@@ -45,36 +42,19 @@ interface Props {
 
 export function TerminalGitDot({ terminalId, cwd }: Props) {
   const [counts, setCounts] = useState<GitChangeCounts | null>(null)
-  const alive = useRef(true)
-
-  const refresh = useCallback(() => {
-    const get = window.termpolis?.gitChangeCounts
-    // Checked synchronously: starting a promise we cannot use would land a setState
-    // after unmount in any host that has no bridge (tests, the pre-preload first paint).
-    if (!cwd || typeof get !== 'function') return
-    get(cwd)
-      .then(res => {
-        if (!alive.current) return
-        setCounts(res?.success ? res.data ?? null : null)
-      })
-      .catch(() => {
-        if (alive.current) setCounts(null)
-      })
-  }, [cwd])
 
   useEffect(() => {
-    alive.current = true
-    refresh()
-    // Keyed by terminal id, not by cwd: pollingService ids are global and a duplicate
-    // silently replaces the previous subscriber, so two terminals in the same repo
-    // would leave one of them permanently un-updated.
-    const id = `git-dot-${terminalId}`
-    subscribe(id, refresh, POLL_MS)
-    return () => {
-      alive.current = false
-      unsubscribe(id)
-    }
-  }, [refresh, terminalId])
+    // Keyed by REPO, not by terminal. This used to own a per-terminal subscription, so
+    // ten terminals open on one repo spawned ten identical `git status` processes every
+    // five seconds — work that scaled with how many terminals you had open rather than
+    // how many repos you were in. subscribeCounts shares one poll per cwd and hands the
+    // same fresh answer to every dot watching it, so the cadence is unchanged and only
+    // the duplication is gone. It also settles the old hazard in the other direction:
+    // pollingService ids are global, and two dots on one repo no longer collide because
+    // they are now deliberately the same subscriber.
+    setCounts(null)
+    return subscribeCounts(cwd, setCounts)
+  }, [cwd])
 
   // No repo here (or no answer yet). Render the glyph anyway, dimmed and inert, so the
   // sidebar's shape does not change the instant someone cd's into a repo — the mark

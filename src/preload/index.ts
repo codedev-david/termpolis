@@ -146,6 +146,12 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('git:change-counts', { cwd }),
   gitChangeDiff: (cwd, file, mode) =>
     ipcRenderer.invoke('git:change-diff', { cwd, file, mode }),
+  // Unpushed commits are the other half of what makes the sidebar dot pulse, and the
+  // half the rail used to have no rows for.
+  gitUnpushed: (cwd) =>
+    ipcRenderer.invoke('git:unpushed', { cwd }),
+  gitCommitDiff: (cwd, sha) =>
+    ipcRenderer.invoke('git:commit-diff', { cwd, sha }),
   coverageForFile: (cwd, file) =>
     ipcRenderer.invoke('coverage:for-file', { cwd, file }),
 

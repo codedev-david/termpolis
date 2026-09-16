@@ -2,6 +2,27 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+
+// Counts appendFileSync instead of spying on it: `vi.spyOn(fs, 'appendFileSync')` cannot work here
+// ("Module namespace is not configurable in ESM"). Every other fs call is the real one, so the rest
+// of this file keeps using the genuine filesystem.
+const fsCalls = vi.hoisted(() => ({ appendFileSync: 0, failOpen: false }))
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs')
+  const appendFileSync = (...args: Parameters<typeof actual.appendFileSync>): void => {
+    fsCalls.appendFileSync++
+    return actual.appendFileSync(...args)
+  }
+  // A failing open has to be injected rather than provoked. Pointing the log at a DIRECTORY looked
+  // like the portable way to do it, but Windows opens a directory for append without complaining —
+  // the test passed while the catch it was written for never ran.
+  const openSync = (...args: Parameters<typeof actual.openSync>): number => {
+    if (fsCalls.failOpen) throw new Error('EACCES: permission denied, open')
+    return actual.openSync(...args)
+  }
+  return { ...actual, appendFileSync, openSync, default: { ...actual, appendFileSync, openSync } }
+})
+
 import {
   initEventBus,
   publish,
@@ -307,5 +328,72 @@ describe('agentEventBus log rotation', () => {
     const grew = fs.statSync(live()).size - onDisk
     expect(grew).toBeGreaterThan(0)
     expect(fs.readFileSync(live(), 'utf8')).toContain('ünïcode')
+  })
+})
+
+// Persistence used to be fs.appendFileSync PER EVENT — an open() + write() + close() every time.
+// Measured on this box at 447 us per line, which at the 500 events/s rate limit is ~224 ms of dead
+// main thread per second, on the thread that pumps every PTY. A persistent append fd costs 3.3 us.
+describe('agentEventBus log persistence cost', () => {
+  const live = (): string => path.join(tmpDir, 'agent-events.jsonl')
+  const backup = (): string => path.join(tmpDir, 'agent-events.jsonl.old')
+
+  it('does not reopen the log file for every event', () => {
+    fsCalls.appendFileSync = 0
+    for (let i = 0; i < 20; i++) {
+      publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `e${i}`, payload: {} })
+    }
+    expect(fsCalls.appendFileSync).toBe(0)
+    // ...and the events still landed, synchronously. The write must stay visible to a reader that
+    // looks immediately — rotation itself depends on that, and so do the tests above.
+    expect(fs.readFileSync(live(), 'utf8')).toContain('e19')
+  })
+
+  it('shutdownEventBus closes the log handle', () => {
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'before-shutdown', payload: {} })
+    shutdownEventBus()
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'after-shutdown', payload: {} })
+    const contents = fs.readFileSync(live(), 'utf8')
+    expect(contents).toContain('before-shutdown')
+    expect(contents).not.toContain('after-shutdown')
+  })
+
+  it('keeps writing to the LIVE log after rotation, never into the rotated backup', () => {
+    const big = 'z'.repeat(50_000)
+    for (let i = 0; i < 150; i++) {
+      publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `fill${i}`, payload: { data: big } })
+    }
+    expect(fs.existsSync(backup())).toBe(true)
+
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'AFTER-ROTATION', payload: {} })
+    // A held file handle follows the INODE across a rename. Get this wrong and every event after
+    // the first rotation is appended to the .old file while the live log stays empty forever —
+    // unbounded growth of the backup, and the rotation that was supposed to bound it never bites.
+    expect(fs.readFileSync(live(), 'utf8')).toContain('AFTER-ROTATION')
+    expect(fs.readFileSync(backup(), 'utf8')).not.toContain('AFTER-ROTATION')
+  })
+
+  it('keeps serving events when the log file cannot be opened', () => {
+    _resetForTests() // drops the handle the shared beforeEach opened
+    fsCalls.failOpen = true
+    try {
+      initEventBus(tmpDir)
+      const e = publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'no-disk', payload: {} })
+      expect(e).not.toBeNull()                          // the ring still serves every consumer
+      expect(query({ search: 'no-disk' })).toHaveLength(1)
+      expect(fs.readFileSync(live(), 'utf8')).toBe('')  // persistence is skipped, silently
+    } finally {
+      fsCalls.failOpen = false
+    }
+  })
+
+  it('appends to an existing log across a re-init rather than truncating it', () => {
+    _resetForTests()
+    fs.writeFileSync(live(), '{"pre":"existing"}\n')
+    initEventBus(tmpDir)
+    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'appended', payload: {} })
+    const contents = fs.readFileSync(live(), 'utf8')
+    expect(contents).toContain('existing')
+    expect(contents).toContain('appended')
   })
 })

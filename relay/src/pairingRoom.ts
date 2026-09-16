@@ -13,173 +13,254 @@ import {
 /** True while a socket can still be written to.
  *
  *  "It is seated, therefore it is open" is not true, only usually true. A peer is
- *  unseated by its own `close` listener, which runs *after* the close, so there is
- *  always a window in which a closed socket is still in the map -- and two
+ *  unseated by its own close handler, which runs *after* the close, so there is
+ *  always a window in which a closed socket is still in the registry -- and two
  *  ordinary things land in it. A client that floods past the frame rate has more
  *  frames already queued behind the one that trips the limit, and every one of
  *  them arrives at a socket this file has just closed. An idle alarm closes both
  *  peers in a single pass, before either close event is dispatched.
  *
  *  It matters because workerd throws on both `send()` and `close()` after a
- *  close, and every call to either happens inside an event listener or the alarm
- *  handler, where a throw is an uncaught exception in the Durable Object rather
- *  than an error some caller can handle. */
+ *  close, and every call to either happens inside a handler the runtime invoked,
+ *  where a throw is an uncaught exception in the Durable Object rather than an
+ *  error some caller can handle. */
 function isOpen(sock: WebSocket): boolean {
   return sock.readyState === WebSocket.READY_STATE_OPEN
 }
 
-/** Send, unless the socket has already gone.
+/** The other end of a pairing.
  *
- *  Dropping the frame is the whole of the handling: the recipient is closed, so
- *  there is nobody left to tell, and every frame that goes through here is either
- *  a courtesy notice or a forward whose sender will learn soon enough. */
-function deliver(sock: WebSocket, frame: ArrayBuffer | string): void {
-  if (isOpen(sock)) sock.send(frame)
+ *  A total lookup rather than a conditional: a third role added to `ROLES` fails
+ *  to compile here instead of silently inheriting one of these two as its
+ *  partner. */
+const PARTNER: Record<Role, Role> = { desktop: 'device', device: 'desktop' }
+
+/** Everything about one connection that has to outlive the isolate.
+ *
+ *  None of this can be a field on the room. Hibernation evicts the isolate while
+ *  a pair sits idle, so a `peers` map is EMPTY on the next frame -- which would
+ *  free both roles, hand every connection a fresh allowance and make the
+ *  two-peer cap advisory. It rides on the socket instead, where the runtime
+ *  keeps it. */
+interface Conn {
+  role: Role
+  /** `TokenBucket` mid-flight -- see `BucketState`. */
+  tokens: number
+  last: number
+  /** `ByteBudget` mid-flight. */
+  spent: number
+  /** When this connection last sent a frame the relay accepted. */
+  lastSeen: number
 }
 
 export class PairingRoom {
-  // Classic Durable Object shape: the runtime constructs one per pairing id and
-  // hands it the state and the environment. State is unused -- a pairing room is
-  // deliberately amnesiac, holding nothing across an eviction, because anything it
-  // remembered would be metadata about a conversation it is not entitled to know.
+  /** Resolved once per isolate rather than once per frame. It is the only thing
+   *  this room ever wanted from `env`, so `env` itself is not kept. */
+  private readonly budget: number
+
   constructor(
     private readonly state: DurableObjectState,
-    private readonly env: Env,
-  ) {}
-
-  /** At most one socket per role. A Map rather than two fields so the peer lookup
-   *  is "the entry that is not me" instead of a conditional that has to be kept in
-   *  step with the role list by hand. */
-  /** One record per connected peer, holding its socket AND its allowances.
-   *
-   *  These started as a Map and a parallel WeakMap keyed by the same socket, which
-   *  forced every read to carry an `if (limit)` guard for a desync no caller could
-   *  cause -- and coverage duly showed that branch was unreachable. One record
-   *  makes the invariant structural: a peer either exists with its budgets, or it
-   *  is not connected.
-   *
-   *  Budgets are per-CONNECTION, not per-role: a peer that is cut and reconnects
-   *  gets a fresh allowance, because the budget bounds one socket's cost -- it is
-   *  not a punishment attached to an identity the relay cannot even see. */
-  private readonly peers = new Map<
-    Role,
-    { sock: WebSocket; frames: TokenBucket; bytes: ByteBudget; lastSeen: number }
-  >()
+    env: Env,
+  ) {
+    this.budget = resolveByteBudget(env.CONNECTION_BYTE_BUDGET)
+  }
 
   async fetch(request: Request): Promise<Response> {
     const role = new URL(request.url).searchParams.get('role')
     if (!isRole(role)) return new Response('bad role', { status: 400 })
-    if (this.peers.has(role)) return new Response('role already connected', { status: 409 })
+    if (this.socketFor(role)) return new Response('role already connected', { status: 409 })
 
     const pair = new WebSocketPair()
     const client = pair[0]
     const server = pair[1]
-    // workerd defaults binaryType to "blob", and WebSocket.send() does NOT accept a
-    // Blob -- it coerces the argument to a string, so a forwarded payload frame
-    // arrives at the far end as the literal text "[object Blob]". Every byte of
-    // every sealed frame would be destroyed, and the relay would still look healthy
-    // because the frame count and the timing would be right. Asking for
-    // ArrayBuffers is what makes the forward below actually a forward.
-    server.binaryType = 'arraybuffer'
-    server.accept()
-    // Held in the closure below, NOT looked up by role when a frame arrives. A role
-    // is freed the moment its peer is cut and can be re-taken immediately, so a
-    // lookup would let a late frame from the cut socket spend the NEW peer's budget
-    // -- an honest client throttled for its predecessor's flood. The allowances
-    // belong to this connection, so this connection holds them.
-    const mine = {
-      sock: server,
-      frames: new TokenBucket(FRAME_BURST, FRAME_RATE_PER_SEC / 1000),
-      bytes: new ByteBudget(resolveByteBudget(this.env.CONNECTION_BYTE_BUDGET)),
+    // The hibernation accept, NOT `server.accept()`. That is the whole shape of
+    // this file: the runtime holds the socket, so the isolate can be evicted
+    // between frames and rebuilt on the next one. `accept()` instead pins a
+    // resident isolate for every connected pair -- and a terminal session is
+    // idle the overwhelming majority of the time, so that is one resident copy
+    // per pairing, almost all of it spent doing nothing.
+    //
+    // Tagged with the role, which is what makes `socketFor` a registry lookup
+    // rather than a scan: the tag survives the eviction with the socket.
+    this.state.acceptWebSocket(server, [role])
+    // There is no `binaryType` to set here, and its absence is not an oversight.
+    // The classic path handed this file a `MessageEvent` whose `data` defaulted
+    // to a Blob, and `send()` coerces a Blob to the string "[object Blob]" --
+    // which destroyed every byte of a forwarded frame while the frame count and
+    // the timing stayed right. `webSocketMessage` is typed `string | ArrayBuffer`
+    // by the runtime, so that hazard has no way to arise.
+    const conn: Conn = {
+      role,
+      tokens: FRAME_BURST,
+      last: 0,
+      spent: 0,
       lastSeen: Date.now(),
     }
-    this.peers.set(role, mine)
+    server.serializeAttachment(conn)
     void this.state.storage.setAlarm(Date.now() + IDLE_TIMEOUT_MS)
 
     // One lookup, used twice: whether the partner is here is exactly what the
     // arriving peer needs to know before it greets, and exactly who to tell that
     // someone has arrived.
-    const partner = this.peer(role)
-    // `server` was accepted three lines ago and its client half has not been
+    const partner = this.socketFor(PARTNER[role])
+    // `server` was accepted a few lines ago and its client half has not been
     // handed out yet, so it cannot be anything but open. The partner has been
     // connected for as long as it has been connected.
     server.send(encode({ kind: 'hello', role, peer: partner !== undefined }))
-    if (partner) deliver(partner, encode({ kind: 'peer-joined', role }))
-
-    server.addEventListener('message', (event) => {
-      // Text is a peer trying to talk to the relay, or to forge a control frame at
-      // its partner. Neither is part of the protocol: peers speak to each other in
-      // BINARY only, and the relay authors every control frame itself. Dropping
-      // text unread means there is no parser for a peer to reach.
-      if (typeof event.data === 'string') return
-
-      const peer = this.peer(role)
-      // No partner: drop. Queueing would make the relay hold payload between
-      // connections, which is the one thing it promises not to do.
-      const size = byteLength(event.data)
-      // Enforce BEFORE forwarding. A limit applied after the send is a report, not
-      // a control -- the frame the relay objected to would already have been
-      // delivered and already have cost what it cost.
-      if (size > MAX_FRAME_BYTES) return this.cut(server, 1009, 'frame-size')
-
-      if (!mine.frames.take(Date.now())) return this.cut(server, 1008, 'frame-rate')
-      if (!mine.bytes.spend(size)) return this.cut(server, 1008, 'connection-bytes')
-
-      mine.lastSeen = Date.now()
-
-      if (!peer) return
-      deliver(peer, event.data)
-    })
-
-    server.addEventListener('close', () => this.drop(role))
-    server.addEventListener('error', () => this.drop(role))
+    if (partner) partner.send(encode({ kind: 'peer-joined', role }))
 
     return new Response(null, { status: 101, webSocket: client })
   }
 
-  /** The other end of the pairing, if it is connected. */
-  private peer(role: Role): WebSocket | undefined {
-    for (const [otherRole, p] of this.peers) if (otherRole !== role) return p.sock
-    return undefined
+  /** The socket seated in a role, if any.
+   *
+   *  `getWebSockets` is the RUNTIME's registry, not this object's, which is what
+   *  carries the two-peer cap across a hibernation. Read from a field, a
+   *  rehydrated room would believe both roles were free and seat a second
+   *  desktop into a pairing that already had one -- quietly giving it a copy of
+   *  someone else's traffic.
+   *
+   *  A seat is held by an OPEN socket, not merely a registered one. The runtime
+   *  keeps a closed socket in the registry until it has finished delivering
+   *  whatever was queued behind the close, which after a flood runs to hundreds
+   *  of milliseconds. Taking the first registered socket would hold the seat for
+   *  that whole window and answer 409 to the honest client trying to come back
+   *  from the disconnect the relay just gave it. */
+  private socketFor(role: Role): WebSocket | undefined {
+    // `find(isOpen)`, not `[0]`, and this is the ONLY place that decides whether a
+    // socket is usable as a recipient. Every caller sends synchronously on what it
+    // gets back, so openness established here still holds at the send -- which is
+    // why none of them re-checks. Introduce an await between a lookup and its send
+    // and that stops being true: re-read here, or re-check there.
+    return this.state.getWebSockets(role).find(isOpen)
   }
 
+  /** A peer has sent a frame. Public because the runtime calls it. */
+  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    // A frame from a socket this room has ALREADY closed, which arrives as a
+    // matter of routine: a client cut for flooding has every frame it queued
+    // behind the offending one still to be delivered, and the cut does not
+    // recall them.
+    //
+    // They cannot be allowed to forward. The rate limiter alone does not stop
+    // them -- it refills at a token per 50 ms, and a long queue takes longer
+    // than that to drain -- so a frame from the dead connection wins a token and
+    // goes out. By then the offender's replacement is usually connected, and the
+    // partner receives a frame from a disowned socket spliced into the middle of
+    // the new connection's stream. Checking the SENDER is still open is what
+    // makes "cut" mean cut.
+    if (!isOpen(ws)) return
+
+    // Text is a peer trying to talk to the relay, or to forge a control frame at
+    // its partner. Neither is part of the protocol: peers speak to each other in
+    // BINARY only, and the relay authors every control frame itself. Dropping
+    // text unread means there is no parser for a peer to reach.
+    if (typeof message === 'string') return
+
+    const conn = ws.deserializeAttachment() as Conn
+    const size = byteLength(message)
+    // Enforce BEFORE forwarding. A limit applied after the send is a report, not
+    // a control -- the frame the relay objected to would already have been
+    // delivered and already have cost what it cost.
+    if (size > MAX_FRAME_BYTES) return this.cut(ws, 1009, 'frame-size')
+
+    const now = Date.now()
+    // Rebuilt from the attachment on every frame because after a hibernation
+    // there is nothing else to rebuild them from, and written back below. The
+    // allowances belong to this CONNECTION, not to the role: a peer that is cut
+    // and reconnects gets a fresh one, because the budget bounds one socket's
+    // cost -- it is not a punishment attached to an identity the relay cannot
+    // even see. Reading them off the socket makes that structural, so a frame
+    // still queued behind a cut cannot spend its successor's allowance.
+    const frames = new TokenBucket(FRAME_BURST, FRAME_RATE_PER_SEC / 1000, conn)
+    if (!frames.take(now)) return this.cut(ws, 1008, 'frame-rate')
+    const bytes = new ByteBudget(this.budget, conn.spent)
+    if (!bytes.spend(size)) return this.cut(ws, 1008, 'connection-bytes')
+
+    ws.serializeAttachment({
+      ...conn,
+      ...frames.snapshot(),
+      spent: bytes.used,
+      lastSeen: now,
+    } as Conn)
+
+    const partner = this.socketFor(PARTNER[conn.role])
+    // No partner: drop. Queueing would make the relay hold payload between
+    // connections, which is the one thing it promises not to do.
+    if (!partner) return
+    partner.send(message)
+  }
+
+  /** Both teardown handlers, and both are the runtime's to call. `close` and
+   *  `error` are separate events for one departure, so `drop` is written to be
+   *  called twice for the same socket. */
+  webSocketClose(ws: WebSocket): void {
+    this.drop(ws)
+  }
+
+  webSocketError(ws: WebSocket): void {
+    this.drop(ws)
+  }
 
   /** Close whatever has gone silent, then decide whether to look again.
    *
    *  Public because it is the Durable Object alarm handler -- the runtime calls it,
    *  and so does the lifecycle test, which is the only way to observe this without
    *  waiting five real minutes for a clock that does not advance inside a Workers
-   *  invocation anyway. */
+   *  invocation anyway.
+   *
+   *  The alarm is also what keeps the idle timeout honest under hibernation: it
+   *  is delivered to an evicted room, waking it just long enough to look. */
   async alarm(): Promise<void> {
     const now = Date.now()
-    for (const p of [...this.peers.values()]) {
-      if (now - p.lastSeen >= IDLE_TIMEOUT_MS) this.cut(p.sock, 1000, 'idle')
+    const sockets = this.state.getWebSockets()
+    for (const ws of sockets) {
+      const { lastSeen } = ws.deserializeAttachment() as Conn
+      if (now - lastSeen >= IDLE_TIMEOUT_MS) this.cut(ws, 1000, 'idle')
     }
     // Re-arm only while someone is still connected. An empty room that keeps
     // scheduling alarms is a Durable Object that never goes away, billed forever
     // for a pairing nobody is using -- and every wake-up is a write.
-    if (this.peers.size > 0) await this.state.storage.setAlarm(now + IDLE_TIMEOUT_MS)
+    if (sockets.length > 0) await this.state.storage.setAlarm(now + IDLE_TIMEOUT_MS)
   }
 
   /** Unseat a peer and tell its partner.
    *
-   *  Deletes by ROLE, with no check that the leaving socket is the one seated --
-   *  and that is safe rather than sloppy. `fetch` answers 409 while a role is
-   *  occupied, so a replacement cannot seat until the incumbent's drop has already
-   *  run; a close event can therefore never arrive for a socket some other
-   *  connection has since replaced. A guard here would be an unreachable branch
-   *  standing in for an invariant that the 409 already enforces. */
-  private drop(role: Role): void {
-    // Idempotent: `close` and `error` are both wired to this, and a socket that
-    // errors then closes calls it twice. Without the early return the second call
-    // would announce a `peer-gone` for a peer that had already gone.
-    if (!this.peers.delete(role)) return
-    const partner = this.peer(role)
-    if (partner) deliver(partner, encode({ kind: 'peer-gone', role }))
-    // Cancel the idle alarm when the last peer leaves. Leaving it armed would wake
+   *  The departing socket is excluded by identity rather than by role. Whether
+   *  the runtime has already removed it from `getWebSockets` by the time this
+   *  runs is not something this file should have to know, and the answer differs
+   *  between a close and an error; filtering on the socket itself is correct
+   *  either way.
+   *
+   *  It is reached twice for one departure -- from `cut`, and again from the
+   *  runtime's own teardown event -- so `announced` makes the announcement
+   *  itself happen once. Telling the phone twice would say its desktop had left
+   *  again, plausibly after the desktop had already reconnected.
+   *
+   *  That guard is in memory, exactly as the old `peers.delete()` return value
+   *  was. A room cannot hibernate with a teardown still pending for a socket it
+   *  is tearing down, so both paths run in the same wake-up. */
+  private readonly announced = new Set<WebSocket>()
+
+  private drop(ws: WebSocket): void {
+    // No attachment means the socket was never seated in this room -- `fetch`
+    // attaches before it hands the client half back, so there is no window in
+    // which a peer exists without one. Nobody is paired with it, so there is
+    // nobody its departure could concern.
+    const conn = ws.deserializeAttachment() as Conn | null
+    if (conn && !this.announced.has(ws)) {
+      this.announced.add(ws)
+      const partner = this.socketFor(PARTNER[conn.role])
+      if (partner) partner.send(encode({ kind: 'peer-gone', role: conn.role }))
+    }
+    // Cancel the idle alarm once no LIVE peer is left. Leaving it armed would wake
     // an empty room five minutes later purely to discover it is empty -- a write
     // and a billable invocation for nothing, on every room anyone ever opened.
-    if (this.peers.size === 0) void this.state.storage.deleteAlarm()
+    // Asked of the other sockets rather than of `ws`, because whether the
+    // departing one is still registered depends on how far the runtime has got.
+    if (!this.state.getWebSockets().some((w) => w !== ws && isOpen(w))) {
+      void this.state.storage.deleteAlarm()
+    }
   }
 
   /** Tell the offender which limit it hit, then close it.
@@ -188,11 +269,13 @@ export class PairingRoom {
    *  from "the network broke" will reconnect in a loop and turn its own bug into a
    *  denial of service against the relay.
    *
-   *  Freeing the role and telling the partner `peer-gone` is left to the `close`
-   *  listener rather than done here. Doing both would be two paths for one event,
-   *  and `close()` fires that listener anyway -- a mutation test proved the extra
-   *  `drop` call changed nothing, which is the definition of a line that can only
-   *  ever drift out of step with the one that matters.
+   *  Telling the partner is done HERE rather than left to the teardown event,
+   *  which is the one place hibernation genuinely changed the design. The runtime
+   *  delivers `webSocketClose` only after everything already queued behind the
+   *  close, so a peer cut mid-flood has its departure announced several hundred
+   *  milliseconds late -- the partner sits waiting on a desktop the relay hung up
+   *  on, and the offender meets 409 when it tries to come back. `drop` is written
+   *  to be called twice for one socket, so this costs nothing but promptness.
    *
    *  Cutting a socket that is already closed is a no-op rather than a second
    *  close. It happens routinely -- see `isOpen` -- and workerd throws on both
@@ -202,5 +285,6 @@ export class PairingRoom {
     if (!isOpen(sock)) return
     sock.send(encode({ kind: 'quota-exceeded', limit }))
     sock.close(code, limit)
+    this.drop(sock)
   }
 }

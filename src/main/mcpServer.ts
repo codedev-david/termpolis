@@ -585,7 +585,7 @@ export interface McpToolHandlers {
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
-  getGitStatus: (cwd: string) => { status: string; recentCommits: string; branch: string }
+  getGitStatus: (cwd: string) => Promise<{ status: string; recentCommits: string; branch: string }>
   swarmSendMessage: (from: string, to: string, type: string, content: string) => any
   swarmReadMessages: (terminalId: string) => any
   swarmCreateTask: (title: string, description: string, createdBy: string, assignTo?: string) => any
@@ -667,7 +667,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
     case 'get_file_tree':
       return handlers.getFileTree(args.path)
     case 'get_git_status':
-      return handlers.getGitStatus(args.cwd)
+      return await handlers.getGitStatus(args.cwd)
     case 'swarm_send_message':
       return handlers.swarmSendMessage('mcp-client', args.to, args.type, args.content)
     case 'swarm_read_messages':

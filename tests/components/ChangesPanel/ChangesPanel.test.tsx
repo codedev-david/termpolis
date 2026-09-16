@@ -25,19 +25,29 @@ const gitChanges = vi.fn()
 const gitChangeDiff = vi.fn()
 const coverageForFile = vi.fn()
 const gitApplyPatch = vi.fn()
+const gitUnpushed = vi.fn()
+const gitCommitDiff = vi.fn()
 const writeToTerminal = vi.fn()
 const onClose = vi.fn()
+
+/** One row of the Unpushed section, shaped as the bridge hands it over. */
+const commit = (shortSha: string, subject: string, patch: Record<string, any> = {}) => ({
+  sha: shortSha.padEnd(40, '0'), shortSha, subject, relativeDate: '2 hours ago', ...patch,
+})
 
 beforeEach(() => {
   vi.clearAllMocks()
   ;(window as any).termpolis = {
     gitFindRoot, gitChanges, gitChangeDiff, coverageForFile, gitApplyPatch, writeToTerminal,
+    gitUnpushed, gitCommitDiff,
   }
   gitFindRoot.mockResolvedValue({ success: true, data: '/repo' })
   gitChanges.mockResolvedValue({ success: true, data: result() })
   gitChangeDiff.mockResolvedValue({ success: true, data: 'diff --git a/a b/a\n' })
   coverageForFile.mockResolvedValue({ success: true, data: null })
   gitApplyPatch.mockResolvedValue({ success: true })
+  gitUnpushed.mockResolvedValue({ success: true, data: [] })
+  gitCommitDiff.mockResolvedValue({ success: true, data: 'diff --git a/a.ts b/a.ts\n' })
 })
 
 afterEach(() => { delete (window as any).termpolis })
@@ -87,6 +97,48 @@ describe('ChangesPanel — states', () => {
   it('says the tree is clean rather than showing empty sections', async () => {
     mount()
     expect(await screen.findByTestId('changes-clean')).toBeInTheDocument()
+  })
+
+  it('does not call the tree clean before git has answered', async () => {
+    // `total` is 0 while `changes` is still null, so for one paint after the repo was
+    // found the panel stated the tree was verified clean having asked git nothing. A
+    // brief version of the very lie this section exists to stop telling — and the reason
+    // "pluralizes the commits it still has to push" failed one run in four: findByTestId
+    // resolves on that first paint, so the assertion read the placeholder text.
+    let release!: (v: any) => void
+    gitChanges.mockReturnValue(new Promise(r => { release = r }))
+    mount()
+
+    // The root has resolved, so the panel knows it IS a repo: the exact window.
+    await waitFor(() => expect(gitChanges).toHaveBeenCalledWith('/repo'))
+    expect(screen.queryByTestId('changes-clean')).not.toBeInTheDocument()
+
+    await act(async () => { release({ success: true, data: result({ ahead: 2 }) }) })
+    await waitFor(() =>
+      expect(screen.getByTestId('changes-clean'))
+        .toHaveTextContent('Working tree clean — 2 commits to push'))
+  })
+
+  it('names the work still to push instead of claiming nothing changed', async () => {
+    // "Nothing changed" was a lie in exactly this state: the tree IS clean, but the dot
+    // counts `ahead` as outstanding, so it pulsed amber over a panel denying there was
+    // anything to see.
+    gitChanges.mockResolvedValue({ success: true, data: result({ ahead: 1 }) })
+    gitUnpushed.mockResolvedValue({ success: true, data: [commit('aaaaaaa', 'fix: the dot lied')] })
+    mount()
+    // waitFor, not findBy: the element can appear before git's answer lands, so findBy
+    // would assert on whatever text happened to be in it at first paint.
+    await waitFor(() =>
+      expect(screen.getByTestId('changes-clean'))
+        .toHaveTextContent('Working tree clean — 1 commit to push'))
+  })
+
+  it('pluralizes the commits it still has to push', async () => {
+    gitChanges.mockResolvedValue({ success: true, data: result({ ahead: 3 }) })
+    mount()
+    await waitFor(() =>
+      expect(screen.getByTestId('changes-clean'))
+        .toHaveTextContent('Working tree clean — 3 commits to push'))
   })
 
   it('surfaces the git error text', async () => {
@@ -180,6 +232,90 @@ describe('ChangesPanel — the file list', () => {
     })
     mount()
     await waitFor(() => expect(screen.getAllByTestId('change-row-both.ts')).toHaveLength(2))
+  })
+})
+
+// The section this rail was missing, and the reason the mark could lie. TerminalGitDot
+// .isDirty counts staged + unstaged + untracked + conflicted + AHEAD, while this panel
+// counted only working-tree files — so a clean repo one commit ahead pulsed amber and then
+// reported "Nothing changed". Unpushed commits are outstanding work that appears nowhere
+// else in the UI, which is exactly why the dot counts them and why they need rows here.
+describe('ChangesPanel — unpushed commits', () => {
+  beforeEach(() => {
+    gitChanges.mockResolvedValue({ success: true, data: result({ ahead: 2 }) })
+    gitUnpushed.mockResolvedValue({
+      success: true,
+      data: [commit('aaaaaaa', 'fix: stop the dot lying'), commit('bbbbbbb', 'test: pin the rule')],
+    })
+  })
+
+  it('lists every commit waiting to be pushed', async () => {
+    mount()
+    expect(await screen.findByTestId('changes-section-unpushed')).toHaveTextContent('Unpushed')
+    expect(screen.getByTestId('commit-row-aaaaaaa')).toHaveTextContent('fix: stop the dot lying')
+    expect(screen.getByTestId('commit-row-bbbbbbb')).toHaveTextContent('test: pin the rule')
+  })
+
+  it('shows the short sha and how long the commit has been sitting there', async () => {
+    mount()
+    const row = await screen.findByTestId('commit-row-aaaaaaa')
+    expect(row).toHaveTextContent('aaaaaaa')
+    expect(row).toHaveTextContent('2 hours ago')
+  })
+
+  it('opens that one commit\'s diff when its row is clicked', async () => {
+    mount()
+    fireEvent.click(await screen.findByTestId('commit-row-aaaaaaa'))
+    await waitFor(() =>
+      expect(gitCommitDiff).toHaveBeenCalledWith('/repo', 'aaaaaaa'.padEnd(40, '0')))
+    expect(await screen.findByTestId('file-diff-modal'))
+      .toHaveAttribute('aria-label', 'Diff for aaaaaaa — fix: stop the dot lying')
+  })
+
+  it('surfaces a failed commit diff rather than opening an empty window', async () => {
+    gitCommitDiff.mockResolvedValue({ success: false, error: 'fatal: bad object' })
+    mount()
+    fireEvent.click(await screen.findByTestId('commit-row-aaaaaaa'))
+    expect(await screen.findByText('fatal: bad object')).toBeInTheDocument()
+  })
+
+  it('renders no section at all when there is nothing to push', async () => {
+    gitChanges.mockResolvedValue({ success: true, data: result() })
+    gitUnpushed.mockResolvedValue({ success: true, data: [] })
+    mount()
+    await screen.findByTestId('changes-clean')
+    expect(screen.queryByTestId('changes-section-unpushed')).not.toBeInTheDocument()
+  })
+
+  it('asks for the commits in the same poll that reads the file list', async () => {
+    // A second subscription would double the spawn rate per repo and could show a file
+    // list and a commit list read at different moments.
+    mount()
+    await waitFor(() => expect(gitUnpushed).toHaveBeenCalledTimes(1))
+    expect(subscribe).toHaveBeenCalledTimes(1)
+    await act(async () => { await (subscribe as any).mock.calls[0][1]() })
+    expect(gitUnpushed).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves the rest of the rail alone when the commit list fails', async () => {
+    // The file list is the payload; the commit list is additive. One failing must not
+    // blank the other, exactly as a failed numstat does not blank the file list.
+    gitUnpushed.mockResolvedValue({ success: false, error: 'fatal: no upstream' })
+    gitChanges.mockResolvedValue({ success: true, data: result({ unstaged: [entry('b.ts', 'M')] }) })
+    mount()
+    expect(await screen.findByTestId('change-row-b.ts')).toBeInTheDocument()
+    expect(screen.queryByTestId('changes-error')).not.toBeInTheDocument()
+  })
+})
+
+// The invariant the whole mark rests on, stated once so it cannot quietly lapse again.
+describe('ChangesPanel — anything that pulses the dot has a row here', () => {
+  it('never claims nothing changed while the dot is pulsing over unpushed work', async () => {
+    gitChanges.mockResolvedValue({ success: true, data: result({ ahead: 1 }) })
+    gitUnpushed.mockResolvedValue({ success: true, data: [commit('aaaaaaa', 'fix: the dot lied')] })
+    mount()
+    await screen.findByTestId('changes-section-unpushed')
+    expect(screen.queryByText('Nothing changed — the working tree is clean.')).not.toBeInTheDocument()
   })
 })
 

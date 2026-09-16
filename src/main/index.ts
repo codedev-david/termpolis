@@ -113,7 +113,8 @@ import { readZip } from './zipArchive'
 import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists } from 'node:fs'
 import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
 import {
-  buildChanges, countChanges, resolveInsideRepo, synthesizeUntrackedDiff, type ChangeMode,
+  buildChanges, countChanges, parseUnpushedZ, resolveInsideRepo, synthesizeUntrackedDiff,
+  UNPUSHED_FORMAT, UNPUSHED_MAX, type ChangeMode,
 } from './gitChanges'
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
@@ -1653,6 +1654,40 @@ ipcMain.handle('git:change-diff', async (
   } catch (e: any) { return err(e.message) }
 })
 
+// The rail's Unpushed section. The dot has always counted `ahead` as outstanding work, so
+// without these rows a clean-but-ahead repo pulsed amber and then reported itself clean.
+// The range is the same one `git status` derives `ahead` from: list any other and the rail
+// would show a different set of commits than the one that made the dot pulse.
+//
+// An empty list on failure rather than an error envelope, for the same reason
+// git:change-counts returns null outside a repo — a branch that tracks nothing makes
+// `@{upstream}` fail outright, that is the ordinary state of a local-only branch, and an
+// error once per poll would be noise rather than information.
+ipcMain.handle('git:unpushed', async (_, { cwd }: { cwd: string }) => {
+  try {
+    const out = await safeGitAsync(
+      ['log', `--max-count=${UNPUSHED_MAX}`, `--format=${UNPUSHED_FORMAT}`, '@{upstream}..HEAD'],
+      { cwd, timeout: 8000, maxBuffer: 8 * 1024 * 1024 },
+    )
+    return ok(parseUnpushedZ(out))
+  } catch { return ok([]) }
+})
+
+// The patch for the one unpushed commit that was clicked. `--format=` drops the commit
+// header, leaving a pure patch for the same parseUnifiedDiff the file rows use.
+ipcMain.handle('git:commit-diff', async (_, { cwd, sha }: { cwd: string; sha: string }) => {
+  try {
+    // The sha arrives from the renderer. Every legitimate value came from git one poll
+    // earlier, which is exactly why the illegitimate one has to be refused here — and
+    // isValidGitRef rejects `..`, so a range cannot be smuggled in as a single row.
+    if (!isValidGitRef(sha)) return err('Invalid SHA')
+    return ok(await safeGitAsync(
+      ['show', '--format=', '--patch', '--no-color', sha],
+      { cwd, timeout: 8000, maxBuffer: 16 * 1024 * 1024 },
+    ))
+  } catch (e: any) { return err(e.message) }
+})
+
 // Swarm Review: capture the HEAD SHA at a point in time so we can diff the full
 // swarm delta later. Returns null when outside a repo so the caller can skip
 // review mode cleanly.
@@ -2941,11 +2976,21 @@ if (!gotTheLock) {
       getFileTree: (path) => {
         return listPathEntries(path)
       },
-      getGitStatus: (cwd) => {
-        let status = '', recentCommits = '', branch = ''
-        try { status = safeGit(['status', '--short'], { cwd, timeout: 3000 }).trim() } catch {}
-        try { recentCommits = safeGit(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).trim() } catch {}
-        try { branch = safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 3000 }).trim() } catch {}
+      // Three sequential safeGit calls used to run here, on the thread that pumps every
+      // PTY. Agents invoke this, concurrently, from swarm — so a tool the user never
+      // touched stalled every terminal for three Windows process spawns (~100ms each).
+      // Promise.all over safeGitAsync is the pattern the renderer-facing git handlers in
+      // this same file already use; this one was just never converted. Each arm keeps its
+      // own catch so a detached HEAD or an empty repo still yields the other two answers.
+      getGitStatus: async (cwd) => {
+        const run = async (args: string[]) => {
+          try { return (await safeGitAsync(args, { cwd, timeout: 3000 })).trim() } catch { return '' }
+        }
+        const [status, recentCommits, branch] = await Promise.all([
+          run(['status', '--short']),
+          run(['log', '--oneline', '-5']),
+          run(['rev-parse', '--abbrev-ref', 'HEAD']),
+        ])
         return { status, recentCommits, branch }
       },
       swarmSendMessage: (from, to, type, content) => {

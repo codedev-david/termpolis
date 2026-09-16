@@ -271,11 +271,11 @@ export function indexFileContent(file: string, content: string, projectKey?: str
 }
 
 /** Incremental single-file re-index: index + rebuild edges + persist (one repo). */
-export function reindexFile(file: string, content: string, projectKey?: string): number {
+export async function reindexFile(file: string, content: string, projectKey?: string): Promise<number> {
   const key = projectKey ?? activeKey
   const n = indexFileContent(file, content, key)
   rebuildEdges(key)
-  persistCodeGraph(key)
+  await persistCodeGraph(key)
   return n
 }
 
@@ -359,7 +359,7 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
     if (ex) indexExtract(st, ex, content)
   }
   rebuildEdges(projectKey)
-  persistCodeGraph(projectKey)
+  await persistCodeGraph(projectKey)
   return statsOf(st)
 }
 
@@ -404,7 +404,7 @@ async function reindexPathsImpl(
     if (ex) n += indexExtract(st, ex, content)
   }
   rebuildEdges(key)
-  persistCodeGraph(key)
+  await persistCodeGraph(key)
   return n
 }
 
@@ -433,18 +433,22 @@ export async function reindexWatchedChange(
   }
 }
 
-export function persistCodeGraph(projectKey?: string): void {
+export async function persistCodeGraph(projectKey?: string): Promise<void> {
   if (!dir) return
   const key = projectKey ?? activeKey
   const st = stateFor(key)
-  // Serialising + writing the whole graph is synchronous and unavoidable (it must be atomic), so if
-  // it ever grows big enough to stall the thread, the stall should say so by name.
+  // The write and the rename are async. This was the last synchronous tail in a file whose sweep had
+  // already been moved onto setImmediate yields (see yieldToEventLoop: 645 files went from 2,777 ms
+  // of unbroken starvation to a 68 ms worst-case stall) — and it runs on the 2-second-debounced
+  // file-watch reindex, so an edit storm paid a full blocking writeFileSync per save on the thread
+  // that pumps every PTY. Atomicity is unchanged: still temp-file + rename, just without blocking.
+  // JSON.stringify is still synchronous, but it is bounded by graph size rather than by disk.
   try {
     const data = { symbols: [...st.symbolsById.values()], imports: [...st.fileImports.entries()] }
     const target = path.join(dir!, graphFileFor(key))
     const tmp = `${target}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(data))
-    fs.renameSync(tmp, target) // atomic replace
+    await fs.promises.writeFile(tmp, JSON.stringify(data))
+    await fs.promises.rename(tmp, target) // atomic replace
   } catch {
     /* best effort — the graph rebuilds from source on next full index */
   }

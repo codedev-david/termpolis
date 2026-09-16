@@ -46,6 +46,57 @@ function removeFromTree(node: PaneNode, terminalId: string): PaneNode | null {
   return { ...node, children: [leftResult, rightResult] }
 }
 
+// ---- Workflow run retention ----
+
+// A workflow run used to keep EVERYTHING forever: `step:output` concatenated every chunk into
+// steps[].output and `run:finished` only flipped a status, so a day of CI-shaped runs left every
+// byte of every build log resident for the life of the app. Both axes are bounded now, because
+// either one alone still leaks: capping only the text lets finished runs pile up without limit,
+// and capping only the run count lets one `tail -f`-shaped step grow unbounded inside a run that
+// never finishes.
+//
+// Head+tail, not a plain tail cut: the head carries the command and the first error, the tail
+// carries the failure you actually opened the panel to read. The elision is spelled out IN the
+// retained text so the Runner's <pre> (WorkflowRunner.tsx:157, a scrollable box that renders
+// output verbatim) can never imply it is showing a complete log.
+const STEP_OUTPUT_HEAD = 32 * 1024
+const STEP_OUTPUT_TAIL = 32 * 1024
+const STEP_OUTPUT_ELISION = '\n…[output truncated by Termpolis — keeping the first 32 KB and the last 32 KB]…\n'
+export const MAX_STEP_OUTPUT = STEP_OUTPUT_HEAD + STEP_OUTPUT_TAIL + STEP_OUTPUT_ELISION.length
+
+// Re-truncating an already-elided string keeps the original head and the newest tail, and the old
+// marker lands inside the freshly elided middle — so exactly one marker ever survives and the
+// retained length stays pinned at MAX_STEP_OUTPUT no matter how many chunks arrive.
+function capStepOutput(text: string): string {
+  if (text.length <= MAX_STEP_OUTPUT) return text
+  return text.slice(0, STEP_OUTPUT_HEAD) + STEP_OUTPUT_ELISION + text.slice(-STEP_OUTPUT_TAIL)
+}
+
+// Finished runs are history, not state: the Runner shows the newest run per workflow
+// (WorkflowOverlayBody.tsx:79) and the sidebar only asks whether one is still running. Keeping the
+// 20 most recent leaves both reads intact. Running runs are never evicted — that would blank a live
+// timeline mid-run.
+export const MAX_FINISHED_RUNS = 20
+
+// ---- Conversation retention ----
+
+// useAgentDetection calls addConversationTurn for every terminal an agent is detected in — never
+// opt-in (useAgentDetection.ts:60) — and nothing ever removed a turn: clearConversations existed
+// but had no caller anywhere in the renderer. Hosting long-lived agents is what this app IS, so an
+// unbounded transcript is the steady state here, not an edge case.
+//
+// Two bounds, because each covers what the other cannot: closing a terminal reclaims that whole
+// transcript, and the rolling window bounds the terminal that is never closed. The window is safe
+// for the only consumer: ConversationSearch already prefers the agent's full on-disk JSONL per
+// terminal and falls back to this parse only where that is unavailable (ConversationSearch.tsx:94),
+// so this array is a recent-history buffer, not the system of record.
+export const MAX_CONVERSATION_TURNS = 200
+
+// Shared by the manual action and the automatic terminal-close path so the two can never drift.
+function dropConversationsFor(conversations: ConversationIndex[], terminalId: string): ConversationIndex[] {
+  return conversations.filter(c => c.terminalId !== terminalId)
+}
+
 export type SwarmAgentStatus = 'starting' | 'thinking' | 'waiting_for_input' | 'working' | 'idle' | 'errored' | 'completed' | 'blocked'
 
 export interface SwarmAgentEntry {
@@ -200,7 +251,16 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     const newTree = s.viewMode === 'split'
       ? buildPaneTree(remaining.filter(t => !t.hidden).map(t => t.id))
       : (s.paneTree ? removeFromTree(s.paneTree, id) : null)
-    return { terminals: remaining, activeTerminalId: nextActive, paneTree: newTree, focusNonce: s.focusNonce + 1 }
+    // Evict here rather than at the call sites: five of them close terminals (App, Sidebar,
+    // PaneRenderer, conductorManager, SwarmDashboard) and a transcript outliving its terminal is
+    // unreachable by every consumer anyway.
+    return {
+      terminals: remaining,
+      activeTerminalId: nextActive,
+      paneTree: newTree,
+      focusNonce: s.focusNonce + 1,
+      conversations: dropConversationsFor(s.conversations, id),
+    }
   }),
 
   updateTerminal: (id, patch) => set(s => ({
@@ -335,9 +395,21 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     }
     if (e.type === 'step:started') upsert(e.stepId, { status: 'running', startedAt: e.at })
     if (e.type === 'step:status') upsert(e.stepId, { status: e.status })
-    if (e.type === 'step:output') upsert(e.stepId, { output: (run.steps.find(x => x.stepId === e.stepId)?.output ?? '') + e.chunk })
-    if (e.type === 'step:finished') upsert(e.result.stepId, e.result)
-    if (e.type === 'run:finished') runs[e.runId] = { ...run, status: e.status, endedAt: e.at }
+    if (e.type === 'step:output') upsert(e.stepId, { output: capStepOutput((run.steps.find(x => x.stepId === e.stepId)?.output ?? '') + e.chunk) })
+    if (e.type === 'step:finished') upsert(e.result.stepId, { ...e.result, output: capStepOutput(e.result.output) })
+    if (e.type === 'run:finished') {
+      runs[e.runId] = { ...run, status: e.status, endedAt: e.at }
+      const finished = Object.values(runs).filter(r => r.status !== 'running')
+      if (finished.length > MAX_FINISHED_RUNS) {
+        // Ranked on startedAt, the one timestamp a WorkflowRun always carries: runs finish in the
+        // order they start here, so it ranks identically to endedAt without a `??` arm that no
+        // event could ever reach.
+        finished
+          .sort((a, b) => b.startedAt - a.startedAt)
+          .slice(MAX_FINISHED_RUNS)
+          .forEach(stale => { delete runs[stale.runId] })
+      }
+    }
     return { activeRuns: runs }
   }),
 
@@ -347,7 +419,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
       return {
         conversations: s.conversations.map(c =>
           c.terminalId === terminalId
-            ? { ...c, turns: [...c.turns, turn] }
+            ? { ...c, turns: [...c.turns, turn].slice(-MAX_CONVERSATION_TURNS) }
             : c
         ),
       }
@@ -364,7 +436,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   }),
 
   clearConversations: (terminalId) => set(s => ({
-    conversations: s.conversations.filter(c => c.terminalId !== terminalId),
+    conversations: dropConversationsFor(s.conversations, terminalId),
   })),
 
   setSwarmActive: (active) => set({ swarmActive: active }),

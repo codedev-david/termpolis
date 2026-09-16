@@ -27,8 +27,21 @@ function stub(id: string) {
   return env.PAIRING_ROOM.get(env.PAIRING_ROOM.idFromName(id))
 }
 
-function peersOf(instance: PairingRoom): Map<string, { lastSeen: number }> {
-  return (instance as unknown as { peers: Map<string, { lastSeen: number }> }).peers
+/** Push peers' last-seen times back past the idle deadline; `role` omitted ages
+ *  the whole room.
+ *
+ *  Time is pushed back rather than waited out: Date.now() is frozen inside a
+ *  Workers invocation, so a test that slept would measure nothing.
+ *
+ *  It rewrites the socket ATTACHMENT because that is where the room keeps a
+ *  connection's state, and there is no `peers` map left to reach into. That is
+ *  the whole point of the hibernation design: an isolate field is gone the moment
+ *  the room is evicted, which for an idle pairing is most of the time. */
+function age(state: DurableObjectState, role?: string): void {
+  for (const ws of state.getWebSockets(role)) {
+    const conn = ws.deserializeAttachment() as { lastSeen: number }
+    ws.serializeAttachment({ ...conn, lastSeen: conn.lastSeen - IDLE_TIMEOUT_MS - 1 })
+  }
 }
 
 describe('idle eviction', () => {
@@ -38,12 +51,8 @@ describe('idle eviction', () => {
     const closed = closeEvent(desktop)
 
     // A socket that never speaks still costs a slot, and holds the room's only
-    // desktop role against the real desktop's reconnect. Time is pushed back rather
-    // than waited out: Date.now() is frozen inside a Workers invocation, so a test
-    // that slept would measure nothing.
-    await runInDurableObject(stub(id), (instance: PairingRoom) => {
-      for (const p of peersOf(instance).values()) p.lastSeen -= IDLE_TIMEOUT_MS + 1
-    })
+    // desktop role against the real desktop's reconnect.
+    await runInDurableObject(stub(id), (_i, state) => age(state))
     await runInDurableObject(stub(id), (instance: PairingRoom) => instance.alarm())
 
     expect((await closed).reason).toBe('idle')
@@ -54,14 +63,12 @@ describe('idle eviction', () => {
     const desktop = await connect(id, 'desktop')
     const device = await connect(id, 'device')
 
-    // Push BOTH peers past the deadline, then have the desktop send. If activity
-    // did not refresh `lastSeen`, a session six minutes old would be evicted while
-    // someone was typing into it -- and a test that only sent a frame without
-    // ageing the clock first could not tell the difference, because Date.now() does
-    // not advance inside a Workers invocation.
-    await runInDurableObject(stub(id), (instance: PairingRoom) => {
-      peersOf(instance).get('desktop')!.lastSeen -= IDLE_TIMEOUT_MS + 1
-    })
+    // Push the desktop past the deadline, then have it send. If activity did not
+    // refresh `lastSeen`, a session six minutes old would be evicted while someone
+    // was typing into it -- and a test that only sent a frame without ageing the
+    // clock first could not tell the difference, because Date.now() does not
+    // advance inside a Workers invocation.
+    await runInDurableObject(stub(id), (_i, state) => age(state, 'desktop'))
     desktop.send(new Uint8Array([7]))
     await new Promise((r) => setTimeout(r, 30))
     await runInDurableObject(stub(id), (instance: PairingRoom) => instance.alarm())
@@ -81,9 +88,7 @@ describe('idle eviction', () => {
     const device = await connect(id, 'device')
     const deviceClosed = closeEvent(device)
 
-    await runInDurableObject(stub(id), (instance: PairingRoom) => {
-      for (const p of peersOf(instance).values()) p.lastSeen -= IDLE_TIMEOUT_MS + 1
-    })
+    await runInDurableObject(stub(id), (_i, state) => age(state))
     // Only the desktop speaks. Refreshing a shared deadline instead of a per-peer
     // one would keep a dead phone's socket alive for as long as the desktop worked.
     desktop.send(new Uint8Array([7]))
@@ -103,9 +108,7 @@ describe('idle eviction', () => {
     device.addEventListener('message', (e) => {
       if (typeof e.data === 'string') said.push(e.data)
     })
-    await runInDurableObject(stub(id), (instance: PairingRoom) => {
-      peersOf(instance).get('desktop')!.lastSeen -= IDLE_TIMEOUT_MS + 1
-    })
+    await runInDurableObject(stub(id), (_i, state) => age(state, 'desktop'))
     await runInDurableObject(stub(id), (instance: PairingRoom) => instance.alarm())
     await new Promise((r) => setTimeout(r, 50))
 
@@ -120,9 +123,7 @@ describe('idle eviction', () => {
     const device = await connect(id, 'device')
     const both = Promise.all([closeEvent(desktop), closeEvent(device)])
 
-    await runInDurableObject(stub(id), (instance: PairingRoom) => {
-      for (const p of peersOf(instance).values()) p.lastSeen -= IDLE_TIMEOUT_MS + 1
-    })
+    await runInDurableObject(stub(id), (_i, state) => age(state))
     await runInDurableObject(stub(id), (instance: PairingRoom) => instance.alarm())
 
     // One pass closes both peers, and neither is unseated until its own close
@@ -132,8 +133,8 @@ describe('idle eviction', () => {
     // catch: from outside, both peers are evicted either way.
     expect((await both).map((e) => e.reason)).toEqual(['idle', 'idle'])
     await new Promise((r) => setTimeout(r, 50))
-    await runInDurableObject(stub(id), (instance: PairingRoom) => {
-      expect(peersOf(instance).size).toBe(0)
+    await runInDurableObject(stub(id), (_i, state) => {
+      expect(state.getWebSockets()).toHaveLength(0)
     })
   })
 

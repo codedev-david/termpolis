@@ -27,6 +27,9 @@ let page: Page
 let isolatedUserData: string
 let repoDir: string
 let plainDir: string | undefined
+// A bare repo to push at, so the fixture has a real upstream: `ahead` is undefined
+// without one, and `ahead` is the whole subject of the last test in this file.
+let originDir: string | undefined
 
 // Every terminal carries a mark now — dim and inert outside a repo — so these assertions
 // select only the LIVE ones, which is what "the dot appeared" has always meant here.
@@ -97,7 +100,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (app) await app.close()
-  for (const dir of [isolatedUserData, repoDir, plainDir]) {
+  for (const dir of [isolatedUserData, repoDir, plainDir, originDir]) {
     if (dir) {
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
     }
@@ -230,6 +233,71 @@ test('committing the work stops the pulse and reports a clean tree', async () =>
   // And the panel agrees, rather than showing a stale list of work already committed.
   await dot.click()
   await expect(page.locator('[data-testid="changes-clean"]')).toBeVisible({ timeout: 30000 })
+})
+
+/**
+ * The invariant the mark rests on: ANYTHING that makes the dot pulse has a row in the
+ * panel. This is the case that broke it — a tree with nothing modified, one commit the
+ * upstream has never seen. `isDirty` counts `ahead`, so the dot pulsed amber; the rail
+ * listed only working-tree files, so it opened on "Nothing changed — the working tree is
+ * clean." The mark said there was work and the panel called it a liar.
+ *
+ * Only an e2e can pin it. The unit suites hand each half its own fixture, so the two can
+ * disagree about what "outstanding" means and both stay green — which is exactly what
+ * they did. Here one real repo feeds both, through real git.
+ *
+ * Runs after the commit test because it needs the clean tree that test leaves behind.
+ */
+test('a clean tree with an unpushed commit pulses AND says what is unpushed', async () => {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: repoDir, stdio: 'pipe' })
+
+  // `git status` reports `ahead` only against a configured upstream, so the fixture needs
+  // somewhere to have pushed. Bare, because it is only ever a push target.
+  originDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitdot-origin-'))
+  execFileSync('git', ['init', '--bare', originDir], { stdio: 'pipe' })
+  git('remote', 'add', 'origin', originDir)
+  // HEAD rather than a branch name: `git init` picks master or main depending on the
+  // developer's git config, and this spec has no business caring which.
+  git('push', '-u', 'origin', 'HEAD')
+
+  // The tree ends clean — the edit goes straight into a commit. That is the whole point:
+  // nothing here is a working-tree change, so nothing here would have shown in the rail.
+  fs.writeFileSync(path.join(repoDir, 'committed.txt'), 'tracked\nand then some\n')
+  git('add', '-A')
+  git(
+    '-c', 'user.email=e2e@termpolis.test', '-c', 'user.name=e2e',
+    'commit', '-m', 'unpushed: the row this test exists for',
+  )
+
+  // The poll owns the clock here too.
+  const dot = page.locator(anyDot).first()
+  await expect(dot).toHaveAttribute('data-dirty', 'true', { timeout: 60000 })
+  await expect(dot).toHaveAttribute('title', /1 to push/)
+
+  await dot.click()
+  const panel = page.locator('[data-testid="changes-panel"]')
+  await expect(panel).toBeVisible({ timeout: 15000 })
+
+  // The branch bar's chip — present in the JSX all along, and absent from the screenshot
+  // that started this. If `ahead` never reaches the renderer, this is where it shows.
+  await expect(panel).toContainText('↑1', { timeout: 30000 })
+
+  // The rows, which is the half that did not exist at all.
+  await expect(page.locator('[data-testid="changes-section-unpushed"]'))
+    .toBeVisible({ timeout: 30000 })
+  const row = page.locator('[data-testid^="commit-row-"]').first()
+  await expect(row).toBeVisible()
+  await expect(row).toContainText('unpushed: the row this test exists for')
+
+  // And the panel stops denying there is anything to see.
+  await expect(page.locator('[data-testid="changes-clean"]')).toHaveText(/1 commit to push/)
+
+  // A row that leads nowhere is the bug one level up, so: the commit's own patch.
+  await row.click()
+  const modal = page.locator('[data-testid="file-diff-modal"]')
+  await expect(modal).toBeVisible({ timeout: 15000 })
+  await expect(modal).toContainText('and then some', { timeout: 15000 })
+  await page.keyboard.press('Escape')
 })
 
 /**

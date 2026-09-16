@@ -32,51 +32,40 @@ export interface CodexWatcherHandle {
  * Codex's directory structure varies — we walk one level deep.
  */
 export function findLatestCodexSessionFile(): string | null {
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(CODEX_SESSIONS_DIR)
-  } catch {
-    return null
-  }
-
   const candidates: { path: string; mtime: number }[] = []
 
-  for (const entry of entries) {
-    const full = path.join(CODEX_SESSIONS_DIR, entry)
-    // Security: enforce containment
+  // readdir already reports whether each entry is a file or a directory, and the name
+  // already says whether it could be a transcript at all. This used to stat every entry
+  // to re-learn both — a syscall per entry, on the thread that pumps every PTY, against
+  // a directory the user has been filling up for months. Now the only stats left are on
+  // files that are genuinely candidates, for the one thing readdir cannot report: mtime.
+  const collect = (dir: string, recurse: boolean): void => {
+    let entries: fs.Dirent[]
     try {
-      resolvePathWithinRoot(CODEX_SESSIONS_DIR, full)
+      entries = fs.readdirSync(dir, { withFileTypes: true })
     } catch {
-      continue
+      return
     }
-    let stat: fs.Stats
-    try {
-      stat = fs.statSync(full)
-    } catch {
-      continue
-    }
-    if (stat.isFile() && /\.(jsonl|json)$/.test(entry)) {
-      candidates.push({ path: full, mtime: stat.mtimeMs })
-    } else if (stat.isDirectory()) {
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      // Security: enforce containment
       try {
-        const sub = fs.readdirSync(full)
-        for (const s of sub) {
-          const subFull = path.join(full, s)
-          try {
-            resolvePathWithinRoot(CODEX_SESSIONS_DIR, subFull)
-          } catch {
-            continue
-          }
-          try {
-            const ss = fs.statSync(subFull)
-            if (ss.isFile() && /\.(jsonl|json)$/.test(s)) {
-              candidates.push({ path: subFull, mtime: ss.mtimeMs })
-            }
-          } catch {}
-        }
-      } catch {}
+        resolvePathWithinRoot(CODEX_SESSIONS_DIR, full)
+      } catch {
+        continue
+      }
+      if (entry.isDirectory()) {
+        if (recurse) collect(full, false) // one level deep, as before
+        continue
+      }
+      if (!entry.isFile() || !/\.(jsonl|json)$/.test(entry.name)) continue
+      try {
+        candidates.push({ path: full, mtime: fs.statSync(full).mtimeMs })
+      } catch { /* vanished between readdir and stat */ }
     }
   }
+
+  collect(CODEX_SESSIONS_DIR, true)
 
   candidates.sort((a, b) => b.mtime - a.mtime)
   return candidates.length > 0 ? candidates[0].path : null

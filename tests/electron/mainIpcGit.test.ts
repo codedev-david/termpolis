@@ -1319,3 +1319,96 @@ describe('coverage:for-file', () => {
     expect(r.error.length).toBeGreaterThan(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// git:unpushed / git:commit-diff — the rail's Unpushed section
+//
+// The sidebar dot counts `ahead` as outstanding work, so a clean-but-ahead repo pulsed
+// amber while the rail reported "Nothing changed — the working tree is clean." These two
+// channels are what give that pulse a row to open. The parsing is unit-tested in
+// gitChanges.test.ts; what is pinned here is the wiring: which argv runs, and what each
+// failure mode hands back.
+// ---------------------------------------------------------------------------
+
+/** One commit exactly as `--format=%H%x1f%h%x1f%s%x1f%ar%x00` writes it. */
+const logRec = (sha: string, short: string, subject: string, when: string) =>
+  `${sha}\x1f${short}\x1f${subject}\x1f${when}\0`
+
+describe('git:unpushed', () => {
+  beforeEach(() => { H.execFile.mockClear() })
+
+  it('lists the commits the upstream does not have', async () => {
+    gitAsync(() => logRec('a'.repeat(40), 'aaaaaaa', 'fix: the dot lied', '2 hours ago'))
+    const r = await invoke('git:unpushed', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual([{
+      sha: 'a'.repeat(40),
+      shortSha: 'aaaaaaa',
+      subject: 'fix: the dot lied',
+      relativeDate: '2 hours ago',
+    }])
+  })
+
+  it('asks for exactly the range the dot counts, and caps how much it will list', async () => {
+    gitAsync(() => '')
+    await invoke('git:unpushed', { cwd: '/repo' })
+    const argv = H.execFile.mock.calls[0][1] as string[]
+    expect(argv[0]).toBe('log')
+    // The same range `git status` derives `ahead` from — anything else and the rail
+    // would list a different set of commits than the one that made the dot pulse.
+    expect(argv).toContain('@{upstream}..HEAD')
+    expect(argv).toContain('--max-count=50')
+  })
+
+  it('runs off the async path, so a slow spawn cannot stall the PTY pump', async () => {
+    gitAsync(() => '')
+    await invoke('git:unpushed', { cwd: '/repo' })
+    expect(H.execFileSync).not.toHaveBeenCalled()
+  })
+
+  it('reports no upstream as an empty list, not an error the rail would paint red', async () => {
+    // `@{upstream}` fails outright on a branch that tracks nothing — the ordinary state
+    // of a local-only branch, and not something to shout about on a 3-second poll.
+    gitAsync(() => new Error("fatal: no upstream configured for branch 'main'"))
+    const r = await invoke('git:unpushed', { cwd: '/repo' })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual([])
+  })
+})
+
+describe('git:commit-diff', () => {
+  beforeEach(() => { H.execFile.mockClear() })
+
+  const SHA = 'a'.repeat(40)
+
+  it('shows the patch for the one commit that was clicked', async () => {
+    gitAsync(() => 'diff --git a/a.ts b/a.ts\n')
+    const r = await invoke('git:commit-diff', { cwd: '/repo', sha: SHA })
+    expect(r.success).toBe(true)
+    expect(r.data).toContain('diff --git')
+    // `--format=` drops the commit header, leaving a pure patch for parseUnifiedDiff.
+    expect(gitAsyncCalls()).toEqual([`show --format= --patch --no-color ${SHA}`])
+  })
+
+  it('refuses a sha that is not one, and spawns nothing to decide it', async () => {
+    // The sha arrives from the renderer. Every legitimate value came from git one poll
+    // earlier, which is exactly why the illegitimate one has to be refused here.
+    const r = await invoke('git:commit-diff', { cwd: '/repo', sha: '--upload-pack=evil' })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('Invalid SHA')
+    expect(H.execFile).not.toHaveBeenCalled()
+  })
+
+  it('refuses a range, which would show far more than the row that was clicked', async () => {
+    const r = await invoke('git:commit-diff', { cwd: '/repo', sha: 'HEAD~5..HEAD' })
+    expect(r.success).toBe(false)
+    expect(H.execFile).not.toHaveBeenCalled()
+  })
+
+  it('returns an error envelope when git itself fails', async () => {
+    gitAsync(() => new Error('fatal: bad object'))
+    const r = await invoke('git:commit-diff', { cwd: '/repo', sha: SHA })
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('bad object')
+  })
+})

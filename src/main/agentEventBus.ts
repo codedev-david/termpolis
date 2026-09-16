@@ -76,6 +76,26 @@ let droppedCount = 0
 // something we already know: we did every write. memoryAudit.ts:59-67 already does it this way
 // ("one statSync total, not per append"). One stat at init, then arithmetic.
 let logBytes = 0
+// A held append fd. publish() used fs.appendFileSync, which is open() + write() + close() on EVERY
+// event — measured here at 447 us per line, so at PUBLISH_RATE_LIMIT (500/s) roughly 224 ms of dead
+// main thread per second, on the thread that pumps every PTY. Holding the fd open costs 3.3 us per
+// line, a 135x cut, and keeps the write SYNCHRONOUS.
+//
+// Synchronous is the requirement, not an accident. A WriteStream is marginally faster still (1.0 us)
+// but buffers: measured here, 2,000 stream writes left the log file not merely stale but NONEXISTENT.
+// rotateIfNeeded renames this very file, so a buffered writer would rename away bytes that were
+// still in memory, and every reader that looks immediately after a publish would miss them.
+let logFd: number | null = null
+
+function openLog(target: string): void {
+  try { logFd = fs.openSync(target, 'a') } catch { logFd = null }
+}
+
+function closeLog(): void {
+  if (logFd === null) return
+  try { fs.closeSync(logFd) } catch {}
+  logFd = null
+}
 
 export function initEventBus(userDataPath: string): void {
   // Validate path is a real absolute directory — refuse traversal attempts
@@ -85,6 +105,7 @@ export function initEventBus(userDataPath: string): void {
   if (!path.isAbsolute(userDataPath)) {
     throw new Error('initEventBus: userDataPath must be absolute')
   }
+  closeLog() // a re-init must not leak the previous handle
   const resolved = path.resolve(userDataPath)
   logPath = path.join(resolved, 'agent-events.jsonl')
   // Ensure the file exists so callers can observe it immediately
@@ -95,6 +116,7 @@ export function initEventBus(userDataPath: string): void {
     } else {
       logBytes = fs.statSync(logPath).size // the ONLY stat of this file — publish() does arithmetic
     }
+    openLog(logPath)
   } catch {
     logPath = null
     logBytes = 0
@@ -107,6 +129,11 @@ function rotateIfNeeded(): void {
   if (!logPath || logBytes < MAX_LOG_SIZE) return
   try {
     const backup = logPath + '.old'
+    // Close BEFORE renaming. An open fd follows the INODE, so every write after the rename would
+    // land in the .old file while the live log stayed empty forever — the rotation that exists to
+    // bound growth would instead guarantee it. On Windows the rename fails outright while a handle
+    // is open. Reopened on the fresh live file in the finally below.
+    closeLog()
     try { fs.unlinkSync(backup) } catch {}
     fs.renameSync(logPath, backup)
     fs.writeFileSync(logPath, '')
@@ -115,6 +142,8 @@ function rotateIfNeeded(): void {
     // Rotation failed (file locked, disk full). Re-sync from the filesystem rather than let the
     // counter drift forever — a wrong counter means we either never rotate or rotate every event.
     try { logBytes = fs.statSync(logPath).size } catch { logBytes = 0 }
+  } finally {
+    openLog(logPath) // reopen whether or not rotation worked — never leave the bus handle-less
   }
 }
 
@@ -166,11 +195,12 @@ export function publish(event: Omit<AgentEvent, 'id' | 'ts'> & { ts?: number }):
     ring.splice(0, ring.length - MAX_RING)
   }
 
-  // Persist synchronously — crash-safe, avoids race with consumers reading the file
-  if (logPath) {
+  // Persist synchronously through the held fd — crash-safe, and the bytes are on disk before this
+  // returns, which rotateIfNeeded (it renames this file) and any immediate reader both depend on.
+  if (logFd !== null) {
     try {
       const line = JSON.stringify(full) + '\n'
-      fs.appendFileSync(logPath, line)
+      fs.writeSync(logFd, line)
       logBytes += Buffer.byteLength(line, 'utf8') // byteLength, not .length: JSON can hold non-ASCII
       rotateIfNeeded()
     } catch {}
@@ -222,13 +252,15 @@ export function clearRing(): void {
   rateCount = 0
 }
 
-/** No-op shutdown hook (kept for API compatibility; persistence is synchronous) */
+/** Release the log handle. Writes are synchronous, so there is nothing buffered to flush — this
+ *  closes the fd. The bus stops persisting until initEventBus runs again. */
 export function shutdownEventBus(): void {
-  /* no-op — synchronous persistence means nothing to flush */
+  closeLog()
 }
 
 /** Test-only: reset all internal state */
 export function _resetForTests(): void {
+  closeLog()
   ring.length = 0
   subscribers.clear()
   logPath = null

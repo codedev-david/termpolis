@@ -7,6 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
+import { registerWebglPane, setWebglPaneVisible } from '../../lib/webglBudget'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
 import { buildTerminalOptions } from '../../lib/terminalOptions'
@@ -905,11 +906,35 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // for a real HARDWARE WebGL2 context up front and only load WebGL then;
     // otherwise we stay on the DOM renderer (what shipped fine before). A runtime
     // context loss still disposes the addon → DOM fallback.
+    //
+    // The context is NOT taken at mount. TabView mounts every non-hidden terminal at
+    // once, and holding one context per pane for the terminal's whole life walked
+    // straight into Chromium's ~16-context cap, past which it silently evicts the oldest
+    // — no throw, no warning — so a terminal opened early just stopped painting. The
+    // budget hands contexts to the panes actually on screen and takes them back from the
+    // ones you looked at longest ago. Writes still reach xterm either way: only the GPU
+    // renderer is leased, so a background agent's buffer, search and export stay live.
+    let releaseWebglPane: (() => void) | null = null
     if (hasHardwareWebgl()) {
       try {
-        const webglAddon = new WebglAddon()
-        webglAddon.onContextLoss(() => { try { webglAddon.dispose() } catch { /* already disposed */ } })
-        term.loadAddon(webglAddon)
+        let addon: WebglAddon | null = null
+        releaseWebglPane = registerWebglPane(terminalId, {
+          acquire: () => {
+            if (addon) return
+            const a = new WebglAddon()
+            a.onContextLoss(() => {
+              try { a.dispose() } catch { /* already disposed */ }
+              if (addon === a) addon = null
+            })
+            term.loadAddon(a)
+            addon = a
+          },
+          release: () => {
+            const a = addon
+            addon = null
+            if (a) { try { a.dispose() } catch { /* already disposed */ } }
+          },
+        })
       } catch { /* WebGL load failed late — DOM renderer stays */ }
     }
 
@@ -1446,6 +1471,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)
       ro.disconnect()
+      // Synchronously, unlike term.dispose() below: this is bookkeeping, not the xterm
+      // instance, and leaving a dead pane in the budget would hold a slot that a live
+      // terminal needs for TERMINAL_DISPOSE_DELAY_MS.
+      releaseWebglPane?.()
       // Everything above is synchronous, so `disposed` is already true and every pending
       // callback in this effect is a no-op — but the Terminal itself has to outlive the
       // cleanup by TERMINAL_DISPOSE_DELAY_MS (see the constant) so xterm's own uncancelled
@@ -1488,6 +1517,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
       }, 0)
     }
+  }, [isVisible, terminalId])
+
+  // Declared after the mount effect on purpose: registration has to exist before the
+  // first visibility report, and React runs effects in declaration order.
+  useEffect(() => {
+    setWebglPaneVisible(terminalId, isVisible)
   }, [isVisible, terminalId])
 
   // Put the cursor on the active terminal's command line so it's ready for input

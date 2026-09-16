@@ -29,10 +29,18 @@ vi.mock('fs', () => ({
 }))
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
-const { listPathEntries, listEnvVars, listPathCommands, resetPathCommandsCache } = await import('../../src/main/completionService')
+const { listPathEntries, listEnvVars, listPathCommands, resetPathCommandsCache, resetSafeRootsCache } = await import('../../src/main/completionService')
 
 const home = homedir()
 const safePath = join(home, 'test-project')
+
+/** Minimal Dirent stand-in. listPathEntries takes each entry's kind from the directory read
+ *  itself (withFileTypes) instead of paying a statSync per entry. */
+const dirent = (name: string, kind: 'file' | 'dir' | 'link' = 'file'): unknown => ({
+  name,
+  isDirectory: () => kind === 'dir',
+  isSymbolicLink: () => kind === 'link',
+})
 
 describe('completionService', () => {
   beforeEach(() => {
@@ -42,10 +50,7 @@ describe('completionService', () => {
 
   describe('listPathEntries', () => {
     it('returns files and dirs for paths under home directory', () => {
-      mockReaddirSync.mockReturnValue(['file.txt', 'subdir'])
-      mockStatSync.mockImplementation((p: any) => ({
-        isDirectory: () => String(p).includes('subdir'),
-      }))
+      mockReaddirSync.mockReturnValue([dirent('file.txt'), dirent('subdir', 'dir')])
       const result = listPathEntries(safePath)
       expect(result).toContainEqual({ name: 'file.txt', isDir: false })
       expect(result).toContainEqual({ name: 'subdir', isDir: true })
@@ -93,8 +98,7 @@ describe('completionService', () => {
       // On some systems cwd may not be under home (e.g. /opt/project)
       const cwd = process.cwd()
       const cwdSubpath = join(cwd, 'src')
-      mockReaddirSync.mockReturnValue(['index.ts'])
-      mockStatSync.mockReturnValue({ isDirectory: () => false })
+      mockReaddirSync.mockReturnValue([dirent('index.ts')])
       const result = listPathEntries(cwdSubpath)
       expect(result).toContainEqual({ name: 'index.ts', isDir: false })
     })
@@ -193,19 +197,16 @@ describe('completionService', () => {
       expect(result).toEqual([])
     })
 
-    it('marks entries as isDir true or false based on statSync', () => {
-      mockReaddirSync.mockReturnValue(['file.txt', 'subdir', 'link'])
-      mockStatSync.mockImplementation((p: any) => ({
-        isDirectory: () => String(p).endsWith('subdir'),
-      }))
+    it('marks entries as isDir true or false from the directory entry itself', () => {
+      mockReaddirSync.mockReturnValue([dirent('file.txt'), dirent('subdir', 'dir'), dirent('link')])
       const result = listPathEntries(safePath)
       expect(result).toContainEqual({ name: 'file.txt', isDir: false })
       expect(result).toContainEqual({ name: 'subdir', isDir: true })
       expect(result).toContainEqual({ name: 'link', isDir: false })
     })
 
-    it('returns isDir: false when statSync throws for a specific entry', () => {
-      mockReaddirSync.mockReturnValue(['good.txt', 'bad-entry'])
+    it('returns isDir: false when a single entry cannot be classified', () => {
+      mockReaddirSync.mockReturnValue([dirent('good.txt'), dirent('bad-entry', 'link')])
       mockStatSync.mockImplementation((p: any) => {
         if (String(p).includes('bad-entry')) throw new Error('EACCES')
         return { isDirectory: () => false }
@@ -213,6 +214,78 @@ describe('completionService', () => {
       const result = listPathEntries(safePath)
       expect(result).toContainEqual({ name: 'good.txt', isDir: false })
       expect(result).toContainEqual({ name: 'bad-entry', isDir: false })
+    })
+  })
+
+  // getSafeRoots used to realpathSync BOTH homedir() and process.cwd() on every single call, and
+  // isPathAllowed added a third realpathSync for the target — three synchronous resolutions on the
+  // thread that pumps every PTY, behind an IPC channel that fires per keystroke/Tab.
+  describe('safe-roots caching', () => {
+    beforeEach(() => {
+      resetSafeRootsCache()
+    })
+
+    it('resolves home and cwd ONCE, not on every call', () => {
+      mockReaddirSync.mockReturnValue([dirent('a.txt')])
+      listPathEntries(safePath)
+      vi.clearAllMocks()
+      // Everything after the first call must resolve ONLY the path the user typed: home and cwd
+      // cannot change while the process runs.
+      listPathEntries(safePath)
+      expect(mockRealpathSync).toHaveBeenCalledTimes(1)
+      expect(mockRealpathSync).toHaveBeenCalledWith(safePath)
+    })
+
+    // Caching freezes this decision for the life of the process, so it is worth pinning: a cwd
+    // outside home becomes a SECOND root. The repo lives under home on this box, so the branch is
+    // only reachable with a stand-in cwd.
+    it('adds cwd as a second root when the process runs outside the home directory', () => {
+      const outside = process.platform === 'win32' ? 'D:\\srv\\app' : '/srv/app'
+      const spy = vi.spyOn(process, 'cwd').mockReturnValue(outside)
+      try {
+        resetSafeRootsCache()
+        mockReaddirSync.mockReturnValue([dirent('deploy.sh')])
+        expect(listPathEntries(join(outside, 'bin'))).toEqual([{ name: 'deploy.sh', isDir: false }])
+      } finally {
+        spy.mockRestore()
+        resetSafeRootsCache() // never leak a fake cwd into a cache that outlives the test
+      }
+    })
+
+    it('resetSafeRootsCache forces the roots to be resolved again', () => {
+      mockReaddirSync.mockReturnValue([dirent('a.txt')])
+      listPathEntries(safePath)
+      resetSafeRootsCache()
+      vi.clearAllMocks()
+      listPathEntries(safePath)
+      expect(mockRealpathSync.mock.calls.length).toBeGreaterThan(1)
+    })
+
+    it('still blocks a path outside the roots once the roots are cached', () => {
+      mockReaddirSync.mockReturnValue([dirent('a.txt')])
+      listPathEntries(safePath) // populate the cache
+      mockRealpathSync.mockImplementation((p: any) => {
+        const s = String(p)
+        return s.includes('etc') ? '/etc/passwd' : s
+      })
+      expect(listPathEntries('/etc/passwd')).toEqual([])
+    })
+  })
+
+  describe('listPathEntries — entry kinds come from the directory read', () => {
+    it('asks readdirSync for file types instead of stat-ing every entry', () => {
+      mockReaddirSync.mockReturnValue([dirent('a.txt'), dirent('b', 'dir')])
+      const result = listPathEntries(safePath)
+      expect(mockReaddirSync).toHaveBeenCalledWith(safePath, { withFileTypes: true })
+      expect(mockStatSync).not.toHaveBeenCalled()
+      expect(result).toEqual([{ name: 'a.txt', isDir: false }, { name: 'b', isDir: true }])
+    })
+
+    it('still stats a SYMLINK — a Dirent reports "symlink", not what it points at', () => {
+      mockReaddirSync.mockReturnValue([dirent('link-to-dir', 'link')])
+      mockStatSync.mockReturnValue({ isDirectory: () => true })
+      expect(listPathEntries(safePath)).toEqual([{ name: 'link-to-dir', isDir: true }])
+      expect(mockStatSync).toHaveBeenCalledWith(join(safePath, 'link-to-dir'))
     })
   })
 })

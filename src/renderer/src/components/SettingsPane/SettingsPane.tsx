@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
+import { useShallow } from 'zustand/react/shallow'
 import { useTerminalStore } from '../../store/terminalStore'
 import { CodeGraphPanel } from '../Memory/CodeGraphPanel'
 import type { ShellInfo, ShellType } from '../../types'
@@ -47,8 +48,18 @@ function getConfigFiles(home: string): { label: string; path: string; lang: stri
 }
 
 export function SettingsPane() {
-  const { defaultShell, setDefaultShell, allowAppMouseControl, setAllowAppMouseControl } = useTerminalStore()
-  const activeCwd = useTerminalStore((s) => s.terminals?.find((t) => t.id === s.activeTerminalId)?.cwd ?? '')
+  // useShallow: a bare useTerminalStore() re-rendered this entire pane — Monaco editor and every
+  // settings tab below it — on EVERY store write, including the ~twice-a-second cwd churn from each
+  // live shell. activeCwd folds into the same selection so the pane subscribes once, to exactly the
+  // four settings it renders plus that one derived string. Actions are stable references and never
+  // trigger a render.
+  const { defaultShell, setDefaultShell, allowAppMouseControl, setAllowAppMouseControl, activeCwd } = useTerminalStore(
+    useShallow((s) => ({
+      defaultShell: s.defaultShell, setDefaultShell: s.setDefaultShell,
+      allowAppMouseControl: s.allowAppMouseControl, setAllowAppMouseControl: s.setAllowAppMouseControl,
+      activeCwd: s.terminals?.find((t) => t.id === s.activeTerminalId)?.cwd ?? '',
+    })),
+  )
   const [brainBusy, setBrainBusy] = useState(false)
   const [brainStatus, setBrainStatus] = useState('')
   const doExport = useCallback(async () => {

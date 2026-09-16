@@ -32,6 +32,21 @@ interface ChangesResult {
   untracked: ChangeEntry[]
 }
 
+/**
+ * One commit HEAD has that the upstream does not.
+ *
+ * The sidebar dot counts `ahead` as outstanding work — committed-but-unpushed work is
+ * invisible everywhere else in the UI and is exactly the state people lose work from — so
+ * without these rows a clean repo one commit ahead pulsed amber over a panel that said
+ * "Nothing changed". Anything that pulses the dot has a row here.
+ */
+interface UnpushedCommit {
+  sha: string
+  shortSha: string
+  subject: string
+  relativeDate: string
+}
+
 /** Mirrors the payload of src/main/coverageReader.ts. */
 interface FileCoverage {
   source: string
@@ -94,10 +109,12 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
   const [root, setRoot] = useState<string | null>(null)
   const [detecting, setDetecting] = useState(true)
   const [changes, setChanges] = useState<ChangesResult | null>(null)
+  const [unpushed, setUnpushed] = useState<UnpushedCommit[]>([])
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
   const [openFile, setOpenFile] = useState<{ file: string; mode: ChangeMode } | null>(null)
+  const [openCommit, setOpenCommit] = useState<{ sha: string; label: string } | null>(null)
   const [diff, setDiff] = useState('')
   const [diffLoading, setDiffLoading] = useState(false)
   const [diffError, setDiffError] = useState<string | null>(null)
@@ -125,6 +142,17 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
 
   const refresh = useCallback(async () => {
     if (!root) return
+    // Fired in the SAME tick as the file list, not on a subscription of its own: two polls
+    // would double the git spawns per repo and could show a file list and a commit list
+    // read at different moments. The commit list is additive — a branch that tracks
+    // nothing has no upstream to compare against, which is ordinary, not an error — so it
+    // empties itself on failure rather than blanking the rail.
+    const readUnpushed = window.termpolis?.gitUnpushed
+    const pending = typeof readUnpushed === 'function'
+      ? readUnpushed(root)
+        .then(res => setUnpushed(res?.success ? res.data ?? [] : []))
+        .catch(() => setUnpushed([]))
+      : Promise.resolve()
     try {
       const res = await window.termpolis.gitChanges(root)
       if (res.success && res.data) {
@@ -136,6 +164,7 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
     } catch (e: any) {
       setError(e?.message ?? 'Could not read git status')
     }
+    await pending
   }, [root])
 
   useEffect(() => {
@@ -171,6 +200,25 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
     }
   }, [root])
 
+  // The same window, for a commit instead of a file. No coverage lookup: coverage is
+  // per-file and this patch spans however many files the commit touched.
+  const openCommitDiff = useCallback(async (c: UnpushedCommit) => {
+    setOpenCommit({ sha: c.sha, label: `${c.shortSha} — ${c.subject}` })
+    setDiff('')
+    setDiffError(null)
+    setDiffLoading(true)
+    setCoverage(null)
+    try {
+      const res = await window.termpolis.gitCommitDiff(root!, c.sha)
+      if (res.success) setDiff(res.data ?? '')
+      else setDiffError(res.error ?? 'Could not load diff')
+    } catch (e: any) {
+      setDiffError(e?.message ?? 'Could not load diff')
+    } finally {
+      setDiffLoading(false)
+    }
+  }, [root])
+
   // Reverse-apply one hunk to revert it, or forward-apply the same patch to undo that
   // revert. Both the open diff and the file list now describe a worktree that has just
   // changed underneath them, so both are reloaded immediately rather than left to the
@@ -195,6 +243,48 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
     () => (changes ? changes.staged.length + changes.unstaged.length + changes.untracked.length : 0),
     [changes],
   )
+
+  // Its own section rather than rows folded into the file list: a commit is not a file,
+  // and what you do about it (push) is not what you do about a modified file. It leads the
+  // rail because it is the work that is furthest along — and because it was the work that
+  // used to be invisible here while the dot pulsed about it.
+  const unpushedSection = () => {
+    if (unpushed.length === 0) return null
+    const isCollapsed = collapsed['unpushed']
+    return (
+      <div>
+        <button
+          className="flex items-center gap-1.5 w-full px-3 py-1.5 hover:bg-[#2a2d2e] cursor-pointer text-left"
+          onClick={() => toggle('unpushed')}
+          data-testid="changes-section-unpushed"
+        >
+          <i className={`fa-solid fa-chevron-${isCollapsed ? 'right' : 'down'} text-[8px] text-[#888]`}></i>
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[#bbb]">Unpushed</span>
+          <span className="text-[10px] text-[#999] ml-auto">{unpushed.length}</span>
+        </button>
+        {!isCollapsed && (
+          <div className="pb-1">
+            {unpushed.map(c => (
+              <button
+                key={c.sha}
+                onClick={() => openCommitDiff(c)}
+                data-testid={`commit-row-${c.shortSha}`}
+                title={`${c.shortSha} — ${c.subject} (${c.relativeDate})`}
+                className="flex items-center gap-1.5 w-full px-3 py-0.5 hover:bg-[#2a2d2e] text-left cursor-pointer"
+              >
+                <span className="w-4 flex-shrink-0 text-center text-[10px] text-[#e5c07b]">
+                  <i className="fa-solid fa-arrow-up"></i>
+                </span>
+                <span className="truncate flex-1 text-[12px] min-w-0 text-[#ccc]">{c.subject}</span>
+                <span className="font-mono text-[10px] text-[#777] flex-shrink-0">{c.shortSha}</span>
+                <span className="text-[10px] text-[#777] flex-shrink-0">{c.relativeDate}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const section = (key: string, title: string, entries: ChangeEntry[], mode: ChangeMode) => {
     if (entries.length === 0) return null
@@ -299,11 +389,21 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
         {!detecting && root && error && (
           <div className="px-3 py-3 text-[#e06c75] text-[11px]" data-testid="changes-error">{error}</div>
         )}
-        {!detecting && root && !error && total === 0 && (
+        {/* `changes &&` is load-bearing: `total` is 0 while the status is still in
+            flight, so without it the panel announced a verified-clean tree in the window
+            between finding the repo and hearing back from git — asserting as fact
+            something it had not yet asked. */}
+        {!detecting && root && !error && changes && total === 0 && (
           <div className="px-3 py-3 text-[#888] italic text-[11px]" data-testid="changes-clean">
-            Nothing changed — the working tree is clean.
+            {/* "Nothing changed" was a lie whenever the branch was ahead: the tree really
+                is clean, but the dot counts unpushed commits as outstanding work, so it
+                pulsed amber over a panel denying there was anything to see. */}
+            {changes?.ahead
+              ? `Working tree clean — ${changes.ahead} commit${changes.ahead === 1 ? '' : 's'} to push`
+              : 'Nothing changed — the working tree is clean.'}
           </div>
         )}
+        {!detecting && root && !error && unpushedSection()}
         {!detecting && root && !error && changes && (
           <>
             {section('staged', 'Staged', changes.staged, 'staged')}
@@ -324,6 +424,20 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
           coverage={coverage}
           onApplyHunk={applyHunk}
           onClose={() => setOpenFile(null)}
+        />
+      )}
+
+      {openCommit && (
+        <FileDiffModal
+          file={openCommit.label}
+          diff={diff}
+          loading={diffLoading}
+          error={diffError}
+          mode="commit"
+          terminalId={terminalId}
+          coverage={null}
+          onApplyHunk={applyHunk}
+          onClose={() => setOpenCommit(null)}
         />
       )}
     </div>

@@ -19,6 +19,7 @@
 import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { MAX_WEBGL_CONTEXTS, resetWebglBudget } from '../../src/renderer/src/lib/webglBudget'
 
 // ---------------------------------------------------------------------------
 // Hoisted mock state. Callbacks are collected into ARRAYS (not a single "last"
@@ -596,6 +597,58 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
     it('does not load WebGL when the host has no WebGL2 at all (headless/jsdom)', () => {
       render(<TerminalPane {...defaultProps} />) // jsdom getContext → null
       expect(H.webglAddons).toHaveLength(0)
+    })
+  })
+
+  // =========================================================================
+  // 1b. GPU context budget
+  // =========================================================================
+  describe('WebGL context budget', () => {
+    beforeEach(() => { resetWebglBudget() })
+
+    it('takes no GPU context for a pane that is not on screen', () => {
+      const spy = stubWebgl({ renderer: 'NVIDIA GeForce RTX 4090' })
+      try {
+        render(<TerminalPane {...defaultProps} isVisible={false} />)
+        expect(H.webglAddons).toHaveLength(0)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('takes one the moment the pane is shown', () => {
+      const spy = stubWebgl({ renderer: 'NVIDIA GeForce RTX 4090' })
+      try {
+        const { rerender } = render(<TerminalPane {...defaultProps} isVisible={false} />)
+        expect(H.webglAddons).toHaveLength(0)
+
+        rerender(<TerminalPane {...defaultProps} isVisible={true} />)
+        expect(H.webglAddons).toHaveLength(1)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    // The bug this budget exists for. TabView mounts EVERY non-hidden terminal at once,
+    // and each pane used to hold its GPU context for the terminal's whole life. Chromium
+    // allows only ~16 live WebGL contexts per process and past that silently evicts the
+    // oldest — no throw, no console warning, nothing to catch. So a terminal opened early
+    // simply stopped painting once enough others existed, with no symptom but a pane gone
+    // blank for no reason.
+    it('keeps live GPU contexts under the budget however many terminals are open', () => {
+      const spy = stubWebgl({ renderer: 'NVIDIA GeForce RTX 4090' })
+      try {
+        for (let i = 0; i < MAX_WEBGL_CONTEXTS + 3; i++) {
+          const { rerender } = render(
+            <TerminalPane {...defaultProps} terminalId={`budget-${i}`} isVisible={true} />,
+          )
+          rerender(<TerminalPane {...defaultProps} terminalId={`budget-${i}`} isVisible={false} />)
+        }
+        const live = H.webglAddons.filter((a: any) => a.dispose.mock.calls.length === 0)
+        expect(live.length).toBeLessThanOrEqual(MAX_WEBGL_CONTEXTS)
+      } finally {
+        spy.mockRestore()
+      }
     })
   })
 

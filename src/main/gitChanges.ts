@@ -44,6 +44,21 @@ export interface ChangeCounts {
   conflicted: number
 }
 
+/**
+ * One commit HEAD has that the upstream does not — a row in the rail's Unpushed section.
+ *
+ * The dot has always counted these as outstanding work (see TerminalGitDot.isDirty), but
+ * until now the rail listed only working-tree files, so a clean-but-ahead repo pulsed
+ * amber and then reported itself clean. These rows are what close that gap.
+ */
+export interface UnpushedCommit {
+  sha: string
+  shortSha: string
+  subject: string
+  /** git's own `%ar` ("2 hours ago"). Relative, because this is a rail you glance at. */
+  relativeDate: string
+}
+
 interface NumStat {
   added: number
   removed: number
@@ -282,4 +297,41 @@ export function synthesizeUntrackedDiff(file: string, bytes: Buffer): string {
   const body = lines.map(l => `+${l}`).join('\n')
   const marker = endsWithNewline ? '' : '\\ No newline at end of file\n'
   return `${preamble}@@ -0,0 +1,${lines.length} @@\n${body}\n${marker}`
+}
+
+/** Field separator within one log record: 0x1f, a byte no commit subject carries. */
+const LOG_SEP = '\x1f'
+
+/**
+ * The `--format` whose output parseUnpushedZ reads. Exported so the handler that runs git
+ * and the parser that reads it cannot drift apart.
+ *
+ * The record terminator is emitted by the format itself (`%x00`) rather than by `-z`:
+ * git specifies `-z` for the --raw / --name-only streams, and relying on it for --format
+ * would be depending on a shape git never promised.
+ */
+export const UNPUSHED_FORMAT = `%H%x1f%h%x1f%s%x1f%ar%x00`
+
+/** A rail listing a thousand unpushed commits is a rail nobody scrolls. */
+export const UNPUSHED_MAX = 50
+
+/** Parse `git log --format=UNPUSHED_FORMAT @{upstream}..HEAD` into rows. */
+export function parseUnpushedZ(out: string): UnpushedCommit[] {
+  const commits: UnpushedCommit[] = []
+  for (const rec of zsplit(out)) {
+    // git writes a newline after each commit's format output, so every record after the
+    // first arrives carrying the previous one's line break. Left on, it becomes part of
+    // the next sha and `git show` refuses it.
+    const fields = rec.replace(/^\n+/, '').split(LOG_SEP)
+    // A record the buffer cut short is dropped: losing the row beats rendering the word
+    // "undefined" in the rail.
+    if (fields.length < 4) continue
+    commits.push({
+      sha: fields[0],
+      shortSha: fields[1],
+      subject: fields[2],
+      relativeDate: fields[3],
+    })
+  }
+  return commits
 }

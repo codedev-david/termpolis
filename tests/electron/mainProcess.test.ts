@@ -174,6 +174,11 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 const mockExecSync = vi.fn()
 const mockExecFileSync = vi.fn()
 const mockSpawn = vi.fn()
+// Both git helpers funnel into mockExecSync, which makes them indistinguishable at the
+// assertion layer — and "did this handler block the main thread?" is exactly the question
+// that distinction answers. So safeGit records here and safeGitAsync doesn't: a handler
+// that leaves a footprint in this array froze every PTY in the app while it ran.
+const syncGitCalls: string[][] = []
 vi.mock('child_process', () => ({
   default: { execSync: mockExecSync, execFileSync: mockExecFileSync, spawn: mockSpawn },
   execSync: mockExecSync,
@@ -190,6 +195,7 @@ vi.mock('../../src/main/gitCommand', async () => {
   return {
     ...actual,
     safeGit: (args: string[], opts: any) => {
+      syncGitCalls.push(args)
       const buf = mockExecSync('git ' + args.join(' '), {
         cwd: opts.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -2107,16 +2113,38 @@ describe('MCP handler callbacks', () => {
     expect(mockListPathEntries).toHaveBeenCalledWith('/project')
   })
 
-  it('getGitStatus returns git info', () => {
+  it('getGitStatus returns git info', async () => {
     mockExecSync
       .mockReturnValueOnce(Buffer.from('M file.ts\n'))
       .mockReturnValueOnce(Buffer.from('abc123 commit msg\n'))
       .mockReturnValueOnce(Buffer.from('main\n'))
 
-    const result = capturedMcpHandlers.getGitStatus('/repo')
+    const result = await capturedMcpHandlers.getGitStatus('/repo')
     expect(result).toHaveProperty('status')
     expect(result).toHaveProperty('recentCommits')
     expect(result).toHaveProperty('branch')
+  })
+
+  // Agents call get_git_status, and several swarm agents can call it at once. Every
+  // synchronous git spawn here is ~100ms (Windows process-creation tax) of a main thread
+  // that also pumps every PTY — so three of them in a row stalled every terminal in the
+  // app on a tool the user never invoked. The renderer-facing git handlers in this same
+  // file already ran Promise.all over safeGitAsync; this one was simply never converted.
+  it('getGitStatus asks git three times without ever blocking the main thread', async () => {
+    syncGitCalls.length = 0
+    mockExecSync
+      .mockReturnValueOnce(Buffer.from('M file.ts\n'))
+      .mockReturnValueOnce(Buffer.from('abc123 commit msg\n'))
+      .mockReturnValueOnce(Buffer.from('main\n'))
+
+    const pending = capturedMcpHandlers.getGitStatus('/repo')
+    expect(typeof pending.then).toBe('function')
+    await expect(pending).resolves.toEqual({
+      status: 'M file.ts',
+      recentCommits: 'abc123 commit msg',
+      branch: 'main',
+    })
+    expect(syncGitCalls).toEqual([])
   })
 
   it('swarmSendMessage delegates to sendMessage', () => {
@@ -2308,9 +2336,9 @@ describe('MCP handler callbacks', () => {
     expect(mockWebContents.send).toHaveBeenCalledWith('mcp:terminal-closed', 'close-notify')
   })
 
-  it('getGitStatus returns empty strings when all git commands fail', () => {
+  it('getGitStatus returns empty strings when all git commands fail', async () => {
     mockExecSync.mockImplementation(() => { throw new Error('not a git repo') })
-    const result = capturedMcpHandlers.getGitStatus('/no-git')
+    const result = await capturedMcpHandlers.getGitStatus('/no-git')
     expect(result.status).toBe('')
     expect(result.recentCommits).toBe('')
     expect(result.branch).toBe('')

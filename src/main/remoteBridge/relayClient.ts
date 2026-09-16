@@ -57,6 +57,8 @@ interface RelayCommonDeps {
   onQuota?(limit: QuotaLimit): void
   /** Injected in tests. Production dials the real relay. */
   openSocket?(url: string): SocketLike
+  /** Injected so backoff jitter is deterministic under test. */
+  random?(): number
 }
 
 /** A room where the two ends are already paired and can therefore establish a
@@ -113,13 +115,24 @@ export const KEEPALIVE_MS = 120_000
  *  user for. */
 const FATAL_LIMITS: readonly QuotaLimit[] = ['frame-size', 'frame-rate']
 
-/** Doubling backoff with a one-minute ceiling.
+/** Doubling backoff with a one-minute ceiling and jitter over the lower half.
  *
  *  The ceiling matters more than the curve: a desktop left running overnight
  *  against a relay that is down would otherwise reach delays measured in days
- *  and never notice the relay coming back. */
-export function backoffDelay(attempt: number): number {
-  return Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt)
+ *  and never notice the relay coming back.
+ *
+ *  The jitter matters because a relay deploy drops every live connection in the
+ *  same instant, and the reconnects meet a limiter of 30 per 60 s keyed by SOURCE
+ *  ADDRESS (`relay/src/index.ts`) -- which behind CGNAT or an office NAT is shared
+ *  with strangers. Undithered, every desktop on that address redials in the same
+ *  millisecond and they lock each other out of their own machines; the ceiling
+ *  sharpens it, because clients that have been down a while are all on one rung.
+ *  Same scheme as the phone's (`mobile/src/net/relaySocket.ts`), deliberately:
+ *  two ends that back off differently against one relay is a difference nobody
+ *  would think to look at when the reconnect storm is on the other end. */
+export function backoffDelay(attempt: number, random: () => number = Math.random): number {
+  const base = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** Math.min(attempt, 30))
+  return Math.round(base * (0.5 + 0.5 * random()))
 }
 
 export class RelayClient {
@@ -375,7 +388,7 @@ export class RelayClient {
 
   private retry(): void {
     if (this.stopped || this.cutForQuota) return
-    const delay = backoffDelay(this.attempt++)
+    const delay = backoffDelay(this.attempt++, this.deps.random)
     this.timer = setTimeout(() => this.dial(), delay)
   }
 

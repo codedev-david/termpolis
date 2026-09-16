@@ -8,6 +8,7 @@ vi.mock('../../../src/renderer/src/lib/pollingService', () => ({
 }))
 
 import { subscribe, unsubscribe } from '../../../src/renderer/src/lib/pollingService'
+import { resetCountsRegistry } from '../../../src/renderer/src/lib/gitCountsCache'
 import { TerminalGitDot, isDirty, summarize } from '../../../src/renderer/src/components/Sidebar/TerminalGitDot'
 
 const counts = (patch: Partial<Record<string, any>> = {}) => ({
@@ -17,6 +18,10 @@ const counts = (patch: Partial<Record<string, any>> = {}) => ({
 const gitChangeCounts = vi.fn()
 
 beforeEach(() => {
+  // The dot now reads from a per-REPO shared poller rather than its own per-terminal
+  // subscription. That registry is module state: without this reset a test rendering
+  // /repo would be handed the previous test's answer and never call the bridge at all.
+  resetCountsRegistry()
   vi.clearAllMocks()
   ;(window as any).termpolis = { gitChangeCounts }
   gitChangeCounts.mockResolvedValue({ success: true, data: counts() })
@@ -172,20 +177,45 @@ describe('TerminalGitDot — opening the rail', () => {
 })
 
 describe('TerminalGitDot — polling', () => {
-  it('subscribes under a per-terminal id so two terminals in one repo both update', () => {
-    // pollingService ids are global: a duplicate silently replaces the previous
-    // subscriber, so keying by cwd would freeze one of the two rows.
+  // This used to subscribe once per TERMINAL, so ten terminals on one repo spawned ten
+  // identical `git status` processes every five seconds. It now subscribes once per REPO.
+  // The invariant that matters to a user is unchanged and still asserted below: two rows
+  // on the same repo must BOTH keep updating — which is exactly what a naive keyed-by-cwd
+  // fix would have broken, since pollingService ids are global and a duplicate silently
+  // replaces the previous subscriber.
+  it('polls a repo once however many terminals are open on it', () => {
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
     render(<TerminalGitDot terminalId="t2" cwd="/repo" />)
     const ids = (subscribe as any).mock.calls.map((c: any[]) => c[0])
-    expect(ids).toEqual(['git-dot-t1', 'git-dot-t2'])
+    expect(ids).toEqual(['git-counts-/repo'])
     expect((subscribe as any).mock.calls[0][2]).toBe(5000)
   })
 
-  it('unsubscribes on unmount', () => {
-    const { unmount } = render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    unmount()
-    expect(unsubscribe).toHaveBeenCalledWith('git-dot-t1')
+  it('updates every terminal on the repo from that one poll', async () => {
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    render(<TerminalGitDot terminalId="t2" cwd="/repo" />)
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalledTimes(1))
+
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts({ untracked: 3 }) })
+    ;(subscribe as any).mock.calls[0][1]()
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('git-dot-t1')).toHaveAttribute('data-dirty', 'true')
+      expect(screen.queryByTestId('git-dot-t2')).toHaveAttribute('data-dirty', 'true')
+    })
+    // Still one spawn for that tick, not one per row — the whole point.
+    expect(gitChangeCounts).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps polling until the LAST terminal on the repo goes away', () => {
+    const a = render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    const b = render(<TerminalGitDot terminalId="t2" cwd="/repo" />)
+
+    a.unmount()
+    expect(unsubscribe).not.toHaveBeenCalledWith('git-counts-/repo')
+
+    b.unmount()
+    expect(unsubscribe).toHaveBeenCalledWith('git-counts-/repo')
   })
 
   it('re-reads when the polling callback fires', async () => {

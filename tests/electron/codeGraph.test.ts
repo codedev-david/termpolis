@@ -97,11 +97,11 @@ describe('codeGraph store', () => {
     expect(codeSymbols().length).toBe(3) // no query → all
   })
 
-  it('re-indexing a changed file prunes its old symbols', () => {
+  it('re-indexing a changed file prunes its old symbols', async () => {
     indexFileContent(A, aSrc)
     rebuildEdges()
     expect(codeSymbols('gamma')).toHaveLength(1)
-    reindexFile(A, 'export function alpha() { return 0 }') // gamma removed
+    await reindexFile(A, 'export function alpha() { return 0 }') // gamma removed
     expect(codeSymbols('gamma')).toHaveLength(0)
     expect(codeSymbols('alpha')).toHaveLength(1)
   })
@@ -159,18 +159,35 @@ describe('codeGraph store', () => {
     expect(stats.symbols).toBe(1) // only ok.ts indexed
   })
 
-  it('persists and reloads the graph (edges rebuilt from disk)', () => {
+  it('persists and reloads the graph (edges rebuilt from disk)', async () => {
     initCodeGraph(dir)
     indexFileContent(A, aSrc)
     indexFileContent(B, bSrc)
     rebuildEdges()
-    persistCodeGraph()
+    await persistCodeGraph()
     expect(fs.existsSync(path.join(dir, 'code-graph.json'))).toBe(true)
 
     _resetCodeGraphForTests()
     initCodeGraph(dir) // reload
     expect(codeGraphStats().symbols).toBe(3)
     expect(codeCallers('beta').map((s) => s.name)).toContain('alpha') // edges rebuilt on load
+  })
+
+  // The one synchronous tail left behind when the rest of this file was moved onto setImmediate
+  // yields (645 files: 2,777 ms of unbroken starvation -> 68 ms worst case). It runs on the full
+  // build AND on the 2-second-debounced file-watch reindex, so an edit storm meant a stall per save.
+  it('persists OFF the main thread — the write is awaited, not synchronous', async () => {
+    initCodeGraph(dir)
+    indexFileContent(A, aSrc)
+    const target = path.join(dir, 'code-graph.json')
+    try { fs.unlinkSync(target) } catch {}
+
+    const pending = persistCodeGraph()
+    // A synchronous writeFileSync would already have put the file on disk by now. That it has NOT
+    // is the fix: the thread is free to pump PTYs while the write is in flight.
+    expect(fs.existsSync(target)).toBe(false)
+    await pending
+    expect(fs.existsSync(target)).toBe(true)
   })
 })
 

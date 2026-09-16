@@ -372,6 +372,9 @@ export interface TermpolisAPI {
   gitChanges: (cwd: string) => Promise<IpcResponse<GitChangesResult>>
   gitChangeCounts: (cwd: string) => Promise<IpcResponse<GitChangeCounts | null>>
   gitChangeDiff: (cwd: string, file: string, mode: GitChangeMode) => Promise<IpcResponse<string>>
+  /** Commits `@{upstream}..HEAD` — the unpushed work the dot counts as outstanding. */
+  gitUnpushed: (cwd: string) => Promise<IpcResponse<GitUnpushedCommit[]>>
+  gitCommitDiff: (cwd: string, sha: string) => Promise<IpcResponse<string>>
   /**
    * Per-hunk test coverage for the diff view, read from whatever format the project's own
    * test run produced (lcov, Cobertura, JaCoCo, Clover, Go coverprofile). Null when the
@@ -991,6 +994,19 @@ export interface GitChangesResult {
   staged: GitChangeEntry[]
   unstaged: GitChangeEntry[]
   untracked: GitChangeEntry[]
+}
+
+/**
+ * One commit HEAD has that the upstream does not — a row in the rail's Unpushed section.
+ * These exist because the dot counts `ahead` as outstanding work, so the rail has to be
+ * able to show what that work actually is.
+ */
+export interface GitUnpushedCommit {
+  sha: string
+  shortSha: string
+  subject: string
+  /** git's own `%ar`, e.g. "2 hours ago". */
+  relativeDate: string
 }
 
 /** The per-terminal dot's payload: counts only, from one status spawn. */

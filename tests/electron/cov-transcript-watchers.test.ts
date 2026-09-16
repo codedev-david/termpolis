@@ -36,6 +36,7 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>()
+  const nodePath = await import('path')
   const call = (fn: unknown, args: unknown[]): unknown => (fn as (...a: unknown[]) => unknown)(...args)
   const patched = {
     ...actual,
@@ -46,9 +47,19 @@ vi.mock('fs', async (importOriginal) => {
       return call(actual.openSync, args)
     },
     readdirSync: (...args: unknown[]): unknown => {
-      const override = hooks.readdir?.(String(args[0]))
-      if (override !== undefined) return override
-      return call(actual.readdirSync, args)
+      const dir = String(args[0])
+      const override = hooks.readdir?.(dir)
+      if (override === undefined) return call(actual.readdirSync, args)
+      if (!(args[1] as { withFileTypes?: boolean } | undefined)?.withFileTypes) return override
+      // The real readdirSync reports each entry's type when asked; the hook only supplies
+      // names, so the type comes from whatever the test actually created on disk. A name
+      // with nothing behind it — a transcript that vanished between the listing and the
+      // read — reports as a file, which is precisely the arm that then fails at statSync.
+      return override.map((name) => {
+        let isDir = false
+        try { isDir = actual.statSync(nodePath.join(dir, name)).isDirectory() } catch { /* vanished */ }
+        return { name, isFile: () => !isDir, isDirectory: () => isDir }
+      })
     },
     watch: (...args: unknown[]): unknown => {
       if (hooks.watchMode === 'throw') {

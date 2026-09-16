@@ -8,6 +8,7 @@ import {
   isUnmerged,
   buildChanges,
   countChanges,
+  parseUnpushedZ,
   resolveInsideRepo,
   synthesizeUntrackedDiff,
   UNTRACKED_MAX_BYTES,
@@ -311,5 +312,61 @@ describe('synthesizeUntrackedDiff', () => {
 
   it('produces a preamble the shared diff parser recognises as a new file', () => {
     expect(synthesizeUntrackedDiff('x.ts', Buffer.from('hi\n'))).toContain('new file mode 100644')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseUnpushedZ — the rail's Unpushed section
+//
+// Exists because the sidebar dot counts `ahead` as outstanding work while the rail
+// counted only working-tree files. A repo that was clean but one commit ahead pulsed
+// amber and then said "Nothing changed — the working tree is clean", which is the one
+// thing a mark must never do. The rule the rail keeps now: anything that makes the dot
+// pulse has a row you can click.
+//
+// The record separator is emitted BY THE FORMAT (`%x00`), not by `-z`. git specifies
+// `-z` for the --raw / --name-only streams; leaning on it for --format would be relying
+// on a shape git never promised. git still writes a newline after each commit's format
+// output, so every record after the first arrives with one attached.
+// ---------------------------------------------------------------------------
+describe('parseUnpushedZ', () => {
+  /** One commit exactly as `--format=%H%x1f%h%x1f%s%x1f%ar%x00` writes it. */
+  const commit = (sha: string, short: string, subject: string, when: string) =>
+    `${sha}\x1f${short}\x1f${subject}\x1f${when}\0`
+
+  it('reads one commit into its four fields', () => {
+    const out = commit('a'.repeat(40), 'aaaaaaa', 'fix: stop the dot lying', '2 hours ago')
+    expect(parseUnpushedZ(out)).toEqual([{
+      sha: 'a'.repeat(40),
+      shortSha: 'aaaaaaa',
+      subject: 'fix: stop the dot lying',
+      relativeDate: '2 hours ago',
+    }])
+  })
+
+  it('strips the newline git writes after each record, so the next sha is usable', () => {
+    // Without this the second sha arrives as '\nbbbb…' and `git show` rejects it, so the
+    // row would open an error instead of a diff.
+    const out = commit('a'.repeat(40), 'aaaaaaa', 'first', '1 day ago')
+      + '\n' + commit('b'.repeat(40), 'bbbbbbb', 'second', '3 minutes ago')
+    const got = parseUnpushedZ(out)
+    expect(got.map(c => c.sha)).toEqual(['a'.repeat(40), 'b'.repeat(40)])
+    expect(got[1].subject).toBe('second')
+  })
+
+  it('keeps a subject containing spaces, colons and em dashes verbatim', () => {
+    const subject = 'feat(rail): show unpushed work — the dot already counts it'
+    expect(parseUnpushedZ(commit('c'.repeat(40), 'ccccccc', subject, '5 seconds ago'))[0].subject)
+      .toBe(subject)
+  })
+
+  it('returns no commits for an empty stream, which is the already-pushed case', () => {
+    expect(parseUnpushedZ('')).toEqual([])
+  })
+
+  it('drops a record the buffer cut short rather than emitting undefined fields', () => {
+    // maxBuffer truncation is the realistic way this happens. Losing the row beats
+    // rendering the word "undefined" in the rail.
+    expect(parseUnpushedZ('deadbeef\x1fdeadbee\0')).toEqual([])
   })
 })
