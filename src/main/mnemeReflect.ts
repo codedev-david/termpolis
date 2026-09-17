@@ -80,8 +80,12 @@ export interface DistillOptions {
 // ordinary changelog prose, not a failure.
 const ERROR_RE =
   /\b(error(?:s|ing)?|exception|fail(?:s|ed|ing|ure|ures)?|traceback|stack ?trace|cannot|can['’]t|denied|not found|undefined|null is not|crash(?:ed|es|ing)?|throw(?:s|ing)?|hang(?:s|ing)|break(?:s|ing)(?!\s*-?\s*change)|ENOENT|E[A-Z]{3,})\b/i
+// Same participle gap as ERROR_RE, on the other side of the pair — plus the ordinary repair verbs
+// that were never here at all. Deliberately NOT widened to bare `added`/`changed`/`updated`: the
+// pairing below is high-precision by design, and a wrong pair writes a recipe that will later be
+// recommended for a problem it does not solve. "Added a note to the changelog" is not a fix.
 const FIX_RE =
-  /\b(fix(?:ed|es)?|resolv(?:ed|es)|solv(?:ed|es)|workaround|the fix (?:is|was)|now works|works now|passes now)\b/i
+  /\b(fix(?:ed|es|ing)?|resolv(?:ed|es|ing)|solv(?:ed|es|ing)|patch(?:ed|es|ing)|correct(?:ed|ing)|switch(?:ed|ing) to|workaround|worked around|the fix (?:is|was)|now works|works now|passes now)\b/i
 const DECISION_RE =
   /\b(decid(?:ed|e)|chose|choosing|going with|we['’]ll use|let['’]s use|opt(?:ed|ing) for|the plan is|the approach is|will use instead)\b/i
 const GOTCHA_RE =

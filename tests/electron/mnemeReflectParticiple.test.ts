@@ -79,3 +79,44 @@ describe('distillEpisode — a problem reported in the present tense is still a 
     expect(procedural(lessons)).toHaveLength(0)
   })
 })
+
+// The same gap on the OTHER side of the pair. FIX_RE knew `fixed`/`fixes` but not `fixing`,
+// `resolved` but not `resolving`, and none of `patched`, `corrected` or `switched to` — all
+// ordinary ways to say "I repaired it". A problem with no matching fix sentence yields no lesson
+// either, so the episode is lost just as completely.
+//
+// Deliberately NOT widened to bare `added` / `changed` / `updated`: the selection here is
+// high-precision by design, and a wrong pairing writes a recipe that will later be recommended
+// for a problem it does not solve. "Added a note to the changelog" is not a fix.
+
+function episodeFixedBy(fix: string): Episode {
+  return {
+    id: 'f1',
+    turns: [
+      { role: 'user', text: 'the app keeps crashing when two terminals close at the same moment' },
+      { role: 'assistant', text: fix },
+    ],
+    outcome: { kind: 'test', success: true },
+  } as Episode
+}
+
+describe('distillEpisode — a fix described in the ordinary way is still a fix', () => {
+  const repairs = [
+    'Fixing it by serializing terminal disposal behind a mutex so two panes never race.',
+    'Patched the pty dispose path so the second close is ignored.',
+    'Resolving it by serializing terminal disposal behind a mutex.',
+    'Corrected the disposal ordering so two panes cannot dispose the same pty.',
+    'Switched to a mutex around terminal disposal so the two closes serialize.',
+  ]
+
+  for (const fix of repairs) {
+    it(`learns from "${fix.split(' ')[0]}"`, async () => {
+      expect(procedural(await distillEpisode(episodeFixedBy(fix))).length).toBeGreaterThan(0)
+    })
+  }
+
+  it('still refuses bare "added", which is not a repair', async () => {
+    const lessons = await distillEpisode(episodeFixedBy('Added a note about it to the changelog under Unreleased.'))
+    expect(procedural(lessons)).toHaveLength(0)
+  })
+})
