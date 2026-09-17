@@ -72,8 +72,14 @@ export interface DistillOptions {
 
 // --- classification vocabulary -------------------------------------------------
 
+// Problems get reported while they are still happening — "it keeps crashing", "the build is
+// failing", "it's throwing a TypeError" — so every verb here carries its present participle. The
+// forms were missing until v1.47 and the cost was not one skipped sentence: with the user's turn
+// invisible, the only error-ish sentence left was the assistant's own fix, which cannot pair with
+// itself, so the whole episode taught nothing. `breaking` is guarded because "breaking change" is
+// ordinary changelog prose, not a failure.
 const ERROR_RE =
-  /\b(error|exception|failed|failure|traceback|stack ?trace|cannot|can['’]t|denied|not found|undefined|null is not|crash(?:ed|es)?|throws?|ENOENT|E[A-Z]{3,})\b/i
+  /\b(error(?:s|ing)?|exception|fail(?:s|ed|ing|ure|ures)?|traceback|stack ?trace|cannot|can['’]t|denied|not found|undefined|null is not|crash(?:ed|es|ing)?|throw(?:s|ing)?|hang(?:s|ing)|break(?:s|ing)(?!\s*-?\s*change)|ENOENT|E[A-Z]{3,})\b/i
 const FIX_RE =
   /\b(fix(?:ed|es)?|resolv(?:ed|es)|solv(?:ed|es)|workaround|the fix (?:is|was)|now works|works now|passes now)\b/i
 const DECISION_RE =
