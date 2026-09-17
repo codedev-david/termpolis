@@ -7,6 +7,11 @@
 // fakes and the store wiring stays thin. Best-effort: a single forget failure
 // never aborts the pass. Summaries (hierarchical) are intentionally left to an
 // on-demand/generative pass; the scheduled run is conservative by design.
+//
+// The scheduled pass is NOT decay-only. Through v1.46 its caller passed `simOf: () => 0`,
+// so planMerges (which needs > 0.92) never grouped anything and near-duplicate merging was
+// dead code in every shipped build. It now receives the real cosine comparator, and what it
+// drops is ARCHIVED rather than deleted — recoverable, never a tombstone.
 
 import { planForget, planMerges, planSummaries, type ConsolEntry } from './mnemeConsolidate'
 

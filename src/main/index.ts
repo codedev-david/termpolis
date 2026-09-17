@@ -3539,11 +3539,30 @@ const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(aw
           // v1.23 C6: ARCHIVE cold chatter (recoverable) instead of memoryDelete (permanent
           // tombstone) — the "rock solid: never silently lose memory" fix. Archived entries leave
           // the hot window but stay recoverable via searchArchive / the deep-search IPC.
+          //
+          // The SAME limit must go to consolidationCandidates and consolidationSimOf, or the
+          // comparator will not know the entries it is asked about (an unknown id scores 0 —
+          // exactly what the in-process closure does for a vector-less entry). Fetched together
+          // so no other main-process task can slip a write between the two calls and desync the
+          // candidate list from the matrix. The pair is hoisted here because BOTH the merge below
+          // and the summarization further down consolidate over it.
+          const [sumCands, simOf] = await Promise.all([consolidationCandidates(200), consolidationSimOf(200)])
+
           const decayCands = await consolidationCandidates(500)
           const toArchive: string[] = []
           runConsolidation({
             candidates: () => decayCands,          // resolved data, not a Promise
-            simOf: () => 0,                        // unchanged: the scheduled pass is decay-only
+            // Through v1.46 this was hardcoded `() => 0`. planMerges needs > 0.92 to group
+            // anything, so near-duplicate merging was dead code in every build — and the comment
+            // that called merge "on-demand" pointed at a path that did not exist. A store fed the
+            // same lesson by four agents kept all four forever, and a recall returned that one
+            // fact four times instead of four different facts.
+            //
+            // The comparator only knows the 200-entry summarization window, which is a subset of
+            // this 500-entry decay window. That is deliberate and safe: a pair involving an entry
+            // outside it scores 0 and is simply never merged. Partial merging, never a false one —
+            // and no second O(n²·384) cosine matrix on the idle tick to get it.
+            simOf,
             forget: (id) => { toArchive.push(id) }, // COLLECT the decision — do not act in the planner
             now: cnow,
           })
@@ -3555,11 +3574,6 @@ const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(aw
           // higher-level `summary` node linking them (additive; a no-op when the
           // embedder is unavailable, since it needs real vectors).
           //
-          // The SAME limit must go to both, or the comparator will not know entries it is asked
-          // about (an unknown id scores 0 — exactly what the in-process closure does for a
-          // vector-less entry). Fetched together so no other main-process task can slip a write
-          // between the two calls and desync the candidate list from the matrix.
-          const [sumCands, simOf] = await Promise.all([consolidationCandidates(200), consolidationSimOf(200)])
           const sumEdges = collectEdges('consolidate')
           await runSummarization({
             candidates: () => sumCands,

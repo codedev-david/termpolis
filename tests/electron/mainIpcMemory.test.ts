@@ -1754,7 +1754,11 @@ describe('memory indexer passes', () => {
     mneme.runConsolidation.mockImplementationOnce((deps: any) => {
       expect(Array.isArray(deps.candidates())).toBe(true) // NOT a Promise
       expect(deps.candidates()).toEqual([{ id: 'c1' }])
-      expect(deps.simOf()).toBe(0) // decay-only on the scheduled pass; merge is on-demand
+      // v1.47: the scheduled pass MERGES as well as decays. `simOf` used to be hardcoded
+      // `() => 0` against planMerges' 0.92 threshold, so near-duplicate merging could never
+      // fire anywhere — the comment promised an "on-demand" merge path that did not exist.
+      expect(typeof deps.simOf).toBe('function')
+      expect(deps.simOf({ id: 'c1' }, { id: 'c1' })).toBe(0.9) // the REAL comparator, not a stub
       deps.forget('c1')
       return { mergedDuplicates: 0, decayedCold: 1 }
     })
@@ -1778,6 +1782,28 @@ describe('memory indexer passes', () => {
     expect(mem.consolidationSimOf).toHaveBeenCalledWith(200)
     expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' })
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'summarizes', createdBy: 'consolidate' })
+  })
+
+  // Near-duplicate merging was dead code in production: every scheduled pass handed the planner
+  // `simOf: () => 0`, and planMerges needs > 0.92 to group anything. A store that ingests the same
+  // lesson from four agents kept all four forever, and the fifth recall returned the same fact four
+  // times instead of four different facts.
+  it('the scheduled pass merges near-duplicates, archiving the copies it drops', async () => {
+    let seen: any
+    mneme.runConsolidation.mockImplementationOnce((deps: any) => {
+      seen = deps
+      // A merge decision must reach the store the same way a decay decision does.
+      deps.forget('dup')
+      return { mergedDuplicates: 1, decayedCold: 0 }
+    })
+    await indexerOpts().run()
+
+    // The planner must receive a comparator that can actually clear planMerges' 0.92 bar.
+    expect(typeof seen.simOf).toBe('function')
+    expect(seen.simOf({ id: 'c1' }, { id: 'c1' })).toBe(0.9)
+    expect(mem.consolidationSimOf).toHaveBeenCalledWith(200)
+    expect(mem.memoryArchive).toHaveBeenCalledWith('dup')
+    expect(mem.memoryDelete).not.toHaveBeenCalled()
   })
 
   it('the weave draws bounded cross-repo analogies and backfills code anchors', async () => {
