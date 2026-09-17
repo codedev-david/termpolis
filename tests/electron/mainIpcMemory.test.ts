@@ -1649,10 +1649,18 @@ describe('MCP memory_feedback', () => {
 })
 
 describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
-  it('selfcheck merges the domain assessment with the overall summary', () => {
-    expect(mcp.memorySelfcheck({ domain: 'termpolis' })).toEqual({
-      domain: 'termpolis', confidence: 0.4, summary: 'weak at flaky tests',
-    })
+  it('selfcheck answers about the domain ASKED about, not the fleet-wide digest', () => {
+    // The summary used to be competenceSummary(3) — the global warnings list — so asking about
+    // `termpolis` could come back "⚠ low competence in mesh". A reader who is answered about
+    // something they did not ask learns to skip the answer.
+    mneme.competenceRecords.mockReturnValueOnce([
+      { domain: 'termpolis', attempts: 30, successes: 28, lastTs: 1, confidence: 0 },
+      { domain: 'mesh', attempts: 3, successes: 3, lastTs: 1, confidence: 0 },
+    ])
+    const out = mcp.memorySelfcheck({ domain: 'termpolis' }) as { domain: string; summary: string }
+    expect(out.domain).toBe('termpolis')
+    expect(out.summary).toContain('termpolis')
+    expect(out.summary).not.toContain('mesh')
     expect(mneme.assessCompetence).toHaveBeenCalledWith('termpolis')
   })
 

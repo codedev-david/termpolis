@@ -4,6 +4,7 @@ import {
   updateCompetence,
   assessDomain,
   summarizeCompetence,
+  describeCompetence,
   type CompetenceRecord,
 } from '../../src/main/mnemeMeta'
 
@@ -137,17 +138,22 @@ describe('mnemeMeta — metacognition / self-competence', () => {
       })
     })
 
-    it('is CONFIDENT with a high bound and enough attempts', () => {
-      expect(assessDomain([rec('ts', 0.8, 5)], 'ts')).toEqual({
+    it('is CONFIDENT once a real track record backs the rate', () => {
+      // 20/25: the pessimistic edge of the interval is 0.609 — still comfortably above half.
+      expect(assessDomain([rec('ts', 0.8, 25)], 'ts')).toEqual({
         known: true,
         confidence: 0.8,
-        attempts: 5,
+        attempts: 25,
         verdict: 'confident',
       })
     })
 
-    it('is CONFIDENT exactly at the boundary (confidence 0.7, attempts 3 — both inclusive)', () => {
-      expect(assessDomain([rec('ts', 0.7, 3)], 'ts').verdict).toBe('confident')
+    it('does NOT call a short promising streak a track record', () => {
+      // 4/5 and 2/3 look good and prove nothing: the interval still reaches well below half, so
+      // the honest answer is "not yet known", not "confident". Before v1.47 both read CONFIDENT
+      // off five and three attempts respectively.
+      expect(assessDomain([rec('ts', 0.8, 5)], 'ts').verdict).toBe('unproven')
+      expect(assessDomain([rec('ts', 0.7, 3)], 'ts').verdict).toBe('unproven')
     })
 
     it('is CAUTION with enough attempts but a low bound (<0.5)', () => {
@@ -295,4 +301,105 @@ describe('mnemeMeta — metacognition / self-competence', () => {
       expect(summarizeCompetence([r!])).toBe('⚠ low competence in rust (0/5 succeeded)')
     })
   })
+
+// ── Calibration ────────────────────────────────────────────────────────────────────────────
+// The Wilson LOWER bound is the right tool for ranking under uncertainty and the wrong number to
+// show a user as "confidence". Through v1.46 the verdict thresholded that single edge, so:
+//
+//   * a spotless 3/3 scored 0.438 and was reported as "⚠ low competence in <x> (3/3 succeeded)" —
+//     a flawless record rendered as a weakness, which is the one thing a self-assessment must
+//     never do, because the agent then distrusts the area it is actually good at;
+//   * 4/5 and 7/10 also read "caution"; you needed TEN flawless runs to clear "confident".
+//
+// A wide interval means WE DO NOT KNOW YET — that is `unproven`. `caution` has to mean "the
+// evidence says this goes badly", which is a statement about the UPPER bound, not the lower one.
+describe('calibration — thin evidence reads unproven, never incompetent', () => {
+  it('never calls a spotless record low competence', () => {
+    const rec = { domain: 'mesh', attempts: 3, successes: 3, lastTs: 1, confidence: confidenceScore(3, 3) }
+    expect(assessDomain([rec], 'mesh').verdict).not.toBe('caution')
+    expect(summarizeCompetence([rec])).toBe('')
+  })
+
+  it('reads a thin perfect record as unproven — not yet proven, not bad', () => {
+    const rec = { domain: 'mesh', attempts: 3, successes: 3, lastTs: 1, confidence: confidenceScore(3, 3) }
+    expect(assessDomain([rec], 'mesh').verdict).toBe('unproven')
+  })
+
+  it('reports the observed success RATE as confidence, not the interval edge', () => {
+    // "How often has this worked?" is what a reader takes `confidence` to mean.
+    const rec = { domain: 'mesh', attempts: 4, successes: 3, lastTs: 1, confidence: confidenceScore(3, 4) }
+    expect(assessDomain([rec], 'mesh').confidence).toBeCloseTo(0.75, 5)
+  })
+
+  it('still says CAUTION when the evidence genuinely says this goes badly', () => {
+    const rec = { domain: 'flaky', attempts: 12, successes: 2, lastTs: 1, confidence: confidenceScore(2, 12) }
+    const a = assessDomain([rec], 'flaky')
+    expect(a.verdict).toBe('caution')
+    expect(summarizeCompetence([rec])).toContain('flaky')
+  })
+
+  it('does not call a long mediocre record unproven — enough evidence settles it', () => {
+    const rec = { domain: 'mid', attempts: 40, successes: 28, lastTs: 1, confidence: confidenceScore(28, 40) }
+    // 70% over 40 attempts is a real, known track record — it is neither a warning nor a mystery.
+    expect(assessDomain([rec], 'mid').verdict).toBe('confident')
+  })
+
+  it('keeps a no-evidence domain at unproven with zero confidence', () => {
+    expect(assessDomain([], 'never-seen')).toEqual({ known: false, confidence: 0, attempts: 0, verdict: 'unproven' })
+  })
+
+  it('surfaces only genuinely weak domains in the digest, worst first', () => {
+    const recs = [
+      { domain: 'good', attempts: 30, successes: 29, lastTs: 1, confidence: confidenceScore(29, 30) },
+      { domain: 'bad', attempts: 10, successes: 1, lastTs: 1, confidence: confidenceScore(1, 10) },
+      { domain: 'meh', attempts: 10, successes: 4, lastTs: 1, confidence: confidenceScore(4, 10) },
+    ]
+    const out = summarizeCompetence(recs)
+    expect(out).not.toContain('good')
+    expect(out.indexOf('bad')).toBeLessThan(out.indexOf('meh'))
+  })
+})
+
+// memory_selfcheck asks "how reliable have you been at X?" and through v1.46 answered with the
+// fleet-wide warnings digest — so asking about `termpolis` could come back "⚠ low competence in
+// mesh (3/3 succeeded)": a warning about a DIFFERENT domain, and a false one. An answer about
+// something you did not ask about trains the reader to skip the answer.
+describe('describeCompetence — the summary answers about the domain you ASKED about', () => {
+  const recs = [
+    { domain: 'mesh', attempts: 3, successes: 3, lastTs: 1, confidence: 0 },
+    { domain: 'flaky', attempts: 12, successes: 2, lastTs: 1, confidence: 0 },
+    { domain: 'termpolis', attempts: 30, successes: 28, lastTs: 1, confidence: 0 },
+  ]
+
+  it('never mentions a domain other than the one asked about', () => {
+    expect(describeCompetence(recs, 'termpolis')).not.toContain('mesh')
+    expect(describeCompetence(recs, 'termpolis')).not.toContain('flaky')
+    expect(describeCompetence(recs, 'termpolis')).toContain('termpolis')
+  })
+
+  it('says a proven domain is proven, with the evidence behind it', () => {
+    const out = describeCompetence(recs, 'termpolis')
+    expect(out).toContain('28/30')
+    expect(out).not.toContain('⚠')
+  })
+
+  it('warns on a genuinely weak domain', () => {
+    const out = describeCompetence(recs, 'flaky')
+    expect(out).toContain('⚠')
+    expect(out).toContain('2/12')
+  })
+
+  it('calls thin evidence unproven rather than either praising or warning', () => {
+    const out = describeCompetence(recs, 'mesh')
+    expect(out).not.toContain('⚠')
+    expect(out).toContain('3/3')
+    expect(out.toLowerCase()).toContain('unproven')
+  })
+
+  it('says so plainly when there is no record at all', () => {
+    const out = describeCompetence(recs, 'brand-new')
+    expect(out).toContain('brand-new')
+    expect(out.toLowerCase()).toContain('no track record')
+  })
+})
 })

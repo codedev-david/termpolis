@@ -233,6 +233,7 @@ import { reflectSoloSession } from './mnemeSession'
 import { initSessionCursors, getSessionCursor, setSessionCursor, sessionCursorKey, flushSessionCursors } from './sessionCursorStore'
 import { readSessionTranscript } from './liveTranscript'
 import { initCompetence, recordOutcome, assessCompetence, competenceSummary, competenceRecords } from './mnemeCompetence'
+import { describeCompetence } from './mnemeMeta'
 import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
 import { augmentPrimer } from './mnemePrimerAugment'
@@ -3192,7 +3193,12 @@ async function semanticPoolOptions(
         } catch { /* best effort */ }
         return await memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query })
       },
-      memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),
+      // `summary` answers about the domain ASKED about. It used to be the fleet-wide warnings
+      // digest, so a question about one project could come back warning about another.
+      memorySelfcheck: (opts) => ({
+        ...assessCompetence(opts.domain),
+        summary: describeCompetence(competenceRecords(), opts.domain),
+      }),
       memoryPool: async (opts) => {
         // F13: pool over the LESSONS in the full window, not just the newest ~200 rows (which an
         // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).

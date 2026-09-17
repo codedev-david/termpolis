@@ -50,6 +50,7 @@ const CONFIDENT_AT = 0.7
 const LOW_COMPETENCE = 0.5
 const MIN_EVIDENCE = 3 // fewer attempts than this is too thin to call either way
 const DEFAULT_SUMMARY_LIMIT = 3
+const EPS = 1e-9 // 28/40 must read as 0.7, not as 0.7 minus a float hair
 
 /** Branchless clamp into [0,1]. */
 function clamp01(n: number): number {
@@ -100,16 +101,45 @@ export function updateCompetence(
  * attempts, or the middling 0.5..0.7 band — is `unproven`. An unknown domain reads
  * as unproven with zero confidence/attempts (`known:false`). Pure.
  */
+/** The observed success rate — what a reader takes "confidence" to mean. */
+function rateOf(rec: { successes: number; attempts: number }): number {
+  return rec.attempts > 0 ? rec.successes / rec.attempts : 0
+}
+
+/**
+ * Verdict from the INTERVAL, not from one edge of it.
+ *
+ * The Wilson lower bound is the right tool for ranking under uncertainty and the wrong number to
+ * threshold as competence. Through v1.46 the verdict compared that single edge to 0.7/0.5, so a
+ * spotless 3/3 scored 0.438 and reported as "⚠ low competence (3/3 succeeded)" — a flawless record
+ * rendered as a weakness. 4/5 and 7/10 read the same way, and you needed TEN consecutive wins to
+ * clear "confident". An agent that distrusts the areas it is actually good at is worse calibrated
+ * than one with no self-model at all.
+ *
+ * A wide interval means we do not know YET — that is `unproven`. So:
+ *   caution    you succeed less than half the time here, over a real sample.
+ *   confident  even the PESSIMISTIC edge of the interval clears half, and the observed rate
+ *              clears the bar — a track record, not a lucky streak.
+ *   unproven   everything else: too thin to call, or genuinely middling.
+ *
+ * `caution` is deliberately the SAME rule summarizeCompetence warns on, so the verdict for a domain
+ * and the warnings digest can never disagree about it.
+ */
 export function assessDomain(records: CompetenceRecord[], domain: string): DomainAssessment {
   const rec = records.find((r) => r.domain === domain)
   if (!rec) return { known: false, confidence: 0, attempts: 0, verdict: 'unproven' }
+  const rate = rateOf(rec)
+  const lower = confidenceScore(rec.successes, rec.attempts)
+  const enough = rec.attempts >= MIN_EVIDENCE
   const verdict: CompetenceVerdict =
-    rec.confidence >= CONFIDENT_AT && rec.attempts >= MIN_EVIDENCE
-      ? 'confident'
-      : rec.attempts >= MIN_EVIDENCE && rec.confidence < LOW_COMPETENCE
+    !enough
+      ? 'unproven'
+      : rate < LOW_COMPETENCE
         ? 'caution'
-        : 'unproven'
-  return { known: true, confidence: rec.confidence, attempts: rec.attempts, verdict }
+        : lower >= LOW_COMPETENCE && rate >= CONFIDENT_AT - EPS
+          ? 'confident'
+          : 'unproven'
+  return { known: true, confidence: rate, attempts: rec.attempts, verdict }
 }
 
 /**
@@ -126,13 +156,34 @@ export function assessDomain(records: CompetenceRecord[], domain: string): Domai
  * all-competent or all-too-thin input → '' (nothing to warn about). Pure and
  * deterministic.
  */
+/**
+ * A one-line answer about the domain that was ASKED about.
+ *
+ * memory_selfcheck's summary used to be the fleet-wide warnings digest, so asking about
+ * `termpolis` could come back "⚠ low competence in mesh (3/3 succeeded)" — a warning about a
+ * different domain, and (before the calibration fix above) a false one. An answer about something
+ * you did not ask about teaches the reader to skip the answer.
+ */
+export function describeCompetence(records: CompetenceRecord[], domain: string): string {
+  const a = assessDomain(records, domain)
+  if (!a.known) return `no track record in ${domain} yet — treat as unproven and verify`
+  const rec = records.find((r) => r.domain === domain)!
+  const ev = `${rec.successes}/${rec.attempts} succeeded`
+  if (a.verdict === 'caution') return `⚠ low competence in ${domain} (${ev})`
+  if (a.verdict === 'confident') return `proven in ${domain} (${ev})`
+  return `unproven in ${domain} (${ev}) — too little evidence to call either way`
+}
+
 export function summarizeCompetence(
   records: CompetenceRecord[],
   limit: number = DEFAULT_SUMMARY_LIMIT,
 ): string {
+  // Weak means "you succeed less than half the time here, over a real sample" — an OBSERVED rate,
+  // not an interval edge. Filtering on the stored Wilson lower bound put spotless records in the
+  // warnings list, which is the fastest way to teach an agent to ignore the warnings list.
   return records
-    .filter((r) => r.attempts >= MIN_EVIDENCE && r.confidence < LOW_COMPETENCE)
-    .sort((a, b) => a.confidence - b.confidence || b.attempts - a.attempts)
+    .filter((r) => r.attempts >= MIN_EVIDENCE && rateOf(r) < LOW_COMPETENCE)
+    .sort((a, b) => rateOf(a) - rateOf(b) || b.attempts - a.attempts)
     .slice(0, Math.max(0, limit))
     .map((r) => `⚠ low competence in ${r.domain} (${r.successes}/${r.attempts} succeeded)`)
     .join('\n')
