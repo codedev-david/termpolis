@@ -1456,8 +1456,36 @@ function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {
 // chunks (message/note) trade durability for throughput on a big ingest pass.
 const FSYNC_KINDS = new Set<MemoryEntry['kind']>(['decision', 'fact', 'result'])
 
+/**
+ * The append path's line format.
+ *
+ * The compact encoding has shipped since v1.28 and decodeEmbedding has always understood both
+ * forms, but the only writers of it were compaction — gated off on a healthy store — and export.
+ * The one-time migration meant to convert the append path
+ * (docs/superpowers/specs/2026-07-16-packed-vector-encoding-design.md) was never built, so every
+ * line ever appended carried 384 JSON decimals: ~3.8 KB where ~2 KB would do, which is roughly
+ * half of a multi-gigabyte store spent spelling out a float32 in base ten.
+ *
+ * serializeEntry cannot do this job: it reads the vector from vectorStore, and persist() runs
+ * BEFORE the entry is packed into it, while `embedding` is still on the entry itself. Writing
+ * `{...e, emb}` there would emit the vector TWICE.
+ *
+ * Total by construction — a malformed vector falls back to the old line rather than throwing.
+ * Durability outranks bytes: a weird embedding costs disk, a thrown encoder costs the memory.
+ */
+export function packEntryLine(entry: MemoryEntry): string {
+  const vec = (entry as { embedding?: unknown }).embedding
+  if (!Array.isArray(vec) || vec.length === 0) return JSON.stringify(entry)
+  try {
+    const { embedding: _drop, ...rest } = entry as MemoryEntry & { embedding?: unknown }
+    return JSON.stringify({ ...rest, emb: encodeEmbedding(vec as ArrayLike<number>) })
+  } catch {
+    return JSON.stringify(entry)
+  }
+}
+
 function persist(entry: MemoryEntry): boolean {
-  const ok = appendShardLine(JSON.stringify(entry), entry.id, { fsync: FSYNC_KINDS.has(entry.kind) })
+  const ok = appendShardLine(packEntryLine(entry), entry.id, { fsync: FSYNC_KINDS.has(entry.kind) })
   // Record that THIS device contributed this id. The compaction gate needs it to work out how
   // much of our own shard is still live -- without which it has to re-read and re-decrypt the
   // whole file just to find out, which is the 4.4-second freeze this all exists to kill.
