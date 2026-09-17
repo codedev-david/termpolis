@@ -1497,16 +1497,16 @@ describe('MCP memory tools', () => {
     vi.mocked(isEmbedderReady).mockReturnValue(true)
   })
 
-  it('memory_list forwards its filters, project scope included', () => {
-    expect(mcp.memoryList({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })).toEqual([{ id: 'l1' }])
+  it('memory_list forwards its filters, project scope included', async () => {
+    expect(await mcp.memoryList({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })).toEqual([{ id: 'l1' }])
     expect(mem.memoryList).toHaveBeenCalledWith({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })
   })
 
-  it('memory_related and memory_graph forward their queries', () => {
-    expect(mcp.memoryRelated({ id: 'm1', query: 'q', limit: 3 })).toEqual([{ id: 'r1' }])
+  it('memory_related and memory_graph forward their queries', async () => {
+    expect(await mcp.memoryRelated({ id: 'm1', query: 'q', limit: 3 })).toEqual([{ id: 'r1' }])
     expect(mem.memoryRelated).toHaveBeenCalledWith({ id: 'm1', query: 'q', limit: 3 })
 
-    expect(mcp.memoryGraph({ id: 'm1', query: 'q', relation: 'explains', depth: 2, limit: 9 })).toEqual({ nodes: [], edges: [] })
+    expect(await mcp.memoryGraph({ id: 'm1', query: 'q', relation: 'explains', depth: 2, limit: 9 })).toEqual({ nodes: [], edges: [] })
     expect(mem.memoryGraphQuery).toHaveBeenCalledWith({ id: 'm1', query: 'q', relation: 'explains', depth: 2, limit: 9 })
   })
 
@@ -1524,7 +1524,7 @@ describe('MCP memory_primer', () => {
     mneme.identitySummary.mockReturnValueOnce('')
     const out = await mcp.memoryPrimer({ query: 'what now', cwd: 'C:/repos/Termpolis', limit: 6 })
     expect(out).toEqual({ project: 'termpolis', primer: '- [claude] digest' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       query: 'what now', limit: 6, maxSnippetChars: 600, project: 'termpolis', projectPath: 'C:/repos/Termpolis',
       recent: expect.any(Function), // the newest-first freshness lane
     })
@@ -1535,7 +1535,7 @@ describe('MCP memory_primer', () => {
     mneme.curiosityPrompts.mockReturnValueOnce([])
     mneme.identitySummary.mockReturnValueOnce('')
     await mcp.memoryPrimer({ query: '   ', cwd: '/repos/termpolis' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
       query: 'recent work, decisions, conventions, and context for termpolis',
       limit: 10, // falls back to the persisted primer limit
     }))
@@ -1547,7 +1547,7 @@ describe('MCP memory_primer', () => {
     mneme.identitySummary.mockReturnValueOnce('')
     const out = await mcp.memoryPrimer({})
     expect(out.project).toBeNull()
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
       query: 'recent work, key decisions, and conventions',
       project: undefined, projectPath: undefined,
     }))
@@ -1964,4 +1964,73 @@ describe('memory:set-vector-quantize', () => {
 // watchdog that reacted to blocking. See tests/electron/noMainThreadInstruments.test.ts.
 it('never exposes the freeze-history IPC again', () => {
   expect(ipcHandlers.has('memory:get-stalls')).toBe(false)
+})
+
+// WP10: a correction binds to the MEMORY, not to the one tool the user happened to notice
+// the bad fact in. Through v1.46 the overlay was applied at exactly ONE call site —
+// `memory_search` — so retracting a wrong fact and then watching an agent quote it straight
+// back via memory_list / memory_related / memory_graph / memory_pool / memory_anticipate /
+// memory_primer was the norm. That is worse than never offering the retract button, because
+// the user believes it worked.
+describe('MCP read paths honour in-flow corrections', () => {
+  afterEach(async () => {
+    const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+  })
+
+  const retract = async (id: string) => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id, kind: 'retract', reason: 'wrong', by: 'david' })
+  }
+
+  it('memory_list drops a retracted memory', async () => {
+    await retract('bad')
+    mem.memoryList.mockReturnValueOnce([
+      { id: 'bad', content: 'the key is in .env' },
+      { id: 'good', content: 'the build runs on node 22' },
+    ])
+    expect((await mcp.memoryList({ limit: 5 })).map((r: any) => r.id)).toEqual(['good'])
+  })
+
+  it('memory_related drops a retracted memory', async () => {
+    await retract('bad')
+    mem.memoryRelated.mockResolvedValueOnce([{ id: 'bad', content: 'x', score: 1 }, { id: 'ok', content: 'y', score: 0.5 }])
+    expect((await mcp.memoryRelated({ id: 'seed' })).map((r: any) => r.id)).toEqual(['ok'])
+  })
+
+  it('memory_graph drops a retracted memory', async () => {
+    await retract('bad')
+    mem.memoryGraphQuery.mockResolvedValueOnce([{ id: 'bad', content: 'x', score: 1 }, { id: 'ok', content: 'y', score: 0.5 }])
+    expect((await mcp.memoryGraph({ id: 'seed' })).map((r: any) => r.id)).toEqual(['ok'])
+  })
+
+  it('memory_anticipate drops a retracted memory', async () => {
+    await retract('bad')
+    mem.memorySearch.mockResolvedValueOnce([
+      { id: 'bad', content: 'x', score: 1, memoryType: 'procedural' },
+      { id: 'ok', content: 'y', score: 0.9, memoryType: 'procedural' },
+    ])
+    expect((await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT' })).map((r: any) => r.id)).toEqual(['ok'])
+  })
+
+  it('memory_primer searches through the correction overlay, not around it', async () => {
+    await retract('bad')
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'bad', content: 'x', score: 1 }, { id: 'ok', content: 'y', score: 0.5 }])
+    primer.buildContextPrimer.mockResolvedValueOnce('- digest')
+    mneme.competenceSummary.mockReturnValueOnce('')
+    mneme.curiosityPrompts.mockReturnValueOnce([])
+    await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
+
+    // The primer is handed a SEARCH FUNCTION; assert the one it got is correction-aware
+    // rather than asserting which object it is.
+    const search = primer.buildContextPrimer.mock.calls.at(-1)![0] as (o: any) => Promise<any[]>
+    expect((await search({ query: 'q' })).map((r: any) => r.id)).toEqual(['ok'])
+  })
+
+  it('serves the replacement text for an amended memory on an unranked list', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'm', kind: 'amend', reason: 'moved', by: 'david', replacement: 'the key is in the keychain' })
+    mem.memoryList.mockReturnValueOnce([{ id: 'm', content: 'the key is in .env' }])
+    expect((await mcp.memoryList({ limit: 5 }))[0].content).toBe('the key is in the keychain')
+  })
 })

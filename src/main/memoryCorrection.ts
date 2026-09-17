@@ -217,3 +217,48 @@ export function correctionStats(overlay: CorrectionOverlay): CorrectionStats {
   stats.revoked = overlay.log.filter(c => c.revokedAt).length
   return stats
 }
+
+/** A stored memory as the non-ranking read paths hand it back: an id and its text, with a
+ *  score only when the caller actually ranked something. */
+export interface CorrectableEntry {
+  id: string
+  content: string
+  score?: number
+}
+
+/** Apply the overlay to ANY list of stored memories, ranked or not.
+ *
+ *  A correction binds to the memory, not to the one tool the user happened to notice the
+ *  bad fact in — so this runs on `memory_list`, `memory_related`, `memory_graph`,
+ *  `memory_pool`, `memory_anticipate` and `memory_primer` too, not just recall. Retracting
+ *  a wrong fact and then watching an agent quote it back through a different tool is worse
+ *  than never offering the retract button, because the user believes it worked.
+ *
+ *  Unlike `applyOverlayToRecall` this does NOT re-sort and does not fabricate a `score`: a
+ *  list has no ranking to demote within, and adding the key would make an unranked row look
+ *  ranked to its caller. Demotion there is carried by the `correction` marker alone. */
+export function applyOverlayToEntries<T extends CorrectableEntry>(
+  overlay: CorrectionOverlay,
+  rows: T[],
+): (T & Pick<CorrectedCandidate, 'correction'>)[] {
+  if (overlay.byId.size === 0) return rows
+  const out: (T & Pick<CorrectedCandidate, 'correction'>)[] = []
+  for (const row of rows) {
+    const correction = overlay.byId.get(row.id)
+    if (!correction) {
+      out.push(row)
+      continue
+    }
+    if (correction.kind === 'retract') continue
+
+    const meta = { kind: correction.kind, reason: correction.reason, by: correction.by }
+    if (correction.kind === 'amend') {
+      out.push({ ...row, content: correction.replacement ?? row.content, correction: meta })
+    } else if (typeof row.score === 'number') {
+      out.push({ ...row, score: row.score * DEMOTE_FACTOR, correction: meta })
+    } else {
+      out.push({ ...row, correction: meta })
+    }
+  }
+  return out
+}

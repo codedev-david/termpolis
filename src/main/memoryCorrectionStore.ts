@@ -21,7 +21,9 @@ import {
   type Correction,
   type CorrectionOverlay,
   type CorrectionInput,
+  applyOverlayToEntries,
   type RecallCandidate,
+  type CorrectableEntry,
 } from './memoryCorrection'
 
 let dir: string | null = null
@@ -85,6 +87,14 @@ export function revokeMemoryCorrection(id: string): { ok: boolean; error?: strin
  *  stops reaching agents immediately, without waiting for a re-index. */
 export function applyCorrections<T extends RecallCandidate>(candidates: T[]): ReturnType<typeof applyOverlayToRecall<T>> {
   return applyOverlayToRecall(overlay, candidates)
+}
+
+/** Same overlay, for the read paths that hand back stored memories rather than a ranking
+ *  (`memory_list`, `memory_related`, `memory_graph`, `memory_pool`, `memory_anticipate`,
+ *  `memory_primer`). A correction binds to the MEMORY, so every one of them has to honour
+ *  it — a retracted fact reaching an agent through a different tool is the bug. */
+export function applyEntryCorrections<T extends CorrectableEntry>(rows: T[]): ReturnType<typeof applyOverlayToEntries<T>> {
+  return applyOverlayToEntries(overlay, rows)
 }
 
 export function correctionForMemory(id: string): Correction | null {

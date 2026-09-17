@@ -183,7 +183,7 @@ import {
 } from './mcpGatewayRuntime'
 import { registerMcpIpc } from './mcpIpc'
 import { remember } from './mcpGateway/policy'
-import { initMemoryCorrections, correctMemory, applyCorrections } from './memoryCorrectionStore'
+import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections } from './memoryCorrectionStore'
 import { runHeadless, type ExecAgent } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
@@ -2883,6 +2883,15 @@ if (!gotTheLock) {
     // Check GitHub releases for updates, auto-download in background,
     // notify renderer when ready to install.
     initAutoUpdater(() => mainWindow, { onBeforeQuitAndInstall: () => { quittingForUpdate = true } })
+/** `memorySearch` with the in-flow correction overlay already applied.
+ *
+ *  A correction binds to the MEMORY, not to the one tool the user noticed the bad fact in,
+ *  so every path that reaches agents goes through this rather than the raw search — the
+ *  primer and `memory_anticipate` included. Through v1.46 only `memory_search` applied the
+ *  overlay, so a retracted fact still reached agents through the other five tools. */
+const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(await memorySearch(opts))
+
+
 
     // Start MCP server for AI agent integration
     const mcpHandlers: McpToolHandlers = {
@@ -3068,13 +3077,13 @@ if (!gotTheLock) {
         // the replacement text; demoted ones keep their place in the list but not their rank.
         return applyCorrections(res)
       },
-      memoryList: (opts) => memoryList({
+      memoryList: async (opts) => applyEntryCorrections(await memoryList({
         limit: opts.limit,
         agentId: opts.agentId,
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
         project: opts.project,
-      }),
+      })),
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
       // Current-directory context leads; cross-project hits follow, labeled.
@@ -3084,7 +3093,7 @@ if (!gotTheLock) {
           (project
             ? `recent work, decisions, conventions, and context for ${project}`
             : 'recent work, key decisions, and conventions')
-        const primer = await buildContextPrimer(memorySearch, {
+        const primer = await buildContextPrimer(correctedSearch, {
           query,
           limit: opts.limit ?? getPrimerLimit(),
           maxSnippetChars: 600,
@@ -3103,19 +3112,19 @@ if (!gotTheLock) {
         try { if (primerOut) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primerOut.length / 4) }) } catch { /* best effort */ }
         return { project: project || null, primer: primerOut }
       },
-      memoryRelated: (opts) => memoryRelated({
+      memoryRelated: async (opts) => applyEntryCorrections(await memoryRelated({
         id: opts.id,
         query: opts.query,
         limit: opts.limit,
-      }),
+      })),
       memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation, createdBy: 'agent' }),
-      memoryGraph: (opts) => memoryGraphQuery({
+      memoryGraph: async (opts) => applyEntryCorrections(await memoryGraphQuery({
         id: opts.id,
         query: opts.query,
         relation: opts.relation,
         depth: opts.depth,
         limit: opts.limit,
-      }),
+      })),
       memoryFeedback: async (opts) => {
         const helpful = opts.helpful !== false
         try {
@@ -3136,7 +3145,7 @@ if (!gotTheLock) {
         // F13: pool over the LESSONS in the full window, not just the newest ~200 rows (which an
         // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).
         // poolLessons takes an ARRAY — .map() on the un-awaited Promise would throw.
-        (await memoryLessons(opts.limit ?? 200))
+        applyEntryCorrections(await memoryLessons(opts.limit ?? 200))
           .map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance })),
       ),
       memoryAnticipate: async (opts) => {
@@ -3145,14 +3154,14 @@ if (!gotTheLock) {
         const limit = opts.limit ?? 5
         // F12: over-fetch, THEN filter to procedural/high-importance and cap — otherwise a lesson
         // ranked just below the naive top-`limit` is a false negative and the fleet re-derives it.
-        const hits = await memorySearch({ query: q, limit: limit * 8 })
+        const hits = await correctedSearch({ query: q, limit: limit * 8 })
         return hits.filter((h) => h.memoryType === 'procedural' || (h.importance ?? 0) >= 0.6).slice(0, limit)
       },
       memoryConflicts: async (opts) => {
         // Surface cross-agent contradictions over the SAME lesson set memory_pool uses. Read-only.
         // detectConflictsNli uses the conservative heuristic by default and the NLI model only when
         // it's been explicitly enabled + bundled (opt-in, per the learning-soundness rule).
-        const lessons = (await memoryLessons(opts.limit ?? 200)).map(toAgentLesson)
+        const lessons = applyEntryCorrections(await memoryLessons(opts.limit ?? 200)).map(toAgentLesson)
         const conflicts = await detectConflictsNli(lessons)
         return conflicts.map((c) => ({
           a: { source: c.a.source, content: c.a.content },
