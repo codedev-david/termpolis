@@ -167,6 +167,21 @@ function sharedWith(term: string, forbidden: Set<string>): boolean {
   return false
 }
 
+/** ⚠ DO NOT use this slice to justify switching graph fusion on.
+ *
+ *  Measured on 2026-09-17 with the real bge-small model, 32 linked memories and 40
+ *  distractors: baseline R@5 0.438 / MRR 0.130, and with graph fusion 0.500 / 0.159.
+ *  A 14% recall lift that means nothing, because a disjoint probe is BUILT FROM the
+ *  A→B edge that graph fusion then traverses. Fusion is holding the answer key, so the
+ *  lift is guaranteed by construction and says nothing about whether it generalises.
+ *  (PRF and taste adaptation were flat in the same run — also not conclusive at this
+ *  corpus size.)
+ *
+ *  What the slice is genuinely good for is the thing it was added for: showing that the
+ *  'cue' slice scores a perfect 1.000 and can therefore report no difference of any
+ *  kind, while a hard query leaves most of the range unused. Clearing a tier for default
+ *  ON still needs probes whose relevance was NOT asserted by the structure that tier
+ *  reads — held-out edges, or human judgements. */
 export function buildDisjointProbes(memories: BenchMemory[]): Probe[] {
   const known = new Map(memories.map(m => [m.id, m]))
   const probes: Probe[] = []
