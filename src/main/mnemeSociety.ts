@@ -91,9 +91,42 @@ function fold(w: string): string {
 
 /** Content words of a lesson, folded and stopworded. Exported so the injected scorer in the
  *  main process can reuse exactly the tokenisation the default uses. */
+/**
+ * Strip the session a lesson was learned in, keep the lesson.
+ *
+ * Cross-agent corroboration only fires when the same lesson, learned twice, LOOKS the same. A
+ * lesson written during real work carries the session with it: a commit SHA, an absolute path with
+ * someone's username in it, a run id, a timestamp, a port. None of that is the lesson, and all of
+ * it is distinct tokens — every one enlarges the union in the Jaccard denominator, so two agents
+ * who learned exactly the same thing on different machines score below the bar and get filed as
+ * two unrelated lessons.
+ *
+ * Volatile spans are REMOVED, not replaced with a shared placeholder. A placeholder would make two
+ * unrelated lessons that both happen to cite a SHA agree a little — inventing corroboration, which
+ * is worse than the problem being fixed.
+ *
+ * This runs on the comparison path only. The stored text keeps its SHA and its path, because a
+ * person reading their own memories needs them.
+ */
+export function abstractLesson(content: string): string {
+  if (typeof content !== 'string' || !content) return ''
+  return content
+    // A path: keep the leaf, drop the machine. `C:/Users/dave/repos/x/src/a.ts` is the same lesson
+    // as `/home/ci/work/x/src/a.ts`, and the directories are pure noise between them.
+    .replace(/(?:[A-Za-z]:)?(?:[\\/][\w.@ -]+){2,}/g, (m) => ' ' + (m.split(/[\\/]/).pop() || ''))
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ' ')
+    // A SHA has to contain a digit: `facade` and `deadbeef` are hex, and are also just words.
+    .replace(/(?=[0-9a-f]*\d)[0-9a-f]{7,40}/gi, ' ')
+    // Four or more digits in a row is a timestamp, a port or a byte count. Three or fewer leaves
+    // `v1.27.4` intact, which IS part of the lesson.
+    .replace(/\d{4,}/g, ' ')
+    .replace(/  +/g, ' ')
+    .trim()
+}
+
 export function lessonTokens(content: string): Set<string> {
   const out = new Set<string>()
-  for (const m of content.toLowerCase().matchAll(/[a-z0-9][a-z0-9_./-]*/g)) {
+  for (const m of abstractLesson(content).toLowerCase().matchAll(/[a-z0-9][a-z0-9_./-]*/g)) {
     const raw = m[0].replace(/[._/-]+$/, '')
     if (!raw || LESSON_STOPWORDS.has(raw)) continue
     const w = raw.length > 4 ? fold(raw) : raw
