@@ -57,6 +57,24 @@ describe('buildDisjointProbes — a query that shares no words with its answer',
     expect(probe.query).not.toContain('disposal')
   })
 
+  it('strips an inflection too, in whichever direction it runs', () => {
+    // A set lookup would wave `deadlocks` through against a target saying `deadlock`,
+    // and a stemming index would then match it straight back — which is not disjoint in
+    // any sense that matters. Both directions of the prefix are tested because only one
+    // of them is exercised by the ordinary case above.
+    const plural = buildDisjointProbes([
+      mem('a', 'repeated deadlocks whenever teardown overlaps', ['b']),
+      mem('b', 'a deadlock during teardown, reproduced under load'),
+    ])
+    expect(plural[0]?.query ?? '').not.toContain('deadlock')
+
+    const singular = buildDisjointProbes([
+      mem('a', 'repeated deadlock whenever teardown overlaps', ['b']),
+      mem('b', 'the deadlocks during teardown, reproduced under load'),
+    ])
+    expect(singular[0]?.query ?? '').not.toContain('deadlock')
+  })
+
   it('drops a pair with nothing left to ask with, rather than emitting a one-word coin flip', () => {
     // A is a near-restatement of B: after removing the shared vocabulary almost nothing
     // remains, and a single leftover term is noise, not a question.
