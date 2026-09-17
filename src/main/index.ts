@@ -234,6 +234,7 @@ import { initSessionCursors, getSessionCursor, setSessionCursor, sessionCursorKe
 import { readSessionTranscript } from './liveTranscript'
 import { initCompetence, recordOutcome, assessCompetence, competenceSummary, competenceRecords } from './mnemeCompetence'
 import { describeCompetence } from './mnemeMeta'
+import { noteRecall, claimRecalled } from './recallLedger'
 import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
 import { augmentPrimer } from './mnemePrimerAugment'
@@ -1403,11 +1404,63 @@ function gitShieldGate(cwd: string, op: 'commit' | 'push'): string | null {
 // populates from ORDINARY use (a commit that landed, a test run that passed or failed)
 // instead of only from swarm tasks and end-of-session magic phrases — which is why it
 // sat empty at attempts:0 forever. Best-effort: a competence write must never break
+/**
+ * Remember that these memories were served into this project, so an outcome minutes from now can
+ * be charged back to them. The other end of the loop is groundOutcomeInMemories.
+ *
+ * Only recalls that CARRY a project are noted. memory_anticipate and memory_list have no
+ * attribution key, and inventing one — the last cwd seen, say — would charge a failing test run to
+ * memories that were never anywhere near it. A missed attribution costs one signal; a wrong one
+ * actively teaches the ranking the wrong thing.
+ */
+function noteServed(project: string | undefined, rows: Array<{ id?: string }>): void {
+  try {
+    const slug = normalizeProjectSlug(project || '')
+    if (!slug) return
+    const ids = rows.map((r) => r.id).filter((id): id is string => typeof id === 'string' && id.length > 0)
+    if (ids.length > 0) noteRecall(slug, ids, Date.now())
+  } catch { /* best effort — never fail a recall over bookkeeping */ }
+}
+
+/**
+ * Close the loop: charge a work outcome back to the memories that informed it.
+ *
+ * Both halves of this have shipped for releases and were never connected. Outcome detection reached
+ * the competence record; memoryFeedback could demote a memory but only when an agent explicitly
+ * called memory_feedback, which in practice never happens. So the brain could learn from being TOLD
+ * it was wrong and never from being wrong.
+ *
+ * The evidence from any single outcome is weak, and the weights respect that: ±1 on the usage
+ * counter, suppression only at -3, so it takes three INDEPENDENT recall→failure pairs before a
+ * memory stops surfacing — and a later success walks it straight back. claimRecalled clears what it
+ * returns, so one recall is charged once however many outcomes follow it.
+ *
+ * Fire-and-forget: a red test run must not get slower, or fail differently, because the brain is
+ * busy.
+ */
+function groundOutcomeInMemories(project: string, success: boolean, now: number): void {
+  const ids = claimRecalled(project, now)
+  if (ids.length === 0) return
+  for (const id of ids) {
+    void Promise.resolve(memoryFeedback({ id, helpful: success })).catch(() => { /* best effort */ })
+  }
+  try {
+    auditMemory({
+      event: 'learn',
+      kind: 'feedback',
+      detail: `outcome ${success ? 'success' : 'FAILURE'} in ${project} → ${ids.length} recalled memories ${success ? 'reinforced' : 'demoted'}`,
+    })
+  } catch { /* best effort */ }
+}
+
 // the user's git or test path.
 function recordWorkOutcome(e: WorkEvent): void {
   try {
     const o = deriveOutcome(e)
-    if (o) recordOutcome(o.domain, o.success, Date.now())
+    if (!o) return
+    const now = Date.now()
+    recordOutcome(o.domain, o.success, now)
+    groundOutcomeInMemories(o.domain, o.success, now)
   } catch { /* best effort */ }
 }
 
@@ -3128,7 +3181,11 @@ async function semanticPoolOptions(
         // waiting for a re-index would mean the wrong fact gets used again in the same
         // session it was corrected in. Retracted entries are dropped; amended ones carry
         // the replacement text; demoted ones keep their place in the list but not their rank.
-        return applyCorrections(res)
+        const served = applyCorrections(res)
+        // Note what the agent actually received, not what the store returned: a retracted entry
+        // was never served, so an outcome must not be charged to it.
+        noteServed(opts.project, served)
+        return served
       },
       memoryList: async (opts) => applyEntryCorrections(await memoryList({
         limit: opts.limit,
@@ -3146,7 +3203,16 @@ async function semanticPoolOptions(
           (project
             ? `recent work, decisions, conventions, and context for ${project}`
             : 'recent work, key decisions, and conventions')
-        const primer = await buildContextPrimer(correctedSearch, {
+        // buildContextPrimer returns prose, so the ids it chose are visible only here, in the
+        // search it is handed. This is the largest single recall an agent ever gets — leaving it
+        // unattributed would mean the loop closes on hand-written queries and not on the context
+        // every session actually starts from.
+        const notingSearch: typeof correctedSearch = async (args) => {
+          const rows = await correctedSearch(args)
+          noteServed(project, rows)
+          return rows
+        }
+        const primer = await buildContextPrimer(notingSearch, {
           query,
           limit: opts.limit ?? getPrimerLimit(),
           maxSnippetChars: 600,

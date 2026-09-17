@@ -362,9 +362,14 @@ let eventFeed: Function
 
 // index.ts registers these ONCE at startup, so they are captured here rather than
 // read from mock.calls (which every test's clearAllMocks() wipes).
+let recalls: typeof import('../../src/main/recallLedger')
+
 beforeAll(async () => {
   vi.resetModules()
   await import('../../src/main/index')
+  // Same post-reset registry index.ts loaded from — a statically imported ledger would be a
+  // different module object holding a different Map.
+  recalls = await import('../../src/main/recallLedger')
   await new Promise((resolve) => setTimeout(resolve, 50))
   mcp = mockStartMcpServer.mock.calls[0]?.[0]
   indexer = mockStartIndexer.mock.calls[0]?.[0]
@@ -2149,5 +2154,40 @@ describe('MCP read paths honour in-flow corrections', () => {
     correctMemory({ id: 'm', kind: 'amend', reason: 'moved', by: 'david', replacement: 'the key is in the keychain' })
     mem.memoryList.mockReturnValueOnce([{ id: 'm', content: 'the key is in .env' }])
     expect((await mcp.memoryList({ limit: 5 }))[0].content).toBe('the key is in the keychain')
+  })
+})
+
+// =========================================================================
+// recall noting — the half that makes outcome grounding possible
+// =========================================================================
+// An outcome can only be charged back to the memories that informed it if something remembered
+// WHICH memories were served into that project. These are the two recall paths that carry a
+// project: everything else (memory_anticipate, memory_list) has no attribution key, and guessing
+// one would charge a failure to memories that had nothing to do with it.
+
+describe('recall noting — a recall is remembered long enough for the outcome to find it', () => {
+  beforeEach(() => recalls.resetRecallLedger())
+
+  it('notes a project-scoped search, so a later outcome in that project can charge it', async () => {
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }, { id: 'm2', content: 'b' }])
+    await mcp.memorySearch({ query: 'q', project: 'C:/repos/termpolis' })
+    expect(recalls.claimRecalled('termpolis', Date.now()).sort()).toEqual(['m1', 'm2'])
+  })
+
+  it('does not note a search with no project — there is nothing to attribute it to', async () => {
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }])
+    await mcp.memorySearch({ query: 'q' })
+    expect(recalls.claimRecalled('', Date.now())).toEqual([])
+    expect(recalls.claimRecalled('termpolis', Date.now())).toEqual([])
+  })
+
+  it('notes what the primer injected — the biggest single recall an agent ever gets', async () => {
+    mem.memorySearch.mockResolvedValue([{ id: 'p1', content: 'primed' }])
+    primer.buildContextPrimer.mockImplementationOnce(async (search: (a: { query: string; limit?: number }) => Promise<unknown[]>) => {
+      await search({ query: 'anything', limit: 5 })
+      return '- [claude] primed'
+    })
+    await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
+    expect(recalls.claimRecalled('termpolis', Date.now())).toEqual(['p1'])
   })
 })

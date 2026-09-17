@@ -362,6 +362,9 @@ const wrote = (p: string): string | undefined => H.files.get(H.norm(p))
 /** Toggle the Commit Shield through the real IPC handler — the same path the Settings panel uses. */
 const setShield = (value: boolean): Promise<unknown> => invoke('aiSecurity:set-commit-shield', { value })
 
+let ledger: typeof import('../../src/main/recallLedger')
+let memClient: typeof import('../../src/main/memoryClient')
+
 beforeAll(async () => {
   // Real dir for the real (require-based) startup writes — see the USER_DATA note above.
   const realFs = await vi.importActual<typeof import('fs')>('fs')
@@ -369,6 +372,11 @@ beforeAll(async () => {
 
   vi.resetModules()
   await import('../../src/main/index')
+  // These must come from the SAME post-reset registry index.ts loaded from; a static import
+  // resolved before vi.resetModules() is a different module object, and a spy taken from it
+  // would sit there uncalled forever.
+  ledger = await import('../../src/main/recallLedger')
+  memClient = await import('../../src/main/memoryClient')
   await new Promise((resolve) => setTimeout(resolve, 50))
 })
 
@@ -1412,3 +1420,73 @@ describe('git:commit-diff', () => {
     expect(r.error).toContain('bad object')
   })
 })
+
+// =========================================================================
+// outcome grounding — the brain learns from being WRONG, not only from being told
+// =========================================================================
+// Both halves of this have shipped for several releases and were never connected: a red test run
+// reached recordWorkOutcome (competence only), and memoryFeedback could demote a memory (manual
+// call only). Nothing remembered WHICH memories were recalled into the work that failed, so the
+// brain could only ever learn from an agent explicitly reporting a bad memory — which in practice
+// never happens.
+describe('outcome grounding — a work outcome reaches the memories that informed it', () => {
+  beforeEach(() => {
+    ledger.resetRecallLedger()
+    vi.mocked(memClient.memoryFeedback).mockClear()
+    vi.mocked(memClient.memoryFeedback).mockResolvedValue({ id: 'm', used: 1 })
+  })
+
+  it('demotes the memories recalled into the project when its tests go red', async () => {
+    ledger.noteRecall('trusted', ['m1', 'm2'], Date.now())
+    H.execSync.mockImplementation(() => { const e: NodeJS.ErrnoException & { status?: number } = new Error('boom'); e.status = 1; throw e })
+    H.execFileSync.mockImplementation(() => { const e: NodeJS.ErrnoException & { status?: number } = new Error('boom'); e.status = 1; throw e })
+
+    await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
+
+    expect(vi.mocked(memClient.memoryFeedback)).toHaveBeenCalledWith({ id: 'm1', helpful: false })
+    expect(vi.mocked(memClient.memoryFeedback)).toHaveBeenCalledWith({ id: 'm2', helpful: false })
+  })
+
+  it('reinforces them when the same work goes green', async () => {
+    ledger.noteRecall('trusted', ['m1'], Date.now())
+    H.execSync.mockReturnValue(Buffer.from('2 passed'))
+    H.execFileSync.mockReturnValue(Buffer.from('2 passed'))
+
+    await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
+
+    expect(vi.mocked(memClient.memoryFeedback)).toHaveBeenCalledWith({ id: 'm1', helpful: true })
+  })
+
+  it('never charges a memory recalled into a DIFFERENT project', async () => {
+    ledger.noteRecall('elsewhere', ['other'], Date.now())
+    H.execSync.mockReturnValue(Buffer.from('ok'))
+    H.execFileSync.mockReturnValue(Buffer.from('ok'))
+
+    await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
+
+    expect(vi.mocked(memClient.memoryFeedback)).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'other' }))
+  })
+
+  it('charges a recall once, so a rerun does not bank a second vote', async () => {
+    ledger.noteRecall('trusted', ['m1'], Date.now())
+    H.execSync.mockReturnValue(Buffer.from('ok'))
+    H.execFileSync.mockReturnValue(Buffer.from('ok'))
+
+    await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
+    vi.mocked(memClient.memoryFeedback).mockClear()
+    await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
+
+    expect(vi.mocked(memClient.memoryFeedback)).not.toHaveBeenCalled()
+  })
+
+  it('does not block the command on the feedback write', async () => {
+    ledger.noteRecall('trusted', ['m1'], Date.now())
+    vi.mocked(memClient.memoryFeedback).mockRejectedValueOnce(new Error('host down'))
+    H.execSync.mockReturnValue(Buffer.from('ok'))
+    H.execFileSync.mockReturnValue(Buffer.from('ok'))
+
+    const r = await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
+    expect(r.success).toBe(true)
+  })
+})
+
