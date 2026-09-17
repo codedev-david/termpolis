@@ -13,6 +13,7 @@ import {
   checkRegression,
   formatBench,
   CUE_FRACTION,
+  PROBE_SET_VERSION,
   BENCH_K,
   BENCH_LIMIT,
   REGRESSION_TOLERANCE,
@@ -150,13 +151,15 @@ describe('recallBench/buildTemporalProbes', () => {
 })
 
 describe('recallBench/buildProbes', () => {
-  it('produces all three slices from one memory sample', () => {
+  it('produces all four slices from one memory sample', () => {
     const mems: BenchMemory[] = [
       { id: 'a', content: 'compression proxy pipeline embedder retrieval baseline telemetry', ts: 0, project: 'p', links: ['b'] },
       { id: 'b', content: 'windows coverage vitest branches threshold electron sandbox', ts: DAY, project: 'p' },
     ]
     const kinds = new Set(buildProbes(mems).map(p => p.kind))
-    expect(kinds).toEqual(new Set(['link', 'cue', 'temporal']))
+    // 'a' and 'b' happen to share no vocabulary at all, so the whole of a's query
+    // survives the disjoint strip — the clean case the slice is named for.
+    expect(kinds).toEqual(new Set(['link', 'cue', 'temporal', 'disjoint']))
   })
 
   it('returns nothing for an empty brain rather than throwing', () => {
@@ -234,17 +237,17 @@ describe('recallBench/checkRegression', () => {
   })
 
   it('passes an unchanged run', () => {
-    expect(checkRegression(result(0.8, 0.9), { mrr: 0.8, recallAt5: 0.9, ts: 0 }).regressed).toBe(false)
+    expect(checkRegression(result(0.8, 0.9), { mrr: 0.8, recallAt5: 0.9, ts: 0, probeSet: PROBE_SET_VERSION }).regressed).toBe(false)
   })
 
   it('tolerates noise below the threshold', () => {
-    const v = checkRegression(result(0.8 - REGRESSION_TOLERANCE / 2, 0.9), { mrr: 0.8, recallAt5: 0.9, ts: 0 })
+    const v = checkRegression(result(0.8 - REGRESSION_TOLERANCE / 2, 0.9), { mrr: 0.8, recallAt5: 0.9, ts: 0, probeSet: PROBE_SET_VERSION })
     expect(v.regressed).toBe(false)
     expect(v.deltas.mrr).toBeLessThan(0)
   })
 
   it('fails on an MRR drop and names both numbers', () => {
-    const v = checkRegression(result(0.6, 0.9), { mrr: 0.8, recallAt5: 0.9, ts: 0 })
+    const v = checkRegression(result(0.6, 0.9), { mrr: 0.8, recallAt5: 0.9, ts: 0, probeSet: PROBE_SET_VERSION })
     expect(v.regressed).toBe(true)
     expect(v.reasons[0]).toContain('MRR fell 0.200')
     expect(v.reasons[0]).toContain('0.800 → 0.600')
@@ -252,18 +255,18 @@ describe('recallBench/checkRegression', () => {
   })
 
   it('fails on a recall@5 drop independently of MRR', () => {
-    const v = checkRegression(result(0.8, 0.5), { mrr: 0.8, recallAt5: 0.9, ts: 0 })
+    const v = checkRegression(result(0.8, 0.5), { mrr: 0.8, recallAt5: 0.9, ts: 0, probeSet: PROBE_SET_VERSION })
     expect(v.regressed).toBe(true)
     expect(v.reasons.join(' ')).toContain('recall@5 fell')
     expect(v.reasons.join(' ')).not.toContain('MRR fell')
   })
 
   it('reports both when both fall', () => {
-    expect(checkRegression(result(0.1, 0.1), { mrr: 0.8, recallAt5: 0.9, ts: 0 }).reasons).toHaveLength(2)
+    expect(checkRegression(result(0.1, 0.1), { mrr: 0.8, recallAt5: 0.9, ts: 0, probeSet: PROBE_SET_VERSION }).reasons).toHaveLength(2)
   })
 
   it('never fails an improvement', () => {
-    expect(checkRegression(result(0.95, 0.99), { mrr: 0.8, recallAt5: 0.9, ts: 0 }).regressed).toBe(false)
+    expect(checkRegression(result(0.95, 0.99), { mrr: 0.8, recallAt5: 0.9, ts: 0, probeSet: PROBE_SET_VERSION }).regressed).toBe(false)
   })
 
   it('handles a result missing the @5 cutoff', () => {
@@ -282,8 +285,15 @@ describe('recallBench/baselineFrom and formatBench', () => {
     durationMs: 42,
   }
 
-  it('records only the two gated metrics plus a timestamp', () => {
-    expect(baselineFrom(res, 99)).toEqual({ mrr: 0.812345, recallAt5: 0.75, ts: 99 })
+  it('records only the two gated metrics, a timestamp, and the ruler they were taken with', () => {
+    // The probe-set stamp is not a metric — it says which benchmark produced these two
+    // numbers, so a later run knows whether they are comparable at all.
+    expect(baselineFrom(res, 99)).toEqual({
+      mrr: 0.812345,
+      recallAt5: 0.75,
+      ts: 99,
+      probeSet: PROBE_SET_VERSION,
+    })
   })
 
   it('defaults the baseline timestamp to now', () => {

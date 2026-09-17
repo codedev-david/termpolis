@@ -22,6 +22,18 @@
 //               user never repeats the stored text, they remember a fragment.
 //   'temporal'— a later memory's terms should still reach the earlier memory it builds
 //               on, which is the case decay and pruning break first.
+//   'disjoint' — the same graph edge as 'link', with every term the target also uses
+//               STRIPPED OUT of the query. Added in v1.47 because the three slices above
+//               are all built from the target's own words: a 'cue' query is literally a
+//               subset of the memory it must find, and a linked pair shares vocabulary by
+//               construction, so a keyword index alone pinned recall@10 at 1.0 and there
+//               was no headroom left for any change to show up in. That is a broken
+//               instrument, not a good score — it reports 1.0 before and after, which is
+//               why embedding, reranking, fusion and PRF have all stayed dark: nothing
+//               could justify the cost of turning them on. With the shared words gone a
+//               lexical match has nothing to grip and the only routes left are meaning
+//               and the graph. Still nothing synthesised: the relevance signal remains
+//               the asserted edge.
 //
 // Slices are reported separately on purpose: a change that lifts 'cue' while wrecking
 // 'link' nets out flat in a single average, and that average is how a regression hides.
@@ -31,7 +43,7 @@
 
 import { evaluate, evaluateSlices, type TaggedQuery, type EvalSummary } from './recallMetrics'
 
-export type ProbeKind = 'link' | 'cue' | 'temporal'
+export type ProbeKind = 'link' | 'cue' | 'temporal' | 'disjoint'
 
 export interface BenchMemory {
   id: string
@@ -126,9 +138,61 @@ export function buildTemporalProbes(memories: BenchMemory[], windowMs = 30 * 86_
   return probes
 }
 
+/** Every word of a memory, unfiltered.
+ *
+ *  Deliberately NOT `distinctiveTerms`: that one keeps the top 12 and drops anything
+ *  under four characters, and a term the query is allowed to keep merely because the
+ *  target used it thirteenth is exactly the lexical shortcut this probe exists to shut. */
+function allTerms(content: string): Set<string> {
+  const terms = new Set<string>()
+  for (const raw of content.toLowerCase().split(/[^a-z0-9_./-]+/)) {
+    const term = raw.replace(/^[./-]+|[./-]+$/g, '')
+    if (term) terms.add(term)
+  }
+  return terms
+}
+
+/** True if the target uses this word, or an inflection of it.
+ *
+ *  Prefix containment either way catches `deadlock`/`deadlocks` and `serialize`/
+ *  `serializes`, which a set lookup would wave through — and a query term that a
+ *  stemming index would match against the answer is not disjoint from it in any sense
+ *  that matters. Both sides are already at least four characters, so the shared prefix
+ *  is never short enough to be a coincidence. */
+function sharedWith(term: string, forbidden: Set<string>): boolean {
+  if (forbidden.has(term)) return true
+  for (const f of forbidden) {
+    if (f.length >= 4 && (f.startsWith(term) || term.startsWith(f))) return true
+  }
+  return false
+}
+
+export function buildDisjointProbes(memories: BenchMemory[]): Probe[] {
+  const known = new Map(memories.map(m => [m.id, m]))
+  const probes: Probe[] = []
+  for (const memory of memories) {
+    const targets = (memory.links ?? []).filter(id => known.has(id) && id !== memory.id)
+    if (targets.length === 0) continue
+    const forbidden = new Set<string>()
+    for (const id of targets) for (const term of allTerms(known.get(id)!.content)) forbidden.add(term)
+    const terms = distinctiveTerms(memory.content, 8).filter(t => !sharedWith(t, forbidden))
+    // One surviving word is noise, not a question — and a pair that restates its
+    // neighbour has nothing left to ask with at all. Both drop out rather than
+    // contributing a coin flip to the score.
+    if (terms.length < 2) continue
+    probes.push({ query: terms.join(' '), relevant: targets, kind: 'disjoint' })
+  }
+  return probes
+}
+
 export function buildProbes(memories: BenchMemory[]): Probe[] {
   const cue = memories.map(buildCueProbe).filter((p): p is Probe => p !== null)
-  return [...buildLinkProbes(memories), ...cue, ...buildTemporalProbes(memories)]
+  return [
+    ...buildLinkProbes(memories),
+    ...cue,
+    ...buildTemporalProbes(memories),
+    ...buildDisjointProbes(memories),
+  ]
 }
 
 export type Searcher = (query: string, limit: number) => Promise<{ id: string }[]>
@@ -182,14 +246,31 @@ export async function runBench(
   }
 }
 
+/** Bump whenever the PROBE SET changes — a kind added or removed, or the way any probe
+ *  is built altered. It is not an app version and has nothing to do with the retrieval
+ *  code: it identifies the ruler, not the thing measured.
+ *
+ *  v2 (v1.47) added the 'disjoint' slice, which is hard on purpose and therefore drags
+ *  the overall average down on a system that did not change at all. Without this stamp
+ *  the gate would have read that as a regression on every machine holding a baseline
+ *  from v1, which is the confound the header of this file exists to warn about. */
+export const PROBE_SET_VERSION = 2
+
 export interface BenchBaseline {
   mrr: number
   recallAt5: number
   ts: number
+  /** Absent on any baseline written before v1.47 — treated as retired, never as 0. */
+  probeSet?: number
 }
 
 export function baselineFrom(result: BenchResult, ts = Date.now()): BenchBaseline {
-  return { mrr: result.overall.mrr, recallAt5: result.overall.recallAtK[5] ?? 0, ts }
+  return {
+    mrr: result.overall.mrr,
+    recallAt5: result.overall.recallAtK[5] ?? 0,
+    ts,
+    probeSet: PROBE_SET_VERSION,
+  }
 }
 
 /** How far a metric may fall before it is a regression. Absolute, not relative: a 2-point
@@ -211,6 +292,19 @@ export function checkRegression(result: BenchResult, baseline: BenchBaseline | n
   // No baseline means this run establishes one. Failing here would make the gate
   // impossible to adopt.
   if (!baseline) return { regressed: false, reasons: ['no baseline; recording this run'], deltas }
+
+  // The two numbers have to have been taken with the same ruler. A baseline from another
+  // probe set is retired rather than compared — reporting a regression here would be
+  // measuring the benchmark's own edit, and the gate would cry wolf on every machine at
+  // once, which is how a gate gets ignored and then removed.
+  if (baseline.probeSet !== PROBE_SET_VERSION) {
+    const was = baseline.probeSet ?? 'pre-versioned'
+    return {
+      regressed: false,
+      reasons: [`probe set changed (${was} → v${PROBE_SET_VERSION}); recording a new baseline`],
+      deltas,
+    }
+  }
 
   const reasons: string[] = []
   if (mrrDelta < -REGRESSION_TOLERANCE) reasons.push(`MRR fell ${(-mrrDelta).toFixed(3)} (${baseline.mrr.toFixed(3)} → ${result.overall.mrr.toFixed(3)})`)
