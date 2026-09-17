@@ -14,7 +14,7 @@ import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEcono
 import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
 import { mmrRerank } from './mmrRerank'
-import { initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
+import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
 import { learnedUtility } from './mnemeRetrieval'
 import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
@@ -686,6 +686,11 @@ export function initSwarmMemory(
   userDataDir = resolved
   legacyPath = path.join(resolved, 'swarm-memory.jsonl')
   initMemoryGraph(resolved)
+  // Immediately after load is the ONLY safe window: compaction rewrites from the in-memory graph
+  // and aborts if the file has changed since, so it has to run before this process appends. It
+  // no-ops unless the log is both large and grossly redundant, which is rare — and it is what
+  // stops an append-only file that reached 115 MB from growing forever.
+  compactGraphLog()
   initMemoryAudit(resolved) // WP-E: local, on-by-default memory/learning audit rooted at the data dir
   deviceId = loadOrCreateDeviceId(resolved)
   // explicit opt wins; otherwise the persisted choice; otherwise local-only

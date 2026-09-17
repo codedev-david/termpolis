@@ -209,6 +209,7 @@ export function initMemoryGraph(dir: string): void {
   adjacency.clear()
   reverseAdjacency.clear()
   edgeCount = 0
+  graphBytesAtLoad = 0
   graphPath = path.join(dir, 'memory-graph.jsonl')
   try {
     if (fs.existsSync(graphPath!)) {
@@ -216,7 +217,10 @@ export function initMemoryGraph(dir: string): void {
       // 'utf8' string, which fatals V8 uncatchably past ~512 MiB (see fileLines.ts). This runs in the
       // memory utilityProcess AND in main on the in-process fallback — the same double-crash surface as
       // the shard loader. Append-order semantics preserved: markers apply in order, sort once at the end.
-      forEachBufferLine(fs.readFileSync(graphPath!), (line) => {
+      const buf = fs.readFileSync(graphPath!)
+      // What compactGraphLog compares against to detect a concurrent append.
+      graphBytesAtLoad = buf.length
+      forEachBufferLine(buf, (line) => {
         const t = line.trim()
         if (!t) return
         try {
@@ -404,6 +408,59 @@ export function neighboursOf(id: string): Array<{ id: string; relation: string; 
   return [...out.values()]
 }
 
+/**
+ * Compaction for the graph log.
+ *
+ * memory-graph.jsonl has always been a pure append log with no compaction, rotation, size cap or
+ * dedup-on-load rewrite — the only thing that ever truncated it was memoryClear(). Every re-link of
+ * the same pair appends another line, and the load path collapses them in memory, so the live graph
+ * stays small while the file grows without limit. It reached 115 MB in normal use.
+ *
+ * That cost is on the launch path: every start streams and parses the whole log to rebuild an
+ * adjacency map the file could have described in a fraction of the lines.
+ *
+ * The in-memory graph after load IS the truth — tombstones applied, duplicates collapsed, weights
+ * resolved — so compacting is just writing it back out. Forward edges only: indexEdge rebuilds the
+ * reverse direction, and the tombstones have already been applied, so neither needs to survive.
+ */
+export const GRAPH_COMPACT_MIN_BYTES = 8 * 1024 * 1024
+/** Below this much redundancy the rewrite costs more than it saves. */
+export const GRAPH_COMPACT_MIN_RATIO = 2
+
+/** The file size this process saw when it loaded the graph — the guard against a concurrent append. */
+let graphBytesAtLoad = 0
+
+export function compactGraphLog(): boolean {
+  const target = graphPath
+  if (!target) return false
+  try {
+    const size = fs.statSync(target).size
+    // initMemoryGraph runs in the memory utilityProcess AND in main. If one of them rewrote from a
+    // snapshot the other had since appended to, the rename would silently drop those edges.
+    // Comparing what we loaded against what is there now makes that impossible, and costs one stat.
+    if (size !== graphBytesAtLoad || size < GRAPH_COMPACT_MIN_BYTES) return false
+
+    let out = ''
+    let lines = 0
+    for (const list of adjacency.values()) {
+      for (const e of list) { out += JSON.stringify(e) + '\n'; lines++ }
+    }
+    // Redundancy, not size, is the trigger: a genuinely large graph has nothing to collapse, and
+    // rewriting it would be pure risk. Compare bytes, since a line's length varies with its ids.
+    if (out.length * GRAPH_COMPACT_MIN_RATIO > size) return false
+
+    const tmp = target + '.compact.tmp'
+    fs.writeFileSync(tmp, out)
+    // Re-check immediately before the swap: the write itself is a window.
+    if (fs.statSync(target).size !== size) { try { fs.unlinkSync(tmp) } catch { /* ignore */ } return false }
+    fs.renameSync(tmp, target)
+    graphBytesAtLoad = out.length
+    return true
+  } catch {
+    return false // a locked or vanished file just means no compaction this launch
+  }
+}
+
 export function graphStats(): { edges: number; nodes: number } {
   return { edges: edgeCount, nodes: adjacency.size }
 }
@@ -546,5 +603,6 @@ export function _resetGraphForTests(): void {
   adjacency.clear()
   reverseAdjacency.clear()
   edgeCount = 0
+  graphBytesAtLoad = 0
   graphPath = null
 }
