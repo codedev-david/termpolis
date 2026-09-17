@@ -214,7 +214,23 @@ const unit = (i: number): number[] => { const v = new Array(EMBED_DIM).fill(0); 
  */
 let vecSeq = 0
 const vecFor = new Map<string, number>()
+/**
+ * `#vN~` is `#vN`'s NEIGHBOUR: cosine exactly 0.8 to it, orthogonal to everything else.
+ *
+ * Needed because 1.0 and 0.0 are no longer the only interesting distances. Consolidation merges
+ * near-duplicates at ≥ 0.92 and runs BEFORE the weave on the same idle tick, so a cosine-1.0 pair
+ * is deduped down to one memory and there is no pair left to draw an analogy between. 0.8 sits in
+ * the band the weave actually exists for: clearly related, definitely not the same memory.
+ */
+const nearUnit = (i: number): number[] => {
+  const v = unit(i)
+  v[i] = 0.8
+  v[EMBED_DIM - 1 - i] = 0.6 // ‖v‖ = 1, and v · unit(i) = 0.8. In range: a longer vector is
+  return v                   // rejected by the packed store exactly like a short one.
+}
 function fixtureVector(text: string): number[] {
+  const near = /#v(\d+)~/.exec(text)
+  if (near) return nearUnit(Number(near[1]))
   const m = /#v(\d+)/.exec(text)
   if (m) return unit(Number(m[1]))
   if (!vecFor.has(text)) vecFor.set(text, 100 + vecSeq++)
@@ -403,9 +419,10 @@ describe('consolidation through the proxy — the right memories are archived, t
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 describe('the weave through the proxy — the right edges, from a pre-fetched neighbourhood', () => {
   async function seedWeave(): Promise<{ a: string; b: string; c: string }> {
-    // Two embedding-near memories in one repo (cosine 1.0, over the 0.72 floor) and one orthogonal.
+    // Two embedding-near memories in one repo (cosine 0.8 — over the weave's 0.72 floor, under
+    // consolidation's 0.92 near-duplicate threshold) and one orthogonal.
     const a = (await memoryWrite({ agentId: 'x', kind: 'fact', content: 'the parser handles nulls #v1', project: '/repos/alpha' })).id
-    const b = (await memoryWrite({ agentId: 'x', kind: 'fact', content: 'the tokenizer skips nulls #v1', project: '/repos/alpha' })).id
+    const b = (await memoryWrite({ agentId: 'x', kind: 'fact', content: 'the tokenizer skips nulls #v1~', project: '/repos/alpha' })).id
     const c = (await memoryWrite({ agentId: 'x', kind: 'fact', content: 'dogs bark at the moon #v2', project: '/repos/alpha' })).id
     return { a, b, c }
   }
@@ -422,6 +439,23 @@ describe('the weave through the proxy — the right edges, from a pre-fetched ne
     expect(woven[0].weight).toBeGreaterThanOrEqual(0.72)
     // The orthogonal memory is in no woven edge at all.
     expect(woven.some((e) => e.from === c || e.to === c)).toBe(false)
+  })
+
+  it('a true DUPLICATE pair is merged away, never woven — consolidation runs first', async () => {
+    // The two passes share one idle tick, consolidation first. So the bands do not overlap: at
+    // ≥ 0.92 the pair is one memory by the time the weave looks, and there is nothing to link.
+    //
+    // Nothing asserted this until v1.47, and the cost of that gap was real: when near-duplicate
+    // merging went from dead code to live code, the analogy test above started failing because its
+    // fixture pair sat at cosine 1.0 — and the failure looked like a broken weave rather than a
+    // stale fixture.
+    const a = (await memoryWrite({ agentId: 'x', kind: 'fact', content: 'the parser handles nulls #v7', project: '/repos/alpha' })).id
+    const b = (await memoryWrite({ agentId: 'x', kind: 'fact', content: 'the tokenizer skips nulls #v7', project: '/repos/alpha' })).id
+    await indexerOpts.run()
+
+    expect(getAllEdges().filter((e) => e.createdBy === 'weave')).toHaveLength(0)
+    const live = (await memoryList({ limit: 50 })).map((m) => m.id)
+    expect(live.includes(a) && live.includes(b)).toBe(false) // one of them was consolidated away
   })
 
   it('fetches the whole neighbourhood in ONE call, not one per candidate', async () => {
