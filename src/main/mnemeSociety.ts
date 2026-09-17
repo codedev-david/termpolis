@@ -68,7 +68,69 @@ export function normalizeKey(content: string): string {
     .replace(TRAILING_PUNCT_RE, '')
 }
 
+/** Words too common to carry a lesson's subject. Deliberately small: over-stripping makes two
+ *  unrelated lessons look alike, which is the expensive failure here — a false merge silently
+ *  destroys one of the two lessons. */
+const LESSON_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'if', 'then', 'than', 'that', 'this', 'these', 'those',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'to', 'of', 'in', 'on', 'at', 'by', 'for',
+  'with', 'from', 'as', 'it', 'its', 'you', 'your', 'we', 'our', 'they', 'their', 'not', 'no',
+  'do', 'does', 'did', 'done', 'have', 'has', 'had', 'can', 'will', 'would', 'should', 'must',
+  'when', 'where', 'while', 'after', 'before', 'because', 'so', 'into', 'over', 'up', 'out',
+  'about', 'always', 'never', 'use', 'using', 'used', 'one', 'any', 'all', 'each', 'via',
+])
+
+/** Crude suffix folding so `upgrading`/`upgraded`/`upgrade` and `modules`/`module` are one
+ *  token. Not a real stemmer — a real one needs a dictionary, and this module is pure and
+ *  dependency-free by contract. Over-folding is bounded by the 4-char floor below. */
+function fold(w: string): string {
+  return w
+    .replace(/(?:ing|edly|ed|ly|es|s)$/, '')
+    .replace(/(.)$/, '$1')
+}
+
+/** Content words of a lesson, folded and stopworded. Exported so the injected scorer in the
+ *  main process can reuse exactly the tokenisation the default uses. */
+export function lessonTokens(content: string): Set<string> {
+  const out = new Set<string>()
+  for (const m of content.toLowerCase().matchAll(/[a-z0-9][a-z0-9_./-]*/g)) {
+    const raw = m[0].replace(/[._/-]+$/, '')
+    if (!raw || LESSON_STOPWORDS.has(raw)) continue
+    const w = raw.length > 4 ? fold(raw) : raw
+    if (w.length >= 3 && !LESSON_STOPWORDS.has(w)) out.add(w)
+  }
+  return out
+}
+
+/** Symmetric overlap of two lessons' content words (Jaccard). 0 when either side is empty —
+ *  an empty token set agrees with nothing, rather than with everything. */
+export function lessonSimilarity(a: string, b: string): number {
+  const ta = lessonTokens(a)
+  const tb = lessonTokens(b)
+  if (ta.size === 0 || tb.size === 0) return 0
+  let shared = 0
+  for (const t of ta) if (tb.has(t)) shared++
+  return shared / (ta.size + tb.size - shared)
+}
+
+/** How much two lessons must overlap to count as the same insight. Tuned high on purpose:
+ *  a FALSE merge silently destroys one of two real lessons and inflates the corroboration
+ *  the importance boost keys off, while a missed merge only leaves the store as it was
+ *  through v1.46. When in doubt, don't merge. */
+export const SAME_LESSON_THRESHOLD = 0.6
+
+export interface PoolOptions {
+  /** Injected 0..1 sameness scorer — an embedding cosine, typically. The pure lexical default
+   *  cannot see two agents describing one insight with disjoint vocabulary; a real embedder
+   *  can. Kept injected for the same reason `contradicts` is: this module stays deterministic
+   *  and store-free. */
+  similar?: (a: string, b: string) => number
+  /** Override SAME_LESSON_THRESHOLD (mainly for tuning and tests). */
+  threshold?: number
+}
+
 interface PoolAccumulator {
+  key: string
   representative: string
   sources: string[]
   seen: Set<string>
@@ -87,15 +149,34 @@ interface PoolAccumulator {
  *   - `content`       the best-worded (longest) member phrasing, kept verbatim
  * Deterministic order: corroboration descending, then importance descending.
  */
-export function poolLessons(lessons: AgentLesson[]): PooledLesson[] {
+export function poolLessons(lessons: AgentLesson[], opts?: PoolOptions): PooledLesson[] {
+  // `groups` is an INDEX, not the group list: an aliased key points at a group that is
+  // already in it under its own key. Emitting from the map's values would therefore emit
+  // that group once per alias. `order` holds each group exactly once, in arrival order.
   const groups = new Map<string, PoolAccumulator>()
+  const order: PoolAccumulator[] = []
+  const similar = opts?.similar ?? lessonSimilarity
+  const threshold = opts?.threshold ?? SAME_LESSON_THRESHOLD
 
   for (const lesson of lessons) {
     const key = normalizeKey(lesson.content)
     let group = groups.get(key)
+    // Exact key is the fast path. Failing that, fall back to the best-scoring existing group
+    // above the threshold — greedy, single pass, comparing against each group's representative
+    // so the result never depends on which member of a group happened to arrive first.
     if (!group) {
-      group = { representative: lesson.content, sources: [], seen: new Set(), maxImportance: -Infinity }
+      let best = -1
+      for (const g of groups.values()) {
+        const score = similar(lesson.content, g.representative)
+        // `>` not `>=`: on a tie the earlier group wins, which is what keeps this deterministic.
+        if (score >= threshold && score > best) { best = score; group = g }
+      }
+      if (group) groups.set(key, group) // remember the alias so a third copy short-circuits
+    }
+    if (!group) {
+      group = { key, representative: lesson.content, sources: [], seen: new Set(), maxImportance: -Infinity }
       groups.set(key, group)
+      order.push(group)
     }
     // Best-worded representative = the longest phrasing (ties keep the earlier one).
     if (lesson.content.length > group.representative.length) {
@@ -113,7 +194,7 @@ export function poolLessons(lessons: AgentLesson[]): PooledLesson[] {
   }
 
   const pooled: PooledLesson[] = []
-  for (const group of groups.values()) {
+  for (const group of order) {
     const corroboration = group.sources.length
     const boost = 1 + Math.min(MAX_CORROBORATION_BOOST, PER_SOURCE_BOOST * (corroboration - 1))
     pooled.push({

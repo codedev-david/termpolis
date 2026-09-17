@@ -286,3 +286,71 @@ describe('mnemeSociety', () => {
     })
   })
 })
+
+// Corroboration was structurally unreachable. poolLessons grouped by `normalizeKey`, an
+// EXACT string match after lowercasing and trimming trailing punctuation — and two agents
+// writing free prose never produce byte-identical sentences. On David's real store every one
+// of ~48 pooled lessons came back `corroboration: 1, sources: ["claude"]`, so the whole
+// cross-agent-agreement mechanism (the capped importance boost, the conflict surface) had
+// never once fired in production. The module is deliberately pure, so the semantic judgement
+// is injected the same way the contradiction predicate already is — with a deterministic
+// lexical default that works with no embedder at all.
+describe('poolLessons — corroboration across differently-worded lessons', () => {
+  it('pools the same lesson phrased differently by two agents', () => {
+    const out = poolLessons([
+      { source: 'claude', content: 'Rebuild the native module after upgrading node.' },
+      { source: 'codex', content: 'After upgrading node, rebuild the native module.' },
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].corroboration).toBe(2)
+    expect(out[0].sources).toEqual(['claude', 'codex'])
+  })
+
+  it('keeps genuinely different lessons apart', () => {
+    const out = poolLessons([
+      { source: 'claude', content: 'Rebuild the native module after upgrading node.' },
+      { source: 'codex', content: 'Prefer the async fs API over the sync one in the main process.' },
+    ])
+    expect(out).toHaveLength(2)
+    expect(out.every((l) => l.corroboration === 1)).toBe(true)
+  })
+
+  it('does not count one agent rewording itself as corroboration', () => {
+    const out = poolLessons([
+      { source: 'claude', content: 'Rebuild the native module after upgrading node.' },
+      { source: 'claude', content: 'After upgrading node, rebuild the native module.' },
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].corroboration).toBe(1)
+  })
+
+  it('accepts an injected similarity so an embedder can cluster better than words can', () => {
+    // Two lessons with almost no shared vocabulary that an embedder would still call the
+    // same insight. The lexical default cannot see this; the injected scorer can.
+    const lessons = [
+      { source: 'claude', content: 'Bump the toolchain before touching the addon.' },
+      { source: 'codex', content: 'Recompile bindings whenever the runtime version moves.' },
+    ]
+    expect(poolLessons(lessons)).toHaveLength(2)
+    expect(poolLessons(lessons, { similar: () => 1 })).toHaveLength(1)
+    expect(poolLessons(lessons, { similar: () => 1 })[0].corroboration).toBe(2)
+  })
+
+  it('is deterministic regardless of how the members arrive', () => {
+    const a = { source: 'claude', content: 'Rebuild the native module after upgrading node.' }
+    const b = { source: 'codex', content: 'After upgrading node, rebuild the native module.' }
+    const c = { source: 'gemini', content: 'Prefer the async fs API over the sync one in the main process.' }
+    const one = poolLessons([a, b, c])
+    const two = poolLessons([c, b, a])
+    expect(one.map((l) => l.corroboration)).toEqual(two.map((l) => l.corroboration))
+    expect(poolLessons([a, b, c])).toEqual(one)
+  })
+
+  it('boosts importance once corroboration is actually reachable', () => {
+    const [pooled] = poolLessons([
+      { source: 'claude', content: 'Rebuild the native module after upgrading node.', importance: 0.5 },
+      { source: 'codex', content: 'After upgrading node, rebuild the native module.', importance: 0.5 },
+    ])
+    expect(pooled.importance).toBeGreaterThan(0.5)
+  })
+})

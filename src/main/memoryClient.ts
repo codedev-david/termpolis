@@ -621,6 +621,14 @@ export async function consolidationSimOf(limit = 200): Promise<(a: ConsolEntry, 
   }
 }
 
+/**
+ * Pairwise similarity over ids the CALLER chose, row-major, `ids.length²` long. The consolidation
+ * variant picks its own set in the host; memory_pool already holds the lesson rows it wants
+ * grouped, so it needs this one. Bounded host-side (MAX_SIM_IDS) — a longer id list is truncated,
+ * never shipped whole.
+ */
+export const entrySimMatrix = (ids: string[]): Promise<number[]> => call('entrySimMatrix', [ids])
+
 // ── Pure helpers — deliberately NOT proxied ──────────────────────────────────────────────────────
 // These read no store state. RPC-ing them would mean a process round-trip to lowercase a string, and
 // worse, it would make them async — poisoning the tight sync loops and hash paths that call them.

@@ -135,6 +135,41 @@ export function consolidationSimMatrix(limit: number): { ids: string[]; sim: num
   return { ids: cands.map((c) => c.id), sim }
 }
 
+/** Bounds the id-set matrix the same way MAX_SIM_CANDIDATES bounds the consolidation one. The real
+ *  caller (memory_pool) asks for 200 → 40k floats; anything past this is a caller bug, and
+ *  truncating is better than shipping a payload that stalls the host. */
+export const MAX_SIM_IDS = 400
+
+/**
+ * Pairwise similarity over an ARBITRARY id set, row-major, `ids.length²` long.
+ *
+ * consolidationSimMatrix answers "how alike are the entries consolidation is looking at" — the set
+ * is chosen by the host. This answers "how alike are THESE entries", where the caller chose them.
+ * memory_pool needs the second: it has just read the lesson rows and wants to group the ones that
+ * mean the same thing, which shared words alone cannot see.
+ *
+ * An id with no vector scores 0 against everything INCLUDING itself, and keeps its row — dropping
+ * it would shift every later index and silently pool the wrong pair.
+ */
+export function entrySimMatrix(ids: string[]): number[] {
+  const use = ids.slice(0, MAX_SIM_IDS)
+  const n = use.length
+  if (n === 0) return []
+  const simOf = consolidationSimOf()
+  const sim = new Array<number>(n * n).fill(0)
+  for (let i = 0; i < n; i++) {
+    const a = { id: use[i] } as Parameters<typeof simOf>[0]
+    // Symmetric: compute the upper triangle and mirror it. The diagonal goes through simOf too,
+    // so an id with no vector reads 0 there rather than a fabricated 1.
+    for (let j = i; j < n; j++) {
+      const v = simOf(a, { id: use[j] } as Parameters<typeof simOf>[1])
+      sim[i * n + j] = v
+      sim[j * n + i] = v
+    }
+  }
+  return sim
+}
+
 // runWeave calls neighbours(id, k) INSIDE its candidate loop — 300 candidates means 300 calls. In
 // process that was 300 array lookups; over RPC it is 300 round trips per idle pass. So the whole
 // neighbourhood is fetched in ONE call and the caller hands runWeave a sync `(id) => map.get(id)`.
@@ -203,7 +238,7 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
   adoptEncryptionKeyB64,
   // composites (not 1:1 swarmMemory exports — see above). Each collapses a per-item RPC that the
   // consumer calls from INSIDE a sync loop into one round trip.
-  consolidationSimMatrix, weaveNeighboursBatch, memoryKnownHashes,
+  consolidationSimMatrix, entrySimMatrix, weaveNeighboursBatch, memoryKnownHashes,
 }
 
 // ── Fail-CLOSED keychain guard ───────────────────────────────────────────────────────────────────

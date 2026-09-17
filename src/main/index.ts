@@ -206,6 +206,7 @@ import {
   graphStats, graphRelationStats,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
+  entrySimMatrix,
   setMemoryScrubber,
   weaveCandidates, weaveNeighboursBatch, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
@@ -236,7 +237,7 @@ import { initIdentity, identitySummary } from './mnemeIdentity'
 import { findGaps, curiosityPrompts } from './mnemeCuriosity'
 import { augmentPrimer } from './mnemePrimerAugment'
 import { runConsolidation, runSummarization } from './mnemeConsolidateRun'
-import { poolLessons, toAgentLesson } from './mnemeSociety'
+import { poolLessons, toAgentLesson, lessonSimilarity, SAME_LESSON_THRESHOLD, type PoolOptions } from './mnemeSociety'
 import { detectConflictsNli } from './nliContradict'
 import { proactiveQuery, proactiveSignals } from './mnemeRetrieval'
 import { codeLocate, type LocatedSite, type LocatorSymbol, type LocatorMemory } from './codeLocate'
@@ -2895,6 +2896,53 @@ if (!gotTheLock) {
  *  overlay, so a retracted fact still reached agents through the other five tools. */
 const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(await memorySearch(opts))
 
+/**
+ * Embedding-backed grouping for memory_pool.
+ *
+ * Cross-agent corroboration only pays off if two agents SAYING the same thing pool together, and
+ * shared words cannot see that "bump the toolchain before touching the addon" and "recompile
+ * bindings when the runtime version moves" are one lesson. Embeddings can. The whole set crosses
+ * the process boundary in ONE matrix call — a per-pair RPC over 200 lessons is 40k crossings.
+ *
+ * Cosine and word-overlap are NOT the same scale: 0.6 Jaccard is a strict bar, 0.6 cosine on
+ * bge-small merges almost anything. So the injected threshold moves with the injected scorer, and a
+ * row the embedder never saw votes on WORDS at exactly the bar — it clears, but loses every tie to
+ * a genuine semantic match rather than outranking one.
+ *
+ * Returns undefined whenever the matrix is unusable, which puts poolLessons back on its own word
+ * default: plain word pooling is honest, pooling nothing is not.
+ */
+const SEMANTIC_POOL_THRESHOLD = 0.9
+async function semanticPoolOptions(
+  rows: Array<{ id?: string; content: string }>,
+): Promise<PoolOptions | undefined> {
+  const keyed = rows.filter((r): r is { id: string; content: string } => !!r.id)
+  if (keyed.length < 2) return undefined
+  const ids = keyed.map((r) => r.id)
+  let sim: number[]
+  try {
+    sim = await entrySimMatrix(ids)
+  } catch {
+    return undefined
+  }
+  const n = ids.length
+  if (!Array.isArray(sim) || sim.length < n * n) return undefined
+  const idx = new Map<string, number>()
+  keyed.forEach((r, i) => { if (!idx.has(r.content)) idx.set(r.content, i) })
+  return {
+    threshold: SEMANTIC_POOL_THRESHOLD,
+    similar: (a, b) => {
+      const i = idx.get(a)
+      const j = idx.get(b)
+      if (i !== undefined && j !== undefined) {
+        const v = sim[i * n + j] ?? 0
+        if (v > 0) return v
+      }
+      return lessonSimilarity(a, b) >= SAME_LESSON_THRESHOLD ? SEMANTIC_POOL_THRESHOLD : 0
+    },
+  }
+}
+
 
 
     // Start MCP server for AI agent integration
@@ -3145,13 +3193,14 @@ const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(aw
         return await memoryFeedback({ id: opts.id, helpful: opts.helpful, query: opts.query })
       },
       memorySelfcheck: (opts) => ({ ...assessCompetence(opts.domain), summary: competenceSummary(3) }),
-      memoryPool: async (opts) => poolLessons(
+      memoryPool: async (opts) => {
         // F13: pool over the LESSONS in the full window, not just the newest ~200 rows (which an
         // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).
         // poolLessons takes an ARRAY — .map() on the un-awaited Promise would throw.
-        applyEntryCorrections(await memoryLessons(opts.limit ?? 200))
-          .map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance })),
-      ),
+        const rows = applyEntryCorrections(await memoryLessons(opts.limit ?? 200))
+        const lessons = rows.map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }))
+        return poolLessons(lessons, await semanticPoolOptions(rows))
+      },
       memoryAnticipate: async (opts) => {
         const q = proactiveQuery(opts.task || '')
         if (!q) return []

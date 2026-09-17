@@ -188,6 +188,7 @@ const mem = vi.hoisted(() => ({
   memoryPatchProjects: vi.fn(async () => 0),
   normalizeProjectSlug: vi.fn((p: string) => (p || '').split(/[\\/]/).filter(Boolean).pop()?.toLowerCase() || ''),
   memoryLessons: vi.fn(async () => [] as any[]),
+  entrySimMatrix: vi.fn(async (_ids: string[]) => [] as number[]),
   memoryPruneCodePath: vi.fn(async () => 0),
   warmProbeEmbeddings: vi.fn(async () => true),
   compactSelfShard: vi.fn(async () => ({ compacted: false, before: 0, after: 0 })),
@@ -331,7 +332,13 @@ vi.mock('../../src/main/mnemeConsolidateRun', () => ({ runConsolidation: mneme.r
 // cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
 // — inside the weave's best-effort catch, so the whole pass would silently do nothing.
 vi.mock('../../src/main/mnemeWeave', () => ({ runWeave: mneme.runWeave, WEAVE_NEIGHBOUR_K: 6 }))
-vi.mock('../../src/main/mnemeSociety', () => ({ poolLessons: mneme.poolLessons, toAgentLesson: mneme.toAgentLesson }))
+vi.mock('../../src/main/mnemeSociety', async () => {
+  // poolLessons is stubbed (this suite tests the WIRING, not the pooling maths), but the word
+  // scorer stays REAL — the vector-less fallback is the behaviour under test here, and a stubbed
+  // similarity would prove nothing about it.
+  const real = await vi.importActual<typeof import('../../src/main/mnemeSociety')>('../../src/main/mnemeSociety')
+  return { ...real, poolLessons: mneme.poolLessons, toAgentLesson: mneme.toAgentLesson }
+})
 vi.mock('../../src/main/nliContradict', () => ({ detectConflictsNli: mneme.detectConflictsNli }))
 vi.mock('../../src/main/memoryAudit', () => ({ auditMemory: mneme.auditMemory }))
 vi.mock('../../src/main/mnemeRetrieval', () => ({ proactiveQuery: mneme.proactiveQuery, proactiveSignals: mneme.proactiveSignals }))
@@ -1652,17 +1659,72 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
   it('pool draws on the LESSONS window (default 200) and labels an unattributable lesson "unknown"', async () => {
     // poolLessons takes an ARRAY — .map() on an un-awaited memoryLessons() would throw.
     mem.memoryLessons.mockResolvedValueOnce([
-      { source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
-      { agentId: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
-      { content: 'c' },
+      { id: 'L1', source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
+      { id: 'L2', agentId: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
+      { id: 'L3', content: 'c' },
     ])
+    mem.entrySimMatrix.mockResolvedValueOnce([1, 0, 0, 0, 1, 0, 0, 0, 1])
     await expect(mcp.memoryPool({})).resolves.toEqual([{ content: 'pooled', corroboration: 2 }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
     expect(mneme.poolLessons).toHaveBeenCalledWith([
       { source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
       { source: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
       { source: 'unknown', content: 'c', memoryType: undefined, importance: undefined },
+    ], expect.objectContaining({ similar: expect.any(Function), threshold: expect.any(Number) }))
+  })
+
+  // Cross-agent corroboration only pays off if two agents SAYING the same thing pool together.
+  // Shared words cannot see that "bump the toolchain before touching the addon" and "recompile
+  // bindings when the runtime version moves" are one lesson. Embeddings can — and the whole set
+  // has to cross the process boundary in ONE call, not one per pair.
+  it('pools by MEANING: hands poolLessons an embedding-backed similarity over one matrix call', async () => {
+    const A = 'Bump the toolchain before touching the addon.'
+    const B = 'Recompile bindings whenever the runtime version moves.'
+    mem.memoryLessons.mockResolvedValueOnce([
+      { id: 'L1', source: 'claude', content: A },
+      { id: 'L2', source: 'codex', content: B },
     ])
+    mem.entrySimMatrix.mockResolvedValueOnce([1, 0.93, 0.93, 1])
+
+    await mcp.memoryPool({})
+
+    expect(mem.entrySimMatrix).toHaveBeenCalledWith(['L1', 'L2'])
+    expect(mem.entrySimMatrix).toHaveBeenCalledTimes(1)
+    const opts = mneme.poolLessons.mock.calls.at(-1)![1] as { similar: (a: string, b: string) => number; threshold: number }
+    expect(opts.similar(A, B)).toBeCloseTo(0.93)
+    expect(opts.similar(B, A)).toBeCloseTo(0.93)
+    expect(opts.similar(A, A)).toBeCloseTo(1)
+    // Cosine lives on a different scale than word overlap: 0.6 Jaccard is strict, 0.6 cosine
+    // merges almost anything. The injected threshold must move with the injected scorer.
+    expect(opts.threshold).toBeGreaterThanOrEqual(0.85)
+  })
+
+  it('still pools on words for a lesson the matrix has no vector for', async () => {
+    const A = 'Rebuild the native module after upgrading node.'
+    const B = 'After upgrading node, rebuild the native module.'
+    mem.memoryLessons.mockResolvedValueOnce([
+      { id: 'L1', source: 'claude', content: A },
+      { id: 'L2', source: 'codex', content: B },
+    ])
+    mem.entrySimMatrix.mockResolvedValueOnce([0, 0, 0, 0]) // never embedded
+
+    await mcp.memoryPool({})
+    const opts = mneme.poolLessons.mock.calls.at(-1)![1] as { similar: (a: string, b: string) => number; threshold: number }
+    // The words are plainly the same lesson, so the lexical vote clears the bar …
+    expect(opts.similar(A, B)).toBeGreaterThanOrEqual(opts.threshold)
+    // … but only just: a genuine semantic match must still outrank a word vote.
+    expect(opts.similar(A, B)).toBeLessThan(1)
+    expect(opts.similar(A, 'Prefer the async fs API in the main process.')).toBe(0)
+  })
+
+  it('falls back to plain word pooling when the matrix call fails, rather than pooling nothing', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([
+      { id: 'L1', source: 'claude', content: 'a' },
+      { id: 'L2', source: 'codex', content: 'b' },
+    ])
+    mem.entrySimMatrix.mockRejectedValueOnce(new Error('host down'))
+    await expect(mcp.memoryPool({})).resolves.toBeDefined()
+    expect(mneme.poolLessons.mock.calls.at(-1)![1]).toBeUndefined()
   })
 
   it('pool honours an explicit window size', async () => {

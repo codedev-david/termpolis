@@ -28,7 +28,7 @@ vi.mock('electron', () => ({
 
 import { setSafeStorage, type SafeStorageLike } from '../../src/main/secureKeyStore'
 import {
-  handleMessage, _resetHostForTests, serializeError, consolidationSimMatrix, HOST_HANDLERS,
+  handleMessage, _resetHostForTests, serializeError, consolidationSimMatrix, entrySimMatrix, MAX_SIM_IDS, HOST_HANDLERS,
   type HostRequest, type HostResponse,
 } from '../../src/main/memoryHost'
 import {
@@ -799,6 +799,52 @@ describe('consolidationSimOf — a closure cannot cross a process boundary', () 
     const m = consolidationSimMatrix(0)
     expect(m.ids).toEqual([])
     expect(structuredClone(m)).toEqual(m)
+  })
+})
+
+// Cross-agent corroboration (memory_pool) groups lessons that SAY the same thing. Words alone
+// cannot see that "bump the toolchain before touching the addon" and "recompile bindings when the
+// runtime version moves" are one lesson — embeddings can. The pool handler needs pairwise
+// similarity over an ARBITRARY id set (the lessons it just read), not over the consolidation
+// window, and it needs it in ONE round trip: a per-pair RPC over 200 lessons is 40k crossings.
+describe('entrySimMatrix — pairwise similarity over an arbitrary id set', () => {
+  it('scores the chosen ids against each other and ships as plain data', async () => {
+    const unit = (i: number): number[] => { const v = new Array(EMBED_DIM).fill(0); v[i] = 1; return v }
+    _resetForTests()
+    _resetHostForTests()
+    _resetMemoryClientForTests()
+    installMainSafe(null)
+    _setEmbedFnForTests(async (t: string) => (t.includes('cat') ? unit(0) : unit(1)))
+    await startWithFake()
+
+    const a = await memoryWrite({ agentId: 'x', kind: 'fact', content: 'a cat sat' })
+    const b = await memoryWrite({ agentId: 'x', kind: 'fact', content: 'the cat ran' })
+    const c = await memoryWrite({ agentId: 'x', kind: 'fact', content: 'dogs bark loudly' })
+
+    const m = entrySimMatrix([a.id, c.id, b.id])
+    expect(m).toHaveLength(9)
+    const at = (i: number, j: number) => m[i * 3 + j]
+    expect(at(0, 2)).toBeCloseTo(1, 5) // a ⇄ b — same vector, and order follows the ids GIVEN
+    expect(at(0, 1)).toBeCloseTo(0, 5) // a ⇄ c — orthogonal
+    expect(at(0, 0)).toBeCloseTo(1, 5) // diagonal
+    expect(at(2, 0)).toBeCloseTo(at(0, 2), 5) // symmetric
+    expect(structuredClone(m)).toEqual(m)
+    _setEmbedFnForTests(null)
+  })
+
+  it('scores an id it has never embedded as 0 rather than dropping the row', () => {
+    // Dropping would shift every later index and silently pool the WRONG pair of lessons.
+    const m = entrySimMatrix(['nope-1', 'nope-2'])
+    expect(m).toEqual([0, 0, 0, 0])
+  })
+
+  it('returns an empty matrix for an empty id set', () => {
+    expect(entrySimMatrix([])).toEqual([])
+  })
+
+  it('bounds the payload rather than shipping an unbounded n² matrix', () => {
+    const ids = Array.from({ length: MAX_SIM_IDS + 50 }, (_, i) => `id-${i}`)
+    expect(entrySimMatrix(ids)).toHaveLength(MAX_SIM_IDS * MAX_SIM_IDS)
   })
 })
 
