@@ -228,7 +228,8 @@ import { auditMemory } from './memoryAudit' // WP-E: audit learning events (refl
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
-import { reflectSoloSession, type SessionCursor } from './mnemeSession'
+import { reflectSoloSession } from './mnemeSession'
+import { initSessionCursors, getSessionCursor, setSessionCursor, sessionCursorKey, flushSessionCursors } from './sessionCursorStore'
 import { readSessionTranscript } from './liveTranscript'
 import { initCompetence, recordOutcome, assessCompetence, competenceSummary, competenceRecords } from './mnemeCompetence'
 import { initIdentity, identitySummary } from './mnemeIdentity'
@@ -449,7 +450,6 @@ async function reflectOnTask(
 // terminal's transcript has already been reflected, so each pass only distils the
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
-const sessionCursors = new Map<string, SessionCursor>()
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
@@ -2333,12 +2333,16 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
   try {
     if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
     const project = normalizeProjectSlug(opts.cwd)
+    const cursorKey = sessionCursorKey(opts.cwd, opts.agent)
     const res = await reflectSoloSession(
       { terminalId: opts.terminalId, cwd: opts.cwd, agent: opts.agent, project },
       {
         readTranscript: (cwd, agent) => readSessionTranscript(cwd, agent),
-        getCursor: (id) => sessionCursors.get(id),
-        setCursor: (id, c) => { sessionCursors.set(id, c) },
+        // Keyed on the TRANSCRIPT (cwd + agent), not on the terminal showing it: terminalId
+        // is minted fresh every launch, so the old Map lost the position on every quit and
+        // re-reflected transcripts it had already read end to end.
+        getCursor: () => getSessionCursor(cursorKey),
+        setCursor: (_id, c) => { setSessionCursor(cursorKey, c) },
         reflect: (episode) => {
           // Same sync-void `link` dep as reflectOnTask — collect, then mint after the reflector
           // returns, so the edges are on the graph before this resolves.
@@ -3308,6 +3312,7 @@ const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(aw
       return response === 0 ? 'deny' : 'allow'
     })
     initMemoryCorrections(app.getPath('userData'))
+    initSessionCursors(app.getPath('userData'))
     initReceiptIdentity(app.getPath('userData'))
     initRecallBench(app.getPath('userData'))
     initOutputEconomy(app.getPath('userData'))
@@ -3584,6 +3589,9 @@ const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(aw
           })
           await sumEdges.flush()
           auditMemory({ event: 'learn', kind: 'consolidate', detail: 'idle consolidation + summarization pass' }) // WP-E
+          // Same idle tick: persist reflection's transcript positions, so a crash costs at
+          // most one pass rather than every open session's place in its transcript.
+          try { flushSessionCursors() } catch { /* best effort */ }
         } catch { /* best effort */ }
 
         // v1.23 C4 — The Weave: continuously draw cross-repo analogies + backfill bridge anchors
@@ -4069,6 +4077,9 @@ const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(aw
     try { stopRepoWatches() } catch {}
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
+    // How far reflection got into each transcript. Losing this doesn't lose memory, but it
+    // makes the next launch re-read every open session from turn zero.
+    try { flushSessionCursors() } catch {}
     // Command history is written in the background and debounced, so a quit can land
     // between the last Enter and its flush. This is the one place a blocking write is
     // correct: there is no event loop left to await on.

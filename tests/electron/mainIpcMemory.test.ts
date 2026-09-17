@@ -1324,13 +1324,34 @@ describe('memory:reflect-session', () => {
     expect(mneme.readSessionTranscript).toHaveBeenCalledWith('/r', 'codex')
   })
 
-  it('persists a per-terminal cursor so each pass only reflects the NEW turns', async () => {
+  // v1.47: the cursor is keyed on the TRANSCRIPT (cwd + agent), not on the terminal showing
+  // it. terminalId is minted fresh every launch, so the old per-terminal Map lost the position
+  // on every quit and re-read transcripts it had already learned end to end — and two panes on
+  // the same repo reflected the same turns twice.
+  it('persists a per-transcript cursor so each pass only reflects the NEW turns', async () => {
+    const { resetSessionCursors } = await import('../../src/main/sessionCursorStore')
+    resetSessionCursors()
+
     await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
-    const deps = mneme.reflectSoloSession.mock.calls[0][1]
-    expect(deps.getCursor('term-cursor-1')).toBeUndefined()
-    deps.setCursor('term-cursor-1', { count: 4, hash: 'abc' })
-    expect(deps.getCursor('term-cursor-1')).toEqual({ count: 4, hash: 'abc' })
-    expect(deps.getCursor('other-terminal')).toBeUndefined() // cursors are per-terminal
+    const a = mneme.reflectSoloSession.mock.calls.at(-1)![1]
+    expect(a.getCursor('t1')).toBeUndefined()
+    a.setCursor('t1', { count: 4, hash: 'abc' })
+    expect(a.getCursor('t1')).toEqual({ count: 4, hash: 'abc' })
+
+    // A SECOND pane on the same repo + agent reads the same transcript, so it must inherit the
+    // position rather than re-learn from turn zero.
+    await invoke('memory:reflect-session', { terminalId: 't2', cwd: '/r', agent: 'claude' })
+    expect(mneme.reflectSoloSession.mock.calls.at(-1)![1].getCursor('t2')).toEqual({ count: 4, hash: 'abc' })
+
+    // A different agent on the same repo is a different transcript.
+    await invoke('memory:reflect-session', { terminalId: 't3', cwd: '/r', agent: 'codex' })
+    expect(mneme.reflectSoloSession.mock.calls.at(-1)![1].getCursor('t3')).toBeUndefined()
+
+    // ...as is the same agent in a different repo.
+    await invoke('memory:reflect-session', { terminalId: 't4', cwd: '/other', agent: 'claude' })
+    expect(mneme.reflectSoloSession.mock.calls.at(-1)![1].getCursor('t4')).toBeUndefined()
+
+    resetSessionCursors()
   })
 
   it('records a reflect metric only when lessons were actually distilled', async () => {
