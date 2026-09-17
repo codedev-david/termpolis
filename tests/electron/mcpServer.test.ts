@@ -296,6 +296,24 @@ describe('MCP HTTP server', () => {
     expect(names).toContain('code_search')
   })
 
+  it('advertises diversify — a retrieval knob agents cannot use if it is not in the schema', async () => {
+    // The ranker has supported it for releases. An undocumented parameter is a dead parameter:
+    // no agent passes what the schema does not mention.
+    const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 31 })
+    const tools = JSON.parse(res.body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>
+    const search = tools.find((t) => t.name === 'memory_search')!
+    expect(Object.keys(search.inputSchema.properties)).toContain('diversify')
+  })
+
+  it('documents the NEGATIVE path on memory_feedback, not just the praise', async () => {
+    // helpful:false is how a wrong memory gets demoted and eventually suppressed. Describing only
+    // the upvote taught every agent that feedback is for thanking the brain.
+    const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 32 })
+    const tools = JSON.parse(res.body).result.tools as Array<{ name: string; description: string }>
+    const fb = tools.find((t) => t.name === 'memory_feedback')!
+    expect(fb.description).toMatch(/helpful: ?false|wrong|misleading/i)
+  })
+
   it('keeps total tool-description text under the slim budget (per-session token cost)', async () => {
     const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 3 })
     const tools = JSON.parse(res.body).result.tools as Array<{ description: string }>

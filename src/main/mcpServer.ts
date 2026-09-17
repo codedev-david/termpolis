@@ -344,6 +344,7 @@ const TOOLS: McpTool[] = [
         kind: { type: 'string', enum: ['message', 'result', 'decision', 'fact', 'note'], description: 'Filter by kind (optional)' },
         taskId: { type: 'string', description: 'Filter by task correlation id (optional)' },
         project: { type: 'string', description: 'Scope to one project — pass your working directory or repo name to recall only that project’s memories (optional)' },
+        diversify: { type: 'boolean', description: 'ON by default: near-duplicates are pushed down so the top-k covers distinct angles. Pass false for a raw ranked list (optional)' },
         fuseGraph: { type: 'boolean', description: 'Opt-in (default off): also walk the knowledge graph one hop from the top hits to pull in CONNECTED memories — a bug\'s fix, a decision\'s supersession. Use it when you want to follow connections, not just closest matches.' },
       },
       required: ['query'],
@@ -431,7 +432,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_feedback',
-    description: 'Tell the shared brain a recalled memory was actually HELPFUL, so it learns which memories matter. After a memory_search/memory_related result helps you, call this with that entry\'s `id` and `helpful: true`. Repeatedly-helpful hits get a small ranking lift — use it liberally. Pass your `agentId` to record cross-agent teaching.',
+    description: 'Tell the shared brain whether a recalled memory was right. `helpful: true` lifts it; `helpful: false` demotes a WRONG or misleading one, and three of those suppress it from recall — use the negative path, it is how bad memories die. Termpolis also scores this automatically from how your work turns out, so this is for what an outcome cannot see. Pass your `agentId` to record cross-agent teaching.',
     inputSchema: {
       type: 'object',
       properties: {
