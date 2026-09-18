@@ -92,10 +92,9 @@ else is reachable until it is bought, so please start there:
    covers the relay this app connects through, which is the only thing this app
    does. There is no free tier and nothing is withheld from subscribers.
 
-1. Download Termpolis for macOS:
-   https://github.com/codedev-david/termpolis/releases/latest
-   (Termpolis-<version>-arm64.dmg for Apple silicon, Termpolis-<version>.dmg
-   for Intel. The app is signed and notarized.)
+1. Download Termpolis for macOS, Windows or Linux from https://termpolis.com
+   (Downloads section). The macOS build is signed and notarized; the Windows
+   build is signed.
 
 2. Open it. It starts with one terminal already running -- no account,
    nothing to sign into.
@@ -171,6 +170,25 @@ Any questions: support@termpolis.com
 
 One placeholder left: `<VIDEO URL>`. The contact address is settled --
 `support@termpolis.com`. See "Before you submit" below.
+
+### What actually went in with 1.1 (2026-09-18)
+
+The submitted notes were a condensed variant of the block above: the same step
+0 verbatim, then five pairing steps instead of ten, and the age-rating
+questionnaire answers spelled out. Shorter is defensible -- a reviewer with
+five minutes reads five steps and skims ten -- so this is recorded rather than
+corrected.
+
+The one thing that must survive any future shortening is **step 0**. It went in
+LAST, after the submission was already open, because the 1.0 notes were reused
+and nobody noticed they described an app with no paywall in front of it. A
+reviewer following those notes installs the desktop, generates a pairing code,
+opens the phone, and is looking at a purchase screen with no instruction to buy
+anything -- which is guideline 2.1 ("unable to test") with extra steps.
+
+So: **when the first screen changes, these notes change in the same commit.**
+The notes describe a launch sequence, and a launch sequence with a new wall in
+front of it is a different sequence.
 
 ### Demo account fields
 
@@ -276,8 +294,16 @@ that break silently in that window.
 
 - [ ] Record the video and replace `<VIDEO URL>` -- the ONLY placeholder left
       in this file
-- [ ] Attach the subscription to the version, and upload the paywall screenshot
-      to Subscription → Review Information
+- [x] Attach the subscription to the version, and upload the paywall screenshot
+      to Subscription → Review Information (2026-09-18, with 1.1).
+      ⚠ A first subscription needs THREE items in one draft submission, not
+      one: the subscription group, the subscription itself, and the app
+      version. A draft holding only the group reports two errors that both
+      read like a rule you have broken rather than a list you have not
+      finished. Each is added from its own page's "Add for Review" button.
+- [ ] Re-read these notes against the app's FIRST SCREEN, not against the
+      diff. Reusing the previous version's notes is the easy mistake and it
+      cost a near-miss on 1.1 -- see "What actually went in" above
 - [ ] Buy it once yourself in the sandbox, from a sandbox Apple ID that has
       never had the trial, and then again from one that has -- the second is
       the "Subscribe" wording, and it is the one nobody tests
@@ -297,6 +323,6 @@ that break silently in that window.
       not `support@termpolis.com`.
 - [x] Deploy the relay (see above)
 - [ ] Confirm a real phone pairs over the deployed relay end to end
-- [ ] Walk the seven steps yourself, on a Mac you have not used for this
-      before, from the released `.dmg`. If any step needs knowledge the notes
-      do not contain, the notes are wrong, not the reviewer.
+- [ ] Walk the steps yourself, on a computer you have not used for this
+      before, from the released installer. If any step needs knowledge the
+      notes do not contain, the notes are wrong, not the reviewer.
