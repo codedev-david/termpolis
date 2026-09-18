@@ -75,6 +75,24 @@ const H = vi.hoisted(() => {
     SANDBOX, USER_DATA, FAKE_HOME, FIXTURES, fsMock,
     mockExecSync: vi.fn(),
     mockExecFileSync: vi.fn(),
+    // v1.47.1: git spawns off the main thread, so these callback flavours are what production
+    // reaches. They delegate to the sync twins the tests below already stub.
+    mockExecFile: vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string) => void) => {
+      try { cb(null, String(H.mockExecFileSync(bin, args, opts) ?? '')) } catch (e) {
+      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown }
+      if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+      cb(x, String(x?.stdout ?? ''))
+    }
+    }),
+    mockExec: vi.fn((cmd: string, opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+      // execSync reports failure by THROWING, carrying .status/.stdout/.stderr; exec reports it
+    // through the callback, with .code and the two streams as arguments. Translate, never drop.
+    try { cb(null, String(H.mockExecSync(cmd, opts) ?? ''), '') } catch (e) {
+      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown; stderr?: unknown }
+      if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+      cb(x, String(x?.stdout ?? ''), String(x?.stderr ?? ''))
+    }
+    }),
     mockShowOpenDialog: vi.fn(),
     // aiSecurity — the pieces index.ts must be observed *through*.
     mockAppendAudit: vi.fn(async () => {}),
@@ -179,6 +197,8 @@ vi.mock('../../src/main/egressAttribute', () => ({
 
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: vi.fn(), killTerminal: vi.fn(), writeToTerminal: vi.fn(),
   resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''),
   getTerminalPid: H.mockGetTerminalPid,
@@ -286,9 +306,11 @@ vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: vi.fn() }))
 vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((c: string) => c) }))
 
 vi.mock('child_process', () => ({
-  default: { execSync: H.mockExecSync, execFileSync: H.mockExecFileSync },
+  default: { execSync: H.mockExecSync, execFileSync: H.mockExecFileSync, exec: H.mockExec, execFile: H.mockExecFile },
   execSync: H.mockExecSync,
   execFileSync: H.mockExecFileSync,
+  exec: H.mockExec,
+  execFile: H.mockExecFile,
 }))
 vi.mock('fs', () => ({ ...H.fsMock, default: { ...H.fsMock } }))
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))

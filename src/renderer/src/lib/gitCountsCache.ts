@@ -14,10 +14,19 @@
 // unchanged.
 
 import { subscribe, unsubscribe } from './pollingService'
+import { watchRepoChanges } from './gitWatch'
 import type { GitChangeCounts } from '../types'
 
-/** Matches the dot's original cadence — slow enough to stay off the PTY thread. */
-export const COUNTS_POLL_MS = 5000
+/**
+ * The SAFETY NET, not the mechanism.
+ *
+ * v1.47.1: main watches the repo (see src/main/gitWatcher.ts) and pushes an invalidation the instant
+ * anything changes, so the dot is now FASTER than the old 5 s poll for every change it sees. This
+ * timer only covers what a watcher cannot — a network share, a platform without recursive watch, an
+ * inotify budget already spent — and at 5 s it was spawning a git process per repo, forever, to
+ * discover nothing had happened.
+ */
+export const COUNTS_POLL_MS = 15000
 
 type Watcher = (counts: GitChangeCounts | null) => void
 
@@ -29,13 +38,18 @@ interface RepoWatch {
   answered: boolean
   /** In flight — a second caller in the same tick joins it instead of spawning again. */
   inFlight: Promise<void> | null
+  /** Tears down the repo watch when the last dot on this repo goes away. */
+  unwatch?: () => void
 }
 
 const repos = new Map<string, RepoWatch>()
 
 /** Drop all shared pollers. Exported for test isolation only. */
 export function resetCountsRegistry(): void {
-  for (const cwd of repos.keys()) unsubscribe(pollId(cwd))
+  for (const [cwd, watch] of repos) {
+    unsubscribe(pollId(cwd))
+    watch.unwatch?.()
+  }
   repos.clear()
 }
 
@@ -91,6 +105,12 @@ export function subscribeCounts(cwd: string, onCounts: Watcher): () => void {
       const live = repos.get(cwd)
       if (live) void refresh(cwd, live)
     }, COUNTS_POLL_MS)
+    // Same callback, pushed instead of polled. refresh() is already single-flighted, so a burst of
+    // filesystem events collapses into one git process exactly as a burst of ticks would.
+    watch.unwatch = watchRepoChanges(cwd, () => {
+      const live = repos.get(cwd)
+      if (live) void refresh(cwd, live)
+    })
     void refresh(cwd, watch)
   } else {
     watch.watchers.add(onCounts)
@@ -108,6 +128,7 @@ export function subscribeCounts(cwd: string, onCounts: Watcher): () => void {
     if (live.watchers.size === 0) {
       repos.delete(cwd)
       unsubscribe(pollId(cwd))
+      live.unwatch?.()
     }
   }
 }

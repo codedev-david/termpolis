@@ -80,6 +80,8 @@ vi.mock('electron', () => ({
 
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: vi.fn(), writeToTerminal: vi.fn(), resizeTerminal: vi.fn(), killTerminal: vi.fn(),
   killAll: vi.fn(), getTerminal: vi.fn(), getAllTerminals: vi.fn(() => []), getOutputBuffer: vi.fn(() => ''),
   setMouseModeGuard: vi.fn(), onTerminalData: vi.fn(), onTerminalExit: vi.fn(),

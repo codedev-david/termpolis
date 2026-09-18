@@ -188,7 +188,7 @@ describe('TerminalGitDot — polling', () => {
     render(<TerminalGitDot terminalId="t2" cwd="/repo" />)
     const ids = (subscribe as any).mock.calls.map((c: any[]) => c[0])
     expect(ids).toEqual(['git-counts-/repo'])
-    expect((subscribe as any).mock.calls[0][2]).toBe(5000)
+    expect((subscribe as any).mock.calls[0][2]).toBe(15000)
   })
 
   it('updates every terminal on the repo from that one poll', async () => {

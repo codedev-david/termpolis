@@ -30,6 +30,22 @@ const M = vi.hoisted(() => ({
   // child_process
   execSync: vi.fn(),
   execFileSync: vi.fn(),
+  execFile: vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string) => void) => {
+    try { cb(null, String(M.execFileSync(bin, args, opts) ?? '')) } catch (e) {
+      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown }
+      if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+      cb(x, String(x?.stdout ?? ''))
+    }
+  }),
+  exec: vi.fn((cmd: string, opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+    // execSync reports failure by THROWING, carrying .status/.stdout/.stderr; exec reports it
+    // through the callback, with .code and the two streams as arguments. Translate, never drop.
+    try { cb(null, String(M.execSync(cmd, opts) ?? ''), '') } catch (e) {
+      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown; stderr?: unknown }
+      if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+      cb(x, String(x?.stdout ?? ''), String(x?.stderr ?? ''))
+    }
+  }),
   spawn: vi.fn(),
   // fs
   existsSync: vi.fn(() => false),
@@ -154,6 +170,8 @@ vi.mock('electron', () => ({
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: M.spawnTerminal,
   killTerminal: M.killTerminal,
   writeToTerminal: M.writeToTerminal,
@@ -217,6 +235,10 @@ vi.mock('../../src/main/agentPaths', () => ({
   getExtendedPath: M.getExtendedPath,
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),
+  // v1.47.1: main primes the login-shell PATH ONCE at startup instead of shelling out the
+  // first time an agent launches, and reads it back asynchronously thereafter.
+  primeInteractiveShellPath: vi.fn(async () => ''),
+  getExtendedPathAsync: vi.fn(async () => '/usr/bin:/opt/agent-bin'),
 }))
 vi.mock('../../src/main/groqKeyStore', () => ({
   getGroqKey: M.getGroqKey, setGroqKey: M.setGroqKey,
@@ -303,9 +325,13 @@ vi.mock('../../src/main/memoryClient', () => MEMC)
 vi.mock('../../src/main/swarmMemory', () => MEMC)
 
 vi.mock('child_process', () => ({
-  default: { execSync: M.execSync, execFileSync: M.execFileSync, spawn: M.spawn },
+  default: { execSync: M.execSync, execFileSync: M.execFileSync, execFile: M.execFile, exec: M.exec, spawn: M.spawn },
   execSync: M.execSync,
   execFileSync: M.execFileSync,
+  // v1.47.1: main no longer spawns anything synchronously (a CreateProcess on the PTY-pumping
+  // thread was the typing lag). These delegate to the sync twins the tests already stub.
+  execFile: M.execFile,
+  exec: M.exec,
   spawn: M.spawn,
 }))
 

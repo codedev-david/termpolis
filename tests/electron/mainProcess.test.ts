@@ -87,6 +87,8 @@ const mockResizeTerminal = vi.fn()
 const mockGetTerminalCwd = vi.fn()
 
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: (...args: any[]) => mockSpawnTerminal(...args),
   killTerminal: (...args: any[]) => mockKillTerminal(...args),
   writeToTerminal: (...args: any[]) => mockWriteToTerminal(...args),
@@ -173,6 +175,24 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 
 const mockExecSync = vi.fn()
 const mockExecFileSync = vi.fn()
+// v1.47.1: main spawns through procHost, so the CALLBACK flavours are the ones production reaches.
+// They delegate to the sync twins, which is what every stub and assertion in this file drives.
+const mockExecFile = vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string) => void) => {
+  try { cb(null, String(mockExecFileSync(bin, args, opts) ?? '')) } catch (e) {
+    const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown }
+    if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+    cb(x, String(x?.stdout ?? ''))
+  }
+})
+const mockExec = vi.fn((cmd: string, opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+  // execSync reports failure by THROWING, carrying .status/.stdout/.stderr; exec reports it
+  // through the callback, with .code and the two streams as arguments. Translate, never drop.
+  try { cb(null, String(mockExecSync(cmd, opts) ?? ''), '') } catch (e) {
+    const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown; stderr?: unknown }
+    if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+    cb(x, String(x?.stdout ?? ''), String(x?.stderr ?? ''))
+  }
+})
 const mockSpawn = vi.fn()
 // Both git helpers funnel into mockExecSync, which makes them indistinguishable at the
 // assertion layer — and "did this handler block the main thread?" is exactly the question
@@ -180,9 +200,11 @@ const mockSpawn = vi.fn()
 // that leaves a footprint in this array froze every PTY in the app while it ran.
 const syncGitCalls: string[][] = []
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, spawn: mockSpawn },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, exec: mockExec, execFile: mockExecFile, spawn: mockSpawn },
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  exec: mockExec,
+  execFile: mockExecFile,
   spawn: mockSpawn,
 }))
 
@@ -313,11 +335,13 @@ const capturedAppCallbacks: Record<string, Function> = {}
 const capturedShortcuts: Record<string, Function> = {}
 // Captured once during import, before beforeEach's clearAllMocks wipes the history.
 let capturedAppUserModelId: string | undefined
+let gitCacheMod: typeof import('../../src/main/gitCache')
 
 beforeAll(async () => {
   vi.resetModules()
   // Re-apply mocks after resetModules
   await import('../../src/main/index')
+  gitCacheMod = await import('../../src/main/gitCache')
   // Flush microtasks so app.whenReady().then() runs
   await new Promise(resolve => setTimeout(resolve, 50))
 
@@ -334,6 +358,10 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The read handlers share one answer per (cwd, argv) for 1.5 s (src/main/gitCache.ts) so a rail
+  // repaint does not respawn git once per panel. That window outlives a test, and the next one
+  // would be handed the PREVIOUS test's stdout without ever reaching the mock.
+  gitCacheMod.invalidateGitCache()
 })
 
 // =========================================================================

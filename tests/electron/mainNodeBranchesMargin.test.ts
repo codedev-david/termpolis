@@ -65,6 +65,7 @@ const h = vi.hoisted(() => {
     }),
     showMessageBox: vi.fn(),
     exec: vi.fn(),
+    execFile: vi.fn(),
     execSync: vi.fn(() => Buffer.from('')),
     execFileSync: vi.fn(),
   }
@@ -76,11 +77,15 @@ vi.mock('electron', () => ({
   dialog: { showMessageBox: h.showMessageBox },
 }))
 vi.mock('node-pty', () => ({ spawn: h.spawn }))
+// `execFile` is stubbed too even though nothing here uses the argv form: terminalManager's probe
+// now goes through procClient, which falls back to procHost's in-process runners when no
+// utilityProcess has been forked, and procHost imports both runners from here.
 vi.mock('child_process', () => ({
   exec: h.exec,
+  execFile: h.execFile,
   execSync: h.execSync,
   execFileSync: h.execFileSync,
-  default: { exec: h.exec, execSync: h.execSync, execFileSync: h.execFileSync },
+  default: { exec: h.exec, execFile: h.execFile, execSync: h.execSync, execFileSync: h.execFileSync },
 }))
 
 // ---------------------------------------------------------------------------

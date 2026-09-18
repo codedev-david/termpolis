@@ -5,10 +5,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // and the platform branches we want to exercise stay invisible. vi.hoisted
 // lets us declare the mock fns alongside the factory call without tripping
 // the hoist-order ReferenceError.
-const { mockExecSync, mockReaddirSync, mockHomedir } = vi.hoisted(() => ({
+const { mockExecSync, mockReaddirSync, mockHomedir, mockExecShellOffThread } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
   mockReaddirSync: vi.fn(),
   mockHomedir: vi.fn(() => '/home/test'),
+  mockExecShellOffThread: vi.fn(),
 }))
 
 vi.mock('child_process', () => ({
@@ -23,11 +24,16 @@ vi.mock('os', () => ({
   homedir: mockHomedir,
   default: { homedir: mockHomedir },
 }))
+vi.mock('../../src/main/procClient', () => ({
+  execShellOffThread: mockExecShellOffThread,
+}))
 
 import {
   getInteractiveShellPath,
   getAgentExtraPaths,
   getExtendedPath,
+  getExtendedPathAsync,
+  primeInteractiveShellPath,
   __resetShellPathCacheForTests,
 } from '../../src/main/agentPaths'
 
@@ -274,5 +280,114 @@ describe('getExtendedPath', () => {
     const out = getExtendedPath()
     expect(out).toContain('/from/shell/bin')
     expect(out.indexOf('/from/shell/bin')).toBeLessThan(out.indexOf('/usr/bin'))
+  })
+})
+
+// =========================================================================
+// primeInteractiveShellPath / getExtendedPathAsync
+// =========================================================================
+//
+// Same answer as the sync pair, with the shell fork moved off the main thread. That fork is
+// `zsh -ilc`, which sources the user's entire dotfile chain — nvm, asdf, rbenv, whatever else has
+// accumulated — and routinely takes a few hundred milliseconds. On main, every one of those
+// milliseconds is a frozen terminal, because main is the thread pumping every PTY.
+//
+// The reason priming works at all is that it fills the SAME cache the sync functions read. Nothing
+// downstream had to become async; the sync callers simply stop finding the cache empty.
+describe('primeInteractiveShellPath', () => {
+  it('forks the shell through the proc host, never on the main thread', async () => {
+    setPlatform('darwin')
+    process.env.SHELL = '/bin/zsh'
+    mockExecShellOffThread.mockResolvedValue('TERMPOLIS_PATH_BEGIN:/opt/homebrew/bin:/usr/bin\n')
+
+    await expect(primeInteractiveShellPath()).resolves.toBe('/opt/homebrew/bin:/usr/bin')
+    const [cmd, opts] = mockExecShellOffThread.mock.calls[0]
+    expect(cmd).toContain('/bin/zsh -ilc')
+    expect(cmd).toContain('TERMPOLIS_PATH_BEGIN')
+    expect(opts).toEqual({ timeout: 5000 })
+    expect(mockExecSync).not.toHaveBeenCalled()
+  })
+
+  it('fills the cache the SYNC function reads, so no sync caller ever spawns', async () => {
+    // The entire point of priming. If this ever stopped holding, the spawn would quietly come back
+    // to the main thread through whichever sync caller asked first.
+    setPlatform('linux')
+    process.env.SHELL = '/bin/bash'
+    mockExecShellOffThread.mockResolvedValue('TERMPOLIS_PATH_BEGIN:/primed/bin\n')
+    await primeInteractiveShellPath()
+
+    expect(getInteractiveShellPath()).toBe('/primed/bin')
+    expect(mockExecSync).not.toHaveBeenCalled()
+  })
+
+  it('short-circuits on Windows exactly as the sync version does', async () => {
+    setPlatform('win32')
+    await expect(primeInteractiveShellPath()).resolves.toBe('')
+    expect(mockExecShellOffThread).not.toHaveBeenCalled()
+  })
+
+  it('returns the cache without a second fork', async () => {
+    setPlatform('darwin')
+    mockExecShellOffThread.mockResolvedValue('TERMPOLIS_PATH_BEGIN:/once/bin\n')
+    await primeInteractiveShellPath()
+    await expect(primeInteractiveShellPath()).resolves.toBe('/once/bin')
+    expect(mockExecShellOffThread).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to /bin/zsh when SHELL is unset', async () => {
+    setPlatform('darwin')
+    mockExecShellOffThread.mockResolvedValue('TERMPOLIS_PATH_BEGIN:/usr/bin\n')
+    await primeInteractiveShellPath()
+    expect(mockExecShellOffThread.mock.calls[0][0]).toContain('/bin/zsh -ilc')
+  })
+
+  it('yields "" — and caches it — when the shell prints no sentinel', async () => {
+    setPlatform('darwin')
+    mockExecShellOffThread.mockResolvedValue('a login banner and nothing else\n')
+    await expect(primeInteractiveShellPath()).resolves.toBe('')
+    expect(getInteractiveShellPath()).toBe('')
+    expect(mockExecSync).not.toHaveBeenCalled()
+  })
+
+  it('yields "" when the fork fails, rather than rejecting into app startup', async () => {
+    // This runs unawaited at startup. A rejection here would be an unhandled promise rejection in
+    // the main process, and on a box with a broken $SHELL that is every single launch.
+    setPlatform('darwin')
+    mockExecShellOffThread.mockRejectedValue(new Error('ENOENT'))
+    await expect(primeInteractiveShellPath()).resolves.toBe('')
+  })
+})
+
+describe('getExtendedPathAsync', () => {
+  it('produces the same PATH as the sync version, with the fork done off-thread', async () => {
+    setPlatform('linux')
+    process.env.PATH = '/usr/bin'
+    mockReaddirSync.mockImplementation(() => { throw new Error('no nvm') })
+    mockExecShellOffThread.mockResolvedValue('TERMPOLIS_PATH_BEGIN:/from/shell/bin\n')
+
+    const asyncPath = await getExtendedPathAsync()
+    const syncPath = getExtendedPath()
+    expect(asyncPath).toBe(syncPath)
+    expect(asyncPath).toContain('/from/shell/bin')
+    expect(asyncPath).toContain('/usr/bin')
+    expect(mockExecSync).not.toHaveBeenCalled()
+  })
+
+  it('joins with the platform separator and drops the empty shell path on Windows', async () => {
+    setPlatform('win32')
+    process.env.PATH = 'C:\Windows'
+    const out = await getExtendedPathAsync()
+    expect(out.split(';')).toContain('C:\Windows')
+    expect(out).not.toContain(';;')
+  })
+
+  it('survives PATH being undefined', async () => {
+    setPlatform('linux')
+    delete process.env.PATH
+    mockReaddirSync.mockImplementation(() => { throw new Error('no nvm') })
+    mockExecShellOffThread.mockResolvedValue('TERMPOLIS_PATH_BEGIN:/shell/bin\n')
+    const out = await getExtendedPathAsync()
+    expect(out).toContain('/shell/bin')
+    expect(out.endsWith(':')).toBe(false)
   })
 })

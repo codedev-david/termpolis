@@ -8,26 +8,10 @@
 // project's test suite" feature from turning into arbitrary RCE if a
 // compromised renderer (or unsanitised MCP client) sends a crafted string.
 
-import { execFileSync, execSync, execFile } from 'child_process'
+import { execFileSync, execSync } from 'child_process'
 import { existsSync } from 'fs'
-import { getExtendedPath } from './agentPaths'
-
-/** Hand-rolled rather than `promisify(execFile)` at module scope: promisify resolves its argument
- *  AT IMPORT, so any test that mocks child_process without an `execFile` (several do — they only
- *  need execFileSync) would crash the whole module on load. Touch `execFile` when CALLED, not when
- *  imported. */
-function execFileAsync(
-  bin: string,
-  args: string[],
-  opts: Parameters<typeof execFile>[2],
-): Promise<{ stdout: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(bin, args, opts, (err, stdout) => {
-      if (err) reject(err)
-      else resolve({ stdout: String(stdout) })
-    })
-  })
-}
+import { getExtendedPath, getExtendedPathAsync } from './agentPaths'
+import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
 
 export interface GitOptions {
   cwd: string
@@ -75,7 +59,7 @@ export function safeGit(args: string[], opts: GitOptions): string {
 }
 
 /**
- * safeGit's non-blocking twin, for anything on a POLL.
+ * safeGit's non-blocking twin — and since v1.47.1, the one every caller should use.
  *
  * `execFileSync` blocks the main thread for the WHOLE spawn — and on Windows a cold git spawn is
  * ~106 ms of pure process-creation tax (measured; Defender), before git reads a single object. The
@@ -84,24 +68,28 @@ export function safeGit(args: string[], opts: GitOptions): string {
  * thread that pumps every PTY. `async` on the IPC handler bought nothing: execFileSync blocks
  * regardless of what wraps it.
  *
+ * Switching to `execFile` did not finish the job either, and that is the v1.47.1 fix. `execFile`
+ * awaits the OUTPUT asynchronously but performs the SPAWN synchronously — libuv's uv_spawn is
+ * CreateProcess on Windows, on the calling thread — measured at p50 47.9 ms and up to 623 ms per
+ * git. So the work now leaves the process entirely: execOffThread hands it to the procHost
+ * utilityProcess, where a blocked thread blocks nobody's typing.
+ *
  * Identical argv-safety (shell: false) and identical git-resolution fallback as safeGit — the two
  * must not drift, or a packaged app with no git on PATH would work in one and ENOENT in the other.
  */
 export async function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
-  const run = async (bin: string): Promise<string> => {
-    const { stdout } = await execFileAsync(bin, args, {
-      cwd: opts.cwd,
-      timeout: opts.timeout ?? 10000,
-      maxBuffer: opts.maxBuffer ?? 1024 * 1024,
-      windowsHide: true,
-      shell: false,
-    })
-    return stdout.toString()
-  }
+  const run = (bin: string): Promise<string> => execOffThread(bin, args, {
+    cwd: opts.cwd,
+    timeout: opts.timeout ?? 10000,
+    maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+  })
   const bin = resolvedGit ?? 'git'
   try {
     return await run(bin)
   } catch (e) {
+    // `code` still means what it always meant: the string 'ENOENT' when the binary was not found,
+    // a number when git ran and refused. ProcError carries it across the process boundary precisely
+    // so this branch keeps working.
     if ((e as NodeJS.ErrnoException)?.code === 'ENOENT' && bin === 'git') {
       for (const candidate of gitInstallCandidates()) {
         if (existsSync(candidate)) {
@@ -217,5 +205,39 @@ export function runSafeCommand(cmd: SafeCommand, opts: GitOptions): RunResult {
   } catch (e: any) {
     const output = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
     return { output, exitCode: typeof e.status === 'number' ? e.status : 1 }
+  }
+}
+
+/**
+ * runSafeCommand's off-thread twin, and the one the IPC handler uses.
+ *
+ * The sync version's own comment says it best: "for however long the subprocess runs, every PTY and
+ * every IPC call in the app is dead" — with a TEN MINUTE default bound. `npm test` on a real project
+ * froze the entire app for the length of the test run. Here the run happens in procHost instead, so
+ * the only thing waiting is this promise.
+ *
+ * Same `RunResult` contract, including the part callers depend on most: a FAILED command is not an
+ * exception, it is `{ output, exitCode }` with the command's own output — which for a test runner is
+ * the whole point. Note the two shapes node uses for "what exit status": `status` on the sync API,
+ * `code` on the async one. Both land here as `error.code`.
+ */
+export async function runSafeCommandAsync(cmd: SafeCommand, opts: GitOptions): Promise<RunResult> {
+  // Same .cmd-shim reasoning as the sync version: parseSafeCommand already rejected every shell
+  // metacharacter, so the shell is a PATHEXT resolver here and nothing more.
+  const needsShell = process.platform === 'win32'
+  const env = { ...process.env, PATH: await getExtendedPathAsync() }
+  const procOpts = {
+    cwd: opts.cwd,
+    timeout: opts.timeout ?? 10 * 60 * 1000,
+    maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
+    env,
+  }
+  const r = needsShell
+    ? await execShellCaptureOffThread([cmd.bin, ...cmd.args].join(' '), procOpts)
+    : await execCaptureOffThread(cmd.bin, cmd.args, procOpts)
+  if (!r.error) return { output: r.stdout, exitCode: 0 }
+  return {
+    output: r.stdout + r.stderr,
+    exitCode: typeof r.error.code === 'number' ? r.error.code : 1,
   }
 }

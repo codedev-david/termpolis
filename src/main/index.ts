@@ -72,7 +72,7 @@ import {
   clearOutput,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -496,8 +496,12 @@ const terminalDisplayName = createTerminalNameLookup({
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
-import { getAgentExtraPaths, getExtendedPath } from './agentPaths'
-import { safeGit, safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommand } from './gitCommand'
+import { getAgentExtraPaths, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
+import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
+import { setProcSpawner, execShellOffThread } from './procClient'
+import { createProcHostTransport } from './procHostTransport'
+import { cachedGit, invalidateGitCache } from './gitCache'
+import { createGitWatcherRegistry } from './gitWatcher'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
 import {
@@ -1319,7 +1323,7 @@ ipcMain.handle('completion:env-vars', async () => {
 
 ipcMain.handle('terminal:git-diff', async (_, { cwd }) => {
   try {
-    const diff = safeGit(['diff', '--stat'], { cwd, timeout: 5000 }).trim()
+    const diff = (await safeGitAsync(['diff', '--stat'], { cwd, timeout: 5000 })).trim()
     return ok(diff)
   } catch { return ok('') }
 })
@@ -1328,7 +1332,8 @@ ipcMain.handle('terminal:git-diff', async (_, { cwd }) => {
 ipcMain.handle('git:stage', async (_, { cwd, files }: { cwd: string; files: string[] }) => {
   try {
     const args = files.length > 0 ? ['add', '--', ...files] : ['add', '.']
-    safeGit(args, { cwd, timeout: 10000 })
+    await safeGitAsync(args, { cwd, timeout: 10000 })
+    invalidateGitCache(cwd)
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -1336,7 +1341,8 @@ ipcMain.handle('git:stage', async (_, { cwd, files }: { cwd: string; files: stri
 ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: string[] }) => {
   try {
     const args = files.length > 0 ? ['reset', 'HEAD', '--', ...files] : ['reset', 'HEAD', '.']
-    safeGit(args, { cwd, timeout: 10000 })
+    await safeGitAsync(args, { cwd, timeout: 10000 })
+    invalidateGitCache(cwd)
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -1359,7 +1365,7 @@ ipcMain.handle('git:unstage', async (_, { cwd, files }: { cwd: string; files: st
 // throw used to be swallowed: the push went out UNSCANNED, with no warning, at exactly the moment
 // the shield matters most. The first push of a whole history to a fresh remote is precisely when an
 // old secret actually gets published.
-function gitShieldGate(cwd: string, op: 'commit' | 'push'): string | null {
+async function gitShieldGate(cwd: string, op: 'commit' | 'push'): Promise<string | null> {
   let enabled = false
   try {
     enabled = getAiSecuritySettings().commitShield
@@ -1375,8 +1381,8 @@ function gitShieldGate(cwd: string, op: 'commit' | 'push'): string | null {
       op === 'push'
         ? { timeout: 120_000, maxBuffer: 512 * 1024 * 1024 }
         : { timeout: 20_000, maxBuffer: 32 * 1024 * 1024 }
-    const deps = { git: (args: string[]) => safeGit(args, { cwd, ...limits }) }
-    const res = op === 'commit' ? scanStagedDiff(deps) : scanPushRange(deps)
+    const deps = { git: (args: string[]) => safeGitAsync(args, { cwd, ...limits }) }
+    const res = op === 'commit' ? await scanStagedDiff(deps) : await scanPushRange(deps)
     const reason = res.clean ? null : blockMessage(res, op)
     aiSecurityAppend({
       agent: 'git',
@@ -1467,9 +1473,10 @@ function recordWorkOutcome(e: WorkEvent): void {
 ipcMain.handle('git:commit', async (_, { cwd, message }: { cwd: string; message: string }) => {
   try {
     if (!message.trim()) return err('Commit message cannot be empty')
-    const blocked = gitShieldGate(cwd, 'commit')
+    const blocked = await gitShieldGate(cwd, 'commit')
     if (blocked) return err(blocked)
-    safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
+    await safeGitAsync(['commit', '-m', message], { cwd, timeout: 30000 })
+    invalidateGitCache(cwd)
     recordWorkOutcome({ kind: 'git-commit', project: normalizeProjectSlug(cwd), ok: true })
     return ok()
   } catch (e: any) { return err(e.message) }
@@ -1541,9 +1548,9 @@ const realHookDeps: HookDeps = {
 
 /** Resolve the repo's REAL hooks dir (honours worktrees / core.hooksPath), plus an absolute
  *  node and the shipped scanner. Null when `cwd` is not a git repository. */
-function hookPathsFor(cwd: string): HookPaths | null {
+async function hookPathsFor(cwd: string): Promise<HookPaths | null> {
   try {
-    const rel = safeGit(['rev-parse', '--git-path', 'hooks'], { cwd, timeout: 5000 }).trim()
+    const rel = (await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd, timeout: 5000 })).trim()
     if (!rel) return null
     return {
       hooksDir: ghResolve(cwd, rel),
@@ -1557,7 +1564,7 @@ function hookPathsFor(cwd: string): HookPaths | null {
 
 ipcMain.handle('gitHooks:status', async (_, { cwd }: { cwd: string }) => {
   try {
-    const paths = hookPathsFor(cwd)
+    const paths = await hookPathsFor(cwd)
     if (!paths) return err('Not a git repository')
     return ok({ status: hookStatus(paths, realHookDeps) })
   } catch (e: any) { return err(e.message) }
@@ -1574,7 +1581,7 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
       if (picked.canceled || !picked.filePaths[0]) return ok({ canceled: true })
       repo = picked.filePaths[0]
     }
-    const paths = hookPathsFor(repo)
+    const paths = await hookPathsFor(repo)
     if (!paths) return err('Not a git repository — pick the folder that contains .git')
     mkdirSync(paths.hooksDir, { recursive: true })
     const written = installHooks(paths, realHookDeps)
@@ -1586,7 +1593,7 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
 
 ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
   try {
-    const paths = hookPathsFor(cwd)
+    const paths = await hookPathsFor(cwd)
     if (!paths) return err('Not a git repository')
     const removed = uninstallHooks(paths, realHookDeps)
     writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
@@ -1594,43 +1601,90 @@ ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
   } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('gitHooks:list', () => {
+ipcMain.handle('gitHooks:list', async () => {
   try {
-    return ok(readShieldRepos().map((repo) => {
-      const paths = hookPathsFor(repo)
+    return ok(await Promise.all(readShieldRepos().map(async (repo) => {
+      const paths = await hookPathsFor(repo)
       return { repo, status: paths ? hookStatus(paths, realHookDeps) : null }
-    }))
+    })))
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:pull', async (_, { cwd }: { cwd: string }) => {
   try {
-    const output = safeGit(['pull'], { cwd, timeout: 60000 }).trim()
+    const output = (await safeGitAsync(['pull'], { cwd, timeout: 60000 })).trim()
+    invalidateGitCache(cwd)
     return ok(output)
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:push', async (_, { cwd }: { cwd: string }) => {
   try {
-    const blocked = gitShieldGate(cwd, 'push')
+    const blocked = await gitShieldGate(cwd, 'push')
     if (blocked) return err(blocked)
-    const output = safeGit(['push'], { cwd, timeout: 60000 }).trim()
+    const output = (await safeGitAsync(['push'], { cwd, timeout: 60000 })).trim()
+    invalidateGitCache(cwd)
     return ok(output)
   } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('git:file-diff', async (_, { cwd, file }: { cwd: string; file: string }) => {
   try {
-    const diff = safeGit(['diff', '--', file], { cwd, timeout: 5000 })
+    const diff = await safeGitAsync(['diff', '--', file], { cwd, timeout: 5000 })
     return ok(diff)
   } catch { return ok('') }
 })
 
 ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
   try {
-    const root = safeGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }).trim()
+    // A directory's repo root does not change while the app is open, so this one is cached for a
+    // minute rather than for the default window.
+    const root = (await cachedGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }, 60_000)).trim()
     return ok(root)
   } catch { return ok(null) }
+})
+
+// ── Watch the repo, instead of asking it every three seconds ─────────────────────────────────────
+//
+// See gitWatcher.ts for the shape. Main owns the handles (the renderer has no fs), resolves the cwd
+// the panel gave us to a repo ROOT so ten terminals in one repo share one watcher, drops the git
+// cache for that root on every change, and tells the renderer to repaint.
+//
+// The renderer still polls, but at 15 s instead of 3 — a safety net for what a watcher cannot see
+// (network shares, an exhausted inotify budget, a platform without recursive watch), not the
+// mechanism. Nothing here is load-bearing for correctness: if every watcher on the box fails to
+// open, the app behaves exactly like v1.47 with a slower poll.
+const gitWatchers = createGitWatcherRegistry({
+  watch: (target, opts, listener) => fsWatch(target, opts, listener),
+  onChange: (root) => {
+    invalidateGitCache(root)
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('git:tree-changed', { root })
+    }
+  },
+})
+
+/** cwd -> resolved repo root, so unwatch can undo exactly what watch did even if the panel has since
+ *  forgotten which repo it was in. */
+const watchedCwds = new Map<string, string>()
+
+ipcMain.handle('git:watch', async (_, { cwd }: { cwd: string }) => {
+  try {
+    if (!cwd || watchedCwds.has(cwd)) return ok(watchedCwds.get(cwd) ?? null)
+    const root = (await cachedGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }, 60_000)).trim()
+    if (!root) return ok(null)
+    watchedCwds.set(cwd, root)
+    gitWatchers.add(root)
+    return ok(root)
+  } catch { return ok(null) }
+})
+
+ipcMain.handle('git:unwatch', async (_, { cwd }: { cwd: string }) => {
+  const root = watchedCwds.get(cwd)
+  if (!root) return ok(null)
+  watchedCwds.delete(cwd)
+  gitWatchers.remove(root)
+  return ok(root)
 })
 
 // ── Changes rail + the per-terminal git dot ───────────────────────────────────
@@ -1665,12 +1719,12 @@ ipcMain.handle('git:changes', async (_, { cwd }: { cwd: string }) => {
   try {
     const opts = { cwd, timeout: 8000, maxBuffer: 8 * 1024 * 1024 }
     const [status, unstaged, staged] = await Promise.all([
-      safeGitAsync(['status', '--porcelain', '-b', '-z'], opts),
+      cachedGit(['status', '--porcelain', '-b', '-z'], opts),
       // Line counts are decoration; the file list is the payload. A repo with no
       // commits yet has no index to diff against, so let those two fail quietly
       // rather than blanking the whole rail.
-      safeGitAsync(['diff', '--numstat', '-z'], opts).catch(() => ''),
-      safeGitAsync(['diff', '--cached', '--numstat', '-z'], opts).catch(() => ''),
+      cachedGit(['diff', '--numstat', '-z'], opts).catch(() => ''),
+      cachedGit(['diff', '--cached', '--numstat', '-z'], opts).catch(() => ''),
     ])
     return ok(buildChanges(status, unstaged, staged))
   } catch (e: any) { return err(e.message) }
@@ -1681,7 +1735,9 @@ ipcMain.handle('git:changes', async (_, { cwd }: { cwd: string }) => {
 // instead of painting an error onto a sidebar row.
 ipcMain.handle('git:change-counts', async (_, { cwd }: { cwd: string }) => {
   try {
-    const status = await safeGitAsync(
+    // Same argv as the rail's first command above, so on a repo with both open this is one spawn
+    // between them rather than two.
+    const status = await cachedGit(
       ['status', '--porcelain', '-b', '-z'],
       { cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
     )
@@ -1748,7 +1804,7 @@ ipcMain.handle('git:commit-diff', async (_, { cwd, sha }: { cwd: string; sha: st
 // review mode cleanly.
 ipcMain.handle('git:rev-parse-head', async (_, { cwd }: { cwd: string }) => {
   try {
-    const sha = safeGit(['rev-parse', 'HEAD'], { cwd, timeout: 3000 }).trim()
+    const sha = (await safeGitAsync(['rev-parse', 'HEAD'], { cwd, timeout: 3000 })).trim()
     return ok(sha)
   } catch { return ok(null) }
 })
@@ -1760,7 +1816,7 @@ ipcMain.handle('git:diff-range', async (_, { cwd, from, to }: { cwd: string; fro
     if (!isValidGitRef(from)) return err('Invalid "from" ref')
     if (to !== undefined && !isValidGitRef(to)) return err('Invalid "to" ref')
     const range = to ? `${from}..${to}` : from
-    const diff = safeGit(['diff', '--no-color', '--no-ext-diff', range], {
+    const diff = await safeGitAsync(['diff', '--no-color', '--no-ext-diff', range], {
       cwd, timeout: 15000, maxBuffer: 16 * 1024 * 1024,
     })
     return ok(diff)
@@ -1774,7 +1830,7 @@ ipcMain.handle('git:files-in-range', async (_, { cwd, from, to }: { cwd: string;
     if (!isValidGitRef(from)) return err('Invalid "from" ref')
     if (to !== undefined && !isValidGitRef(to)) return err('Invalid "to" ref')
     const range = to ? `${from}..${to}` : from
-    const raw = safeGit(['diff', '--name-status', range], { cwd, timeout: 5000 }).trim()
+    const raw = (await safeGitAsync(['diff', '--name-status', range], { cwd, timeout: 5000 })).trim()
     const files: { file: string; status: string }[] = []
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue
@@ -1799,7 +1855,8 @@ ipcMain.handle('git:apply-patch', async (_, { cwd, patch, reverse }: { cwd: stri
       const args = reverse
         ? ['apply', '-R', '--whitespace=nowarn', tmpPath]
         : ['apply', '--whitespace=nowarn', tmpPath]
-      safeGit(args, { cwd, timeout: 10000 })
+      await safeGitAsync(args, { cwd, timeout: 10000 })
+      invalidateGitCache(cwd)
       return ok()
     } finally {
       try { require('fs').unlinkSync(tmpPath) } catch {}
@@ -1813,7 +1870,8 @@ ipcMain.handle('git:checkout-file', async (_, { cwd, sha, files }: { cwd: string
   try {
     if (!files.length) return err('No files specified')
     if (!isValidGitRef(sha)) return err('Invalid SHA')
-    safeGit(['checkout', sha, '--', ...files], { cwd, timeout: 10000 })
+    await safeGitAsync(['checkout', sha, '--', ...files], { cwd, timeout: 10000 })
+    invalidateGitCache(cwd)
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -1823,7 +1881,8 @@ ipcMain.handle('git:checkout-file', async (_, { cwd, sha, files }: { cwd: string
 ipcMain.handle('git:reset-hard', async (_, { cwd, sha }: { cwd: string; sha: string }) => {
   try {
     if (!sha || !/^[a-f0-9]{7,40}$/i.test(sha)) return err('Invalid SHA')
-    safeGit(['reset', '--hard', sha], { cwd, timeout: 10000 })
+    await safeGitAsync(['reset', '--hard', sha], { cwd, timeout: 10000 })
+    invalidateGitCache(cwd)
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -1833,11 +1892,12 @@ ipcMain.handle('git:reset-hard', async (_, { cwd, sha }: { cwd: string; sha: str
 ipcMain.handle('git:commit-all', async (_, { cwd, message }: { cwd: string; message: string }) => {
   try {
     if (!message.trim()) return err('Commit message cannot be empty')
-    safeGit(['add', '-A'], { cwd, timeout: 15000 })
+    await safeGitAsync(['add', '-A'], { cwd, timeout: 15000 })
     // Gate AFTER `add -A` so the staged diff the shield scans is the complete set.
-    const blocked = gitShieldGate(cwd, 'commit')
+    const blocked = await gitShieldGate(cwd, 'commit')
     if (blocked) return err(blocked)
-    safeGit(['commit', '-m', message], { cwd, timeout: 30000 })
+    await safeGitAsync(['commit', '-m', message], { cwd, timeout: 30000 })
+    invalidateGitCache(cwd)
     recordWorkOutcome({ kind: 'git-commit', project: normalizeProjectSlug(cwd), ok: true })
     return ok()
   } catch (e: any) { return err(e.message) }
@@ -2514,7 +2574,7 @@ ipcMain.handle('swarm:run-command', async (_, { cwd, command }: { cwd: string; c
     parentWindow: mainWindow,
   })
   if (!trusted) return err('Workspace not trusted — command cancelled')
-  const result = runSafeCommand(parsed, { cwd, timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
+  const result = await runSafeCommandAsync(parsed, { cwd, timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
   // Ground truth, in BOTH directions: a passing suite raises competence for this
   // project, a failing one lowers it. This is the signal that makes the calibration
   // honest instead of a ratchet that only ever goes up.
@@ -2530,8 +2590,8 @@ ipcMain.handle('swarm:run-command', async (_, { cwd, command }: { cwd: string; c
 ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
   try {
     const [branchRes, statusRes] = await Promise.all([
-      safeGitAsync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).catch(() => ''),
-      safeGitAsync(['status', '--porcelain'], { cwd, timeout: 5000 }),
+      cachedGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 }).catch(() => ''),
+      cachedGit(['status', '--porcelain'], { cwd, timeout: 5000 }),
     ])
     const branch = branchRes.trim()
     const statusRaw = statusRes.trim()
@@ -2557,8 +2617,8 @@ ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
 ipcMain.handle('terminal:git-info', async (_, { cwd }) => {
   try {
     const [status, recentCommits] = await Promise.all([
-      safeGitAsync(['status', '--short'], { cwd, timeout: 3000 }).then(s => s.trim()).catch(() => ''),
-      safeGitAsync(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).then(s => s.trim()).catch(() => ''),
+      cachedGit(['status', '--short'], { cwd, timeout: 3000 }).then(s => s.trim()).catch(() => ''),
+      cachedGit(['log', '--oneline', '-5'], { cwd, timeout: 3000 }).then(s => s.trim()).catch(() => ''),
     ])
     return ok({ status, recentCommits })
   } catch (e: any) { return err(e.message) }
@@ -2571,7 +2631,7 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
   try {
     const liveCwd = await getTerminalCwdAsync(terminalId)
     const cwd = liveCwd || fallbackCwd
-    const gitBranch = await safeGitAsync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 })
+    const gitBranch = await cachedGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 })
       .then((s) => s.trim())
       .catch(() => '')
     return ok({ cwd, gitBranch })
@@ -2587,15 +2647,14 @@ ipcMain.handle('terminal:status', async (_, { terminalId, fallbackCwd }) => {
 // Check if a command exists — tries `where`/`which` against the *extended*
 // PATH (covers NVM/asdf/volta and macOS GUI-launch PATH gaps from issue #8),
 // then scans known install dirs as a belt-and-braces fallback.
-function findAgentInstalled(command: string): boolean {
-  const execOpts = {
-    stdio: 'ignore' as const,
-    timeout: 3000,
-    windowsHide: true,
-    env: { ...process.env, PATH: getExtendedPath() },
-  }
+async function findAgentInstalled(command: string): Promise<boolean> {
   try {
-    execSync(process.platform === 'win32' ? `where ${command}` : `which ${command}`, execOpts)
+    // `where`/`which` is a SPAWN, and a spawn on the main thread is a frozen PTY (procHost.ts).
+    // Half a dozen of these run back to back on every agents:detect, which is every window open.
+    await execShellOffThread(process.platform === 'win32' ? `where ${command}` : `which ${command}`, {
+      timeout: 3000,
+      env: { ...process.env, PATH: getExtendedPath() },
+    })
     return true
   } catch {}
 
@@ -2633,12 +2692,12 @@ ipcMain.handle('agents:detect', async () => {
   const agents = ['claude', 'codex']
   const results: Record<string, boolean> = {}
   for (const agent of agents) {
-    results[agent] = findAgentInstalled(agent)
+    results[agent] = await findAgentInstalled(agent)
   }
   // Gemini's CLI is the Antigravity CLI (`agy`) now — both the sidebar "Gemini CLI" profile
   // (id 'gemini') and the Second Opinion Gemini option key off agy availability, not the
   // deprecated `gemini` binary.
-  results['agy'] = findAgentInstalled('agy')
+  results['agy'] = await findAgentInstalled('agy')
   results['gemini'] = results['agy']
   // Test hook: force a comma-separated list of agent ids to report as not installed,
   // so Playwright can deterministically open the InstallHint modal for that agent.
@@ -2898,6 +2957,20 @@ if (!gotTheLock) {
   let mcpExecSeq = 0
 
   app.whenReady().then(() => {
+    // FIRST, before anything can want a child process. Every spawn main used to do — git for the
+    // status bar and the Changes rail, `where`/`which` for agent detection, the login-shell PATH
+    // dump, swarm test runs — now goes to the procHost utilityProcess instead. CreateProcess blocks
+    // the thread that calls it, and this thread is the one pumping every PTY; that is where the ten
+    // seconds of typing lag came from. See procHost.ts for the measurements.
+    setProcSpawner(() => createProcHostTransport())
+    // Warm the shell-PATH cache off-thread so the sync readers of it never fork a login shell.
+    // No-op on Windows, where PATH is global and the sync version short-circuits anyway.
+    void primeInteractiveShellPath()
+    // Same idea for the bundled-tools probe: spawnTerminal asks whether jq/yq/nano exist, and
+    // asking it there means three CreateProcess calls on the main thread while the user waits for
+    // the terminal to open. Answered here instead, long before the first terminal.
+    void primeBundledToolsCheck()
+
     // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
     // macOS, without which Cmd+Q and copy/paste in native inputs do not work. See appMenu.ts.
     installApplicationMenu(Menu, process.platform)

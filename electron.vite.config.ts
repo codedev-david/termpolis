@@ -29,6 +29,11 @@ export default defineConfig({
           // index.js so proxySupervisor can utilityProcess.fork() it. Compresses Claude's
           // tool_result/image bytes off the main (PTY/paint) thread.
           headroomProxy: resolve(__dirname, 'src/main/headroomProxy/proxyMain.ts'),
+          // v1.47.1: the process host. Main is the thread that pumps every PTY, and uv_spawn
+          // (CreateProcess on Windows) blocks the thread that calls it — measured at 48-623 ms per
+          // git spawn, which is where ten seconds of typing lag came from. Every child process main
+          // wants is forked from HERE instead.
+          procHost: resolve(__dirname, 'src/main/procHost.ts'),
           // Remote bridge, forked by remoteBridgeSupervisor. Its whole input is
           // an untrusted network, so a crash there must not take the app down, and
           // main stays free to pump PTY.

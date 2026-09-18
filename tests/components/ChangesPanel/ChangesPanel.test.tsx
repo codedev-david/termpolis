@@ -407,11 +407,11 @@ describe('ChangesPanel — opening a diff', () => {
 })
 
 describe('ChangesPanel — lifecycle', () => {
-  it('polls on a 3s cycle keyed to the repo root', async () => {
+  it('falls back to a slow poll keyed to the repo root (the watcher is the fast path)', async () => {
     mount()
     await waitFor(() => expect(subscribe).toHaveBeenCalled())
     expect((subscribe as any).mock.calls[0][0]).toBe('changes-panel-/repo')
-    expect((subscribe as any).mock.calls[0][2]).toBe(3000)
+    expect((subscribe as any).mock.calls[0][2]).toBe(15000)
   })
 
   it('refreshes when the poll fires', async () => {

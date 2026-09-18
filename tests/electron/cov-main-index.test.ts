@@ -64,7 +64,10 @@ const M = vi.hoisted(() => ({
   collectDiagnostics: vi.fn(() => ({ os: 'win32', version: '1.0.0' })),
   // git
   safeGit: vi.fn(() => ''),
-  safeGitAsync: vi.fn(async () => ''),
+  // v1.47.1: every handler spawns git off the main thread, so safeGitAsync is the one production
+  // reaches. It DELEGATES to safeGit by default so a test can still stub either name and get the
+  // same single queue of answers; stubbing safeGitAsync directly overrides the delegation.
+  safeGitAsync: vi.fn(async (...a: unknown[]) => (M.safeGit as unknown as (...x: unknown[]) => string)(...a)),
   // git hooks
   hookStatus: vi.fn(() => ({ installed: false })),
   installHooks: vi.fn(() => []),
@@ -241,6 +244,8 @@ vi.mock('electron', () => ({
 // ---------------------------------------------------------------------------
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: M.spawnTerminal,
   killTerminal: M.killTerminal,
   writeToTerminal: M.writeToTerminal,
@@ -359,6 +364,10 @@ vi.mock('../../src/main/agentPaths', () => ({
   getExtendedPath: vi.fn(() => '/usr/bin:/opt/agent-bin'),
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),
+  // v1.47.1: main primes the login-shell PATH ONCE at startup instead of shelling out the
+  // first time an agent launches, and reads it back asynchronously thereafter.
+  primeInteractiveShellPath: vi.fn(async () => ''),
+  getExtendedPathAsync: vi.fn(async () => '/usr/bin:/opt/agent-bin'),
 }))
 vi.mock('../../src/main/groqKeyStore', () => ({
   getGroqKey: vi.fn(() => null), setGroqKey: vi.fn(),

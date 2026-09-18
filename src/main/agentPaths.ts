@@ -22,6 +22,7 @@
 // the whole Electron main module through resetModules.
 
 import { execSync } from 'child_process'
+import { execShellOffThread } from './procClient'
 import { readdirSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -122,6 +123,46 @@ export function getAgentExtraPaths(): string[] {
 export function getExtendedPath(): string {
   const currentPath = process.env.PATH || ''
   const shellPath = getInteractiveShellPath()
+  const sep = process.platform === 'win32' ? ';' : ':'
+  return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(sep)
+}
+
+/**
+ * Fill the shell-PATH cache without spawning on the main thread.
+ *
+ * The sync `getInteractiveShellPath` forks a login shell — `zsh -ilc`, which sources the user's
+ * whole dotfile chain and can take hundreds of milliseconds — and every one of those milliseconds
+ * is a frozen main thread (see procHost.ts). Once this has run, the cache is warm and every sync
+ * caller returns it without spawning anything, so their signatures never had to change.
+ *
+ * Called once at startup. win32 short-circuits exactly as the sync version does: Windows PATH is
+ * global, there is no shell to ask.
+ */
+export async function primeInteractiveShellPath(): Promise<string> {
+  if (_cachedShellPath !== null) return _cachedShellPath
+  if (process.platform === 'win32') {
+    _cachedShellPath = ''
+    return _cachedShellPath
+  }
+  try {
+    const shell = process.env.SHELL || '/bin/zsh'
+    const out = await execShellOffThread(
+      `${shell} -ilc 'printf "TERMPOLIS_PATH_BEGIN:%s\\n" "$PATH"'`,
+      { timeout: 5000 },
+    )
+    const m = out.match(/TERMPOLIS_PATH_BEGIN:(.*)/)
+    _cachedShellPath = m ? m[1].trim() : ''
+  } catch {
+    _cachedShellPath = ''
+  }
+  return _cachedShellPath
+}
+
+/** getExtendedPath with the shell fork done off-thread. Identical result — the sync version reads
+ *  the same cache this primes. */
+export async function getExtendedPathAsync(): Promise<string> {
+  const currentPath = process.env.PATH || ''
+  const shellPath = await primeInteractiveShellPath()
   const sep = process.platform === 'win32' ? ';' : ':'
   return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(sep)
 }

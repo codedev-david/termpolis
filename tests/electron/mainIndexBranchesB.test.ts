@@ -149,6 +149,8 @@ vi.mock('os', async (importOriginal) => {
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: M.spawnTerminal,
   killTerminal: M.killTerminal,
   writeToTerminal: M.writeToTerminal,
@@ -286,6 +288,10 @@ vi.mock('../../src/main/agentPaths', () => ({
   getExtendedPath: vi.fn(() => '/usr/bin:/opt/agent-bin'),
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),
+  // v1.47.1: main primes the login-shell PATH ONCE at startup instead of shelling out the
+  // first time an agent launches, and reads it back asynchronously thereafter.
+  primeInteractiveShellPath: vi.fn(async () => ''),
+  getExtendedPathAsync: vi.fn(async () => '/usr/bin:/opt/agent-bin'),
 }))
 vi.mock('../../src/main/groqKeyStore', () => ({
   getGroqKey: vi.fn(() => null), setGroqKey: vi.fn(),

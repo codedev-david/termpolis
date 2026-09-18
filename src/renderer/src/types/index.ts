@@ -371,6 +371,13 @@ export interface TermpolisAPI {
   // and trims). These read the -z forms instead. See src/main/gitChanges.ts.
   gitChanges: (cwd: string) => Promise<IpcResponse<GitChangesResult>>
   gitChangeCounts: (cwd: string) => Promise<IpcResponse<GitChangeCounts | null>>
+  /** Ask main to watch this directory's repo. Resolves to the repo ROOT it is watching, or null
+   *  when `cwd` is not in a repo. Ref-counted in main — every watch needs its unwatch. */
+  gitWatch: (cwd: string) => Promise<IpcResponse<string | null>>
+  gitUnwatch: (cwd: string) => Promise<IpcResponse<string | null>>
+  /** Fires when anything under a watched repo changes on disk. `root` is the repo root, which is at
+   *  or above the cwd that asked for the watch. Returns an unsubscribe. */
+  onGitTreeChanged: (cb: (data: { root: string }) => void) => () => void
   gitChangeDiff: (cwd: string, file: string, mode: GitChangeMode) => Promise<IpcResponse<string>>
   /** Commits `@{upstream}..HEAD` — the unpushed work the dot counts as outstanding. */
   gitUnpushed: (cwd: string) => Promise<IpcResponse<GitUnpushedCommit[]>>

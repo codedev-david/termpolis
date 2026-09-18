@@ -28,64 +28,64 @@ const STAGED = 'diff --cached --no-color --no-ext-diff'
 const UNPUSHED = 'log -p --no-color --not --remotes'
 
 describe('commitScan — staged diff (what `git commit` will capture)', () => {
-  it('flags a secret in the staged diff and names the rule', () => {
+  it('flags a secret in the staged diff and names the rule', async () => {
     const diff = `diff --git a/.env b/.env\n+++ b/.env\n+AWS_ACCESS_KEY_ID=${AWS_KEY}\n`
-    const res = scanStagedDiff({ git: fakeGit({ [STAGED]: diff }) })
+    const res = await scanStagedDiff({ git: fakeGit({ [STAGED]: diff }) })
     expect(res.clean).toBe(false)
     expect(res.hitCount).toBe(1)
     expect(res.hits[0].rule).toBe('aws_access_key')
     expect(res.scannedBytes).toBe(diff.length)
   })
 
-  it('passes a clean staged diff', () => {
-    const res = scanStagedDiff({ git: fakeGit({ [STAGED]: '+const answer = 42\n' }) })
+  it('passes a clean staged diff', async () => {
+    const res = await scanStagedDiff({ git: fakeGit({ [STAGED]: '+const answer = 42\n' }) })
     expect(res.clean).toBe(true)
     expect(res.hitCount).toBe(0)
     expect(res.hits).toEqual([])
   })
 
-  it('is clean when nothing is staged', () => {
-    const res = scanStagedDiff({ git: fakeGit({ [STAGED]: '' }) })
+  it('is clean when nothing is staged', async () => {
+    const res = await scanStagedDiff({ git: fakeGit({ [STAGED]: '' }) })
     expect(res.clean).toBe(true)
     expect(res.scannedBytes).toBe(0)
   })
 })
 
 describe('commitScan — push range (what `git push` will send)', () => {
-  it('scans the patch of every unpushed commit and flags a secret', () => {
+  it('scans the patch of every unpushed commit and flags a secret', async () => {
     const patch = `commit abc123\n+++ b/config.ts\n+const key = "${OPENAI_KEY}"\n`
-    const res = scanPushRange({ git: fakeGit({ [UNPUSHED]: patch }) })
+    const res = await scanPushRange({ git: fakeGit({ [UNPUSHED]: patch }) })
     expect(res.clean).toBe(false)
     expect(res.hits.some((h) => h.rule === 'openai_key')).toBe(true)
   })
 
-  it('is clean when there is nothing unpushed', () => {
-    const res = scanPushRange({ git: fakeGit({ [UNPUSHED]: '' }) })
+  it('is clean when there is nothing unpushed', async () => {
+    const res = await scanPushRange({ git: fakeGit({ [UNPUSHED]: '' }) })
     expect(res.clean).toBe(true)
     expect(res.hitCount).toBe(0)
   })
 
-  it('catches a secret that is already in history but not yet on a remote', () => {
+  it('catches a secret that is already in history but not yet on a remote', async () => {
     // The whole point of the push gate: the commit gate can be bypassed with
     // --no-verify or a commit made outside Termpolis. The push is the last line.
     const patch = `commit deadbeef\n+AWS_ACCESS_KEY_ID=${AWS_KEY}\n`
-    const res = scanPushRange({ git: fakeGit({ [UNPUSHED]: patch }) })
+    const res = await scanPushRange({ git: fakeGit({ [UNPUSHED]: patch }) })
     expect(res.clean).toBe(false)
     expect(res.hitCount).toBe(1)
   })
 })
 
 describe('commitScan — block message', () => {
-  it('names the offending rule labels and the operation', () => {
-    const res = scanStagedDiff({ git: fakeGit({ [STAGED]: `+k=${AWS_KEY}\n` }) })
+  it('names the offending rule labels and the operation', async () => {
+    const res = await scanStagedDiff({ git: fakeGit({ [STAGED]: `+k=${AWS_KEY}\n` }) })
     const msg = blockMessage(res, 'commit')
     expect(msg).toContain('Blocked commit')
     expect(msg).toContain('AWS Access Key ID')
     expect(msg).toContain('1 secret')
   })
 
-  it('pluralises and de-duplicates repeated rule labels', () => {
-    const res = scanPushRange({ git: fakeGit({ [UNPUSHED]: `+a=${AWS_KEY}\n+b=${OPENAI_KEY}\n` }) })
+  it('pluralises and de-duplicates repeated rule labels', async () => {
+    const res = await scanPushRange({ git: fakeGit({ [UNPUSHED]: `+a=${AWS_KEY}\n+b=${OPENAI_KEY}\n` }) })
     const msg = blockMessage(res, 'push')
     expect(msg).toContain('Blocked push')
     expect(msg).toContain('2 secrets')

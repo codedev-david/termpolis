@@ -14,8 +14,13 @@
 import { scanText } from './aiSecurity'
 
 export interface CommitScanDeps {
-  /** Run a git command in the target repo and return stdout. */
-  git: (args: string[]) => string
+  /** Run a git command in the target repo and return stdout.
+   *
+   *  Sync OR async: since v1.47.1 the real implementation spawns in the procHost utilityProcess and
+   *  returns a promise, because the push scan (`git log -p --not --remotes`, unbounded, 120 s
+   *  timeout, 512 MB buffer) used to run that entire diff on the thread pumping every PTY. Tests
+   *  that hand in a plain string still typecheck and still work. */
+  git: (args: string[]) => string | Promise<string>
 }
 
 export interface CommitScanResult {
@@ -32,8 +37,8 @@ function scan(text: string): CommitScanResult {
 }
 
 /** What `git commit` is about to capture: the staged diff. */
-export function scanStagedDiff(deps: CommitScanDeps): CommitScanResult {
-  return scan(deps.git(['diff', '--cached', '--no-color', '--no-ext-diff']))
+export async function scanStagedDiff(deps: CommitScanDeps): Promise<CommitScanResult> {
+  return scan(await deps.git(['diff', '--cached', '--no-color', '--no-ext-diff']))
 }
 
 /** What `git push` is about to send: the full patch of every commit not yet on ANY
@@ -41,8 +46,8 @@ export function scanStagedDiff(deps: CommitScanDeps): CommitScanResult {
  *  and root commits, where a naive `@{u}..HEAD` range errors out when there is no
  *  upstream. The push gate is the last line of defence: the commit gate can be
  *  bypassed with `--no-verify`, or the commit may have been made outside Termpolis. */
-export function scanPushRange(deps: CommitScanDeps): CommitScanResult {
-  return scan(deps.git(['log', '-p', '--no-color', '--not', '--remotes']))
+export async function scanPushRange(deps: CommitScanDeps): Promise<CommitScanResult> {
+  return scan(await deps.git(['log', '-p', '--no-color', '--not', '--remotes']))
 }
 
 /** A one-line, human-readable reason to surface when a git op is blocked. */

@@ -14,7 +14,7 @@ import { execFile } from 'child_process'
 import { normalizeNewlines } from './lineEndings'
 import { join } from 'path'
 import { matchSensitiveFile } from './sensitiveFileWatcher'
-import { safeGit } from './gitCommand'
+import { safeGitAsync } from './gitCommand'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
 
 // Promise wrapper that references execFile only when CALLED (not at module
@@ -187,11 +187,11 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   try {
     stdout = await execGit(['-C', repoRoot, 'ls-files'], { maxBuffer: 64 * 1024 * 1024 })
   } catch {
-    // A packaged app can inherit a PATH without git — retry via safeGit, which resolves the
+    // A packaged app can inherit a PATH without git — retry via safeGitAsync, which resolves the
     // binary from common install locations. A REAL "not a repo" error still throws → []. This is
     // what stops a transient git-off-PATH from silently wiping the code graph.
     try {
-      stdout = safeGit(['-C', repoRoot, 'ls-files'], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 })
+      stdout = await safeGitAsync(['-C', repoRoot, 'ls-files'], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 })
     } catch {
       return []
     }

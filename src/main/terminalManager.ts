@@ -2,8 +2,9 @@ import * as pty from 'node-pty'
 import { homedir, tmpdir } from 'os'
 import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { execSync, exec } from 'child_process'
+import { execSync } from 'child_process'
 import { app } from 'electron'
+import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import {
@@ -56,11 +57,46 @@ const SPAWN_ROWS = 24
 // Cache tool availability check — run once, reuse for all terminal spawns
 let bundledToolsNeeded: boolean | null = null
 
+/** `where`/`which` for one tool. Shared so the sync and primed paths can never ask different
+ *  questions and cache different answers. */
+function toolProbe(cmd: string): string {
+  return process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`
+}
+
+/**
+ * Fill the bundled-tools cache without spawning on the main thread.
+ *
+ * The sync version below runs up to three `where`/`which` probes, and it runs them from inside
+ * spawnTerminal — so they land on the main thread at the exact moment the user is waiting for a
+ * terminal to appear, and on Windows each one costs tens of milliseconds of CreateProcess on the
+ * thread that pumps every PTY (see procHost.ts). Priming at startup makes the cache warm before the
+ * first terminal is ever opened, and the sync function then returns it without spawning anything.
+ *
+ * The three probes run in parallel here, in the host, rather than short-circuiting: off the main
+ * thread the cost of asking all three is wall-clock free, and the answer is identical.
+ */
+export async function primeBundledToolsCheck(): Promise<boolean> {
+  if (bundledToolsNeeded !== null) return bundledToolsNeeded
+  const has = async (cmd: string): Promise<boolean> => {
+    try {
+      const r = await execShellCaptureOffThread(toolProbe(cmd), { timeout: 2000 })
+      return !r.error
+    } catch {
+      // No host and no in-process fallback either — treat as "missing", exactly as the sync
+      // version's catch does.
+      return false
+    }
+  }
+  const found = await Promise.all([has('jq'), has('yq'), has('nano')])
+  bundledToolsNeeded = found.some((ok) => !ok)
+  return bundledToolsNeeded
+}
+
 function checkBundledToolsNeeded(): boolean {
   if (bundledToolsNeeded !== null) return bundledToolsNeeded
   const check = (cmd: string) => {
     try {
-      execSync(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`, { stdio: 'ignore', timeout: 2000, windowsHide: true })
+      execSync(toolProbe(cmd), { stdio: 'ignore', timeout: 2000, windowsHide: true })
       return true
     } catch { return false }
   }
@@ -244,6 +280,13 @@ function cwdProbeCommand(pid: number): string {
   return `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`
 }
 
+/**
+ * @deprecated No production caller since v1.47.1 — use getTerminalCwdAsync.
+ *
+ * Kept only because it is the one probe with a meaningful sync contract, and deleting a public
+ * export is not worth the churn. Do NOT wire it back up: `lsof` takes 50-500 ms and this blocks the
+ * thread that pumps every PTY for all of it.
+ */
 export function getTerminalCwd(id: string): string | null {
   // Windows: no reliable way to get a child process's working directory
   // without shell integration. Return null to use the fallback cwd.
@@ -266,20 +309,18 @@ export function getTerminalCwd(id: string): string | null {
  * On macOS there is no /proc, so the probe ALWAYS falls through to `lsof`, which takes 50-500 ms.
  * getTerminalCwd is called from the `terminal:status` handler, which the status bar polls every 5 s
  * PER terminal — so the sync version froze the PTY-pumping thread for a few hundred ms every 5 s per
- * open terminal, on exactly the machines (Macs) where lsof is slowest. This runs the same probe via
- * async `exec`, so the poll costs the main thread nothing.
+ * open terminal, on exactly the machines (Macs) where lsof is slowest. This runs the same probe in
+ * the proc host, so neither the spawn nor the wait costs the main thread anything.
  */
-export function getTerminalCwdAsync(id: string): Promise<string | null> {
-  if (process.platform === 'win32') return Promise.resolve(null)
+export async function getTerminalCwdAsync(id: string): Promise<string | null> {
+  if (process.platform === 'win32') return null
   const pid = getTerminalPid(id)
-  if (!pid) return Promise.resolve(null)
-  return new Promise((resolve) => {
-    exec(cwdProbeCommand(pid), { timeout: 2000 }, (err, stdout) => {
-      if (err) { resolve(null); return }
-      const cwd = String(stdout).trim()
-      resolve(cwd || null)
-    })
-  })
+  if (!pid) return null
+  // Via the proc host, so even the CreateProcess/fork half of the spawn happens off the main
+  // thread. `exec` here would still have blocked the PTY pump for the duration of uv_spawn.
+  const r = await execShellCaptureOffThread(cwdProbeCommand(pid), { timeout: 2000 })
+  if (r.error) return null
+  return r.stdout.trim() || null
 }
 
 /**

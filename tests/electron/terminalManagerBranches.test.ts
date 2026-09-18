@@ -34,6 +34,7 @@ const h = vi.hoisted(() => {
     ),
     execSync: vi.fn((_cmd: string, _opts?: unknown) => Buffer.from('')),
     exec: vi.fn(),
+    execFile: vi.fn(),
     existsSync: vi.fn((_p: string) => true),
     homedir: vi.fn(() => '/home/testuser'),
     // Mutable so a test can flip the app into "packaged" mode; terminalManager
@@ -53,13 +54,18 @@ vi.mock('node-pty', () => ({ spawn: h.spawn }))
 vi.mock('electron', () => ({ app: h.app }))
 vi.mock('fs', () => ({ existsSync: h.existsSync, default: { existsSync: h.existsSync } }))
 vi.mock('os', () => ({ homedir: h.homedir, default: { homedir: h.homedir } }))
+// `execFile` is mocked for procHost's argv runner, which terminalManager now reaches through
+// procClient. Nothing here uses the argv form, but leaving it off the factory would make any
+// accidental use throw "No execFile export is defined" instead of failing on an assertion.
 vi.mock('child_process', () => ({
   execSync: h.execSync,
   exec: h.exec,
-  default: { execSync: h.execSync, exec: h.exec },
+  execFile: h.execFile,
+  default: { execSync: h.execSync, exec: h.exec, execFile: h.execFile },
 }))
 
 type TerminalManager = typeof import('../../src/main/terminalManager')
+type ExecCallback = (err: Error | null, stdout: string, stderr: string) => void
 
 /** Re-import terminalManager with its memoised tool check and process map wiped. */
 async function freshManager(): Promise<TerminalManager> {
@@ -90,6 +96,10 @@ describe('terminalManager — defensive and non-Windows branches', () => {
     h.existsSync.mockImplementation(() => true)
     h.homedir.mockImplementation(() => '/home/testuser')
     h.execSync.mockImplementation(() => Buffer.from(''))
+    // procClient with no utilityProcess forked runs the probe in-process through procHost,
+    // which calls `exec`. Left unarmed it returns undefined and the callback never fires, so
+    // an awaited probe would hang rather than fail.
+    h.exec.mockImplementation((_cmd: string, _opts: unknown, cb: ExecCallback) => cb(null, '', ''))
     h.app.isPackaged = false
 
     // The e2e shim dir would prepend an extra PATH entry and make the exact
@@ -239,5 +249,79 @@ describe('terminalManager — defensive and non-Windows branches', () => {
     // "unknown" (null, so the caller keeps the configured cwd), never as ''.
     h.execSync.mockImplementation(() => Buffer.from('   \n'))
     expect(tm.getTerminalCwd('cwd-probe')).toBeNull()
+  })
+
+  // ---- primeBundledToolsCheck: the same answer as the sync check, off the main thread ----
+
+  it('fills the cache at startup so the first spawn never probes on the main thread', async () => {
+    setPlatform('linux')
+    process.env.PATH = '/usr/bin:/bin'
+    const tm = await freshManager()
+
+    await expect(tm.primeBundledToolsCheck()).resolves.toBe(false)
+    // All three are asked, and all three go through `exec` (the proc host), not `execSync`.
+    expect(h.exec.mock.calls.map((c) => c[0])).toEqual(['which jq', 'which yq', 'which nano'])
+    expect(h.execSync).not.toHaveBeenCalled()
+
+    // This is the whole point: spawnTerminal used to run those probes itself, on the thread that
+    // pumps every PTY, while the user waited for the terminal to appear.
+    tm.spawnTerminal('primed', '/bin/bash', '/tmp', vi.fn())
+    expect(h.execSync).not.toHaveBeenCalled()
+    expect(h.spawn.mock.calls[0][2].env?.PATH).toBe('/usr/bin:/bin')
+  })
+
+  it('probes all three in parallel rather than short-circuiting on the first miss', async () => {
+    setPlatform('linux')
+    process.env.PATH = '/usr/bin'
+    // jq missing. The sync version stops there because `||` short-circuits; off the main thread the
+    // other two cost nothing in wall-clock, and asking them keeps the probe one shape.
+    h.exec.mockImplementation((cmd: string, _opts: unknown, cb: ExecCallback) => {
+      if (cmd === 'which jq') cb(new Error('Command failed'), '', 'not found')
+      else cb(null, '/usr/bin/x\n', '')
+    })
+
+    const tm = await freshManager()
+    await expect(tm.primeBundledToolsCheck()).resolves.toBe(true)
+    expect(h.exec.mock.calls.map((c) => c[0])).toEqual(['which jq', 'which yq', 'which nano'])
+  })
+
+  it('asks Windows the Windows question', async () => {
+    setPlatform('win32')
+    process.env.PATH = 'C:\\Windows'
+    const tm = await freshManager()
+    await tm.primeBundledToolsCheck()
+    expect(h.exec.mock.calls.map((c) => c[0])).toEqual(['where jq', 'where yq', 'where nano'])
+  })
+
+  it('answers from the cache on a second call without probing again', async () => {
+    setPlatform('linux')
+    const tm = await freshManager()
+    await tm.primeBundledToolsCheck()
+    h.exec.mockClear()
+    await expect(tm.primeBundledToolsCheck()).resolves.toBe(false)
+    expect(h.exec).not.toHaveBeenCalled()
+  })
+
+  it('reads a probe that cannot run at all as "missing", exactly as the sync version does', async () => {
+    setPlatform('linux')
+    // No proc host AND no in-process fallback: the spawn itself throws. Treating that as "tool is
+    // present" would drop the bundled tools off PATH for the whole session.
+    h.exec.mockImplementation(() => {
+      throw new Error('spawn ENOMEM')
+    })
+    const tm = await freshManager()
+    await expect(tm.primeBundledToolsCheck()).resolves.toBe(true)
+  })
+
+  it('leaves the sync check authoritative when nothing primed it', async () => {
+    setPlatform('linux')
+    h.execSync.mockImplementation(() => Buffer.from('/usr/bin/jq\n'))
+    const tm = await freshManager()
+    tm.spawnTerminal('unprimed', '/bin/bash', '/tmp', vi.fn())
+    expect(h.execSync.mock.calls.map((c) => c[0])).toEqual(['which jq', 'which yq', 'which nano'])
+    // And the primed reader then agrees with it instead of re-probing.
+    h.exec.mockClear()
+    await expect(tm.primeBundledToolsCheck()).resolves.toBe(false)
+    expect(h.exec).not.toHaveBeenCalled()
   })
 })

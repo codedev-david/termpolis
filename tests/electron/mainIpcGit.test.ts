@@ -77,6 +77,9 @@ const H = vi.hoisted(() => {
     // execFile (CALLBACK style) — the polled git handlers use it so they don't block the main
     // thread on a spawn. Defaults to "no output, no error"; tests override per command.
     execFile: vi.fn((_bin: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => { cb(null, '') }),
+    // exec (CALLBACK style, THROUGH A SHELL) — runSafeCommandAsync takes this path on win32, where
+    // npm/npx are .cmd shims a shell-less spawn cannot resolve at all.
+    exec: vi.fn((_cmd: string, _opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => { cb(null, '', '') }),
     spawn: vi.fn(),
     showOpenDialog: vi.fn(),
     // The audit sink. gitShieldGate fire-and-forgets into this; we assert on WHAT it records — and
@@ -156,10 +159,11 @@ vi.mock('electron', () => ({
 // child_process + fs (BOTH specifiers — index.ts reads hooks via node:fs, writes via fs)
 // ---------------------------------------------------------------------------
 vi.mock('child_process', () => ({
-  default: { execSync: H.execSync, execFileSync: H.execFileSync, execFile: H.execFile, spawn: H.spawn },
+  default: { execSync: H.execSync, execFileSync: H.execFileSync, execFile: H.execFile, exec: H.exec, spawn: H.spawn },
   execSync: H.execSync,
   execFileSync: H.execFileSync,
   execFile: H.execFile,
+  exec: H.exec,
   spawn: H.spawn,
 }))
 vi.mock('fs', () => ({ ...H.fs, default: H.fs }))
@@ -190,6 +194,8 @@ vi.mock('../../src/main/workspaceTrust', () => ({
 // ---------------------------------------------------------------------------
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: vi.fn(), killTerminal: vi.fn(), writeToTerminal: vi.fn(),
   resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''),
   getTerminalPid: vi.fn(), computeWindowsPty: vi.fn(),
@@ -305,16 +311,18 @@ function invoke(channel: string, args: unknown = {}): any {
   return handler({}, args)
 }
 
-/** Route git by argv (and cwd). Return a string for stdout, or an Error to make that call fail. */
+/** Route git by argv (and cwd). Return a string for stdout, or an Error to make that call fail.
+ *
+ *  v1.47.1: there is no longer a sync git path to route. Every handler — read AND write — goes
+ *  through safeGitAsync, because a synchronous spawn blocks the thread that pumps every PTY (that
+ *  was the 10-second typing lag). Both mocks are still armed: execFileSync so any residual sync
+ *  caller answers the same way, execFile because that is the one production actually reaches. */
 function git(route: (argv: string[], opts: { cwd: string }) => string | Error): void {
   H.execFileSync.mockImplementation((_bin: string, argv: string[], opts: { cwd: string }) => {
     const out = route(argv, opts)
     if (out instanceof Error) throw out
     return Buffer.from(out)
   })
-}
-/** Route the ASYNC (callback) git — what the POLLED handlers use so a spawn can't block main. */
-function gitAsync(route: (argv: string[], opts: { cwd: string }) => string | Error): void {
   H.execFile.mockImplementation(
     (_bin: string, argv: string[], opts: { cwd: string }, cb: (e: Error | null, out: string) => void) => {
       const out = route(argv, opts)
@@ -323,19 +331,31 @@ function gitAsync(route: (argv: string[], opts: { cwd: string }) => string | Err
     },
   )
 }
+/** Route the ASYNC (callback) git. Kept as its own name where a test is specifically about the
+ *  off-thread path; identical to `git` since every path became async. */
+const gitAsync = git
+/** Route a SHELL command — what runSafeCommandAsync uses on win32 for `.cmd` shims. */
+function shell(out: string | Error): void {
+  H.exec.mockImplementation(
+    (_cmd: string, _opts: unknown, cb: (e: Error | null, stdout: string, stderr: string) => void) => {
+      if (out instanceof Error) cb(out, '', String(out.message))
+      else cb(null, out, '')
+    },
+  )
+}
+/** Every git argv that ran, whichever spawn flavour carried it, space-joined. */
+const allGitCalls = (): string[][] =>
+  [...H.execFileSync.mock.calls, ...H.execFile.mock.calls].map((c) => c[1] as string[])
 /** Every git argv the ASYNC path ran, space-joined. */
 const gitAsyncCalls = (): string[] => H.execFile.mock.calls.map((c) => (c[1] as string[]).join(' '))
 /** Every git argv the handlers ran, in order, space-joined. */
-const gitCalls = (): string[] => H.execFileSync.mock.calls.map((c) => (c[1] as string[]).join(' '))
+const gitCalls = (): string[] => allGitCalls().map((argv) => argv.join(' '))
 /** Did git run this subcommand (`commit`, `push`, `add`, …)? */
-const ranGit = (sub: string): boolean =>
-  H.execFileSync.mock.calls.some((c) => (c[1] as string[])[0] === sub)
+const ranGit = (sub: string): boolean => allGitCalls().some((argv) => argv[0] === sub)
 /** The staged-diff scan the Commit Shield runs before a commit. */
-const scannedStagedDiff = (): boolean =>
-  H.execFileSync.mock.calls.some((c) => (c[1] as string[]).includes('--cached'))
+const scannedStagedDiff = (): boolean => allGitCalls().some((argv) => argv.includes('--cached'))
 /** The unpushed-patch scan the Commit Shield runs before a push. */
-const scannedPushRange = (): boolean =>
-  H.execFileSync.mock.calls.some((c) => (c[1] as string[]).includes('--remotes'))
+const scannedPushRange = (): boolean => allGitCalls().some((argv) => argv.includes('--remotes'))
 const auditCalls = (): any[] => H.appendAudit.mock.calls.map((c) => c[0])
 
 // Realistic-shaped but entropy-poor, so GitHub push protection will not block this test file while
@@ -364,6 +384,7 @@ const setShield = (value: boolean): Promise<unknown> => invoke('aiSecurity:set-c
 
 let ledger: typeof import('../../src/main/recallLedger')
 let memClient: typeof import('../../src/main/memoryClient')
+let gitCache: typeof import('../../src/main/gitCache')
 
 beforeAll(async () => {
   // Real dir for the real (require-based) startup writes — see the USER_DATA note above.
@@ -377,12 +398,17 @@ beforeAll(async () => {
   // would sit there uncalled forever.
   ledger = await import('../../src/main/recallLedger')
   memClient = await import('../../src/main/memoryClient')
+  gitCache = await import('../../src/main/gitCache')
   await new Promise((resolve) => setTimeout(resolve, 50))
 })
 
 beforeEach(async () => {
   H.execFileSync.mockReset()
   H.execSync.mockReset()
+  // execFile/exec carry the git calls now, so their HISTORY is what ranGit() reads. Leaving it to
+  // accumulate would make every test inherit the spawns of the one before it.
+  H.execFile.mockReset()
+  H.exec.mockReset()
   H.appendAudit.mockReset()
   H.appendAudit.mockImplementation(async () => {})
   H.showOpenDialog.mockReset()
@@ -401,11 +427,18 @@ beforeEach(async () => {
   H.fs.readFileSync.mockImplementation((p: unknown) => (H.files.has(H.norm(p)) ? H.files.get(H.norm(p))! : '{}'))
   H.files.clear()
   git(() => '')
+  shell('')
+  // The read handlers share answers for 1.5 s (src/main/gitCache.ts) so a rail repaint does not
+  // respawn git per panel. That window outlives a test, so the next one would be handed the
+  // PREVIOUS test's stdout and never spawn at all.
+  gitCache.invalidateGitCache()
 
   // Every suite below assumes the shipped default: shield ARMED. Persisting that setting itself
   // writes a file, so the fs/exec spies are cleared AFTER it — each test sees only its own I/O.
   await setShield(true)
   H.execFileSync.mockClear()
+  H.execFile.mockClear()
+  H.exec.mockClear()
   H.appendAudit.mockClear()
   for (const fn of [H.fs.writeFileSync, H.fs.unlinkSync, H.fs.mkdirSync, H.fs.chmodSync]) fn.mockClear()
 })
@@ -926,6 +959,7 @@ describe('swarm:run-command — workspace trust gate', () => {
     // would be forgeable by the very thing it exists to protect against.
     H.execSync.mockReturnValue(Buffer.from('2 passed'))
     H.execFileSync.mockReturnValue(Buffer.from('2 passed'))
+    shell('2 passed')
 
     const r = await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
 
@@ -945,6 +979,7 @@ describe('swarm:run-command — workspace trust gate', () => {
     expect(r.error).toContain('Workspace not trusted')
     expect(H.execSync).not.toHaveBeenCalled()
     expect(H.execFileSync).not.toHaveBeenCalled()
+    expect(H.exec).not.toHaveBeenCalled()
   })
 
   it('rejects a non-allowlisted command before it ever reaches the trust prompt', async () => {
@@ -1440,6 +1475,8 @@ describe('outcome grounding — a work outcome reaches the memories that informe
     ledger.noteRecall('trusted', ['m1', 'm2'], Date.now())
     H.execSync.mockImplementation(() => { const e: NodeJS.ErrnoException & { status?: number } = new Error('boom'); e.status = 1; throw e })
     H.execFileSync.mockImplementation(() => { const e: NodeJS.ErrnoException & { status?: number } = new Error('boom'); e.status = 1; throw e })
+    const failed: NodeJS.ErrnoException = Object.assign(new Error('boom'), { code: 1 })
+    shell(failed)
 
     await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
 
@@ -1451,6 +1488,7 @@ describe('outcome grounding — a work outcome reaches the memories that informe
     ledger.noteRecall('trusted', ['m1'], Date.now())
     H.execSync.mockReturnValue(Buffer.from('2 passed'))
     H.execFileSync.mockReturnValue(Buffer.from('2 passed'))
+    shell('2 passed')
 
     await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
 
@@ -1461,6 +1499,7 @@ describe('outcome grounding — a work outcome reaches the memories that informe
     ledger.noteRecall('elsewhere', ['other'], Date.now())
     H.execSync.mockReturnValue(Buffer.from('ok'))
     H.execFileSync.mockReturnValue(Buffer.from('ok'))
+    shell('ok')
 
     await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
 
@@ -1471,6 +1510,7 @@ describe('outcome grounding — a work outcome reaches the memories that informe
     ledger.noteRecall('trusted', ['m1'], Date.now())
     H.execSync.mockReturnValue(Buffer.from('ok'))
     H.execFileSync.mockReturnValue(Buffer.from('ok'))
+    shell('ok')
 
     await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
     vi.mocked(memClient.memoryFeedback).mockClear()
@@ -1484,6 +1524,7 @@ describe('outcome grounding — a work outcome reaches the memories that informe
     vi.mocked(memClient.memoryFeedback).mockRejectedValueOnce(new Error('host down'))
     H.execSync.mockReturnValue(Buffer.from('ok'))
     H.execFileSync.mockReturnValue(Buffer.from('ok'))
+    shell('ok')
 
     const r = await invoke('swarm:run-command', { cwd: '/trusted', command: 'npm test' })
     expect(r.success).toBe(true)

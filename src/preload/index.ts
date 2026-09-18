@@ -144,6 +144,15 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('git:changes', { cwd }),
   gitChangeCounts: (cwd) =>
     ipcRenderer.invoke('git:change-counts', { cwd }),
+  // Watch, rather than poll. Main resolves `cwd` to a repo root and returns it; the change events
+  // below carry that root, so a panel matches by path prefix rather than by exact directory.
+  gitWatch: (cwd) => ipcRenderer.invoke('git:watch', { cwd }),
+  gitUnwatch: (cwd) => ipcRenderer.invoke('git:unwatch', { cwd }),
+  onGitTreeChanged: (cb: (data: { root: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, data: { root: string }) => cb(data)
+    ipcRenderer.on('git:tree-changed', handler)
+    return () => ipcRenderer.removeListener('git:tree-changed', handler)
+  },
   gitChangeDiff: (cwd, file, mode) =>
     ipcRenderer.invoke('git:change-diff', { cwd, file, mode }),
   // Unpushed commits are the other half of what makes the sidebar dot pulse, and the

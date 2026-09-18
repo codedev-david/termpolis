@@ -187,6 +187,8 @@ vi.mock('electron', () => ({
 
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
 vi.mock('../../src/main/terminalManager', () => ({
+  // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
+  primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: vi.fn(), killTerminal: vi.fn(), writeToTerminal: vi.fn(),
   resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(),
 }))
@@ -296,15 +298,40 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
   sanitizeAgentCommand: vi.fn((cmd: string) => cmd),
 }))
 
-const { mockExecSync, mockExecFileSync, mockShowOpenDialog } = vi.hoisted(() => ({
-  mockExecSync: vi.fn(),
-  mockExecFileSync: vi.fn(),
+const { mockExecSync, mockExecFileSync, mockExec, mockExecFile, mockShowOpenDialog } = vi.hoisted(() => {
+  const mockExecSync = vi.fn()
+  const mockExecFileSync = vi.fn()
+  return ({
+  mockExecSync,
+  mockExecFileSync,
+  // v1.47.1: nothing in main spawns synchronously any more — a CreateProcess on the thread that
+  // pumps every PTY was the typing lag. These callback flavours delegate to the sync twins so the
+  // stubs and command-string assertions below keep meaning what they meant.
+  mockExecFile: vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string) => void) => {
+    try { cb(null, String(mockExecFileSync(bin, args, opts) ?? '')) } catch (e) {
+      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown }
+      if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+      cb(x, String(x?.stdout ?? ''))
+    }
+  }),
+  mockExec: vi.fn((cmd: string, opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+    // execSync reports failure by THROWING, carrying .status/.stdout/.stderr; exec reports it
+    // through the callback, with .code and the two streams as arguments. Translate, never drop.
+    try { cb(null, String(mockExecSync(cmd, opts) ?? ''), '') } catch (e) {
+      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown; stderr?: unknown }
+      if (x && x.code === undefined && x.status !== undefined) x.code = x.status
+      cb(x, String(x?.stdout ?? ''), String(x?.stderr ?? ''))
+    }
+  }),
   mockShowOpenDialog: vi.fn(),
-}))
+  })
+})
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync, execFileSync: mockExecFileSync },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, exec: mockExec, execFile: mockExecFile },
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  exec: mockExec,
+  execFile: mockExecFile,
 }))
 
 vi.mock('fs', () => ({

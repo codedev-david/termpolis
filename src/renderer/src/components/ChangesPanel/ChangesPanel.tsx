@@ -8,8 +8,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
+import { watchRepoChanges } from '../../lib/gitWatch'
 import type { DiffHunk } from '../../lib/diffParser'
 import { FileDiffModal } from './FileDiffModal'
+
+/** Safety net only — the repo watcher is what actually drives this panel. See the effect below. */
+export const CHANGES_POLL_MS = 15000
 
 export type ChangeMode = 'staged' | 'unstaged' | 'untracked'
 
@@ -167,12 +171,18 @@ export function ChangesPanel({ cwd, onClose, terminalId = null }: Props) {
     await pending
   }, [root])
 
+  // v1.47.1: watched, not polled. The rail used to ask every 3 s — three git processes a tick,
+  // per open repo, whether or not anything had changed — and each spawn blocked the thread pumping
+  // every PTY (see src/main/procHost.ts). Now main watches the repo and pushes, which is both
+  // FASTER on a real edit and free when nothing happens. The 15 s timer is the safety net for
+  // changes a filesystem watcher cannot see, not the mechanism.
   useEffect(() => {
     if (!root) return
     refresh()
     const id = `changes-panel-${root}`
-    subscribe(id, refresh, 3000)
-    return () => unsubscribe(id)
+    subscribe(id, refresh, CHANGES_POLL_MS)
+    const unwatch = watchRepoChanges(root, refresh)
+    return () => { unsubscribe(id); unwatch() }
   }, [refresh, root])
 
   const openDiff = useCallback(async (file: string, mode: ChangeMode) => {
