@@ -117,6 +117,22 @@ describe('app.json -- the fields a store submission turns on', () => {
       cameraPermission: expect.stringMatching(/only to scan the pairing code/i),
     })
   })
+
+  it('keeps every plugin in tuple form, options or not', () => {
+    // `npx expo install expo-iap` appends a BARE STRING to this array, and a
+    // bare string next to the tuples widens the type app.json infers for
+    // `plugins` to `(string | [string, object])[]`. The test above then stops
+    // compiling -- `p[0]` and `entry?.[1]` are both indexes into a value that
+    // might be a string -- and the failure arrives from tsc, in a file nobody
+    // edited, pointing at the camera.
+    //
+    // `["expo-iap", {}]` is the same configuration and keeps the array
+    // homogeneous. This test is here so the next `expo install` is caught by
+    // jest saying what happened rather than by tsc saying where.
+    for (const plugin of appConfig.expo.plugins) {
+      expect(Array.isArray(plugin)).toBe(true)
+    }
+  })
 })
 
 describe('package.json -- what makes "collects no data" true', () => {
@@ -134,6 +150,20 @@ describe('package.json -- what makes "collects no data" true', () => {
       'expo',
       'expo-camera',
       'expo-constants',
+      // Added 2026-09-18 for the relay subscription, and it does NOT change the
+      // App Privacy answer. expo-iap is a thin wrapper over StoreKit 2 and Play
+      // Billing: the purchase happens inside Apple's own sheet, the app never
+      // sees a card number or an Apple ID, and the library ships no analytics,
+      // no advertising identifier and no back end of its own. Nothing is sent
+      // anywhere this app does not send it.
+      //
+      // That last clause is what to re-check if this is ever swapped for
+      // RevenueCat, Adapty, Superwall or any other subscription service. Those
+      // are third parties that receive a purchase event and a device
+      // identifier, which is "Purchases" and "Identifiers" on the App Privacy
+      // form -- a disclosure Apple has already reviewed as "Data Not
+      // Collected", and one that cannot be quietly changed by an npm install.
+      'expo-iap',
       'expo-secure-store',
       'expo-splash-screen',
       'expo-status-bar',

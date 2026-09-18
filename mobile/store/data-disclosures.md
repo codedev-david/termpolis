@@ -17,10 +17,11 @@ the working that supports it.
 
 | Claim | Where it is true in the code |
 | --- | --- |
-| No analytics, crash reporting or attribution SDK | `mobile/package.json` — the whole dependency list is 18 entries, frozen by `mobile/__tests__/appConfig.test.ts` |
+| No analytics, crash reporting or attribution SDK | `mobile/package.json` — the whole dependency list is 19 entries, frozen by `mobile/__tests__/appConfig.test.ts` |
 | No account, no sign-in, no server of ours the app talks to | `mobile/src/net/` speaks only to the relay named in the pairing payload |
 | No advertising identifier | Nothing imports one; iOS shows no ATT prompt because there is nothing to track |
-| Nothing written to disk but the key and the pairing | `mobile/src/storage/identity.ts` — two `expo-secure-store` entries, `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
+| The subscription talks to Apple and to nobody else | `mobile/src/state/subscription.ts` — `expo-iap` over StoreKit 2, no purchase-analytics service in front of it |
+| Nothing written to disk but the key, the pairing and a yes/no | `mobile/src/storage/identity.ts` (two `expo-secure-store` entries) and `mobile/src/storage/grant.ts` (one), all `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
 | Terminal output is never persisted | It lives in the zustand store (`mobile/src/state/remoteStore.ts`) and dies with the process |
 | The relay cannot read anything | `relay/src/pairingRoom.ts` forwards sealed frames by room id, stores only an idle alarm, logs nothing |
 | The one-time pairing secret is never stored | Asserted directly: a test checks it never reaches SecureStore |
@@ -46,12 +47,12 @@ For the record, every category and its answer:
 | Browsing History | Not collected |
 | Search History | Not collected |
 | Identifiers | Not collected — the device id is generated locally and shared only with the paired desktop |
-| Purchases | Not collected |
+| Purchases | Not collected — see the note below. The app sells a subscription; it still collects nothing about it |
 | Usage Data | Not collected |
 | Diagnostics | Not collected — there is no crash reporter in this app |
 | Other Data | Not collected |
 
-### The two things a reviewer may ask about anyway
+### The three things a reviewer may ask about anyway
 
 **The camera.** `expo-camera` is present and the app declares `NSCameraUsageDescription`
 as "Termpolis Remote uses the camera only to scan the pairing code shown on your
@@ -63,6 +64,28 @@ end-to-end encrypted, is held in memory while the app is open, and is never writ
 disk. It is not *collected* in Apple's sense — it never reaches a server anyone but the
 user's own desktop can read — but say so plainly rather than leaving a reviewer to
 infer it.
+
+**The subscription.** An app that sells something and then answers "Purchases: Not
+collected" looks, at a glance, like an oversight. It is not, and this is the working.
+
+Apple's own definition of *collect* is the test: transmitting data off the device where
+the developer or a partner can reach it for longer than it takes to service the request.
+The purchase flow here transmits nothing. `expo-iap` talks to StoreKit, StoreKit talks to
+Apple, and the only thing that survives the exchange on this phone is one keychain entry
+holding a boolean and a timestamp (`mobile/src/storage/grant.ts`) — no transaction id, no
+receipt, no price, no Apple ID. There is no server of ours to send it to; there is no
+purchase-analytics SDK in the dependency list to send it for us.
+
+The developer does learn that a subscription was bought, from App Store Connect's own
+sales reporting. That is Apple collecting on its own account, which Apple's App Privacy
+guidance explicitly does not ask you to declare, and it is the same for every app that
+sells anything.
+
+The answer changes the moment a purchase event leaves the device by any route we control
+— a receipt posted to the relay for server-side entitlement, or an SDK like RevenueCat,
+Adapty or Superwall, each of which receives the transaction alongside a device
+identifier. Both are real possibilities for a later version. See "What would change these
+answers".
 
 ### Export compliance
 
@@ -143,6 +166,17 @@ one — the form is a declaration, and a stale declaration is a false one.
   agreed to anything. `mobile/__tests__/appConfig.test.ts` asserts the
   dependency list exactly, so adding one fails a test — that failure is the
   reminder to come back here.
+- **A purchase SDK in front of StoreKit.** RevenueCat, Adapty, Superwall,
+  Qonversion. Each one receives the transaction and a device identifier, on
+  their servers, which is Purchases and Identifiers collected — and on an app
+  whose "Data Not Collected" answer Apple has already reviewed, changing it is
+  a change a reviewer reads as a correction. `expo-iap` is in the allowlist in
+  `mobile/__tests__/appConfig.test.ts` precisely so swapping one in trips a
+  test; that failure is the reminder to come back here.
+- **Sending a receipt to the relay.** Server-side entitlement is the obvious
+  next step for the subscription and it is deliberately not in 1.1: the moment a
+  receipt or a transaction id reaches a machine we run, Purchases is collected,
+  and the relay stops being a thing that holds nothing.
 - **Push notifications.** A push token is an Identifier, held by a server.
 - **An account, sign-in, or hosted sync.** Contact Info, and probably more.
 - **Writing terminal output to disk** — a scrollback cache, an export, a
@@ -162,7 +196,8 @@ one — the form is a declaration, and a stale declaration is a false one.
 | Claim | File |
 | --- | --- |
 | Dependency set, permissions, encryption flag | `mobile/app.json`, `mobile/package.json`, gated by `mobile/__tests__/appConfig.test.ts` |
-| What is stored, and how | `mobile/src/storage/identity.ts` |
+| What is stored, and how | `mobile/src/storage/identity.ts`, `mobile/src/storage/grant.ts` |
+| What the subscription does, and does not, send anywhere | `mobile/src/state/subscription.ts` |
 | What the relay can see | `relay/src/pairingRoom.ts`, `relay/src/wire.ts` |
 | The cryptography | `docs/remote-wire-format.md` |
 | The public statement of all of it | `https://termpolis.com/privacy.html` |

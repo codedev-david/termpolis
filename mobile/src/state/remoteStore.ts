@@ -17,6 +17,7 @@ import {
   type PairedDesktop,
   type StoredPairing,
 } from '../storage/identity'
+import { forgetGrant } from '../storage/grant'
 import { parseQrPayload } from '../wire/qr'
 import { deriveVerificationPhrase } from '../wire/safetyNumber'
 import { sanitizeDeviceLabel } from '../wire/deviceLabel'
@@ -639,4 +640,8 @@ export function teardownRemote(): void {
 export async function forgetEverything(): Promise<void> {
   teardownRemote()
   await wipeEverything()
+  // The cached "this phone has paid" flag is not key material, but it is state
+  // that must not outlive an erase: left behind, it is a few days of relay
+  // access for whoever picks the phone up next, on the last owner's card.
+  await forgetGrant()
 }

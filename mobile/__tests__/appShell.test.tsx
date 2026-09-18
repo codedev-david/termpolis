@@ -105,6 +105,24 @@ jest.mock('../src/screens/DesktopsScreen', () => {
   return { __esModule: true, default: Screen }
 })
 
+/** The paywall is the whole stack when relay access has not been paid for, so
+ *  the shell has to be able to render it without StoreKit underneath. */
+jest.mock('../src/screens/PaywallScreen', () => mockStub('screen-paywall'))
+
+/** Entitlement defaults to `active` here. Every test below is about which
+ *  screen the shell picks once access is settled; the ones about the gate
+ *  itself set it explicitly, and a default of `unknown` would have hidden the
+ *  answer behind a spinner in all the others. */
+jest.mock('../src/state/subscription', () => {
+  const { create } = require('zustand')
+  return {
+    useSubscription: create(() => ({
+      entitlement: 'active',
+      boot: jest.fn(async () => undefined),
+    })),
+  }
+})
+
 jest.mock('../src/state/remoteStore', () => {
   const { create } = require('zustand')
   return {
@@ -119,9 +137,14 @@ jest.mock('../src/state/remoteStore', () => {
 
 import App from '../src/App'
 import { useRemoteStore } from '../src/state/remoteStore'
+import { useSubscription } from '../src/state/subscription'
 
 function bootFn(): jest.Mock {
   return useRemoteStore.getState().boot as unknown as jest.Mock
+}
+
+function bootSubscriptionFn(): jest.Mock {
+  return useSubscription.getState().boot as unknown as jest.Mock
 }
 
 /** Let the boot promise settle and React commit what it produced. */
@@ -136,6 +159,10 @@ beforeEach(() => {
   fn.mockReset()
   fn.mockResolvedValue(undefined)
   useRemoteStore.setState({ paired: null, pairings: [], status: 'offline' })
+  const sub = bootSubscriptionFn()
+  sub.mockReset()
+  sub.mockResolvedValue(undefined)
+  useSubscription.setState({ entitlement: 'active' })
 })
 
 /** What boot leaves behind on a phone that is already paired. */
@@ -382,5 +409,100 @@ describe('App -- naming the terminal screen', () => {
     // Not the static route name, and not the desktop's label: the name the
     // list handed over in the route params.
     expect(JSON.stringify(screen.toJSON())).toContain('claude -- api')
+  })
+})
+
+describe('App -- the relay gate', () => {
+  it('boots the subscription alongside the store, not after it', async () => {
+    // Started together on purpose. They share nothing, and a phone made to
+    // wait for the App Store before it may read its own keychain takes twice
+    // as long to show anything on a bad connection.
+    await render(<App />)
+    await settle()
+    expect(bootFn()).toHaveBeenCalledTimes(1)
+    expect(bootSubscriptionFn()).toHaveBeenCalledTimes(1)
+  })
+
+  it('still opens when the subscription boot fails', async () => {
+    // Nothing in the app waits on it: `ready` is about the keychain alone, so a
+    // rejection here has no path to the screen except as an unhandled one. The
+    // entitlement it could not decide falls to the paywall on its own.
+    bootSubscriptionFn().mockRejectedValue(new Error('StoreKit is unavailable'))
+    await render(<App />)
+    await settle()
+    expect(screen.getByTestId('screen-pair')).toBeTruthy()
+  })
+
+  it('shows neither the app nor the paywall while entitlement is undecided', async () => {
+    // The dangerous moment. Guessing `active` gives the product away; guessing
+    // `none` bills a paying customer's goodwill. Showing the same spinner the
+    // keychain already gets is the only honest third option.
+    useSubscription.setState({ entitlement: 'unknown' })
+    booted(PAIRED)
+    await render(<App />)
+    await settle()
+    expect(screen.queryByTestId('screen-paywall')).toBeNull()
+    expect(screen.queryByTestId('screen-terminals')).toBeNull()
+  })
+
+  it('puts the paywall in front of an unpaired phone', async () => {
+    useSubscription.setState({ entitlement: 'none' })
+    await render(<App />)
+    await settle()
+    expect(screen.getByTestId('screen-paywall')).toBeTruthy()
+    expect(screen.queryByTestId('screen-pair')).toBeNull()
+  })
+
+  it('puts the paywall in front of a phone that is already paired', async () => {
+    // A lapsed subscription, not a new install. The pairing survives -- the
+    // keys are still good and unpairing over an unpaid month would make
+    // resubscribing mean scanning a QR code again -- but the relay does not.
+    useSubscription.setState({ entitlement: 'none' })
+    booted(PAIRED)
+    await render(<App />)
+    await settle()
+    expect(screen.getByTestId('screen-paywall')).toBeTruthy()
+    expect(screen.queryByTestId('screen-terminals')).toBeNull()
+  })
+
+  it('leaves no route out of the paywall', async () => {
+    // The point of rendering it as the entire stack. A paywall listed beside
+    // the other screens is one that a stray `navigate` -- or a back gesture
+    // from a screen pushed before the subscription lapsed -- eventually walks
+    // past.
+    useSubscription.setState({ entitlement: 'none' })
+    booted(PAIRED)
+    await render(<App />)
+    await settle()
+    const tree = JSON.stringify(screen.toJSON())
+    expect(tree).not.toContain('screen-terminals')
+    expect(tree).not.toContain('screen-settings')
+    expect(tree).not.toContain('screen-desktops')
+  })
+
+  it('hands the app back the moment the subscription starts', async () => {
+    // The purchase listener flips entitlement from outside React. Nothing
+    // navigates: the navigator is rebuilt around the branch it now takes.
+    useSubscription.setState({ entitlement: 'none' })
+    booted(PAIRED)
+    await render(<App />)
+    await settle()
+    expect(screen.getByTestId('screen-paywall')).toBeTruthy()
+
+    await act(async () => {
+      useSubscription.setState({ entitlement: 'active' })
+    })
+    expect(screen.getByTestId('screen-terminals')).toBeTruthy()
+    expect(screen.queryByTestId('screen-paywall')).toBeNull()
+  })
+
+  it('sends a subscriber with no desktop to pairing, not to the terminals', async () => {
+    // Paying is not pairing. Someone who subscribes on a fresh install has an
+    // entitlement and no keys, and the shell has to fall through to the empty
+    // state rather than into a list of nothing.
+    useSubscription.setState({ entitlement: 'active' })
+    await render(<App />)
+    await settle()
+    expect(screen.getByTestId('screen-pair')).toBeTruthy()
   })
 })

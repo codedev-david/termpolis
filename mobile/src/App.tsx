@@ -12,12 +12,14 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 import type { RootStackParamList } from './navigation/routes'
 import DesktopsScreen from './screens/DesktopsScreen'
 import PairScreen from './screens/PairScreen'
+import PaywallScreen from './screens/PaywallScreen'
 import SafetyNumberScreen from './screens/SafetyNumberScreen'
 import SettingsScreen from './screens/SettingsScreen'
 import TerminalListScreen from './screens/TerminalListScreen'
 import TerminalScreen from './screens/TerminalScreen'
 import { pairingStamp } from './state/pairingStamp'
 import { useRemoteStore } from './state/remoteStore'
+import { useSubscription } from './state/subscription'
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
 
@@ -46,6 +48,15 @@ const THEME = {
  * already paired, and a pairing screen is exactly where a phone should not
  * teach its owner to tap through.
  *
+ * Relay access is asked about at the same time and gates everything else. Both
+ * boots run together rather than one after the other: they touch nothing in
+ * common, and a phone that has to wait for the App Store before it may read its
+ * own keychain takes twice as long to show anything. The entitlement is allowed
+ * to be undecided for a moment and the shell shows the same spinner it already
+ * shows for the keychain -- what it must never do is guess, in either
+ * direction. The store's own deadline is what stops that spinner being
+ * permanent.
+ *
  * A pairing that appears while the app is running is one the user just made, so
  * the safety words are pushed on top of the list. Which pairing is "new" is read
  * off `pairingStamp` rather than off a single stored key, because pairing a
@@ -58,6 +69,8 @@ export default function App(): React.JSX.Element {
   const paired = useRemoteStore((s) => s.paired)
   const pairings = useRemoteStore((s) => s.pairings)
   const boot = useRemoteStore((s) => s.boot)
+  const entitlement = useSubscription((s) => s.entitlement)
+  const bootSubscription = useSubscription((s) => s.boot)
   const navigation = useNavigationContainerRef<RootStackParamList>()
 
   const [ready, setReady] = React.useState(false)
@@ -69,6 +82,11 @@ export default function App(): React.JSX.Element {
   React.useEffect(() => {
     if (started.current) return
     started.current = true
+    // Started, not awaited. `ready` is about the keychain; the entitlement has
+    // its own gate below and its own deadline inside the store, so holding the
+    // splash screen for the App Store as well would only make a slow network
+    // cost twice.
+    void bootSubscription().catch(() => undefined)
     void boot()
       // A keychain that refused to answer is a phone with no pairing, not a
       // dead app. The store recorded the failure; the pairing screen is next.
@@ -77,7 +95,7 @@ export default function App(): React.JSX.Element {
         seen.current = pairingStamp(useRemoteStore.getState().pairings)
         setReady(true)
       })
-  }, [boot])
+  }, [boot, bootSubscription])
 
   React.useEffect(() => {
     if (!ready) return
@@ -92,7 +110,7 @@ export default function App(): React.JSX.Element {
     navigation.reset({ index: 1, routes: [{ name: 'Terminals' }, { name: 'SafetyNumber' }] })
   }, [ready, pairings, navigation])
 
-  if (!ready) {
+  if (!ready || entitlement === 'unknown') {
     return (
       <SafeAreaProvider>
         <StatusBar style="light" />
@@ -108,7 +126,18 @@ export default function App(): React.JSX.Element {
       <StatusBar style="light" />
       <NavigationContainer ref={navigation} theme={THEME}>
         <Stack.Navigator>
-          {paired === null ? (
+          {entitlement === 'none' ? (
+            // The only screen there is. Pairing, the terminal list and every
+            // route under them go through the relay, so none of them has
+            // anything to show until access to it has been paid for -- and a
+            // paywall that is one route among several is a paywall something
+            // eventually navigates past.
+            <Stack.Screen
+              name="Paywall"
+              component={PaywallScreen}
+              options={{ title: 'Relay access' }}
+            />
+          ) : paired === null ? (
             <Stack.Screen
               name="Pair"
               component={PairScreen}

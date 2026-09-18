@@ -14,6 +14,31 @@ flag) is the single most likely rejection.
 So the notes have one job: make the desktop half trivially available, and say
 so in the first sentence.
 
+Since 1.1 there is a second wall in front of the first. The app opens on a
+purchase screen, and a reviewer who taps nothing has now seen even less than
+before. The notes answer it the same way: tell them what to tap, in step 0,
+before anything else.
+
+### What the subscription needs to be true in App Store Connect
+
+- **The subscription must be submitted with this app version.** A first in-app
+  purchase cannot be reviewed on its own; it rides along with a binary. Attach
+  it to the version in the "In-App Purchases and Subscriptions" section of the
+  version page before submitting, or it is simply not reviewed and the live app
+  has a paywall selling a product that does not exist.
+- **The subscription needs its own review screenshot.** Subscription → Review
+  Information → Screenshot. It is the paywall, and it is not shown to customers
+  anywhere; it exists so a reviewer can see what was promised. Take it from the
+  app.
+- **Localization, price and the introductory offer must all be filled in**
+  before the state leaves "Missing Metadata". The free week is an Introductory
+  Offer on the subscription, created under the price — not a field on the
+  subscription itself, which is where an evening goes looking for it.
+- **The price and the trial are read from the store at runtime**, never printed
+  from a constant (`mobile/src/state/subscriptionCatalog.ts`). Changing the
+  price in App Store Connect changes the paywall with no app update, and an
+  Apple ID that has used the trial is never shown one.
+
 ### Why there is no demo mode
 
 The obvious shortcut -- a hidden build flag that fakes a paired desktop and
@@ -47,6 +72,25 @@ Termpolis Remote is a companion app. It is a viewer and keyboard for terminals
 running in the Termpolis desktop app; it runs nothing itself and has no
 account, no sign-in and no backend of ours. To see it work you need the desktop
 app, which is free, open source, and takes about two minutes to set up.
+
+THE SUBSCRIPTION COMES FIRST. The app opens on the purchase screen and nothing
+else is reachable until it is bought, so please start there:
+
+0. On first launch the app shows "Relay access" -- an auto-renewable monthly
+   subscription (product id com.termpolis.remote.relay.monthly) with a one-week
+   introductory free trial. Tap "Start free week" and confirm with the sandbox
+   Apple ID; nothing is charged in the sandbox. The app then goes straight to
+   the pairing screen and step 1 below.
+
+   If you have already run the app on this sandbox account, the trial is used
+   up and the button reads "Subscribe" instead -- same result, still no charge.
+   "Restore purchases" on the same screen re-checks the sandbox account, which
+   is the path to use if the app reopens on the purchase screen unexpectedly.
+
+   What the money is for: the phone reaches the desktop through a relay we run
+   and pay for. The desktop app is free and always will be; the subscription
+   covers the relay this app connects through, which is the only thing this app
+   does. There is no free tier and nothing is withheld from subscribers.
 
 1. Download Termpolis for macOS:
    https://github.com/codedev-david/termpolis/releases/latest
@@ -100,6 +144,8 @@ app, which is free, open source, and takes about two minutes to set up.
     this desktop" on the phone.
 
 NO ACCOUNT IS NEEDED ANYWHERE. There is nothing to sign into on either half.
+The subscription is bought with the Apple ID already on the phone; we never see
+it, and there is no login of ours.
 
 CAMERA: used only to read the pairing QR code in step 6. Frames are decoded on
 the device and discarded; nothing is stored or uploaded. Step 6 also gives a
@@ -138,7 +184,15 @@ then leaving the credential fields empty is a guaranteed round trip.
 ### App access
 
 Choose **"All functionality is available without special access"**. There is no
-login, no region lock, no paywall.
+login and no region lock.
+
+**And no paywall on Android**, which is not an oversight. There is no base plan
+in Play Console, so the gate is iOS-only by construction: `boot()` in
+`mobile/src/state/subscription.ts` grants entitlement outright when
+`Platform.OS` is not `ios`. Gating a store that has nothing to sell would be a
+locked door with no handle, and it would strand the closed test that Play's
+production timeline depends on. When Android does get a product, this answer
+and this paragraph both change.
 
 ### Testing instructions
 
@@ -163,6 +217,9 @@ watches when they decide not to install a desktop app.
 
 Two to three minutes, no narration needed, captions optional:
 
+0. Phone: the purchase screen on first launch, the price and the free week on
+   it, and the tap that buys it. Sandbox, so the confirmation sheet says
+   "Environment: Sandbox" — leave that visible rather than cutting it.
 1. Desktop: Settings → Remote → "Allow phones to connect". (Show that it was
    off.)
 2. Desktop: "Pair a device", QR appears.
@@ -211,11 +268,21 @@ that break silently in that window.
 - **`termpolis.com` and `termpolis.com/privacy.html` must be up.** They are
   both linked from the listing, and Apple checks them.
 - **The video URL must resolve** without a login and without an ad interstitial.
+- **The subscription must stay attached to the version.** Detaching it, or
+  editing it into "Missing Metadata" mid-review, leaves the binary selling
+  nothing. Do not touch it once the version is in review.
 
 ## Before you submit
 
 - [ ] Record the video and replace `<VIDEO URL>` -- the ONLY placeholder left
       in this file
+- [ ] Attach the subscription to the version, and upload the paywall screenshot
+      to Subscription → Review Information
+- [ ] Buy it once yourself in the sandbox, from a sandbox Apple ID that has
+      never had the trial, and then again from one that has -- the second is
+      the "Subscribe" wording, and it is the one nobody tests
+- [ ] Tap "Restore purchases" on a fresh install of the same sandbox account
+      and confirm it lets you back in without paying again (3.1.1)
 - [x] Contact email decided, placed, and **delivery confirmed** (2026-09-08).
       `support@termpolis.com` is in `listing.md`, published in `privacy.html`,
       and routed by Cloudflare Email Routing to a real inbox; a test message was
