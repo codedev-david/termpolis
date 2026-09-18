@@ -6,7 +6,11 @@ jest.mock('expo-iap', () => ({
 
 import { describeIntro, fetchRelayProduct } from '../src/state/subscriptionCatalog'
 
-const SKU = 'com.termpolis.remote.relay.monthly'
+/** Deliberately NOT the real product id. `fetchRelayProduct` takes the sku as an
+ *  argument and must look up the one it was handed; a fixture that happened to
+ *  match the constant would pass just as well if the function ignored its own
+ *  parameter and reached for `PRODUCT_ID` instead. */
+const SKU = 'com.example.some.subscription'
 
 /** A subscription as StoreKit hands it over, with a free week on it. */
 function product(over: Record<string, unknown> = {}): Record<string, unknown> {

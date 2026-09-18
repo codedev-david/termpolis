@@ -15,10 +15,22 @@ import { readGrant, writeGrant } from '../storage/grant'
 
 import { fetchRelayProduct } from './subscriptionCatalog'
 
-/** The App Store product. Permanent: Apple never lets a product id be renamed or
- *  re-used, and it is the string that appears in every receipt, every refund
- *  request and every server-side lookup this app will ever have. */
-export const PRODUCT_ID = 'com.termpolis.remote.relay.monthly'
+/** The App Store product, and it really is called `002`.
+ *
+ *  Not a placeholder, not a typo, and NOT to be tidied into something that
+ *  reads better. It is what the subscription was created as in App Store
+ *  Connect, and an auto-renewable subscription cannot be renamed OR deleted
+ *  once it exists -- the only way to a nicer id is a second subscription and an
+ *  abandoned first one, which was considered and declined. A product id is
+ *  never shown to a customer; it appears in financial reports, refund requests
+ *  and any server-side lookup, and this one is ugly in exactly those places and
+ *  nowhere else.
+ *
+ *  It must match App Store Connect character for character. A mismatch is
+ *  silent: `fetchProducts` returns nothing, the paywall falls back to wording
+ *  with no price in it, and the buy button fails against a product the store
+ *  has never heard of. */
+export const PRODUCT_ID = '002'
 
 /** How long a cached grant is honoured when the App Store cannot be reached.
  *

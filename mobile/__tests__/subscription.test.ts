@@ -125,6 +125,18 @@ afterEach(() => {
   jest.restoreAllMocks()
 })
 
+describe('the product id', () => {
+  it('is the exact string App Store Connect holds, unlovely as it is', () => {
+    // Pinned on purpose. `002` looks like a placeholder somebody forgot, and
+    // the obvious tidy-up -- renaming it to something readable -- breaks the
+    // paywall SILENTLY: the store returns no product, the price disappears and
+    // the buy button fails against an id that does not exist. An auto-renewable
+    // subscription cannot be renamed or deleted in App Store Connect, so the
+    // code is the side that has to match, and this test is what says so.
+    expect(PRODUCT_ID).toBe('002')
+  })
+})
+
 describe('booting -- asking the App Store', () => {
   it('starts undecided, because nothing has been asked yet', () => {
     // Not `none`. A paywall shown before the question was put is one shown to

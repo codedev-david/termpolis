@@ -77,7 +77,7 @@ THE SUBSCRIPTION COMES FIRST. The app opens on the purchase screen and nothing
 else is reachable until it is bought, so please start there:
 
 0. On first launch the app shows "Relay access" -- an auto-renewable monthly
-   subscription (product id com.termpolis.remote.relay.monthly) with a one-week
+   subscription (product id 002) with a one-week
    introductory free trial. Tap "Start free week" and confirm with the sandbox
    Apple ID; nothing is charged in the sandbox. The app then goes straight to
    the pairing screen and step 1 below.
