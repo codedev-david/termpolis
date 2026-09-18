@@ -317,35 +317,55 @@ function invoke(channel: string, args: unknown = {}): any {
  *  through safeGitAsync, because a synchronous spawn blocks the thread that pumps every PTY (that
  *  was the 10-second typing lag). Both mocks are still armed: execFileSync so any residual sync
  *  caller answers the same way, execFile because that is the one production actually reaches. */
+/** git under every spelling the resolver can produce: `git`, `git.exe`, or a full install path. */
+const isGitBin = (bin: unknown): boolean => /(^|[\\/])git(\.exe)?$/i.test(String(bin ?? ''))
+/** The two live routes. The spawn mocks read them rather than closing over one, so `git()` and
+ *  `shell()` compose in either order — several tests arm one and leave the other to `beforeEach`. */
+let gitRoute: (argv: string[], opts: { cwd: string }) => string | Error = () => ''
+let commandAnswer: string | Error = ''
 function git(route: (argv: string[], opts: { cwd: string }) => string | Error): void {
+  gitRoute = route
   H.execFileSync.mockImplementation((_bin: string, argv: string[], opts: { cwd: string }) => {
-    const out = route(argv, opts)
+    const out = gitRoute(argv, opts)
     if (out instanceof Error) throw out
     return Buffer.from(out)
   })
+  // The argv spawn carries BOTH git and — off win32 — safe commands, so the bin picks the route.
   H.execFile.mockImplementation(
-    (_bin: string, argv: string[], opts: { cwd: string }, cb: (e: Error | null, out: string) => void) => {
-      const out = route(argv, opts)
-      if (out instanceof Error) cb(out, '')
-      else cb(null, out)
+    (bin: string, argv: string[], opts: { cwd: string }, cb: (e: Error | null, out: string, err?: string) => void) => {
+      const out = isGitBin(bin) ? gitRoute(argv, opts) : commandAnswer
+      if (out instanceof Error) cb(out, '', String(out.message))
+      else cb(null, out, '')
     },
   )
 }
 /** Route the ASYNC (callback) git. Kept as its own name where a test is specifically about the
  *  off-thread path; identical to `git` since every path became async. */
 const gitAsync = git
-/** Route a SHELL command — what runSafeCommandAsync uses on win32 for `.cmd` shims. */
+/**
+ * Answer a non-git safe command (`npm test`, …).
+ *
+ * runSafeCommandAsync picks its spawn by PLATFORM: a shell on win32, where npm/npx are `.cmd` shims
+ * a shell-less spawn cannot resolve at all, and plain argv everywhere else. Arming only the shell is
+ * how two tests here passed on Windows and failed on macOS/Linux CI — off win32 the command landed
+ * on execFile, was handed git's argv router, and came back empty with a false exit code 0. One
+ * answer now feeds both spawns, so these tests say the same thing on every platform.
+ */
 function shell(out: string | Error): void {
+  commandAnswer = out
   H.exec.mockImplementation(
     (_cmd: string, _opts: unknown, cb: (e: Error | null, stdout: string, stderr: string) => void) => {
-      if (out instanceof Error) cb(out, '', String(out.message))
-      else cb(null, out, '')
+      if (commandAnswer instanceof Error) cb(commandAnswer, '', String(commandAnswer.message))
+      else cb(null, commandAnswer, '')
     },
   )
 }
-/** Every git argv that ran, whichever spawn flavour carried it, space-joined. */
+/** Every git argv that ran, whichever spawn flavour carried it, space-joined. A safe command is not
+ *  a git call even when it rides the same mock, so the BIN decides membership, not the mock. */
 const allGitCalls = (): string[][] =>
-  [...H.execFileSync.mock.calls, ...H.execFile.mock.calls].map((c) => c[1] as string[])
+  [...H.execFileSync.mock.calls, ...H.execFile.mock.calls]
+    .filter((c) => isGitBin(c[0]))
+    .map((c) => c[1] as string[])
 /** Every git argv the ASYNC path ran, space-joined. */
 const gitAsyncCalls = (): string[] => H.execFile.mock.calls.map((c) => (c[1] as string[]).join(' '))
 /** Every git argv the handlers ran, in order, space-joined. */

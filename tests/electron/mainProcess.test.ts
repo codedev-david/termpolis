@@ -177,11 +177,18 @@ const mockExecSync = vi.fn()
 const mockExecFileSync = vi.fn()
 // v1.47.1: main spawns through procHost, so the CALLBACK flavours are the ones production reaches.
 // They delegate to the sync twins, which is what every stub and assertion in this file drives.
-const mockExecFile = vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string) => void) => {
-  try { cb(null, String(mockExecFileSync(bin, args, opts) ?? '')) } catch (e) {
-    const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown }
+//
+// BOTH callback flavours resolve to mockExecSync, and the argv one reconstructs the command line to
+// get there. That is deliberate: runSafeCommandAsync spawns through a SHELL on win32, where npm/npx
+// are `.cmd` shims a shell-less spawn cannot resolve, and through argv everywhere else. Arming one
+// twin is how the three swarm:run-command tests below passed on Windows and failed on macOS/Linux
+// CI — off win32 the command reached execFile, whose answer nothing had ever set. One stub, both
+// spawns, same assertions on every platform.
+const mockExecFile = vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+  try { cb(null, String(mockExecSync([bin, ...args].join(' '), opts) ?? ''), '') } catch (e) {
+    const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown; stderr?: unknown }
     if (x && x.code === undefined && x.status !== undefined) x.code = x.status
-    cb(x, String(x?.stdout ?? ''))
+    cb(x, String(x?.stdout ?? ''), String(x?.stderr ?? ''))
   }
 })
 const mockExec = vi.fn((cmd: string, opts: unknown, cb: (e: Error | null, out: string, err: string) => void) => {

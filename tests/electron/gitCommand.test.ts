@@ -3,27 +3,35 @@
 // exercise safeGit / runSafeCommand defaults or the platform-specific
 // execFileSync vs execSync split — that's what this file is for.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { mockExecSync, mockExecFileSync, mockExistsSync } = vi.hoisted(() => ({
+const { mockExecSync, mockExecFileSync, mockExistsSync, mockExec, mockExecFile } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
   mockExecFileSync: vi.fn(),
   mockExistsSync: vi.fn(),
+  // The callback flavours. With no proc host wired up, procClient runs the spawn in-process through
+  // exactly these, so they are what the ASYNC half of this module reaches.
+  mockExec: vi.fn(),
+  mockExecFile: vi.fn(),
 }))
 
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync, execFileSync: mockExecFileSync },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, exec: mockExec, execFile: mockExecFile },
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  exec: mockExec,
+  execFile: mockExecFile,
 }))
 vi.mock('fs', () => ({ existsSync: mockExistsSync, default: { existsSync: mockExistsSync } }))
 
-import { safeGit, runSafeCommand, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
+import { safeGit, runSafeCommand, runSafeCommandAsync, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
 
 beforeEach(() => {
   mockExecSync.mockReset()
   mockExecFileSync.mockReset()
   mockExistsSync.mockReset()
+  mockExec.mockReset()
+  mockExecFile.mockReset()
   _resetGitBinForTests()
 })
 
@@ -272,5 +280,103 @@ describe('parseSafeCommand — defensive paths', () => {
     expect(parseSafeCommand('npm test -- --bail')).toEqual({
       bin: 'npm', args: ['test', '--', '--bail'],
     })
+  })
+})
+
+// runSafeCommandAsync — the same platform split as the sync twin, one layer further out.
+//
+// v1.47.1 moved every spawn into the proc host, and this function kept the branch it has always had:
+// a SHELL on win32, where npm/npx are `.cmd` shims a shell-less spawn cannot resolve at all, and
+// plain argv everywhere else. A branch like that is INVISIBLE to a win32-only test run — which is
+// precisely how v1.47.1 went green on Windows and red on macOS and Ubuntu, with three swarm
+// run-command tests reporting a cheerful exit code 0 and no output. Both sides are pinned here so
+// the next person to touch this line finds out on their own machine.
+describe('runSafeCommandAsync', () => {
+  const origPlatform = process.platform
+  const setPlatform = (p: NodeJS.Platform): void => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true })
+  }
+  type Cb = (e: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
+
+  /** Arm the argv spawn (non-win32). */
+  const argvAnswers = (e: NodeJS.ErrnoException | null, out = '', err = ''): void => {
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(e, out, err))
+  }
+  /** Arm the shell spawn (win32), and the interactive-PATH probe that shares it. */
+  const shellAnswers = (e: NodeJS.ErrnoException | null, out = '', err = ''): void => {
+    mockExec.mockImplementation((_c: string, _o: unknown, cb: Cb) => cb(e, out, err))
+  }
+  /** The shell calls that are the command under test, not the PATH probe. */
+  const shellRuns = (): string[] => mockExec.mock.calls.map((c) => c[0] as string).filter((c) => c.startsWith('npm'))
+
+  beforeEach(() => {
+    setPlatform(origPlatform)
+    argvAnswers(null)
+    shellAnswers(null)
+  })
+  afterEach(() => setPlatform(origPlatform))
+
+  it('spawns through a SHELL on win32, as one command line, so a .cmd shim resolves', async () => {
+    setPlatform('win32')
+    shellAnswers(null, 'ok')
+    await expect(runSafeCommandAsync({ bin: 'npm', args: ['test'] }, { cwd: '/r' })).resolves.toEqual({
+      output: 'ok',
+      exitCode: 0,
+    })
+    expect(shellRuns()).toEqual(['npm test'])
+    expect(mockExecFile).not.toHaveBeenCalled()
+  })
+
+  it('spawns argv-style everywhere else, with the args kept apart and no shell', async () => {
+    setPlatform('linux')
+    argvAnswers(null, 'ok')
+    await expect(runSafeCommandAsync({ bin: 'npm', args: ['test'] }, { cwd: '/r' })).resolves.toEqual({
+      output: 'ok',
+      exitCode: 0,
+    })
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+    expect(mockExecFile.mock.calls[0][0]).toBe('npm')
+    expect(mockExecFile.mock.calls[0][1]).toEqual(['test'])
+    expect((mockExecFile.mock.calls[0][2] as { shell: boolean }).shell).toBe(false)
+    expect(shellRuns()).toEqual([])
+  })
+
+  it('reports the real exit code and everything the command printed — argv side', async () => {
+    setPlatform('darwin')
+    argvAnswers(Object.assign(new Error('Command failed'), { code: 2 }), 'on stdout', 'on stderr')
+    await expect(runSafeCommandAsync({ bin: 'npm', args: ['test'] }, { cwd: '/r' })).resolves.toEqual({
+      output: 'on stdouton stderr',
+      exitCode: 2,
+    })
+  })
+
+  it('reports the real exit code and everything the command printed — shell side', async () => {
+    setPlatform('win32')
+    shellAnswers(Object.assign(new Error('Command failed'), { code: 2 }), 'on stdout', 'on stderr')
+    await expect(runSafeCommandAsync({ bin: 'npm', args: ['test'] }, { cwd: '/r' })).resolves.toEqual({
+      output: 'on stdouton stderr',
+      exitCode: 2,
+    })
+  })
+
+  it('falls back to exit code 1 when the failure carries no numeric code', async () => {
+    // ENOENT is a STRING code: the command never ran. Passing that through as the exit code would
+    // hand the caller `exitCode: 'ENOENT'`, which every `=== 0` check upstream reads as failure of
+    // an unknown kind. 1 is the honest answer.
+    setPlatform('linux')
+    argvAnswers(Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }), '', 'not found')
+    await expect(runSafeCommandAsync({ bin: 'npm', args: ['test'] }, { cwd: '/r' })).resolves.toEqual({
+      output: 'not found',
+      exitCode: 1,
+    })
+  })
+
+  it('honours the caller timeout and maxBuffer, and defaults them to 10min / 16MB', async () => {
+    setPlatform('linux')
+    await runSafeCommandAsync({ bin: 'npm', args: [] }, { cwd: '/r', timeout: 5000, maxBuffer: 8 })
+    expect(mockExecFile.mock.calls[0][2]).toMatchObject({ cwd: '/r', timeout: 5000, maxBuffer: 8 })
+    mockExecFile.mockClear()
+    await runSafeCommandAsync({ bin: 'npm', args: [] }, { cwd: '/r' })
+    expect(mockExecFile.mock.calls[0][2]).toMatchObject({ timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
   })
 })
