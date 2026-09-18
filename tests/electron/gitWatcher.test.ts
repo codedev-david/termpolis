@@ -15,6 +15,7 @@ import type { FSWatcher } from 'fs'
 import {
   createGitWatcherRegistry,
   isIgnoredPath,
+  isIgnoredGitPath,
   DEFAULT_THROTTLE_MS,
   type GitWatcherDeps,
 } from '../../src/main/gitWatcher'
@@ -127,6 +128,49 @@ describe('isIgnoredPath', () => {
     expect(isIgnoredPath('my_node_modules/x.ts')).toBe(false)
     expect(isIgnoredPath('outbox/mail.ts')).toBe(false)
     expect(isIgnoredPath('builder.ts')).toBe(false)
+  })
+})
+
+describe('isIgnoredGitPath', () => {
+  it('keeps everything the status answer actually depends on', () => {
+    expect(isIgnoredGitPath('index')).toBe(false)
+    expect(isIgnoredGitPath('HEAD')).toBe(false)
+    expect(isIgnoredGitPath('refs/heads/main')).toBe(false)
+    expect(isIgnoredGitPath('packed-refs')).toBe(false)
+    expect(isIgnoredGitPath('MERGE_HEAD')).toBe(false)
+  })
+
+  it('drops loose objects and packs, which are the bulk of the churn', () => {
+    // A fetch or a commit writes hundreds of these, and not one of them changes the answer on its
+    // own — whatever they are part of also lands on a ref or the index.
+    expect(isIgnoredGitPath('objects/ab/cdef0123')).toBe(true)
+    expect(isIgnoredGitPath('objects/pack/pack-abc.pack')).toBe(true)
+    expect(isIgnoredGitPath('objects')).toBe(true)
+  })
+
+  it('drops the reflog, which only ever echoes a ref update we already saw', () => {
+    expect(isIgnoredGitPath('logs/HEAD')).toBe(true)
+    expect(isIgnoredGitPath('logs/refs/heads/main')).toBe(true)
+    expect(isIgnoredGitPath('logs')).toBe(true)
+  })
+
+  it('drops lock files, because the lock is RENAMED onto the target and the target fires', () => {
+    // index.lock is the loud one: every `git status` this watcher triggers takes it, so passing it
+    // through is how the watcher ends up feeding itself.
+    expect(isIgnoredGitPath('index.lock')).toBe(true)
+    expect(isIgnoredGitPath('config.lock')).toBe(true)
+    expect(isIgnoredGitPath('refs/heads/main.lock')).toBe(true)
+  })
+
+  it('does not over-match a name that merely begins the same way', () => {
+    expect(isIgnoredGitPath('objects-backup/x')).toBe(false)
+    expect(isIgnoredGitPath('logsomething')).toBe(false)
+    expect(isIgnoredGitPath('locked')).toBe(false)
+  })
+
+  it('handles the backslashes Windows actually delivers', () => {
+    expect(isIgnoredGitPath('objects\\ab\\cdef')).toBe(true)
+    expect(isIgnoredGitPath('refs\\heads\\main')).toBe(false)
   })
 })
 
@@ -363,13 +407,39 @@ describe('filtering', () => {
     expect(h.onChange).toHaveBeenCalledTimes(1)
   })
 
-  it('does NOT filter the .git watcher — its paths are the ones that matter most', () => {
-    // Its filenames are relative to `.git`, so `index` and `HEAD` — staging and checkout, the two
-    // events that change the answer the most. Running them through the tree filter would be fine
-    // today and wrong the moment the ignore list grows.
+  it('passes the .git paths that matter — its filenames are relative to `.git`', () => {
     const h = harness()
     registry(h).add('/repo')
     h.gitDir().listener('change', 'index')
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('filters the .git watcher with its OWN list, not the working tree one', () => {
+    // These two watchers see different namespaces, and giving `.git` the tree's filter would be
+    // exactly backwards: the tree list exists to drop `.git/` entirely.
+    const h = harness()
+    registry(h).add('/repo')
+    h.gitDir().listener('change', 'objects/ab/cdef')
+    h.gitDir().listener('change', 'index.lock')
+    h.gitDir().listener('change', 'logs/HEAD')
+    expect(h.onChange).not.toHaveBeenCalled()
+    h.gitDir().listener('change', 'refs/heads/main')
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not drop a .git event with no filename', () => {
+    const h = harness()
+    registry(h).add('/repo')
+    h.gitDir().listener('rename', null)
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('decodes a Buffer filename on the .git watcher too', () => {
+    const h = harness()
+    registry(h).add('/repo')
+    h.gitDir().listener('change', Buffer.from('index.lock'))
+    expect(h.onChange).not.toHaveBeenCalled()
+    h.gitDir().listener('change', Buffer.from('HEAD'))
     expect(h.onChange).toHaveBeenCalledTimes(1)
   })
 })
@@ -385,7 +455,7 @@ describe('defaults', () => {
     }).add('/repo')
     h.tree().listener('change', 'a.ts')
     expect(h.setTimer).toHaveBeenCalledWith(expect.any(Function), DEFAULT_THROTTLE_MS)
-    expect(DEFAULT_THROTTLE_MS).toBe(400)
+    expect(DEFAULT_THROTTLE_MS).toBe(1000)
   })
 
   it('uses the real timers when none are injected', () => {

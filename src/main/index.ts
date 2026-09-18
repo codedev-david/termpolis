@@ -498,7 +498,7 @@ const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit mem
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
-import { setProcSpawner, execShellOffThread } from './procClient'
+import { setProcSpawner, execShellOffThread, shutdownProcHost } from './procClient'
 import { createProcHostTransport } from './procHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
@@ -4260,7 +4260,10 @@ async function semanticPoolOptions(
     })) console.log(`Global hotkey ${hotkeys.toggleSwarm} unavailable (already registered by the OS)`)
   })
 
+  // How far teardown got, so the `will-quit` watchdog below can name the step it stalled on.
+  let shutdownStage = 'idle'
   app.on('before-quit', () => {
+    shutdownStage = 'start'
     // FIRST: this is a clean shutdown, so the next boot must not report it as a crash. Everything
     // below can throw; the marker must be cleared regardless.
     try { markCleanExit() } catch { /* best effort */ }
@@ -4269,6 +4272,12 @@ async function semanticPoolOptions(
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { stopRepoWatches() } catch {}
+    // These are persistent:false, so they are not what holds the process open — the point is that
+    // they keep FIRING. Every event costs three git processes and a send() to a webContents that is
+    // being destroyed, right in the middle of teardown, and on Linux a recursive watch is one
+    // inotify watch PER DIRECTORY that nothing else releases.
+    try { gitWatchers.closeAll() } catch {}
+    shutdownStage = 'watchers'
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
     // How far reflection got into each transcript. Losing this doesn't lose memory, but it
@@ -4285,6 +4294,11 @@ async function semanticPoolOptions(
     // exclusive -- the relay answers a second desktop socket for the same room
     // with 409 -- so a killed child leaves the next launch racing its timeout.
     try { stopRemoteBridgeHost() } catch {}
+    // Reap the spawn host and latch it off. The latch is the point: the git dot and the status bar
+    // are still polling as the window goes, and without it the next poll forks a REPLACEMENT host
+    // out of a process that is trying to exit.
+    try { shutdownProcHost() } catch {}
+    shutdownStage = 'hosts'
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
     try { saveDepthCurveToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
@@ -4292,6 +4306,23 @@ async function semanticPoolOptions(
       try { stopMcpServer(mcpServer) } catch { /* already down */ }
       mcpServer = null
     }
+    shutdownStage = 'mcp'
+  })
+  // The force-exit that ends a stalled shutdown lives in `window-all-closed` — and Electron never
+  // emits that event for a quit we asked for. Cmd/Ctrl+Q, the menu, an update restart and
+  // Playwright's app.close() all go through app.quit(), which closes the windows and jumps straight
+  // to `will-quit`. So the net has to be armed here too, or one stray handle hangs the quit forever
+  // with no window left to show for it. `will-quit` is the right place rather than `before-quit`:
+  // it only fires once the quit is really happening, so a close the user cancels never arms this.
+  app.on('will-quit', () => {
+    const watchdog = setTimeout(() => {
+      console.error(`[shutdown] stalled after "${shutdownStage}" — forcing exit`)
+      // A forced exit is still a deliberate one: without this the next boot files it as a crash.
+      try { markCleanExit() } catch { /* best effort */ }
+      process.exit(0)
+    }, 5000)
+    // unref so the watchdog itself never holds open a shutdown that is going fine.
+    watchdog.unref?.()
   })
   // `before-quit` above misses the shutdowns we don't initiate — an OS session end and a
   // termination signal — and each of those would otherwise be filed as a phantom native crash

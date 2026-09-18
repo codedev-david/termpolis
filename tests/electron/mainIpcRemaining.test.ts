@@ -1303,6 +1303,59 @@ describe('shutdown', () => {
     // window-all-closed already nulled the handle — a second stop would throw inside electron.
     expect(M.stopMcpServer).not.toHaveBeenCalled()
   })
+
+  it('before-quit on its own never force-exits — a quit can still be cancelled at that point', async () => {
+    // The agents-running dialog cancels a close AFTER before-quit has already fired. Arming the
+    // escape hatch there would turn "the user clicked Cancel" into "the app exited five seconds
+    // later", killing the very agents the dialog exists to protect.
+    exitSpy.mockClear()
+    vi.useFakeTimers()
+    try {
+      ;(await appCallback('before-quit'))()
+      vi.advanceTimersByTime(60_000)
+      expect(exitSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('will-quit arms the force-exit, because a quit we asked for never emits window-all-closed', async () => {
+    // Ctrl/Cmd+Q, the menu, an update restart and Playwright's app.close() all go through
+    // app.quit(), and Electron closes the windows and jumps straight to will-quit for those — so
+    // the net above is unreachable on every path a real shutdown actually takes.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    exitSpy.mockClear()
+    vi.useFakeTimers()
+    try {
+      ;(await appCallback('before-quit'))()
+      ;(await appCallback('will-quit'))()
+      // A shutdown that is going fine gets its chance first.
+      expect(exitSpy).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(5000)
+      expect(exitSpy).toHaveBeenCalledWith(0)
+      // And it names the step it got stuck after, which is the whole point of tracking one.
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('stalled after "mcp"'))
+    } finally {
+      vi.useRealTimers()
+      errSpy.mockRestore()
+    }
+  })
+
+  it('force-exits on macOS too — will-quit only ever fires when the app is really going', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    exitSpy.mockClear()
+    vi.useFakeTimers()
+    try {
+      await withPlatform('darwin', async () => {
+        ;(await appCallback('will-quit'))()
+        vi.advanceTimersByTime(5000)
+      })
+      expect(exitSpy).toHaveBeenCalledWith(0)
+    } finally {
+      vi.useRealTimers()
+      errSpy.mockRestore()
+    }
+  })
 })
 
 // ===========================================================================

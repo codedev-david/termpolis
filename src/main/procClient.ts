@@ -87,6 +87,27 @@ export function procHostActive(): boolean {
   return transport !== null
 }
 
+/**
+ * Reap the host on the way out, and make sure nothing forks a replacement.
+ *
+ * Not just hygiene. `disabled` is the load-bearing half: the git dot, the Changes rail and the
+ * status bar are all still polling while the window closes, so without it the very next poll walks
+ * into `ensureTransport` and forks a BRAND NEW utility process out of a process that is trying to
+ * exit. The in-flight calls are rejected for the same reason `onHostExit` rejects them — a promise
+ * that can only settle by firing its own 15 s timeout is a promise nothing can await during a quit.
+ */
+export function shutdownProcHost(): void {
+  disabled = true
+  for (const p of pending.values()) {
+    clearTimeout(p.timer)
+    p.reject(new Error('proc host shut down'))
+  }
+  pending.clear()
+  const t = transport
+  transport = null
+  try { t?.kill() } catch { /* already gone */ }
+}
+
 function withinRestartBudget(now: number): boolean {
   while (restartTimes.length > 0 && now - restartTimes[0] > RESTART_WINDOW_MS) restartTimes.shift()
   return restartTimes.length < RESTART_BUDGET

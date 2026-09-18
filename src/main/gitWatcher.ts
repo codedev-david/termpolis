@@ -20,6 +20,10 @@
 // the full window before the UI moves, which is the sluggishness we are trying to remove. Firing
 // first and then collapsing the rest of the burst gives an instant repaint on the keystroke that
 // saved, and one more at the end of a `npm install`-sized storm rather than ten thousand.
+//
+// The window is a second rather than the 400 ms this first shipped with. The leading edge is what
+// makes the UI feel instant, so widening the window costs nothing there — it only decides how
+// often a SUSTAINED storm is allowed to re-ask, and each re-ask is three git processes per repo.
 
 import type { FSWatcher } from 'fs'
 
@@ -39,7 +43,7 @@ export interface GitWatcherDeps {
   throttleMs?: number
 }
 
-export const DEFAULT_THROTTLE_MS = 400
+export const DEFAULT_THROTTLE_MS = 1000
 
 /** Paths whose churn says nothing about the repo's git status but can produce thousands of events a
  *  second. `.git` is here too: it has its own dedicated watcher, and letting the recursive tree
@@ -49,6 +53,17 @@ const IGNORED = ['.git/', 'node_modules/', '.venv/', '__pycache__/', 'dist/', 'o
 export function isIgnoredPath(filename: string): boolean {
   const p = filename.replace(/\\/g, '/')
   return IGNORED.some((seg) => p === seg.slice(0, -1) || p.startsWith(seg) || p.includes('/' + seg))
+}
+
+/** The `.git` watcher is the amplifier in this design: every event it passes costs three git
+ *  processes, and git rewrites far more of `.git` than the status answer depends on. Loose objects
+ *  and packs (`objects/`), the reflog (`logs/`) and every `*.lock` are noise — a lock file is
+ *  created and then RENAMED onto its target, so the target fires on its own — while a change that
+ *  really moves the needle always lands on `index`, `HEAD`, `refs/**`, `packed-refs` or a
+ *  MERGE/REBASE head, none of which are dropped here. */
+export function isIgnoredGitPath(filename: string): boolean {
+  const p = filename.replace(/\\/g, '/')
+  return p.endsWith('.lock') || p === 'objects' || p.startsWith('objects/') || p === 'logs' || p.startsWith('logs/')
 }
 
 interface RepoWatch {
@@ -93,13 +108,13 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
     }, throttleMs)
   }
 
-  function open(root: string, target: string, recursive: boolean, filter: boolean): FSWatcher | null {
+  function open(root: string, target: string, recursive: boolean, ignore: (name: string) => boolean): FSWatcher | null {
     try {
       // persistent:false — a file watcher must never be the reason the process stays alive.
       return deps.watch(target, { recursive, persistent: false }, (_event, filename) => {
-        if (filter && filename) {
+        if (filename) {
           const name = typeof filename === 'string' ? filename : filename.toString()
-          if (isIgnoredPath(name)) return
+          if (ignore(name)) return
         }
         bump(root)
       })
@@ -115,9 +130,9 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
       const existing = repos.get(root)
       if (existing) { existing.refs++; return }
       const watchers: FSWatcher[] = []
-      const gitDir = open(root, joinPath(root, '.git'), true, false)
+      const gitDir = open(root, joinPath(root, '.git'), true, isIgnoredGitPath)
       if (gitDir) watchers.push(gitDir)
-      const tree = open(root, root, true, true)
+      const tree = open(root, root, true, isIgnoredPath)
       if (tree) watchers.push(tree)
       repos.set(root, { refs: 1, watchers, timer: null, dirty: false })
     },

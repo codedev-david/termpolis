@@ -30,6 +30,7 @@ import {
   setProcSpawner,
   _resetProcClientForTests,
   procHostActive,
+  shutdownProcHost,
   execOffThread,
   execShellOffThread,
   execCaptureOffThread,
@@ -370,5 +371,75 @@ describe('the restart budget', () => {
     transports[0].exit(0)
     H.runExec.mockResolvedValue({ stdout: 'no host', stderr: '' })
     await expect(execOffThread('git', ['b'], {})).resolves.toBe('no host')
+  })
+})
+
+describe('shutting the host down for a quit', () => {
+  it('kills the child, so it cannot outlive the app that forked it', async () => {
+    const { transports } = install()
+    const p = execCaptureOffThread('git', ['status'], {}).catch(() => 'rejected')
+    expect(procHostActive()).toBe(true)
+    shutdownProcHost()
+    expect(transports[0].killed).toBe(1)
+    expect(procHostActive()).toBe(false)
+    expect(await p).toBe('rejected')
+  })
+
+  it('rejects the calls in flight rather than leaving them to time out', async () => {
+    // A quit has no event loop left to wait on. A promise that can only settle by firing its own
+    // 15s timeout is a promise nothing can await, and the teardown that awaits it hangs.
+    const { transports } = install()
+    const a = execCaptureOffThread('git', ['a'], {})
+    const b = execCaptureOffThread('git', ['b'], {})
+    expect(transports[0].sent).toHaveLength(2)
+    shutdownProcHost()
+    await expect(a).rejects.toThrow('proc host shut down')
+    await expect(b).rejects.toThrow('proc host shut down')
+  })
+
+  it('clears the per-call timer, so a settled call cannot fire one afterwards', async () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const p = execCaptureOffThread('git', ['a'], {}).catch((e: Error) => e.message)
+    shutdownProcHost()
+    expect(await p).toBe('proc host shut down')
+    // If the timeout were still armed it would reject an already-settled promise here, which in
+    // this process means an unhandled rejection at exit.
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(transports[0].killed).toBe(1)
+  })
+
+  it('refuses to fork a REPLACEMENT for a poll that lands mid-quit', async () => {
+    // This is the load-bearing half. The git dot and the status bar are still polling while the
+    // window goes, and a fork here leaves a fresh utility process orphaned by the exit.
+    const { spawn } = install()
+    const inFlight = execCaptureOffThread('git', ['a'], {}).catch(() => {})
+    expect(spawn).toHaveBeenCalledTimes(1)
+    shutdownProcHost()
+    await inFlight
+
+    H.runExec.mockResolvedValue({ stdout: 'in-process', stderr: '' })
+    await expect(execOffThread('git', ['status'], {})).resolves.toBe('in-process')
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(procHostActive()).toBe(false)
+  })
+
+  it('is safe to call twice, and with no host ever forked', () => {
+    expect(() => shutdownProcHost()).not.toThrow()
+    install()
+    void execCaptureOffThread('git', [], {}).catch(() => {})
+    shutdownProcHost()
+    expect(() => shutdownProcHost()).not.toThrow()
+  })
+
+  it('survives a kill that throws — the child may already be gone', () => {
+    setProcSpawner(() => {
+      const t = makeTransport()
+      t.kill = () => { throw new Error('already gone') }
+      return t
+    })
+    void execCaptureOffThread('git', [], {}).catch(() => {})
+    expect(() => shutdownProcHost()).not.toThrow()
+    expect(procHostActive()).toBe(false)
   })
 })
