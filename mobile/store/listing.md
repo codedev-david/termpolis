@@ -54,6 +54,18 @@ It is a viewer and a keyboard. Nothing runs here. The work happens on your deskt
 REQUIRES THE TERMPOLIS DESKTOP APP
 Termpolis Remote does nothing on its own. You need Termpolis running on a Mac, Windows or Linux computer, with Remote turned on in Settings. Termpolis is free and open source: github.com/codedev-david/termpolis
 
+RELAY ACCESS IS A SUBSCRIPTION
+The app is free to install. Your phone reaches your desktop through a relay we run and pay for, and that is what the subscription covers:
+
+Relay access -- $4.99 per month, auto-renewing. New subscribers get the first week free.
+
+The desktop app stays free and open source. There is no free tier here and nothing is held back from subscribers; the relay is the one thing this app does.
+
+Payment is charged to your Apple ID at confirmation of purchase. It renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period, and your account is charged for renewal within 24 hours of that. Manage or cancel it in your Apple ID account settings after purchase. Any unused part of a free week is forfeited when you buy a subscription.
+
+Terms of Use (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+Privacy policy: https://termpolis.com/privacy.html
+
 PAIRING TAKES ONE SCAN
 Your desktop shows a code. You scan it. Both screens then show the same eight words -- if they match, the two devices agreed on a key nothing in between can derive. If they do not match, something is in between, and the right move is to unpair.
 
@@ -75,9 +87,25 @@ No account. No sign-in. No analytics, no crash reporting, no advertising identif
 CAMERA
 Used for one thing: reading the pairing code on your desktop screen. Frames are decoded on the phone and thrown away. If you would rather not, the pairing code can be typed in by hand.
 
-Termpolis is open source under the Apache 2.0 licence, and the wire format this app speaks is published in full. Privacy policy: termpolis.com/privacy.html
+Termpolis is open source under the Apache 2.0 licence, and the wire format this app speaks is published in full.
 ```
-2,833 characters.
+3,733 characters.
+
+⛔ **The Terms of Use (EULA) link is not decoration — it is what 1.1.0 was
+rejected for.** Guideline 3.1.2 requires an app selling a subscription to carry
+a *functional* link to the EULA in the metadata on its App Store product page,
+which in practice means the Description field. Having the link on the paywall
+screen inside the app is necessary and **not sufficient**; both are checked, and
+the product-page one is checked by a bot before a human ever opens the build.
+
+Write both links with the `https://` scheme. The privacy line here read
+`termpolis.com/privacy.html` for 1.0 and was accepted, but a bare host is not
+reliably parsed as a link, and there is nothing to gain by finding out which
+checker is stricter this month.
+
+If a custom EULA is ever used instead of Apple's standard one, it goes in App
+Store Connect under App Information → License Agreement, and the Description
+link comes out.
 
 ### Keywords — 100 max, comma-separated, no spaces
 
