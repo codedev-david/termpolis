@@ -26,9 +26,18 @@ locked for the duration of a review once submitted.
 ### App Name — 30 max
 
 ```
-Termpolis Remote
+Termpolis R
 ```
-16 characters.
+11 characters.
+
+⛔ **The live name is "Termpolis R", and that is deliberate — do not "fix" it.**
+It went in short by accident and David kept it (2026-09-22). Changing the name
+field in App Store Connect now would break every link label that matches it.
+
+The long form is still correct in **prose**: the description, the website body
+copy and the Play listing all say "Termpolis Remote". The rule is that the *name
+field* and any *link text pointing at the store* say "Termpolis R"; sentences
+about the product say "Termpolis Remote".
 
 ### Subtitle — 30 max
 
