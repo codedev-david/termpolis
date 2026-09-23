@@ -1,4 +1,5 @@
 import type { AppLogEntry, AppLogLevel } from '../../../shared/appLog'
+import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
@@ -321,6 +322,13 @@ export interface TermpolisAPI {
   exportTerminal: (opts: { content: string; defaultFilename: string }) => Promise<IpcResponse<{ filePath: string }>>
   detectAgents: () => Promise<IpcResponse<Record<string, boolean>>>
   secondOpinion: (opts: { agent: string; model?: string; content: string }) => Promise<IpcResponse<{ feedback: string }>>
+  /** Current per-provider model catalog. Resolves immediately — the main process seeds a
+   *  builtin (Claude-only) catalog at startup, so this never blocks on discovery. */
+  getModelCatalog: () => Promise<IpcResponse<ModelCatalog>>
+  /** Force a re-discovery now, bypassing the cache TTL. */
+  refreshModelCatalog: () => Promise<IpcResponse<ModelCatalog>>
+  /** Fires when the launch-time (or forced) refresh lands. Returns an unsubscribe fn. */
+  onModelCatalogUpdated: (cb: (catalog: ModelCatalog) => void) => () => void
   pickDirectory: (defaultPath?: string) => Promise<IpcResponse<string | null>>
   openPath: (path: string) => Promise<IpcResponse>
   openExternal: (url: string) => Promise<IpcResponse>

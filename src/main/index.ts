@@ -60,6 +60,14 @@ import { homedir, release } from 'os'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
 import { execSync, spawn } from 'child_process'
 import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
+import {
+  builtinCatalog,
+  catalogIsStale,
+  isAllowedModel,
+  parseStoredCatalog,
+  refreshModelCatalog,
+  type ModelCatalog,
+} from './modelCatalog'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
 import { createTerminalNameLookup } from './terminalNames'
 import { initAppLog, logToApp, readAppLog, clearAppLog, appLogFilePath, captureConsole } from './appLog'
@@ -498,7 +506,7 @@ const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit mem
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
-import { setProcSpawner, execShellOffThread, shutdownProcHost } from './procClient'
+import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
 import { createProcHostTransport } from './procHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
@@ -2710,6 +2718,81 @@ ipcMain.handle('agents:detect', async () => {
   return ok(results)
 })
 
+// ---------------------------------------------------------------------------
+// Model catalog — what the model pickers may offer, per provider.
+//
+// Refreshed once on launch (see primeModelCatalog in whenReady) and cached to
+// userData so a launch with no network, or with Codex never yet run, still gets
+// the last-known list instead of an empty dropdown. Claude's entry is a builtin
+// and never expires: its aliases self-resolve to the newest model in each family.
+// ---------------------------------------------------------------------------
+let modelCatalog: ModelCatalog = builtinCatalog()
+
+function modelCatalogPath(): string {
+  return join(app.getPath('userData'), 'model-catalog.json')
+}
+
+/** Off-thread, non-throwing binary run — the CatalogIO.run seam. A spawn on the main
+ *  thread is a frozen PTY (see procHost.ts), and `agy models` hits the network. */
+async function runForCatalog(bin: string, args: string[], timeoutMs: number): Promise<string | null> {
+  try {
+    // execCapture, not execShell: argv stays a real array, so nothing is shell-parsed,
+    // and a non-zero exit comes back as `error` instead of throwing.
+    const out = await execCaptureOffThread(bin, args, {
+      timeout: timeoutMs,
+      env: { ...process.env, PATH: getExtendedPath() },
+    })
+    return out.stdout && out.stdout.trim() ? out.stdout : null
+  } catch {
+    return null // an uninstalled/failing CLI is not an error — that provider just has no list
+  }
+}
+
+async function installedForCatalog(): Promise<Record<string, boolean>> {
+  const [codex, agy] = await Promise.all([findAgentInstalled('codex'), findAgentInstalled('agy')])
+  // `agy models` is the only discovery step that leaves the machine — and it is the
+  // user's own already-authenticated CLI asking its own vendor, not Termpolis phoning
+  // home. Still, the project's posture is that a network call gets an off switch:
+  // TERMPOLIS_SKIP_MODEL_CATALOG=1 suppresses it (naming follows TERMPOLIS_SKIP_UPDATER).
+  // Codex discovery is a plain local file read and keeps working air-gapped either way.
+  const offline = process.env.TERMPOLIS_SKIP_MODEL_CATALOG === '1'
+  return { claude: true, codex, agy: agy && !offline }
+}
+
+/** Read disk → re-probe if stale → persist. `force` skips the TTL check, which is what
+ *  the explicit refresh does. Fully guarded: a model list must never be able to take
+ *  down startup (the app-boot rule). */
+async function primeModelCatalog(force = false): Promise<void> {
+  try {
+    let stored: ModelCatalog | null = null
+    try {
+      stored = parseStoredCatalog(readFileSync(modelCatalogPath(), 'utf-8'))
+    } catch { /* absent or unreadable — fall through to a probe */ }
+    if (stored) modelCatalog = stored
+    if (!force && !catalogIsStale(stored, Date.now())) return
+    const fresh = await refreshModelCatalog(
+      {
+        readFile: async (p) => { try { return readFileSync(p, 'utf-8') } catch { return null } },
+        run: runForCatalog,
+        codexCachePath: join(app.getPath('home'), '.codex', 'models_cache.json'),
+        installed: await installedForCatalog(),
+        now: () => Date.now(),
+      },
+      stored,
+    )
+    modelCatalog = fresh
+    try { writeFileSync(modelCatalogPath(), JSON.stringify(fresh, null, 2), 'utf-8') } catch { /* cache is best-effort */ }
+    try { mainWindow?.webContents.send('models:catalog-updated', fresh) } catch { /* window may be gone */ }
+  } catch { /* never block startup on a model list */ }
+}
+
+ipcMain.handle('models:catalog', async () => ok(modelCatalog))
+
+ipcMain.handle('models:refresh-catalog', async () => {
+  await primeModelCatalog(true)
+  return ok(modelCatalog)
+})
+
 // Swarm IPC handlers for the dashboard
 // Read terminal output buffer from renderer (used by swarm bridge for non-MCP agents)
 // `fromOffset` is a position in the terminal's WHOLE output stream, not in the retained
@@ -2807,7 +2890,11 @@ ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?:
   try {
     const agent = opts?.agent as SecondOpinionAgent
     if (!['claude', 'codex', 'gemini'].includes(agent)) return err('unsupported agent')
-    const res = await runSecondOpinion({ agent, model: opts?.model, content: opts?.content || '' }, deliverSecondOpinion)
+    // First gate on the model: it must be one the launch-time catalog actually
+    // discovered for that provider. secondOpinionCommand applies a second, shape-only
+    // gate; anything that fails either is dropped and the agent runs its own default.
+    const model = isAllowedModel(agent, opts?.model, modelCatalog) ? opts?.model : undefined
+    const res = await runSecondOpinion({ agent, model, content: opts?.content || '' }, deliverSecondOpinion)
     return res.ok ? ok({ feedback: res.feedback }) : err(res.error || 'second opinion failed')
   } catch (e: any) { return err(e.message) }
 })
@@ -2970,6 +3057,11 @@ if (!gotTheLock) {
     // asking it there means three CreateProcess calls on the main thread while the user waits for
     // the terminal to open. Answered here instead, long before the first terminal.
     void primeBundledToolsCheck()
+    // Refresh what each installed agent says its own models are, so the pickers offer
+    // today's list rather than whatever was hardcoded at release. Fire-and-forget and
+    // fully guarded: it reads a file and (for Gemini) runs one bounded off-thread probe,
+    // and every failure path leaves the previous cached list in place.
+    void primeModelCatalog()
 
     // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
     // macOS, without which Cmd+Q and copy/paste in native inputs do not work. See appMenu.ts.

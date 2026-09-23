@@ -1434,6 +1434,164 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 2d3. The picker is PER PROVIDER — a Codex or Gemini terminal lists that vendor's
+  // models (discovered at launch), not Claude's aliases, which its CLI would reject.
+  // =====================================================
+  describe('per-provider model picker', () => {
+    const CATALOG = {
+      claude: { provider: 'claude', models: [{ id: 'opus', label: 'Opus' }], source: 'builtin', fetchedAt: 0 },
+      codex: { provider: 'codex', models: [{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' }, { id: 'gpt-5.5', label: 'GPT-5.5' }], source: 'cli', fetchedAt: 1 },
+      gemini: { provider: 'gemini', models: [{ id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' }], source: 'cli', fetchedAt: 1 },
+    }
+
+    function withAgentTerminal(agentCommand: string | undefined, catalog: unknown = CATALOG) {
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false, agentCommand }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        focusActiveTerminal: mocks.mockFocusActiveTerminal,
+        focusNonce: 0,
+        voiceSettings: { enabled: false },
+      }))
+      ;(window as any).termpolis.getModelCatalog = vi.fn(async () => ({ success: true, data: catalog }))
+      // Reset the two APIs individual cases below override, so a stub cannot leak forward.
+      ;(window as any).termpolis.detectAgents = vi.fn(async () => ({ success: true, data: { claude: true, codex: true, gemini: true, agy: true } }))
+      ;(window as any).termpolis.onModelCatalogUpdated = vi.fn(() => () => {})
+      ;(window as any).termpolis.refreshModelCatalog = vi.fn(async () => ({ success: true, data: CATALOG }))
+    }
+
+    /** Wait for the launch-time catalog to arrive before asserting on the options. */
+    async function pickerWithModels(): Promise<HTMLSelectElement> {
+      const picker = await screen.findByTestId('model-picker') as HTMLSelectElement
+      await waitFor(() => expect(picker.querySelectorAll('option').length).toBeGreaterThan(1))
+      return picker
+    }
+
+    it('lists Codex\'s discovered models in a Codex terminal', async () => {
+      withAgentTerminal('codex --yolo')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await pickerWithModels()
+      expect(Array.from(picker.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value))
+        .toEqual(['', 'gpt-5.6-sol', 'gpt-5.5'])
+      // Claude's aliases must NOT leak into a Codex picker — its CLI rejects them.
+      expect(picker.textContent).not.toContain('Sonnet')
+    })
+
+    it('relaunches Codex with its own resume flag and a SINGLE Ctrl+D', async () => {
+      withAgentTerminal('codex --yolo')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await pickerWithModels()
+      vi.useFakeTimers()
+      fireEvent.change(picker, { target: { value: 'gpt-5.6-sol' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', 'codex --model gpt-5.6-sol resume --last\r')
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(3)
+      vi.useRealTimers()
+    })
+
+    it('lists Gemini\'s models and relaunches the Antigravity CLI with --continue', async () => {
+      withAgentTerminal('agy')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await pickerWithModels()
+      expect(picker.textContent).toContain('Gemini 3.8 Flash (High)')
+      vi.useFakeTimers()
+      fireEvent.change(picker, { target: { value: 'gemini-3.8-flash-high' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', 'agy --model gemini-3.8-flash-high --continue\r')
+      vi.useRealTimers()
+    })
+
+    it('still offers Claude its always-latest aliases, ignoring the catalog', async () => {
+      withAgentTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await pickerWithModels()
+      expect(Array.from(picker.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value))
+        .toEqual(['', 'fable', 'opus', 'sonnet', 'haiku'])
+    })
+
+    it('gives a heuristically-detected Codex terminal NO picker', async () => {
+      // Termpolis did not launch it, so its identity is a guess — and the switch is an
+      // interrupt-and-relaunch. Codex has no in-session /model fallback to degrade to.
+      withAgentTerminal(undefined)
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: { name: 'Codex', icon: 'fa-solid fa-microchip', color: '#10B981' } })
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect((window as any).termpolis.getModelCatalog).toHaveBeenCalled())
+      expect(screen.queryByTestId('model-picker')).not.toBeInTheDocument()
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null })
+    })
+
+    it('explains the install gap when the provider\'s CLI is not on PATH', async () => {
+      withAgentTerminal('codex --yolo')
+      ;(window as any).termpolis.detectAgents = vi.fn(async () => ({ success: true, data: { claude: true, codex: false, agy: true } }))
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('model-picker')
+      await waitFor(() => expect(picker.textContent).toContain('Model — needs OpenAI Codex'))
+      fireEvent.change(picker, { target: { value: '' } })
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('offers a retry instead of a dead control when discovery found nothing', async () => {
+      // Codex publishes its cache only after it has been run once, so an empty list is a
+      // normal first-run state — not an error, and not worth a 12h wait for the TTL.
+      withAgentTerminal('codex --yolo', { ...CATALOG, codex: { provider: 'codex', models: [], source: 'builtin', fetchedAt: 0 } })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('model-picker')
+      await waitFor(() => expect(picker.textContent).toContain('Model — none found'))
+      expect(picker).not.toBeDisabled()
+
+      fireEvent.change(picker, { target: { value: '__refresh__' } })
+      await waitFor(() => expect(picker.textContent).toContain('GPT-5.6 Sol'))
+      expect((window as any).termpolis.refreshModelCatalog).toHaveBeenCalled()
+      // The sentinel is not a model: nothing may reach the PTY, and it must not stick
+      // in the select as if it were the chosen one.
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect((picker as HTMLSelectElement).value).toBe('')
+    })
+
+    it('leaves the retry row in place when the re-probe still finds nothing', async () => {
+      withAgentTerminal('codex --yolo', { ...CATALOG, codex: { provider: 'codex', models: [], source: 'builtin', fetchedAt: 0 } })
+      ;(window as any).termpolis.refreshModelCatalog = vi.fn(async () => { throw new Error('agy not installed') })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('model-picker')
+      await waitFor(() => expect(picker.textContent).toContain('Model — none found'))
+      fireEvent.change(picker, { target: { value: '__refresh__' } })
+      await waitFor(() => expect((window as any).termpolis.refreshModelCatalog).toHaveBeenCalled())
+      expect(picker.textContent).toContain('Retry discovery')
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('repopulates when the launch-time refresh lands after first paint', async () => {
+      // getModelCatalog resolves with the builtin (empty) catalog; the real discovery
+      // arrives moments later over models:catalog-updated.
+      let push: ((c: unknown) => void) | undefined
+      withAgentTerminal('codex --yolo', { ...CATALOG, codex: { provider: 'codex', models: [], source: 'builtin', fetchedAt: 0 } })
+      ;(window as any).termpolis.onModelCatalogUpdated = vi.fn((cb: (c: unknown) => void) => { push = cb; return () => {} })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await screen.findByTestId('model-picker')
+      await waitFor(() => expect(push).toBeTypeOf('function'))
+      act(() => { push!(CATALOG) })
+      await waitFor(() => expect(picker.textContent).toContain('GPT-5.6 Sol'))
+      expect(picker).not.toBeDisabled()
+    })
+
+    it('survives the catalog IPC being absent or failing', async () => {
+      withAgentTerminal('claude --dangerously-skip-permissions')
+      ;(window as any).termpolis.getModelCatalog = vi.fn(async () => { throw new Error('nope') })
+      ;(window as any).termpolis.onModelCatalogUpdated = undefined
+      render(<TerminalPane {...defaultProps} />)
+      // Claude's rows are builtin, so its picker is unaffected by a dead catalog.
+      const picker = await pickerWithModels()
+      expect(picker.textContent).toContain('Sonnet')
+    })
+  })
+
+  // =====================================================
   // Second Opinion dropdown + review pipeline
   // =====================================================
   describe('Second Opinion', () => {
@@ -1459,16 +1617,22 @@ describe('TerminalPane', () => {
 
     beforeEach(() => { mockSecondOpinion.mockReset(); mockSecondOpinion.mockResolvedValue({ success: true, data: { feedback: 'Consider quicksort instead.' } }) })
 
-    it('lists installed agents with Claude models nested under a Claude group', async () => {
+    it('gives every installed provider its own group, each led by a default row', async () => {
       withAgents()
       render(<TerminalPane {...defaultProps} />)
       const picker = await screen.findByTestId('second-opinion-picker')
       fireEvent.click(picker) // opening the dropdown must not bubble to the terminal
-      const group = picker.querySelector('optgroup[label="Claude"]') as HTMLOptGroupElement | null
-      expect(group).toBeTruthy()
-      expect(Array.from(group!.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Fable', 'Opus', 'Sonnet', 'Haiku'])
+      const groups = Array.from(picker.querySelectorAll('optgroup')) as HTMLOptGroupElement[]
+      expect(groups.map((g) => g.label)).toEqual(['Claude', 'OpenAI Codex', 'Gemini'])
+      // Claude's rows are its four builtin aliases; Codex/Gemini have no catalog in this
+      // test, so they contribute only their "run the CLI's own default" row.
+      expect(Array.from(groups[0].querySelectorAll('option')).map((o) => o.textContent))
+        .toEqual(['Claude · default', 'Fable', 'Opus', 'Sonnet', 'Haiku'])
+      expect(Array.from(groups[1].querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['codex'])
+      expect(Array.from(groups[2].querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['gemini'])
+      // Only the placeholder sits outside a group now.
       const topValues = Array.from(picker.children).filter((c) => c.tagName === 'OPTION').map((o) => (o as HTMLOptionElement).value)
-      expect(topValues).toEqual(expect.arrayContaining(['codex', 'gemini']))
+      expect(topValues).toEqual([''])
     })
 
     it('does not crash when agent detection fails (menus stay hidden)', async () => {

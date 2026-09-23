@@ -40,6 +40,22 @@ describe('secondOpinionCommand', () => {
     expect(bin).toBe('agy')
     expect(args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions'])
   })
+  it('codex: passes a discovered model with -m, BEFORE the positional prompt', () => {
+    const { args } = secondOpinionCommand('codex', 'gpt-5.6-sol')
+    expect(args).toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', PROMPT_TOKEN])
+  })
+  it('gemini: passes a discovered model with --model', () => {
+    expect(secondOpinionCommand('gemini', 'gemini-3.8-flash-high').args)
+      .toEqual(['-p', PROMPT_TOKEN, '--model', 'gemini-3.8-flash-high', '--dangerously-skip-permissions'])
+  })
+  it('codex/gemini: drop a model that fails the shape gate rather than passing it through', () => {
+    // These namespaces are discovered at runtime so there is no enum to match against —
+    // isSafeModelId is the gate, and the caller has already checked catalog membership.
+    for (const bad of ['--sandbox', 'a; rm -rf /', '-m', 'a b']) {
+      expect(secondOpinionCommand('codex', bad).args).not.toContain('-m')
+      expect(secondOpinionCommand('gemini', bad).args).not.toContain('--model')
+    }
+  })
 })
 
 describe('secondOpinionSpawnPlan', () => {

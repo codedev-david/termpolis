@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ModelCatalog } from '../renderer/src/lib/modelCatalog'
 import type {
   TermpolisAPI,
   ShellType,
@@ -73,6 +74,22 @@ const api: TermpolisAPI = {
 
   secondOpinion: (opts: { agent: string; model?: string; content: string }) =>
     ipcRenderer.invoke('agent:second-opinion', opts),
+
+  // Per-provider model catalog. `getModelCatalog` is cheap and always resolves — the
+  // main process holds a builtin (Claude-only) catalog from the first tick, so a picker
+  // can render before discovery finishes. `onModelCatalogUpdated` then fires once the
+  // launch-time refresh lands, and returns its own unsubscribe.
+  getModelCatalog: () =>
+    ipcRenderer.invoke('models:catalog'),
+
+  refreshModelCatalog: () =>
+    ipcRenderer.invoke('models:refresh-catalog'),
+
+  onModelCatalogUpdated: (cb) => {
+    const handler = (_e: unknown, catalog: ModelCatalog) => cb(catalog)
+    ipcRenderer.on('models:catalog-updated', handler)
+    return () => { ipcRenderer.removeListener('models:catalog-updated', handler) }
+  },
 
   pickDirectory: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', { defaultPath }),

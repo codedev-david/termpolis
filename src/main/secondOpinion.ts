@@ -11,6 +11,8 @@
 // the untrusted (terminal-scraped) prompt out-of-band — via a temp file / env var, never on
 // a shell command line — and a scraped prompt can't inject a command.
 
+import { isSafeModelId } from './modelCatalog'
+
 export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
 
 // Claude model aliases valid for `--model` (mirrors agentCommandSanitizer.AGENT_MODEL_ALIASES).
@@ -43,15 +45,21 @@ export function buildReviewPrompt(content: string, opts: { maxChars?: number } =
  * Full argv (binary + args, with PROMPT_TOKEN where the prompt goes) for a one-shot headless
  * review. Per-agent because the CLIs differ:
  *  - claude:  `claude -p <prompt> [--model <alias>] --dangerously-skip-permissions`
- *  - codex:   `codex exec --sandbox read-only --skip-git-repo-check <prompt>`  (its `-p` is
- *             `--profile`; `exec` is the non-interactive entry point; read-only so a review
- *             can't touch the repo)
- *  - gemini:  `agy -p <prompt> --dangerously-skip-permissions`  (Gemini's headless access is
- *             now the Antigravity CLI `agy` — the old `gemini` free-tier headless client was
- *             deprecated. Verified: `-p`/`--print` runs one prompt non-interactively;
- *             skip-permissions prevents a tool-approval prompt hanging the run.)
- * An invalid/absent Claude model alias is dropped (the prompt is never here, so nothing an
- * attacker controls reaches the argv). Pure.
+ *  - codex:   `codex exec --sandbox read-only --skip-git-repo-check [-m <model>] <prompt>`  (its
+ *             `-p` is `--profile`; `exec` is the non-interactive entry point; read-only so a
+ *             review can't touch the repo; `-m`/`--model` must precede the positional prompt)
+ *  - gemini:  `agy -p <prompt> [--model <model>] --dangerously-skip-permissions`  (Gemini's
+ *             headless access is now the Antigravity CLI `agy` — the old `gemini` free-tier
+ *             headless client was deprecated. Verified: `-p`/`--print` runs one prompt
+ *             non-interactively; skip-permissions prevents a tool-approval prompt hanging it.)
+ *
+ * Model validation differs by provider because their namespaces do. Claude's four aliases are
+ * a closed enum, so they are matched exactly. Codex and Gemini ids are DISCOVERED at runtime
+ * (see modelCatalog.ts) and version fast, so an exact enum here would go stale within weeks;
+ * they are gated on isSafeModelId instead — alphanumeric-leading, [A-Za-z0-9._-] only, so
+ * nothing flag-shaped or shell-significant can become an argv token. The caller additionally
+ * checks the id against the fetched catalog (isAllowedModel), making this the second gate, not
+ * the only one. An invalid/absent model is dropped and the agent runs its own default. Pure.
  */
 export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string): { bin: string; args: string[] } {
   switch (agent) {
@@ -61,11 +69,19 @@ export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string):
       args.push('--dangerously-skip-permissions')
       return { bin: 'claude', args }
     }
-    case 'codex':
-      return { bin: 'codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', PROMPT_TOKEN] }
-    case 'gemini':
+    case 'codex': {
+      const args = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check']
+      if (isSafeModelId(model)) args.push('-m', model)
+      args.push(PROMPT_TOKEN)
+      return { bin: 'codex', args }
+    }
+    case 'gemini': {
       // Gemini is accessed through the Antigravity CLI (`agy`) now, not `gemini`.
-      return { bin: 'agy', args: ['-p', PROMPT_TOKEN, '--dangerously-skip-permissions'] }
+      const args = ['-p', PROMPT_TOKEN]
+      if (isSafeModelId(model)) args.push('--model', model)
+      args.push('--dangerously-skip-permissions')
+      return { bin: 'agy', args }
+    }
   }
 }
 

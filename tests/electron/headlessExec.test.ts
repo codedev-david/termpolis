@@ -82,6 +82,23 @@ describe('headlessExec/execCommand', () => {
     expect(execCommand('gemini', undefined, false).args).toEqual(['-p', PROMPT_TOKEN])
     expect(execCommand('gemini', undefined, true).args).toContain('--dangerously-skip-permissions')
   })
+
+  it('flips the VALUE after --sandbox, not every token that happens to equal it', () => {
+    // A discovered Codex id is any [A-Za-z0-9._-] string, so one could legitimately
+    // collide with the sandbox value. Rewriting by value would corrupt the model arg.
+    const rw = execCommand('codex', 'read-only', true)
+    expect(rw.args).toEqual(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'read-only', PROMPT_TOKEN])
+  })
+
+  it('leaves a codex read-only run untouched', () => {
+    expect(execCommand('codex', 'gpt-5.6-sol', false).args)
+      .toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', PROMPT_TOKEN])
+  })
+
+  it('keeps a discovered gemini model on a write run', () => {
+    expect(execCommand('gemini', 'gemini-3.8-flash-high', true).args)
+      .toEqual(['-p', PROMPT_TOKEN, '--model', 'gemini-3.8-flash-high', '--dangerously-skip-permissions'])
+  })
 })
 
 describe('headlessExec/runHeadless', () => {

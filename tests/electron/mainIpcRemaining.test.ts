@@ -13,7 +13,7 @@
 // / initAutoUpdater / startMcpServer / setMemoryScrubber — those are the app's real lifecycle and
 // they are only reachable through the mock that received them.
 
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
 import { EventEmitter } from 'events'
 import { homedir } from 'os'
 import { globalHotkeys } from '../../src/main/appMenu'
@@ -1495,6 +1495,132 @@ describe('startup keeps slow work OFF the launch path', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// ===========================================================================
+// Model catalog — what each provider's picker may offer.
+//
+// Discovery is key-free and per provider: Claude's aliases are builtins that
+// self-resolve to the newest model in each family, Codex publishes its own
+// already-fetched cache file, and only Gemini costs a bounded probe. Nothing
+// here may throw: a model list must never be able to take down startup.
+// ===========================================================================
+describe('models: per-provider catalog IPC', () => {
+  const CODEX_CACHE = JSON.stringify({
+    models: [
+      { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6 Sol', visibility: 'list', priority: 1 },
+      { slug: 'gpt-reserve', display_name: 'Reserved', visibility: 'hide', priority: 0 },
+    ],
+  })
+  const AGY_STDOUT = 'Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\n'
+  const storedWith = (id: string, fetchedAt: number): string => JSON.stringify({
+    claude: { provider: 'claude', models: [{ id: 'opus', label: 'Opus' }], source: 'builtin', fetchedAt: 0 },
+    codex: { provider: 'codex', models: [{ id, label: 'Last known' }], source: 'cli', fetchedAt },
+    gemini: { provider: 'gemini', models: [], source: 'builtin', fetchedAt: 0 },
+  })
+
+  let readFileSync: ReturnType<typeof vi.fn>
+
+  /** Answer each read by WHICH file was asked for: the userData cache, or Codex's
+   *  own ~/.codex list. `null` means absent, which on disk is a throw, not ''. */
+  function withDisk(disk: { stored?: string | null; codex?: string | null }): void {
+    readFileSync.mockImplementation((target: unknown) => {
+      const path = String(target)
+      const text = path.includes('.codex') ? disk.codex : disk.stored
+      if (text == null) throw new Error(`ENOENT: ${path}`)
+      return text
+    })
+  }
+
+  const ids = (entry: { models: { id: string }[] }): string[] => entry.models.map((m) => m.id)
+
+  beforeEach(async () => {
+    const fs = await import('fs')
+    readFileSync = vi.mocked(fs.readFileSync) as never
+    readFileSync.mockReset()
+    M.execFileSync.mockReset()
+    M.writeFileSync.mockReset()
+    M.execSync.mockReturnValue(Buffer.from('/usr/bin/agy')) // both CLIs on PATH
+    M.execFileSync.mockImplementation((bin: string) => (bin === 'agy' ? AGY_STDOUT : ''))
+    withDisk({ stored: null, codex: CODEX_CACHE })
+  })
+
+  afterEach(() => {
+    // Restore the file-wide defaults the other suites were written against.
+    readFileSync.mockReset()
+    readFileSync.mockReturnValue('{}')
+    M.execFileSync.mockReset()
+    M.writeFileSync.mockReset()
+  })
+
+  it('answers models:catalog from memory, without probing anything', async () => {
+    // Every picker paints on this on mount, so it has to be free — and it has to
+    // resolve before discovery finishes, which is why Claude is a builtin.
+    const r = await invoke('models:catalog')
+    expect(r.success).toBe(true)
+    expect(ids(r.data.claude)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
+    expect(r.data.claude.source).toBe('builtin')
+    expect(M.execFileSync).not.toHaveBeenCalled()
+  })
+
+  it('refresh reads Codex own cache, probes agy, then persists and broadcasts', async () => {
+    const r = await invoke('models:refresh-catalog')
+    // 'hide' rows are Codex's internal entries — not user-selectable, so never offered.
+    expect(r.data.codex.models).toEqual([{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' }])
+    expect(r.data.gemini.models).toEqual([{ id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' }])
+    // argv, never a shell line, and bounded — this is the one step that leaves the box.
+    expect(M.execFileSync).toHaveBeenCalledWith('agy', ['models'], expect.objectContaining({ timeout: 20_000 }))
+    const write = M.writeFileSync.mock.calls.find((c) => String(c[0]).endsWith('model-catalog.json'))
+    expect(write).toBeTruthy()
+    expect(JSON.parse(String(write![1])).codex.models[0].id).toBe('gpt-5.6-sol')
+    // Pickers already on screen repaint from the broadcast rather than re-asking.
+    expect(mockWebContents.send).toHaveBeenCalledWith(
+      'models:catalog-updated',
+      expect.objectContaining({ codex: expect.objectContaining({ source: 'cli' }) }),
+    )
+  })
+
+  it('refresh re-probes even while the cached catalog is still inside its TTL', async () => {
+    // The whole point of the explicit refresh. primeModelCatalog() returns early on a
+    // fresh cache, so without the force flag the button did nothing for twelve hours.
+    withDisk({ stored: storedWith('gpt-stale', Date.now()), codex: CODEX_CACHE })
+    const r = await invoke('models:refresh-catalog')
+    expect(M.execFileSync).toHaveBeenCalledWith('agy', ['models'], expect.anything())
+    expect(ids(r.data.codex)).toEqual(['gpt-5.6-sol'])
+  })
+
+  it('keeps the last known list when a refresh discovers nothing, and says it is cached', async () => {
+    // An empty dropdown is worse than a stale one: the user cannot switch at all.
+    withDisk({ stored: storedWith('gpt-known', 1), codex: null })
+    M.execFileSync.mockImplementation(() => '')
+    const r = await invoke('models:refresh-catalog')
+    expect(ids(r.data.codex)).toEqual(['gpt-known'])
+    expect(r.data.codex.source).toBe('cache')
+  })
+
+  it('TERMPOLIS_SKIP_MODEL_CATALOG=1 suppresses the network probe, not the local read', async () => {
+    process.env.TERMPOLIS_SKIP_MODEL_CATALOG = '1'
+    try {
+      const r = await invoke('models:refresh-catalog')
+      expect(M.execFileSync).not.toHaveBeenCalledWith('agy', ['models'], expect.anything())
+      expect(r.data.gemini.models).toEqual([])
+      // Codex discovery is a plain file read, so it keeps working air-gapped.
+      expect(ids(r.data.codex)).toEqual(['gpt-5.6-sol'])
+    } finally {
+      delete process.env.TERMPOLIS_SKIP_MODEL_CATALOG
+    }
+  })
+
+  it('resolves with Claude builtins when the disk, the probe and the write all fail', async () => {
+    readFileSync.mockImplementation(() => { throw new Error('EACCES') })
+    M.execFileSync.mockImplementation(() => { throw new Error('spawn ENOENT') })
+    M.writeFileSync.mockImplementation(() => { throw new Error('disk full') })
+    const r = await invoke('models:refresh-catalog')
+    expect(r.success).toBe(true)
+    expect(ids(r.data.claude)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
+    expect(r.data.codex.models).toEqual([])
+    expect(r.data.gemini.models).toEqual([])
   })
 })
 

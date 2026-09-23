@@ -506,11 +506,10 @@ describe('TerminalPane — defensive branches', () => {
     mockReadTerminalBuffer.mockResolvedValue({ success: true, data: { output: 'PROPOSED SOLUTION: bubble sort' } })
     mockSecondOpinion.mockResolvedValue({ success: false, error: 'agent not reachable' } as never)
     // `claude:` is what parseSecondOpinion (real, not mocked here) turns into a bare
-    // { agent: 'claude' } with no model — the one shape that has no pretty label of its
-    // own. The message must fall back to the agent id instead of printing "Claude undefined".
+    // { agent: 'claude' } with no model. The message must name the provider on its own
+    // rather than printing "Claude undefined".
     mocks.mockBuildSecondOpinionMenu.mockReturnValue({
-      flat: [{ value: 'claude:', label: 'Claude (CLI default model)' }],
-      claude: null,
+      groups: [{ provider: 'claude', label: 'Claude', options: [{ value: 'claude:', label: 'Claude (CLI default model)' }] }],
       hasAny: true,
     } satisfies SoMenu)
 
@@ -519,7 +518,7 @@ describe('TerminalPane — defensive branches', () => {
     fireEvent.change(picker, { target: { value: 'claude:' } })
 
     await waitFor(() => expect(mockWriteToTerminal).toHaveBeenCalled())
-    expect(mockWriteToTerminal.mock.calls[0][1]).toContain('[Second Opinion from claude failed: agent not reachable]')
+    expect(mockWriteToTerminal.mock.calls[0][1]).toContain('[Second Opinion from Claude failed: agent not reachable]')
   })
 
   // =====================================================

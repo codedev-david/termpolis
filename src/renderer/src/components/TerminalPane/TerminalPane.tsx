@@ -31,8 +31,9 @@ import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEdita
 import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, cellFromOffsets, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
-import { CLAUDE_MODEL_OPTIONS, modelSwitchCommand } from '../../lib/modelBroker'
-import { relaunchClaudeWithModel } from '../../lib/modelRelaunch'
+import { modelSwitchCommand } from '../../lib/modelBroker'
+import { relaunchAgentWithModel } from '../../lib/modelRelaunch'
+import { modelOptionsFor, providerForAgent, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
 import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -225,6 +226,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // Which agents are installed on this machine (green-check source) — gates the models
   // dropdown and the Second Opinion menu to only what's actually available.
   const [installedAgents, setInstalledAgents] = useState<Record<string, boolean> | null>(null)
+  // Per-provider model catalog, refreshed by the main process at launch. Null until the
+  // first IPC resolves; every consumer treats null as "Claude's builtin aliases only".
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
   const [secondOpinionBusy, setSecondOpinionBusy] = useState(false)
   // In-terminal find bar (Ctrl+Shift+F). `searchResults` is fed from the
   // SearchAddon's onDidChangeResults so the bar can show "3/17".
@@ -341,12 +345,17 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // Falls back to output detection for an agent started by hand in a plain shell.
   const agentCommand = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.agentCommand)
   const badgeAgent = agentFromCommand(agentCommand) ?? agent.detectedAgent
-  // Only an authoritatively-launched Claude session (Termpolis itself typed the launch
-  // command) is safe to interrupt-and-relaunch — see modelRelaunch.ts's file comment.
-  // A heuristically output-detected "Claude-like" terminal might be a different program
-  // that would just exit on the first Ctrl+D (plain bash does, at an empty prompt)
-  // instead of consuming it like Claude Code does, so that case keeps the old hot-swap.
-  const isAuthoritativeClaudeSession = agentFromCommand(agentCommand)?.name === 'Claude Code'
+  // Which vendor's models this terminal's picker should list. Derived from the badge, so a
+  // Codex or Gemini session gets ITS OWN models rather than Claude's aliases (which its CLI
+  // would reject).
+  const badgeProvider = providerForAgent(badgeAgent?.name)
+  // The stricter form: non-null only for a session Termpolis itself launched, which is the
+  // precondition for the interrupt-and-relaunch switch — see modelRelaunch.ts's file
+  // comment. A heuristically output-detected "Claude-like" terminal might be a different
+  // program that would just exit on the first Ctrl+D (plain bash does, at an empty prompt)
+  // instead of consuming it, so that case keeps Claude's old /model hot-swap and gets no
+  // picker at all for the other providers, which have no equivalent in-session command.
+  const authoritativeProvider = providerForAgent(agentFromCommand(agentCommand)?.name)
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings). The gate is what keeps
   // the pointer out of a line the user is still typing: output detection fires on the ECHO of
@@ -375,13 +384,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // Reactive so the on-pane mic button appears/disappears as voice is toggled in Settings.
   const voiceEnabled = useTerminalStore((s) => s.voiceSettings?.enabled ?? false)
   const setShowSettings = useTerminalStore((s) => s.setShowSettings)
-  // Local hot-swap model for this terminal's Claude agent — relaunches with
-  // --model/--continue for an authoritatively-launched session (see
-  // isAuthoritativeClaudeSession above); falls back to a plain /model hot-swap
-  // for a heuristically-detected session we can't safely interrupt.
+  // Local hot-swap model for this terminal's agent — relaunches with the provider's own
+  // --model + resume flags for an authoritatively-launched session (see
+  // authoritativeProvider above); falls back to a plain /model hot-swap for a
+  // heuristically-detected Claude session we can't safely interrupt.
   const [liveModel, setLiveModel] = useState('')
-  // Re-entrancy guard for the authoritative relaunch path only: relaunchClaudeWithModel
-  // is an async ~1.8s multi-step PTY sequence (Ctrl+C, Ctrl+D x2, retype). A second
+  // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel
+  // is an async ~1.8s multi-step PTY sequence (Ctrl+C, Ctrl+D xN, retype). A second
   // pick landing before the first settles would interleave its writes into the same
   // PTY as the in-flight sequence — e.g. sequence B's Ctrl+D arriving after sequence A
   // already exited Claude back to an empty shell prompt, where Ctrl+D exits the shell
@@ -443,14 +452,29 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     return () => { alive = false }
   }, [])
 
+  // Model catalog: take the current one immediately (main seeds a builtin catalog on its
+  // first tick, so this never waits on discovery), then subscribe for the launch-time
+  // refresh. Discovery runs once per app launch in main — this is a read, not a fetch, so
+  // every pane getting one costs nothing.
+  useEffect(() => {
+    let alive = true
+    let off: (() => void) | undefined
+    try {
+      window.termpolis.getModelCatalog?.()
+        ?.then((res) => { if (alive && res?.success && res.data) setModelCatalog(res.data) })
+        ?.catch(() => { /* leave null — pickers fall back to Claude's builtin aliases */ })
+      off = window.termpolis.onModelCatalogUpdated?.((catalog) => { if (alive) setModelCatalog(catalog) })
+    } catch { /* API unavailable (e.g. in tests) */ }
+    return () => { alive = false; off?.() }
+  }, [])
+
   // Second Opinion: capture this terminal's recent output, have the chosen agent/model
   // review it headless, and paste the feedback back here as an unsent block (bracketed
   // paste, no CR) so the user can read it and choose to send it to the primary agent.
   const handleSecondOpinion = useCallback(async (value: string) => {
     const parsed = parseSecondOpinion(value)
     if (!parsed) return
-    const label = parsed.model ? `Claude ${parsed.model}`
-      : parsed.agent === 'codex' ? 'OpenAI Codex' : parsed.agent === 'gemini' ? 'Gemini' : parsed.agent
+    const label = parsed.model ? `${PROVIDER_LABEL[parsed.agent]} ${parsed.model}` : PROVIDER_LABEL[parsed.agent]
     const bp = (t: string): string => `\x1b[200~${t.replace(/\r?\n/g, '\r')}\x1b[201~`
     setSecondOpinionBusy(true)
     try {
@@ -1718,21 +1742,35 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               Past AI Sessions
             </button>
           )}
-          {badgeAgent?.name === 'Claude Code' && (
-            installedAgents?.claude === false ? (
-              // Claude terminal but Claude Code isn't detected on PATH — no models to offer;
+          {/* Model picker. Offered for ANY recognized provider — a Codex terminal lists
+              Codex's models, a Gemini terminal lists Gemini's. Claude's rows are its four
+              self-resolving aliases (always-latest by construction); the other two come
+              from the launch-time catalog, which is the only place their versioned ids
+              exist. A non-Claude session Termpolis did NOT launch gets no picker: the
+              switch is an interrupt-and-relaunch, and we only interrupt a process whose
+              identity is authoritative (see modelRelaunch.ts). Claude keeps its `/model`
+              hot-swap fallback for that case, which is a single harmless write. */}
+          {badgeProvider && (badgeProvider === 'claude' || authoritativeProvider === badgeProvider) && (() => {
+            const provider = badgeProvider
+            const label = PROVIDER_LABEL[provider]
+            if (installedAgents?.[PROVIDER_INSTALL_KEY[provider]] === false) {
+              // Recognized agent terminal, but its CLI isn't on PATH — no models to offer;
               // the tooltip explains why (matches the Second Opinion install-gating).
-              <select
-                data-testid="model-picker"
-                value=""
-                onClick={(e) => e.stopPropagation()}
-                title="Claude Code must be installed to switch models."
-                className="text-[10px] font-medium text-[#9ca3af] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded px-1.5 py-1 outline-none"
-                onChange={(e) => e.stopPropagation()}
-              >
-                <option value="">Model — needs Claude</option>
-              </select>
-            ) : (
+              return (
+                <select
+                  data-testid="model-picker"
+                  value=""
+                  onClick={(e) => e.stopPropagation()}
+                  title={`${label} must be installed to switch models.`}
+                  className="text-[10px] font-medium text-[#9ca3af] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded px-1.5 py-1 outline-none"
+                  onChange={(e) => e.stopPropagation()}
+                >
+                  <option value="">Model — needs {label}</option>
+                </select>
+              )
+            }
+            const options = modelOptionsFor(provider, modelCatalog)
+            return (
               <select
                 data-testid="model-picker"
                 value={liveModel}
@@ -1740,36 +1778,48 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 onChange={(e) => {
                   e.stopPropagation()
                   const alias = e.target.value
+                  if (alias === REFRESH_MODELS_VALUE) {
+                    // Discovery found nothing for this provider — Codex has never been run
+                    // (so it has published no cache), or `agy models` failed offline. Give
+                    // the otherwise-dead dropdown one honest action rather than waiting out
+                    // the 12h TTL. Never becomes liveModel: it is not a model.
+                    void window.termpolis.refreshModelCatalog?.()
+                      ?.then((res) => { if (res?.success && res.data) setModelCatalog(res.data) })
+                      ?.catch(() => { /* still nothing to offer — the row stays */ })
+                    return
+                  }
                   setLiveModel(alias)
-                  if (isAuthoritativeClaudeSession) {
+                  if (authoritativeProvider === provider) {
                     // Guard against a second pick overlapping this one — see
                     // relaunchInFlight's declaration for why.
                     if (relaunchInFlight) return
                     setRelaunchInFlight(true)
-                    void relaunchClaudeWithModel(alias, {
+                    void relaunchAgentWithModel(provider, alias, modelCatalog, {
                       write: (data) => window.termpolis.writeToTerminal(terminalId, data),
                       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
                     }).finally(() => setRelaunchInFlight(false))
-                  } else {
+                  } else if (provider === 'claude') {
                     const cmd = modelSwitchCommand(alias)
                     if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
                   }
                 }}
                 disabled={relaunchInFlight}
-                title="Switch this Claude agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens)."
-                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none"
+                title={`Switch this ${label} agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens).`}
+                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none disabled:opacity-60"
               >
-                <option value="">Model…</option>
-                {CLAUDE_MODEL_OPTIONS.map((m) => (
+                <option value="">{options.length === 0 ? 'Model — none found' : 'Model…'}</option>
+                {options.length === 0 && <option value={REFRESH_MODELS_VALUE}>Retry discovery</option>}
+                {options.map((m) => (
                   <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
                 ))}
               </select>
             )
-          )}
+          })()}
           {badgeAgent && (() => {
-            // Second Opinion: only installed agents; Claude's models nested under it. A
-            // native <optgroup> gives the indented Fable/Opus/Sonnet/Haiku for free.
-            const so = buildSecondOpinionMenu(installedAgents, CLAUDE_MODEL_OPTIONS)
+            // Second Opinion: one <optgroup> per INSTALLED provider, each with a "default"
+            // row plus that vendor's discovered models — so a review can be asked of any
+            // Codex or Gemini model too, not just Claude's aliases.
+            const so = buildSecondOpinionMenu(installedAgents, modelCatalog)
             if (!so.hasAny) return null
             return (
               <select
@@ -1782,12 +1832,11 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none disabled:opacity-60"
               >
                 <option value="">{secondOpinionBusy ? 'Reviewing…' : 'Second Opinion…'}</option>
-                {so.flat.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
-                {so.claude && (
-                  <optgroup label="Claude">
-                    {so.claude.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                {so.groups.map((g) => (
+                  <optgroup key={g.provider} label={g.label}>
+                    {g.options.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
                   </optgroup>
-                )}
+                ))}
               </select>
             )
           })()}

@@ -290,6 +290,30 @@ describe('preload: windowControls API', () => {
   })
 })
 
+describe('preload: model catalog API', () => {
+  it('getModelCatalog invokes models:catalog', async () => {
+    await exposed.termpolis.getModelCatalog()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('models:catalog')
+  })
+
+  it('refreshModelCatalog invokes models:refresh-catalog', async () => {
+    await exposed.termpolis.refreshModelCatalog()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('models:refresh-catalog')
+  })
+
+  it('onModelCatalogUpdated subscribes, forwards the catalog, and unsubscribes', () => {
+    const cb = vi.fn()
+    const off = exposed.termpolis.onModelCatalogUpdated(cb)
+    expect(mockIpcRenderer.on).toHaveBeenCalledWith('models:catalog-updated', expect.any(Function))
+    // The IpcRenderer event object must be stripped before the catalog reaches the renderer.
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any[]) => c[0] === 'models:catalog-updated')![1] as Function
+    handler({}, { claude: { models: [] } })
+    expect(cb).toHaveBeenCalledWith({ claude: { models: [] } })
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('models:catalog-updated', handler)
+  })
+})
+
 describe('preload: globalEvents API', () => {
   it('exposes globalEvents on the window', () => {
     expect(exposed.globalEvents).toBeDefined()

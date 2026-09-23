@@ -106,9 +106,14 @@ export function buildExecPrompt(task: string, primer?: string | null): string {
 export function execCommand(agent: ExecAgent, model: string | undefined, write: boolean): { bin: string; args: string[] } {
   const base = secondOpinionCommand(agent, model)
   if (agent === 'codex') {
-    return write
-      ? { bin: base.bin, args: base.args.map(a => (a === 'read-only' ? 'workspace-write' : a)) }
-      : base
+    // Flip the VALUE that follows `--sandbox`, not every token equal to 'read-only' — a
+    // discovered model id may legitimately be any [A-Za-z0-9._-] string, including one
+    // that collides with the sandbox value, and rewriting it would corrupt the argv.
+    if (!write) return base
+    const args = [...base.args]
+    const i = args.indexOf('--sandbox')
+    if (i >= 0 && args[i + 1] === 'read-only') args[i + 1] = 'workspace-write'
+    return { bin: base.bin, args }
   }
   return write ? base : { bin: base.bin, args: base.args.filter(a => a !== '--dangerously-skip-permissions') }
 }
