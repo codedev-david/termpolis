@@ -13,6 +13,8 @@
 //     in `initMainSentry`'s beforeSend, because we don't own the throw site.
 // Both are needed: fixing only the first still leaves the second filing an issue.
 
+import { homedir } from 'os'
+
 // electron-updater reads `resources/app-update.yml` at the start of every checkForUpdates(). When
 // that file is absent — an interrupted/partial install, an antivirus quarantine, a manual delete —
 // it emits an ENOENT 'error'. Auto-update genuinely cannot run without it and there is nothing the
@@ -49,9 +51,89 @@ export function isReadOnlyVolumeError(err: unknown): boolean {
   return /read-only volume/i.test(messageOf(err))
 }
 
+// The update host answered, but with a transient server-side failure: GitHub's edge timing out, a bad
+// gateway, maintenance, an internal error, rate limiting. The network is fine and so is Termpolis —
+// the next scheduled check simply retries (was Sentry ELECTRON-Y / GitHub #28: "updater error: 504"
+// for releases.atom). Only electron-updater's own shapes count, never a bare number:
+//   • an HttpError (feed / channel-file request): `<status> <statusMessage>` alone on the first line,
+//     then the JSON-quoted `"method: GET url: …"` description, or straight into `Headers: …`;
+//   • a failed download: `Cannot download "<url>", status <status>: <statusMessage>`.
+// Only 408/429/500/502/503/504. A 404 (a release or latest.yml genuinely missing) or a 403 is a real
+// release defect and still reports. The status message can't hold a quote or a backslash, so the
+// match can't start inside the JSON-quoted body: a 403 whose body quotes an upstream 503 is a 403.
+export function isTransientHttpServerError(err: unknown): boolean {
+  const msg = messageOf(err)
+  return (
+    /(?:^|: )(?:408|429|50[0234]) [^\n"\\]*\n(?:"method: [A-Z]+ url: |Headers: )/.test(msg) ||
+    /\bCannot download "https?:\/\/[^"]*", status (?:408|429|50[0234]):/.test(msg)
+  )
+}
+
 /** Any updater failure the user can neither cause nor fix. */
 export function isBenignUpdaterError(err: unknown): boolean {
-  return isMissingUpdateConfigError(err) || isTransientNetworkError(err) || isReadOnlyVolumeError(err)
+  return (
+    isMissingUpdateConfigError(err) ||
+    isTransientNetworkError(err) ||
+    isTransientHttpServerError(err) ||
+    isReadOnlyVolumeError(err)
+  )
+}
+
+// Where builder-util-runtime's HttpError starts quoting the response: the JSON description
+// (`"method: GET url: …`), or straight into `Headers: …` when there is none.
+const HTTP_RESPONSE_DUMP = /\n(?:"method: [A-Z]+ url: |Headers: )/
+
+// The disk is full. On macOS, Squirrel.Mac unpacks the downloaded update with `ditto` into
+// ~/Library/Caches/com.termpolis.app.ShipIt/update.<random>/ and a full volume kills it mid-extract
+// ("ditto: …: No space left on device", then "ditto: Couldn't read pkzip signature."); elsewhere it
+// is Node's ENOSPC. Not a Termpolis defect, so it must never be filed as a crash: Sentry
+// ELECTRON-Z/10/11 = GitHub #29/#30/#31 were ONE user's full disk, filed three times because every
+// 4-hourly retry extracts into a fresh random update.XXXXXXX directory. Deliberately NOT part of
+// isBenignUpdaterError: an update really is pending and only the user can free the space, so the
+// updater says so rather than claiming there is no update. Only the text before an HttpError's
+// response dump counts: a server that says IT is out of space (a 507, a proxy's error page) is not
+// the user's disk.
+export function isDiskFullError(err: unknown): boolean {
+  const msg = messageOf(err).split(HTTP_RESPONSE_DUMP, 1)[0]
+  return /no space left on device/i.test(msg) || /\bENOSPC\b/.test(msg)
+}
+
+/**
+ * The text of an updater error, fit to show the user and to report. electron-updater's HttpError
+ * appends every response header (`\nHeaders: {…}`, always last). They diagnose nothing, they make
+ * each report unique (a date, a request id) so Sentry can't group them, and #28 shows they carry
+ * cookies: GitHub's `set-cookie: _gh_sess=…` went to Sentry and on into a public GitHub issue.
+ */
+export function withoutResponseHeaders(message: string): string {
+  return message.replace(/\nHeaders: [\s\S]*$/, '')
+}
+
+/**
+ * Updater text fit to show the user, log, and report: withoutResponseHeaders, and the user's home
+ * directory as `~`. Every path the updater names — Squirrel's ShipIt cache, electron-updater's
+ * pending download — sits under it, so unscrubbed, each report and log line names the user (#29–#31
+ * took a macOS user name into public GitHub issues). `home` is injectable for tests.
+ */
+export function scrubUpdaterText(text: string, home: string = homeDirOrEmpty()): string {
+  const out = withoutResponseHeaders(text)
+  const root = home.replace(/[\\/]+$/, '')
+  // Too short to be a real home ("/", "C:"): it would match all over the text.
+  if (root.length < 3) return out
+  // Either separator and any case (the Windows and macOS default volumes ignore case), and never
+  // the prefix of a longer name: home /Users/x leaves /Users/xavier alone.
+  const pattern = root
+    .split(/[\\/]/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('[\\\\/]')
+  return out.replace(new RegExp(`${pattern}(?![\\w.-])`, 'gi'), '~')
+}
+
+function homeDirOrEmpty(): string {
+  try {
+    return homedir()
+  } catch {
+    return '' // no HOME and no passwd entry: nothing to scrub, and a logger must never throw
+  }
 }
 
 /**
@@ -60,7 +142,8 @@ export function isBenignUpdaterError(err: unknown): boolean {
  *
  * Deliberately narrow: it only looks at the message/exception text, and only drops text that one of
  * the predicates above already recognises. A genuine updater bug (sha512 mismatch, a bad signature)
- * still reports.
+ * still reports. A full disk is dropped only when the text is visibly the updater's (see
+ * isUpdaterDiskFullText) — ENOSPC anywhere else in the main process still reports.
  */
 export function shouldDropSentryEvent(event: unknown): boolean {
   const e = event as
@@ -73,7 +156,16 @@ export function shouldDropSentryEvent(event: unknown): boolean {
   if (Array.isArray(values)) {
     for (const v of values) texts.push(v?.value)
   }
-  return texts.some((t) => typeof t === 'string' && t.length > 0 && isBenignUpdaterError(t))
+  return texts.some(
+    (t) => typeof t === 'string' && t.length > 0 && (isBenignUpdaterError(t) || isUpdaterDiskFullText(t)),
+  )
+}
+
+// A full disk that is visibly the UPDATER's: our own `updater error:` capture, or Squirrel.Mac's
+// ShipIt/ditto extraction. The same errno from anywhere else in the main process is not ours to mute —
+// a store that corrupts instead of degrading on a full disk is a real bug.
+function isUpdaterDiskFullText(text: string): boolean {
+  return isDiskFullError(text) && /^updater error: |\bditto: |\bShipIt\b/.test(text)
 }
 
 /** An Error's message, anything else stringified — never throws, never returns undefined. */

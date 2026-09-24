@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { homedir } from 'os'
 
 // Capture event handlers + IPC handlers registered by initAutoUpdater
 const eventHandlers: Record<string, Function> = {}
@@ -8,11 +9,12 @@ const mockAutoUpdater = {
   on: vi.fn((event: string, handler: Function) => {
     eventHandlers[event] = handler
   }),
-  checkForUpdates: vi.fn(() => Promise.resolve()),
+  checkForUpdates: vi.fn((): Promise<unknown> => Promise.resolve()),
   quitAndInstall: vi.fn(),
   autoDownload: false,
   autoInstallOnAppQuit: false,
   allowPrerelease: false,
+  logger: null as null | Record<'info' | 'warn' | 'error' | 'debug', (message?: unknown) => void>,
 }
 
 vi.mock('electron', () => ({
@@ -42,7 +44,7 @@ async function loadAutoUpdater(opts?: { onBeforeQuitAndInstall?: () => void }) {
   mod.__setUpdaterProviderForTests(() => mockAutoUpdater)
   const fakeWindow = { webContents: { send: vi.fn() } } as any
   mod.initAutoUpdater(() => fakeWindow, opts)
-  return { fakeWindow }
+  return { fakeWindow, mod }
 }
 
 beforeEach(() => {
@@ -313,6 +315,217 @@ describe('initAutoUpdater — missing app-update.yml is benign (Sentry ELECTRON-
     mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
     expect(setIntervalSpy).toHaveBeenCalled()
     setIntervalSpy.mockRestore()
+  })
+})
+
+// #28: GitHub's edge timed out serving releases.atom. Transient — the next check retries.
+const gatewayTimeout = () =>
+  new Error(
+    '504 \n"method: GET url: https://github.com/codedev-david/termpolis/releases.atom\\n\\n          Data:\\n' +
+      '          <html><body><h1>504 Gateway Time-out</h1>\\n</body></html>\\n\\n          "\n' +
+      'Headers: {\n  "set-cookie": [\n    "_gh_sess=<elided>; path=/"\n  ]\n}',
+  )
+// #30: Squirrel.Mac ran out of disk while unpacking the downloaded update.
+const diskFull = () =>
+  new Error(
+    'ditto: /Users/x/Library/Caches/com.termpolis.app.ShipIt/update.uR4Dy5u/Termpolis.app/Contents/Resources/app.asar: ' +
+      "No space left on device\nditto: Couldn't read pkzip signature.",
+  )
+
+describe('initAutoUpdater — a GitHub 5xx and a full disk (Sentry ELECTRON-Y, ELECTRON-Z/10/11)', () => {
+  it('surfaces a 504 from GitHub as a benign not-available state, never an error', async () => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['error']?.(gatewayTimeout())
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith({ status: 'not-available' })
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }))
+    expect(fakeWindow.webContents.send).toHaveBeenCalledWith('updater:state', { status: 'not-available' })
+  })
+
+  it('tells the user their disk is full, without filing it as a crash', async () => {
+    const { fakeWindow, mod } = await loadAutoUpdater()
+    // On macOS Squirrel fails right AFTER electron-updater announced the download.
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    eventHandlers['error']?.(diskFull())
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', {
+      status: 'error',
+      error: mod.DISK_FULL_MESSAGE,
+    })
+    // report:false = a breadcrumb only; telemetry skips the captureMessage that filed #29/#30/#31.
+    expect(mockRecordUpdaterEvent).toHaveBeenLastCalledWith({
+      status: 'error',
+      error: mod.DISK_FULL_MESSAGE,
+      report: false,
+    })
+    // Squirrel never staged it, so there is nothing to restart into.
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: 'no update ready' })
+  })
+
+  it("treats Node's ENOSPC (Windows / Linux download) the same way", async () => {
+    const { mod } = await loadAutoUpdater()
+    eventHandlers['error']?.(new Error('ENOSPC: no space left on device, write'))
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith({
+      status: 'error',
+      error: mod.DISK_FULL_MESSAGE,
+      report: false,
+    })
+  })
+
+  it('still reports a genuine HTTP failure (a 404), minus the response-header dump', async () => {
+    await loadAutoUpdater()
+    eventHandlers['error']?.(
+      new Error(
+        '404 \n"method: GET url: https://github.com/o/r/releases/download/v1/latest-mac.yml"\n' +
+          'Headers: {\n  "set-cookie": [\n    "_gh_sess=<elided>; path=/"\n  ]\n}',
+      ),
+    )
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith({
+      status: 'error',
+      error: '404 \n"method: GET url: https://github.com/o/r/releases/download/v1/latest-mac.yml"',
+    })
+  })
+
+  it('a failed manual check reports its reason minus the header dump', async () => {
+    await loadAutoUpdater()
+    mockAutoUpdater.checkForUpdates.mockImplementationOnce(() => Promise.reject(gatewayTimeout()))
+    const res = await ipcHandlers.get('updater:check')!()
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/^504 \n"method: GET url: https:\/\/github\.com\/codedev-david\/termpolis\/releases\.atom/)
+    expect(res.error).not.toMatch(/Headers:|set-cookie|_gh_sess/)
+  })
+
+  it('re-exports the new predicates alongside the old ones', async () => {
+    vi.resetModules()
+    const mod = await import('../../src/main/autoUpdater')
+    expect(mod.isTransientHttpServerError(gatewayTimeout())).toBe(true)
+    expect(mod.isBenignUpdaterError(gatewayTimeout())).toBe(true)
+    expect(mod.isDiskFullError(diskFull())).toBe(true)
+    expect(mod.isBenignUpdaterError(diskFull())).toBe(false)
+  })
+
+  it('a reported failure names no home directory, and neither does a failed manual check', async () => {
+    await loadAutoUpdater()
+    eventHandlers['error']?.(new Error(`EPERM: operation not permitted, rename '${homedir()}/AppData/Local/u/a.exe'`))
+    expect(mockRecordUpdaterEvent).toHaveBeenCalledWith({
+      status: 'error',
+      error: "EPERM: operation not permitted, rename '~/AppData/Local/u/a.exe'",
+    })
+    mockAutoUpdater.checkForUpdates.mockImplementationOnce(() =>
+      Promise.reject(new Error(`EACCES: permission denied, open '${homedir()}/Library/Caches/u/update-info.json'`)),
+    )
+    expect(await ipcHandlers.get('updater:check')!()).toEqual({
+      success: false,
+      error: "EACCES: permission denied, open '~/Library/Caches/u/update-info.json'",
+    })
+  })
+})
+
+describe('initAutoUpdater — nothing leaks: download rejections, cookies and home paths in the log', () => {
+  // A download that dies on a full disk: electron-updater emits 'error' AND rejects the
+  // downloadPromise that checkForUpdates() resolved with.
+  const checkThatStartsAFailingDownload = () =>
+    Promise.resolve({ downloadPromise: Promise.reject(new Error('ENOSPC: no space left on device, write')) })
+
+  /** Every unhandled rejection raised while `run` runs and the event loop turns once more. */
+  async function unhandledRejectionsDuring(run: () => unknown): Promise<unknown[]> {
+    const seen: unknown[] = []
+    const onRejection = (reason: unknown) => {
+      seen.push(reason)
+    }
+    process.on('unhandledRejection', onRejection)
+    try {
+      await run()
+      await new Promise((resolve) => setImmediate(resolve))
+    } finally {
+      process.off('unhandledRejection', onRejection)
+    }
+    return seen
+  }
+
+  it('handles the download a manual check starts, so its failure is reported once, not twice', async () => {
+    await loadAutoUpdater()
+    const results: unknown[] = []
+    const check = async () => results.push(await ipcHandlers.get('updater:check')!())
+    mockAutoUpdater.checkForUpdates.mockImplementationOnce(checkThatStartsAFailingDownload)
+    expect(await unhandledRejectionsDuring(check)).toEqual([])
+    // No update, autoDownload off, or the updater inactive: nothing to handle.
+    mockAutoUpdater.checkForUpdates.mockImplementationOnce(() => Promise.resolve({ downloadPromise: null }))
+    mockAutoUpdater.checkForUpdates.mockImplementationOnce(() => Promise.resolve(null))
+    await check()
+    await check()
+    expect(results).toEqual([{ success: true }, { success: true }, { success: true }])
+  })
+
+  it('handles the download a scheduled check starts, at launch and every 4 hours', async () => {
+    vi.resetModules()
+    for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
+    ipcHandlers.clear()
+    const mod = await import('../../src/main/autoUpdater')
+    mod.__setUpdaterProviderForTests(() => mockAutoUpdater)
+    mod.__setUpdateConfigExistsForTests(() => true)
+    const scheduled: Array<() => unknown> = []
+    const capture = ((fn: () => unknown) => {
+      scheduled.push(fn)
+      return 0
+    }) as never
+    const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(capture)
+    const setIntervalSpy = vi.spyOn(global, 'setInterval').mockImplementation(capture)
+    try {
+      mod.initAutoUpdater(() => null)
+    } finally {
+      setTimeoutSpy.mockRestore()
+      setIntervalSpy.mockRestore()
+    }
+    expect(scheduled).toHaveLength(2)
+    for (const check of scheduled) {
+      mockAutoUpdater.checkForUpdates.mockImplementationOnce(checkThatStartsAFailingDownload)
+      expect(await unhandledRejectionsDuring(check)).toEqual([])
+      // A failed check itself was always handled: on('error') reports it.
+      mockAutoUpdater.checkForUpdates.mockImplementationOnce(() => Promise.reject(new Error('net::ERR_TIMED_OUT')))
+      expect(await unhandledRejectionsDuring(check)).toEqual([])
+    }
+    expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(4)
+  })
+
+  it("scrubs electron-updater's own log: no response headers, no home directory", async () => {
+    await loadAutoUpdater()
+    const logger = mockAutoUpdater.logger!
+    const home = homedir()
+    const logged = {
+      error: vi.spyOn(console, 'error').mockImplementation(() => {}),
+      warn: vi.spyOn(console, 'warn').mockImplementation(() => {}),
+      info: vi.spyOn(console, 'info').mockImplementation(() => {}),
+      debug: vi.spyOn(console, 'debug').mockImplementation(() => {}),
+    }
+    try {
+      // What electron-updater's on('error') logs for #28: `Error: ${error.stack || error.message}`.
+      logger.error(`Error: ${gatewayTimeout().stack}`)
+      // What MacUpdater logs for #29–#31: Squirrel's Error itself.
+      logger.warn(new Error(`ditto: ${home}/Library/Caches/com.termpolis.app.ShipIt/u/app.asar: No space left on device`))
+      logger.info(`Update has been downloaded to ${home}/Library/Caches/termpolis-updater/pending/T.zip`)
+      logger.debug(`Checking for update in ${home}`)
+      const stackless = new Error('stackless')
+      stackless.stack = undefined
+      logger.error(stackless)
+      logger.info()
+
+      const [first, second] = logged.error.mock.calls.map(([line]) => String(line))
+      expect(first).toMatch(/^Error: Error: 504 \n"method: GET url: https:\/\/github\.com\/codedev-david\/termpolis\/releases\.atom/)
+      expect(first).not.toMatch(/Headers:|set-cookie|_gh_sess/)
+      expect(second).toBe('stackless')
+      expect(String(logged.warn.mock.calls[0][0]).split('\n')[0]).toBe(
+        'Error: ditto: ~/Library/Caches/com.termpolis.app.ShipIt/u/app.asar: No space left on device',
+      )
+      expect(logged.info.mock.calls.map(([line]) => line)).toEqual([
+        'Update has been downloaded to ~/Library/Caches/termpolis-updater/pending/T.zip',
+        '',
+      ])
+      expect(logged.debug).toHaveBeenCalledWith('Checking for update in ~')
+      for (const spy of Object.values(logged)) {
+        for (const [line] of spy.mock.calls) expect(String(line)).not.toContain(home)
+      }
+    } finally {
+      for (const spy of Object.values(logged)) spy.mockRestore()
+    }
   })
 })
 

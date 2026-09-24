@@ -119,6 +119,11 @@ export interface UpdaterEventPayload {
   error?: string
   downloadedBytes?: number
   totalBytes?: number
+  /**
+   * `false` = an error only the user can fix (a full disk): kept as a warning breadcrumb, but never
+   * filed as a Sentry issue.
+   */
+  report?: boolean
 }
 
 // Tier 2: auto-update health. We don't open a Sentry issue per event —
@@ -130,7 +135,7 @@ export function recordUpdaterEvent(payload: UpdaterEventPayload): void {
   try {
     Sentry.addBreadcrumb?.({
       category: 'updater',
-      level: payload.status === 'error' ? 'error' : 'info',
+      level: payload.status !== 'error' ? 'info' : payload.report === false ? 'warning' : 'error',
       message: `updater: ${payload.status}${payload.version ? ` -> ${payload.version}` : ''}`,
       data: {
         status: payload.status,
@@ -144,7 +149,7 @@ export function recordUpdaterEvent(payload: UpdaterEventPayload): void {
           : {}),
       },
     })
-    if (payload.status === 'error' && payload.error) {
+    if (payload.status === 'error' && payload.error && payload.report !== false) {
       Sentry.captureMessage?.(`updater error: ${payload.error}`, 'error')
     }
   } catch {

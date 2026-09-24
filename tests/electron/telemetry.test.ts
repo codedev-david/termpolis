@@ -159,6 +159,18 @@ describe('recordUpdaterEvent', () => {
     expect(mockCaptureMessage).toHaveBeenCalledWith('updater error: sha512 mismatch', 'error')
   })
 
+  it('keeps a report:false error (a full disk) as a warning breadcrumb, never a captureMessage', async () => {
+    process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
+    const mod = await loadFreshModule()
+    mod.initTelemetry(tmpDir)
+    mod.setOptIn(true)
+    mod.recordUpdaterEvent({ status: 'error', error: 'Not enough free disk space', report: false })
+    const breadcrumb = mockAddBreadcrumb.mock.calls[0][0]
+    expect(breadcrumb.level).toBe('warning')
+    expect(breadcrumb.data).toEqual({ status: 'error', error: 'Not enough free disk space' })
+    expect(mockCaptureMessage).not.toHaveBeenCalled()
+  })
+
   it('omits undefined fields from breadcrumb data', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
     const mod = await loadFreshModule()

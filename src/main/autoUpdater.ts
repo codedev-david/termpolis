@@ -10,7 +10,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { recordUpdaterEvent } from './telemetry'
-import { isBenignUpdaterError } from './updaterErrors'
+import { isBenignUpdaterError, isDiskFullError, scrubUpdaterText } from './updaterErrors'
 
 export interface UpdateState {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -39,9 +39,39 @@ export function __setUpdaterProviderForTests(fn: () => any): void {
 export {
   isMissingUpdateConfigError,
   isTransientNetworkError,
+  isTransientHttpServerError,
   isReadOnlyVolumeError,
+  isDiskFullError,
   isBenignUpdaterError,
 } from './updaterErrors'
+
+// Shown instead of the raw failure when the disk is too full to stage an update (isDiskFullError).
+// Squirrel's text names a cache path the user never chose and says nothing about what to do.
+export const DISK_FULL_MESSAGE =
+  'Not enough free disk space to install the update. Free up some space and Termpolis will try again automatically.'
+
+// With autoDownload on, a check that finds an update starts the download and returns it as
+// `downloadPromise`. A failed download is reported to on('error') AND rejects that promise, so
+// left unhandled it reaches Sentry a second time as an unhandled rejection — a full disk
+// mid-download would re-file #29–#31. on('error') has already dealt with it.
+function ignoreDownloadRejection(result: { downloadPromise?: Promise<unknown> | null } | null | undefined): void {
+  result?.downloadPromise?.catch(() => {})
+}
+
+// electron-updater logs to the console by default, and Sentry keeps console output as breadcrumbs
+// on every later report. It logs each failure whole — an HttpError with GitHub's cookies in its
+// response headers (#28), Squirrel's cache path with the user's name (#29–#31) — so its log goes
+// through the same scrub as the text we show and report. It logs strings and Error objects.
+const scrubbingLogger = {
+  info: (message?: unknown) => console.info(scrubLogMessage(message)),
+  warn: (message?: unknown) => console.warn(scrubLogMessage(message)),
+  error: (message?: unknown) => console.error(scrubLogMessage(message)),
+  debug: (message: string) => console.debug(scrubLogMessage(message)),
+}
+
+function scrubLogMessage(message: unknown): string {
+  return scrubUpdaterText(message instanceof Error ? message.stack || message.message : String(message ?? ''))
+}
 
 // Injectable so unit tests can simulate a present/absent app-update.yml without
 // a real packaged resources dir. Defaults to the exact path electron-updater
@@ -95,10 +125,10 @@ export function initAutoUpdater(
     try {
       const au = updaterProvider()
       if (!au) return { success: false, error: 'electron-updater unavailable' }
-      await au.checkForUpdates()
+      ignoreDownloadRejection(await au.checkForUpdates())
       return { success: true }
     } catch (e) {
-      return { success: false, error: String((e as Error).message || e) }
+      return { success: false, error: scrubUpdaterText(String((e as Error).message || e)) }
     }
   })
 
@@ -110,16 +140,18 @@ export function initAutoUpdater(
     return
   }
 
+  autoUpdater.logger = scrubbingLogger
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowPrerelease = false
 
-  const setState = (s: UpdateState) => {
+  const setState = (s: UpdateState, opts: { report?: boolean } = {}) => {
     currentState = s
     const win = getMainWindow()
     win?.webContents.send('updater:state', s)
     // Tier 2: forward to telemetry as a breadcrumb (or captureMessage on
-    // hard error). Internally no-ops when the user hasn't opted in.
+    // hard error, unless `report: false`). Internally no-ops when the user
+    // hasn't opted in.
     try {
       recordUpdaterEvent({
         status: s.status,
@@ -127,6 +159,7 @@ export function initAutoUpdater(
         ...(s.error ? { error: s.error } : {}),
         ...(typeof s.downloadedBytes === 'number' ? { downloadedBytes: s.downloadedBytes } : {}),
         ...(typeof s.totalBytes === 'number' ? { totalBytes: s.totalBytes } : {}),
+        ...(opts.report === false ? { report: false } : {}),
       })
     } catch { /* never let telemetry crash the updater */ }
   }
@@ -163,13 +196,23 @@ export function initAutoUpdater(
     //   - a missing app-update.yml (isMissingUpdateConfigError; ELECTRON-8 / #14)
     //   - a transient network failure / offline (isTransientNetworkError;
     //     ELECTRON-9 / #15)
+    //   - a transient 5xx / 429 from the update host (isTransientHttpServerError;
+    //     ELECTRON-Y / #28)
     //   - the app running from a read-only volume / the .dmg on macOS
     //     (isReadOnlyVolumeError; ELECTRON-E+F / #21+#22)
     if (isBenignUpdaterError(err)) {
       setState({ status: 'not-available' })
       return
     }
-    setState({ status: 'error', error: err?.message || String(err) })
+    // A full disk is the user's to fix, and an update IS pending — on macOS
+    // this fires right after 'update-downloaded', when Squirrel fails to
+    // unpack it. Tell them plainly, but don't file it as a crash
+    // (isDiskFullError; ELECTRON-Z/10/11 / #29-#31).
+    if (isDiskFullError(err)) {
+      setState({ status: 'error', error: DISK_FULL_MESSAGE }, { report: false })
+      return
+    }
+    setState({ status: 'error', error: scrubUpdaterText(err?.message || String(err)) })
   })
 
   // If the update config is absent, every checkForUpdates() would only re-emit
@@ -180,6 +223,6 @@ export function initAutoUpdater(
   if (!updateConfigExists()) return
 
   // First check a few seconds after launch; then every 4 hours.
-  setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 10_000)
-  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 4 * 60 * 60 * 1000)
+  setTimeout(() => autoUpdater.checkForUpdates().then(ignoreDownloadRejection).catch(() => {}), 10_000)
+  setInterval(() => autoUpdater.checkForUpdates().then(ignoreDownloadRejection).catch(() => {}), 4 * 60 * 60 * 1000)
 }
