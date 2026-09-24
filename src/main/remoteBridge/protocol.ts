@@ -47,6 +47,39 @@ export interface PairedDevice {
   lastSeenAt: number
 }
 
+/** The three agents a phone may launch. A closed set on purpose: `launchAgent`
+ *  turns the choice into a fixed binary name (dispatcher's AGENT_BINARY), so the
+ *  command the desktop runs is never spelled by the phone. Keep in lockstep with
+ *  the mobile mirror and with AGENT_BINARY/AGENT_LABEL. */
+export type RemoteAgent = 'claude' | 'codex' | 'gemini'
+
+/** One selectable folder in the remote directory picker. `path` is an absolute
+ *  path on the DESKTOP, already resolved and contained under the desktop home by
+ *  the bridge -- the phone only ever echoes it back to descend or to launch. */
+export interface DirectoryEntry {
+  name: string
+  path: string
+}
+
+/** One level of the desktop filesystem, as the phone's folder picker sees it.
+ *
+ *  `parent` is null at the picker's root (the desktop home) and an absolute path
+ *  otherwise, so the phone can offer a ".." row without deciding for itself
+ *  where the ceiling is. `entries` are directories only, sorted by name. */
+export interface DirectoryListing {
+  path: string
+  parent: string | null
+  entries: DirectoryEntry[]
+}
+
+/** What `launchAgent` answers with: the terminal it opened and a label to show
+ *  while the phone navigates to it. `terminalId` is the uuid `create_terminal`
+ *  returned, recovered from the MCP result. */
+export interface LaunchedAgent {
+  terminalId: string
+  name: string
+}
+
 /** Requests a remote device may send. */
 export type RemoteRequest =
   // Needs no grant, and deliberately has no case in `requiredCapability`: it is
@@ -71,6 +104,19 @@ export type RemoteRequest =
   | { kind: 'closeTerminal'; terminalId: string }
   | { kind: 'subscribe'; terminalId: string }
   | { kind: 'unsubscribe'; terminalId: string }
+  // Browse the desktop filesystem so a phone can pick a working folder. Rooted
+  // at the desktop home and contained there by the bridge; `path` absent means
+  // that root. Needs `createTerminal` -- it exists only to feed `launchAgent`,
+  // and a device that cannot open a terminal has no use for the folder list.
+  | { kind: 'listDirectory'; path?: string }
+  // Open a terminal in `cwd` and start `agent` in it. `agent` is one of a fixed
+  // three, mapped to a binary name on the desktop -- the phone never spells the
+  // command, so this is not the arbitrary-execution power that `runCommand`
+  // carries and it rides `createTerminal`, not `writeToTerminal`. `cwd` must be
+  // a folder the desktop offered; the dispatcher does not re-derive it, so it is
+  // validated as a non-empty string and trusted only as far as `create_terminal`
+  // itself trusts a cwd.
+  | { kind: 'launchAgent'; agent: RemoteAgent; cwd: string }
 
 /** One terminal's output as it crosses the wire.
  *

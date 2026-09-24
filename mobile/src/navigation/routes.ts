@@ -17,7 +17,14 @@
  * route reachable from the others. Nothing here works without the relay, so
  * there is no screen for it to sit in front of -- and a paywall with a back
  * button on it is a paywall with a way past it.
+ *
+ * `FolderPicker` carries the chosen agent so the picker can title its start
+ * button and knows what to launch once a folder is chosen. It replaces the
+ * Terminal screen (`navigation.replace`) once the desktop opens the terminal, so
+ * Back from the running agent goes to the list, not back to the picker.
  */
+import type { RemoteAgent } from '../wire/protocol'
+
 export type RootStackParamList = {
   Pair: undefined
   Paywall: undefined
@@ -26,4 +33,5 @@ export type RootStackParamList = {
   SafetyNumber: undefined
   Settings: undefined
   Desktops: undefined
+  FolderPicker: { agent: RemoteAgent }
 }

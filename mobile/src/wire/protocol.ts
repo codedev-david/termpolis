@@ -103,6 +103,76 @@ export function parseCapabilities(data: unknown): Capabilities {
   }
 }
 
+/** Read a directory listing off an `ok` response, or `null` when it is unusable.
+ *
+ *  A listing with no `path` is dropped whole -- the picker cannot show where it
+ *  is or launch there without one, and the store keeps the last good level
+ *  rather than blanking. `parent` coerces anything that is not a string to null,
+ *  so an older or malformed desktop simply offers no ".." row. Individual bad
+ *  entries are dropped, never the whole list: one unnamed folder is not a reason
+ *  to show none. */
+export function parseDirectoryListing(data: unknown): DirectoryListing | null {
+  if (!isObject(data) || typeof data.path !== 'string' || data.path.length === 0) return null
+  const entries: DirectoryEntry[] = []
+  if (Array.isArray(data.entries)) {
+    for (const row of data.entries) {
+      if (!isObject(row)) continue
+      const { name, path } = row
+      if (typeof name !== 'string' || name.length === 0) continue
+      if (typeof path !== 'string' || path.length === 0) continue
+      entries.push({ name, path })
+    }
+  }
+  return {
+    path: data.path,
+    parent: typeof data.parent === 'string' ? data.parent : null,
+    entries,
+  }
+}
+
+/** Read a launched-agent result, or `null` when there is no terminal to open.
+ *
+ *  `terminalId` is required -- without it the phone has nothing to navigate to.
+ *  `name` falls back to the id so the terminal screen still has a title. */
+export function parseLaunchedAgent(data: unknown): LaunchedAgent | null {
+  if (!isObject(data) || typeof data.terminalId !== 'string' || data.terminalId.length === 0) {
+    return null
+  }
+  return {
+    terminalId: data.terminalId,
+    name: typeof data.name === 'string' && data.name.length > 0 ? data.name : data.terminalId,
+  }
+}
+
+/** The three agents a phone may launch. Mirrors `RemoteAgent` on the desktop;
+ *  the interop test asserts the two agree. A closed set on purpose -- the phone
+ *  sends a key, never a command, and the desktop maps it to a binary. */
+export type RemoteAgent = 'claude' | 'codex' | 'gemini'
+
+/** One selectable folder in the remote directory picker. `path` is an absolute
+ *  path on the DESKTOP that the desktop already resolved and fenced under its
+ *  home; the phone only ever echoes it back to descend or to launch. */
+export interface DirectoryEntry {
+  name: string
+  path: string
+}
+
+/** One level of the desktop filesystem, as the folder picker sees it. `parent`
+ *  is null at the picker's root and an absolute path otherwise, so the phone can
+ *  offer a ".." row without deciding where the ceiling is. */
+export interface DirectoryListing {
+  path: string
+  parent: string | null
+  entries: DirectoryEntry[]
+}
+
+/** What `launchAgent` answers with: the terminal the desktop opened and a label
+ *  to show while the phone navigates to it. */
+export interface LaunchedAgent {
+  terminalId: string
+  name: string
+}
+
 /** Requests a remote device may send. */
 export type RemoteRequest =
   // The two requests that need no grant. A phone that could not ask the first
@@ -121,6 +191,12 @@ export type RemoteRequest =
   | { kind: 'closeTerminal'; terminalId: string }
   | { kind: 'subscribe'; terminalId: string }
   | { kind: 'unsubscribe'; terminalId: string }
+  // Browse the desktop's folders to pick a working directory; `path` absent means
+  // the desktop home. Both this and `launchAgent` need the `createTerminal` grant.
+  | { kind: 'listDirectory'; path?: string }
+  // Open a terminal in `cwd` and start `agent` in it. `agent` is one of three
+  // fixed keys the desktop maps to a binary, so the command is never phone text.
+  | { kind: 'launchAgent'; agent: RemoteAgent; cwd: string }
 
 /** Envelope carrying a request with its correlation id. */
 export interface RemoteEnvelope {

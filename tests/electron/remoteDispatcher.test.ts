@@ -1,7 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { RequestDispatcher, SUBMIT_SETTLE_MS } from '../../src/main/remoteBridge/dispatcher'
 import { CapabilityError } from '../../src/main/remoteBridge/remotePolicy'
-import { NO_CAPABILITIES, type Capabilities, type RemoteRequest } from '../../src/main/remoteBridge/protocol'
+import {
+  NO_CAPABILITIES,
+  type Capabilities,
+  type DirectoryListing,
+  type LaunchedAgent,
+  type RemoteRequest,
+} from '../../src/main/remoteBridge/protocol'
 
 const all: Capabilities = { read: true, createTerminal: true, writeToTerminal: true, closeTerminal: true }
 const fakeMcp = () => ({ callTool: vi.fn().mockResolvedValue({ ok: true }) })
@@ -296,5 +302,260 @@ describe('RequestDispatcher — typing, then Enter', () => {
       .dispatch({ kind: 'writeToTerminal', terminalId: 't1', text: 'hello\r' }, all, DEVICE)
     expect(Date.now() - started).toBeGreaterThanOrEqual(SUBMIT_SETTLE_MS - 25)
     expect(mcp.callTool).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('RequestDispatcher — the folder picker', () => {
+  /** Records the pauses instead of taking them, so the suite does not sleep. */
+  const fakeSettle = () => {
+    const slept: number[] = []
+    return { slept, settle: async (ms: number) => { slept.push(ms) } }
+  }
+
+  it('answers listDirectory from the injected picker, never from MCP', async () => {
+    // The listing is bridge-local filesystem, not an MCP tool -- the whole reason
+    // it exists is to avoid spending the nearly-full agent tool-description budget
+    // on it. So a listDirectory that reached `callTool` would be the design gone
+    // wrong, not merely a wrong path.
+    const mcp = fakeMcp()
+    const listing: DirectoryListing = {
+      path: '/home/dev',
+      parent: null,
+      entries: [{ name: 'repo', path: '/home/dev/repo' }],
+    }
+    const listDir = vi.fn().mockReturnValue(listing)
+    const { settle } = fakeSettle()
+
+    const answer = await new RequestDispatcher(mcp, settle, listDir).dispatch(
+      { kind: 'listDirectory', path: '/home/dev' },
+      all,
+      DEVICE,
+    )
+
+    expect(listDir).toHaveBeenCalledWith('/home/dev')
+    expect(answer).toBe(listing)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it('passes no path to the picker when the phone named none, so it opens at home', async () => {
+    // An absent `path` is the phone asking for the desktop home. Forwarding an
+    // explicit `undefined` is what listHomeDirectory reads as "the root" -- a
+    // sentinel string here would name a folder called "undefined" instead.
+    const mcp = fakeMcp()
+    const listDir = vi.fn().mockReturnValue({ path: '/home/dev', parent: null, entries: [] })
+    const { settle } = fakeSettle()
+
+    await new RequestDispatcher(mcp, settle, listDir).dispatch({ kind: 'listDirectory' }, all, DEVICE)
+
+    expect(listDir).toHaveBeenCalledWith(undefined)
+  })
+
+  it('refuses listDirectory for a device without createTerminal', async () => {
+    // The folder list rides `createTerminal` because it exists only to feed a
+    // launch. A read-only device has no business enumerating the desktop's tree.
+    const mcp = fakeMcp()
+    const listDir = vi.fn()
+    const readOnly: Capabilities = { ...NO_CAPABILITIES, read: true }
+
+    await expect(
+      new RequestDispatcher(mcp, undefined, listDir).dispatch({ kind: 'listDirectory' }, readOnly, DEVICE),
+    ).rejects.toThrow(CapabilityError)
+    expect(listDir).not.toHaveBeenCalled()
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+})
+
+describe('RequestDispatcher — launching an agent', () => {
+  /** The middle dot the terminal name is built with, spelled by code point so
+   *  the assertion cannot drift from the source over a copy-paste. */
+  const DOT = '·'
+
+  const fakeSettle = () => {
+    const slept: number[] = []
+    return { slept, settle: async (ms: number) => { slept.push(ms) } }
+  }
+
+  /** An MCP whose create_terminal names a terminal and whose run_command just
+   *  succeeds -- the shape launchAgent needs to reach its happy path. */
+  const launchMcp = (created: unknown = { terminalId: 't9' }) => ({
+    callTool: vi.fn().mockResolvedValueOnce(created).mockResolvedValue({ ok: true }),
+  })
+
+  it('opens the terminal, waits, THEN starts the agent -- in that order', async () => {
+    // The settle between the two is the same fix the typed-message path carries:
+    // run_command fused onto a just-spawned PTY reaches an agent still drawing its
+    // first frame and is swallowed -- "launched it and nothing happened". The
+    // order is the assertion; a settle that ran after both calls would satisfy a
+    // count and still deliver one burst.
+    const order: string[] = []
+    const mcp = {
+      callTool: vi.fn(async (name: string) => {
+        order.push(name)
+        return name === 'create_terminal' ? { terminalId: 't9' } : { ok: true }
+      }),
+    }
+    const settle = async (ms: number): Promise<void> => { order.push(`settle:${ms}`) }
+
+    const launched = await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'claude', cwd: '/home/dev/api' },
+      all,
+      DEVICE,
+    )
+
+    expect(order).toEqual(['create_terminal', `settle:${SUBMIT_SETTLE_MS}`, 'run_command'])
+    expect(launched).toEqual({ terminalId: 't9', name: `Claude ${DOT} api` })
+  })
+
+  it('names the terminal for its agent and folder, and runs the agent binary in it', async () => {
+    const mcp = launchMcp()
+    const { slept, settle } = fakeSettle()
+
+    await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'codex', cwd: '/home/dev/api' },
+      all,
+      DEVICE,
+    )
+
+    expect(mcp.callTool).toHaveBeenNthCalledWith(
+      1,
+      'create_terminal',
+      { name: `Codex ${DOT} api`, cwd: '/home/dev/api' },
+      DEVICE,
+    )
+    expect(mcp.callTool).toHaveBeenNthCalledWith(2, 'run_command', { terminalId: 't9', command: 'codex' }, DEVICE)
+    expect(slept).toEqual([SUBMIT_SETTLE_MS])
+  })
+
+  it("runs gemini's real binary, which is not named after it", async () => {
+    // The one agent whose key and command differ: `gemini` launches `agy`. A map
+    // that regressed to running `gemini` would fail only here.
+    const mcp = launchMcp({ terminalId: 't1' })
+    const { settle } = fakeSettle()
+
+    await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'gemini', cwd: '/repo' },
+      all,
+      DEVICE,
+    )
+
+    expect(mcp.callTool).toHaveBeenNthCalledWith(2, 'run_command', { terminalId: 't1', command: 'agy' }, DEVICE)
+  })
+
+  it('recovers the terminal id when create_terminal answers with a bare string', async () => {
+    // The MCP result shape is not guaranteed: create_terminal is Headroom-exempt
+    // and usually returns an object, but a bare id must still route the run.
+    const mcp = launchMcp('t-str')
+    const { settle } = fakeSettle()
+
+    const launched = await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'claude', cwd: '/repo' },
+      all,
+      DEVICE,
+    )
+
+    expect((launched as LaunchedAgent).terminalId).toBe('t-str')
+    expect(mcp.callTool).toHaveBeenNthCalledWith(2, 'run_command', { terminalId: 't-str', command: 'claude' }, DEVICE)
+  })
+
+  it('tags both the create and the run with the device that asked', async () => {
+    // Two MCP calls are two audit lines. Spec §4.4: neither may be anonymous.
+    const mcp = launchMcp()
+    const { settle } = fakeSettle()
+
+    await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'claude', cwd: '/repo' },
+      all,
+      DEVICE,
+    )
+
+    expect(mcp.callTool.mock.calls.map((c) => c[2])).toEqual([DEVICE, DEVICE])
+  })
+
+  it('falls back to the whole path for a folder with no basename, as a root has', async () => {
+    // basename('/') is '' -- the `|| cwd` keeps the terminal from being named
+    // "Claude · " with nothing after the dot.
+    const mcp = launchMcp({ terminalId: 't1' })
+    const { settle } = fakeSettle()
+
+    const launched = await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'claude', cwd: '/' },
+      all,
+      DEVICE,
+    )
+
+    expect((launched as LaunchedAgent).name).toBe(`Claude ${DOT} /`)
+  })
+
+  it.each<[string, unknown]>([
+    ['a success object carrying no id', { ok: true }],
+    ['an object whose id is empty', { terminalId: '' }],
+    ['a bare empty string', ''],
+    ['null', null],
+  ])('refuses to launch, and never runs the agent, when create_terminal returns %s', async (_label, created) => {
+    // No terminal id means there is nowhere to run the agent. It must throw
+    // BEFORE the settle and the run_command, not open a headless terminal and
+    // fire a command into the void.
+    const mcp = { callTool: vi.fn().mockResolvedValueOnce(created).mockResolvedValue({ ok: true }) }
+    const { slept, settle } = fakeSettle()
+
+    await expect(
+      new RequestDispatcher(mcp, settle).dispatch(
+        { kind: 'launchAgent', agent: 'claude', cwd: '/repo' },
+        all,
+        DEVICE,
+      ),
+    ).rejects.toThrow(/create_terminal did not return a terminal id/)
+
+    expect(mcp.callTool).toHaveBeenCalledTimes(1)
+    expect(slept).toEqual([])
+  })
+
+  it('refuses an agent it has no binary for, without opening a terminal', async () => {
+    const mcp = fakeMcp()
+    const bogus = { kind: 'launchAgent', agent: 'rogue', cwd: '/repo' } as unknown as RemoteRequest
+
+    await expect(new RequestDispatcher(mcp).dispatch(bogus, all, DEVICE)).rejects.toThrow(/unknown agent/)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it("does not treat an inherited key like 'constructor' as a known agent", async () => {
+    // hasOwnProperty, not `in`: `'constructor' in AGENT_BINARY` is true through the
+    // prototype, and an `in` check would let the phone name a "binary" that is a
+    // function on Object's prototype. This pins the own-property guard.
+    const mcp = fakeMcp()
+    const sneaky = { kind: 'launchAgent', agent: 'constructor', cwd: '/repo' } as unknown as RemoteRequest
+
+    await expect(new RequestDispatcher(mcp).dispatch(sneaky, all, DEVICE)).rejects.toThrow(/unknown agent/)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it.each<[string, unknown]>([
+    ['an empty string', ''],
+    ['a number', 42],
+    ['null', null],
+    ['undefined', undefined],
+  ])('refuses to launch with %s for a working directory', async (_label, cwd) => {
+    // `cwd` arrives unvalidated over the wire and the dispatcher does not
+    // re-derive it, so an empty or non-string cwd must be refused here rather
+    // than passed to create_terminal, which would open a terminal somewhere
+    // undefined.
+    const mcp = fakeMcp()
+    const req = { kind: 'launchAgent', agent: 'claude', cwd } as unknown as RemoteRequest
+
+    await expect(new RequestDispatcher(mcp).dispatch(req, all, DEVICE)).rejects.toThrow(/no working directory/)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it('refuses launchAgent for a device without createTerminal, before it validates anything', async () => {
+    // Capability is checked first, so an ungranted launch is refused as a
+    // CapabilityError -- not as "unknown agent" -- and never reaches the agent or
+    // cwd checks. A read-only device cannot even probe which agents exist.
+    const mcp = fakeMcp()
+    const readOnly: Capabilities = { ...NO_CAPABILITIES, read: true }
+
+    await expect(
+      new RequestDispatcher(mcp).dispatch({ kind: 'launchAgent', agent: 'claude', cwd: '/repo' }, readOnly, DEVICE),
+    ).rejects.toThrow(CapabilityError)
+    expect(mcp.callTool).not.toHaveBeenCalled()
   })
 })

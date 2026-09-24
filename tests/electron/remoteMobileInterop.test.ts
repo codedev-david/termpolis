@@ -17,6 +17,7 @@ import {
   NO_CAPABILITIES as DESKTOP_NO_CAPABILITIES,
   RELAY_MAX_FRAME_BYTES as DESKTOP_MAX_FRAME,
   type Capabilities as DesktopCapabilities,
+  type RemoteAgent as DesktopAgent,
   type RemoteMessage as DesktopMessage,
   type RemoteRequest as DesktopRequest,
 } from '../../src/main/remoteBridge/protocol'
@@ -44,10 +45,13 @@ import {
 import {
   NO_CAPABILITIES as PHONE_NO_CAPABILITIES,
   parseCapabilities,
+  parseDirectoryListing,
+  parseLaunchedAgent,
   parseRemoteMessage,
   RELAY_MAX_FRAME_BYTES as PHONE_MAX_FRAME,
   type AgentStatus as PhoneAgentStatus,
   type Capabilities as PhoneCapabilities,
+  type RemoteAgent as PhoneAgent,
   type RemoteMessage as PhoneMessage,
   type RemoteRequest as PhoneRequest,
 } from '../../mobile/src/wire/protocol'
@@ -598,5 +602,84 @@ describe('the constants the two trees each declare for themselves', () => {
       closeTerminal: true,
     }
     expect(parseCapabilities(JSON.parse(JSON.stringify(granted)))).toEqual(granted)
+  })
+})
+
+describe('stage 9: browsing folders and launching an agent, both trees', () => {
+  const header = Uint8Array.from([FRAME_SESSION])
+
+  it('the desktop hears a listDirectory the phone may send, with a path and without', () => {
+    // The kind is additive: an older desktop would refuse it as 'unrecognised
+    // request kind' and the phone swallows that. These assignments are what keeps
+    // the two unions from drifting on the shape while the wire stays compatible.
+    const rootward: PhoneRequest = { kind: 'listDirectory' }
+    const deeper: PhoneRequest = { kind: 'listDirectory', path: '/home/dev/repo' }
+    const heardRoot: DesktopRequest = rootward
+    const heardDeep: DesktopRequest = deeper
+    expect(heardRoot.kind).toBe('listDirectory')
+    expect(heardDeep).toEqual({ kind: 'listDirectory', path: '/home/dev/repo' })
+  })
+
+  it('agrees on the three launchable agents, structurally', () => {
+    // Same structural guard as the status union: if either tree adds or drops an
+    // agent, the cross-assignment stops compiling. The phone picks the key and the
+    // desktop maps it to a binary, so a silent drift is a phone offering an agent
+    // the desktop cannot start.
+    for (const agent of ['claude', 'codex', 'gemini'] as PhoneAgent[]) {
+      const asked: PhoneRequest = { kind: 'launchAgent', agent, cwd: '/repo' }
+      const heard: DesktopRequest = asked
+      expect(heard.kind).toBe('launchAgent')
+    }
+    const fromDesktop: DesktopAgent = 'gemini'
+    const asPhone: PhoneAgent = fromDesktop
+    const backAgain: DesktopAgent = asPhone
+    expect(backAgain).toBe('gemini')
+  })
+
+  it('carries a directory listing down the sealed channel, and the phone parses it', () => {
+    // End to end through the real session crypto, not just the type system: the
+    // desktop seals an `ok` whose data is a DirectoryListing, and the phone opens,
+    // reads the message, and reconstructs the listing field by field.
+    const { desktop, phone } = connect()
+    const listing = {
+      path: '/home/dev',
+      parent: null,
+      entries: [
+        { name: 'repo', path: '/home/dev/repo' },
+        { name: 'notes', path: '/home/dev/notes' },
+      ],
+    }
+
+    const envelope = phone.seal(
+      header,
+      utf8Encode(JSON.stringify({ id: 5, request: { kind: 'listDirectory' } })),
+    )
+    const asRead = JSON.parse(new TextDecoder().decode(desktop.open(envelope, SESSION_HEADER_BYTES)))
+    expect(asRead).toEqual({ id: 5, request: { kind: 'listDirectory' } })
+
+    const answer = desktop.seal(header, utf8Encode(JSON.stringify({ kind: 'ok', id: 5, data: listing })))
+    const message = parseRemoteMessage(phone.open(answer, SESSION_HEADER_BYTES)!)
+    expect(message).toEqual({ kind: 'ok', id: 5, data: listing })
+    expect(parseDirectoryListing((message as { data: unknown }).data)).toEqual(listing)
+  })
+
+  it('carries a launched-agent answer back up, which the phone parses to a terminal', () => {
+    const { desktop, phone } = connect()
+    // The middle dot the desktop builds the name with, by code point so the
+    // fixture cannot drift from the source.
+    const launched = { terminalId: '7f3a2b', name: `Codex ${'·'} api` }
+
+    const envelope = phone.seal(
+      header,
+      utf8Encode(
+        JSON.stringify({ id: 6, request: { kind: 'launchAgent', agent: 'codex', cwd: '/home/dev/api' } }),
+      ),
+    )
+    const asRead = JSON.parse(new TextDecoder().decode(desktop.open(envelope, SESSION_HEADER_BYTES)))
+    expect(asRead).toEqual({ id: 6, request: { kind: 'launchAgent', agent: 'codex', cwd: '/home/dev/api' } })
+
+    const answer = desktop.seal(header, utf8Encode(JSON.stringify({ kind: 'ok', id: 6, data: launched })))
+    const message = parseRemoteMessage(phone.open(answer, SESSION_HEADER_BYTES)!)
+    expect(parseLaunchedAgent((message as { data: unknown }).data)).toEqual(launched)
   })
 })

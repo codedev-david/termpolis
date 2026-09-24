@@ -11,6 +11,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import type { RootStackParamList } from './navigation/routes'
 import DesktopsScreen from './screens/DesktopsScreen'
+import FolderPickerScreen from './screens/FolderPickerScreen'
 import PairScreen from './screens/PairScreen'
 import PaywallScreen from './screens/PaywallScreen'
 import SafetyNumberScreen from './screens/SafetyNumberScreen'
@@ -178,6 +179,14 @@ export default function App(): React.JSX.Element {
                 name="Terminal"
                 component={TerminalScreen}
                 options={({ route }) => ({ title: route.params.name })}
+              />
+              {/* Reached from the list's "New AI terminal" menu, one entry per
+                  agent. It lists the desktop's folders and, on a pick, launches
+                  the agent there and REPLACES itself with the Terminal screen. */}
+              <Stack.Screen
+                name="FolderPicker"
+                component={FolderPickerScreen}
+                options={{ title: 'Choose a folder' }}
               />
               <Stack.Screen
                 name="SafetyNumber"

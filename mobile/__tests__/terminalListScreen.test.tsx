@@ -1,4 +1,4 @@
-import type { Capabilities, TerminalSummary } from '../src/wire/protocol'
+import type { Capabilities, RemoteAgent, TerminalSummary } from '../src/wire/protocol'
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
@@ -44,7 +44,6 @@ jest.mock('../src/state/remoteStore', () => {
       agentStatus: {},
       error: null,
       refreshTerminals: jest.fn(async () => undefined),
-      createTerminal: jest.fn(async () => undefined),
     })),
   }
 })
@@ -52,17 +51,15 @@ jest.mock('../src/state/remoteStore', () => {
 import TerminalListScreen from '../src/screens/TerminalListScreen'
 import { useRemoteStore } from '../src/state/remoteStore'
 
-function fn(name: 'refreshTerminals' | 'createTerminal'): jest.Mock {
+function fn(name: 'refreshTerminals'): jest.Mock {
   return useRemoteStore.getState()[name] as unknown as jest.Mock
 }
 
 beforeEach(() => {
   mockNavigate.mockReset()
-  for (const name of ['refreshTerminals', 'createTerminal'] as const) {
-    const f = fn(name)
-    f.mockReset()
-    f.mockResolvedValue(undefined)
-  }
+  const f = fn('refreshTerminals')
+  f.mockReset()
+  f.mockResolvedValue(undefined)
   useRemoteStore.setState({
     status: 'attached',
     stale: false,
@@ -104,6 +101,17 @@ describe('TerminalListScreen -- the rows', () => {
     expect(screen.queryByTestId('terminal-status-t2')).toBeNull()
   })
 
+  it('shows a busy terminal that reported no summary without an empty line', async () => {
+    useRemoteStore.setState({
+      terminals: TERMINALS,
+      agentStatus: { t1: { terminalId: 't1', status: 'working', summary: '' } },
+    })
+    await render(<TerminalListScreen />)
+    // The badge is there; the empty summary is not rendered as a blank row.
+    expect(screen.getByTestId('terminal-status-t1')).toBeTruthy()
+    expect(screen.getByText('Working')).toBeTruthy()
+  })
+
   it('opens the terminal it was tapped on', async () => {
     useRemoteStore.setState({ terminals: TERMINALS })
     await render(<TerminalListScreen />)
@@ -140,17 +148,19 @@ describe('TerminalListScreen -- refreshing', () => {
   })
 })
 
-describe('TerminalListScreen -- what the desktop granted', () => {
+describe('TerminalListScreen -- the new-terminal menu', () => {
   it('offers no new-terminal control without createTerminal', async () => {
     useRemoteStore.setState({ capabilities: { ...GRANTS, createTerminal: false } })
     await render(<TerminalListScreen />)
     expect(screen.queryByTestId('terminal-new')).toBeNull()
   })
 
-  it('offers it once createTerminal is granted', async () => {
+  it('offers the button once createTerminal is granted, closed to start', async () => {
     useRemoteStore.setState({ capabilities: GRANTS })
     await render(<TerminalListScreen />)
     expect(screen.getByTestId('terminal-new')).toBeTruthy()
+    // The three-agent menu is not shown until the button is tapped.
+    expect(screen.queryByTestId('terminal-agent-menu')).toBeNull()
   })
 
   it('hides the control again when the grant is withdrawn mid-session', async () => {
@@ -164,22 +174,44 @@ describe('TerminalListScreen -- what the desktop granted', () => {
     expect(screen.queryByTestId('terminal-new')).toBeNull()
   })
 
-  it('starts an AI terminal with the name that was typed', async () => {
+  it('opens the three-agent menu on tap, replacing the button', async () => {
     useRemoteStore.setState({ capabilities: GRANTS })
     await render(<TerminalListScreen />)
     await fireEvent.press(screen.getByTestId('terminal-new'))
-    await fireEvent.changeText(screen.getByTestId('terminal-new-name'), 'claude')
-    await fireEvent.press(screen.getByTestId('terminal-new-submit'))
-    expect(fn('createTerminal')).toHaveBeenCalledWith('claude')
+
+    expect(screen.getByTestId('terminal-agent-menu')).toBeTruthy()
+    expect(screen.getByTestId('terminal-agent-claude')).toBeTruthy()
+    expect(screen.getByTestId('terminal-agent-codex')).toBeTruthy()
+    expect(screen.getByTestId('terminal-agent-gemini')).toBeTruthy()
+    // The plain button is gone while the menu is open.
+    expect(screen.queryByTestId('terminal-new')).toBeNull()
   })
 
-  it('will not start one with a blank name', async () => {
+  it.each<[RemoteAgent, string]>([
+    ['claude', 'terminal-agent-claude'],
+    ['codex', 'terminal-agent-codex'],
+    ['gemini', 'terminal-agent-gemini'],
+  ])('sends the folder picker the %s agent it was tapped for', async (agent, testId) => {
     useRemoteStore.setState({ capabilities: GRANTS })
     await render(<TerminalListScreen />)
     await fireEvent.press(screen.getByTestId('terminal-new'))
-    await fireEvent.changeText(screen.getByTestId('terminal-new-name'), '   ')
-    await fireEvent.press(screen.getByTestId('terminal-new-submit'))
-    expect(fn('createTerminal')).not.toHaveBeenCalled()
+    await fireEvent.press(screen.getByTestId(testId))
+
+    // The agent key is the whole payload -- the folder is chosen on the next
+    // screen -- and it carries the wire key, not the label.
+    expect(mockNavigate).toHaveBeenCalledWith('FolderPicker', { agent })
+  })
+
+  it('closes the menu once an agent is chosen, so returning shows the button', async () => {
+    useRemoteStore.setState({ capabilities: GRANTS })
+    await render(<TerminalListScreen />)
+    await fireEvent.press(screen.getByTestId('terminal-new'))
+    await fireEvent.press(screen.getByTestId('terminal-agent-claude'))
+
+    // Back on the list, the user sees the button again, not a menu they never
+    // reopened.
+    expect(screen.queryByTestId('terminal-agent-menu')).toBeNull()
+    expect(screen.getByTestId('terminal-new')).toBeTruthy()
   })
 })
 
@@ -195,6 +227,12 @@ describe('TerminalListScreen -- offline', () => {
     useRemoteStore.setState({ stale: true, capabilities: GRANTS })
     await render(<TerminalListScreen />)
     expect(screen.queryByTestId('terminal-new')).toBeNull()
+  })
+
+  it('says nothing was running when the desktop last answered, while stale', async () => {
+    useRemoteStore.setState({ stale: true, capabilities: GRANTS })
+    await render(<TerminalListScreen />)
+    expect(screen.getByText('Nothing was running when the desktop last answered.')).toBeTruthy()
   })
 
   it('shows the last error the store recorded', async () => {
@@ -219,24 +257,5 @@ describe('TerminalListScreen -- a status this build has never heard of', () => {
     await render(<TerminalListScreen />)
     expect(screen.getByTestId('terminal-status-t1')).toBeTruthy()
     expect(screen.getByText('compacting')).toBeTruthy()
-  })
-})
-
-describe('TerminalListScreen -- a create the desktop refuses', () => {
-  it('clears the field anyway rather than raising an unhandled rejection', async () => {
-    // createTerminal rejects when the grant was revoked between render and press.
-    // Unhandled, that rejection is a red box in dev and a silent crash in release.
-    useRemoteStore.setState({ capabilities: { ...GRANTS }, terminals: TERMINALS })
-    fn('createTerminal').mockRejectedValue(new Error('nope'))
-    await render(<TerminalListScreen />)
-
-    await fireEvent.press(screen.getByTestId('terminal-new'))
-    await fireEvent.changeText(screen.getByTestId('terminal-new-name'), 'build')
-    await act(async () => {
-      fireEvent.press(screen.getByTestId('terminal-new-submit'))
-    })
-
-    expect(fn('createTerminal')).toHaveBeenCalledWith('build')
-    expect(screen.queryByTestId('terminal-new-name')).toBeNull()
   })
 })

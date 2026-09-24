@@ -38,6 +38,25 @@ describe('remotePolicy', () => {
     expect(isAllowed({ kind: 'writeToTerminal', terminalId: 't', text: 'x' }, caps)).toBe(false)
   })
 
+  it('gates the folder picker and the launch on createTerminal, the grant that ends in a terminal', () => {
+    // Both are the folder-picker-to-launch path. They ride `createTerminal`
+    // rather than a grant of their own: browsing for a folder and starting a
+    // fixed agent binary in it is the reach the local "new AI terminal" already
+    // has -- launchAgent never spells the command, so it is not the arbitrary
+    // execution that keeps runCommand/writeToTerminal separate.
+    expect(requiredCapability({ kind: 'listDirectory' })).toBe('createTerminal')
+    expect(requiredCapability({ kind: 'listDirectory', path: '/home/dev' })).toBe('createTerminal')
+    expect(requiredCapability({ kind: 'launchAgent', agent: 'claude', cwd: '/repo' })).toBe('createTerminal')
+
+    const readOnly: Capabilities = { ...NO_CAPABILITIES, read: true }
+    expect(isAllowed({ kind: 'listDirectory' }, readOnly)).toBe(false)
+    expect(isAllowed({ kind: 'launchAgent', agent: 'codex', cwd: '/repo' }, readOnly)).toBe(false)
+
+    const canCreate: Capabilities = { ...NO_CAPABILITIES, createTerminal: true }
+    expect(isAllowed({ kind: 'listDirectory' }, canCreate)).toBe(true)
+    expect(isAllowed({ kind: 'launchAgent', agent: 'gemini', cwd: '/repo' }, canCreate)).toBe(true)
+  })
+
   it('assertAllowed throws CapabilityError naming the missing capability', () => {
     expect(() => assertAllowed({ kind: 'writeToTerminal', terminalId: 't', text: 'x' }, NO_CAPABILITIES))
       .toThrow(CapabilityError)

@@ -2,6 +2,8 @@ import { utf8Encode } from '../src/wire/bytes'
 import {
   NO_CAPABILITIES,
   parseCapabilities,
+  parseDirectoryListing,
+  parseLaunchedAgent,
   parseRemoteMessage,
   parseTerminalList,
   RELAY_MAX_FRAME_BYTES,
@@ -357,5 +359,109 @@ describe('parseTerminalList', () => {
     expect(parseTerminalList([{ id: 't3', name: 12, shellType: {}, cwd: [] }])).toEqual([
       { id: 't3', name: 't3', shellType: '', cwd: '' },
     ])
+  })
+})
+
+describe('parseDirectoryListing', () => {
+  it('reads a well-formed level, entries and all', () => {
+    expect(
+      parseDirectoryListing({
+        path: '/home/dev/termpolis',
+        parent: '/home/dev',
+        entries: [
+          { name: 'relay', path: '/home/dev/termpolis/relay' },
+          { name: 'mobile', path: '/home/dev/termpolis/mobile' },
+        ],
+      }),
+    ).toEqual({
+      path: '/home/dev/termpolis',
+      parent: '/home/dev',
+      entries: [
+        { name: 'relay', path: '/home/dev/termpolis/relay' },
+        { name: 'mobile', path: '/home/dev/termpolis/mobile' },
+      ],
+    })
+  })
+
+  it('reads the root, where there is no parent to climb to', () => {
+    // parent null is the whole signal the picker uses to hide its ".." row.
+    expect(parseDirectoryListing({ path: '/home/dev', parent: null, entries: [] })).toEqual({
+      path: '/home/dev',
+      parent: null,
+      entries: [],
+    })
+  })
+
+  it('coerces a non-string parent to null rather than trusting it', () => {
+    // An older or malformed desktop that sends a number for parent simply gets
+    // no up-row, not a picker that tries to navigate to 42.
+    expect(parseDirectoryListing({ path: '/x', parent: 7, entries: [] })!.parent).toBeNull()
+  })
+
+  it('drops entries that are malformed, and keeps the rest', () => {
+    // One unnamed folder is not a reason to show the user none.
+    expect(
+      parseDirectoryListing({
+        path: '/x',
+        parent: null,
+        entries: [
+          { name: 'good', path: '/x/good' },
+          null,
+          7,
+          { name: '', path: '/x/blank' },
+          { name: 'no-path' },
+          { name: 'bad-path', path: 42 },
+          { path: '/x/no-name' },
+        ],
+      })!.entries,
+    ).toEqual([{ name: 'good', path: '/x/good' }])
+  })
+
+  it('treats a listing whose entries are not an array as having none', () => {
+    expect(parseDirectoryListing({ path: '/x', parent: null, entries: 'nope' })!.entries).toEqual([])
+    expect(parseDirectoryListing({ path: '/x', parent: null })!.entries).toEqual([])
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 42],
+    ['a string', '/x'],
+    ['an array', []],
+    ['an object with no path', { parent: null, entries: [] }],
+    ['an object with an empty path', { path: '', entries: [] }],
+    ['an object with a non-string path', { path: 7, entries: [] }],
+  ])('drops the whole listing for %s', (_name, value) => {
+    expect(parseDirectoryListing(value)).toBeNull()
+  })
+})
+
+describe('parseLaunchedAgent', () => {
+  it('reads a launched terminal with its label', () => {
+    expect(parseLaunchedAgent({ terminalId: 't7', name: 'Claude · api' })).toEqual({
+      terminalId: 't7',
+      name: 'Claude · api',
+    })
+  })
+
+  it.each([
+    ['no name', { terminalId: 't7' }],
+    ['an empty name', { terminalId: 't7', name: '' }],
+    ['a non-string name', { terminalId: 't7', name: 42 }],
+  ])('falls back to the id as the title given %s', (_name, value) => {
+    // The terminal screen must have a title even from a desktop that named none.
+    expect(parseLaunchedAgent(value)).toEqual({ terminalId: 't7', name: 't7' })
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 7],
+    ['a string', 't7'],
+    ['an object with no terminalId', { name: 'Claude' }],
+    ['an object with an empty terminalId', { terminalId: '', name: 'Claude' }],
+    ['an object with a non-string terminalId', { terminalId: 7 }],
+  ])('returns null for %s, because there is nothing to open', (_name, value) => {
+    expect(parseLaunchedAgent(value)).toBeNull()
   })
 })

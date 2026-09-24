@@ -1014,6 +1014,8 @@ describe('stale means stale', () => {
     ['runCommand', () => useRemoteStore.getState().runCommand('t1', 'ls')],
     ['createTerminal', () => useRemoteStore.getState().createTerminal('New')],
     ['closeTerminal', () => useRemoteStore.getState().closeTerminal('t1')],
+    ['listDirectory', () => useRemoteStore.getState().listDirectory()],
+    ['launchAgent', () => useRemoteStore.getState().launchAgent('claude', '/repo')],
   ]
 
   it.each(writes)('%s refuses while stale and queues nothing', async (_name, run) => {
@@ -1686,6 +1688,105 @@ describe('creating and closing terminals', () => {
     // The buffer belongs to a terminal that no longer exists. Keeping it would
     // eventually show a reused id somebody else's output.
     expect(useRemoteStore.getState().output).toEqual({ t2: 'hello' })
+  })
+})
+
+describe('listing folders and launching an agent', () => {
+  async function attachedWith(terminals: unknown[]): Promise<void> {
+    seed([STORED])
+    await useRemoteStore.getState().boot()
+    state('attached')
+    await settle()
+    session().resolveNext(GRANTS)
+    session().resolveNext(terminals)
+    await settle()
+  }
+
+  it('asks for the home root with no path when none is given', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().listDirectory()
+    session().resolveNext({ path: '/home/dev', parent: null, entries: [{ name: 'repos', path: '/home/dev/repos' }] })
+    await done
+    // No `path` key at all: the desktop reads that as "home", and sending
+    // `path: undefined` would serialise to a key the desktop must special-case.
+    expect(session().requests).toContainEqual({ kind: 'listDirectory' })
+    expect(useRemoteStore.getState().directory).toEqual({
+      path: '/home/dev',
+      parent: null,
+      entries: [{ name: 'repos', path: '/home/dev/repos' }],
+    })
+  })
+
+  it('passes the path through when climbing into a subfolder', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().listDirectory('/home/dev/repos')
+    session().resolveNext({ path: '/home/dev/repos', parent: '/home/dev', entries: [] })
+    await done
+    expect(session().requests).toContainEqual({ kind: 'listDirectory', path: '/home/dev/repos' })
+    expect(useRemoteStore.getState().directory).toEqual({
+      path: '/home/dev/repos',
+      parent: '/home/dev',
+      entries: [],
+    })
+  })
+
+  it('keeps the last good level when the next answer is unreadable', async () => {
+    await attachedWith([])
+    let done = useRemoteStore.getState().listDirectory()
+    session().resolveNext({ path: '/home/dev', parent: null, entries: [] })
+    await done
+    // A malformed answer parses to null. That is "could not read that", not
+    // "empty", so the picker holds where it was rather than blanking.
+    done = useRemoteStore.getState().listDirectory('/nope')
+    session().resolveNext({ garbage: true })
+    await done
+    expect(useRemoteStore.getState().directory).toEqual({ path: '/home/dev', parent: null, entries: [] })
+    expect(useRemoteStore.getState().directoryLoading).toBe(false)
+  })
+
+  it('stops the spinner even when the desktop is offline', async () => {
+    await attachedWith([])
+    state('offline')
+    await expect(useRemoteStore.getState().listDirectory()).rejects.toThrow(/offline/i)
+    // The finally must fire on the refusal path too, or the picker spins forever.
+    expect(useRemoteStore.getState().directoryLoading).toBe(false)
+  })
+
+  it('launches the agent, then re-reads the list so the new terminal is there', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().launchAgent('codex', '/repo/api')
+    session().resolveNext({ terminalId: 't9', name: 'Codex · api' })
+    await settle()
+    // The re-read is a second round trip, exactly as createTerminal does.
+    session().resolveNext([{ id: 't9', name: 'Codex · api', shellType: 'pwsh', cwd: '/repo/api' }])
+    const launched = await done
+    expect(launched).toEqual({ terminalId: 't9', name: 'Codex · api' })
+    expect(session().requests).toContainEqual({ kind: 'launchAgent', agent: 'codex', cwd: '/repo/api' })
+    expect(useRemoteStore.getState().terminals).toEqual([
+      { id: 't9', name: 'Codex · api', shellType: 'pwsh', cwd: '/repo/api' },
+    ])
+  })
+
+  it('still returns the launched terminal when the follow-up refresh is refused', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().launchAgent('gemini', '/repo')
+    session().resolveNext({ terminalId: 't9', name: 'Gemini · repo' })
+    await settle()
+    // The caller navigates by the id it already holds, so a refresh that fails
+    // (read not granted, say) must not swallow a launch that worked.
+    session().rejectNext(new Error('read is not granted'))
+    const launched = await done
+    expect(launched).toEqual({ terminalId: 't9', name: 'Gemini · repo' })
+  })
+
+  it('says the desktop could not start it when no terminal comes back', async () => {
+    await attachedWith([])
+    const done = useRemoteStore.getState().launchAgent('claude', '/repo')
+    // An older or wedged desktop answers without a terminal id.
+    session().resolveNext({ name: 'nothing' })
+    const launched = await done
+    expect(launched).toBeNull()
+    expect(useRemoteStore.getState().error).toBe('The desktop could not start that agent.')
   })
 })
 

@@ -1,21 +1,22 @@
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import React from 'react'
-import {
-  FlatList,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native'
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native'
 
 import type { RootStackParamList } from '../navigation/routes'
 import { useRemoteStore } from '../state/remoteStore'
-import type { TerminalSummary } from '../wire/protocol'
+import type { RemoteAgent, TerminalSummary } from '../wire/protocol'
 
 type Nav = NativeStackNavigationProp<RootStackParamList>
+
+/** The three agents the "New AI terminal" menu offers, in the order they are
+ *  shown. The `agent` key is what the wire and the desktop's AGENT_BINARY expect;
+ *  the label is only ever seen here. */
+const AGENTS: readonly { agent: RemoteAgent; label: string }[] = [
+  { agent: 'claude', label: 'Claude' },
+  { agent: 'codex', label: 'Codex' },
+  { agent: 'gemini', label: 'Gemini' },
+]
 
 /** How the desktop's agent states read on a phone. Anything the desktop adds
  *  that this does not name falls back to the raw word, which is wrong-looking
@@ -51,11 +52,12 @@ export default function TerminalListScreen(): React.JSX.Element {
   const stale = useRemoteStore((s) => s.stale)
   const error = useRemoteStore((s) => s.error)
   const refreshTerminals = useRemoteStore((s) => s.refreshTerminals)
-  const createTerminal = useRemoteStore((s) => s.createTerminal)
 
   const [refreshing, setRefreshing] = React.useState(false)
-  const [composing, setComposing] = React.useState(false)
-  const [name, setName] = React.useState('')
+  // Whether the agent picker is open. Choosing a terminal is now two taps -- pick
+  // the agent here, then a folder on the next screen -- so there is nothing to
+  // type and no draft to hold, only which of the two steps is on screen.
+  const [menuOpen, setMenuOpen] = React.useState(false)
 
   async function onRefresh(): Promise<void> {
     setRefreshing(true)
@@ -63,14 +65,6 @@ export default function TerminalListScreen(): React.JSX.Element {
     // whole screen for something already on it.
     await refreshTerminals().catch(() => undefined)
     setRefreshing(false)
-  }
-
-  function onCreate(): void {
-    const wanted = name.trim()
-    if (wanted.length === 0) return
-    setName('')
-    setComposing(false)
-    void createTerminal(wanted).catch(() => undefined)
   }
 
   function renderRow(terminal: TerminalSummary): React.JSX.Element {
@@ -117,33 +111,31 @@ export default function TerminalListScreen(): React.JSX.Element {
       )}
 
       {canCreate && !stale ? (
-        composing ? (
-          <View style={styles.composer}>
-            <TextInput
-              testID="terminal-new-name"
-              style={styles.input}
-              value={name}
-              onChangeText={setName}
-              placeholder="claude, codex, gemini..."
-              placeholderTextColor="#6b7280"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Pressable
-              testID="terminal-new-submit"
-              accessibilityRole="button"
-              style={styles.primary}
-              onPress={onCreate}
-            >
-              <Text style={styles.primaryText}>Start</Text>
-            </Pressable>
+        menuOpen ? (
+          <View testID="terminal-agent-menu" style={styles.menu}>
+            {AGENTS.map(({ agent, label }) => (
+              <Pressable
+                key={agent}
+                testID={`terminal-agent-${agent}`}
+                accessibilityRole="button"
+                style={styles.primary}
+                onPress={() => {
+                  // Close before navigating so returning to the list shows the
+                  // button again, not a menu the user never reopened.
+                  setMenuOpen(false)
+                  navigation.navigate('FolderPicker', { agent })
+                }}
+              >
+                <Text style={styles.primaryText}>{label}</Text>
+              </Pressable>
+            ))}
           </View>
         ) : (
           <Pressable
             testID="terminal-new"
             accessibilityRole="button"
             style={styles.primary}
-            onPress={() => setComposing(true)}
+            onPress={() => setMenuOpen(true)}
           >
             <Text style={styles.primaryText}>New AI terminal</Text>
           </Pressable>
@@ -200,18 +192,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   badgeText: { color: '#ffffff', fontSize: 11, fontWeight: '600' },
-  composer: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  input: {
-    flex: 1,
-    backgroundColor: '#252526',
-    borderWidth: 1,
-    borderColor: '#3c3c3c',
-    borderRadius: 8,
-    color: '#e0e0e0',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-  },
+  menu: { gap: 8 },
   primary: {
     backgroundColor: '#0e639c',
     borderRadius: 8,

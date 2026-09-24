@@ -25,8 +25,13 @@ import { Handshake } from '../wire/sessionCrypto'
 import {
   NO_CAPABILITIES,
   parseCapabilities,
+  parseDirectoryListing,
+  parseLaunchedAgent,
   parseTerminalList,
   type Capabilities,
+  type DirectoryListing,
+  type LaunchedAgent,
+  type RemoteAgent,
   type RemoteRequest,
   type TerminalSummary,
 } from '../wire/protocol'
@@ -82,6 +87,13 @@ interface RemoteState {
    *  alone. */
   outputEnd: Record<string, number>
   agentStatus: Record<string, StatusUpdate>
+  /** The desktop folder the picker is currently showing, or null before the
+   *  first listing (and after a desktop switch). Home-rooted by the desktop; the
+   *  phone only ever hands `path`s from here straight back. */
+  directory: DirectoryListing | null
+  /** True while a `listDirectory` is in flight, so the picker can show a spinner
+   *  instead of a stale level. */
+  directoryLoading: boolean
   /** True whenever what is on screen is not being kept current. */
   stale: boolean
   error: string | null
@@ -105,6 +117,12 @@ interface RemoteState {
   runCommand(terminalId: string, command: string): Promise<void>
   createTerminal(name: string, cwd?: string): Promise<void>
   closeTerminal(terminalId: string): Promise<void>
+  /** List a desktop folder for the picker. `path` absent means the desktop home. */
+  listDirectory(path?: string): Promise<void>
+  /** Open a terminal in `cwd` and start `agent` in it. Resolves to the terminal
+   *  the desktop opened, or null when it could not start one -- the caller stays
+   *  on the picker in that case, with the banner explaining why. */
+  launchAgent(agent: RemoteAgent, cwd: string): Promise<LaunchedAgent | null>
 }
 
 /** The live connection. Not state: a socket is not renderable, and re-rendering
@@ -366,6 +384,10 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
       output: {},
       outputEnd: {},
       agentStatus: {},
+      // A folder tree is a statement about one machine's filesystem; carrying it
+      // into another desktop's view would offer folders that are not there.
+      directory: null,
+      directoryLoading: false,
       error: null,
     })
   }
@@ -396,6 +418,8 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
     output: {},
     outputEnd: {},
     agentStatus: {},
+    directory: null,
+    directoryLoading: false,
     // Nothing on screen has been confirmed against a live desktop yet, which is
     // exactly what stale means.
     stale: true,
@@ -597,6 +621,39 @@ export const useRemoteStore = create<RemoteState>((set, get) => {
         }
       })
     },
+
+    async listDirectory(path) {
+      set({ directoryLoading: true })
+      try {
+        const listing = parseDirectoryListing(
+          await ask({ kind: 'listDirectory', ...(path === undefined ? {} : { path }) }),
+        )
+        // Keep the last good level when the answer is unreadable rather than
+        // blanking the picker mid-browse. A null is "could not read that", not
+        // "empty": an empty folder still parses, with `entries: []`.
+        if (listing !== null) set({ directory: listing })
+      } finally {
+        // Reached whether the listing parsed, failed to parse, or `ask` threw
+        // (offline/unpaired) -- the spinner must never be left spinning.
+        set({ directoryLoading: false })
+      }
+    },
+
+    async launchAgent(agent, cwd) {
+      const launched = parseLaunchedAgent(await ask({ kind: 'launchAgent', agent, cwd }))
+      if (launched === null) {
+        // The desktop answered but named no terminal -- an older or wedged
+        // desktop. Say so rather than leaving a tapped button that did nothing.
+        set({ error: 'The desktop could not start that agent.' })
+        return null
+      }
+      // Fold the new terminal into the list so it is there when the phone lands,
+      // the same reason createTerminal refreshes. Best-effort: the caller
+      // navigates by the id it just got back, not by the list, so a refresh that
+      // fails (e.g. `read` not granted) must not swallow a launch that worked.
+      await get().refreshTerminals().catch(() => undefined)
+      return launched
+    },
   }
 })
 
@@ -629,6 +686,8 @@ export function teardownRemote(): void {
     output: {},
     outputEnd: {},
     agentStatus: {},
+    directory: null,
+    directoryLoading: false,
     stale: true,
     error: null,
   })
