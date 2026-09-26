@@ -92,13 +92,13 @@ describe('processFormat', () => {
         ],
         skipped: [
           { pid: 5, reason: 'pid reused by a different process' },
-          { pid: 6, reason: 'already exited or no longer listed' },
+          { pid: 6, reason: 'still running but no longer listed' },
           { pid: 7, reason: 'pid reused by a different process...' },
         ],
       }),
     ).toBe(
       'Nothing was killed. 4 could not be killed: access denied; timed out. ' +
-        '3 were skipped: pid reused by a different process; already exited or no longer listed.',
+        '3 were skipped: pid reused by a different process; still running but no longer listed.',
     )
   })
 

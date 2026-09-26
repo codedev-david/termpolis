@@ -34,7 +34,7 @@ const GROUPS: { id: GroupId; title: string; hint: string }[] = [
   {
     id: 'agent',
     title: 'Headless AI agents',
-    hint: 'Claude Code, Codex and Gemini CLI runs with no window — scheduled jobs, hooks, swarm workers and anything they started.',
+    hint: 'Claude Code, Codex and Gemini CLI running non-interactively (-p, exec or a server mode), and anything they started. Scripts, hooks, scheduled jobs and swarm workers run them this way, and so do editors and apps, which may be using one right now (an IDE extension, an MCP or ACP client).',
   },
   {
     id: 'git',
@@ -99,7 +99,7 @@ function ProcessRow({
           {p.stuck && (
             <span
               className="px-1.5 rounded bg-[#5a1d1d] text-[#f48771] font-semibold"
-              title="Safe to kill: serves no TCP port, nobody is using it, and it is frozen or orphaned."
+              title="Stuck: serves no TCP port, nothing interactive is open in it, and it is frozen or orphaned. Usually safe to kill, but check the command first: a download or script you detached on purpose looks the same."
             >
               STUCK
             </span>
@@ -208,6 +208,7 @@ export function ProcessesSettings(): JSX.Element {
   const confirmRows = confirm === 'stuck' ? stuckRows : confirm === 'selected' ? selectedRows : []
   const open = confirmRows.length > 0
   const confirmChildren = confirmRows.reduce((n, p) => n + p.treeSize - 1, 0)
+  const oneRow = confirmRows.length === 1
 
   // A rescan left nothing to confirm, so the question goes too.
   useEffect(() => {
@@ -296,21 +297,33 @@ export function ProcessesSettings(): JSX.Element {
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-sm font-semibold text-[#e0e0e0] inline-flex items-center">
           Processes
-          <InfoTip testId="processes-info" label="What counts as stuck">
+          <InfoTip testId="processes-info" label="What counts as stuck" wide>
             <p className="mb-2">
-              <span className="text-[#d4d4d4]">Stuck</span> means it serves no TCP port and is either frozen (Windows
-              only: every thread suspended for at least a minute) or orphaned: the program that started it has
-              exited (a headless agent only after an hour). On Windows, Git Bash can leave a git or jq frozen for
-              good when the script that started it quits at the wrong moment; a status line that runs git on every
-              refresh leaks a few a day.
+              <span className="text-[#d4d4d4]">Stuck</span> means it serves no TCP port, nothing interactive is open
+              in it (see below), and it is either frozen (Windows only: every thread suspended, in a process over a
+              minute old) or orphaned: the program that started it has exited — a headless agent once it has been
+              running for an hour, git once it has run for 30 minutes (never git&apos;s own gc or maintenance),
+              anything else as soon as it is listed. It is judged from process state alone, so a download or script
+              you detached on purpose looks the same: check the command before you kill. On Windows, Git Bash can
+              leave a git or jq frozen for good when the script that started it quits at the wrong moment; a status
+              line that runs git on every refresh leaks a few a day.
             </p>
             <p className="mb-2">
-              Also listed, but not marked stuck: headless agents still attached to whatever started them or
-              orphaned for under an hour, git that has run for over 30 minutes, and anything listening on a TCP
-              port — that may be a server you started on purpose. On macOS and Linux a stopped (Ctrl+Z) job is
-              never counted as frozen. Anything someone is using — an agent CLI open in a terminal, or git
-              waiting on a pager or an editor — is left alone: it is never marked stuck, and an orphaned or
-              long-running tree that holds one is not listed.
+              Also listed, but only marked stuck if frozen (Windows): anything whose parent is still running (its
+              row does not say “parent exited”), an orphaned headless agent under an hour old, and orphaned git
+              under 30 minutes old or doing gc or maintenance. Anything listening on a TCP port is never marked
+              stuck — it may be a server you started on purpose. An orphan is listed once it is 5 minutes old (a
+              headless agent at any age; on Windows, a frozen process after a minute). On macOS and Linux a stopped
+              (Ctrl+Z) job is never counted as frozen, and an orphaned shell, wrapper or tool is listed only while
+              its tree holds git, a headless agent or an MCP server. A launchd job is never taken for an orphan, nor
+              is anything inside a systemd service on Linux (on Debian and Ubuntu that includes whatever a cron job
+              leaves behind).
+            </p>
+            <p className="mb-2">
+              Anything someone is using — an agent CLI open in a terminal, a git GUI or merge tool, or git waiting
+              on a common pager or editor — is left alone: a tree that holds one is never marked stuck, and is not
+              listed for being orphaned or long-running. Every headless agent is still listed, though, including
+              one whose tree holds something in use.
             </p>
             <p>
               Termpolis itself, the programs that launched it, and its own windows and terminal shells are never
@@ -399,17 +412,18 @@ export function ProcessesSettings(): JSX.Element {
               }}
             >
               <p id={questionId} className="text-xs text-[#e0e0e0] mb-1">
-                Kill {confirmRows.length} {confirmRows.length === 1 ? 'process' : 'processes'}
+                Kill {confirmRows.length} {oneRow ? 'process' : 'processes'}
                 {confirmChildren > 0 &&
-                  `, plus ${confirmChildren} child process${confirmChildren === 1 ? '' : 'es'} under ${confirmRows.length === 1 ? 'it' : 'them'}`}
+                  `, plus ${confirmChildren} child process${confirmChildren === 1 ? '' : 'es'} under ${oneRow ? 'it' : 'them'}`}
                 ?
               </p>
               <p id={warningId} className="text-xs text-[#9ca3af] mb-2">
-                Whatever they were doing is lost. A git killed mid-write can leave a stale{' '}
-                <code>.git/index.lock</code> — delete it if the next git command complains. Each one is checked again
-                first: anything that has exited{confirm === 'stuck' && ', is no longer stuck'}, or whose pid now
-                belongs to a different process, is skipped. Anything still running is ended with its current child
-                processes.
+                Whatever {oneRow ? 'it was' : 'they were'} doing is lost. A git killed mid-write can leave a stale{' '}
+                <code>.git/index.lock</code> — delete it if the next git command complains.{' '}
+                {oneRow ? 'It is' : 'Each is'} checked again first and skipped if it has exited, is no longer listed
+                {confirm === 'stuck' && ', is no longer stuck'}, or its pid now belongs to a different process;{' '}
+                {oneRow ? 'otherwise it is' : 'the others are'} ended together with the child processes that the
+                re-check finds under {oneRow ? 'it' : 'them'}.
               </p>
               <div className="flex gap-2">
                 <button

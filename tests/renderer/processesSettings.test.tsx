@@ -317,7 +317,11 @@ describe('ProcessesSettings', () => {
       expect(agents.querySelector('label')?.textContent).toBe('Headless AI agents (2)')
       expect(git.querySelector('label')?.textContent).toBe('Git (1)')
       expect(leftover.querySelector('label')?.textContent).toBe('Leftover shells & tools (1)')
-      expect(agents.textContent).toContain('Claude Code, Codex and Gemini CLI runs with no window')
+      expect(agents.textContent).toContain(
+        'Claude Code, Codex and Gemini CLI running non-interactively (-p, exec or a server mode), and anything ' +
+          'they started. Scripts, hooks, scheduled jobs and swarm workers run them this way, and so do editors ' +
+          'and apps, which may be using one right now (an IDE extension, an MCP or ACP client).',
+      )
 
       expect(within(agents).getAllByTestId(/^processes-row-/).map((r) => r.dataset.testid)).toEqual([
         'processes-row-4242',
@@ -358,7 +362,11 @@ describe('ProcessesSettings', () => {
       expect(r.getByText('Claude Code')).toBeInTheDocument()
       expect(r.queryByText('node.exe')).toBeNull()
       expect(r.getByText('pid 4242')).toBeInTheDocument()
-      expect(r.getByText('STUCK')).toHaveAttribute('title', 'Safe to kill: serves no TCP port, nobody is using it, and it is frozen or orphaned.')
+      expect(r.getByText('STUCK')).toHaveAttribute(
+        'title',
+        'Stuck: serves no TCP port, nothing interactive is open in it, and it is frozen or orphaned. Usually safe ' +
+          'to kill, but check the command first: a download or script you detached on purpose looks the same.',
+      )
       expect(r.getByText('headless')).toHaveAttribute('title', REASON_HINT.headless)
       expect(r.getByText('orphaned')).toHaveAttribute('title', REASON_HINT.orphaned)
       expect(r.queryByText('MCP')).toBeNull()
@@ -482,17 +490,31 @@ describe('ProcessesSettings', () => {
       fireEvent.click(tip)
       const explained = screen.getByTestId('processes-info-text').textContent
       expect(explained).toContain(
-        'Stuck means it serves no TCP port and is either frozen (Windows only: every thread suspended for at ' +
-          'least a minute) or orphaned: the program that started it has exited (a headless agent only after an hour).',
+        'Stuck means it serves no TCP port, nothing interactive is open in it (see below), and it is either ' +
+          'frozen (Windows only: every thread suspended, in a process over a minute old) or orphaned: the program ' +
+          'that started it has exited — a headless agent once it has been running for an hour, git once it has ' +
+          "run for 30 minutes (never git's own gc or maintenance), anything else as soon as it is listed. It is " +
+          'judged from process state alone, so a download or script you detached on purpose looks the same: ' +
+          'check the command before you kill.',
       )
       expect(explained).toContain(
-        'Also listed, but not marked stuck: headless agents still attached to whatever started them or orphaned ' +
-          'for under an hour, git that has run for over 30 minutes, and anything listening on a TCP port',
+        'Also listed, but only marked stuck if frozen (Windows): anything whose parent is still running (its ' +
+          'row does not say “parent exited”), an orphaned headless agent under an hour old, and orphaned git ' +
+          'under 30 minutes old or doing gc or maintenance. Anything listening on a TCP port is never marked ' +
+          'stuck — it may be a server you started on purpose. An orphan is listed once it is 5 minutes old (a ' +
+          'headless agent at any age; on Windows, a frozen process after a minute).',
       )
-      expect(explained).toContain('On macOS and Linux a stopped (Ctrl+Z) job is never counted as frozen.')
       expect(explained).toContain(
-        'Anything someone is using — an agent CLI open in a terminal, or git waiting on a pager or an editor — is ' +
-          'left alone: it is never marked stuck, and an orphaned or long-running tree that holds one is not listed.',
+        'On macOS and Linux a stopped (Ctrl+Z) job is never counted as frozen, and an orphaned shell, wrapper or ' +
+          'tool is listed only while its tree holds git, a headless agent or an MCP server. A launchd job is ' +
+          'never taken for an orphan, nor is anything inside a systemd service on Linux (on Debian and Ubuntu ' +
+          'that includes whatever a cron job leaves behind).',
+      )
+      expect(explained).toContain(
+        'Anything someone is using — an agent CLI open in a terminal, a git GUI or merge tool, or git waiting ' +
+          'on a common pager or editor — is left alone: a tree that holds one is never marked stuck, and is not ' +
+          'listed for being orphaned or long-running. Every headless agent is still listed, though, including ' +
+          'one whose tree holds something in use.',
       )
       expect(explained).toContain('its own windows and terminal shells are never listed')
       expect(explained).toContain(
@@ -776,23 +798,27 @@ describe('ProcessesSettings', () => {
       expect(ask('processes-kill-stuck')).toEqual(['Kill 3 processes, plus 2 child processes under them?', 'Kill 3'])
     })
 
-    it('warns what a kill costs, and that Kill all stuck also skips whatever is no longer stuck', async () => {
+    it('warns what a kill costs, of one row in the singular, and that Kill all stuck also skips whatever is no longer stuck', async () => {
       mockApi()
       render(<ProcessesSettings />)
       fireEvent.click(await screen.findByTestId('processes-check-777'))
 
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
+      // One row: "the rest" or "each" would read as if more than the one asked about will be ended.
       expect(confirmWarning()).toBe(
-        'Whatever they were doing is lost. A git killed mid-write can leave a stale .git/index.lock — delete it ' +
-          'if the next git command complains. Each one is checked again first: anything that has exited, or whose ' +
-          'pid now belongs to a different process, is skipped. Anything still running is ended with its current ' +
-          'child processes.',
+        'Whatever it was doing is lost. A git killed mid-write can leave a stale .git/index.lock — delete it if ' +
+          'the next git command complains. It is checked again first and skipped if it has exited, is no longer ' +
+          'listed, or its pid now belongs to a different process; otherwise it is ended together with the child ' +
+          'processes that the re-check finds under it.',
       )
       fireEvent.click(screen.getByTestId('processes-confirm-cancel'))
 
       fireEvent.click(screen.getByTestId('processes-kill-stuck'))
-      expect(confirmWarning()).toContain(
-        'anything that has exited, is no longer stuck, or whose pid now belongs to a different process, is skipped.',
+      expect(confirmWarning()).toBe(
+        'Whatever they were doing is lost. A git killed mid-write can leave a stale .git/index.lock — delete it ' +
+          'if the next git command complains. Each is checked again first and skipped if it has exited, is no ' +
+          'longer listed, is no longer stuck, or its pid now belongs to a different process; the others are ' +
+          'ended together with the child processes that the re-check finds under them.',
       )
     })
 

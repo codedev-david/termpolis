@@ -34,6 +34,7 @@ const SELF = 100
 const SELF_MISSING = 'Termpolis could not find itself in the process list, so nothing was flagged.'
 const PORTS_UNKNOWN = 'Could not read which processes are listening on ports, so nothing was marked stuck.'
 const MSYS_UNKNOWN = 'Could not confirm which Git Bash processes lost their parent, so none of those were marked orphaned.'
+const MANAGED_UNKNOWN = 'Could not confirm which processes launchd or systemd started, so none of those were marked orphaned.'
 
 function proc(pid: number, over: Partial<ProcRecord> = {}): ProcRecord {
   return { pid, ppid: 0, name: 'x', cmd: '', created: NOW - 60 * MIN, cpuSec: 0, memBytes: 0, suspended: false, scope: 1, ...over }
@@ -292,6 +293,138 @@ describe('displayCommand', () => {
     expect(displayCommand(long.slice(0, 4_000))).toBe('echo')
     // A word the cut does not split stays.
     expect(displayCommand(`echo${' '.repeat(3_980)}ok ${token}`)).toBe('echo ok')
+  })
+
+  // How Claude Code's Bash tool wraps a command: a version-dependent head, the eval word, a tail.
+  const HEAD_WIN = String.raw`"C:\Program Files\Git\bin\bash.exe" -c -l "source C:/Users/Dev/.claude/shell-snapshots/snapshot-bash-1.sh && eval '`
+  const HEAD_NEW = String.raw`"C:\Program Files\Git\bin\bash.exe" -c -l "{ \builtin unalias -- 'unsetenv'; } 2>/dev/null || true && eval '`
+  const HEAD_LNX = `/bin/bash -c -l source /home/dev/.claude/shell-snapshots/snapshot-bash-1.sh && eval '`
+  const TAIL_WIN = `' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"`
+  const TAIL_LNX = `' < /dev/null && pwd -P >| /tmp/claude-1-cwd`
+  // A single quote inside the eval word: '"'"' (on Windows '\"'\"'), or '\'' from older versions.
+  const WQ = String.raw`'\"'\"'`
+  const LQ = `'"'"'`
+  const OQ = `'\\''`
+  const LONG = ' -v x=1'.repeat(700)
+
+  it('still shows the command of a Bash tool harness whose tail the 4,000-character cut removed', () => {
+    for (const [cmd, shown] of [
+      [`${HEAD_WIN}PGPASSWORD=${WQ}hunter 2 pg${WQ} psql -h db -f big.sql${LONG}${TAIL_WIN}`, 'PGPASSWORD=<redacted> psql -h db -f big.sql -v x=1 '],
+      [`${HEAD_NEW}curl -u admin:${WQ}hunter 2 curl${WQ} https://x${LONG}${TAIL_WIN}`, 'curl -u admin:<redacted> https://x -v x=1 '],
+      [`${HEAD_LNX}tool --api-key ${LQ}k3y value${LQ}${LONG}${TAIL_LNX}`, 'tool --api-key <redacted> -v x=1 '],
+      [`${HEAD_LNX}PGPASSWORD=${OQ}hunter 2 pg${OQ} psql${LONG}${TAIL_LNX}`, 'PGPASSWORD=<redacted> psql -v x=1 '],
+    ]) {
+      const out = displayCommand(cmd)
+      expect(out.startsWith(shown), out.slice(0, 80)).toBe(true)
+      expect(out).not.toMatch(/hunter|k3y/)
+    }
+    // Exactly 4,000 characters counts as cut, since the OS readers stop there too.
+    const cut = `${HEAD_WIN}PGPASSWORD=${WQ}hunter 2 pg${WQ} psql${LONG}${TAIL_WIN}`
+    expect(displayCommand(cut.slice(0, 4_000)).startsWith('PGPASSWORD=<redacted> psql -v x=1 ')).toBe(true)
+    // One shorter was not cut, and with its tail missing nothing says the harness wrapped it.
+    const whole = displayCommand(cut.slice(0, 3_999))
+    expect(whole.startsWith(String.raw`"C:\Program Files\Git\bin\bash.exe" -c -l "source `)).toBe(true)
+    expect(whole).toContain("eval 'PGPASSWORD=<redacted> psql -v x=1 ")
+  })
+
+  it('shows the whole command line when nothing confirms a cut command is the harness', () => {
+    for (const cmd of [
+      // Short enough that the tail would have been read, and it is not there.
+      `${HEAD_LNX.slice(0, -1)}'echo hi'`,
+      // The eval word ended, and something other than the harness tail follows it.
+      `${HEAD_LNX}a'; rm -rf ~/work${LONG}`,
+      // No harness head before the eval.
+      `bash -c "rm -rf ~/work; eval 'echo hi${LONG}`,
+    ]) {
+      expect(displayCommand(cmd).startsWith(cmd.slice(0, 80))).toBe(true)
+    }
+  })
+
+  it('masks secret JSON fields at every level of quoting a Windows command line nests them in', () => {
+    expect(
+      displayCommand(`${HEAD_WIN}curl -d ${WQ}{\\"username\\":\\"deploy\\",\\"password\\":\\"Winter2026!Blue\\"}${WQ} https://x${TAIL_WIN}`),
+    ).toBe(`curl -d '{"username":"deploy","password":"<redacted>"}' https://x`)
+    // A backslash inside the value is still part of the secret.
+    expect(displayCommand(String.raw`curl -d '{"password":"C:\vault\pw 2"}' https://x`)).toBe(`curl -d '{"password":"<redacted>"}' https://x`)
+    expect(
+      displayCommand(
+        String.raw`${HEAD_WIN}powershell -Command \"Invoke-RestMethod -Body ${WQ}{\\\"password\\\":\\\"Winter2026!Blue\\\",\\\"client_secret\\\":\\\"s3cr3t-Value\\\"}${WQ}\"${TAIL_WIN}`,
+      ),
+    ).toBe(String.raw`powershell -Command "Invoke-RestMethod -Body '{\"password\":\"<redacted>\",\"client_secret\":\"<redacted>\"}'"`)
+    // Outside the harness nothing is unwrapped, so the backslashes stay in what is shown.
+    expect(
+      displayCommand(String.raw`"C:\Program Files\Git\bin\bash.exe" -c "curl -d \"{\\\"username\\\":\\\"deploy\\\",\\\"password\\\":\\\"Winter2026!Blue\\\"}\" https://x"`),
+    ).toBe(String.raw`"C:\Program Files\Git\bin\bash.exe" -c "curl -d \"{\\\"username\\\":\\\"deploy\\\",\\\"password\\\":\\\"<redacted>\\\"}\" https://x"`)
+    expect(displayCommand(String.raw`"C:\Program Files\Git\bin\bash.exe" -c "curl -d \"{\\\"token\\\": \\\"abc def\\\", \\\"n\\\": 1}\" https://x"`)).toBe(
+      String.raw`"C:\Program Files\Git\bin\bash.exe" -c "curl -d \"{\\\"token\\\": \\\"<redacted>\\\", \\\"n\\\": 1}\" https://x"`,
+    )
+  })
+
+  it("masks a value quoted the way the harness quotes a quote, even where it is not unwrapped", () => {
+    expect(displayCommand(`bash -c "eval 'PGPASSWORD=${WQ}hunter 2 pg${WQ} psql' ; echo"`)).toBe(`bash -c "eval 'PGPASSWORD=<redacted> psql' ; echo"`)
+    expect(displayCommand(`bash -c "tool --password ${LQ}hunter 2 pw${LQ} -v"`)).toBe('bash -c "tool --password <redacted> -v"')
+    expect(displayCommand(`bash -c 'tool --password ${OQ}hunter 2 pw${OQ} -v'`)).toBe("bash -c 'tool --password <redacted> -v'")
+    const cut = displayCommand(`/bin/bash -c -l eval 'PGPASSWORD=${LQ}hunter 2 pg${LQ} psql${LONG}${TAIL_LNX}`)
+    expect(cut.startsWith("/bin/bash -c -l eval 'PGPASSWORD=<redacted> psql -v x=1 ")).toBe(true)
+  })
+
+  // A quoted ; & or | before a password flag is part of an argument, not the end of the command.
+  it.each([
+    ['curl "https://api.example.com/items?page=1&limit=50" -b "sessionid=abc123def456ghi"', 'curl "https://api.example.com/items?page=1&limit=50" -b <redacted>'],
+    ['mysql -h db -e "SELECT 1; SELECT 2" -phunter2mysql app', 'mysql -h db -e "SELECT 1; SELECT 2" -p<redacted> app'],
+    ['mysqldump --where="a=1 && b=2" -phunter2mysql app', 'mysqldump --where="a=1 && b=2" -p<redacted> app'],
+    ['redis-cli -h host --pattern "a|b" -a hunter2redis', 'redis-cli -h host --pattern "a|b" -a <redacted>'],
+    ['sshpass -v -P "passphrase;" -p hunter2ssh ssh host', 'sshpass -v -P "passphrase;" -p <redacted> ssh host'],
+    ['curl -H "Accept: text/html; q=0.9" -b "sid=abc123def456ghi" https://x', 'curl -H "Accept: text/html; q=0.9" -b <redacted> https://x'],
+    ['docker login -u "bob; x" -p hunter2 ghcr.io', 'docker login -u "bob; x" -p <redacted> ghcr.io'],
+    [`${HEAD_WIN}curl ${WQ}https://api.example.com/items?page=1&limit=50${WQ} -b ${WQ}sid=abc${WQ}${TAIL_WIN}`, "curl 'https://api.example.com/items?page=1&limit=50' -b <redacted>"],
+    [
+      String.raw`"C:\Program Files\Git\bin\bash.exe" -c "curl \"https://api.example.com/items?page=1&limit=50\" -b \"sid=abc\""`,
+      String.raw`"C:\Program Files\Git\bin\bash.exe" -c "curl \"https://api.example.com/items?page=1&limit=50\" -b <redacted>"`,
+    ],
+  ])('masks a password flag after a quoted operator: %s', (input, expected) => {
+    expect(displayCommand(input)).toBe(expected)
+  })
+
+  it('still ends the command at an operator that is not quoted', () => {
+    expect(displayCommand('curl https://x && echo -b notacookie')).toBe('curl https://x && echo -b notacookie')
+  })
+
+  it.each([
+    ['curl -u admin:"hunter2curl" https://x', 'curl -u admin:<redacted> https://x'],
+    ["curl -u 'admin':hunter2curl https://x", "curl -u 'admin':<redacted> https://x"],
+    [`curl -u "admin:pa'ssw0rdXYZ" https://x`, 'curl -u "admin:<redacted>" https://x'],
+    [`curl -u "bob's:pw word" https://x`, `curl -u "bob's:<redacted>" https://x`],
+    ['curl -u "admin":"x" https://x', 'curl -u "admin":<redacted> https://x'],
+    [String.raw`bash -c "curl -u \"admin:x\" https://x"`, String.raw`bash -c "curl -u \"admin:<redacted>\" https://x"`],
+    ['curl -u :token123 https://x', 'curl -u :<redacted> https://x'],
+    ['curl -uadmin:x https://x', 'curl -uadmin:<redacted> https://x'],
+    ['curl --user=admin:x https://x', 'curl --user=admin:<redacted> https://x'],
+    ["curl --proxy-user 'bob:pw word' https://x", "curl --proxy-user 'bob:<redacted>' https://x"],
+  ])('masks the password of curl -u however the user part is quoted: %s', (input, expected) => {
+    expect(displayCommand(input)).toBe(expected)
+  })
+
+  it('leaves a -u that carries no password alone', () => {
+    for (const cmd of ['git push -u origin main', 'curl -u admin https://x']) expect(displayCommand(cmd)).toBe(cmd)
+  })
+
+  it('stays fast on adversarial command lines just under the 4,000-character cut', () => {
+    for (const cmd of [
+      `curl -d ${'\\'.repeat(3_990)}`,
+      `curl -d "${'\\\\"password\\\\":'.repeat(250)}`,
+      `curl -d "${'token'.repeat(790)}`,
+      `docker login ${'"'.repeat(3_980)} -p`,
+      `mysql ${`-e "a" '`.repeat(495)} -p`,
+      `curl -u ${`"a:\\"`.repeat(790)}`,
+      `curl -b ${`'a'"b"`.repeat(600)}`,
+      // Cut, with a head, so every eval is checked against it.
+      `${HEAD_LNX}x' ${"eval 'x' ".repeat(440)}`,
+    ]) {
+      const started = performance.now()
+      displayCommand(cmd)
+      expect(performance.now() - started, cmd.slice(0, 40)).toBeLessThan(1_000)
+    }
   })
 })
 
@@ -794,8 +927,9 @@ const PS_STAT = ['  1  0    0 Ss 10:00 00:00 100 systemd', ' 42  1 1000 S  05:00
 const PS_ARGS = ['  1 /sbin/init', ' 42 git fetch'].join('\n')
 const SS_OUT = 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=42,fd=3))'
 
-function posixRunner(calls: Call[], over: { stat?: ProcOutcome; args?: ProcOutcome; ports?: ProcOutcome } = {}): StuckRunner {
-  return recorder(calls, (_bin, args) => {
+function posixRunner(calls: Call[], over: { stat?: ProcOutcome; args?: ProcOutcome; ports?: ProcOutcome; launchctl?: ProcOutcome } = {}): StuckRunner {
+  return recorder(calls, (bin, args) => {
+    if (bin === '/bin/launchctl') return over.launchctl ?? { stdout: '', stderr: '' }
     if (args.includes('pid=,args=')) return over.args ?? { stdout: PS_ARGS, stderr: '' }
     if (args.some((a) => a.startsWith('pid=,ppid='))) return over.stat ?? { stdout: PS_STAT, stderr: '' }
     return over.ports ?? { stdout: SS_OUT, stderr: '' }
@@ -855,6 +989,147 @@ describe('takeProcessSnapshot — POSIX', () => {
     const broken = await takeProcessSnapshot({ platform: 'darwin', runner: posixRunner([], { ports: { stdout: '', stderr: '', error: { message: 'x', code: 2 } } }) })
     expect(broken.listening).toBeNull()
     expect(broken.warnings).toEqual([PORTS_UNKNOWN])
+  })
+
+  /** `ps` output rows, as `pid ppid uid comm` plus a fixed state, clock and memory. */
+  const psRows = (rows: [number, number, number, string][]): ProcOutcome => ({
+    stdout: rows.map(([pid, ppid, uid, comm]) => `${pid} ${ppid} ${uid} S 01:00:00 00:00:01 1000 ${comm}`).join('\n'),
+    stderr: '',
+  })
+  const psArgs = (rows: [number, number, number, string][]): ProcOutcome => ({
+    stdout: rows.map(([pid, , , comm]) => `${pid} ${comm}`).join('\n'),
+    stderr: '',
+  })
+  const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code })
+
+  it('asks which orphan-looking processes of its own user systemd runs as a service, and only those', async () => {
+    const rows: [number, number, number, string][] = [
+      [1, 0, 0, 'systemd'],
+      [50, 1, 1000, 'systemd'],
+      [SELF, 50, 1000, 'termpolis'],
+      [200, 50, 1000, 'nightly'],
+      [201, 50, 1000, 'git'],
+      [202, 1, 1000, 'git'],
+      [203, 1, 1000, 'backup'],
+      [204, 50, 1000, 'git'],
+      [205, 1, 1000, 'git'],
+      [206, 1, 1000, 'git'],
+      [207, 1, 1000, 'git'],
+      [208, 1, 1000, 'git'],
+      [209, 1, 1000, 'git'],
+      [210, 999, 1000, 'git'],
+      [300, SELF, 1000, 'bash'],
+      [301, 200, 1000, 'git'],
+      [400, 1, 0, 'cron'],
+    ]
+    const cgroups = new Map<string, string | NodeJS.ErrnoException>([
+      ['/proc/50/cgroup', '0::/user.slice/user-1000.slice/user@1000.service/init.scope\n'],
+      // A user service: a job, even though its parent is the user's systemd.
+      ['/proc/200/cgroup', '0::/user.slice/user-1000.slice/user@1000.service/app.slice/nightly.service\n'],
+      // Left behind by a closed ssh session and adopted by the user's systemd.
+      ['/proc/201/cgroup', '0::/user.slice/user-1000.slice/session-2.scope\n'],
+      ['/proc/202/cgroup', '0::/init.scope\n'],
+      // cgroup v1 (hybrid): the name=systemd line wins over the empty unified one.
+      ['/proc/203/cgroup', '12:memory:/system.slice/cron.service\n1:name=systemd:/system.slice/cron.service\n0::/\n'],
+      // Directly in the user instance, which holds every user unit: not a job of its own.
+      ['/proc/204/cgroup', '0::/user.slice/user-1000.slice/user@1000.service\n'],
+      // No systemd hierarchy at all, only a controller.
+      ['/proc/205/cgroup', '12:memory:/system.slice/foo.service\n'],
+      ['/proc/206/cgroup', '0::/\n'],
+      ['/proc/207/cgroup', errno('EACCES')],
+      ['/proc/208/cgroup', errno('EACCES')],
+      // Exited since the listing.
+      ['/proc/209/cgroup', errno('ENOENT')],
+      ['/proc/210/cgroup', '0::/user.slice/user-1000.slice/session-3.scope\n'],
+    ])
+    const read: string[] = []
+    const readFile = async (file: string): Promise<string> => {
+      read.push(file)
+      const v = cgroups.get(file)
+      if (v === undefined) throw new Error(`unexpected read of ${file}`)
+      if (typeof v !== 'string') throw v
+      return v
+    }
+    const calls: Call[] = []
+    const out = await takeProcessSnapshot({ platform: 'linux', selfPid: SELF, readFile, runner: posixRunner(calls, { stat: psRows(rows), args: psArgs(rows) }) })
+    expect(out.managedPids).toEqual(new Set([200, 203, 207, 208]))
+    expect(out.warnings).toEqual([MANAGED_UNKNOWN])
+    // Not itself, not what it started, not what a live parent holds, not another user's.
+    expect(read.sort()).toEqual([...cgroups.keys()].sort())
+    expect(calls.map((c) => c.bin)).not.toContain('/bin/launchctl')
+  })
+
+  it('asks about what init adopted even when init is not systemd, as in a container', async () => {
+    const rows: [number, number, number, string][] = [
+      // Root, as init is, so only the adopted git is asked about.
+      [1, 0, 0, 'tini'],
+      [SELF, 1, 1000, 'termpolis'],
+      [250, 1, 1000, 'git'],
+    ]
+    const read: string[] = []
+    const readFile = async (file: string): Promise<string> => {
+      read.push(file)
+      return '0::/system.slice/git-sync.service\n'
+    }
+    const out = await takeProcessSnapshot({ platform: 'linux', selfPid: SELF, readFile, runner: posixRunner([], { stat: psRows(rows), args: psArgs(rows) }) })
+    expect(read).toEqual(['/proc/250/cgroup'])
+    expect(out.managedPids).toEqual(new Set([250]))
+  })
+
+  it('reads /proc itself by default, and says nothing about a process that has exited', async () => {
+    // No pid reaches 99999999 on Linux, so its cgroup file is missing on every platform.
+    const rows: [number, number, number, string][] = [
+      [1, 0, 0, 'systemd'],
+      [SELF, 1, 1000, 'termpolis'],
+      [99_999_999, 1, 1000, 'git'],
+    ]
+    const out = await takeProcessSnapshot({ platform: 'linux', selfPid: SELF, runner: posixRunner([], { stat: psRows(rows), args: psArgs(rows) }) })
+    expect(out.managedPids).toEqual(new Set())
+    expect(out.warnings).toEqual([])
+  })
+
+  describe('launchd jobs on macOS', () => {
+    const rows: [number, number, number, string][] = [
+      [1, 0, 0, '/sbin/launchd'],
+      [SELF, 1, 501, '/Applications/Termpolis.app/Contents/MacOS/Termpolis'],
+      [200, 1, 501, '/usr/local/bin/claude'],
+      [201, 1, 501, '/usr/bin/git'],
+      [300, SELF, 501, '/bin/zsh'],
+      [400, 1, 0, '/usr/sbin/cfprefsd'],
+    ]
+    // Termpolis is a job too, but it is not one of the processes that look orphaned.
+    const LIST = `PID\tStatus\tLabel\n${SELF}\t0\tapplication.com.termpolis.app.1\n200\t0\tcom.example.nightly\n-\t0\tcom.apple.idle\n400\t0\tcom.apple.cfprefsd.xpc.agent\n`
+    const scan = (calls: Call[], launchctl?: ProcOutcome, list = rows) =>
+      takeProcessSnapshot({ platform: 'darwin', selfPid: SELF, runner: posixRunner(calls, { stat: psRows(list), args: psArgs(list), ...(launchctl ? { launchctl } : {}) }) })
+
+    it('asks launchctl once, and keeps only the jobs among the processes that look orphaned', async () => {
+      const calls: Call[] = []
+      const out = await scan(calls, { stdout: LIST, stderr: '' })
+      const asked = calls.filter((c) => c.bin === '/bin/launchctl')
+      expect(asked.map((c) => c.args)).toEqual([['list']])
+      expect(asked[0].opts).toEqual(SCAN_OPTS)
+      expect(out.managedPids).toEqual(new Set([200]))
+      expect(out.warnings).toEqual([])
+    })
+
+    it('still reads a list launchctl printed before failing', async () => {
+      const out = await scan([], { stdout: LIST, stderr: '', error: { message: 'x', code: 1 } })
+      expect(out.managedPids).toEqual(new Set([200]))
+      expect(out.warnings).toEqual([])
+    })
+
+    it('counts every candidate as a job, and says so, when launchctl gives no answer', async () => {
+      const out = await scan([], { stdout: ' \n', stderr: 'launchctl: not found', error: { message: 'x', code: 127 } })
+      expect(out.managedPids).toEqual(new Set([200, 201]))
+      expect(out.warnings).toEqual([MANAGED_UNKNOWN])
+    })
+
+    it('does not ask at all when nothing looks orphaned', async () => {
+      const calls: Call[] = []
+      const out = await scan(calls, undefined, rows.filter(([pid]) => pid !== 200 && pid !== 201))
+      expect(calls.map((c) => c.bin)).not.toContain('/bin/launchctl')
+      expect(out.managedPids).toEqual(new Set())
+    })
   })
 })
 
@@ -918,11 +1193,11 @@ describe('classifyProcesses — Windows', () => {
   })
 
   it("does not take a younger process that inherited a dead parent's pid for the parent", () => {
-    const git = proc(600, { name: 'git', ppid: 601, cmd: 'git fetch', created: NOW - 10 * MIN })
+    const git = proc(600, { name: 'git', ppid: 601, cmd: 'git fetch', created: NOW - 40 * MIN })
     const reused = proc(601, { name: 'chrome', ppid: 10, created: NOW - 2 * MIN })
     const cls = classify([...base(), git, reused])
     expect(pids(cls)).toEqual([600])
-    expect(row(cls, 600)).toMatchObject({ owner: 'orphaned', reasons: ['orphaned'], stuck: true, category: 'git' })
+    expect(row(cls, 600)).toMatchObject({ owner: 'orphaned', reasons: ['orphaned', 'long-running'], stuck: true, category: 'git' })
     expect(row(cls, 600).parentName).toBeUndefined()
     expect(cls.children.get(601)).toBeUndefined()
   })
@@ -1042,7 +1317,8 @@ describe('classifyProcesses — Windows', () => {
     const git = proc(971, { name: 'git', ppid: 970, cmd: 'git status', created: NOW - 30_000, suspended: true })
     const cls = classify([...base(), bash, git])
     expect(pids(cls)).toEqual([970])
-    expect(row(cls, 970)).toMatchObject({ category: 'git', reasons: ['orphaned'], stuck: true, detail: 'git status' })
+    // Not frozen, and a git that started half a minute ago may still be working: not stuck yet.
+    expect(row(cls, 970)).toMatchObject({ category: 'git', reasons: ['orphaned'], stuck: false, detail: 'git status' })
   })
 
   it('lists a headless agent a scheduled job started, as external and not stuck', () => {
@@ -1284,6 +1560,39 @@ describe('classifyProcesses — Windows', () => {
     expect(pids(cls)).toEqual([3500])
     expect(row(cls, 3500)).toMatchObject({ reasons: ['long-running'], stuck: false, tree: [3500, 3501] })
   })
+
+  it('still ends a frozen git gc: frozen, it is not doing any maintenance', () => {
+    const gc = proc(3600, { name: 'git', ppid: 3599, cmd: 'git gc --auto', created: NOW - 45 * MIN, suspended: true })
+    const cls = classify([...base(), gc])
+    expect(row(cls, 3600)).toMatchObject({ owner: 'orphaned', reasons: ['orphaned', 'suspended'], stuck: true })
+  })
+
+  it.each(['gui', 'citool', 'difftool --dir-diff', 'mergetool', '-c mergetool.keepBackup=false mergetool'])(
+    'never lists git %s: someone is working in its window',
+    (sub) => {
+      const attached = proc(3700, { name: 'git', ppid: 20, cmd: `git ${sub}`, created: NOW - 45 * MIN })
+      const orphaned = proc(3710, { name: 'git', ppid: 3709, cmd: `git ${sub}`, created: NOW - 45 * MIN })
+      // What the merge tool opened is not a known editor, so only the subcommand says someone is there.
+      const meld = proc(3711, { name: 'meld', ppid: 3710, cmd: 'meld LOCAL BASE REMOTE', created: NOW - 45 * MIN + 10 })
+      expect(classify([...base(), code(), attached, orphaned, meld]).rows).toEqual([])
+    },
+  )
+
+  it.each([
+    'less', 'more', 'most', 'moar', 'ov', 'vim', 'vi', 'gvim', 'mvim', 'nvim', 'nvim-qt', 'neovide',
+    'nano', 'pico', 'micro', 'joe', 'mcedit', 'hx', 'helix', 'kak', 'emacs', 'emacsclient', 'code',
+    'code-insiders', 'code - insiders', 'codium', 'vscodium', 'cursor', 'windsurf', 'zed', 'zeditor',
+    'subl', 'sublime_text', 'mate', 'bbedit', 'gedit', 'kate', 'notepad', 'notepad++', 'gitk', 'git-gui',
+  ])('never lists a git waiting on %s', (name) => {
+    const tree = (child: string): ProcRecord[] => [
+      proc(3800, { name: 'bash', ppid: 20, cmd: 'bash', created: NOW - 50 * MIN }),
+      proc(3801, { name: 'git', ppid: 3800, cmd: 'git commit', created: NOW - 45 * MIN }),
+      proc(3802, { name: child, ppid: 3801, cmd: `${child} .git/COMMIT_EDITMSG`, created: NOW - 45 * MIN + 10 }),
+    ]
+    expect(classify([...base(), code(), ...tree(name)]).rows).toEqual([])
+    // The control: a child nobody types into.
+    expect(pids(classify([...base(), code(), ...tree('cat')]))).toEqual([3801])
+  })
 })
 
 describe('frozen processes (Windows)', () => {
@@ -1471,14 +1780,17 @@ describe('classifyProcesses — POSIX', () => {
     const cls = classify(
       [
         ...posixBase(),
-        proc(300, { ...u, name: 'git', ppid: 1, cmd: 'git fetch', created: NOW - 10 * MIN }),
-        proc(301, { ...u, name: 'git', ppid: 50, cmd: 'git pull', created: NOW - 10 * MIN }),
+        proc(300, { ...u, name: 'git', ppid: 1, cmd: 'git fetch', created: NOW - 40 * MIN }),
+        proc(301, { ...u, name: 'git', ppid: 50, cmd: 'git pull', created: NOW - 40 * MIN }),
+        // Orphaned too, but a clone may still be working ten minutes in.
+        proc(302, { ...u, name: 'git', ppid: 1, cmd: 'git clone https://example.com/big.git', created: NOW - 10 * MIN }),
       ],
       linux,
     )
-    expect(pids(cls)).toEqual([300, 301])
-    expect(row(cls, 300)).toMatchObject({ owner: 'orphaned', parentName: 'systemd', stuck: true })
+    expect(pids(cls)).toEqual([300, 301, 302])
+    expect(row(cls, 300)).toMatchObject({ owner: 'orphaned', parentName: 'systemd', reasons: ['orphaned', 'long-running'], stuck: true })
     expect(row(cls, 301)).toMatchObject({ owner: 'orphaned', parentName: 'systemd', stuck: true })
+    expect(row(cls, 302)).toMatchObject({ owner: 'orphaned', parentName: 'systemd', reasons: ['orphaned'], stuck: false })
     expect(cls.protectedPids).toEqual(new Set([SELF, 50, 1, 101]))
   })
 
@@ -1575,6 +1887,54 @@ describe('classifyProcesses — POSIX', () => {
       linux,
     )
     expect(row(cls, 410)).toMatchObject({ category: 'leftover', mcp: true, detail: 'uvx mcp-server-fetch', tree: [410, 411] })
+  })
+
+  it("gives an orphaned git half an hour, and never calls git's own gc or maintenance stuck", () => {
+    const at = { ...u, name: 'git', ppid: 1, created: NOW - 45 * MIN }
+    const cls = classify(
+      [
+        ...posixBase(),
+        proc(600, { ...at, cmd: 'git gc --auto' }),
+        proc(601, { ...at, cmd: 'git -C /home/dev/repo maintenance run --auto' }),
+        proc(602, { ...at, cmd: 'git for-each-repo --config=maintenance.repo maintenance run --schedule=hourly' }),
+        // A git whose subcommand cannot be read is not maintenance.
+        proc(603, { ...at, cmd: 'git' }),
+        proc(604, { ...at, cmd: 'git -c core.x=1' }),
+        proc(605, { ...at, cmd: 'git push', created: NOW - 30 * MIN }),
+        proc(606, { ...at, cmd: 'git push', created: NOW - 30 * MIN + 1 }),
+      ],
+      linux,
+    )
+    expect([...pids(cls)].sort((a, b) => a - b)).toEqual([600, 601, 602, 603, 604, 605, 606])
+    for (const pid of [600, 601, 602]) expect(row(cls, pid)).toMatchObject({ owner: 'orphaned', reasons: ['orphaned', 'long-running'], stuck: false })
+    for (const pid of [603, 604, 605]) expect(row(cls, pid)).toMatchObject({ owner: 'orphaned', reasons: ['orphaned', 'long-running'], stuck: true })
+    expect(row(cls, 606)).toMatchObject({ owner: 'orphaned', reasons: ['orphaned'], stuck: false })
+  })
+
+  it('leaves a launchd job alone: its parent is launchd because that is where it belongs', () => {
+    const mac = (over: Partial<ProcSnapshot>): StuckClassification =>
+      classify(
+        [
+          proc(1, { name: 'launchd', ppid: 0, cmd: '/sbin/launchd', scope: 0 }),
+          proc(SELF, { ...u, name: 'termpolis', ppid: 1, cmd: '/Applications/Termpolis.app/Contents/MacOS/Termpolis', created: NOW - 120 * MIN }),
+          proc(500, { ...u, name: 'claude', ppid: 1, cmd: 'claude -p "summarize the nightly build"', created: NOW - 90 * MIN }),
+        ],
+        { platform: 'darwin', ...over },
+      )
+    expect(row(mac({ managedPids: new Set([500]) }), 500)).toMatchObject({ owner: 'external', parentName: 'launchd', reasons: ['headless'], stuck: false })
+    expect(row(mac({}), 500)).toMatchObject({ owner: 'orphaned', parentName: 'launchd', reasons: ['headless', 'orphaned'], stuck: true })
+  })
+
+  it('treats a process adopted by a container init that is not systemd as orphaned', () => {
+    const cls = classify(
+      [
+        proc(1, { ...u, name: 'tini', ppid: 0, cmd: '/sbin/tini -- /opt/Termpolis/termpolis', created: NOW - 900 * MIN }),
+        proc(SELF, { ...u, name: 'termpolis', ppid: 1, cmd: '/opt/Termpolis/termpolis', created: NOW - 800 * MIN }),
+        proc(700, { ...u, name: 'git', ppid: 1, cmd: 'git fetch', created: NOW - 40 * MIN }),
+      ],
+      linux,
+    )
+    expect(row(cls, 700)).toMatchObject({ owner: 'orphaned', parentName: 'tini', stuck: true })
   })
 })
 
@@ -1712,6 +2072,8 @@ describe('killStuckProcesses', () => {
         { pid: 11, created: 1500 },
         { pid: 20, created: 1000 },
         { pid: 30, created: 1 },
+        { pid: 13, created: 1700 },
+        { pid: 40, created: 1 },
       ],
       { classify, kill, platform: 'win32' },
     )
@@ -1721,7 +2083,9 @@ describe('killStuckProcesses', () => {
       failed: [],
       skipped: [
         { pid: 20, reason: 'pid reused by a different process' },
-        { pid: 30, reason: 'already exited or no longer listed' },
+        { pid: 30, reason: 'already exited' },
+        { pid: 13, reason: 'still running but no longer listed' },
+        { pid: 40, reason: 'pid reused by a different process' },
       ],
     })
     expect(kill.mock.calls).toEqual([
@@ -1790,7 +2154,7 @@ describe('killStuckProcesses', () => {
     expect(result).toEqual({
       killed: [11, 10, 20],
       failed: [{ pid: 40, error: 'access denied — elevated or owned by another user' }],
-      skipped: [{ pid: 30, reason: 'already exited or no longer listed' }],
+      skipped: [{ pid: 30, reason: 'already exited' }],
     })
     expect(calls).toEqual([
       [10, 'SIGTERM'],
@@ -1904,7 +2268,7 @@ describe('on this machine (read-only)', () => {
     expect(await killStuckProcesses([{ pid: target, created: 0 }])).toEqual({
       killed: [],
       failed: [],
-      skipped: [{ pid: target, reason: 'already exited or no longer listed' }],
+      skipped: [{ pid: target, reason: 'already exited' }],
     })
     expect(spy).not.toHaveBeenCalled()
   }, 90_000)

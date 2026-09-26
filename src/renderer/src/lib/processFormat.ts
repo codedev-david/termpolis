@@ -72,8 +72,9 @@ export const AGENT_LABEL: Record<NonNullable<StuckProcessView['agent']>, string>
 }
 
 export const REASON_HINT: Record<StuckProcessView['reasons'][number], string> = {
-  headless: 'Running with no window: a script, hook, scheduled job or swarm worker started it.',
-  orphaned: 'The program that started it has exited, so nothing will ever stop it.',
+  headless:
+    'Running non-interactively (-p, exec or a server mode): started by a script, hook, scheduled job or swarm worker, by an editor or app that drives it and may be using it right now (an IDE extension, an MCP or ACP client), or by hand in a terminal.',
+  orphaned: 'The program that started it has exited, so nothing is waiting for it and nothing will stop it if it hangs.',
   suspended: 'Frozen: every thread is suspended, so it will never finish on its own.',
   'long-running': 'Git has been running for more than 30 minutes.',
 }

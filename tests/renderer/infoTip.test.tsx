@@ -60,6 +60,17 @@ describe('InfoTip', () => {
     expect(screen.getByRole('tooltip').className).toContain('left-0')
   })
 
+  it('widens for a long explanation, since a tip cannot scroll, and stays narrow otherwise', () => {
+    const { unmount } = render(<InfoTip testId="tip" wide>a long explanation</InfoTip>)
+    fireEvent.click(screen.getByTestId('tip'))
+    expect(screen.getByRole('tooltip').className.split(' ')).toContain('w-96')
+    expect(screen.getByRole('tooltip').className.split(' ')).not.toContain('w-64')
+    unmount()
+    render(<InfoTip testId="tip">a short one</InfoTip>)
+    fireEvent.click(screen.getByTestId('tip'))
+    expect(screen.getByRole('tooltip').className.split(' ')).toContain('w-64')
+  })
+
   it('names what it explains for a screen reader, and falls back when nothing is named', () => {
     // Several tips on one pane all reading "What this means" tells a screen-reader user nothing.
     const { unmount } = render(<InfoTip label="What upstream MCP servers are">named</InfoTip>)

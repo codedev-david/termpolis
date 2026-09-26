@@ -23,6 +23,7 @@
  * orphaned and serving no port, because those are the rows "Kill all stuck" ends in bulk.
  * Everything else is shown so the user can decide.
  */
+import { promises as fsp } from 'fs'
 import * as path from 'path'
 import { homedir } from 'os'
 import { execCaptureOffThread, type ProcOutcome } from './procClient'
@@ -64,6 +65,11 @@ export interface ProcSnapshot {
    * says it has none. Only asked for processes whose Windows parent is gone (see findMsysParents).
    */
   msysParents?: Map<number, number>
+  /**
+   * POSIX only: processes launchd or systemd started as a job. That is where they belong, so they
+   * are never orphaned. Only asked for processes that look orphaned (see findManagedPids).
+   */
+  managedPids?: Set<number>
 }
 
 export interface StuckProcess {
@@ -131,6 +137,8 @@ export interface StuckScanDeps {
   now?: () => number
   homeDir?: string
   env?: NodeJS.ProcessEnv
+  /** Linux: reads `/proc/<pid>/cgroup`. */
+  readFile?: (file: string) => Promise<string>
 }
 
 export interface StuckKillDeps {
@@ -152,7 +160,10 @@ const ORPHAN_MIN_AGE_MS = 5 * MINUTE_MS
 /** Frozen for a whole minute is not a scheduling blip. */
 const SUSPENDED_MIN_AGE_MS = MINUTE_MS
 const GIT_LONG_RUNNING_MS = 30 * MINUTE_MS
-/** An orphaned headless agent may be a deliberate `nohup` job that is still working. */
+/**
+ * An orphaned headless agent may be a deliberate `nohup` job that is still working. Measured from
+ * its start: a scan keeps no state, so when it lost its parent is not known.
+ */
 const AGENT_ORPHAN_STUCK_MS = 60 * MINUTE_MS
 /** Windows hands out a dead parent's pid again, so a "parent" younger than its child is not one. */
 const CREATED_TOLERANCE_MS = 2_000
@@ -172,6 +183,10 @@ const GIT_NAMES = new Set([
 ])
 /** Long-lived by design: listing them as "long-running" would be noise. */
 const GIT_DAEMON_SUBCOMMANDS = new Set(['fsmonitor--daemon', 'credential-cache--daemon', 'daemon'])
+/** git's own upkeep, which detaches on purpose (gc.autoDetach, maintenance.autoDetach). */
+const GIT_MAINTENANCE_SUBCOMMANDS = new Set(['gc', 'maintenance', 'for-each-repo'])
+/** Open in front of someone: git's GUIs, and the diff or merge tool they are working in. */
+const GIT_INTERACTIVE_SUBCOMMANDS = new Set(['gui', 'citool', 'difftool', 'mergetool'])
 const GIT_VALUE_FLAGS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
 const SHELLS = new Set(['bash', 'sh', 'dash', 'zsh', 'fish', 'ksh'])
 const SHELL_VALUE_FLAGS = new Set(['-o', '-O', '+o', '+O', '--rcfile', '--init-file'])
@@ -186,10 +201,15 @@ const PYTHON_RE = /^python(\d+(\.\d+)*)?w?$/
 const PTY_HOSTS = new Set(['openconsole', 'winpty-agent'])
 /** A tree with one of these in it is waiting on a person, not stuck. */
 const INTERACTIVE_CHILDREN = new Set([
-  'less', 'more', 'most', 'vim', 'vi', 'nvim', 'nano', 'emacs', 'code', 'code-insiders', 'cursor',
-  'windsurf', 'subl', 'sublime_text', 'notepad', 'notepad++',
+  'less', 'more', 'most', 'moar', 'ov', 'vim', 'vi', 'gvim', 'mvim', 'nvim', 'nvim-qt', 'neovide',
+  'nano', 'pico', 'micro', 'joe', 'mcedit', 'hx', 'helix', 'kak', 'emacs', 'emacsclient', 'code',
+  'code-insiders', 'code - insiders', 'codium', 'vscodium', 'cursor', 'windsurf', 'zed', 'zeditor',
+  'subl', 'sublime_text', 'mate', 'bbedit', 'gedit', 'kate', 'notepad', 'notepad++', 'gitk', 'git-gui',
 ])
-/** A POSIX process re-parented to one of these has lost the parent that started it. */
+/**
+ * A POSIX process re-parented to one of these has lost the parent that started it. A job one of
+ * them started is the exception: that is its real parent (see findManagedPids).
+ */
 const POSIX_ADOPTERS = new Set(['systemd', 'launchd', 'init'])
 const WRAPPER_NAMES = new Set(['cmd', 'powershell', 'pwsh'])
 const MCP_RE = /(?:^|[\\/\s@._-])mcp(?:[\\/\s@._-]|$)|modelcontextprotocol/i
@@ -371,6 +391,8 @@ function isHeadless(kind: StuckAgent, args: string[]): boolean {
 interface ProcInfo {
   /** A git-family process with a known command line that is not a daemon. */
   git: boolean
+  /** git's own background upkeep (gc, maintenance): it detaches on purpose and ends on its own. */
+  maintenance: boolean
   shellish: boolean
   wrapper: boolean
   runtime: boolean
@@ -390,9 +412,12 @@ function analyze(p: ProcRecord, platform: NodeJS.Platform, selfName: string): Pr
   const runtime = RUNTIMES.has(name) || PYTHON_RE.test(name) || name.startsWith('npm ')
   const agent = detectAgent(name, tokens, runtime)
   const headless = agent && isHeadless(agent.kind, agent.args) ? agent.kind : null
+  // Only git itself takes a subcommand; git-remote-https and the like do not.
+  const gitSub = name === 'git' ? (firstPositional(args, GIT_VALUE_FLAGS) ?? '') : ''
   return {
     // Unknown command line = unknown subcommand: never assume a daemon is a stuck git.
     git: GIT_NAMES.has(name) && p.cmd !== '' && !isGitDaemon(name, args),
+    maintenance: GIT_MAINTENANCE_SUBCOMMANDS.has(gitSub),
     shellish: (SHELLS.has(name) && shellRunsScript(args)) || TOOLS.has(name),
     wrapper: WRAPPER_NAMES.has(name) && wrapperRunsCommand(name, args),
     runtime,
@@ -402,7 +427,7 @@ function analyze(p: ProcRecord, platform: NodeJS.Platform, selfName: string): Pr
     // Electron helpers carry --type=; the main process never does.
     ownHelper: (name === selfName || name.startsWith(`${selfName} helper`)) && p.cmd.includes('--type='),
     pty: platform === 'win32' && PTY_HOSTS.has(name),
-    interactive: INTERACTIVE_CHILDREN.has(name),
+    interactive: INTERACTIVE_CHILDREN.has(name) || GIT_INTERACTIVE_SUBCOMMANDS.has(gitSub),
     interactiveAgent: agent !== null && headless === null,
   }
 }
@@ -437,29 +462,49 @@ function readShellWord(s: string, i: number): { word: string; end: number } {
 
 /** What follows the command in the harness: an optional stdin redirect, then `&& pwd -P`. */
 const EVAL_HARNESS_TAIL_RE = /^\s*(?:\\?<\s*\/dev\/null\s*)?&&\s*pwd\s+-P\b/
+/** What is left of that tail when the command line was cut inside it, or before it. */
+const EVAL_HARNESS_CUT_TAIL_RE = /^\s*(?:\\?<\s*(?:\/dev\/null\s*)?)?(?:&&\s*(?:pwd\s*(?:-P\s*(?:>\|\s*)?)?)?)?$/
+/** The harness's own start: an older one sources a shell snapshot, a newer one clears aliases. */
+const EVAL_HARNESS_HEAD_RE = /(?:shell-snapshots[\\/]snapshot-|\\builtin unalias -- 'unsetenv')[\s\S]*&&\s*$/
 
 /**
  * Claude's Bash tool runs `bash -c "… && eval '<the command>' < /dev/null && pwd -P …"`: show
  * the command, not the harness. Only an eval followed by that `&& pwd -P` tail is unwrapped —
- * `rm -rf ~/work; eval 'echo hi'` or `node --eval "…"` must be shown whole. On Windows the
- * script is one argument whose inner double quotes arrive as \", so those are unescaped first.
+ * `rm -rf ~/work; eval 'echo hi'` or `node --eval "…"` must be shown whole. A command line `cut`
+ * at MAX_CMDLINE_CHARS has lost that tail, so there the harness's own start has to vouch for it.
+ * On Windows the script is one argument whose inner double quotes arrive escaped, so those are
+ * unescaped first.
  */
-function unwrapEval(cmd: string): string {
-  const s = cmd.replace(/\\"/g, '"')
+function unwrapEval(cmd: string, cut: boolean): string {
+  // CreateProcess quoting: 2n+1 backslashes before a quote are n backslashes and a literal quote.
+  const s = cmd.replace(/(?<!\\)(\\+)"/g, (_m, b: string) => `${'\\'.repeat(b.length >> 1)}"`)
   const re = /\beval\s+(?=['"])/g
   for (let m = re.exec(s); m; m = re.exec(s)) {
     const { word, end } = readShellWord(s, re.lastIndex)
-    if (word.trim() && EVAL_HARNESS_TAIL_RE.test(s.slice(end))) return word
+    if (!word.trim()) continue
+    const tail = s.slice(end)
+    if (EVAL_HARNESS_TAIL_RE.test(tail)) return word
+    if (cut && EVAL_HARNESS_CUT_TAIL_RE.test(tail) && EVAL_HARNESS_HEAD_RE.test(s.slice(0, m.index))) return word
   }
   return cmd
 }
 
+/** A single quote inside a single-quoted word, as bash writes one: '"'"' or '\'' (Windows: '\"'\"'). */
+const ENCQ = /'(?:\\'|\\?"'\\?")'/.source
+
 /**
  * One shell value: a \"…\" (a quoted value inside a quoted Windows argument), "…", '…' or an
- * unquoted run. A quote that never closes runs to the end, because the scanner cuts long
- * command lines and half a secret is still a secret.
+ * unquoted run. A '…' inside a harness that could not be unwrapped arrives between encoded
+ * quotes. A quote that never closes runs to the end, because the scanner cuts long command
+ * lines and half a secret is still a secret.
  */
-const VALUE = /(?:\\"(?:[^"\\]|\\(?!"))*(?:\\"|$)|"(?:[^"\\]|\\.)*(?:"|$)|'[^']*(?:'|$)|[^\s;&|<>()"'`]+)/.source
+const VALUE = `(?:${[
+  /\\"(?:[^"\\]|\\(?!"))*(?:\\"|$)/.source,
+  /"(?:[^"\\]|\\.)*(?:"|$)/.source,
+  `${ENCQ}[^']*(?:${ENCQ}|$)`,
+  /'[^']*(?:'|$)/.source,
+  /[^\s;&|<>()"'`]+/.source,
+].join('|')})`
 
 /** Names that say they hold a secret. TOKEN must end a word so TOKENIZERS_PARALLELISM is left alone. */
 const SECRET_NAME =
@@ -469,6 +514,9 @@ const SECRET_NAME =
   '|(?:[A-Za-z0-9]+_)*(?:AUTH|PASS)(?:_[A-Za-z0-9]+)*' +
   '|(?:[A-Za-z0-9]+_)+(?:PWD|KEY)(?:_[A-Za-z0-9]+)*'
 
+/** The rest of the same command before a flag: `;`, `&` and `|` end it, but not inside quotes. */
+const GAP = /(?:[^;&|"']|"[^"]*"|'[^']*')/.source
+
 /** `mysql -pSECRET` (attached only: `mysql -p db` prompts), `sshpass -p`, `docker login -p`, `redis-cli -a`, `curl -b`. */
 const SHORT_FLAG_RES: readonly RegExp[] = [
   /(\b(?:mysql|mysqldump|mariadb|mariadb-dump|mysqladmin|mysqlimport|mysqlcheck)(?:\.exe)?\b[^;&|]*?\s-p)(?!\s)/,
@@ -477,7 +525,7 @@ const SHORT_FLAG_RES: readonly RegExp[] = [
   /(\b(?:docker|podman|nerdctl)(?:\.exe)?\b[^;&|]{0,300}?\slogin\b[^;&|]{0,300}?\s-p\s*)/,
   /(\bredis-cli(?:\.exe)?\b[^;&|]*?\s-a\s*)/,
   /(\bcurl(?:\.exe)?\b[^;&|]*?\s-b(?:\s+|=)?)/,
-].map((re) => new RegExp(re.source + VALUE, 'g'))
+].map((re) => new RegExp(re.source.split('[^;&|]').join(GAP) + VALUE, 'g'))
 
 /** Tokens recognisable by shape alone, on top of the ones redactSecrets already knows. */
 const TOKEN_SHAPES: readonly { re: RegExp; with: string }[] = [
@@ -491,6 +539,23 @@ const TOKEN_SHAPES: readonly { re: RegExp; with: string }[] = [
   { re: /\bAIza[0-9A-Za-z_-]{30,}/g, with: '<redacted-key>' },
   { re: /\bAKIA[0-9A-Z]{16}/g, with: '<redacted-key>' },
 ]
+
+/**
+ * `user:password` as one shell word, however it is quoted: the user stays and everything after
+ * the first colon goes, with a quote still open there closed again. null when there is no colon.
+ */
+function maskUserPassword(flag: string, word: string): string | null {
+  let open = ''
+  for (let i = 0; i < word.length; i++) {
+    if (word[i] === ':') return `${flag}${word.slice(0, i + 1)}<redacted>${open}`
+    const q = word.startsWith('\\"', i) ? '\\"' : word[i] === '"' || word[i] === "'" ? word[i] : ''
+    if (!q) continue
+    if (!open) open = q
+    else if (q === open) open = ''
+    i += q.length - 1
+  }
+  return null
+}
 
 /**
  * What redactSecrets does not know about command lines: URL credentials, secret-named env
@@ -517,9 +582,8 @@ function maskCommandSecrets(input: string): string {
   s = s
     // curl -u / -U / --user / --proxy-user user:password — the user stays, the password goes.
     .replace(
-      /((?:^|\s)(?:-u|-U|--user|--proxy-user)(?:\s+|=)?)(?:(\\?["'])([^:"'\s]+):[^"']*\2|([^\s:"']+):[^\s;&|<>()"'`]+)/g,
-      (_m, flag: string, q: string | undefined, qUser: string, user: string) =>
-        q ? `${flag}${q}${qUser}:<redacted>${q}` : `${flag}${user}:<redacted>`,
+      /((?:^|\s)(?:-u|-U|--user|--proxy-user)(?:\s+|=)?)((?:\\?"(?:[^"\\]|\\(?!"))*(?:\\?"|$)|'[^']*(?:'|$)|[^\s"';&|<>()`\\]|\\(?!"))+)/g,
+      (m, flag: string, word: string) => maskUserPassword(flag, word) ?? m,
     )
     .replace(/(authorization:\s*(?:[A-Za-z][\w-]*\s+)?)[^\s"'\\]+/gi, '$1<redacted>')
     .replace(/((["'])\s*cookie:\s*)[^"'\\]+/gi, '$1<redacted>')
@@ -532,9 +596,10 @@ function maskCommandSecrets(input: string): string {
     .replace(/(hooks\.slack\.com\/services\/)[^\s"'\\]+/gi, '$1<redacted>')
     .replace(/(discord(?:app)?\.com\/api\/webhooks\/)[^\s"'\\]+/gi, '$1<redacted>')
   for (const t of TOKEN_SHAPES) s = s.replace(t.re, t.with)
-  // "password": "…" in inline JSON, including the \"…\" form inside a quoted Windows argument.
+  // "password": "…" in inline JSON, however deeply escaped: \"…\" inside a quoted Windows
+  // argument, \\\"…\\\" when that argument was itself quoted inside another.
   return s.replace(
-    /(\\?"[\w.-]*(?:token(?![a-z])|secret|passw(?:or)?d|pass(?![a-z])|pwd|auth(?![a-z])|authorization|api[-_]?key|key(?![a-z])|credential|private[-_]?key)[\w.-]*\\?"\s*:\s*\\?")(?:[^"\\]|\\(?!"))+(?=\\?")/gi,
+    /(?<!\\)(\\*"[\w.-]*(?:token(?![a-z])|secret|passw(?:or)?d|pass(?![a-z])|pwd|auth(?![a-z])|authorization|api[-_]?key|key(?![a-z])|credential|private[-_]?key)[\w.-]*\\*"\s*:\s*\\*")(?:[^"\\]|\\+(?=[^"\\]))+(?=\\*")/gi,
     '$1<redacted>',
   )
 }
@@ -564,7 +629,7 @@ function capCommandLine(cmd: string): string {
 /** A command line fit to show: the real command, secrets masked, home shortened to `~`, capped. */
 export function displayCommand(cmd: string, homeDir = ''): string {
   // Mask first: redactSecrets stops a quoted value at its first space and would leave the rest.
-  let s = redactSecrets(maskCommandSecrets(unwrapEval(capCommandLine(cmd))))
+  let s = redactSecrets(maskCommandSecrets(unwrapEval(capCommandLine(cmd), cmd.length >= MAX_CMDLINE_CHARS)))
   for (const re of homePatterns(homeDir)) s = s.replace(re, '~')
   s = s.replace(/\s+/g, ' ').trim()
   return s.length > MAX_COMMAND_CHARS ? `${s.slice(0, MAX_COMMAND_CHARS)}…` : s
@@ -851,6 +916,79 @@ async function findMsysParents(
   return out
 }
 
+const MANAGED_UNKNOWN = 'Could not confirm which processes launchd or systemd started, so none of those were marked orphaned.'
+
+/**
+ * Whether a `/proc/<pid>/cgroup` puts the process in a service unit: the name=systemd line under
+ * cgroup v1, the unified `0::` line under v2. The user instance's own `user@<uid>.service` holds
+ * every user unit, so a process directly in it is not a job of its own.
+ */
+function isServiceCgroup(text: string): boolean {
+  const lines = text.split('\n')
+  const line = lines.find((l) => /^\d+:name=systemd:/.test(l)) ?? lines.find((l) => l.startsWith('0::')) ?? ''
+  const unit = line.slice(line.lastIndexOf('/') + 1)
+  return unit.endsWith('.service') && !/^user@\d+\.service$/.test(unit)
+}
+
+/**
+ * POSIX: which of the processes that look orphaned a service manager started as a job. Their
+ * parent is launchd or systemd because that is where they belong, not because theirs died.
+ * macOS: `launchctl list` names every running job's pid. Linux: a job runs in a `.service` unit.
+ * A process keeps its unit when its parent dies, so an orphan whose parent ran in a service reads
+ * as a job too, which errs toward not ending it. Unanswered: all of them count as jobs, and a
+ * warning says so.
+ */
+async function findManagedPids(
+  procs: ProcRecord[],
+  platform: NodeJS.Platform,
+  runner: StuckRunner,
+  readFile: (file: string) => Promise<string>,
+  selfPid: number,
+  warnings: string[],
+): Promise<Set<number>> {
+  const out = new Set<number>()
+  const self = procs.find((p) => p.pid === selfPid)
+  // Nothing is listed without it (classifyProcesses says so), so there is nothing to ask about.
+  if (!self) return out
+  const byPid = new Map(procs.map((p) => [p.pid, p]))
+  const candidates = procs.filter((p) => {
+    if (p.pid === self.pid || p.scope !== self.scope) return false
+    const par = liveParent(p, byPid, false)
+    return !par || p.ppid === 1 || POSIX_ADOPTERS.has(par.name)
+  })
+  if (candidates.length === 0) return out
+  if (platform === 'darwin') {
+    const r = await run(runner, '/bin/launchctl', ['list'])
+    if (r.error && !r.stdout.trim()) {
+      for (const p of candidates) out.add(p.pid)
+      warnings.push(MANAGED_UNKNOWN)
+      return out
+    }
+    const jobs = new Set<number>()
+    for (const line of r.stdout.split('\n')) {
+      const m = /^(\d+)\s/.exec(line)
+      if (m) jobs.add(Number(m[1]))
+    }
+    for (const p of candidates.filter((c) => jobs.has(c.pid))) out.add(p.pid)
+    return out
+  }
+  let unresolved = false
+  await Promise.all(
+    candidates.map(async (p) => {
+      try {
+        if (isServiceCgroup(await readFile(`/proc/${p.pid}/cgroup`))) out.add(p.pid)
+      } catch (e) {
+        // Exited since the listing, so a kill would skip it anyway.
+        if (errCode(e) === 'ENOENT') return
+        unresolved = true
+        out.add(p.pid)
+      }
+    }),
+  )
+  if (unresolved) warnings.push(MANAGED_UNKNOWN)
+  return out
+}
+
 export async function takeProcessSnapshot(deps: StuckScanDeps = {}): Promise<ProcSnapshot> {
   const runner = deps.runner ?? execCaptureOffThread
   const platform = deps.platform ?? process.platform
@@ -890,7 +1028,10 @@ export async function takeProcessSnapshot(deps: StuckScanDeps = {}): Promise<Pro
   // lsof exits 1 when nothing is listening at all.
   if (ports.error && !(platform === 'darwin' && ports.error.code === 1)) warnings.push(PORTS_UNKNOWN)
   else listening = platform === 'darwin' ? parseLsof(ports.stdout) : parseSs(ports.stdout)
-  return { procs: parsePosixProcesses(stat.r.stdout, args.stdout, stat.at, platform), listening, takenAt: stat.at, platform, warnings }
+  const procs = parsePosixProcesses(stat.r.stdout, args.stdout, stat.at, platform)
+  const readFile = deps.readFile ?? ((file: string) => fsp.readFile(file, 'utf8'))
+  const managedPids = await findManagedPids(procs, platform, runner, readFile, deps.selfPid ?? process.pid, warnings)
+  return { procs, listening, takenAt: stat.at, platform, warnings, managedPids }
 }
 
 export function classifyProcesses(snap: ProcSnapshot, opts: { selfPid: number; homeDir?: string }): StuckClassification {
@@ -946,11 +1087,13 @@ export function classifyProcesses(snap: ProcSnapshot, opts: { selfPid: number; h
   }
 
   const age = (p: ProcRecord): number => (p.created > 0 ? Math.max(0, now - p.created) : 0)
+  const managed = snap.managedPids ?? new Set<number>()
   const isOrphan = (p: ProcRecord): boolean => {
     const par = validParent(p)
     // An MSYS program is only orphaned when its own install confirmed it has no parent.
-    if (!par) return !win || msysParents.get(p.pid) === 0 || msysBinDir(p.cmd) === null
-    return !win && (p.ppid === 1 || POSIX_ADOPTERS.has(par.name))
+    if (win) return !par && (msysParents.get(p.pid) === 0 || msysBinDir(p.cmd) === null)
+    // A job launchd or systemd started is where it belongs; anything else they hold lost its parent.
+    return !managed.has(p.pid) && (!par || p.ppid === 1 || POSIX_ADOPTERS.has(par.name))
   }
   const hasAncestor = (p: ProcRecord, test: (a: ProcRecord) => boolean): boolean => {
     const seen = new Set<number>([p.pid])
@@ -1009,12 +1152,17 @@ export function classifyProcesses(snap: ProcSnapshot, opts: { selfPid: number; h
     const serving = listening
       ? [...new Set(members.flatMap((m) => listening.get(m.pid) ?? []))].sort((a, b) => a - b)
       : []
-    const agentAge = headlessAt >= 0 ? age(members[headlessAt]) : 0
+    // An orphan that may still be working gets time first: a headless agent may be a deliberate
+    // `nohup` job and a git a long clone. git's own detached upkeep ends by itself, so it never is.
+    const orphanDone =
+      category === 'agent'
+        ? age(members[headlessAt]) >= AGENT_ORPHAN_STUCK_MS
+        : category === 'leftover' || (!mi[gitAt].maintenance && age(members[gitAt]) >= GIT_LONG_RUNNING_MS)
     const stuck =
       listening !== null &&
       serving.length === 0 &&
       !tree.some(attended) &&
-      ((win && rootFrozen) || (owner === 'orphaned' && (category !== 'agent' || agentAge >= AGENT_ORPHAN_STUCK_MS)))
+      ((win && rootFrozen) || (owner === 'orphaned' && orphanDone))
     const parent = validParent(root)
     const defining = members[definingAt]
     rows.push({
@@ -1169,7 +1317,15 @@ export async function killStuckProcesses(
   for (const t of targets) {
     const row = rowOf.get(t.pid)
     if (!row) {
-      result.skipped.push({ pid: t.pid, reason: 'already exited or no longer listed' })
+      const seen = cls.created.get(t.pid)
+      // Still there but no longer listed: it resumed, or something is using it again.
+      const reason =
+        seen === undefined
+          ? 'already exited'
+          : Math.abs(seen - t.created) > tolerance
+            ? 'pid reused by a different process'
+            : 'still running but no longer listed'
+      result.skipped.push({ pid: t.pid, reason })
       continue
     }
     if (Math.abs((cls.created.get(t.pid) as number) - t.created) > tolerance) {

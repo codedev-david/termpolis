@@ -68,6 +68,7 @@
 - [ ] Processes (Windows): the same with `'-c "python -m http.server 8000"'` shows "serving port 8000" and no STUCK badge; kill it afterwards
 - [ ] Processes (Windows): in a Git Bash terminal run `sleep 999 | cat`, wait 5 minutes, **Refresh** — nothing from that pipeline is listed; Ctrl+C it afterwards
 - [ ] Processes (Windows): in a PowerShell terminal run `Start-Process cmd -ArgumentList '/c','claude'`, close that terminal, wait 5 minutes, **Refresh** — neither the Claude Code session nor its MCP servers are listed; exit it afterwards
+- [ ] Processes (macOS/Linux): in a terminal run `nohup sleep 999 >/dev/null 2>&1 &`, close that terminal, wait 5 minutes, **Refresh** — it is not listed (an orphaned shell or tool is shown only while its tree holds git, a headless agent or an MCP server); `pkill -f 'sleep 999'` afterwards
 
 ## MCP Server
 

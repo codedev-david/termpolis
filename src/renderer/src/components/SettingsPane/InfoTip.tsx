@@ -11,17 +11,22 @@ import { useState, type ReactNode } from 'react'
  *
  * `label` names what is being explained for a screen reader, which matters as soon as a
  * pane carries more than one tip: "What this means" three times over says nothing.
+ *
+ * `wide` is for a long explanation. The tip cannot scroll — the pointer leaving the button
+ * closes it — so more width is what keeps a long one on the screen.
  */
 export function InfoTip({
   children,
   align = 'left',
   label = 'What this means',
   testId,
+  wide = false,
 }: {
   children: ReactNode
   align?: 'left' | 'right'
   label?: string
   testId?: string
+  wide?: boolean
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -41,7 +46,7 @@ export function InfoTip({
         <span
           role="tooltip"
           data-testid={testId ? `${testId}-text` : undefined}
-          className={`absolute z-50 top-[calc(100%+8px)] ${align === 'right' ? 'right-0' : 'left-0'} w-64 max-w-[74vw] rounded-lg border border-[#3c3c3c] bg-[#1e1e1e] p-2.5 text-[11px] font-sans font-normal normal-case leading-relaxed tracking-normal text-[#9ca3af] shadow-xl`}
+          className={`absolute z-50 top-[calc(100%+8px)] ${align === 'right' ? 'right-0' : 'left-0'} ${wide ? 'w-96' : 'w-64'} max-w-[74vw] rounded-lg border border-[#3c3c3c] bg-[#1e1e1e] p-2.5 text-[11px] font-sans font-normal normal-case leading-relaxed tracking-normal text-[#9ca3af] shadow-xl`}
         >{children}</span>
       )}
     </span>
