@@ -206,6 +206,16 @@ describe('preload: termpolis API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app-log:clear')
   })
 
+  it('processesKillStuck sends stuckOnly only as a real boolean true', async () => {
+    const targets = [{ pid: 20, created: 5000 }]
+    await exposed.termpolis.processesKillStuck(targets)
+    expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith('processes:kill-stuck', { targets, stuckOnly: false })
+    await exposed.termpolis.processesKillStuck(targets, { stuckOnly: true })
+    expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith('processes:kill-stuck', { targets, stuckOnly: true })
+    await exposed.termpolis.processesKillStuck(targets, { stuckOnly: 'yes' })
+    expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith('processes:kill-stuck', { targets, stuckOnly: false })
+  })
+
   it('appLogPath invokes app-log:path with no payload', async () => {
     await exposed.termpolis.appLogPath()
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app-log:path')

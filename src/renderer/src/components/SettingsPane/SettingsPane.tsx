@@ -13,6 +13,7 @@ import { VoiceSettings } from './VoiceSettings'
 import { TokenSavingsSettings } from './TokenSavingsSettings'
 import { RemoteSettings } from './RemoteSettings'
 import { McpServersSettings } from './McpServersSettings'
+import { ProcessesSettings } from './ProcessesSettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
@@ -252,6 +253,7 @@ export function SettingsPane() {
           { id: 'tokenSavings', label: 'Token Savings' },
           { id: 'remote', label: 'Remote' },
           { id: 'mcp', label: 'MCP Servers' },
+          { id: 'processes', label: 'Processes' },
         ].map(t => (
           <button
             key={t.id}
@@ -265,6 +267,7 @@ export function SettingsPane() {
           >
             {t.id === 'memory' && <i className="fa-solid fa-brain text-[10px] mr-1.5 text-[#22D3EE]"></i>}
             {t.id === 'security' && <i className="fa-solid fa-shield-halved text-[10px] mr-1.5 text-[#7ee2a3]"></i>}
+            {t.id === 'processes' && <i className="fa-solid fa-microchip text-[10px] mr-1.5 text-[#e5c07b]"></i>}
             {t.label}
           </button>
         ))}
@@ -624,6 +627,7 @@ export function SettingsPane() {
       {activeTab === 'remote' && <RemoteSettings />}
 
       {activeTab === 'mcp' && <McpServersSettings />}
+      {activeTab === 'processes' && <ProcessesSettings />}
 
       {activeTab === 'shell' && (
         <div className="flex flex-col gap-2" style={{ minHeight: 400 }}>

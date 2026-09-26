@@ -13,7 +13,7 @@ vi.mock('@sentry/react', () => ({
   browserTracingIntegration: vi.fn(() => ({})),
 }))
 
-import { recordSwarmError, normalizeRejection } from '../../src/renderer/src/lib/sentry'
+import { recordSwarmError, normalizeRejection, scrubUiBreadcrumb } from '../../src/renderer/src/lib/sentry'
 
 beforeEach(() => {
   mockAddBreadcrumb.mockReset()
@@ -134,5 +134,74 @@ describe('normalizeRejection', () => {
     const e = normalizeRejection(c)
     expect(e).toBeInstanceOf(Error)
     expect(e!.message).toMatch(/unhandledrejection/)
+  })
+})
+
+describe('scrubUiBreadcrumb', () => {
+  const click = (message: string) => ({ category: 'ui.click', message })
+
+  it('drops the attributes Sentry copies verbatim from a clicked element', () => {
+    expect(
+      scrubUiBreadcrumb(click('div.settings-section > button.text-xs[type="button"][aria-label="Select git.exe (pid 777)"]'))
+        .message,
+    ).toBe('div.settings-section > button.text-xs[type="button"][…]')
+    expect(scrubUiBreadcrumb(click(String.raw`li > div[title="node cli.js -p "triage C:\Users\me""]`)).message).toBe(
+      'li > div[…]',
+    )
+    expect(scrubUiBreadcrumb(click('img[alt="Jane Doe"]')).message).toBe('img[…]')
+    expect(scrubUiBreadcrumb({ category: 'ui.input', message: 'input[name="password"]' }).message).toBe('input[…]')
+  })
+
+  it('takes everything up to the last quoted attribute, since the values are not escaped', () => {
+    // A value holding `"]` would end a lazy match early and leak the rest of itself.
+    expect(scrubUiBreadcrumb(click('span[title="a"] > b"][aria-label="secret tail"]')).message).toBe('span[…]')
+    // An ancestor's attribute takes the path after it along — losing the path is the cheaper mistake.
+    expect(
+      scrubUiBreadcrumb(click(String.raw`div[title="C:\Users\me\notes.txt"] > ul.ml-5 > button[aria-label="x"]`)).message,
+    ).toBe('div[…]')
+  })
+
+  it('leaves alone a path that carries nothing copied from the page', () => {
+    for (const message of [
+      'div.settings-section > button.text-xs[type="button"]',
+      'ProcessesSettings > process-command',
+      'button#refresh.px-2',
+      'div[data-x="1"]',
+    ]) {
+      expect(scrubUiBreadcrumb(click(message)).message).toBe(message)
+    }
+  })
+
+  it('touches only UI breadcrumbs that have a message', () => {
+    const other = { category: 'console', message: 'button[title="x"]' }
+    expect(scrubUiBreadcrumb(other).message).toBe('button[title="x"]')
+    const uncategorised = { message: 'button[title="x"]' }
+    expect(scrubUiBreadcrumb(uncategorised).message).toBe('button[title="x"]')
+    const silent = { category: 'ui.click' }
+    expect(scrubUiBreadcrumb(silent)).toEqual({ category: 'ui.click' })
+    // The same breadcrumb comes back, edited in place.
+    const crumb = click('a[title="t"]')
+    expect(scrubUiBreadcrumb(crumb)).toBe(crumb)
+  })
+})
+
+describe('initSentry', () => {
+  it('scrubs every breadcrumb before Sentry records it', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_SENTRY_DSN', 'https://public@example.invalid/1')
+    localStorage.setItem('termpolis.telemetry.optIn', '1')
+    const listen = vi.spyOn(window, 'addEventListener').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const sdk = await import('@sentry/react')
+      const mod = await import('../../src/renderer/src/lib/sentry')
+      mod.initSentry()
+      expect(sdk.init).toHaveBeenCalledWith(expect.objectContaining({ beforeBreadcrumb: mod.scrubUiBreadcrumb }))
+    } finally {
+      listen.mockRestore()
+      log.mockRestore()
+      localStorage.removeItem('termpolis.telemetry.optIn')
+      vi.unstubAllEnvs()
+    }
   })
 })

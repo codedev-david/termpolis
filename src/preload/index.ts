@@ -313,6 +313,11 @@ const api: TermpolisAPI = {
   mcpGatewayPolicy: () => ipcRenderer.invoke('mcp:gateway-policy'),
   mcpGatewaySetPolicy: (policy: McpGatewayPolicyView) => ipcRenderer.invoke('mcp:gateway-set-policy', { policy }),
   mcpGatewayTest: (id: string) => ipcRenderer.invoke('mcp:gateway-test', { id }),
+
+  // Settings ▸ Processes. Main re-scans before a kill and refuses any target that changed.
+  processesScanStuck: () => ipcRenderer.invoke('processes:scan-stuck'),
+  processesKillStuck: (targets, opts) =>
+    ipcRenderer.invoke('processes:kill-stuck', { targets, stuckOnly: opts?.stuckOnly === true }),
 }
 
 contextBridge.exposeInMainWorld('termpolis', api)

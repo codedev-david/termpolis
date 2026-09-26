@@ -31,6 +31,8 @@ export function initSentry() {
     // Don't send PII
     sendDefaultPii: false,
 
+    beforeBreadcrumb: scrubUiBreadcrumb,
+
     // Filter out noisy errors
     beforeSend(event) {
       // Don't report if user has no internet
@@ -67,6 +69,18 @@ export function initSentry() {
       Sentry.captureException(e.error ?? new Error(e.message || 'window.onerror'))
     } catch { /* noop */ }
   })
+}
+
+// A click or input breadcrumb names its element with a CSS-like path that copies the element's
+// aria-label, title, alt and name attributes verbatim — and those can carry what the user was
+// looking at: a command line, a file path, a terminal's name. Everything from the first such
+// attribute to the last closing `"]` goes. Greedy on purpose: the values are not escaped, so a
+// value holding `"]` would end a lazy match early and leak the rest of itself.
+export function scrubUiBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb {
+  if (breadcrumb.category?.startsWith('ui.') && breadcrumb.message) {
+    breadcrumb.message = breadcrumb.message.replace(/\[(?:aria-label|title|alt|name)="[\s\S]*"\]/, '[…]')
+  }
+  return breadcrumb
 }
 
 // Normalize a Promise rejection reason into an Error suitable for Sentry.

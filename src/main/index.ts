@@ -190,6 +190,7 @@ import {
   setGatewayPolicy,
 } from './mcpGatewayRuntime'
 import { registerMcpIpc } from './mcpIpc'
+import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections } from './memoryCorrectionStore'
 import { runHeadless, type ExecAgent } from './headlessExec'
@@ -3572,6 +3573,7 @@ async function semanticPoolOptions(
     initContextPinStore(app.getPath('userData'))
     initMcpGateway(app.getPath('userData'))
     registerMcpIpc(ipcMain)
+    registerStuckProcessIpc(ipcMain)
 
     // The human in the gateway's loop. Without this, `defaultDecision: 'ask'` resolves
     // to deny for want of anyone to ask -- which is how the whole subsystem shipped

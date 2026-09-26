@@ -949,6 +949,10 @@ describe('SettingsPane — tab switching', () => {
     fireEvent.click(screen.getByTestId('settings-tab-shell'))
     expect(await screen.findByText('Shell Config Files')).toBeInTheDocument()
 
+    fireEvent.click(screen.getByTestId('settings-tab-processes'))
+    expect(await screen.findByTestId('processes-settings')).toBeInTheDocument()
+    expect(screen.queryByText('Shell Config Files')).toBeNull()
+
     fireEvent.click(screen.getByTestId('settings-tab-general'))
     expect(screen.getByText('Default Shell')).toBeInTheDocument()
     expect(screen.queryByText('Shell Config Files')).toBeNull()

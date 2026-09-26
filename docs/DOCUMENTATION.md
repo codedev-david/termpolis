@@ -252,8 +252,25 @@ Open with the gear icon in the sidebar, or press `Ctrl+,`. The settings panel sl
 - **Shells** — default shell per OS, custom shell commands, startup arguments.
 - **Behavior** — confirm on close, copy on select, scrollback size, cursor style, font.
 - **Advanced** — experimental flags, telemetry (off by default), log levels.
+- **Processes** — find and end what is quietly slowing the machine down (see below).
 
 Changes save immediately. There is no "apply" button — edits are persisted to `settings.json` in your data directory.
+
+### Processes (stuck-process cleanup)
+
+Headless AI runs, hooks and crashed sessions can leave processes behind that hold memory, CPU and file handles long after anyone needs them. The **Processes** tab lists them in three groups:
+
+- **Headless AI agents** — Claude Code (`-p`, `--print`, stream-json, `mcp serve`), Codex (`exec`, `app-server`, `mcp-server`) and Gemini CLI (`-p`, `--acp`) runs with no window, including ones started through `node`, `npx` or `python`. Interactive sessions in a terminal are not listed.
+- **Git** — git that is frozen (Windows), lost the program that started it, or has run for more than 30 minutes. Git daemons (fsmonitor, credential cache, `cat-file --batch`) and git waiting on a pager or an editor are not listed.
+- **Leftover shells & tools** — shells, `cmd /c` / PowerShell wrappers, MCP servers, console hosts and tools whose parent is gone, or (on Windows) that are frozen. A wrapper is listed only while it still runs something. On macOS and Linux, where closing a terminal or a GUI launcher orphans everything it started, an orphaned shell or wrapper is listed only while its tree still holds git, an agent or an MCP server.
+
+Each row shows who started it (Termpolis, another program, or *parent exited*), age, CPU time, memory, any child processes, and the command line. For a shell left by an agent's Bash tool, the command that tool actually ran is shown instead of the harness around it. Common secret formats (tokens, passwords, URL credentials, auth headers and cookies) are masked, best effort, and your home folder is shortened to `~`.
+
+A **STUCK** badge marks what is safe to end: something that serves no TCP port and is either frozen on Windows (every thread suspended, in a process over a minute old — Git Bash can leave a git or jq frozen for good when the script that started it exits at the wrong moment) or orphaned. Only a process's own state counts: a frozen process inside a healthy tree gets a row of its own, so it never marks the tree around it stuck. On macOS and Linux a stopped git is listed after 30 minutes but not marked stuck while the shell that stopped it is still running, since it is usually a job paused with Ctrl+Z. An orphaned headless agent is only marked stuck after an hour, since it may be a deliberate `nohup` job. Anything listening on a TCP port is never marked stuck — it may be a server you started on purpose — and if the port table cannot be read in full (netstat failed or timed out), nothing is marked stuck and a note says so. A process tree that holds something a person is using — an agent CLI open in a terminal, or a pager or an editor — is never marked stuck, and is not listed as orphaned or as long-running git. On Windows, a Git Bash program whose Windows parent has exited (Git Bash starts each stage of a pipeline that way) is traced to its real parent with that Git install's own `ps`, so a pipeline that is still running is never taken for an orphan; when that cannot be confirmed, the program is not marked orphaned and a note says so.
+
+**Kill selected** and **Kill all stuck** end the whole process tree after an inline confirmation. Before anything is signalled, each target is checked again against a fresh scan by pid *and* start time; anything that exited or whose pid now belongs to a different process is skipped and reported (**Kill all stuck** also skips anything that is no longer stuck); anything still running is ended with its current child processes. On macOS and Linux a kill is SIGTERM, then SIGKILL after 3 seconds. A git killed mid-write can leave a stale `.git/index.lock` — delete it if the next git command complains.
+
+Scanning happens only when the tab opens or you press **Refresh**, never on a timer. Termpolis itself, the programs that launched it, and its own windows and terminal shells are never listed. Processes in other Windows sessions (other users' processes on macOS and Linux) are not listed; elevated ones can only be killed from an elevated Termpolis.
 
 ---
 

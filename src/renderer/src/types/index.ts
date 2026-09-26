@@ -502,6 +502,11 @@ export interface TermpolisAPI {
   mcpGatewaySetPolicy: (policy: McpGatewayPolicyView) => Promise<IpcResponse<McpGatewayPolicyView>>
   mcpGatewayTest: (id: string) => Promise<IpcResponse<McpGatewayTestView>>
 
+  // Settings ▸ Processes — headless agents, frozen git and orphaned leftovers.
+  processesScanStuck: () => Promise<IpcResponse<StuckScanView>>
+  /** `stuckOnly` ("Kill all stuck") also skips any target that is no longer stuck. */
+  processesKillStuck: (targets: StuckKillTarget[], opts?: { stuckOnly?: boolean }) => Promise<IpcResponse<StuckKillResultView>>
+
   // Test-only seams (inert in production — main handlers registered only under
   // NODE_ENV=test). Used by e2e/compaction-reprime.spec.ts.
   __testTerminalData?: (id: string, data: string) => Promise<IpcResponse<boolean>>
@@ -578,6 +583,48 @@ export interface McpGatewayTestView {
   ok: boolean
   tools?: number
   error?: string
+}
+
+/** One process tree the Processes tab lists (mirrors StuckProcess in src/main/stuckProcesses.ts). */
+export interface StuckProcessView {
+  pid: number
+  /** Start time, epoch ms. Sent back with a kill so main can tell a reused pid apart. */
+  created: number
+  name: string
+  category: 'agent' | 'git' | 'leftover'
+  agent?: 'claude' | 'codex' | 'gemini'
+  mcp?: boolean
+  reasons: ('headless' | 'orphaned' | 'suspended' | 'long-running')[]
+  owner: 'termpolis' | 'external' | 'orphaned'
+  parentName?: string
+  /** Frozen, or orphaned and serving no port: what "Kill all stuck" ends. */
+  stuck: boolean
+  serving: number[]
+  ageMs: number
+  cpuSec: number
+  memBytes: number
+  command: string
+  detail?: string
+  treeSize: number
+}
+
+export interface StuckScanView {
+  processes: StuckProcessView[]
+  scannedAt: number
+  platform: string
+  totalProcesses: number
+  warnings: string[]
+}
+
+export interface StuckKillTarget {
+  pid: number
+  created: number
+}
+
+export interface StuckKillResultView {
+  killed: number[]
+  failed: { pid: number; error: string }[]
+  skipped: { pid: number; reason: string }[]
 }
 
 export interface AISessionSummary {
