@@ -659,24 +659,9 @@ jobs:
           exit 0
 
 
-  # Fires a repository_dispatch at codedev-david/homebrew-termpolis so that
-  # tap rewrites Casks/termpolis.rb against the new tag's DMG sha256s. Gated
-  # on publish-release so we only bump the tap once the release is live AND its
-  # update metadata has been checked. Will silently no-op until
-  # HOMEBREW_TAP_TOKEN is set.
-  bump-homebrew-tap:
-    needs: publish-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch tap update
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "HOMEBREW_TAP_TOKEN not set — skipping tap bump"
-            exit 0
-          fi
-          version="${GITHUB_REF_NAME#v}"
-          gh api repos/codedev-david/homebrew-termpolis/dispatches \
-            -f event_type=termpolis-release \
-            -f "client_payload[version]=$version"
+  # Homebrew needs no job here: codedev-david/homebrew-termpolis polls
+  # releases/latest every 30 minutes and pushes the new cask itself, after
+  # brew-auditing and test-installing it on a macOS runner. The dispatch job
+  # that used to live here depended on a cross-repo token that was never
+  # created, so it skipped "successfully" on every release while the cask sat
+  # at 1.11.55. Don't reintroduce a job that no-ops when a secret is missing.

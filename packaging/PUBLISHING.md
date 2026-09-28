@@ -66,17 +66,25 @@ Update version in `.nuspec`, URL and SHA256 in `chocolateyinstall.ps1`, then pac
 
 ## Homebrew (macOS)
 
-Users install with: `brew tap codedev-david/tap && brew install --cask termpolis`
+Users install with: `brew install --cask codedev-david/termpolis/termpolis`
+(or `brew tap codedev-david/termpolis` once, then `brew install --cask termpolis`).
 
-### First-time setup
+The tap lives at [codedev-david/homebrew-termpolis](https://github.com/codedev-david/homebrew-termpolis).
+**Nothing needs doing per release.** Its `update-cask.yml` workflow polls
+`releases/latest` every 30 minutes (drafts and prereleases are never returned,
+so a release is picked up only once it's published), takes both DMG sha256s
+from GitHub's asset digests, and pushes the new cask only after `brew style`,
+`brew audit --online`, a checksum-verified `brew fetch` of both DMGs and a real
+install + uninstall pass on a macOS runner. No secret or token is involved on
+either side.
 
-1. Create a public repo: `codedev-david/homebrew-tap`
-2. Copy `packaging/homebrew/termpolis.rb` to `Casks/termpolis.rb` in that repo (with SHA256 filled in)
-3. Push to the repo
-
-### Updating for new versions
-
-Update version and SHA256 in `Casks/termpolis.rb` and push.
+- Bump now instead of waiting: `gh workflow run update-cask.yml -R codedev-david/homebrew-termpolis`
+- If the cask is behind, look at that workflow's runs first: a red run means
+  the new release failed a brew check and the cask was deliberately left alone.
+- The cask is `auto_updates true` because the app updates itself, so
+  `brew upgrade` skips it unless run with `--greedy`.
+- `packaging/homebrew/termpolis.rb` mirrors the tap's cask as a reference;
+  the tap's copy is the one users get.
 
 ### Getting into homebrew-cask (optional, for `brew install --cask termpolis` without tap)
 

@@ -1,21 +1,32 @@
 cask "termpolis" do
-  version "1.4.1"
-  sha256 "REPLACE_WITH_SHA256"
+  arch arm: "-arm64"
 
-  url "https://github.com/codedev-david/termpolis/releases/download/v#{version}/Termpolis-#{version}.dmg"
+  version "1.48.0"
+  sha256 arm:   "ce9ba6928ae6fcfe4326ba5ea395b5fa4fae9f867f38664f909466635b658aea",
+         intel: "9071e4de32a59b3916f1151445818e9d708452372ea5ef805382b9bbd512bf0d"
+
+  url "https://github.com/codedev-david/termpolis/releases/download/v#{version}/Termpolis-#{version}#{arch}.dmg"
   name "Termpolis"
-  desc "Secure AI-Assisted Development — local-first multi-agent terminal (Claude, Codex, Gemini)"
-  homepage "https://github.com/codedev-david/termpolis"
+  desc "Desktop terminal for Claude Code, Codex and Gemini CLI with shared memory"
+  homepage "https://termpolis.com/"
 
   livecheck do
     url :url
     strategy :github_latest
   end
 
+  auto_updates true
+  depends_on :macos
+
   app "Termpolis.app"
 
   zap trash: [
-    "~/Library/Application Support/Termpolis",
+    "~/Library/Application Support/termpolis",
+    "~/Library/Caches/com.termpolis.app",
+    "~/Library/Caches/com.termpolis.app.ShipIt",
+    "~/Library/Caches/termpolis-updater",
+    "~/Library/HTTPStorages/com.termpolis.app",
+    "~/Library/Logs/termpolis",
     "~/Library/Preferences/com.termpolis.app.plist",
     "~/Library/Saved Application State/com.termpolis.app.savedState",
   ]

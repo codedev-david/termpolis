@@ -746,8 +746,15 @@ describe('release.yml cannot ship to users before the gate runs', () => {
   })
 
   it('gates every post-release job on the verified publish', () => {
-    for (const job of ['publish-windows-channels', 'bump-homebrew-tap']) {
+    for (const job of ['publish-windows-channels']) {
       expect(wf.jobs[job].needs).toBe('publish-release')
     }
+  })
+
+  it('leaves Homebrew to the tap, which polls for releases itself', () => {
+    // The old dispatch job needed a cross-repo token that never existed, so it
+    // "passed" by skipping on every release while the cask sat at 1.11.55.
+    expect(wf.jobs['bump-homebrew-tap']).toBeUndefined()
+    expect(stepText('publish-release')).not.toContain('HOMEBREW_TAP_TOKEN')
   })
 })
