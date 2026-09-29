@@ -158,7 +158,15 @@ test('a chosen directory opens the wizard — the picker gates it, in that order
   // Whatever the conductor step resolves to on this runner (prepared, or the
   // "Claude Code Required" notice when no agent CLI is installed), the wizard is
   // open and owns the screen. Close it so the profile is left clean.
+  //
+  // The panel is vertically centred, and the conductor check resolving swaps
+  // its content for a taller one, so the header's × moves up. A click aimed
+  // before that shift lands in the panel body, which swallows it — so retry a
+  // real (actionable, unforced) click until the wizard is actually gone.
   const wizard = page!.locator('div.rounded-xl:has(> div > div > h2:text-is("Start Swarm"))')
-  await wizard.locator('button:has(i.fa-xmark)').first().click({ force: true }).catch(() => {})
-  await expect(wizardHeading()).toHaveCount(0, { timeout: 20_000 })
+  const closeWizard = wizard.locator('button:has(i.fa-xmark)').first()
+  await expect(async () => {
+    if (await wizardHeading().count()) await closeWizard.click({ timeout: 2_000 })
+    await expect(wizardHeading()).toHaveCount(0, { timeout: 2_000 })
+  }).toPass({ timeout: 30_000 })
 })
