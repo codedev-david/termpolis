@@ -246,10 +246,10 @@ test.describe.serial('Swarm Integration', () => {
 
     // Write the mock-claude command into the terminal
     await writeToTerminal(`node "${MOCK_CLAUDE}"`)
-    await page.waitForTimeout(3000)
 
-    const termContent = await readActiveTerminalContent()
-    expect(termContent).toContain('trust')
+    // Poll, don't sleep: on a busy CI runner node's cold start has outrun a fixed
+    // 3 s wait, leaving only the typed command on screen.
+    await expect.poll(readActiveTerminalContent, { timeout: 15000 }).toContain('trust')
     await ss('01-claude-trust-prompt')
   })
 
@@ -283,11 +283,12 @@ test.describe.serial('Swarm Integration', () => {
     await page.waitForTimeout(500)
 
     await writeToTerminal(`node "${MOCK_CODEX}"`)
-    await page.waitForTimeout(3000)
 
-    // Codex shows trust prompt immediately
-    const termContent = await readActiveTerminalContent()
-    expect(termContent).toContain('trust')
+    // Codex shows its trust prompt immediately. Polled for the same reason as test 1,
+    // on Codex's own wording so the Claude terminal's prompt can't satisfy it.
+    await expect.poll(readActiveTerminalContent, { timeout: 15000 }).toContain(
+      'trust the contents of this directory',
+    )
 
     // Send Enter to accept trust
     await focusActiveTerminal()
