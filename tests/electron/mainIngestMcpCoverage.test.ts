@@ -3,11 +3,15 @@
 //
 //   • src/main/conversationIngest.ts — the claude/codex/gemini transcript parsers + disk discovery
 //   • src/main/mcpServer.ts          — JSON-RPC tool dispatch, the audit log, port binding
-//   • src/main/agentMcpRegistry.ts   — per-agent config-file registration
+//   • src/main/agentMcpRegistry.ts   — resolveNodeCommand's per-platform PATH lookup
+//
+// (Writing Termpolis into each agent's config files moved to agentIntegrationManager.ts /
+// agentConfigIO.ts in v1.49.0, behind the user's consent. Their write-failed / corrupt reporting
+// is proven in those modules' own suites, so it is no longer driven from here.)
 //
 // The happy paths are already covered elsewhere. Everything here drives the arms those suites
 // never reach — malformed JSONL, a transcript with no dialogue, a stat that fails mid-scan, a
-// config file that cannot be written, a tool that throws, an over-sized audit log, a
+// node binary that is not on PATH, a tool that throws, an over-sized audit log, a
 // non-EADDRINUSE bind failure. Those arms exist because the MAIN PROCESS must survive them: a
 // throw in any of them takes the whole app down, and a silently-swallowed one corrupts memory.
 
@@ -87,13 +91,7 @@ import {
   type IngestTurn,
   type IngestDeps,
 } from '../../src/main/conversationIngest'
-import {
-  registerInClaudeSettings,
-  registerInGlobalMcp,
-  registerInCodex,
-  registerInGemini,
-  resolveNodeCommand,
-} from '../../src/main/agentMcpRegistry'
+import { resolveNodeCommand } from '../../src/main/agentMcpRegistry'
 import {
   executeTool,
   initAuditLog,
@@ -451,162 +449,8 @@ describe('discoverTranscriptFiles / findLatestTranscriptFile — default roots, 
 })
 
 // =========================================================================================
-// agentMcpRegistry
+// agentMcpRegistry — resolveNodeCommand
 // =========================================================================================
-
-const ADAPTER = '/path/to/stdio-adapter.cjs'
-const HOOK = '/path/to/mcp-adapter/memory-primer-hook.cjs'
-
-describe('agentMcpRegistry — a config we cannot write must be REPORTED, never thrown', () => {
-  let dir: string
-
-  beforeEach(() => {
-    dir = realFs.mkdtempSync(join(os.tmpdir(), 'tp-reg-fail-'))
-  })
-  afterEach(() => {
-    try {
-      realFs.rmSync(dir, { recursive: true, force: true })
-    } catch {
-      /* best effort */
-    }
-  })
-
-  // atomicWriteJson writes `<path>.tmp` and then renames it. Making that temp path a DIRECTORY
-  // makes the write fail for real — a faithful stand-in for a full disk or a locked file, with
-  // no mocking at all. The errno wording differs slightly per OS, so we assert on the CONTRACT
-  // (write-failed + a genuine errno was captured + the user's file survived), not the spelling.
-  const blockTmp = (p: string): void => realFs.mkdirSync(p + '.tmp')
-  const OS_ERRNO = /EISDIR|EPERM|EACCES/
-
-  it('claude settings.json: reports write-failed and leaves the original file untouched', () => {
-    const p = join(dir, 'settings.json')
-    realFs.writeFileSync(p, '{}')
-    blockTmp(p)
-    const r = registerInClaudeSettings(p, ADAPTER)
-    expect(r).toMatchObject({ changed: false, skipped: 'write-failed' })
-    expect(r.error).toMatch(OS_ERRNO) // the real OS error is surfaced, not swallowed into undefined
-    expect(realFs.readFileSync(p, 'utf-8')).toBe('{}') // user's config not corrupted by the failure
-  })
-
-  it('~/.mcp.json: reports write-failed instead of crashing main-process boot', () => {
-    const p = join(dir, '.mcp.json')
-    blockTmp(p) // the manifest does not even exist yet — it is created, so only the write can fail
-    const r = registerInGlobalMcp(p, ADAPTER)
-    expect(r).toMatchObject({ changed: false, skipped: 'write-failed' })
-    expect(r.error).toMatch(OS_ERRNO)
-    expect(realFs.existsSync(p)).toBe(false)
-  })
-
-  it('gemini settings.json: report write-failed', () => {
-    const g = join(dir, 'gemini.json')
-    realFs.writeFileSync(g, '{}')
-    blockTmp(g)
-    expect(registerInGemini(g, ADAPTER)).toMatchObject({ changed: false, skipped: 'write-failed' })
-    expect(realFs.readFileSync(g, 'utf-8')).toBe('{}')
-  })
-
-  it('codex config.toml: an unreadable path (a directory) is reported as corrupt', () => {
-    const p = join(dir, 'config.toml')
-    realFs.mkdirSync(p) // exists, but reading it is an OS error
-    const r = registerInCodex(p, ADAPTER)
-    expect(r).toMatchObject({ changed: false, skipped: 'corrupt' })
-    expect(r.error).toMatch(OS_ERRNO)
-  })
-
-  it('codex config.toml: a failing write is reported as write-failed and the file is left intact', () => {
-    const p = join(dir, 'config.toml')
-    const before = 'model = "gpt-5"\n'
-    realFs.writeFileSync(p, before)
-    // Codex is written tmp+rename like the other three, so the fault lands on the tmp
-    // file and the user's real config is untouched — not merely un-appended-to.
-    fsCtl.rules.push({ op: 'write', match: 'config.toml', err: new Error('EACCES: permission denied') })
-    const r = registerInCodex(p, ADAPTER)
-    expect(r).toMatchObject({ changed: false, skipped: 'write-failed' })
-    expect(r.error).toContain('EACCES')
-    expect(realFs.readFileSync(p, 'utf-8')).toBe(before)
-  })
-
-  it('a thrown NON-Error (no .message) is still surfaced as a string, never as "undefined"', () => {
-    const settings = join(dir, 'settings.json')
-    const gem = join(dir, 'gemini.json')
-    const toml = join(dir, 'config.toml')
-    for (const p of [settings, gem]) realFs.writeFileSync(p, '{}')
-    realFs.writeFileSync(toml, '')
-
-    fsCtl.rules.push({ op: 'write', match: dir, err: 'raw string blew up' })
-    // Kept as a REGRESSION guard: no registration path may append to a live config any
-    // more. If this rule ever fires again, an atomic write has been reverted to an append.
-    fsCtl.rules.push({ op: 'append', match: dir, err: 'raw append blew up' })
-
-    expect(registerInClaudeSettings(settings, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
-    expect(registerInGemini(gem, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
-    expect(registerInGlobalMcp(join(dir, '.mcp.json'), ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
-    // Codex goes through the same atomic tmp+rename as the other three, so the fault it
-    // reports is the WRITE, not an append.
-    expect(registerInCodex(toml, ADAPTER)).toMatchObject({ skipped: 'write-failed', error: 'raw string blew up' })
-  })
-
-  it('a NON-Error read failure is reported as corrupt with the raw value as the message', () => {
-    const p = join(dir, 'settings.json')
-    const toml = join(dir, 'config.toml')
-    realFs.writeFileSync(p, '{}')
-    realFs.writeFileSync(toml, 'model = "gpt-5"\n')
-    fsCtl.rules.push({ op: 'read', match: dir, err: 'read blew up' })
-    expect(registerInClaudeSettings(p, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
-    expect(registerInGemini(p, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
-    // registerInCodex reads the TOML as a raw blob (no JSON parse) — it has its own catch.
-    expect(registerInCodex(toml, ADAPTER)).toMatchObject({ changed: false, skipped: 'corrupt', error: 'read blew up' })
-  })
-})
-
-describe('agentMcpRegistry — hook + manifest shapes the happy path never produces', () => {
-  let dir: string
-  beforeEach(() => {
-    dir = realFs.mkdtempSync(join(os.tmpdir(), 'tp-reg-shape-'))
-  })
-  afterEach(() => {
-    try {
-      realFs.rmSync(dir, { recursive: true, force: true })
-    } catch {
-      /* best effort */
-    }
-  })
-
-  it('detects an existing memory-primer hook registered as a FLAT SessionStart entry (no nested hooks[])', () => {
-    const p = join(dir, 'settings.json')
-    realFs.writeFileSync(
-      p,
-      JSON.stringify({
-        mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } },
-        permissions: { allow: ['mcp__termpolis__*'] },
-        // A hand-written / older-schema group that puts `command` at the TOP level.
-        hooks: { SessionStart: [{ type: 'command', command: `node "${HOOK}"` }] },
-      }),
-    )
-    const r = registerInClaudeSettings(p, ADAPTER, HOOK)
-    expect(r).toMatchObject({ changed: false, skipped: 'already-registered' })
-    const v = JSON.parse(realFs.readFileSync(p, 'utf-8'))
-    expect(v.hooks.SessionStart).toHaveLength(1) // NOT duplicated
-  })
-
-  it('~/.mcp.json: strips the legacy ROOT-level termpolis key even when mcpServers already matches', () => {
-    const p = join(dir, '.mcp.json')
-    realFs.writeFileSync(
-      p,
-      JSON.stringify({
-        termpolis: { command: 'node', args: ['/legacy/adapter.cjs'] }, // pre-1.11 shape
-        mcpServers: { termpolis: { command: 'node', args: [ADAPTER] } }, // already correct
-      }),
-    )
-    const r = registerInGlobalMcp(p, ADAPTER)
-    expect(r.changed).toBe(true) // the legacy key alone is enough to warrant a rewrite
-    const v = JSON.parse(realFs.readFileSync(p, 'utf-8'))
-    expect(v).not.toHaveProperty('termpolis')
-    expect(v.mcpServers.termpolis.args[0]).toBe(ADAPTER)
-    // Now that the legacy key is gone, a second pass is a clean no-op.
-    expect(registerInGlobalMcp(p, ADAPTER)).toMatchObject({ changed: false, skipped: 'already-registered' })
-  })
-})
 
 describe('resolveNodeCommand — platform-specific PATH resolution (#4 node-not-on-PATH)', () => {
   const realPlatform = process.platform

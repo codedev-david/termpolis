@@ -3,6 +3,7 @@ import { agentFromCommand, type AgentInfo } from '../lib/agentDetector'
 import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
+import { isAwaitingAnswer, tailSlice } from '../lib/promptAutoDismiss'
 
 // Auto context-primer: point a freshly-launched agent at this project's memory digest via the
 // memory_primer MCP tool, so every invocation starts already knowing prior decisions and context
@@ -86,6 +87,21 @@ function countPrimerMemories(digest: string): number {
   return digest.split('\n').filter((l) => l.startsWith('- [')).length
 }
 
+/**
+ * True unless the agent's screen can be read and shows nothing waiting for an answer
+ * (isAwaitingAnswer). A screen that can't be read counts as a prompt: nothing is typed
+ * into a terminal whose state is unknown.
+ */
+export async function promptShowing(terminalId: string): Promise<boolean> {
+  try {
+    const res = await window.termpolis?.readTerminalBuffer?.(terminalId)
+    if (!res?.success || !res.data) return true
+    return isAwaitingAnswer(tailSlice(res.data.output || ''))
+  } catch {
+    return true
+  }
+}
+
 // Check that relevant memory exists for this project and, if so, paste a short
 // pointer into the freshly-launched agent terminal directing it to load the
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
@@ -109,6 +125,10 @@ export async function injectAutoPrimer(
     // paste only the pointer — the agent pulls the content itself over MCP.
     const res = await api.memoryBuildPrimer(query, undefined, cwd || undefined)
     if (!res?.success || !res.data) return false
+    // The pointer goes in with an Enter, and an Enter on a trust or approval prompt answers
+    // it — which is how a paste 1.5 s into a Codex launch used to accept its folder-trust
+    // prompt. Checked after the recall, right before typing, and again before the Enter.
+    if (await promptShowing(terminalId)) return false
     // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
     // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
     // nothing happened. Compaction re-primes pass notify=false and stay silent.
@@ -132,6 +152,7 @@ export async function injectAutoPrimer(
     // the same constant, as SUBMIT_SETTLE_MS in the remote dispatcher, which
     // fixed the identical symptom for messages sent from the phone.
     await sleep(PRIMER_SUBMIT_SETTLE_MS)
+    if (await promptShowing(terminalId)) return false
     api.writeToTerminal(terminalId, '\r')
     return true
   } catch {
@@ -178,6 +199,8 @@ export async function reprimeAfterCompaction(
   opts: {
     isLaunchPrimed: () => boolean
     pending?: (id: string) => Promise<boolean>
+    /** A prompt is on screen (promptShowing). Waited out like a draft. */
+    awaiting?: (id: string) => Promise<boolean>
     inject?: (id: string, cwd: string) => Promise<boolean>
     sleep?: (ms: number) => Promise<void>
     pollMs?: number
@@ -186,13 +209,16 @@ export async function reprimeAfterCompaction(
 ): Promise<boolean> {
   if (opts.isLaunchPrimed()) return false // rule 1 — it re-primes itself, silently
   const pending = opts.pending ?? inputPending
+  const awaiting = opts.awaiting ?? promptShowing
   const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c))
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const pollMs = opts.pollMs ?? REPRIME_IDLE_POLL_MS
   const maxWaitMs = opts.maxWaitMs ?? REPRIME_IDLE_MAX_WAIT_MS
 
   let waited = 0
-  while (await pending(terminalId)) {
+  // A compaction can land while the agent waits on an approval prompt; the pointer's Enter
+  // would answer it. Wait that out the same way as a draft.
+  while ((await pending(terminalId)) || (await awaiting(terminalId))) {
     if (waited >= maxWaitMs) return false // rule 2 — skip rather than clobber a draft
     await sleep(pollMs)
     waited += pollMs
@@ -242,6 +268,8 @@ export async function primeOnLaunch(
   gate: PrimerGate,
   opts: {
     inject?: (id: string, cwd: string) => Promise<boolean>
+    /** A prompt is on screen (promptShowing). Waited out after the boot delay. */
+    awaiting?: (id: string) => Promise<boolean>
     sleep?: (ms: number) => Promise<void>
     stopped?: () => boolean
     pollMs?: number
@@ -253,6 +281,7 @@ export async function primeOnLaunch(
   // need the self-record primer path; keep it wired for future agents that might.
   // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
   const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c, false, true))
+  const awaiting = opts.awaiting ?? promptShowing
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const stopped = opts.stopped ?? (() => false)
   const pollMs = opts.pollMs ?? PRIMER_GATE_POLL_MS
@@ -269,6 +298,14 @@ export async function primeOnLaunch(
   }
   await sleep(delayMs)
   if (stopped()) return false
+  // A folder-trust prompt the agent put up while it booted is the user's to answer. Wait for
+  // it to go, within the same budget as the gate.
+  while (await awaiting(terminalId)) {
+    if (waited >= maxWaitMs) return false
+    await sleep(pollMs)
+    if (stopped()) return false
+    waited += pollMs
+  }
   if (!open()) return false // they started typing while the CLI was booting
   return inject(terminalId, cwd)
 }

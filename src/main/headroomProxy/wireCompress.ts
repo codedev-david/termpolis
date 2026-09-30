@@ -3,6 +3,7 @@ import { compactText } from '../headroom/compactText'
 import { compactWeb, looksLikeHtml } from '../headroom/compactWeb'
 import { thresholdsFor, type Mode } from '../headroom/config'
 import { applyPrefixDecay } from './prefixDecay'
+import { mapOutsideReminders } from './reminders'
 import { bestDiff, makeCandidate, type DiffCandidate } from '../headroom/diffEncode'
 import { compactJson } from './jsonCompact'
 import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
@@ -13,9 +14,7 @@ export interface WireStats {
   trBlocks: number
   trOrigChars: number
   trCompChars: number
-  /** tool_use input (the agent's own output, re-read from the prefix every turn) — counted
-   *  separately from tool_result so the dashboard can report what each surface actually earns
-   *  rather than quoting one blended number that hides which half is working. */
+  /** Always 0 — tool_use input is never rewritten; kept so the IPC/ledger schema stays compatible. */
   tuBlocks: number
   tuOrigChars: number
   tuCompChars: number
@@ -48,8 +47,6 @@ export interface WireStats {
    *  nothing recorded whether it was even present, let alone what it earned. */
   steered: boolean
 }
-/** Which counter pair a compacted block is billed to. */
-export type StatBucket = 'tr' | 'tu'
 export interface WireResult {
   body: string
   changed: boolean
@@ -164,7 +161,7 @@ export function clampThinkingBudget(obj: { thinking?: unknown }): boolean {
  */
 export interface ContentHint { path?: string; toolName?: string }
 
-/** Input keys that name the file a tool acted on. First match wins; all are in TOOL_USE_SKIP. */
+/** Input keys that name the file a tool acted on. First match wins. */
 const PATH_KEYS = ['file_path', 'notebook_path', 'path', 'filePath', 'file']
 
 /** Pull the content hint out of a tool_use input object. */
@@ -183,8 +180,7 @@ export function hintFromInput(input: unknown, name?: unknown): ContentHint {
 
 /**
  * Index tool_use blocks by id so a tool_result can be told which file it came from. Built in one
- * pass over the whole body before any rewriting, so it is complete regardless of block order and
- * unaffected by anything the rewrite later does to those inputs.
+ * pass over the whole body before any rewriting, so it is complete regardless of block order.
  */
 export function collectToolUseHints(messages: Array<{ content?: unknown }>): Map<string, ContentHint> {
   const map = new Map<string, ContentHint>()
@@ -318,13 +314,9 @@ function compactOrDedup(
   seen: SeenIndex,
   stats: WireStats,
   stashes: Array<{ token: string; original: string }>,
-  bucket: StatBucket = 'tr',
   hint?: ContentHint,
 ): { text: string; changed: boolean } {
-  const origKey = bucket === 'tu' ? 'tuOrigChars' : 'trOrigChars'
-  const compKey = bucket === 'tu' ? 'tuCompChars' : 'trCompChars'
-  const blockKey = bucket === 'tu' ? 'tuBlocks' : 'trBlocks'
-  stats[origKey] += text.length
+  stats.trOrigChars += text.length
   let out = text
   let changed = false
   const key = detToken(text)
@@ -334,7 +326,7 @@ function compactOrDedup(
     // stub's own length). Reversible: the original is stashed under its content-hash token.
     out = `[headroom] Identical to an earlier tool result in this conversation — call the retrieve_full tool with token "${key}" to expand it.`
     changed = true
-    stats[blockKey]++
+    stats.trBlocks++
     stashes.push({ token: key, original: text })
   } else {
     const c = compactToolText(text, hint)
@@ -351,26 +343,26 @@ function compactOrDedup(
     if (best.length < text.length) {
       out = best
       changed = true
-      stats[blockKey]++
+      stats.trBlocks++
       if (stash) stashes.push(stash)
     }
   }
-  stats[compKey] += out.length
+  stats.trCompChars += out.length
   return { text: out, changed }
 }
 
 /**
- * Record a block in `seen` WITHOUT rewriting it — the index half of compactOrDedup, split out for
- * the fields that must ride the wire verbatim (TOOL_USE_VERBATIM).
+ * Record a block in `seen` WITHOUT rewriting it — the index half of compactOrDedup, used for the
+ * tool_use fields listed in TOOL_USE_VERBATIM.
  *
  * A file body the agent wrote has to arrive byte-for-byte, but it is still the best possible dedup
  * key and diff base for the tool_result that re-reads that same file a few turns later — and a
  * tool_result IS safe to compress. Indexing it here keeps the "wrote it, then read it — paid for
  * once, not twice" collapse working, which simply skipping the field would have silently lost.
  *
- * The key and candidate are derived from the ORIGINAL text at the same point in the left-to-right
- * walk where compactOrDedup would have added them, so the index state — and therefore every later
- * block's output — is byte-identical to before. Determinism and cache-stability are unaffected.
+ * The key and candidate are derived from the ORIGINAL text in the same left-to-right walk that
+ * fills the index from tool_results, so the index — and therefore every later block's output —
+ * stays a pure function of the body. Determinism and cache-stability are unaffected.
  */
 function noteSeen(text: string, seen: SeenIndex): void {
   if (text.length < wireWindow.floorChars) return
@@ -392,42 +384,12 @@ function compressImageBlock(block: { source?: { type?: string; media_type?: stri
 }
 
 /**
- * Keys in a tool_use input that name a thing rather than carry content. All are short enough that
- * the compaction floor already excludes them; the explicit skip is defense-in-depth, because a
- * truncated path or glob would be actively misleading rather than merely elided.
- */
-export const TOOL_USE_SKIP = new Set([
-  'file_path', 'path', 'notebook_path', 'url', 'pattern', 'glob',
-  // PATH_KEYS above claims every key it reads is in this set. Until now `filePath` and `file` were
-  // not, so the claim was false and those two were compressible by a route the comment said was
-  // closed. Both name a file; neither carries content.
-  'filePath', 'file',
-])
-
-/**
- * Fields whose bytes the agent COPIES FORWARD into the real world, and which therefore must survive
- * byte-for-byte no matter how large they get.
- *
- * The distinction that makes tool_result compression safe does not hold here. A tool_result is
- * OBSERVED DATA: the model knows it did not author it, and calls retrieve_full when it needs the
- * exact bytes back. A tool_use input is AUTHORED INTENT: the model treats its own prior Write/Edit/
- * Bash input as the record of what it meant, reproduces it verbatim on a later turn, and has no
- * reason to suspect the bytes were rewritten underneath it.
- *
- * So eliding these does not shrink history — it REWRITES it, and the elision marker becomes a real
- * artifact. Both of these are from one live session (2026-08-25):
- *
- *     /usr/bin/bash: line 37: [headroom]: command not found
- *     File "apex3.py", line 8: SyntaxError: invalid character '…' (U+2026)
- *
- * The model had re-emitted "… [20 lines elided] …" and the "[headroom] Full result cached" footer
- * into a real Python file and a real shell command. Each such turn is a red tool error, a retry off
- * the same poisoned history, and a retrieve_full round-trip — which is why the give-back ledger ran
- * NET NEGATIVE (-7,970,560 tokens) instead of paying for itself.
- *
- * Keeping them whole costs ~1.7% of measured savings (tool_use was 22.5M of 1.34B saved tokens) and
- * removes the entire failure class. The remaining tool_use fields — descriptions, prompts, MCP tool
- * bodies — are still compressed, and identifiers are still skipped above.
+ * The proxy never rewrites a tool_use input, at any age, on any path. A tool_result is observed
+ * data the model can re-fetch with retrieve_full; a tool_use input is authored intent the model
+ * replays as a template, so an elision marker in any of its fields gets copied into real files,
+ * shell commands and subagent prompts. The fields below carry the bytes an action writes to disk
+ * or runs, and are indexed (never rewritten) as dedup keys and diff bases for the tool_results
+ * that later read those bytes back.
  */
 export const TOOL_USE_VERBATIM = new Set([
   'content',      // Write — the file body, replayed onto disk
@@ -448,63 +410,30 @@ export const TOOL_USE_VERBATIM = new Set([
 ])
 
 /**
- * Compress the bulk string fields of a historical `tool_use` block — the agent's OWN output —
- * EXCEPT the artifact-bearing fields listed in TOOL_USE_VERBATIM, which are copied forward into
- * real files and real shell commands and must therefore arrive byte-for-byte.
- *
- * Output tokens are billed once at generation (5x, and nothing here can change that), but they then
- * live in the prefix and are re-read as cache-read tokens on EVERY later turn. Those re-reads were
- * paying full freight.
- *
- * Cache-safe: deterministic, shrink-only, and byte-stable across turns, so the re-sent prefix keeps
- * hashing the same. Reversible via retrieve_full. Every tool_use in a request body is by definition
- * a PRIOR action (the current turn's has not been generated yet), so this never touches an in-flight
- * call — but "prior" is NOT the same as "finished with", which is what TOOL_USE_VERBATIM exists to
- * say: the agent re-reads and replays its own prior inputs.
+ * Add a historical tool_use block's TOOL_USE_VERBATIM fields to `seen`, so a tool_result that later
+ * repeats or re-reads them still collapses. Read-only: it never assigns to the input, and nothing
+ * it does is counted as compressed material.
  */
-function compressToolUseInput(
-  block: { input?: unknown },
-  seen: SeenIndex,
-  stats: WireStats,
-  stashes: Array<{ token: string; original: string }>,
-): boolean {
+function indexToolUseInput(block: { input?: unknown; name?: unknown }, seen: SeenIndex): void {
   const input = block.input
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return false
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return
+  // Exempt tools (memory_*, swarm_*, …) stay out of the index, as their tool_results do. The
+  // wire's name is namespaced (`mcp__termpolis__memory_write`); isExempt strips that, so one list
+  // governs every layer.
+  if (typeof block.name === 'string' && isExempt(block.name)) return
   const rec = input as Record<string, unknown>
-  let changed = false
-  // The block names its own file (Write's file_path sits beside its content), so the router can
-  // outline what the agent wrote just as it outlines what the agent read.
-  const hint = hintFromInput(rec, (block as { name?: unknown }).name)
-  // The memory/swarm exemption is a product invariant, not an MCP-layer detail: what the model
-  // SEES when it recalls has to be what the brain stored. The MCP layer already refuses these
-  // tools; the wire used to compress them anyway, because the wire's name is namespaced
-  // (`mcp__termpolis__memory_write`) and the exemption list holds bare names. isExempt strips
-  // the namespace now, so one list governs both layers.
-  if (hint.toolName && isExempt(hint.toolName)) return false
   // Object.keys order is insertion order, and the body is re-parsed from identical JSON each
-  // turn, so the traversal — and therefore the output — is deterministic.
+  // turn, so the index — and every later block's output — is deterministic.
   for (const k of Object.keys(rec)) {
-    if (TOOL_USE_SKIP.has(k)) continue
     const v = rec[k]
-    // Artifact-bearing field: index it as a dedup key / diff base for the tool_results that follow,
-    // but hand the bytes on untouched. Never counted as compressible material — it isn't.
-    if (TOOL_USE_VERBATIM.has(k)) {
-      if (typeof v === 'string') noteSeen(v, seen)
-      continue
-    }
-    // Only fields at/above the compaction floor are candidates — below it compactOrDedup is a
-    // provable no-op, so counting them would just dilute the ratio with incompressible tare.
-    if (typeof v !== 'string' || v.length < wireWindow.floorChars) continue
-    const r = compactOrDedup(v, seen, stats, stashes, 'tu', hint)
-    if (r.changed) { rec[k] = r.text; changed = true }
+    if (TOOL_USE_VERBATIM.has(k) && typeof v === 'string') noteSeen(v, seen)
   }
-  return changed
 }
 
 /**
- * Rewrite an Anthropic /v1/messages request body: compress tool_result text, tool_use input and
- * image blocks, and (only when a cap is configured — off by default) lower `thinking.budget_tokens`.
- * Everything else (system, tools, thinking blocks, cache_control, all headers/fields) is left
+ * Rewrite an Anthropic /v1/messages request body: compress tool_result text and image blocks, and
+ * (only when a cap is configured — off by default) lower `thinking.budget_tokens`. Everything else
+ * (system, tools, tool_use input, thinking blocks, cache_control, all headers/fields) is left
  * byte-identical. `thinking` blocks are a HARD exclusion: they carry a cryptographic signature that
  * Anthropic validates, so any edit would be rejected outright.
  * Deterministic and FAIL-OPEN: any parse error / unknown shape / anomaly returns the original body.
@@ -551,7 +480,7 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
 export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean } = {}): WireResult {
   const stats = emptyStats()
   const stashes: Array<{ token: string; original: string }> = []
-  const seen = emptySeen() // per-body dedup/diff index over earlier tool_result text, filled left-to-right
+  const seen = emptySeen() // per-body dedup/diff index over earlier tool_result text + tool_use artifacts, filled left-to-right
   const maxChars = opts.maxBodyChars ?? 10_000_000
   if (raw.length > maxChars) return { body: raw, changed: false, stats, stashes }
   let obj: { messages?: unknown[]; thinking?: unknown }
@@ -578,18 +507,13 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
     // Decay runs BEFORE the main walk so aged-out blocks never enter the dedup/diff index — a
     // later block must not be encoded as a patch against something no longer on the wire.
     if (opts.decay) {
-      const d = applyPrefixDecay(obj.messages as Array<{ content?: unknown }>, stashes)
-      if (d.blocks > 0 || d.tuBlocks > 0) {
+      const d = applyPrefixDecay(obj.messages as Array<{ content?: unknown }>, stashes, (id) => hints.get(id)?.toolName)
+      // Decay only ever stubs tool_result text, so everything it removed bills to that bucket.
+      if (d.blocks > 0) {
         changed = true
         stats.trBlocks += d.blocks
         stats.trOrigChars += d.origChars
         stats.trCompChars += d.compChars
-        // Decay's tool_use bytes bill to the tool_use bucket. They used to be added to trOrigChars
-        // with everything else, which credited tool_result compression with work it never did —
-        // the exact blend the WireStats comment above says these two counters exist to prevent.
-        stats.tuBlocks += d.tuBlocks
-        stats.tuOrigChars += d.tuOrigChars
-        stats.tuCompChars += d.tuCompChars
       }
     }
     for (const m of obj.messages as Array<{ content?: unknown }>) {
@@ -604,13 +528,16 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
           // brain may as well not have stored it. The tool_use this result answers is what knows
           // the name, which is exactly what `hints` was built to carry.
           if (hint?.toolName && isExempt(hint.toolName)) continue
+          // Harness <system-reminder> blocks inside the result are instructions to the model, not
+          // tool output — only the text around them is compressed (see reminders.ts).
+          const compact = (seg: string) => compactOrDedup(seg, seen, stats, stashes, hint)
           if (typeof b.content === 'string') {
-            const r = compactOrDedup(b.content, seen, stats, stashes, 'tr', hint)
+            const r = mapOutsideReminders(b.content, compact)
             if (r.changed) { b.content = r.text; changed = true }
           } else if (Array.isArray(b.content)) {
             for (const item of b.content as Array<Record<string, unknown>>) {
               if (item && item.type === 'text' && typeof item.text === 'string') {
-                const r = compactOrDedup(item.text, seen, stats, stashes, 'tr', hint)
+                const r = mapOutsideReminders(item.text, compact)
                 if (r.changed) { item.text = r.text; changed = true }
               } else if (item && item.type === 'image' && opts.compressImage) {
                 changed = compressImageBlock(item as { source?: { type?: string; media_type?: string; data?: string } }, opts.compressImage, stats) || changed
@@ -620,9 +547,9 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
         } else if (b.type === 'image' && opts.compressImage) {
           changed = compressImageBlock(b as { source?: { type?: string; media_type?: string; data?: string } }, opts.compressImage, stats) || changed
         } else if (b.type === 'tool_use') {
-          // Shares `seen` with tool_result on purpose: a file the agent WROTE and later READ
-          // collapses on the second occurrence instead of being paid for twice.
-          if (compressToolUseInput(b, seen, stats, stashes)) changed = true
+          // Index only — the input is never rewritten. Shares `seen` with tool_result on purpose:
+          // a file the agent WROTE and later READ is paid for once, not twice.
+          indexToolUseInput(b, seen)
         }
       }
     }

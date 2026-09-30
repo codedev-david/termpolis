@@ -3,8 +3,8 @@ import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
 import {
   initTelemetry,
-  setOptIn as setTelemetryOptIn,
-  isEnabled as isTelemetryEnabled,
+  getConsentForRenderer,
+  setConsent as setTelemetryConsent,
   dailyLaunchPing,
   recordEvent as recordTelemetryEvent,
   recordUncleanExit,
@@ -30,11 +30,28 @@ app.setName('termpolis')
 // optional-chained so a minimal `app` mock in unit tests can't trip on it.
 app.setAppUserModelId?.('com.termpolis.app')
 
-// Telemetry must initialize before Sentry — Sentry's gate reads from the
-// persisted opt-in state. Without this ordering, the very first launch
-// after install would never enable Sentry even after the user opts in,
-// because the gate reads stale "false" before persisted state is loaded.
-initTelemetry(app.getPath('userData'))
+// `Termpolis.exe --disconnect-agents` removes what Termpolis wrote into Claude Code, Codex and
+// Gemini CLI configs (the same Disconnect as Settings ▸ Agent integration) and exits. The
+// Windows uninstaller runs it before deleting the app (build/installer.nsh). It sits above
+// telemetry, Sentry and the single-instance lock because it must report nothing, must not hand
+// off to a running window, and must end on its own; app.exit before ready stops this file at
+// once, so nothing below it runs.
+if (process.argv.includes('--disconnect-agents')) {
+  try {
+    const rows = disconnectAgentIntegration(resolveAgentIntegrationPaths(homedir(), app.getPath('userData'), process.env))
+    for (const r of rows) console.log(`${r.agent}: ${r.action} ${r.what} (${r.file})${r.error ? ` - ${r.error}` : ''}`)
+  } catch (e) {
+    console.error('Could not disconnect agents:', (e as Error)?.message ?? e)
+  }
+  app.exit(0)
+}
+
+// Telemetry must initialize before Sentry — Sentry's gate reads the
+// persisted consent. Without this ordering a user who turned crash reports
+// on would launch with them off, because the gate would read the default
+// "off" before the persisted answer is loaded. The app version keys the
+// once-per-version updater-report dedupe.
+initTelemetry(app.getPath('userData'), app.getVersion?.())
 initMainSentry()
 
 // Linux AppImage: the bundled chrome-sandbox lacks SUID root, which crashes on
@@ -126,7 +143,7 @@ import {
 } from './gitChanges'
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
-// (resolveNodeCommand is already imported above for the MCP registration.)
+// (Its node path comes from resolveNodeCommand, imported with the agent-integration modules.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
@@ -147,13 +164,13 @@ import type { WorkflowScope } from '../renderer/src/types'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
-import { writeAgentsMd, ensureCodexMemoryAutoApproved } from './codexParity'
-import { adaptSteeringMode, type SteeringMode } from './headroom/outputSteering'
+import { adaptSteeringMode, steeringDirective, type SteeringMode } from './headroom/outputSteering'
 import { initOutputEconomy, armForSession, flushOutputEconomy, outputEconomyReport } from './headroom/outputEconomyStore'
 import { resolveWireMode } from './headroom/savingsFloor'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader } from './headroomProxy/proxySupervisor'
+import { readJsonObject } from './agentConfigIO'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { fileURLToPath } from 'url'
@@ -478,9 +495,11 @@ import {
   stopRemoteBridgeHost,
 } from './remoteHost'
 
-// One-way bypass for the agents-running close guard: armed when the user clicks
+// Bypass for the agents-running close guard: armed when the user clicks
 // "Restart" on a downloaded update, so the quit from quitAndInstall isn't
-// intercepted (and cancelled) by the confirm dialog.
+// intercepted (and cancelled) by the confirm dialog. Also armed right before a
+// macOS Move to Applications, which quits the app from inside the move — and
+// disarmed again if the move didn't happen.
 let quittingForUpdate = false
 
 let mainWindow: BrowserWindow | null = null
@@ -521,16 +540,31 @@ import {
   listTrustedWorkspaces,
   ensureWorkspaceTrust,
 } from './workspaceTrust'
-import { trustClaudeWorkspace } from './claudeTrust'
+import { resolveNodeCommand, resolveNodeRunner } from './agentMcpRegistry'
 import {
-  registerInClaudeSettings,
-  registerInGlobalMcp,
-  registerInCodex,
-  registerInGemini,
-  resolveNodeCommand,
-  resolveNodeRunner,
-} from './agentMcpRegistry'
+  resolveAgentIntegrationPaths,
+  bootAgentIntegration,
+  disconnectAgentIntegration,
+  getAgentIntegrationStatus,
+  setAgentIntegration,
+  isFolderTrustAllowed,
+  trustFolderForAgents,
+  prepareCodexLaunch,
+  removeCodexHomeTrust,
+  conductorMcpConfig,
+  type AgentIntegrationPaths,
+  type AgentIntegrationRuntime,
+} from './agentIntegrationManager'
+import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import { repairWindowsShortcuts, defaultShortcutPaths } from './windowsShortcutRepair'
+
+/** Start the Headroom proxy child unless it is already running — at boot, or when the user
+ *  switches it back on. Both are re-checked after the port lookup: a second flip may have started
+ *  it meanwhile, or the user may have switched it straight back off. */
+function ensureHeadroomProxy(): void {
+  if (isProxyStarted()) return
+  void pickFreePort().then((port) => { if (port > 0 && !isProxyStarted() && isProxyEnabled()) startProxy({ port }) })
+}
 
 // Load the window/taskbar icon from a Buffer. We previously used
 // nativeImage.createFromPath, but the assets/ dir lives INSIDE app.asar and
@@ -672,12 +706,10 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
     if (!shell) return err('No shell available')
-    // EVERY folder Termpolis opens a terminal in is pre-approved in Claude Code's own
-    // config, not just the ones we launch an agent into: the user's own `claude` typed
-    // into a plain tab has to work too. Seeding here rather than at each launch site is
-    // what makes that unconditional — terminal creation is the one funnel they all share.
-    // Cheap and idempotent (memoised per folder per run); see src/main/claudeTrust.ts.
-    if (cwd) trustClaudeWorkspace(cwd)
+    // No folder trust is seeded here any more. Opening a terminal is not agreeing to let
+    // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
+    // unless the user connected the agents, and then only where Termpolis launches Claude
+    // itself (`claude:trust-workspace`, via agentIntegrationManager).
     await new Promise<void>((resolve, reject) => {
       // NOTE: a `setTimeout(() => reject('timeout'), 5000)` "hang guard" used to sit here. It was
       // DEAD CODE: the executor body below is fully SYNCHRONOUS, so clearTimeout always won the
@@ -1047,18 +1079,27 @@ ipcMain.handle('diagnostics:collect', async () => {
   } catch (e: any) { return err(e.message) }
 })
 
-// Crash-reporting opt-in. The renderer is the source of truth for the
-// initial choice (Onboarding/SettingsPane), but the main process needs
-// to know to gate Sentry, updater pings, and feature events. Persisted
-// to userData/telemetry.json so it survives across launches.
-ipcMain.handle('telemetry:set-opt-in', async (_, { value }: { value: boolean }) => {
+// Telemetry consent: crash reports and usage statistics, each off until the
+// user turns it on (onboarding's privacy step, the launch review, Settings ▸
+// Privacy). Main owns the answer — it gates Sentry, updater reports, feature
+// events and the launch ping — and persists it to userData/telemetry.json.
+// A change applies at once, in both processes.
+ipcMain.handle('telemetry:get-consent', async () => {
   try {
-    setTelemetryOptIn(value === true)
-    return ok({ optIn: isTelemetryEnabled() })
+    return ok(getConsentForRenderer())
   } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('telemetry:get-opt-in', async () => ok(isTelemetryEnabled()))
+ipcMain.handle('telemetry:set-consent', async (_, choice?: { crash?: unknown; usage?: unknown } | null) => {
+  try {
+    const { crash, usage } = choice ?? {}
+    if ((crash !== undefined && typeof crash !== 'boolean') || (usage !== undefined && typeof usage !== 'boolean')) {
+      return err('crash and usage must be booleans')
+    }
+    setTelemetryConsent({ crash, usage })
+    return ok(getConsentForRenderer())
+  } catch (e: any) { return err(e.message) }
+})
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
 
@@ -1260,8 +1301,9 @@ ipcMain.handle('aiSecurity:append', async (_, entry: { agent: string; event: str
   } catch (e: any) { return err(e.message) }
 })
 
-// Tier 3: anonymous usage events from the renderer (e.g. report-problem.submit,
-// swarm.start). Caller is responsible for keeping props PII-free.
+// Anonymous usage events from the renderer (e.g. report-problem.submit,
+// swarm.start): recorded only with usage statistics on (recordEvent gates it).
+// Caller is responsible for keeping props PII-free.
 ipcMain.handle('telemetry:record-event', async (_, { name, props }: { name: string; props?: Record<string, unknown> }) => {
   try {
     if (typeof name !== 'string' || !name.trim()) return err('event name required')
@@ -2419,12 +2461,13 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
   } catch (e: any) { return err(e.message) }
 })
 
-// Codex parity. Codex has no `--append-system-prompt-file`, so the same instruction Claude gets
-// invisibly at launch is delivered through the file Codex reads natively: `<cwd>/AGENTS.md`. The
-// bytes come from the SAME builder, so the two agents cannot drift apart. Also clears any
-// per-tool approval prompt on the memory tools — Codex writes `approval_mode = "approve"` the
-// first time a user approves once, and a dialog on `memory_primer` is the difference between
-// having the context and having it behind a click nobody sees.
+// Codex parity. Codex has no `--append-system-prompt-file`, so the memory instruction Claude gets
+// at launch reaches Codex as a one-session config override the renderer appends to the launch
+// command (`-c "developer_instructions='…'"`): nothing is written into the user's repo. Earlier
+// versions wrote `<cwd>/AGENTS.md`; prepareCodexLaunch takes that block back out. It also adds
+// the memory tools' approvals Codex is missing, never changing one the user set, and returns no
+// instruction when the user's config.toml sets developer_instructions itself or they haven't
+// connected the agents. See agentIntegrationManager.ts.
 ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string }) => {
   try {
     if (!opts?.cwd) return err('cwd required')
@@ -2442,9 +2485,9 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
       // the experiment whichever agent it launches, and the arms stay comparable.
       if (steering && armForSession(opts.cwd) === 'holdout') steering = false
     } catch { /* steering optional */ }
-    const agents = writeAgentsMd(opts.cwd, { cwd: opts.cwd, steering, mode: steeringMode })
-    const approvals = ensureCodexMemoryAutoApproved(join(homedir(), '.codex', 'config.toml'))
-    return ok({ file: agents.path, changed: agents.changed, approvals: approvals.tools.length })
+    return ok(prepareCodexLaunch(agentIntegrationPaths(), opts.cwd, {
+      steering: steering ? steeringDirective(steeringMode) : null,
+    }))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -2548,19 +2591,108 @@ ipcMain.handle('workspace:trust', async (_, { cwd }: { cwd: string }) => {
   try { trustWorkspace(cwd); return ok() } catch (e: any) { return err(e.message) }
 })
 
+// The stdio adapter each agent runs to reach this app's MCP server, and the SessionStart hook
+// that loads the memory primer into new Claude Code sessions. Both ship as extraResources.
+function agentAdapterPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.cjs')
+    : join(__dirname, '../../src/mcp-adapter/stdio-adapter.cjs')
+}
+
+function agentHookPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'mcp-adapter', 'memory-primer-hook.cjs')
+    : join(__dirname, '../../src/mcp-adapter/memory-primer-hook.cjs')
+}
+
+// Resolved per call, not cached: CLAUDE_CONFIG_DIR / CODEX_HOME are read from the env the
+// way the agents themselves read them.
+function agentIntegrationPaths(): AgentIntegrationPaths {
+  return resolveAgentIntegrationPaths(homedir(), app.getPath('userData'), process.env)
+}
+
+function agentIntegrationRuntime(): AgentIntegrationRuntime {
+  const hook = agentHookPath()
+  return {
+    paths: agentIntegrationPaths(),
+    adapterPath: agentAdapterPath(),
+    // Forward slashes for the embedded hook command: node accepts them on every OS.
+    hookScriptPath: existsSync(hook) ? hook.replace(/\\/g, '/') : null,
+    // One interpreter decision for all three agents. A bare `node` is ENOENT whenever
+    // Termpolis was started from a desktop launcher (a GUI PATH has no nvm) or on a machine
+    // with no Node at all — the .deb ships Electron, not Node.
+    node: resolveNodeRunner(),
+  }
+}
+
+// The swarm conductor's `--mcp-config` file. It is Termpolis's own file under userData, passed
+// explicitly on the conductor's command line, not an agent config, so it is written whatever
+// the agent-integration consent.
+function writeConductorMcpConfig(): void {
+  try {
+    writeFileSync(
+      join(app.getPath('userData'), 'claude-mcp-config.json'),
+      JSON.stringify(conductorMcpConfig(agentIntegrationRuntime()), null, 2),
+      'utf-8',
+    )
+  } catch (e) {
+    console.warn('Could not write the conductor MCP config (non-fatal):', (e as Error)?.message ?? e)
+  }
+}
+
 // Pre-approve the folder in Claude Code's own config so its workspace-trust dialog
-// never renders. Answering that dialog by typing keys is what used to kill launches —
-// since Claude Code 2.1.x it opens focused on "No, exit", so the blind Enter Termpolis
-// sent as auto-trust quit the session. See src/main/claudeTrust.ts.
+// never renders when Termpolis launches Claude there. Answering that dialog by typing keys
+// is what used to kill launches — since Claude Code 2.1.x it opens focused on "No, exit".
+// Only once the user connected the agents, and never for the home folder or a filesystem
+// root: there Claude asks, as it would anywhere else. See agentIntegrationManager.ts.
 ipcMain.handle('claude:trust-workspace', async (_, { cwd }: { cwd: string }) => {
   try {
+    const paths = agentIntegrationPaths()
+    if (!isFolderTrustAllowed(paths, cwd)) return ok(trustFolderForAgents(paths, cwd))
     // Claude keys a git repo by its ROOT, so seed that too when there is one — it is
     // the exact key Claude itself would write, and it covers launches from a subdir.
     const root = await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 })
       .then((s) => s.trim())
       .catch(() => '')
-    return ok(trustClaudeWorkspace(cwd, { alsoTrust: root ? [root] : [] }))
+    return ok(trustFolderForAgents(paths, cwd, root || null))
   } catch (e: any) { return err(e.message) }
+})
+
+// Agent integration: consent, what Termpolis writes into Claude Code / Codex / Gemini CLI
+// configs, and taking it all back out. Everything runs in agentIntegrationManager.ts.
+ipcMain.handle(AGENT_INTEGRATION_IPC.status, async () => {
+  try { return ok(getAgentIntegrationStatus(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle(AGENT_INTEGRATION_IPC.set, async (_, req: AgentIntegrationSetRequest) => {
+  try {
+    if (!req || typeof req.connect !== 'boolean') return err('connect must be true or false')
+    const primerHook = typeof req.primerHook === 'boolean' ? req.primerHook : undefined
+    const result = setAgentIntegration(agentIntegrationRuntime(), { connect: req.connect, primerHook })
+    // The swarm conductor's config is Termpolis's own and is kept either way.
+    writeConductorMcpConfig()
+    return ok(result)
+  } catch (e: any) { return err(e.message) }
+})
+
+// Asked by App.tsx's prompt poller before it answers a folder-trust prompt. The folder is the
+// shell's LIVE directory where it can be probed (an agent relaunched after `cd ~` asks about
+// home), else the renderer's shell-integration cwd. The git root is checked too, because
+// Codex applies trust to the repository root, not the folder opened.
+ipcMain.handle(AGENT_INTEGRATION_IPC.folderTrustAllowed, async (_, req: { terminalId?: unknown; fallbackCwd?: unknown }) => {
+  try {
+    const paths = agentIntegrationPaths()
+    const live = typeof req?.terminalId === 'string' ? await getTerminalCwdAsync(req.terminalId) : null
+    const cwd = live || req?.fallbackCwd
+    if (typeof cwd !== 'string' || !cwd || !isFolderTrustAllowed(paths, cwd)) return ok(false)
+    const root = await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 })
+      .then((s) => s.trim()).catch(() => '')
+    return ok(isFolderTrustAllowed(paths, cwd, root || null))
+  } catch (e: any) { return err(e.message) }
+})
+
+ipcMain.handle(AGENT_INTEGRATION_IPC.removeCodexHomeTrust, async () => {
+  try { return ok(removeCodexHomeTrust(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('workspace:revoke-trust', async (_, { cwd }: { cwd: string }) => {
@@ -3101,13 +3233,14 @@ if (!gotTheLock) {
     // regress. The worker is spawned lazily on the first embed, off the main thread.
     try { setWorkerSpawner(() => createWorkerTransport()) } catch { /* keep in-process embedding */ }
 
-    // Tier 3 heartbeat — counts unique daily launches. Internally de-duped
-    // to once per UTC day, so re-opening the window does not re-fire.
+    // Usage-statistics heartbeat — counts unique daily launches, and only with
+    // that tier on. Internally de-duped to once per UTC day, so re-opening the
+    // window does not re-fire.
     try { dailyLaunchPing(app.getVersion()) } catch {}
 
     // Check GitHub releases for updates, auto-download in background,
     // notify renderer when ready to install.
-    initAutoUpdater(() => mainWindow, { onBeforeQuitAndInstall: () => { quittingForUpdate = true } })
+    initAutoUpdater(() => mainWindow, { onBeforeQuitAndInstall: (armed?: boolean) => { quittingForUpdate = armed !== false } })
 /** `memorySearch` with the in-flow correction overlay already applied.
  *
  *  A correction binds to the MEMORY, not to the one tool the user noticed the bad fact in,
@@ -3263,12 +3396,16 @@ async function semanticPoolOptions(
       // Promise.all over safeGitAsync is the pattern the renderer-facing git handlers in
       // this same file already use; this one was just never converted. Each arm keeps its
       // own catch so a detached HEAD or an empty repo still yields the other two answers.
+      // Connected agents may call this without a prompt, in any folder they name, and
+      // `git status` runs whatever command that repo's own .git/config puts in
+      // core.fsmonitor. Switching it off (submodules inherit -c) keeps a planted config
+      // from running anything.
       getGitStatus: async (cwd) => {
         const run = async (args: string[]) => {
           try { return (await safeGitAsync(args, { cwd, timeout: 3000 })).trim() } catch { return '' }
         }
         const [status, recentCommits, branch] = await Promise.all([
-          run(['status', '--short']),
+          run(['-c', 'core.fsmonitor=false', 'status', '--short']),
           run(['log', '--oneline', '-5']),
           run(['rev-parse', '--abbrev-ref', 'HEAD']),
         ])
@@ -3630,9 +3767,19 @@ async function semanticPoolOptions(
       ipcMain.handle('tokenSavings:set-settings', (_e, p) => {
         const next = setHeadroomSettings(p || {})
         try { saveSettingsToDisk(hrDir) } catch { /* best effort */ }
-        try { setProxyMode(next.mode) } catch { /* proxy honors the new mode live; aggressive default holds if this fails */ }
+        // Re-tier only when a tier input changed. Pushing next.mode on every save dropped a
+        // floor-escalated tier back to the selector's value whenever an unrelated box was ticked.
+        const patch = (p || {}) as Record<string, unknown>
+        if ('mode' in patch || 'floorControl' in patch) {
+          try {
+            const wm = next.floorControl ? resolveWireMode(next.mode, summarizeProxySavings().cumulative) : next.mode
+            setProxyMode(wm)
+          } catch { /* proxy honors the new mode live; aggressive default holds if this fails */ }
+        }
         try { setProxyDecay(next.prefixDecay) } catch { /* decay stays where it was → never silently turns itself on */ }
         try { setProxyThinkingCap(next.thinkingCap) } catch { /* cap stays where it was → never silently tightens */ }
+        // The master switch acts on NEW launches only; a live session keeps the port it was given.
+        try { setProxyEnabled(next.wireProxy); if (next.wireProxy) ensureHeadroomProxy() } catch { /* best effort */ }
         return ok(next)
       })
       ipcMain.handle('tokenSavings:get-receipt', () => ok(summarizeHeadroomSavings()))
@@ -3656,9 +3803,10 @@ async function semanticPoolOptions(
       })
     } catch { /* headroom persistence is best-effort */ }
 
-    // ── Headroom compression proxy: ALWAYS-ON for Claude Code ───────────────────────────────────
+    // ── Headroom compression proxy for Claude Code: ON by default, the user's switch───────────────────────────────────
     // Runs in a utilityProcess (off the main/PTY thread). Claude terminals launch through it via
-    // ANTHROPIC_BASE_URL. Health-gated AT LAUNCH: if the proxy isn't up, getProxyEnv() returns null and
+    // ANTHROPIC_BASE_URL — unless Settings switched it off or the user already routes Anthropic
+    // traffic (a base URL, an outbound proxy or a cloud provider; see userRoutingVar). Health-gated AT LAUNCH: if the proxy isn't up, getProxyEnv() returns null and
     // Claude launches DIRECT. A live session is pinned to the proxy port for its lifetime, so a
     // sustained proxy outage would surface transient API errors until the child self-heals — it rebinds
     // the SAME port and maybeRestart() never gives up (backs off, then retries). New launches during an
@@ -3688,7 +3836,22 @@ async function semanticPoolOptions(
       // The result only lands once the upstream response ends, but Claude can call retrieve_full
       // the moment the token streams back — so the originals are committed on the request path too.
       onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } } })
+      // A route set in Claude Code's own settings.json `env` block counts like one in our env.
+      setAgentEnvReader(() => {
+        const read = readJsonObject(join(agentIntegrationPaths().claudeDir, 'settings.json'))
+        const env = read.kind === 'ok' ? read.value.env : null
+        return env && typeof env === 'object' && !Array.isArray(env) ? env : null
+      })
       ipcMain.handle('tokenSavings:get-proxy-receipt', () => ok(summarizeProxySavings()))
+      // What the proxy is actually doing, as opposed to what Settings asked for: floor control may
+      // have raised the tier, and the user's own routing may have sent it aside entirely.
+      ipcMain.handle('tokenSavings:get-proxy-status', () => {
+        const hs = getHeadroomSettings()
+        return ok({
+          enabled: isProxyEnabled(), running: isProxyStarted(), healthy: isProxyHealthy(),
+          bypassVar: userRoutingVar(), selectedMode: hs.mode, effectiveMode: getProxyMode(),
+        })
+      })
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
       // Carry the user's mode + thinking cap into the proxy child from its very first init
@@ -3706,8 +3869,10 @@ async function semanticPoolOptions(
         setProxyMode(wireMode)
         setProxyThinkingCap(hs.thinkingCap)
         setProxyDecay(hs.prefixDecay)
+        setProxyEnabled(hs.wireProxy)
       } catch { /* defaults hold */ }
-      void pickFreePort().then((port) => { if (port > 0) startProxy({ port }) })
+      // Switched off → no child at all. Settings starts it the moment the user turns it back on.
+      if (getHeadroomSettings().wireProxy) ensureHeadroomProxy()
     } catch { /* headroom proxy is best-effort; Claude launches direct */ }
 
     // ── The memory brain starts in ANOTHER PROCESS ────────────────────────────────────────────────
@@ -4167,17 +4332,11 @@ async function semanticPoolOptions(
       }
     }).catch(() => { /* the port failure is already reported above */ })
 
-    // Auto-register Termpolis as an MCP server in Claude Code's settings
-    const adapterPath = app.isPackaged
-      ? join(process.resourcesPath, 'mcp-adapter', 'stdio-adapter.cjs')
-      : join(__dirname, '../../src/mcp-adapter/stdio-adapter.cjs')
-
-    // One interpreter decision for all three agents. Codex and Gemini used to
-    // hardcode `command = "node"`, which on Linux is an outright ENOENT whenever
-    // Termpolis was started from a desktop launcher (a GUI PATH has no nvm) or on
-    // a machine with no Node at all — the .deb ships Electron, not Node. Reported
-    // from Codex on Linux as: MCP startup failed: No such file or directory.
-    const nodeRunner = resolveNodeRunner()
+    // Agent integration (Claude Code, Codex, Gemini CLI) is consent-gated. agentIntegrationManager
+    // writes into an agent's config only after the user connects the agents (onboarding, the
+    // one-time review, or Settings ▸ Agent integration). Boot runs the one-time cleanups of what
+    // older versions wrote without asking, then re-applies the connection if there is one.
+    const adapterPath = agentAdapterPath()
 
     // Preflight — if the adapter file isn't on disk, EVERY Claude Code session
     // will silently fail to register the Termpolis MCP server, and the
@@ -4192,144 +4351,17 @@ async function semanticPoolOptions(
       } catch {}
     }
 
-    // Portable SessionStart memory hook — ships alongside the adapter and is
-    // registered into every user's Claude settings so memory recall is
-    // deterministic (digest injected at session start, not reliant on the model).
-    const hookPath = app.isPackaged
-      ? join(process.resourcesPath, 'mcp-adapter', 'memory-primer-hook.cjs')
-      : join(__dirname, '../../src/mcp-adapter/memory-primer-hook.cjs')
+    // Portable SessionStart memory hook — ships alongside the adapter. Claude Code gets it only
+    // when the user connected the agents and left the memory hook on.
+    const hookPath = agentHookPath()
     if (!require('fs').existsSync(hookPath)) {
       console.warn(`[memory-primer] SessionStart hook not found at ${hookPath} — deterministic memory recall will be disabled for new Claude sessions (non-fatal).`)
     }
 
-    // Also write standalone config for reference
-    const mcpConfigPath = join(app.getPath('userData'), 'claude-mcp-config.json')
-    const mcpConfig = { mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }
-    require('fs').writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+    writeConductorMcpConfig()
 
-    // Auto-inject into Claude Code's global settings (~/.claude/settings.json).
-    // Registers MCP server + auto-trusts all Termpolis tools. All robustness
-    // (corrupt JSON, missing file, wrong types, atomic write) lives in the helper.
-    {
-      const claudeSettingsPath = join(homedir(), '.claude', 'settings.json')
-      // Normalize to forward slashes for the embedded command string (node
-      // accepts them on every OS; the registry also normalizes defensively).
-      const r = registerInClaudeSettings(claudeSettingsPath, adapterPath, hookPath.replace(/\\/g, '/'), nodeRunner)
-      if (r.changed) console.log('Auto-registered Termpolis MCP server, tool permissions, and memory hook in Claude Code settings')
-      else if (r.error) console.log('Could not auto-register in Claude Code settings (non-fatal):', r.skipped, r.error)
-    }
-
-    // Also write to ~/.mcp.json (global MCP config that Claude Code actually loads).
-    {
-      const globalMcpPath = join(homedir(), '.mcp.json')
-      const r = registerInGlobalMcp(globalMcpPath, adapterPath, nodeRunner)
-      if (r.changed) console.log('Auto-registered Termpolis in global ~/.mcp.json')
-      else if (r.error) console.log('Could not write ~/.mcp.json (non-fatal):', r.skipped, r.error)
-    }
-
-    // Register as a Claude Code local plugin (this is how Claude actually loads MCP servers)
-    // Write to BOTH the marketplace source AND the cache (Claude reads from cache at startup)
-    try {
-      const localMarketplace = join(homedir(), '.claude', 'local-marketplace')
-      const pluginDir = join(localMarketplace, 'plugins', 'termpolis')
-      const pluginMetaDir = join(pluginDir, '.claude-plugin')
-      require('fs').mkdirSync(pluginMetaDir, { recursive: true })
-
-      // Plugin manifest
-      const pluginJson = join(pluginMetaDir, 'plugin.json')
-      if (!require('fs').existsSync(pluginJson)) {
-        require('fs').writeFileSync(pluginJson, JSON.stringify({
-          name: 'termpolis',
-          description: 'AI-native terminal manager MCP server. Create terminals, run commands, read output, and coordinate multi-agent swarms.',
-          author: { name: 'Termpolis' }
-        }, null, 2))
-      }
-
-      // MCP config for the plugin — Claude Code expects the mcpServers wrapper;
-      // without it the server silently fails to register and the conductor has
-      // no MCP tool access (symptom: swarm posts "analyzing..." then nothing).
-      const pluginMcp = join(pluginDir, '.mcp.json')
-      const mcpContent = JSON.stringify({ mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }, null, 2)
-      const existingMcp = require('fs').existsSync(pluginMcp) ? require('fs').readFileSync(pluginMcp, 'utf-8') : ''
-      if (existingMcp !== mcpContent) {
-        require('fs').writeFileSync(pluginMcp, mcpContent)
-      }
-
-      // Enable the plugin in Claude Code settings
-      let marketplaceName = 'local-plugins'
-      if (require('fs').existsSync(join(homedir(), '.claude', 'settings.json'))) {
-        const settings = JSON.parse(require('fs').readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'))
-        if (!settings.enabledPlugins) settings.enabledPlugins = {}
-
-        // Detect local marketplace name from settings
-        if (settings.extraKnownMarketplaces) {
-          for (const [name, config] of Object.entries(settings.extraKnownMarketplaces as Record<string, any>)) {
-            if (config?.source?.path?.includes('local-marketplace')) {
-              marketplaceName = name
-              break
-            }
-          }
-        }
-
-        const pluginKey = `termpolis@${marketplaceName}`
-        if (!settings.enabledPlugins[pluginKey]) {
-          settings.enabledPlugins[pluginKey] = true
-          const tmpPath = join(homedir(), '.claude', 'settings.json.tmp')
-          require('fs').writeFileSync(tmpPath, JSON.stringify(settings, null, 2), 'utf-8')
-          require('fs').renameSync(tmpPath, join(homedir(), '.claude', 'settings.json'))
-          console.log(`Enabled Termpolis plugin as ${pluginKey}`)
-        }
-      }
-      // Also write directly to the plugin cache (Claude reads from cache at startup)
-      const cacheDir = join(homedir(), '.claude', 'plugins', 'cache', marketplaceName, 'termpolis', '1.0.0')
-      const cacheMetaDir = join(cacheDir, '.claude-plugin')
-      require('fs').mkdirSync(cacheMetaDir, { recursive: true })
-      require('fs').writeFileSync(join(cacheMetaDir, 'plugin.json'), JSON.stringify({
-        name: 'termpolis',
-        description: 'AI-native terminal manager MCP server. Create terminals, run commands, read output, and coordinate multi-agent swarms.',
-        author: { name: 'Termpolis' }
-      }, null, 2))
-      require('fs').writeFileSync(join(cacheDir, '.mcp.json'), mcpContent)
-      console.log('Termpolis plugin cached at:', cacheDir)
-
-      // Register in marketplace.json manifest (required for Claude to discover the plugin)
-      const marketplaceJsonPath = join(localMarketplace, '.claude-plugin', 'marketplace.json')
-      if (require('fs').existsSync(marketplaceJsonPath)) {
-        const manifest = JSON.parse(require('fs').readFileSync(marketplaceJsonPath, 'utf-8'))
-        if (manifest.plugins && !manifest.plugins.some((p: any) => p.name === 'termpolis')) {
-          manifest.plugins.push({
-            name: 'termpolis',
-            description: 'AI-native terminal manager MCP server. Create terminals, run commands, read output, manage split panes, and coordinate multi-agent swarms.',
-            version: '1.0.0',
-            author: { name: 'Termpolis' },
-            source: './plugins/termpolis',
-            category: 'development',
-            strict: false,
-          })
-          const tmpManifest = marketplaceJsonPath + '.tmp'
-          require('fs').writeFileSync(tmpManifest, JSON.stringify(manifest, null, 2), 'utf-8')
-          require('fs').renameSync(tmpManifest, marketplaceJsonPath)
-          console.log('Registered Termpolis in marketplace.json manifest')
-        }
-      }
-    } catch (e) {
-      console.log('Could not register Claude Code plugin (non-fatal):', (e as any).message)
-    }
-
-    // Auto-register in Codex CLI (~/.codex/config.toml)
-    {
-      const codexConfigPath = join(homedir(), '.codex', 'config.toml')
-      const r = registerInCodex(codexConfigPath, adapterPath, nodeRunner)
-      if (r.changed) console.log('Auto-registered Termpolis MCP server in Codex CLI config')
-      else if (r.error) console.log('Could not register in Codex config (non-fatal):', r.skipped, r.error)
-    }
-
-    // Auto-register in Gemini CLI (~/.gemini/settings.json)
-    {
-      const geminiSettingsPath = join(homedir(), '.gemini', 'settings.json')
-      const r = registerInGemini(geminiSettingsPath, adapterPath, nodeRunner)
-      if (r.changed) console.log('Auto-registered Termpolis MCP server in Gemini CLI settings')
-      else if (r.error) console.log('Could not register in Gemini settings (non-fatal):', r.skipped, r.error)
+    for (const c of bootAgentIntegration(agentIntegrationRuntime()).changes) {
+      console.log(`[agents] ${c.agent}: ${c.action} ${c.what} (${c.file})${c.error ? ` — ${c.error}` : ''}`)
     }
 
     // Global hotkeys. On Windows/Linux these are Win+Shift+T / Win+Shift+S; on macOS `Super` is Cmd

@@ -6,7 +6,7 @@
 //
 // Lives in its own tiny module so importing it does NOT pull the heavy,
 // lazy-loaded SettingsPane bundle into the caller (e.g. TerminalPane).
-export type SettingsTab = 'general' | 'memory' | 'security' | 'voice' | 'keybindings' | 'agents' | 'shell' | 'tokenSavings' | 'remote' | 'mcp' | 'processes'
+export type SettingsTab = 'general' | 'memory' | 'security' | 'voice' | 'keybindings' | 'agents' | 'shell' | 'tokenSavings' | 'remote' | 'agentIntegration' | 'mcp' | 'processes'
 
 let pending: SettingsTab | null = null
 

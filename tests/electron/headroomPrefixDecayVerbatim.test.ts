@@ -4,11 +4,10 @@ import {
 } from '../../src/main/headroomProxy/prefixDecay'
 
 /**
- * Decay guarded only on the naming keys. It had no TOOL_USE_VERBATIM check and no isExempt check,
- * so a Write `content`, a Bash `command`, an Edit `old_string` or an apply_patch `patch` old enough
- * to age out was replaced wholesale by a 134-char stub — the replay-poisoning class the live
- * compressor was deliberately changed to avoid in v1.36 (wireCompress.ts:412-420). It shipped ON by
- * default with no test covering any of it.
+ * Decay never rewrites a tool_use input, at any age. It once guarded only on the naming keys, so a
+ * Write `content`, a Bash `command` or an apply_patch `patch` old enough to age out became a
+ * 134-char stub that the model then replayed. Decay now has no tool_use branch at all: only
+ * tool_result text ages out.
  */
 const big = (tag: string): string => `${tag}:` + 'x'.repeat(DECAY_MIN_CHARS * 2)
 
@@ -30,7 +29,7 @@ const decay = (blocks: Array<Record<string, unknown>>): {
 const field = (b: Record<string, unknown>, k: string): string =>
   (b.input as Record<string, string>)[k]
 
-describe('prefix decay — must not rewrite the agent\'s own artifacts', () => {
+describe('prefix decay — must not rewrite any tool_use input', () => {
   it('leaves every TOOL_USE_VERBATIM field byte-identical', () => {
     const content = big('body'); const command = big('cmd')
     const oldS = big('old'); const newS = big('new'); const patch = big('diff')
@@ -62,15 +61,16 @@ describe('prefix decay — must not rewrite the agent\'s own artifacts', () => {
     expect(counts.tuBlocks).toBe(0)
   })
 
-  it('still ages out a bulk field that is neither a name, an artifact, nor exempt', () => {
+  it('never ages out a bulk field that is neither a name, an artifact, nor exempt', () => {
     const prompt = big('prompt')
     const { input, counts } = decay([
       { type: 'tool_use', id: 'a', name: 'SomeUnlistedTool', input: { prompt } },
     ])
-    expect(field(input[0], 'prompt')).toContain('Aged out')
-    expect(counts.tuBlocks).toBe(1)
-    expect(counts.tuOrigChars).toBe(prompt.length)
-    // ...and bills to the tool_use bucket, not the tool_result one.
+    expect(field(input[0], 'prompt')).toBe(prompt)
+    expect(counts.tuBlocks).toBe(0)
+    expect(counts.tuOrigChars).toBe(0)
+    expect(counts.tuCompChars).toBe(0)
+    // ...and nothing is billed to the tool_result bucket in its place.
     expect(counts.blocks).toBe(0)
     expect(counts.origChars).toBe(0)
   })
@@ -98,11 +98,13 @@ describe('prefix decay — must not rewrite the agent\'s own artifacts', () => {
     }
   })
 
-  it('keeps filePath and file whole — PATH_KEYS claimed they were already skipped', () => {
+  it('keeps long filePath and file values whole', () => {
     const filePath = big('/a/very/long/generated/path')
+    const file = big('/b/f')
     const { input } = decay([
-      { type: 'tool_use', id: 'a', name: 'SomeUnlistedTool', input: { filePath, file: big('/b/f') } },
+      { type: 'tool_use', id: 'a', name: 'SomeUnlistedTool', input: { filePath, file } },
     ])
     expect(field(input[0], 'filePath')).toBe(filePath)
+    expect(field(input[0], 'file')).toBe(file)
   })
 })

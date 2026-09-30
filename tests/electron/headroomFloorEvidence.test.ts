@@ -63,8 +63,9 @@ describe('per-request floor evidence', () => {
   })
 
   it('judges a request on BOTH wire surfaces together, not tool_result alone', () => {
-    // tool_result alone would read 0% here; with the tool_use half included it clears the floor.
-    // Splitting the denominator per surface would let either one alone trigger a false breach.
+    // Ledger arithmetic only: the live wire now always reports tool_use as 0, but the pair stays in
+    // the schema and the ledger still sums both surfaces into one denominator. tool_result alone
+    // would read 0% here; splitting the denominator would let either surface trigger a false breach.
     recordProxyResult(request(20000, 20000, 20000, 0))
     const { session } = summarizeProxySavings()
     expect(session.worstSavedPct).toBe(50)

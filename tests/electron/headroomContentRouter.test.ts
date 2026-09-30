@@ -238,7 +238,7 @@ describe('hint plumbing', () => {
   it('refuses to outline what the agent WROTE — that body gets replayed onto disk', () => {
     // The router is happy to outline this content, and for a tool_RESULT it does. A Write's own
     // `content` is different in kind: the agent copies it forward, so an outline of it becomes the
-    // file. See TOOL_USE_VERBATIM in wireCompress.ts for the field report this comes from.
+    // file. See TOOL_USE_VERBATIM in wireCompress.ts: no tool_use input is ever rewritten.
     const src = tsFile(8)
     const body = JSON.stringify({
       model: 'claude-x',
@@ -303,8 +303,8 @@ describe('cache safety', () => {
     expect(resultOf(r.body)).not.toContain('[headroom]')
   })
 
-  it('leaves a tool_use field alone when compression would not shrink it', () => {
-    // Past the 400-char floor but incompressible: one line, no duplicates, not code or JSON.
+  it('leaves a tool_use field alone — compressible or not, tool_use input is never rewritten', () => {
+    // Past the 400-char floor and incompressible anyway: one line, no duplicates, not code or JSON.
     const incompressible = Array.from({ length: 500 }, (_, i) => String.fromCharCode(97 + (i * 7) % 26)).join('')
     const raw = JSON.stringify({
       model: 'claude-x',
@@ -319,7 +319,11 @@ describe('cache safety', () => {
     const r = rewriteMessagesBody(bodyFor(tsFile(8), { file_path: 'src/handlers.ts' }), { decay: true })
     // The code block still routes and shrinks; the decay pass simply contributes nothing.
     expect(r.changed).toBe(true)
-    expect(r.stats.decayedBlocks ?? 0).toBe(0)
+    // Decay bills into the tool_result counters, so "contributes nothing" means the same body
+    // with decay off comes out byte-identical, with identical stats.
+    const off = rewriteMessagesBody(bodyFor(tsFile(8), { file_path: 'src/handlers.ts' }), { decay: false })
+    expect(r.body).toBe(off.body)
+    expect(r.stats).toEqual(off.stats)
   })
 
   it('leaves a tool_result whose content is neither a string nor an array untouched', () => {

@@ -50,7 +50,7 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 
 **What makes it different:**
 
-- **Secure AI-Assisted Development**: a built-in AI Security Center (Settings → Security) auto-scans every AI prompt against 70+ secret patterns (AWS, GitHub, Azure, GCP, Stripe, Slack, JWT, PEM, …), enforces Gemini paid-tier mode, keeps a local JSONL audit log, and surfaces per-provider training-disposition facts sourced from live ToS pages. See the [Security](#security-center) section.
+- **Secure AI-Assisted Development**: a built-in AI Security Center (Settings → AI Security) auto-scans every AI prompt against 70+ secret patterns (AWS, GitHub, Azure, GCP, Stripe, Slack, JWT, PEM, …), enforces Gemini paid-tier mode, keeps a local JSONL audit log, and surfaces per-provider training-disposition facts sourced from live ToS pages. See the [Security](#security-center) section.
 - **Multi-agent swarm**: Claude Code, Codex, and Gemini CLI work together on a task. A dedicated Claude Code instance acts as the conductor.
 - **MCP server** baked in: AI agents can control Termpolis via Model Context Protocol — open terminals, run commands, send messages.
 - **Transparent routing**: every subtask shows *which* agent got it, *why*, and *what it cost*.
@@ -64,14 +64,14 @@ Everything is built around the idea that **you're not writing code alone anymore
 
 ## Security Center
 
-The **AI Security Center** at Settings → Security is the security backbone of Termpolis. Every check runs on the local machine. None of these features send data to Termpolis or any third party.
+The **AI Security Center** at Settings → AI Security is the security backbone of Termpolis. Every check runs on the local machine. None of these features send data to Termpolis or any third party.
 
 - **Per-provider training-disposition facts.** Live ToS-sourced summaries: Claude (default off), Codex (default off), Gemini paid (excluded), Gemini free OAuth (Google may use prompts, flagged yellow).
 - **Auto-scan on every prompt.** Once you launch `claude`, `codex`, or `gemini` in a terminal, every Enter and every paste-sized chunk (≥32 bytes) is scanned in main-process memory against 70+ regex rules before it reaches the PTY. Hits are redacted in place, audited as `redaction_hit` events, and surfaced via a dismissable banner. Catalog covers AWS (access/secret/session), GitHub (classic/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage, SAS, conn-string, AD client secret, DevOps PAT), GCP (SA JSON, OAuth client), AI providers (OpenAI, Anthropic, Google, HuggingFace, Cohere, Replicate), payments (Stripe, PayPal Braintree, Square), comms (Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark), cloud (Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi), CI/CD (CircleCI, Travis, Codecov), observability (Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Mapbox, Okta, Auth0), package registries (npm, PyPI, Docker Hub), secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database connection strings (Postgres/MySQL/MongoDB/Redis), HTTP basic-auth URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead). A manual paste-and-scan box is also available in the Settings panel.
 - **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_GCA`, and `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify which tier the Gemini CLI will hit (Vertex / Code Assist / Paid API key / Free OAuth).
 - **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts shell-level `gemini` invocations and refuses to forward them unless paid-tier credentials are detected. Blocked launches are recorded in the audit log as `BLOCKED: strict-mode + free-tier`.
 - **Local JSONL audit log.** Every AI-agent terminal launch can be appended to `ai-security-audit.jsonl` in userData. Append-only, 10 MB rotated. Wipeable from Settings.
-- **Legal disclaimer.** Apache 2.0 "AS IS". Full disclaimer in `TERMS.md` §5a and inline in Settings → Security.
+- **Legal disclaimer.** Apache 2.0 "AS IS". Full disclaimer in `TERMS.md` §5a and inline in Settings → AI Security.
 
 ## Copy for Slack / Teams / PRs
 
@@ -130,6 +130,16 @@ The welcome screen is where you start from when no terminals are open. It shows:
 - **Tips and shortcuts** — an at-a-glance primer on the command palette, splits, and the swarm.
 
 Press **`Ctrl+T`** (`⌘T` on macOS) to open the new-terminal modal, or click any launch button to spawn one immediately.
+
+### The first-run tour
+
+The first time you open Termpolis, a six-step tour walks you through it: connecting your coding agents, what Termpolis is, setting an API key, launching your first agent or swarm, security, and your privacy choices.
+
+- **Connect your coding agents** (first step) shows exactly what Termpolis would change for each of Claude Code, Codex and Gemini CLI installed on this machine. It has two boxes, both ticked to start: one connects the agents, the other adds the optional SessionStart hook (**Also load project memory when any Claude Code session starts**). Nothing is written to an agent's settings until you finish or skip the tour — see [Connecting your coding agents](#connecting-your-coding-agents).
+- **Your privacy choices** (last step) has two separate boxes, one for crash reports and one for anonymous usage statistics, which start unticked, plus the switch for the [Claude Code compression proxy](#token-savings--the-claude-code-compression-proxy).
+- **Skip tour** (or `Esc`) closes the tour at once and keeps the choices exactly as shown. On a first run, that means your agents are connected and nothing is sent.
+
+Reopen it any time with **Show tour again** in the Help drawer. If you updated from a version before v1.49, Termpolis asks the two questions once instead, in two short reviews — your coding agents first, then privacy — and sends no crash reports or usage statistics until you answer.
 
 ---
 
@@ -251,10 +261,21 @@ Open with the gear icon in the sidebar, or press `Ctrl+,`. The settings panel sl
 - **Agent Capability** — score each AI model across 10 capability categories, influencing swarm routing.
 - **Shells** — default shell per OS, custom shell commands, startup arguments.
 - **Behavior** — confirm on close, copy on select, scrollback size, cursor style, font.
-- **Advanced** — experimental flags, telemetry (off by default), log levels.
+- **General** — default shell, terminal defaults, memory recall, and **Privacy**: crash reports and anonymous usage statistics are two separate switches, both off unless you turn them on, and a change applies at once (details in `PRIVACY.md`).
+- **Token Savings** — Token Headroom, including the switch for the Claude Code compression proxy (see [below](#token-savings--the-claude-code-compression-proxy)).
+- **Agent Integration** — whether Claude Code, Codex and Gemini CLI are connected to Termpolis, every change that made to their settings, and **Disconnect** (see [Connecting your coding agents](#connecting-your-coding-agents)).
 - **Processes** — find and end what is quietly slowing the machine down (see below).
 
 Changes save immediately. There is no "apply" button — edits are persisted to `settings.json` in your data directory.
+
+### Token Savings — the Claude Code compression proxy
+
+By default, each Claude Code session Termpolis launches sends its API requests through a small compression proxy on your own machine (`127.0.0.1`), which forwards them to `api.anthropic.com` and nowhere else. It shrinks tool results — large file reads, command output, search results, MCP results — and pasted images, and the agent can call `retrieve_full` to get any compressed block back in full. It never rewrites a tool call's input: what Claude asked a tool to do — a Bash command, a file edit, a subagent prompt — is forwarded byte-for-byte, however old it is. Codex, Gemini CLI and your shells never go through the proxy.
+
+- **Turn it off** with **Route new Claude Code sessions through the local compression proxy** in Settings → Token Savings (the tour's last step and the one-time privacy review offer the same switch). New sessions then talk to Anthropic directly; a session that is already running keeps its route until it ends.
+- **Your own route wins.** If `ANTHROPIC_BASE_URL`, `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` (upper- or lower-case) is set, or `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY` is on — in Termpolis's environment, or in the `env` block of Claude Code's own `settings.json` (`~/.claude/settings.json`, or the one in your `CLAUDE_CONFIG_DIR`) — the proxy steps aside. Settings → Token Savings names the variable it found; Claude Code keeps the route you configured, and nothing is compressed.
+- **Age out old history** (on by default) swaps old tool results in very long conversations for stubs that `retrieve_full` expands. It never ages out the result of a `retrieve_full` or memory call.
+- The full text of every compressed block stays on your machine, **unencrypted**, in `headroom/ccr` in your data directory (capped at 200 MB).
 
 ### Processes (stuck-process cleanup)
 
@@ -511,7 +532,7 @@ Custom profiles take any command — if it's in your PATH, you can profile it. A
 
 ## 19. MCP Server
 
-Termpolis ships an **MCP (Model Context Protocol) server** so AI agents can control the app from inside a conversation. It listens on `http://localhost:48211` by default (port configurable).
+Termpolis ships an **MCP (Model Context Protocol) server** so AI agents can control the app from inside a conversation. It listens on `http://127.0.0.1:9315` — reachable from this machine only — and moves up to the next free port, as far as 9319, if that one is taken.
 
 ### Available tools (17 total)
 
@@ -534,7 +555,26 @@ Termpolis ships an **MCP (Model Context Protocol) server** so AI agents can cont
 | `memory_search`     | RAG search across shared memory (semantic + keyword)  |
 | `memory_list`       | List recent memory entries                            |
 
-The server is authenticated via a per-launch token that lives in `~/.termpolis/mcp-token` — agents read it at startup. Misuse resistance includes tight origin checks, rate limits, and an audit log.
+The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
+
+### Connecting your coding agents
+
+Termpolis doesn't register itself with an agent until you say so. The first step of the first-run tour, or **Settings → Agent Integration** at any time, lists exactly what it would change for each of Claude Code, Codex and Gemini CLI installed on this machine. Connected, Termpolis:
+
+- **Claude Code** — adds the `termpolis` MCP server at user scope in `~/.claude.json`, as `claude mcp add -s user` would (under your `CLAUDE_CONFIG_DIR` if you set one). It allows 27 read-only and memory tools in `settings.json` so they run without asking; tools that run commands or type into terminals still ask. It marks each folder you open an agent in as trusted — never your home folder, a folder above it, a drive root or a network share root. Optionally, it adds a **SessionStart hook** that loads your project memory whenever a Claude Code session starts, including sessions started outside Termpolis.
+- **Codex** — adds the `termpolis` MCP server to its `config.toml` (a different server you already named `termpolis` is left alone), pre-approves the 14 `memory_*` tools unless you already chose a setting for them, and answers the folder-trust prompt for a folder you open it in, with the same exclusions. Its memory instruction is passed on the launch command (`-c developer_instructions`) for that session only, and not at all if you set your own; nothing is written into your projects.
+- **Gemini CLI** — adds the `termpolis` MCP server to its `settings.json`.
+
+When Termpolis answers a folder-trust prompt, it selects the trust option itself instead of pressing Enter on whatever is highlighted. It never answers a permission, approval or MCP prompt, a `[Y/n]` question or a numbered choice — those wait for you — and while your agents aren't connected it doesn't answer the folder-trust prompt either.
+
+**Disconnect** in Settings → Agent Integration removes everything Termpolis wrote. Uninstalling on Windows does the same (an update doesn't), and `Termpolis --disconnect-agents` does it from the command line on any platform.
+
+Whatever you choose, v1.49 also cleans up once after older versions: it removes a permission that let every Termpolis tool run without asking, the duplicate Termpolis plugin for Claude Code, Termpolis's entry in `~/.mcp.json`, and any trust for your home folder or a drive root.
+
+**Known limitations**
+
+- Disconnect un-trusts only the folders this version marked trusted. Trust that an older Termpolis version added can't be told apart from trust you accepted yourself, so it stays.
+- Older versions wrote a memory note into `AGENTS.md` in project folders. Termpolis removes that note (and the file, if the note was all it held) the next time you launch Codex from Termpolis in that folder, not before.
 
 ---
 
@@ -680,15 +720,15 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 ### How it works
 
 - **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
-- **Shared across all three agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`). One store backs Claude/Codex/Gemini, so a fact one learns is instantly available to the others.
+- **Shared across all three agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`), once you connect them (see [Connecting your coding agents](#connecting-your-coding-agents)). One store backs Claude/Codex/Gemini, so a fact one learns is instantly available to the others.
 - **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\Termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/Termpolis/` on macOS, `~/.config/Termpolis/` on Linux (plain text, hand-editable) — and reloaded with embeddings at startup. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A ~100k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
-- **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver).
+- **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver). With **Auto-recall context on agent launch** on (Settings → General; on by default), every agent you launch is pointed at it: Claude through its system prompt, Codex and Gemini through a one-line pointer typed into their input. The pointer waits while the agent's screen shows something waiting for an answer, such as a trust or approval prompt, or can't be read, so its Enter never answers a prompt for you. If you connected Claude Code with the optional SessionStart hook, sessions you start outside Termpolis load your project memory too.
 - **Current-directory precedence.** The primer leads with context for the project you're standing in — past conversations from this repo first, then its code/notes — and anything from other projects is appended under a "may NOT apply" label. Ingested chunks are tagged with their project (derived from the transcript cwd / repo root), legacy chunks get back-tagged on the next indexer pass, and `memory_search` accepts a `project` filter so agents can scope recall themselves.
 
 ### Using the Memory panel
 
-Open the panel with **Ctrl+Shift+M**, or from **Settings → AI Memory → Open the Memory panel**. From there you can:
+Open the panel with **Ctrl+Shift+M**, or from **Settings → General → Open the Memory panel**. From there you can:
 
 - **See what's stored** — the number of remembered chunks (and how many sit in the in-RAM hot window for fast search).
 - **Search** — type what you're working on and hit **Search** for a semantic lookup across your past conversations and indexed code.
@@ -770,9 +810,11 @@ The bottom strip shows, left to right:
 
 **MCP indicator in status bar is red.** The MCP server failed to start. Look at `~/.termpolis/logs/mcp.log`. Common causes:
 
-- **Port 48211 already in use.** Another instance of Termpolis (or an old crashed one) still owns the port. Kill any stray `termpolis` processes, or change the port in Settings → Advanced.
+- **No free port.** The server tries port 9315, then the next four (up to 9319). If all five are taken — usually by stray Termpolis processes left behind by a crash — it can't start. Kill any stray `termpolis` processes and relaunch.
 - **Firewall blocking localhost.** Rare but possible. Add an exception for `termpolis.exe` / the Termpolis binary.
-- **Token file write failed.** `~/.termpolis/mcp-token` couldn't be written due to permissions. Fix the directory permissions (`chmod 700 ~/.termpolis`).
+- **Token file write failed.** `mcp-token` in the data directory (see [First run](#first-run)) couldn't be written due to permissions. Fix that folder's permissions so your user account can write to it.
+
+**An agent doesn't see Termpolis's tools or memory.** Since v1.49, Termpolis registers itself with Claude Code, Codex and Gemini CLI only after you connect them. Check **Settings → Agent Integration**, connect if needed, then start a new agent session.
 
 **Swarm conductor doesn't launch.** The conductor spawns a Claude Code child process that needs `claude` on PATH (see agent troubleshooting above). Watch `~/.termpolis/logs/conductor.log` for its startup output.
 
@@ -900,7 +942,7 @@ the phone app and the relay is at <https://termpolis.com/privacy.html>.
 │  ├── AI conductor (spawns Claude Code as a child)   │
 │  └── Watchers (event bus + alerts)                  │
 └──────────────────┬──────────────────────────────────┘
-                   │  localhost:48211 (MCP)
+                   │  localhost:9315 (MCP)
 ┌──────────────────▼──────────────────────────────────┐
 │  AI agents (Claude, Codex, Gemini)                  │
 │  Each in its own pty-backed terminal                │

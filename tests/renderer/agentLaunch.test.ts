@@ -4,7 +4,6 @@ import {
   agentTargets,
   SHELL_SETTLE_MS,
   COMMAND_DELAY_MS,
-  AUTO_TRUST_MS,
   DISMISS_MS,
   SLOW_DISMISS_MS,
 } from '../../src/renderer/src/lib/agentLaunch'
@@ -94,12 +93,17 @@ describe('agentLaunch', () => {
       expect(write).toHaveBeenLastCalledWith('t1', 'claude\r')
     })
 
-    it('answers the Codex approval prompt with option 1', () => {
+    // Codex used to get a blind `1⏎` ten seconds in. That accepted its folder-trust prompt
+    // whether or not the user wanted the folder trusted, and it became a chat message when no
+    // prompt showed. A trust prompt is the user's to answer (or App.tsx's poller's, once they
+    // connected the agents), so nothing follows the command.
+    it('types NOTHING at Codex after the command — its trust prompt is the user\'s', () => {
       const write = vi.fn()
       launchAgents([{ id: 't1', agentCommand: 'codex' }], { write })
 
-      vi.advanceTimersByTime(AUTO_TRUST_MS)
-      expect(write).toHaveBeenLastCalledWith('t1', '1\r')
+      vi.advanceTimersByTime(60_000)
+      expect(write.mock.calls).toEqual([['t1', '\r'], ['t1', 'codex\r']])
+      expect(write).not.toHaveBeenCalledWith('t1', '1\r')
     })
 
     it('sends no trust reply for an agent that does not prompt', () => {

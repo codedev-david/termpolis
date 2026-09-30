@@ -5,7 +5,12 @@
 // in-process LLM"). Reflection distills an episode into a lesson by shelling out
 // to the cheapest model tier via the `claude` CLI:
 //
-//     claude -p "<prompt>" --model haiku --dangerously-skip-permissions
+//     claude -p "<prompt>" --model haiku --tools "" --strict-mcp-config
+//
+// Distilling is text in, text out, so the session gets no tools at all: no built-in
+// ones (`--tools ""`) and no MCP servers (`--strict-mcp-config` with no `--mcp-config`
+// loads none). With nothing to call, there is nothing to approve, so it never needs
+// the permission bypass it used to run with.
 //
 // This runs only at task boundaries and is net-negative on tokens (the stored
 // lesson prevents later re-derivation). It is OPTIONAL — mnemeReflect always has
@@ -44,6 +49,8 @@ export interface DistillerOptions {
 const DEFAULT_MODEL = 'haiku'
 const DEFAULT_TIMEOUT_MS = 60_000
 const DEFAULT_BIN = 'claude'
+/** No built-in tools and no MCP servers: the distiller only ever answers in text. */
+export const NO_TOOLS: readonly string[] = ['--tools', '', '--strict-mcp-config']
 
 /**
  * Real subprocess wrapper over node's `execFile`. Promise-wrapped, killed after
@@ -64,8 +71,8 @@ export const defaultExec: ExecFn = (cmd, args, opts) =>
 
 /**
  * Build a headless `LlmDistiller` (the seam consumed by `distillEpisode`). The
- * returned function runs `claude -p <prompt> --model <model>
- * --dangerously-skip-permissions` through the (injectable) `exec`, returning the
+ * returned function runs `claude -p <prompt> --model <model> --tools ""
+ * --strict-mcp-config` through the (injectable) `exec`, returning the
  * trimmed stdout only when the child exited 0 AND produced non-empty output —
  * otherwise `null`. It NEVER throws: any error/timeout from `exec` is swallowed
  * and surfaced as `null` so reflection degrades to the deterministic extractor.
@@ -80,7 +87,7 @@ export function makeHeadlessDistiller(opts: DistillerOptions = {}): LlmDistiller
     try {
       const { stdout, code } = await exec(
         bin,
-        ['-p', prompt, '--model', model, '--dangerously-skip-permissions'],
+        ['-p', prompt, '--model', model, ...NO_TOOLS],
         { timeoutMs },
       )
       const out = stdout.trim()

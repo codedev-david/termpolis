@@ -550,19 +550,24 @@ describe('preload: contextPins API', () => {
 })
 
 describe('preload: telemetry API', () => {
-  it('setTelemetryOptIn invokes telemetry:set-opt-in with value', async () => {
-    await exposed.termpolis.setTelemetryOptIn(true)
-    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:set-opt-in', { value: true })
+  it('telemetrySetConsent invokes telemetry:set-consent with the choice as given', async () => {
+    await exposed.termpolis.telemetrySetConsent({ crash: true, usage: false })
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:set-consent', { crash: true, usage: false })
   })
 
-  it('setTelemetryOptIn passes false through unchanged', async () => {
-    await exposed.termpolis.setTelemetryOptIn(false)
-    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:set-opt-in', { value: false })
+  it('telemetrySetConsent passes a single tier through unchanged', async () => {
+    await exposed.termpolis.telemetrySetConsent({ usage: true })
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:set-consent', { usage: true })
   })
 
-  it('getTelemetryOptIn invokes telemetry:get-opt-in', async () => {
-    await exposed.termpolis.getTelemetryOptIn()
-    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:get-opt-in')
+  it('telemetryGetConsent invokes telemetry:get-consent', async () => {
+    await exposed.termpolis.telemetryGetConsent()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('telemetry:get-consent')
+  })
+
+  it('no longer exposes the retired opt-in bridge', () => {
+    expect(exposed.termpolis.setTelemetryOptIn).toBeUndefined()
+    expect(exposed.termpolis.getTelemetryOptIn).toBeUndefined()
   })
 
   it('recordTelemetryEvent invokes telemetry:record-event with name + props', async () => {

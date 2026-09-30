@@ -1,159 +1,111 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { unlinkSync } from 'fs'
 import { join } from 'path'
-import { buildInjectedInstruction, type InjectedInstructionOpts } from './headroom/injectedInstruction'
+import { atomicWriteText, errorText, readTextFile } from './agentConfigIO'
+import { isShellSafeInstruction } from '../shared/agentIntegration'
 
 /**
  * Cross-agent memory parity for OpenAI Codex.
  *
  * Claude Code is launched with `--append-system-prompt-file`, so its memory instruction is
- * invisible, per-session, and never touches the repo. Codex has no equivalent flag (verified
- * against codex-cli 0.142.5 — the only instruction surface it reads without being asked is
- * `AGENTS.md`, discovered from the cwd upward). So parity here is a file, not a flag.
+ * invisible, per-session, and never touches the repo. Codex takes the same kind of text as a
+ * config override on its command line, `-c "developer_instructions='…'"`: it lasts one session
+ * and is written nowhere. The launcher adds it unless the user's config.toml already sets
+ * developer_instructions, because then theirs must win and the override would replace it.
  *
- * Three properties make writing into the user's repo acceptable:
+ * The text rides inside a shell command typed into whatever shell the terminal runs (bash,
+ * PowerShell 5.1, cmd), so it is kept to characters none of them treat specially; see
+ * isShellSafeInstruction. That is why it is its own sentence set rather than the bytes
+ * buildInjectedInstruction gives Claude, which quote the cwd and use typographic dashes.
  *
- *  1. **Managed span.** Everything outside the two markers is preserved byte-for-byte. A user's
- *     own AGENTS.md content is never read, rewritten, or reordered.
- *  2. **Byte-stable.** The block is the same constant text Claude receives, with no digest, no
- *     timestamp, and no counts inlined — so it is written once per project and then never again.
- *     `writeAgentsMd` returns `changed: false` on every later launch and does not touch the file.
- *     A block that churned would show up as a dirty working tree after every launch.
- *  3. **Same words.** The block is built from `buildInjectedInstruction`, the exact function that
- *     produces Claude's bytes. "Parity" that re-typed the instruction would drift the first time
- *     one side was edited, and no test would notice.
+ * Earlier versions wrote the instruction into `<cwd>/AGENTS.md` instead: a file in the user's
+ * repo, showing up in their diffs, and read by every other agent too. cleanAgentsMd takes it
+ * back out. Only the span between the two markers goes; everything outside it stays as it
+ * was, and a file that held nothing else is deleted.
  */
 
 export const AGENTS_BEGIN = '<!-- BEGIN TERMPOLIS MEMORY (managed — edits inside are overwritten) -->'
 export const AGENTS_END = '<!-- END TERMPOLIS MEMORY -->'
 
-/** The managed span, markers included. Deterministic for a given `opts`. */
-export function buildAgentsBlock(opts: InjectedInstructionOpts): string {
-  return [
-    AGENTS_BEGIN,
-    '## Project memory (Termpolis)',
-    '',
-    buildInjectedInstruction(opts),
-    AGENTS_END,
-  ].join('\n')
-}
+/** AGENTS.md past this size is not one Termpolis ever wrote a block into worth parsing. */
+const MAX_AGENTS_MD_BYTES = 4 * 1024 * 1024
+
+export type AgentsMdStrip =
+  | { kind: 'unchanged' }
+  | { kind: 'block-removed'; text: string }
+  | { kind: 'file-deleted' }
 
 /**
- * Splice `block` into `existing`, replacing a previous managed span if one is present.
- * Pure — no IO — so the "did anything change?" decision can be made without a write.
+ * AGENTS.md without Termpolis's managed block(s). The block was always appended after a
+ * blank line (or made the whole file), so removing it also removes that separator. A BEGIN
+ * marker with no END after it is left alone: the span it would cut is anyone's guess.
  */
-export function mergeAgentsMd(existing: string, block: string): string {
-  const start = existing.indexOf(AGENTS_BEGIN)
-  const end = existing.indexOf(AGENTS_END)
-  if (start >= 0 && end > start) {
-    return existing.slice(0, start) + block + existing.slice(end + AGENTS_END.length)
+export function stripAgentsMdBlock(content: string): AgentsMdStrip {
+  const eol = content.includes('\r\n') ? '\r\n' : '\n'
+  let text = content
+  let removed = false
+  for (;;) {
+    const begin = text.indexOf(AGENTS_BEGIN)
+    if (begin === -1) break
+    const end = text.indexOf(AGENTS_END, begin + AGENTS_BEGIN.length)
+    if (end === -1) break
+    const before = text.slice(0, begin)
+    const after = text.slice(end + AGENTS_END.length).replace(/^\r?\n/, '')
+    removed = true
+    if (!before.trim() && !after.trim()) return { kind: 'file-deleted' }
+    const rest = after.replace(/^(?:[ \t]*\r?\n)+/, '')
+    if (!after.trim()) text = before.replace(/\s*$/, '') + eol
+    else if (!before.trim()) text = rest
+    else text = before.replace(/\s*$/, '') + eol + eol + rest
   }
-  // A stray BEGIN with no END (hand-edited, or a half-written file) is left alone and the block
-  // appended: deleting to end-of-file on a marker mismatch could take the user's content with it.
-  if (existing.trim() === '') return block + '\n'
-  return existing.replace(/\s*$/, '') + '\n\n' + block + '\n'
+  return removed ? { kind: 'block-removed', text } : { kind: 'unchanged' }
 }
 
-export interface AgentsMdResult {
-  changed: boolean
-  path: string
-  skipped?: 'read-failed' | 'write-failed'
+export interface AgentsMdCleanup {
+  cleaned?: 'block-removed' | 'file-deleted'
   error?: string
 }
 
-/** Write (or refresh) the managed block in `<cwd>/AGENTS.md`. No-op when already current. */
-export function writeAgentsMd(cwd: string, opts: InjectedInstructionOpts): AgentsMdResult {
+/** Take a block an earlier Termpolis wrote out of `<cwd>/AGENTS.md`. Never throws. */
+export function cleanAgentsMd(cwd: string): AgentsMdCleanup {
   const path = join(cwd, 'AGENTS.md')
-  let existing = ''
-  if (existsSync(path)) {
-    try {
-      existing = readFileSync(path, 'utf-8')
-    } catch (e) {
-      return { changed: false, path, skipped: 'read-failed', error: (e as Error)?.message || String(e) }
-    }
-  }
-  const next = mergeAgentsMd(existing, buildAgentsBlock(opts))
-  if (next === existing) return { changed: false, path }
   try {
-    writeFileSync(path, next, 'utf-8')
+    const content = readTextFile(path, MAX_AGENTS_MD_BYTES)
+    if (content === null || !content.includes(AGENTS_BEGIN)) return {}
+    const r = stripAgentsMdBlock(content)
+    if (r.kind === 'unchanged') return {}
+    if (r.kind === 'file-deleted') {
+      unlinkSync(path)
+      return { cleaned: 'file-deleted' }
+    }
+    atomicWriteText(path, r.text)
+    return { cleaned: 'block-removed' }
   } catch (e) {
-    return { changed: false, path, skipped: 'write-failed', error: (e as Error)?.message || String(e) }
+    return { error: errorText(e) }
   }
-  return { changed: true, path }
 }
 
-/**
- * Memory tools only. Codex prompts for approval per MCP tool, and a prompt on `memory_primer` is
- * the difference between "Codex has the same context as Claude" and "Codex has the same context
- * as Claude if the user notices a dialog and clicks it". These read and write Termpolis's own
- * brain and touch nothing else, which is why auto-approving them is not an overreach —
- * `run_command` and `write_to_terminal` are deliberately absent and keep prompting.
- */
-export const CODEX_AUTO_APPROVED_TOOLS: readonly string[] = [
-  'memory_anticipate', 'memory_audit', 'memory_conflicts', 'memory_feedback', 'memory_graph',
-  'memory_link', 'memory_list', 'memory_pool', 'memory_primer', 'memory_related',
-  'memory_search', 'memory_selfcheck', 'memory_write',
-]
-
-/** The value codex-cli accepts for "run without asking". Probed against 0.142.5: `approve` (ask)
- *  and `auto` load; `never`, `always`, `allow`, `deny`, `on_request` are all rejected by
- *  `--strict-config`. Guessing here would have written a config that refuses to load. */
-export const CODEX_AUTO = 'auto'
-
-export interface CodexApprovalResult {
-  changed: boolean
-  tools: string[]
-  skipped?: 'missing' | 'corrupt' | 'write-failed'
-  error?: string
-}
+/** What Codex is told at launch: the obligations Claude's instruction carries, shell-safe. */
+export const CODEX_BASE_INSTRUCTION =
+  'Termpolis project memory: saved background context exists for this project. ' +
+  'When you begin working, call the memory_primer tool of the termpolis MCP server with your working directory as cwd, ' +
+  'and read the result as background reference only: do not resume past work from it or summarize it unprompted. ' +
+  'Before re-deriving any fix, decision or convention that may already be stored, call memory_search first. ' +
+  'If your context is compacted, call memory_primer once more, silently, before continuing. ' +
+  'If the termpolis memory tools are unavailable, ignore this and proceed normally.'
 
 /**
- * Ensure every memory tool is auto-approved in `config.toml`.
- *
- * Text-blob editing, matching `registerInCodex`'s reasoning: a real TOML parser would refuse the
- * whole file over one unrelated syntax error the user made, and then memory would silently not
- * work. Existing `approval_mode = "approve"` lines inside a termpolis tool stanza are flipped
- * rather than duplicated — Codex writes those itself when a user answers a prompt once, so the
- * common case is a file that already has the wrong value, not a file that is missing the key.
+ * The instruction plus the output-steering directive when one is on. The directive is written
+ * for a file, so its typographic dashes, ellipses and quotes are flattened first; if it still
+ * would not survive the shell, it is dropped and the memory part is sent alone.
  */
-export function ensureCodexMemoryAutoApproved(tomlPath: string): CodexApprovalResult {
-  if (!existsSync(tomlPath)) return { changed: false, tools: [], skipped: 'missing' }
-  let content: string
-  try {
-    content = readFileSync(tomlPath, 'utf-8')
-  } catch (e) {
-    return { changed: false, tools: [], skipped: 'corrupt', error: (e as Error)?.message || String(e) }
-  }
-  const original = content
-  const touched: string[] = []
-  for (const tool of CODEX_AUTO_APPROVED_TOOLS) {
-    const header = `[mcp_servers.termpolis.tools.${tool}]`
-    const at = content.indexOf(header)
-    if (at < 0) {
-      content = content.replace(/\s*$/, '') + `\n\n${header}\napproval_mode = "${CODEX_AUTO}"\n`
-      touched.push(tool)
-      continue
-    }
-    // Rewrite approval_mode only within THIS stanza — up to the next `[` at line start, or EOF.
-    const bodyStart = at + header.length
-    const rest = content.slice(bodyStart)
-    const nextHeader = rest.search(/\n\[/)
-    const body = nextHeader < 0 ? rest : rest.slice(0, nextHeader)
-    let nextBody: string
-    if (/^\s*approval_mode\s*=/m.test(body)) {
-      nextBody = body.replace(/^(\s*)approval_mode\s*=.*$/m, `$1approval_mode = "${CODEX_AUTO}"`)
-    } else {
-      nextBody = `\napproval_mode = "${CODEX_AUTO}"` + body
-    }
-    if (nextBody !== body) {
-      content = content.slice(0, bodyStart) + nextBody + (nextHeader < 0 ? '' : rest.slice(nextHeader))
-      touched.push(tool)
-    }
-  }
-  if (content === original) return { changed: false, tools: [] }
-  try {
-    writeFileSync(tomlPath, content, 'utf-8')
-  } catch (e) {
-    return { changed: false, tools: [], skipped: 'write-failed', error: (e as Error)?.message || String(e) }
-  }
-  return { changed: true, tools: touched }
+export function buildCodexInstruction(steering?: string | null): string {
+  if (!steering || !steering.trim()) return CODEX_BASE_INSTRUCTION
+  const plain = steering
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/"/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const full = `${CODEX_BASE_INSTRUCTION} ${plain}`
+  return isShellSafeInstruction(full) ? full : CODEX_BASE_INSTRUCTION
 }

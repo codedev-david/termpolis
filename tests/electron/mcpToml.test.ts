@@ -41,7 +41,7 @@ describe('parseCodexMcpServers', () => {
     ])
   })
 
-  it('reads an inline env table, the shape agentMcpRegistry itself writes', () => {
+  it('reads an inline env table, the shape codexConfigEdit itself writes', () => {
     const toml = '[mcp_servers.a]\ncommand = "x"\nenv = { TOKEN = "abc", MODE = \'dev\' }\n'
     expect(parseCodexMcpServers(toml)[0].env).toEqual({ TOKEN: 'abc', MODE: 'dev' })
   })
@@ -70,6 +70,22 @@ describe('parseCodexMcpServers', () => {
       'nonsense-without-an-equals',
     ].join('\n')
     expect(parseCodexMcpServers(toml)).toEqual([{ name: 'ok', command: 'node', url: '' }])
+  })
+
+  it('skips server keys it does not show, without losing the ones around them', () => {
+    // Real Codex servers carry more than command/args/url/env; none of it belongs in the inventory.
+    const toml = [
+      '[mcp_servers.termpolis]',
+      'command = "node"',
+      'startup_timeout_sec = 20',
+      'enabled = true',
+      'args = ["adapter.cjs"]',
+      'env_vars = ["HOME"]',
+      'env = { A = "1" }',
+    ].join('\n')
+    expect(parseCodexMcpServers(toml)).toEqual([
+      { name: 'termpolis', command: 'node', args: ['adapter.cjs'], env: { A: '1' } },
+    ])
   })
 
   it('returns [] for garbage rather than throwing', () => {

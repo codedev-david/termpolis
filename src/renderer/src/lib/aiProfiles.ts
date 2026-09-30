@@ -6,6 +6,7 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
+import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
   PROMPT_ECHO_CEILING_MS,
@@ -42,8 +43,8 @@ export interface LaunchAgentDeps {
 /**
  * Canonical AI-agent launch flow, shared by the sidebar click and the keyboard
  * launch shortcuts. Prompts for a directory, spawns the shell, seeds Claude's
- * project memory invisibly via --append-system-prompt-file when available, then
- * types the launch command and the agent's trust-prompt confirmations.
+ * project memory invisibly via --append-system-prompt-file when available (Codex:
+ * `-c developer_instructions`), then types the launch command.
  */
 export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDeps): Promise<void> {
   const { availableShells, addTerminal, setLaunchingAgent } = deps
@@ -54,8 +55,9 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   setLaunchingAgent(profile.name)
   const id = uuid()
   const shellType = resolveShellType(profile.shell, availableShells)
-  // Claude Code launches through the always-on Headroom compression proxy: signal main
-  // to inject ANTHROPIC_BASE_URL (main owns the proxy env; returns direct if unhealthy).
+  // Claude Code launches through the Headroom compression proxy (on by default): signal main
+  // to inject ANTHROPIC_BASE_URL. Main owns the proxy env and launches direct when the proxy is
+  // switched off, unhealthy, or the user already routes Anthropic traffic elsewhere.
   const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
   const isCodex = profile.id === 'codex' || profile.command.trim().toLowerCase().startsWith('codex')
   const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude)
@@ -99,15 +101,26 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
       })()
     : Promise.resolve(null)
 
-  // Codex parity. Codex takes no system-prompt flag, so the same instruction is written into the
-  // file it reads by itself at session start — `<cwd>/AGENTS.md`. Byte-stable, so this only ever
-  // writes once per project and never dirties a tracked file twice. Overlapped for the same reason.
-  const codexPromise: Promise<void> = isCodex && isAutoPrimerEnabled()
-    ? (async () => { try { await window.termpolis.memoryPrepareCodexContext(cwd) } catch { /* launch bare */ } })()
-    : Promise.resolve()
+  // Codex parity. Codex takes no system-prompt flag, so the same instruction rides on its command
+  // line for this one session (`-c developer_instructions=…`); nothing is written into the
+  // project. The prepare call runs on EVERY Codex launch, whatever the primer setting, because it
+  // also removes the note older versions wrote into `<cwd>/AGENTS.md`. Overlapped for the same
+  // reason as the recall.
+  const codexPromise: Promise<CodexLaunchContext | null> = isCodex
+    ? (async () => {
+        try {
+          const r = await window.termpolis.memoryPrepareCodexContext(cwd)
+          return r?.success && r.data ? r.data : null
+        } catch {
+          return null // launch bare
+        }
+      })()
+    : Promise.resolve(null)
 
   // Pre-approve the folder in Claude Code's own config so its workspace-trust dialog never
-  // renders. Overlapped with the recall and the shell wait — it is a small local file write —
+  // renders — only once the user connected the agents, and never for the home folder or a drive
+  // root (main decides and otherwise writes nothing). Overlapped with the recall and the shell
+  // wait — it is a small local file write —
   // but AWAITED before the command is typed, because the seed only counts if it is on disk
   // before Claude reads it. See src/main/claudeTrust.ts for why typing Enter is not the answer.
   const claudeTrusted: Promise<void> = isClaude
@@ -124,7 +137,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   })
 
   const primer = await primerPromise
-  await codexPromise
+  const codex = await codexPromise
   if (primer === 'failed') {
     useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
   } else if (primer) {
@@ -136,6 +149,17 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     // looks like nothing happened (#1 observable recall). Auto-dismisses (App.tsx).
     const n = primer.count
     useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
+  }
+  // The instruction is typed into the user's shell, so it goes on only if it is still the plain
+  // text main promised: no quote, `$`, backtick or `%` that a shell would act on.
+  const codexText = codex?.developerInstructions
+  if (codexText && isAutoPrimerEnabled() && isShellSafeInstruction(codexText)) {
+    launchCommand = `${launchCommand} -c "developer_instructions='${codexText}'"`
+  }
+  if (codex?.agentsMdCleaned) {
+    useTerminalStore.getState().setMemoryNotice(codex.agentsMdCleaned === 'file-deleted'
+      ? `🧹 Deleted AGENTS.md in "${label}": it held only the memory note older Termpolis versions wrote`
+      : `🧹 Removed the memory note older Termpolis versions wrote into AGENTS.md in "${label}"`)
   }
   // Per-profile model selection: append a validated --model for Claude launches.
   if (isClaude) launchCommand = launchCommand + claudeModelArg(profile.model)
@@ -188,20 +212,11 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     ceilingMs: testDelay(PROMPT_ECHO_CEILING_MS),
   })
   writeIfAlive(launchCommand + '\r')
-  // Auto-trust: Codex still shows a trust prompt a few seconds after the command. It is BLIND —
-  // sent on a timer whether or not a prompt is showing — so it is measured from the command, not
-  // from the launch click. Typing the command earlier without this would stretch the gap it was
-  // tuned for (4.5 s) to as much as 8.5 s, widening the window for a stray keypress to land
-  // somewhere it was never meant to.
-  //
-  // Claude has NO blind reply any more. Its dialog now opens focused on "No, exit", so a timed
-  // Enter quit the session instead of trusting it — the folder is pre-approved in config above,
-  // and if the dialog somehow still appears, App.tsx's poller answers the row that is actually
-  // highlighted rather than guessing.
-  if (profile.command.startsWith('codex')) {
-    // Codex requires '1' to trust the directory
-    setTimeout(() => writeIfAlive('1\r'), testDelay(afterCommandDelay(9000)))
-  }
+  // Nothing is typed after the command. Codex used to get a blind `1⏎` on a timer, which accepted
+  // its folder-trust prompt whether or not the user wanted that folder trusted, and Claude a blind
+  // Enter, which since its dialog opens on "No, exit" quit the session instead. A trust prompt is
+  // the user's to answer. Only once they connected the agents does App.tsx's poller answer it, on
+  // the row that is actually highlighted, and never for the home folder or a drive root.
   const dismissMs = profile.id === 'gemini' ? 15000 : 8000
   setTimeout(() => setLaunchingAgent(null), testDelay(afterCommandDelay(dismissMs)))
 }

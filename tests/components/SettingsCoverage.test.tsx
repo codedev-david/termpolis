@@ -145,7 +145,8 @@ function makeTermpolis(): Record<string, unknown> {
     getHomedir: vi.fn().mockResolvedValue({ success: true, data: '/home/test' }),
     readConfigFile: vi.fn().mockResolvedValue({ success: true, data: '# config' }),
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
-    setTelemetryOptIn: vi.fn().mockResolvedValue({ success: true }),
+    telemetryGetConsent: vi.fn().mockResolvedValue({ success: true, data: { crash: false, usage: false, consentVersion: 2, needsReview: false } }),
+    telemetrySetConsent: vi.fn().mockResolvedValue({ success: true, data: { crash: false, usage: false, consentVersion: 2, needsReview: false } }),
     getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
     memoryGetPrimerLimit: vi.fn().mockResolvedValue({ success: true, data: 10 }),
     memorySetPrimerLimit: vi.fn().mockResolvedValue({ success: true }),
@@ -956,6 +957,34 @@ describe('SettingsPane — tab switching', () => {
     fireEvent.click(screen.getByTestId('settings-tab-general'))
     expect(screen.getByText('Default Shell')).toBeInTheDocument()
     expect(screen.queryByText('Shell Config Files')).toBeNull()
+  })
+
+  it('opens the agent integration panel from its tab', async () => {
+    tp().agentIntegrationStatus = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        consent: 'granted',
+        legacyDetected: false,
+        connected: true,
+        primerHook: true,
+        agents: {
+          claude: { installed: true, configPath: '/home/test/.claude.json', registered: true },
+          codex: { installed: false, configPath: '/home/test/.codex/config.toml', registered: false },
+          gemini: { installed: false, configPath: '/home/test/.gemini/settings.json', registered: false },
+        },
+        autoAllowedTools: [],
+        trustedFolders: [],
+        codexHomeTrusted: false,
+      },
+    })
+    render(<SettingsPane />)
+    expect(screen.getByTestId('settings-tab-agentIntegration')).toHaveTextContent('Agent Integration')
+    expect(screen.queryByTestId('agent-integration-settings')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('settings-tab-agentIntegration'))
+    expect(await screen.findByTestId('agent-integration-status')).toBeInTheDocument()
+    expect(tp().agentIntegrationStatus).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Default Shell')).toBeNull()
   })
 
   it('underlines only the active tab', () => {

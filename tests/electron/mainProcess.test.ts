@@ -1258,33 +1258,37 @@ describe('window:close', () => {
 })
 
 // =========================================================================
-// Telemetry IPC — opt-in mirror + event capture
+// Telemetry IPC — consent + event capture
 // =========================================================================
 describe('telemetry IPC', () => {
-  it('telemetry:set-opt-in flips main-process state and persists', async () => {
-    const result = await invokeHandler('telemetry:set-opt-in', { value: true })
-    expect(result.success).toBe(true)
-    expect(result.data?.optIn).toBe(true)
+  it('telemetry:set-consent sets each tier on its own, and get-consent reads it back', async () => {
+    const crashOnly = await invokeHandler('telemetry:set-consent', { crash: true, usage: false })
+    expect(crashOnly).toEqual({ success: true, data: { crash: true, usage: false, consentVersion: 2, needsReview: false } })
 
-    const get1 = await invokeHandler('telemetry:get-opt-in')
-    expect(get1).toEqual({ success: true, data: true })
+    // A tier left out keeps its value.
+    const plusUsage = await invokeHandler('telemetry:set-consent', { usage: true })
+    expect(plusUsage.data).toMatchObject({ crash: true, usage: true })
 
-    const off = await invokeHandler('telemetry:set-opt-in', { value: false })
-    expect(off.success).toBe(true)
-    expect(off.data?.optIn).toBe(false)
+    const get1 = await invokeHandler('telemetry:get-consent')
+    expect(get1).toEqual({ success: true, data: { crash: true, usage: true, consentVersion: 2, needsReview: false } })
 
-    const get2 = await invokeHandler('telemetry:get-opt-in')
-    expect(get2).toEqual({ success: true, data: false })
+    const off = await invokeHandler('telemetry:set-consent', { crash: false, usage: false })
+    expect(off.data).toMatchObject({ crash: false, usage: false })
+
+    const get2 = await invokeHandler('telemetry:get-consent')
+    expect(get2.data).toMatchObject({ crash: false, usage: false, consentVersion: 2 })
   })
 
-  it('telemetry:set-opt-in coerces non-true values to false', async () => {
-    const result = await invokeHandler('telemetry:set-opt-in', { value: '1' })
-    expect(result.success).toBe(true)
-    expect(result.data?.optIn).toBe(false)
+  it('telemetry:set-consent refuses a non-boolean tier and changes nothing', async () => {
+    await invokeHandler('telemetry:set-consent', { crash: false, usage: false })
+    const result = await invokeHandler('telemetry:set-consent', { crash: '1' })
+    expect(result).toEqual({ success: false, error: 'crash and usage must be booleans' })
+    const after = await invokeHandler('telemetry:get-consent')
+    expect(after.data).toMatchObject({ crash: false, usage: false })
   })
 
-  it('telemetry:record-event accepts a name + props (no-op when opted out)', async () => {
-    // Default: opted out — but the handler still returns ok (no-op internally)
+  it('telemetry:record-event accepts a name + props (no-op with usage statistics off)', async () => {
+    // Usage statistics off — but the handler still returns ok (no-op internally)
     const result = await invokeHandler('telemetry:record-event', {
       name: 'feature.click',
       props: { area: 'sidebar' },
@@ -1336,8 +1340,8 @@ describe('IPC handler registration', () => {
       'swarm:clear',
       'diagnostics:collect',
       'shell:open-external',
-      'telemetry:set-opt-in',
-      'telemetry:get-opt-in',
+      'telemetry:get-consent',
+      'telemetry:set-consent',
       'telemetry:record-event',
     ]
 
@@ -2180,6 +2184,18 @@ describe('MCP handler callbacks', () => {
       branch: 'main',
     })
     expect(syncGitCalls).toEqual([])
+  })
+
+  // Connected agents call get_git_status with no prompt, in a folder they choose. `git status`
+  // runs the command a repo's own .git/config names in core.fsmonitor, so a planted config
+  // would run it too, unless the call switches that off.
+  it('getGitStatus switches off a repo-configured fsmonitor command', async () => {
+    mockExecSync.mockClear()
+    mockExecSync.mockReturnValue(Buffer.from(''))
+    await capturedMcpHandlers.getGitStatus('/repo')
+    const commands = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(commands).toContain('git -c core.fsmonitor=false status --short')
+    expect(commands.filter((c: string) => / status( |$)/.test(c))).toEqual(['git -c core.fsmonitor=false status --short'])
   })
 
   it('swarmSendMessage delegates to sendMessage', () => {

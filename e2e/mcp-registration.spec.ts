@@ -1,29 +1,41 @@
 /**
- * MCP Auto-Registration Tests
- * Verifies Termpolis registers itself in Claude Code, Codex CLI, and Gemini CLI configs.
+ * MCP Registration Tests
+ * Verifies Termpolis connects to Claude Code, Codex CLI and Gemini CLI only with the
+ * user's consent, writes exactly what it discloses, and removes all of it on Disconnect.
+ *
+ * Every agent config lives in a scratch home passed as TERMPOLIS_TEST_AGENT_HOME, never
+ * the developer's real ~/.claude*, ~/.codex or ~/.gemini.
  */
-import { test, expect, type ElectronApplication } from '@playwright/test'
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir } from './helpers/launch'
 
 let app: ElectronApplication
+let page: Page
+let agentHome = ''
 
 test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
+  // The agents count as installed when their config directories exist.
+  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-mcp-reg-home-'))
+  for (const dir of ['.claude', '.codex', '.gemini']) fs.mkdirSync(path.join(agentHome, dir))
+
   app = await electron.launch({
     args: e2eLaunchArgs('mcp-registration'),
-    env: { ...process.env, NODE_ENV: 'test' },
+    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENT_HOME: agentHome },
   })
 
-  const page = await app.firstWindow()
-  await dismissOnboarding(page)
+  page = await app.firstWindow()
+  // No dismissOnboarding here: skipping the tour answers its "Connect agents" step, and
+  // these tests check what happens before anyone answers. They only use IPC and the
+  // filesystem, so the tour can stay open.
   await page.waitForLoadState('domcontentloaded')
-  // Wait for all auto-registration to complete
+  // Let the MCP server and the boot migrations settle
   await page.waitForTimeout(5000)
 })
 
@@ -161,88 +173,91 @@ test('CLI tool exists and is valid JavaScript', () => {
 })
 
 // ══════════════════════════════════════════════════════
-// CLAUDE CODE REGISTRATION
+// AGENT CONNECTION (consent-gated)
 // ══════════════════════════════════════════════════════
 
-test('Claude Code: plugin files exist in local marketplace', () => {
-  const pluginDir = path.join(os.homedir(), '.claude', 'local-marketplace', 'plugins', 'termpolis')
-  if (fs.existsSync(pluginDir)) {
-    expect(fs.existsSync(path.join(pluginDir, '.mcp.json'))).toBeTruthy()
-    expect(fs.existsSync(path.join(pluginDir, '.claude-plugin', 'plugin.json'))).toBeTruthy()
+const readJson = (...parts: string[]) => JSON.parse(fs.readFileSync(path.join(agentHome, ...parts), 'utf-8'))
+const readText = (...parts: string[]) => {
+  const file = path.join(agentHome, ...parts)
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : ''
+}
+const setIntegration = (req: { connect: boolean; primerHook?: boolean }) =>
+  page.evaluate((r) => (window as any).termpolis.agentIntegrationSet(r), req)
+const NODE_COMMAND = /(?:^|[\\/])node(?:\.exe)?$/
 
-    const mcpConfig = JSON.parse(fs.readFileSync(path.join(pluginDir, '.mcp.json'), 'utf-8'))
-    const termpolis = mcpConfig.mcpServers?.termpolis ?? mcpConfig.termpolis
-    expect(termpolis).toBeTruthy()
-    expect(termpolis.command).toBe('node')
-    expect(termpolis.args[0]).toContain('stdio-adapter.cjs')
+test('writes nothing to any agent before the user answers', async () => {
+  const status = await page.evaluate(() => (window as any).termpolis.agentIntegrationStatus())
+  expect(status.success).toBe(true)
+  expect(status.data.consent).toBeNull()
+  expect(status.data.connected).toBe(false)
+  expect(fs.existsSync(path.join(agentHome, '.claude.json'))).toBe(false)
+  expect(readText('.codex', 'config.toml')).not.toContain('mcp_servers.termpolis')
+  expect(fs.existsSync(path.join(agentHome, '.gemini', 'settings.json'))).toBe(false)
+})
+
+test('Connect registers the server with each installed agent', async () => {
+  const res = await setIntegration({ connect: true, primerHook: true })
+  expect(res.success).toBe(true)
+  expect(res.data.status.connected).toBe(true)
+
+  // The command may be the bare `node` (relying on PATH) or an absolute
+  // interpreter path — registration writes whichever it resolved, and on
+  // Windows that is typically `C:\\Program Files\\nodejs\\node.exe`.
+  // What matters is that it IS node, not how it was spelled.
+  const claude = readJson('.claude.json').mcpServers?.termpolis
+  expect(claude?.command).toMatch(NODE_COMMAND)
+  expect(claude?.args?.[0]).toContain('stdio-adapter.cjs')
+
+  const codex = readText('.codex', 'config.toml')
+  expect(codex).toContain('[mcp_servers.termpolis]')
+  expect(codex).toMatch(/command = "(?:[^"]*[\\/])?node(?:\.exe)?"/)
+  expect(codex).toContain('stdio-adapter.cjs')
+
+  const gemini = readJson('.gemini', 'settings.json').mcpServers?.termpolis
+  expect(gemini?.command).toMatch(NODE_COMMAND)
+  expect(gemini?.args?.[0]).toContain('stdio-adapter.cjs')
+})
+
+test('Claude Code: only the listed read-only and memory tools are pre-approved', () => {
+  const allow: string[] = readJson('.claude', 'settings.json').permissions?.allow ?? []
+  const ours = allow.filter((rule) => rule.startsWith('mcp__termpolis'))
+  expect(ours).toContain('mcp__termpolis__memory_search')
+  expect(ours).not.toContain('mcp__termpolis__*')
+  expect(ours).not.toContain('mcp__termpolis')
+  for (const tool of ['run_command', 'run_and_wait', 'write_to_terminal', 'create_terminal', 'gateway_call']) {
+    expect(ours).not.toContain(`mcp__termpolis__${tool}`)
   }
 })
 
-test('Claude Code: plugin cached', () => {
-  const cacheDir = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'local-plugins', 'termpolis')
-  if (fs.existsSync(cacheDir)) {
-    // Should have a version directory with .mcp.json
-    const versions = fs.readdirSync(cacheDir)
-    expect(versions.length).toBeGreaterThan(0)
-    const versionDir = path.join(cacheDir, versions[0])
-    expect(fs.existsSync(path.join(versionDir, '.mcp.json'))).toBeTruthy()
+test('Claude Code: no plugin, and the home folder is never pre-trusted', () => {
+  const settings = readJson('.claude', 'settings.json')
+  expect(Object.keys(settings.enabledPlugins ?? {}).some((k) => k.startsWith('termpolis@'))).toBe(false)
+  expect(fs.existsSync(path.join(agentHome, '.claude', 'local-marketplace', 'plugins', 'termpolis'))).toBe(false)
+  const home = agentHome.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()
+  for (const [key, value] of Object.entries<any>(readJson('.claude.json').projects ?? {})) {
+    if (key.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase() === home) {
+      expect(value?.hasTrustDialogAccepted).not.toBe(true)
+    }
   }
 })
 
-test('Claude Code: plugin enabled in settings', () => {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-  if (fs.existsSync(settingsPath)) {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    const pluginKey = Object.keys(settings.enabledPlugins || {}).find(k => k.startsWith('termpolis@'))
-    expect(pluginKey).toBeTruthy()
-    expect(settings.enabledPlugins[pluginKey!]).toBe(true)
-  }
+test('Disconnect removes everything Termpolis wrote', async () => {
+  const res = await setIntegration({ connect: false })
+  expect(res.success).toBe(true)
+  expect(res.data.status.connected).toBe(false)
+  expect(res.data.status.consent).toBe('declined')
+
+  expect(readJson('.claude.json').mcpServers?.termpolis).toBeUndefined()
+  const settings = readJson('.claude', 'settings.json')
+  expect((settings.permissions?.allow ?? []).filter((rule: string) => rule.startsWith('mcp__termpolis'))).toEqual([])
+  expect(JSON.stringify(settings.hooks ?? {})).not.toContain('termpolis')
+  expect(readText('.codex', 'config.toml')).not.toContain('mcp_servers.termpolis')
+  expect(readJson('.gemini', 'settings.json').mcpServers?.termpolis).toBeUndefined()
 })
 
-test('Claude Code: tool permissions auto-trusted', () => {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-  if (!fs.existsSync(settingsPath)) {
-    test.skip()
-    return
-  }
-  const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-  const perms = settings.permissions?.allow || []
-  // Check at least one termpolis tool is trusted
-  const hasTermpolisPerms = perms.some((p: string) => p.includes('termpolis'))
-  expect(hasTermpolisPerms).toBeTruthy()
-})
-
-// ══════════════════════════════════════════════════════
-// CODEX CLI REGISTRATION
-// ══════════════════════════════════════════════════════
-
-test('Codex CLI: config.toml has termpolis MCP server', () => {
-  const configPath = path.join(os.homedir(), '.codex', 'config.toml')
-  if (fs.existsSync(configPath)) {
-    const content = fs.readFileSync(configPath, 'utf-8')
-    expect(content).toContain('[mcp_servers.termpolis]')
-    // The command may be the bare `node` (relying on PATH) or an absolute
-    // interpreter path — registration writes whichever it resolved, and on
-    // Windows that is typically `C:\\Program Files\\nodejs\\node.exe`.
-    // What matters is that it IS node, not how it was spelled.
-    expect(content).toMatch(/command = "(?:[^"]*[\\/])?node(?:\.exe)?"/)
-    expect(content).toContain('stdio-adapter.cjs')
-  }
-})
-
-// ══════════════════════════════════════════════════════
-// GEMINI CLI REGISTRATION
-// ══════════════════════════════════════════════════════
-
-test('Gemini CLI: settings.json has termpolis MCP server', () => {
-  const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json')
-  if (fs.existsSync(settingsPath)) {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    expect(settings.mcpServers?.termpolis).toBeTruthy()
-    // Bare `node` or an absolute interpreter path — see the Codex test above.
-    expect(settings.mcpServers.termpolis.command).toMatch(/(?:^|[\\/])node(?:\.exe)?$/)
-    expect(settings.mcpServers.termpolis.args[0]).toContain('stdio-adapter.cjs')
-  }
+test('Reconnect for the swarm tests below', async () => {
+  const res = await setIntegration({ connect: true, primerHook: true })
+  expect(res.data.status.connected).toBe(true)
 })
 
 // ══════════════════════════════════════════════════════

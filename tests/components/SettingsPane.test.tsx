@@ -22,7 +22,11 @@ beforeAll(() => {
     getHomedir: vi.fn().mockResolvedValue({ success: true, data: '/home/test' }),
     readConfigFile: vi.fn().mockResolvedValue({ success: true, data: '# config content' }),
     writeConfigFile: vi.fn().mockResolvedValue({ success: true }),
-    setTelemetryOptIn: vi.fn().mockResolvedValue({ success: true, data: { optIn: true } }),
+    telemetryGetConsent: vi.fn().mockResolvedValue({ success: true, data: { crash: false, usage: false, consentVersion: 2, needsReview: false } }),
+    telemetrySetConsent: vi.fn(async (c: { crash?: boolean; usage?: boolean }) => ({
+      success: true,
+      data: { crash: c.crash === true, usage: c.usage === true, consentVersion: 2, needsReview: false },
+    })),
     getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
     codeGraphStats: vi.fn().mockResolvedValue({ success: true, data: { files: 0, symbols: 0, edges: 0 } }),
     brainExport: vi.fn().mockResolvedValue({ success: true, data: { canceled: false, path: '/tmp/brain.zip', bytes: 2048 } }),
@@ -410,38 +414,38 @@ describe('SettingsPane', () => {
     ] })
   })
 
-  it('toggling crash reporting writes localStorage AND mirrors to main', async () => {
-    localStorage.removeItem('termpolis.telemetry.optIn')
+  it('General has a Privacy section whose crash toggle applies live through main', async () => {
     render(<SettingsPane />)
-    // The crash-reporting toggle is the button with aria-label "Toggle crash reporting"
+    expect(screen.getByTestId('settings-privacy')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-agent-integrations-slot')).toBeInTheDocument()
+    expect(screen.queryByText(/Takes effect on next launch/)).not.toBeInTheDocument()
     const toggle = await screen.findByRole('button', { name: /Toggle crash reporting/i })
     fireEvent.click(toggle)
-    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBe('1')
-    expect((window as any).termpolis.setTelemetryOptIn).toHaveBeenCalledWith(true)
-    // Toggle off
-    fireEvent.click(toggle)
-    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBe('0')
-    expect((window as any).termpolis.setTelemetryOptIn).toHaveBeenLastCalledWith(false)
+    expect((window as any).termpolis.telemetrySetConsent).toHaveBeenLastCalledWith({ crash: true })
+    await waitFor(() => expect(localStorage.getItem('termpolis.telemetry.crash')).toBe('true'))
+    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBeNull()
   })
 
-  it('telemetry toggle reflects current localStorage value on mount', () => {
-    localStorage.setItem('termpolis.telemetry.optIn', '1')
+  it('the usage toggle applies live through main too', async () => {
     render(<SettingsPane />)
-    // We can't easily inspect button state, but a click should now toggle it OFF
-    const toggle = screen.getByRole('button', { name: /Toggle crash reporting/i })
-    fireEvent.click(toggle)
-    expect(localStorage.getItem('termpolis.telemetry.optIn')).toBe('0')
-    localStorage.removeItem('termpolis.telemetry.optIn')
+    fireEvent.click(screen.getByRole('button', { name: /Toggle usage statistics/i }))
+    expect((window as any).termpolis.telemetrySetConsent).toHaveBeenLastCalledWith({ usage: true })
+    await waitFor(() => expect(localStorage.getItem('termpolis.telemetry.usage')).toBe('true'))
   })
 
-  it('telemetry toggle still works if main bridge is missing (graceful)', () => {
-    const original = (window as any).termpolis.setTelemetryOptIn
-    delete (window as any).termpolis.setTelemetryOptIn
-    expect(() => {
+  it('the Privacy section opens Token Savings for the compression proxy', async () => {
+    const api = (window as any).termpolis
+    const names = ['tokenSavingsGetSettings', 'tokenSavingsGetReceipt', 'tokenSavingsGetProxyReceipt',
+      'tokenSavingsGetProxyStatus', 'tokenSavingsGetUnifiedReceipt', 'tokenSavingsSetSettings']
+    for (const n of names) api[n] = vi.fn().mockResolvedValue({ success: false, error: 'not in this test' })
+    try {
       render(<SettingsPane />)
-      fireEvent.click(screen.getByRole('button', { name: /Toggle crash reporting/i }))
-    }).not.toThrow()
-    ;(window as any).termpolis.setTelemetryOptIn = original
+      fireEvent.click(screen.getByTestId('settings-privacy-open-token-savings'))
+      expect(screen.queryByTestId('settings-privacy')).not.toBeInTheDocument()
+      await waitFor(() => expect(api.tokenSavingsGetSettings).toHaveBeenCalled())
+    } finally {
+      for (const n of names) delete api[n]
+    }
   })
 
   it('handles readConfigFile returning no data (?? fallback)', async () => {

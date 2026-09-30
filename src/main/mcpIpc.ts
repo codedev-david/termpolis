@@ -41,14 +41,19 @@ export interface McpIpcLike {
 
 const MASK = '••••'
 
-/** The four foreign configs Termpolis already writes to. Resolved at call time, not at
- *  import time, so a test can point HOME elsewhere and so a user who creates
- *  `~/.codex/config.toml` mid-session sees it on the next Refresh. */
-export function defaultInventoryPaths(home: string = homedir()): InventoryPaths {
+/** Where each agent reads its user-level MCP servers: Claude Code from `.claude.json` (in
+ *  CLAUDE_CONFIG_DIR when set; its settings.json has no server list), Codex from
+ *  `$CODEX_HOME/config.toml`, Gemini CLI from `~/.gemini/settings.json`, plus the
+ *  `~/.mcp.json` older Termpolis versions wrote. Resolved at call time, not at import time,
+ *  so a test can point HOME elsewhere and so a user who creates `~/.codex/config.toml`
+ *  mid-session sees it on the next Refresh. */
+export function defaultInventoryPaths(home: string = homedir(), env: NodeJS.ProcessEnv = process.env): InventoryPaths {
+  const claudeDir = (env.CLAUDE_CONFIG_DIR || '').trim()
+  const codexHome = (env.CODEX_HOME || '').trim()
   return {
-    claude: join(home, '.claude', 'settings.json'),
+    claude: join(claudeDir || home, '.claude.json'),
     globalMcp: join(home, '.mcp.json'),
-    codex: join(home, '.codex', 'config.toml'),
+    codex: join(codexHome || join(home, '.codex'), 'config.toml'),
     gemini: join(home, '.gemini', 'settings.json'),
   }
 }

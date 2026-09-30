@@ -32,6 +32,9 @@ import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
 import { ShieldScanFailedBanner } from './components/ShieldScanFailedBanner/ShieldScanFailedBanner'
 import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
+import { ConsentReviewModal, consentNeedsReview } from './components/ConsentReview/ConsentReviewModal'
+import { AgentReviewModal, agentReviewNeeded } from './components/AgentIntegration/AgentReviewModal'
+import type { AgentIntegrationStatus } from '../../shared/agentIntegration'
 import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { startRepoResweep } from './hooks/useAutoCodeIndex'
@@ -49,10 +52,25 @@ import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { detectAgentStatus } from '../../shared/agentStatusDetector'
-import { detectDismissChar, tailSlice } from './lib/promptAutoDismiss'
+import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
+
+// May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
+// the shell's live directory (the store's cwd follows `cd` via shell integration, and
+// is only the fallback), so an agent relaunched after `cd ~` is judged by home.
+async function mayTrustFolder(terminalId: string): Promise<boolean> {
+  const cwd = useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.cwd ?? ''
+  const res = await window.termpolis.agentFolderTrustAllowed(terminalId, cwd)
+  return res.success === true && res.data === true
+}
+
+// The terminal's buffer as main has it now: the pollers' second look before answering.
+async function readScreen(terminalId: string): Promise<string | null> {
+  const res = await window.termpolis.readTerminalBuffer(terminalId)
+  return res.success && res.data ? res.data.output || '' : null
+}
 
 export default function App() {
   // useShallow: App is the ROOT — a bare useTerminalStore() re-ran this whole component (and every
@@ -100,7 +118,26 @@ export default function App() {
   const swarmCompletionSummary = useTerminalStore(s => s.swarmCompletionSummary)
   const setSwarmCompletionSummary = useTerminalStore(s => s.setSwarmCompletionSummary)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
-  const [showOnboarding, setShowOnboarding] = useState(() => !hasSeenOnboarding())
+  // Whether the tour shows at this launch, read once on the first render. The launch reviews
+  // below key off this same read and never a later one: e2e writes the seen flag right after the
+  // page loads, and closing the tour writes it too, and neither may bring a review up.
+  const [tourAtStart] = useState(() => !hasSeenOnboarding())
+  const [showOnboarding, setShowOnboarding] = useState(tourAtStart)
+  // Asked again, once, at launch, of someone who saw the tour in an earlier session: the agent
+  // integration when there is no answer on record, then telemetry when its answer predates the
+  // current consent version. A launch that shows the tour asks neither: its first and last steps
+  // answer both, and once it closes a check that is still in flight is ignored.
+  const [agentReview, setAgentReview] = useState<AgentIntegrationStatus | null>(null)
+  const [consentReview, setConsentReview] = useState(false)
+  const reviewsAnswered = useRef(false)
+  useEffect(() => {
+    if (tourAtStart) return
+    void Promise.all([agentReviewNeeded(true), consentNeedsReview()]).then(([agent, consent]) => {
+      if (reviewsAnswered.current) return
+      setAgentReview(agent)
+      setConsentReview(consent)
+    })
+  }, [tourAtStart])
   const [swarmStartCwd, setSwarmStartCwd] = useState<string | null>(null)
   const [availableShells, setAvailableShells] = useState<ShellInfo[]>([])
   const [restoring, setRestoring] = useState(true)
@@ -598,8 +635,8 @@ export default function App() {
 
   // Poll swarm agent terminals for real-time status detection
   useEffect(() => {
-    // Remember the trust-prompt fingerprint we most recently dismissed for each
-    // terminal, so we don't keep pounding Enter on the same prompt every tick.
+    // Remember the screen fingerprint we most recently judged for each terminal,
+    // so we don't keep pounding Enter on the same prompt every tick.
     const lastDismissedPrompt = new Map<string, string>()
     // Clear the stale "needs input" notification once the agent has moved past
     // the trust prompt and back to actually working.
@@ -621,21 +658,26 @@ export default function App() {
 
           const output = bufferRes.data.output || ''
           const recent = output.slice(-3000)
-          const tail = tailSlice(recent)
 
-          // Pattern-based auto-dismiss for trust / onboarding / MCP prompts.
-          // Keyed on the last ~200 chars of the buffer so we don't re-dismiss
-          // after a prompt has scrolled off the visible region.
-          const dismissKey = tail.slice(-200)
-          const alreadyDismissed = lastDismissedPrompt.get(agent.terminalId) === dismissKey
-          const dismissChar = detectDismissChar(tail, { agentName: agent.agentName })
-
-          if (dismissChar && !alreadyDismissed) {
+          // Pattern-based auto-dismiss for onboarding screens, and for folder trust
+          // where the user allows it. Approvals are never answered (promptAutoDismiss.ts).
+          // Keyed on the last ~200 chars of the buffer so each screen is judged once;
+          // the key is claimed before the consent lookup so an overlapping tick
+          // can't answer the same screen twice, and the screen is read again before
+          // answering so a dialog the user already answered gets nothing.
+          const dismissKey = screenKey(output)
+          if (lastDismissedPrompt.get(agent.terminalId) !== dismissKey) {
             lastDismissedPrompt.set(agent.terminalId, dismissKey)
-            window.termpolis.writeToTerminal(agent.terminalId, dismissChar)
-            // Give the agent a beat to register the input before the next poll
-            // runs the status detector
-            continue
+            const dismissChar = await replyToScreen(
+              output, agent.agentName,
+              () => mayTrustFolder(agent.terminalId), () => readScreen(agent.terminalId),
+            )
+            if (dismissChar) {
+              window.termpolis.writeToTerminal(agent.terminalId, dismissChar)
+              // Give the agent a beat to register the input before the next poll
+              // runs the status detector
+              continue
+            }
           }
 
           const result = detectAgentStatus(recent, agent.agentName, agent.status)
@@ -687,11 +729,13 @@ export default function App() {
   }, [])
 
   // Prompt auto-dismiss for regular (non-swarm) AI agent terminals.
-  // When a user launches Claude / Codex / Gemini from the sidebar,
-  // each tool shows first-run prompts (folder trust, MCP server trust,
-  // "Press Enter to continue" splash). The swarm loop above handles this for
-  // swarm-tracked agents; this loop covers everyone else. Two small loops
-  // are simpler than merging them since the swarm loop also tracks status.
+  // When a user launches Claude / Codex / Gemini from the sidebar, each tool
+  // can open on a first-run screen ("Press Enter to continue" splash, theme or
+  // login picker, folder trust). The swarm loop above handles this for
+  // swarm-tracked agents; this loop covers everyone else. Folder trust is
+  // answered only where the user allows it, and no approval, permission or
+  // MCP-server prompt is ever answered. Two small loops are simpler than
+  // merging them since the swarm loop also tracks status.
   useEffect(() => {
     const lastDismissedPrompt = new Map<string, string>()
     const interval = setInterval(async () => {
@@ -707,13 +751,15 @@ export default function App() {
           const bufferRes = await window.termpolis.readTerminalBuffer(term.id)
           if (!bufferRes.success || !bufferRes.data) continue
           const output = bufferRes.data.output || ''
-          const tail = tailSlice(output.slice(-3000))
-          const dismissKey = tail.slice(-200)
+          const dismissKey = screenKey(output)
           if (lastDismissedPrompt.get(term.id) === dismissKey) continue
-          const dismissChar = detectDismissChar(tail, { agentName: term.name })
-          if (!dismissChar) continue
+          // Claimed before the consent lookup, so an overlapping tick can't answer twice;
+          // replyToScreen reads the screen again first, so an answered dialog gets nothing.
           lastDismissedPrompt.set(term.id, dismissKey)
-          window.termpolis.writeToTerminal(term.id, dismissChar)
+          const dismissChar = await replyToScreen(
+            output, term.name, () => mayTrustFolder(term.id), () => readScreen(term.id),
+          )
+          if (dismissChar) window.termpolis.writeToTerminal(term.id, dismissChar)
         } catch {
           // Terminal gone — skip
         }
@@ -1052,7 +1098,19 @@ export default function App() {
           />
         )}
       </Suspense>
-      {showOnboarding && <OnboardingModal onDone={() => setShowOnboarding(false)} />}
+      {showOnboarding && (
+        <OnboardingModal
+          onDone={() => {
+            reviewsAnswered.current = true
+            setShowOnboarding(false)
+            setAgentReview(null)
+            setConsentReview(false)
+          }}
+        />
+      )}
+      {/* One at a time, agents first; never over the tour. */}
+      {agentReview && !showOnboarding && <AgentReviewModal status={agentReview} onDone={() => setAgentReview(null)} />}
+      {consentReview && !agentReview && !showOnboarding && <ConsentReviewModal onDone={() => setConsentReview(false)} />}
       {showCloseConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70">
           <div className="bg-[#252526] border border-[#3c3c3c] rounded-xl shadow-2xl w-[420px] p-6 flex flex-col gap-4" onClick={e => e.stopPropagation()}>

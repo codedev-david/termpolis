@@ -5,30 +5,59 @@ interface UpdateState {
   version?: string
   releaseNotes?: string
   error?: string
+  // Set on an 'error' that is the user's to act on, with `error` in plain words.
+  reason?: 'read-only-location' | 'disk-full'
   downloadedBytes?: number
   totalBytes?: number
 }
 
 // Thin banner above the status bar. Hidden unless an update has finished
-// downloading and is waiting for the user to restart and install.
+// downloading and is waiting for the user to restart and install — or the
+// updater needs the user to do something first (free up disk space; on macOS,
+// run Termpolis from Applications), which shows as a hint instead. A failure
+// that isn't the user's to fix never shows here.
 export function UpdateBanner() {
   const [state, setState] = useState<UpdateState>({ status: 'idle' })
-  const [dismissed, setDismissed] = useState(false)
+  // Per version: after a later check, or a check that failed, main announces
+  // the same download again — which mustn't bring back a banner already dismissed.
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
+  const [dismissedHints, setDismissedHints] = useState<ReadonlySet<string>>(() => new Set())
 
   useEffect(() => {
     const updater = (window as any).updater
     if (!updater) return
 
     updater.getStatus().then((s: UpdateState) => s && setState(s)).catch(() => {})
-    const unsub = updater.onState((next: UpdateState) => {
-      setState(next)
-      if (next.status === 'downloaded') setDismissed(false)
-    })
+    const unsub = updater.onState((next: UpdateState) => setState(next))
     return () => unsub?.()
   }, [])
 
-  if (dismissed) return null
+  const { reason } = state
+  if (state.status === 'error' && reason && state.error) {
+    if (dismissedHints.has(reason)) return null
+    return (
+      <div
+        role="status"
+        className="px-4 py-2 flex items-center justify-between text-sm bg-[#FF9800]/10 border-t border-[#FF9800]/30 text-[#FFB74D]"
+      >
+        <div className="flex items-center gap-2">
+          <i className={reason === 'disk-full' ? 'fa-solid fa-hard-drive' : 'fa-solid fa-circle-info'}></i>
+          <span>{state.error}</span>
+        </div>
+        <button
+          onClick={() => setDismissedHints((prev) => new Set(prev).add(reason))}
+          className="text-xs px-1.5 py-1 rounded hover:bg-white/10"
+          aria-label="Dismiss update hint"
+        >
+          <i className="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+    )
+  }
+
   if (state.status !== 'downloaded') return null
+  const version = state.version ?? ''
+  if (dismissedVersion === version) return null
 
   const handleRestart = async () => {
     const updater = (window as any).updater
@@ -52,7 +81,7 @@ export function UpdateBanner() {
           Restart now
         </button>
         <button
-          onClick={() => setDismissed(true)}
+          onClick={() => setDismissedVersion(version)}
           className="text-xs px-1.5 py-1 rounded hover:bg-white/10"
           aria-label="Dismiss update banner"
         >

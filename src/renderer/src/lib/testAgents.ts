@@ -29,7 +29,7 @@ export function resolveAgentCommand(command: string): string {
   return command
 }
 
-/** True when a command string launches Claude Code — used to gate the always-on Headroom proxy. */
+/** True when a command string launches Claude Code — used to gate the Headroom proxy (on by default). */
 export function isClaudeCommand(command?: string | null): boolean {
   return !!command && command.trim().toLowerCase().startsWith('claude')
 }

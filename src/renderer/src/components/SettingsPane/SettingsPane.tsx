@@ -13,7 +13,9 @@ import { VoiceSettings } from './VoiceSettings'
 import { TokenSavingsSettings } from './TokenSavingsSettings'
 import { RemoteSettings } from './RemoteSettings'
 import { McpServersSettings } from './McpServersSettings'
+import { AgentIntegrationSettings } from './AgentIntegrationSettings'
 import { ProcessesSettings } from './ProcessesSettings'
+import { PrivacySettings } from './PrivacySettings'
 import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
@@ -95,9 +97,6 @@ export function SettingsPane() {
   const [fileContents, setFileContents] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
-  const [telemetryOptIn, setTelemetryOptIn] = useState(() => {
-    try { return localStorage.getItem('termpolis.telemetry.optIn') === '1' } catch { return false }
-  })
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
   const [primerLimit, setPrimerLimit] = useState<number>(10)
   const [soloLearning, setSoloLearning] = useState(() => isSoloLearningEnabled())
@@ -141,16 +140,6 @@ export function SettingsPane() {
     } finally {
       setUpdateChecking(false)
     }
-  }
-
-  const toggleTelemetry = () => {
-    const next = !telemetryOptIn
-    setTelemetryOptIn(next)
-    try { localStorage.setItem('termpolis.telemetry.optIn', next ? '1' : '0') } catch {}
-    // Mirror to main so Sentry init, updater pings, and feature events
-    // all see the new state without a relaunch. Best-effort — preload may
-    // not have hot-reloaded in dev.
-    try { window.termpolis.setTelemetryOptIn?.(next) } catch {}
   }
 
   useEffect(() => {
@@ -241,7 +230,7 @@ export function SettingsPane() {
         </div>
       )}
 
-      <div className="flex gap-1 border-b border-[#3c3c3c] -mt-2" data-testid="settings-tabs">
+      <div className="flex flex-wrap gap-1 border-b border-[#3c3c3c] -mt-2" data-testid="settings-tabs">
         {[
           { id: 'general', label: 'General' },
           { id: 'memory', label: 'Memory & Learning' },
@@ -252,6 +241,7 @@ export function SettingsPane() {
           { id: 'shell', label: 'Shell Config' },
           { id: 'tokenSavings', label: 'Token Savings' },
           { id: 'remote', label: 'Remote' },
+          { id: 'agentIntegration', label: 'Agent Integration' },
           { id: 'mcp', label: 'MCP Servers' },
           { id: 'processes', label: 'Processes' },
         ].map(t => (
@@ -558,26 +548,7 @@ export function SettingsPane() {
               </span>
             </span>
           </button>
-          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
-            <button
-              onClick={toggleTelemetry}
-              aria-label="Toggle crash reporting"
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
-                telemetryOptIn ? 'bg-[#0078d4]' : 'bg-[#555]'
-              }`}
-            >
-              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                telemetryOptIn ? 'translate-x-4.5' : 'translate-x-0.5'
-              }`} />
-            </button>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium">Send anonymous crash reports</span>
-              <span className="text-xs text-[#9ca3af] leading-relaxed">
-                Error stack traces and the app version only. No terminal contents, file paths, or
-                personal data. Takes effect on next launch.
-              </span>
-            </div>
-          </div>
+          <PrivacySettings onOpenTokenSavings={() => setActiveTab('tokenSavings')} />
 
           <div className="border-t border-[#3c3c3c] pt-3 flex flex-col gap-2" data-testid="brain-io">
             <span className="text-sm font-medium">Import / Export Memory</span>
@@ -626,6 +597,7 @@ export function SettingsPane() {
       {activeTab === 'tokenSavings' && <TokenSavingsSettings />}
       {activeTab === 'remote' && <RemoteSettings />}
 
+      {activeTab === 'agentIntegration' && <AgentIntegrationSettings />}
       {activeTab === 'mcp' && <McpServersSettings />}
       {activeTab === 'processes' && <ProcessesSettings />}
 

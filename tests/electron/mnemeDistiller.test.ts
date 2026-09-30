@@ -9,7 +9,7 @@ function fakeExec(result: { stdout: string; code: number }) {
 }
 
 describe('mnemeDistiller — makeHeadlessDistiller', () => {
-  it('happy path: returns trimmed stdout and shells out to `claude -p … --model haiku --dangerously-skip-permissions`', async () => {
+  it('happy path: returns trimmed stdout and shells out to `claude -p … --model haiku` with no tools', async () => {
     const exec = fakeExec({ stdout: '  Always add the tsconfig path alias for module resolution.  \n', code: 0 })
     const distiller = makeHeadlessDistiller({ exec })
 
@@ -27,9 +27,12 @@ describe('mnemeDistiller — makeHeadlessDistiller', () => {
     expect(args).toContain(prompt) // the exact prompt is forwarded verbatim
     expect(args).toContain('--model')
     expect(args).toContain('haiku')
-    expect(args).toContain('--dangerously-skip-permissions')
+    // Text in, text out: no built-in tools, no MCP servers, so nothing ever needs approving
+    // and the permission bypass it once ran with is gone.
+    expect(args).not.toContain('--dangerously-skip-permissions')
+    expect(args.some((a) => /dangerously|bypass|yolo|permission-mode/.test(a))).toBe(false)
     // Exact shape + order, and the default timeout.
-    expect(args).toEqual(['-p', prompt, '--model', 'haiku', '--dangerously-skip-permissions'])
+    expect(args).toEqual(['-p', prompt, '--model', 'haiku', '--tools', '', '--strict-mcp-config'])
     expect(callOpts).toEqual({ timeoutMs: 60000 })
   })
 
@@ -74,7 +77,7 @@ describe('mnemeDistiller — makeHeadlessDistiller', () => {
     expect(exec).toHaveBeenCalledTimes(1)
     const [cmd, args, callOpts] = exec.mock.calls[0]
     expect(cmd).toBe('/usr/local/bin/claude')
-    expect(args).toEqual(['-p', 'hello', '--model', 'sonnet', '--dangerously-skip-permissions'])
+    expect(args).toEqual(['-p', 'hello', '--model', 'sonnet', '--tools', '', '--strict-mcp-config'])
     expect(callOpts).toEqual({ timeoutMs: 5000 })
   })
 

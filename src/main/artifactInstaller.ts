@@ -411,9 +411,8 @@ function mergeJsonServer(t: AgentTarget, name: string, server: McpServerDef, dep
   return p
 }
 
-// Codex is TOML. We treat it as a text blob and APPEND, exactly like
-// agentMcpRegistry.registerInCodex — a real TOML parser would choke on any
-// syntax error the user already has and block the install. The header check is
+// Codex is TOML. We treat it as a text blob and APPEND — a real TOML parser
+// would choke on any syntax error the user already has and block the install. The header check is
 // what makes a repeat install idempotent (no duplicate block).
 function appendCodexServer(name: string, server: McpServerDef, deps: InstallerDeps): string {
   const p = settingsPath('codex', deps.home())

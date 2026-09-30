@@ -10,6 +10,11 @@ import {
   isReadOnlyVolumeError,
   isDiskFullError,
   isBenignUpdaterError,
+  classifyUpdaterError,
+  updaterFailureMessage,
+  DISK_FULL_MESSAGE,
+  UPDATE_SERVER_UNREACHABLE_MESSAGE,
+  NO_UPDATE_FEED_MESSAGE,
   shouldDropSentryEvent,
   withoutResponseHeaders,
   scrubUpdaterText,
@@ -96,6 +101,12 @@ describe('isTransientNetworkError', () => {
     'net::ERR_ADDRESS_UNREACHABLE',
     'net::ERR_NETWORK_ACCESS_DENIED',
     'net::ERR_PROXY_CONNECTION_FAILED',
+    'net::ERR_NAME_RESOLUTION_FAILED',
+    'net::ERR_CONNECTION_ABORTED',
+    'net::ERR_CONNECTION_FAILED',
+    'net::ERR_TUNNEL_CONNECTION_FAILED',
+    'net::ERR_EMPTY_RESPONSE',
+    'net::err_internet_disconnected',
     'getaddrinfo ENOTFOUND github.com',
     'getaddrinfo EAI_AGAIN github.com',
     'connect ETIMEDOUT 140.82.121.4:443',
@@ -104,8 +115,31 @@ describe('isTransientNetworkError', () => {
     'connect ENETUNREACH',
     'connect EHOSTUNREACH',
     'connect ENETDOWN',
+    'socket hang up',
+    'Request timed out',
+    'Request has been aborted by the server',
   ])('treats %s as transient', (msg) => {
     expect(isTransientNetworkError(new Error(msg))).toBe(true)
+  })
+
+  it("reads a socket errno off the error's code as well as its text", () => {
+    expect(isTransientNetworkError(Object.assign(new Error('request failed'), { code: 'ECONNRESET' }))).toBe(true)
+    expect(isTransientNetworkError({ code: 'ETIMEDOUT' })).toBe(true)
+    // Any other code is not a network error, and neither is a code that isn't a string.
+    expect(isTransientNetworkError(Object.assign(new Error('request failed'), { code: 'EACCES' }))).toBe(false)
+    expect(isTransientNetworkError({ code: 42 })).toBe(false)
+    expect(isTransientNetworkError(null)).toBe(false)
+  })
+
+  it("only counts the error's own words, never the response it quotes", () => {
+    // A 404 whose page happens to mention a network error is a 404.
+    const missing =
+      '404 \n"method: GET url: https://github.com/o/r/releases/download/v1/latest-mac.yml\\n\\n  Data:\\n' +
+      '  upstream ECONNRESET, net::ERR_CONNECTION_RESET, socket hang up"\nHeaders: {}'
+    expect(isTransientNetworkError(new Error(missing))).toBe(false)
+    expect(isTransientNetworkError(new Error('403 Forbidden\nHeaders: {\n  "x-error": "ETIMEDOUT"\n}'))).toBe(false)
+    // A Chromium code is a whole word too.
+    expect(isTransientNetworkError(new Error('net::ERR_TIMED_OUT_X'))).toBe(false)
   })
 
   it('does NOT swallow genuine update failures', () => {
@@ -141,7 +175,7 @@ describe('isTransientHttpServerError', () => {
     expect(isTransientHttpServerError(`updater error: ${GATEWAY_TIMEOUT}`)).toBe(true)
   })
 
-  it.each([408, 429, 500, 502, 503, 504])('treats a %i in any electron-updater shape as transient', (code) => {
+  it.each([408, 429, 500, 501, 502, 503, 504, 507, 599])('treats a %i in any electron-updater shape as transient', (code) => {
     const feed = `${code} \n"method: GET url: https://github.com/o/r/releases.atom\\n\\n  Data:\\n  busy"\nHeaders: {}`
     expect(isTransientHttpServerError(new Error(feed))).toBe(true)
     expect(isTransientHttpServerError(new Error(`${code} Service Unavailable\nHeaders: {}`))).toBe(true)
@@ -149,14 +183,15 @@ describe('isTransientHttpServerError', () => {
     expect(isTransientHttpServerError(new Error(download))).toBe(true)
   })
 
-  it('still reports a 404/403/501, and never matches a bare number', () => {
+  it('still reports a 404/403/400, and never matches a bare number', () => {
     // A missing release asset or latest.yml is a real release defect.
     const missing =
       '404 \n"method: GET url: https://github.com/o/r/releases/download/v1/latest-mac.yml\\n\\n' +
       'Please double check that your authentication token is correct."\nHeaders: {}'
     expect(isTransientHttpServerError(new Error(missing))).toBe(false)
     expect(isTransientHttpServerError(new Error('403 Forbidden\nHeaders: {}'))).toBe(false)
-    expect(isTransientHttpServerError(new Error('501 Not Implemented\nHeaders: {}'))).toBe(false)
+    expect(isTransientHttpServerError(new Error('400 Bad Request\nHeaders: {}'))).toBe(false)
+    expect(isTransientHttpServerError(new Error('600 \nHeaders: {}'))).toBe(false)
     expect(isTransientHttpServerError(new Error('Cannot download "https://x/y.zip", status 404: Not Found'))).toBe(false)
     // Not electron-updater's shape: a status alone, a longer number, a number mid-sentence.
     expect(isTransientHttpServerError(new Error('504 Gateway Timeout'))).toBe(false)
@@ -174,6 +209,31 @@ describe('isTransientHttpServerError', () => {
     expect(isTransientHttpServerError(new Error(forbidden))).toBe(false)
     expect(isTransientHttpServerError(`updater error: ${forbidden}`)).toBe(false)
     expect(shouldDropSentryEvent({ message: `updater error: ${forbidden}` })).toBe(false)
+  })
+
+  it.each([408, 429, 500, 503, 599])("reads a transient %i off the HttpError's own statusCode", (status) => {
+    expect(isTransientHttpServerError(Object.assign(new Error('request failed'), { statusCode: status }))).toBe(true)
+  })
+
+  it.each([400, 404, 499, 600])("reads a %i off the HttpError's own statusCode, and it still reports", (status) => {
+    expect(isTransientHttpServerError(Object.assign(new Error('request failed'), { statusCode: status }))).toBe(false)
+  })
+
+  it("falls back to the HttpError's HTTP_ERROR_<n> code", () => {
+    expect(isTransientHttpServerError(Object.assign(new Error('request failed'), { code: 'HTTP_ERROR_502' }))).toBe(true)
+    expect(isTransientHttpServerError({ code: 'HTTP_ERROR_429' })).toBe(true)
+    expect(isTransientHttpServerError({ code: 'HTTP_ERROR_404' })).toBe(false)
+    expect(isTransientHttpServerError({ code: 'HTTP_ERROR_5000' })).toBe(false)
+    expect(isTransientHttpServerError({ code: 'ERR_UPDATER_INVALID_VERSION' })).toBe(false)
+    expect(isTransientHttpServerError({ code: 503 })).toBe(false)
+    expect(isTransientHttpServerError('HTTP_ERROR_503')).toBe(false)
+  })
+
+  it("lets a 404's own statusCode stand, but still reads a 5xx off its text", () => {
+    expect(isTransientHttpServerError(Object.assign(new Error('404 Not Found\nHeaders: {}'), { statusCode: 404 }))).toBe(false)
+    expect(
+      isTransientHttpServerError(Object.assign(new Error('503 Service Unavailable\nHeaders: {}'), { statusCode: undefined })),
+    ).toBe(true)
   })
 })
 
@@ -206,8 +266,9 @@ describe('isDiskFullError', () => {
       '\nHeaders: {}'
     expect(isDiskFullError(new Error(insufficientStorage))).toBe(false)
     expect(isDiskFullError(new Error('500 \nHeaders: {\n  "x-error": "ENOSPC"\n}'))).toBe(false)
-    // Not ours to explain away either: it still reports.
-    expect(shouldDropSentryEvent({ message: `updater error: ${insufficientStorage}` })).toBe(false)
+    // It is the update host failing, like any 5xx: retried by the next check, never reported.
+    expect(classifyUpdaterError(new Error(insufficientStorage))).toBe('transient')
+    expect(shouldDropSentryEvent({ message: `updater error: ${insufficientStorage}` })).toBe(true)
   })
 })
 
@@ -225,6 +286,156 @@ describe('isBenignUpdaterError', () => {
   it('leaves a full disk OUT: an update is pending and only the user can free the space', () => {
     expect(isBenignUpdaterError(new Error(DISK_FULL_ASAR))).toBe(false)
     expect(isBenignUpdaterError(new Error('ENOSPC: no space left on device, write'))).toBe(false)
+  })
+})
+
+describe('classifyUpdaterError', () => {
+  it.each([
+    ['missing-config', MISSING_CONFIG],
+    ['read-only', READ_ONLY],
+    ['disk-full', DISK_FULL_ASAR],
+    ['disk-full', 'ENOSPC: no space left on device, write'],
+    ['transient', 'net::ERR_INTERNET_DISCONNECTED'],
+    ['transient', 'socket hang up'],
+    ['transient', GATEWAY_TIMEOUT],
+    ['transient', 'Cannot download "https://github.com/o/r/releases/download/v1/T.zip", status 503: '],
+  ])('calls it %s: %s', (kind, msg) => {
+    expect(classifyUpdaterError(new Error(msg))).toBe(kind)
+  })
+
+  it('calls everything else genuine — the only kind that is ever reported', () => {
+    expect(classifyUpdaterError(new Error('sha512 checksum mismatch'))).toBe('genuine')
+    expect(classifyUpdaterError(new Error('New version signature is invalid'))).toBe('genuine')
+    expect(classifyUpdaterError(new Error('Cannot download "https://x/y.zip", status 404: Not Found'))).toBe('genuine')
+    expect(classifyUpdaterError(new Error('EROFS: read-only file system, open /x'))).toBe('genuine')
+    expect(classifyUpdaterError(null)).toBe('genuine')
+    expect(classifyUpdaterError(undefined)).toBe('genuine')
+  })
+
+  it('reads text that fits two kinds the way that tells the user more', () => {
+    // The disk being full is why the connection dropped: say so, rather than "try again later".
+    expect(classifyUpdaterError(new Error('ENOSPC: no space left on device, read ECONNRESET'))).toBe('disk-full')
+    expect(classifyUpdaterError(new Error(`${READ_ONLY} ENOSPC`))).toBe('read-only')
+    expect(classifyUpdaterError(new Error(`${MISSING_CONFIG} on a read-only volume`))).toBe('missing-config')
+  })
+})
+
+describe('updaterFailureMessage', () => {
+  const HINT = 'Termpolis is running from a read-only disk.'
+
+  it('puts every kind that is not a real failure in plain words', () => {
+    expect(updaterFailureMessage(new Error(MISSING_CONFIG), HINT)).toBe(NO_UPDATE_FEED_MESSAGE)
+    expect(updaterFailureMessage(new Error(READ_ONLY), HINT)).toBe(HINT)
+    expect(updaterFailureMessage(new Error(DISK_FULL_LOCALE), HINT)).toBe(DISK_FULL_MESSAGE)
+    expect(updaterFailureMessage(new Error('net::ERR_INTERNET_DISCONNECTED'), HINT)).toBe(UPDATE_SERVER_UNREACHABLE_MESSAGE)
+    expect(updaterFailureMessage(new Error(GATEWAY_TIMEOUT), HINT)).toBe(UPDATE_SERVER_UNREACHABLE_MESSAGE)
+  })
+
+  it("gives a genuine failure's own text, scrubbed of response headers and the user's home", () => {
+    const err = new Error(`sha512 checksum mismatch for ${homedir()}/Library/Caches/T.zip\nHeaders: {\n  "set-cookie": "_gh_sess=x"\n}`)
+    expect(updaterFailureMessage(err, HINT)).toBe('sha512 checksum mismatch for ~/Library/Caches/T.zip')
+    expect(updaterFailureMessage('New version signature is invalid', HINT)).toBe('New version signature is invalid')
+    expect(updaterFailureMessage(undefined, HINT)).toBe('')
+  })
+
+  it('says what the user can do, and that nothing else is needed', () => {
+    expect(DISK_FULL_MESSAGE.startsWith('Not enough free disk space to download the update')).toBe(true)
+    for (const msg of [DISK_FULL_MESSAGE, UPDATE_SERVER_UNREACHABLE_MESSAGE]) {
+      expect(msg).toMatch(/try again automatically\.$/)
+    }
+    expect(NO_UPDATE_FEED_MESSAGE).toMatch(/Reinstalling Termpolis restores it\.$/)
+  })
+})
+
+/** GitHub's releases.atom as electron-updater fetched it: one release, its notes HTML-escaped as GitHub does. */
+const releasesFeed = (notes: string) =>
+  '<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">\n' +
+  '  <entry>\n    <title>v1.49.0</title>\n    <content type="html">&lt;pre&gt;' +
+  notes.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') +
+  '&lt;/pre&gt;</content>\n  </entry>\n</feed>'
+
+/** Notes (a code block) naming every kind of failure — as the notes for the release that stopped reporting them would. */
+const NOTES_NAMING_EVERY_KIND = [
+  READ_ONLY,
+  MISSING_CONFIG,
+  DISK_FULL_ASAR,
+  'ENOSPC: no space left on device, write',
+  'net::ERR_INTERNET_DISCONNECTED, read ECONNRESET, socket hang up',
+  'updater error: 504 ',
+  'Headers: {}',
+].join('\n')
+
+/**
+ * How GitHubProvider (electron-updater 6.8) reports a failed /releases/latest request: wrapped twice,
+ * the request's own error quoted stack and all, then the whole releases feed it had already fetched.
+ */
+const latestRequestFailed = (cause: string) =>
+  Object.assign(
+    new Error(
+      'Cannot parse releases feed: Error: Unable to find latest version on GitHub ' +
+        '(https://github.com/codedev-david/termpolis/releases/latest), please ensure a production release exists: ' +
+        `${cause},\nXML:\n${releasesFeed(NOTES_NAMING_EVERY_KIND)}`,
+    ),
+    { code: 'ERR_UPDATER_INVALID_RELEASE_FEED' },
+  )
+const AT_HTTP = '\n    at ClientRequest.<anonymous> (/app.asar/node_modules/builder-util-runtime/out/httpExecutor.js:1:1)'
+const LATEST_503 =
+  'HttpError: 503 \n"method: GET url: https://github.com/codedev-david/termpolis/releases/latest\\n\\n  Data:\\n  busy\\n  "' +
+  `\nHeaders: {\n  "date": "Mon, 28 Sep 2026 09:00:00 GMT"\n}${AT_HTTP}`
+const LATEST_404 =
+  'HttpError: 404 \n"method: GET url: https://github.com/codedev-david/termpolis/releases/latest\\n\\n  Data:\\n  Not Found\\n  "' +
+  `\nHeaders: {}${AT_HTTP}`
+
+/** The feed itself unusable (an entry's link isn't a tag), quoted after the TypeError. */
+const UNUSABLE_FEED = new Error(
+  "Cannot parse releases feed: TypeError: Cannot read properties of null (reading '1')\n" +
+    '    at GitHubProvider.getLatestVersion (/app.asar/node_modules/electron-updater/out/providers/GitHubProvider.js:1:1)' +
+    `,\nXML:\n${releasesFeed(NOTES_NAMING_EVERY_KIND)}`,
+)
+/** A latest.yml that won't parse, quoted after the YAMLException (electron-updater's Provider.parseUpdateInfo). */
+const UNUSABLE_CHANNEL_FILE = new Error(
+  'Cannot parse update info from latest.yml in the latest release artifacts ' +
+    '(https://github.com/codedev-david/termpolis/releases/download/v1.49.0/latest.yml): ' +
+    'YAMLException: bad indentation of a mapping entry (3:9)\n    at generateError (js-yaml.js:1:1), ' +
+    `rawData: version: 1.49.0\nreleaseNotes: |\n  ${NOTES_NAMING_EVERY_KIND.replace(/\n/g, '\n  ')}\n` +
+    '  Cannot download "https://github.com/o/r/releases/download/v1/T.zip", status 503: ',
+)
+
+describe("a feed or channel file electron-updater couldn't use — the document it quotes is not the error", () => {
+  it.each([
+    ['a 503', LATEST_503],
+    ['a 504 with no body', `HttpError: 504 \nHeaders: {}${AT_HTTP}`],
+    ['the machine going offline', 'Error: net::ERR_INTERNET_DISCONNECTED\n    at SimpleURLLoaderWrapper.<anonymous> (x:2:1)'],
+  ])('reads %s from /releases/latest as transient, whatever the notes it quotes say', (_what, cause) => {
+    const err = latestRequestFailed(cause)
+    expect(classifyUpdaterError(err)).toBe('transient')
+    expect(isBenignUpdaterError(err)).toBe(true)
+    expect(updaterFailureMessage(err, 'hint')).toBe(UPDATE_SERVER_UNREACHABLE_MESSAGE)
+    // Neither a read-only disk to stand down for (on any platform), nor a full disk, nor a broken install.
+    expect(isReadOnlyVolumeError(err)).toBe(false)
+    expect(isDiskFullError(err)).toBe(false)
+    expect(isMissingUpdateConfigError(err)).toBe(false)
+    expect(shouldDropSentryEvent({ exception: { values: [{ type: 'Error', value: err.message }] } })).toBe(true)
+  })
+
+  it.each([
+    ['no production release (a 404 from /releases/latest)', latestRequestFailed(LATEST_404)],
+    ['an unusable feed', UNUSABLE_FEED],
+    ['an unusable latest.yml', UNUSABLE_CHANNEL_FILE],
+  ])('still reports %s, though the document it quotes names every benign kind', (_what, err) => {
+    expect(classifyUpdaterError(err)).toBe('genuine')
+    for (const matches of [isMissingUpdateConfigError, isReadOnlyVolumeError, isDiskFullError, isTransientNetworkError]) {
+      expect(matches(err)).toBe(false)
+    }
+    expect(isTransientHttpServerError(err)).toBe(false)
+    expect(shouldDropSentryEvent({ exception: { values: [{ type: 'Error', value: err.message }] } })).toBe(false)
+    expect(shouldDropSentryEvent({ message: `updater error: ${scrubUpdaterText(err.message)}` })).toBe(false)
+  })
+
+  it('leaves a channel file with no data at all as it was: nothing is quoted', () => {
+    const empty = new Error('Cannot parse update info from latest.yml in the latest release artifacts (https://x/latest.yml): rawData: null')
+    expect(classifyUpdaterError(empty)).toBe('genuine')
+    expect(updaterFailureMessage(empty, 'hint')).toBe(empty.message)
   })
 })
 
@@ -278,6 +489,32 @@ describe('shouldDropSentryEvent — the second reporting path (#22)', () => {
       }),
     ).toBe(false)
     expect(shouldDropSentryEvent({ message: 'UncleanExit: previous session ended without a clean exit' })).toBe(false)
+  })
+
+  it("drops the updater's own capture of anything that isn't genuine — and keeps a genuine one", () => {
+    expect(shouldDropSentryEvent({ message: `updater error: ${MISSING_CONFIG}` })).toBe(true)
+    expect(shouldDropSentryEvent({ message: 'updater error: socket hang up' })).toBe(true)
+    expect(shouldDropSentryEvent({ message: 'updater error: Request timed out' })).toBe(true)
+    expect(shouldDropSentryEvent({ message: 'updater error: 429 \nHeaders: {}' })).toBe(true)
+    const missing = '404 \n"method: GET url: https://github.com/o/r/releases/download/v1/latest-mac.yml"'
+    expect(shouldDropSentryEvent({ message: `updater error: ${missing}` })).toBe(false)
+    expect(
+      shouldDropSentryEvent({ message: "updater error: EACCES: permission denied, open '~/Library/Caches/u/update-info.json'" }),
+    ).toBe(false)
+  })
+
+  it("drops what is the updater's or noise wherever it comes from, and nothing more", () => {
+    expect(shouldDropSentryEvent({ exception: { values: [{ type: 'Error', value: MISSING_CONFIG }] } })).toBe(true)
+    expect(shouldDropSentryEvent({ exception: { values: [{ type: 'HttpError', value: GATEWAY_TIMEOUT }] } })).toBe(true)
+    expect(shouldDropSentryEvent({ message: 'net::ERR_INTERNET_DISCONNECTED' })).toBe(true)
+    expect(shouldDropSentryEvent({ exception: { values: [{ type: 'Error', value: 'getaddrinfo ENOTFOUND github.com' }] } })).toBe(
+      true,
+    )
+    // Too generic to mute when nothing says it is the updater's.
+    expect(shouldDropSentryEvent({ message: 'socket hang up' })).toBe(false)
+    expect(shouldDropSentryEvent({ exception: { values: [{ type: 'Error', value: 'Request timed out' }] } })).toBe(false)
+    // A network code that only a quoted response mentions is not the failure.
+    expect(shouldDropSentryEvent({ message: '403 Forbidden\nHeaders: {\n  "x-error": "ECONNRESET"\n}' })).toBe(false)
   })
 
   it('survives every malformed event shape without throwing', () => {

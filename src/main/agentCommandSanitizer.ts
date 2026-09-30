@@ -1,8 +1,12 @@
 // Valid agent launch commands — run_command on swarm terminals must match one of these.
 // If the conductor tries to add -p, --sandbox, or append a prompt, we fix it.
+// Codex: `--full-auto` was removed from the CLI (0.153 rejects it outright), and a swarm
+// worker can't stop for approvals — Termpolis no longer answers them. `-a never` returns a
+// failed command to the model instead of asking; `-s workspace-write` keeps its sandbox:
+// writes stay in the project, and no network.
 export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
   'claude': 'claude --dangerously-skip-permissions',
-  'codex': 'codex --full-auto',
+  'codex': 'codex -a never -s workspace-write',
   'agy': 'agy --dangerously-skip-permissions', // Gemini via the Antigravity CLI (autonomous swarm worker → auto-approve, like Claude)
   'gemini': 'gemini', // legacy fallback
 }

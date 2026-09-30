@@ -13,12 +13,11 @@ import { rewriteMessagesBody, setWireWindow, windowForMode } from '../../src/mai
  *   both combined ....... 61.0% removed   — 6.2% of requests fell below 50%
  *   at 'max' ............ 72.3% removed   — 0.1% of requests fell below 50%
  *
- * CAVEAT (2026-08-25): the tool_use row above was measured while the artifact-bearing fields — a
- * Write's `content`, a Bash `command`, either side of an Edit — were still being compressed. They
- * no longer are (TOOL_USE_VERBATIM in wireCompress.ts: the agent copies those bytes forward, so
- * eliding them corrupted real files and real commands). The tool_use surface is now the fields the
- * agent never replays — subagent prompts, MCP tool bodies — and it is a much smaller slice: on this
- * machine's ledger tool_use was 22.5M of 1.34B saved tokens, ~1.7% of the total.
+ * CAVEAT: the tool_use rows above were measured while the proxy still compressed tool_use input.
+ * It no longer touches any tool_use field, at any age (TOOL_USE_VERBATIM in wireCompress.ts: the
+ * model replays its own inputs, so an elided one corrupted real files, commands and prompts). That
+ * surface now contributes nothing and the floor rests on tool_result text alone — on this machine's
+ * ledger tool_use was 22.5M of 1.34B saved tokens, ~1.7% of the total.
  *
  * The fixture below reproduces the SHAPE of that traffic — repeated file reads, a near-duplicate
  * re-read after an edit, verbose command output, large `Write` payloads and a subagent dispatch. If
@@ -53,7 +52,7 @@ function realisticBody(): string {
   result('r2', cmdOutput(300))
   call('r3', 'Read', { file_path: '/repo/src/b.ts' })
   result('r3', fileB)
-  // The agent writes the whole file back — the tool_use payload that older versions never touched.
+  // The agent writes the whole file back — a tool_use payload the proxy never touches.
   call('w1', 'Write', { file_path: '/repo/src/a.ts', content: fileAEdited })
   result('w1', 'File written successfully.')
   // Re-read after the edit: a NEAR-duplicate of what is already on the wire.
@@ -64,8 +63,8 @@ function realisticBody(): string {
   result('r5', fileB)
   call('r6', 'Bash', { command: 'npm run build' })
   result('r6', cmdOutput(400))
-  // A subagent dispatch: bulk tool_use text the agent never replays into a file or a shell, and so
-  // the surface that tool_use compression still legitimately owns.
+  // A subagent dispatch: bulk tool_use text that rides the wire untouched like every other tool_use
+  // input, so it counts toward neither side of the ratio.
   call('t1', 'Task', { description: 'audit', prompt: srcFile('brief', 200) })
   result('t1', 'Subagent finished.')
   messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Done — the build is green.' }] })
@@ -91,31 +90,31 @@ describe('the 50% savings floor holds on realistic traffic', () => {
     expect(measure(realisticBody()).combined).toBeGreaterThanOrEqual(50)
   })
 
-  it('clears the floor on EACH surface independently — neither carries the other', () => {
-    setWireWindow(windowForMode('aggressive'))
-    const m = measure(realisticBody())
-    expect(m.tr).toBeGreaterThanOrEqual(50)
-    expect(m.tu).toBeGreaterThanOrEqual(50)
-  })
-
-  it('reaches the floor WITHOUT touching a byte the agent replays', () => {
-    // The floor is only worth clearing if what survives is still usable. Every artifact-bearing
-    // field in the fixture has to come back byte-identical, or the saving was bought by corrupting
-    // the agent's own work — which is exactly the regression this pairs with.
+  it('clears the floor on tool_result text alone — tool_use input adds nothing to either side', () => {
     setWireWindow(windowForMode('aggressive'))
     const raw = realisticBody()
-    const before = JSON.parse(raw) as { messages: Array<{ content: Array<Record<string, never>> }> }
-    const after = JSON.parse(rewriteMessagesBody(raw).body) as typeof before
-    const artifacts = (b: typeof before): string[] =>
-      b.messages.flatMap((m) => m.content)
-        .filter((c) => (c as { type?: string }).type === 'tool_use')
-        .flatMap((c) => {
-          const input = (c as unknown as { input: Record<string, unknown> }).input
-          return ['content', 'command', 'old_string', 'new_string']
-            .map((k) => input[k]).filter((v): v is string => typeof v === 'string')
-        })
-    expect(artifacts(after)).toEqual(artifacts(before))
-    expect(artifacts(before).length).toBeGreaterThan(0) // the fixture actually exercises this
+    const m = measure(raw)
+    expect(m.tr).toBeGreaterThanOrEqual(50)
+    expect(m.combined).toBe(m.tr)
+    const s = rewriteMessagesBody(raw).stats
+    expect([s.tuBlocks, s.tuOrigChars, s.tuCompChars]).toEqual([0, 0, 0])
+  })
+
+  it('reaches the floor WITHOUT touching a byte of any tool_use input', () => {
+    // The floor is only worth clearing if what survives is still usable. Every tool_use input in
+    // the fixture — file bodies, commands, the subagent prompt — has to come back byte-identical,
+    // or the saving was bought by corrupting the agent's own work.
+    setWireWindow(windowForMode('aggressive'))
+    const raw = realisticBody()
+    const inputs = (body: string): string[] =>
+      (JSON.parse(body) as { messages: Array<{ content: Array<{ type?: string; input?: unknown }> }> }).messages
+        .flatMap((m) => m.content)
+        .filter((c) => c.type === 'tool_use')
+        .map((c) => JSON.stringify(c.input))
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(true) // the floor WAS reached — by tool_result text
+    expect(inputs(r.body)).toEqual(inputs(raw))
+    expect(inputs(raw).length).toBeGreaterThan(0) // the fixture actually exercises this
   })
 
   it('compresses monotonically harder as the tier escalates', () => {

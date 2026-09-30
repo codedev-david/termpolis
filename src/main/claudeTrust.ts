@@ -18,20 +18,35 @@
 // cwd is sufficient; the repo root is seeded too when the caller knows it, which is the
 // key Claude itself would have written.
 //
-// Note on the home directory: Claude deliberately does NOT persist trust when a user
-// accepts the dialog while sitting in ~ ("home trust is session-only"), which is why a
-// terminal opened in the home folder re-prompted on every single launch. Its trust
-// *lookup* has no such carve-out, so a key we write there is honored.
+// That ancestor walk is also why some folders are never seeded: the home folder, anything
+// above it, a drive root, `/` and a UNC share root. Trusting one of them trusts every
+// project beneath it, which is a decision for the user and not for a terminal they happened
+// to open there. Claude itself refuses to persist trust for the home folder ("home trust is
+// session-only"), so a terminal in ~ keeps getting the dialog, and that is intended.
+//
+// Only agentIntegrationManager calls this, and only once the user agreed to connect the
+// agents; it records the keys a call newly set (`newlySet`) so a disconnect can put them back.
 
-import { existsSync, readFileSync, writeFileSync, renameSync, realpathSync, statSync } from 'fs'
+import { readFileSync, realpathSync, statSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
+import { atomicWriteText, errorText, formatJsonLike } from './agentConfigIO'
+import { isUnsafeTrustRoot } from '../shared/agentIntegration'
 
 export interface TrustResult {
   changed: boolean
   /** Which keys are now marked trusted (whether or not this call wrote them). */
   keys: string[]
-  skipped?: 'corrupt' | 'already-trusted' | 'write-failed' | 'no-cwd' | 'too-large'
+  /** The keys this call switched to trusted: the ones a disconnect must switch back. */
+  newlySet: string[]
+  skipped?: 'corrupt' | 'already-trusted' | 'write-failed' | 'no-cwd' | 'too-large' | 'unsafe-root'
+  error?: string
+}
+
+export interface TrustRevertResult {
+  changed: boolean
+  /** Keys whose trust this call withdrew. */
+  reverted: string[]
   error?: string
 }
 
@@ -81,32 +96,52 @@ export function claudeProjectKey(cwd: string): string {
   return fwd.replace(/\/+$/, '') || '/'
 }
 
-function readConfig(path: string): { ok: true; value: any } | { ok: false; reason: 'corrupt' | 'too-large'; error?: string } {
+/** Home as given and as a key, so a short-name or symlinked home is still recognised. */
+function homeForms(home: string): string[] {
+  return home.trim() ? Array.from(new Set([home, claudeProjectKey(home)])) : ['']
+}
+
+function isUnsafe(path: string, key: string, homes: string[]): boolean {
+  return homes.some((h) => isUnsafeTrustRoot(path, h) || isUnsafeTrustRoot(key, h))
+}
+
+function isObj(v: unknown): v is Record<string, any> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+type ConfigRead =
+  | { ok: true; value: any; text: string | null }
+  | { ok: false; reason: 'corrupt' | 'too-large'; error?: string }
+
+function readConfig(path: string): ConfigRead {
   // A missing file is NOT a failure here: Claude creates ~/.claude.json on first run,
   // and a config that only carries `projects` is a shape it merges over its defaults.
   // Refusing to seed until the user has run Claude once would leave exactly the
   // first-launch case — the one that prompts — unfixed.
-  if (!existsSync(path)) return { ok: true, value: {} }
+  if (!existsSync(path)) return { ok: true, value: {}, text: null }
   try {
     if (statSync(path).size > MAX_CONFIG_BYTES) {
       return { ok: false, reason: 'too-large', error: 'config exceeds ' + MAX_CONFIG_BYTES + ' bytes' }
     }
     const raw = readFileSync(path, 'utf-8')
-    if (!raw.trim()) return { ok: true, value: {} }
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const body = raw.replace(/^\uFEFF/, '')
+    if (!body.trim()) return { ok: true, value: {}, text: raw }
+    const parsed = JSON.parse(body)
+    if (!isObj(parsed)) {
       return { ok: false, reason: 'corrupt', error: 'root is not an object' }
     }
-    return { ok: true, value: parsed }
-  } catch (e: any) {
+    return { ok: true, value: parsed, text: raw }
+  } catch (e) {
     // Never overwrite a config we failed to parse — that file holds the user's
     // whole Claude Code state. Skip and let the dialog handler take over.
-    return { ok: false, reason: 'corrupt', error: e?.message || String(e) }
+    return { ok: false, reason: 'corrupt', error: errorText(e) }
   }
 }
 
 /**
  * Mark `cwd` (and any `alsoTrust` paths, e.g. the enclosing git root) as trusted.
+ * A `cwd` that is the home folder or a filesystem root is refused outright; such an
+ * `alsoTrust` path is dropped and the rest still seeded.
  *
  * Idempotent by design: after the first launch in a folder nothing is written at all,
  * which keeps the read-modify-write window against a concurrently running Claude
@@ -114,53 +149,98 @@ function readConfig(path: string): { ok: true; value: any } | { ok: false; reaso
  */
 export function trustClaudeWorkspace(
   cwd: string,
-  opts: { alsoTrust?: string[]; configPath?: string } = {},
+  opts: { alsoTrust?: string[]; configPath?: string; home?: string } = {},
 ): TrustResult {
-  if (!cwd || !cwd.trim()) return { changed: false, keys: [], skipped: 'no-cwd' }
+  if (!cwd || !cwd.trim()) return { changed: false, keys: [], newlySet: [], skipped: 'no-cwd' }
   const path = opts.configPath ?? claudeConfigPath()
-  const keys = Array.from(new Set(
-    [cwd, ...(opts.alsoTrust ?? [])].filter((p) => !!p && !!p.trim()).map(claudeProjectKey),
-  ))
+  const homes = homeForms(opts.home ?? homedir())
+  const cwdKey = claudeProjectKey(cwd)
+  if (isUnsafe(cwd, cwdKey, homes)) return { changed: false, keys: [], newlySet: [], skipped: 'unsafe-root' }
+  const extra = (opts.alsoTrust ?? [])
+    .filter((p) => !!p && !!p.trim())
+    .map((p) => ({ p, key: claudeProjectKey(p) }))
+    .filter(({ p, key }) => !isUnsafe(p, key, homes))
+    .map(({ key }) => key)
+  const keys = Array.from(new Set([cwdKey, ...extra]))
 
   // Nothing to do if this run already confirmed every key against this config.
   if (keys.every((k) => seeded.has(path + '\0' + k))) {
-    return { changed: false, keys, skipped: 'already-trusted' }
+    return { changed: false, keys, newlySet: [], skipped: 'already-trusted' }
   }
 
   const read = readConfig(path)
-  if (!read.ok) return { changed: false, keys, skipped: read.reason, error: read.error }
+  if (!read.ok) return { changed: false, keys, newlySet: [], skipped: read.reason, error: read.error }
 
   const config = read.value
-  if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) {
-    config.projects = {}
-  }
+  if (!isObj(config.projects)) config.projects = {}
 
-  let changed = false
+  const newlySet: string[] = []
   for (const key of keys) {
     const entry = config.projects[key]
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    if (!isObj(entry)) {
       config.projects[key] = { hasTrustDialogAccepted: true }
-      changed = true
+      newlySet.push(key)
     } else if (entry.hasTrustDialogAccepted !== true) {
       entry.hasTrustDialogAccepted = true
-      changed = true
+      newlySet.push(key)
     }
   }
 
   const remember = (): void => { for (const key of keys) seeded.add(path + '\0' + key) }
 
-  if (!changed) {
+  if (!newlySet.length) {
     remember()
-    return { changed: false, keys, skipped: 'already-trusted' }
+    return { changed: false, keys, newlySet, skipped: 'already-trusted' }
   }
 
   try {
-    const tmp = path + '.tmp'
-    writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf-8')
-    renameSync(tmp, path)
+    atomicWriteText(path, formatJsonLike(config, read.text))
     remember()
-    return { changed: true, keys }
-  } catch (e: any) {
-    return { changed: false, keys, skipped: 'write-failed', error: e?.message || String(e) }
+    return { changed: true, keys, newlySet }
+  } catch (e) {
+    return { changed: false, keys, newlySet: [], skipped: 'write-failed', error: errorText(e) }
   }
+}
+
+/**
+ * Withdraw trust from the folders `pick` selects. An entry holding nothing but the flag was
+ * created by Termpolis and goes; otherwise the flag goes back to false, which is what Claude
+ * Code writes before a folder is accepted. Nothing is written when nothing matched.
+ */
+function withdrawTrust(path: string, pick: (key: string) => boolean): TrustRevertResult {
+  const read = readConfig(path)
+  if (!read.ok) return { changed: false, reverted: [], error: read.error }
+  const projects = read.value.projects
+  if (!isObj(projects)) return { changed: false, reverted: [] }
+  const reverted: string[] = []
+  for (const [key, entry] of Object.entries(projects)) {
+    if (!pick(key) || !isObj(entry) || entry.hasTrustDialogAccepted !== true) continue
+    if (Object.keys(entry).length === 1) delete projects[key]
+    else entry.hasTrustDialogAccepted = false
+    reverted.push(key)
+  }
+  if (!reverted.length) return { changed: false, reverted }
+  try {
+    atomicWriteText(path, formatJsonLike(read.value, read.text))
+  } catch (e) {
+    return { changed: false, reverted: [], error: errorText(e) }
+  }
+  seeded.clear()
+  return { changed: true, reverted }
+}
+
+/** Undo trustClaudeWorkspace: withdraw trust from the keys it reported in `newlySet`. */
+export function revertClaudeTrust(keys: readonly string[], opts: { configPath?: string } = {}): TrustRevertResult {
+  if (!keys.length) return { changed: false, reverted: [] }
+  return withdrawTrust(opts.configPath ?? claudeConfigPath(), (key) => keys.includes(key))
+}
+
+/**
+ * Withdraw trust from the home folder, the folders above it and the filesystem roots.
+ * Claude never persists trust for home itself, so such a key was written by an earlier
+ * Termpolis, which seeded every folder a terminal opened in.
+ */
+export function untrustUnsafeClaudeRoots(opts: { configPath?: string; home?: string } = {}): TrustRevertResult {
+  const homes = homeForms(opts.home ?? homedir())
+  return withdrawTrust(opts.configPath ?? claudeConfigPath(), (key) => isUnsafe(key, key, homes))
 }

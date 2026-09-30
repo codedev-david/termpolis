@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView, DepthAdviceView } from '../../types'
+import { useEffect, useState, type ReactNode } from 'react'
+import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView, DepthAdviceView, ProxyStatusView } from '../../types'
 
 /** Mirrors CCR_MAX_BYTES in src/main/headroom/ccrStore.ts — the pane names the real limit. */
 const CCR_CAP_MB = 200
@@ -67,11 +67,29 @@ const effectiveCostShare = (t?: UnifiedTotalsView): number | null =>
 const outputCostShare = (t?: UnifiedTotalsView): number | null =>
   t?.bill && t.bill.total > 0 ? Math.round(t.bill.outputPct) : null
 
+const MODE_LABEL: Record<Mode, string> = { conservative: 'Conservative', balanced: 'Balanced', aggressive: 'Aggressive', max: 'Maximum' }
+
+/** One line on what the proxy is actually doing — the switch alone can't say it stepped aside. */
+function ProxyStatusLine({ status }: { status: ProxyStatusView | null }) {
+  if (!status) return null
+  let text: ReactNode
+  if (!status.enabled) text = 'Off — new Claude Code sessions go straight to Anthropic.'
+  else if (status.bypassVar) {
+    text = <>Stepping aside — <code>{status.bypassVar}</code> is set (in Termpolis&rsquo;s environment or Claude Code&rsquo;s settings.json), so Claude Code keeps the route you configured and nothing is compressed.</>
+  } else if (!status.running || !status.healthy) text = 'Not running right now — Claude Code sessions launch direct until it recovers.'
+  else {
+    const raised = status.effectiveMode !== status.selectedMode
+    text = <>Running at the <b>{MODE_LABEL[status.effectiveMode] ?? status.effectiveMode}</b> tier{raised ? <> (raised from {MODE_LABEL[status.selectedMode] ?? status.selectedMode} by the savings floor)</> : null}.</>
+  }
+  return <div data-testid="hr-proxy-status" style={{ fontSize: 13, opacity: 0.8, margin: '0 0 8px' }}>{text}</div>
+}
+
 export function TokenSavingsSettings() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [proxy, setProxy] = useState<ProxyReceipt | null>(null)
   const [unified, setUnified] = useState<UnifiedReceipt | null>(null)
+  const [status, setStatus] = useState<ProxyStatusView | null>(null)
 
   const refresh = async (): Promise<void> => {
     const s = await window.termpolis.tokenSavingsGetSettings()
@@ -82,12 +100,16 @@ export function TokenSavingsSettings() {
     if (p.success) setProxy(p.data)
     const u = await window.termpolis.tokenSavingsGetUnifiedReceipt()
     if (u.success) setUnified(u.data)
+    const st = await window.termpolis.tokenSavingsGetProxyStatus?.()
+    if (st?.success) setStatus(st.data)
   }
   useEffect(() => { void refresh() }, [])
 
   const update = async (p: Partial<Settings>): Promise<void> => {
     const res = await window.termpolis.tokenSavingsSetSettings(p)
     if (res.success) setSettings(res.data)
+    const st = await window.termpolis.tokenSavingsGetProxyStatus?.()
+    if (st?.success) setStatus(st.data)
   }
 
   const cacheHealthy = (proxy?.cumulative.cacheReadTokens ?? 0) >= (proxy?.cumulative.cacheCreationTokens ?? 0)
@@ -232,14 +254,30 @@ export function TokenSavingsSettings() {
       </div>
 
       <div className="hr-proxy-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
-        <h4 style={{ margin: '0 0 6px' }}>Claude Code compression <span style={{ fontWeight: 400, opacity: 0.65 }}>— always on</span></h4>
+        <h4 style={{ margin: '0 0 6px' }}>Claude Code compression proxy</h4>
+        <label style={{ display: 'block', margin: '8px 0' }}>
+          <input
+            data-testid="hr-toggle-proxy"
+            type="checkbox"
+            aria-label="Route Claude Code through the compression proxy"
+            checked={settings?.wireProxy !== false}
+            disabled={!settings}
+            onChange={() => { void update({ wireProxy: settings?.wireProxy === false }) }}
+          />
+          {' '}Route new Claude Code sessions through the local compression proxy{' '}
+          <span style={{ opacity: 0.6 }}>— off means Claude talks to Anthropic directly; a session that is already running keeps its route until it ends</span>
+        </label>
+        <ProxyStatusLine status={status} />
         <p style={{ opacity: 0.8, marginTop: 0 }}>
-          Every Claude Code session runs through a local, off-thread compression proxy that shrinks the tool-result
-          text (large Read/Bash output, search dumps, MCP results), the agent&rsquo;s own tool <i>inputs</i> (file bodies it
-          wrote, both sides of every edit) and pasted images it sends to Anthropic — trimming the input-token volume of
-          those blocks while keeping the prompt cache intact. Repeat results collapse to a
-          reference, near-identical ones (re-read an edited file) are sent as a patch. Fully reversible via
-          <code>retrieve_full</code>; your memory/brain is never touched.
+          When on, each Claude Code session Termpolis launches sends its API requests to a small proxy on 127.0.0.1, which
+          shrinks tool-result text (large Read/Bash output, search dumps, MCP results) and pasted images, then forwards the
+          request to api.anthropic.com and nowhere else. Repeat results collapse to a reference and near-identical ones (a
+          re-read edited file) are sent as a patch, so the model sees a shorter version; <code>retrieve_full</code> brings
+          any compressed block back in full. Whatever the agent writes to disk or runs — file bodies, commands, both sides of
+          every edit — is always forwarded byte-for-byte, and your memory/brain is never touched. The prompt cache stays
+          intact, except for the one deliberate rebuild that aging out old history (below) pays. If Termpolis sees your own
+          <code>ANTHROPIC_BASE_URL</code>, an HTTP(S) proxy or a Bedrock/Vertex/Foundry switch in its environment, it steps
+          aside and leaves your route alone.
         </p>
         <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'baseline' }}>
           <div>
@@ -261,20 +299,22 @@ export function TokenSavingsSettings() {
           )}
         </div>
 
-        {/* The two wire surfaces, kept apart. They behave nothing alike: tool_result is content
-            arriving once, while tool_use is the agent's OWN output sitting in the cached prefix
-            and re-read on every subsequent turn — so a token removed there is a token not paid
-            for again and again. Blending them into one figure would hide which half is working. */}
+        {/* The two wire surfaces, kept apart. tool_result is content arriving once. tool_use — the
+            agent's own tool calls — has not been rewritten since v1.49: an Agent prompt or a Bash
+            command has to reach the model exactly as it was written. So its row only reports what
+            earlier versions removed, and stays hidden for anyone who never ran one. */}
         {((proxy?.cumulative.textOrigTokens ?? 0) + (proxy?.cumulative.toolUseOrigTokens ?? 0)) > 0 && (
           <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }} data-testid="hr-surface-split">
             <div>
               Tool results (what came back): <b data-testid="hr-surface-tr">{fmt(proxy?.cumulative.textSavedTokens ?? 0)}</b> of{' '}
               {fmt(proxy?.cumulative.textOrigTokens ?? 0)} tokens removed
             </div>
+            {(proxy?.cumulative.toolUseOrigTokens ?? 0) > 0 && (
             <div>
-              Tool inputs (what the agent wrote, re-read every turn): <b data-testid="hr-surface-tu">{fmt(proxy?.cumulative.toolUseSavedTokens ?? 0)}</b> of{' '}
+              Tool inputs, before v1.49 (no longer compressed): <b data-testid="hr-surface-tu">{fmt(proxy?.cumulative.toolUseSavedTokens ?? 0)}</b> of{' '}
               {fmt(proxy?.cumulative.toolUseOrigTokens ?? 0)} tokens removed
             </div>
+            )}
           </div>
         )}
 

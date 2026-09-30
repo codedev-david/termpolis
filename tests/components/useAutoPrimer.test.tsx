@@ -9,6 +9,7 @@ import {
   buildPrimerPointer,
   reprimeAfterCompaction,
   primeOnLaunch,
+  promptShowing,
   PRIMER_GATE_POLL_MS,
   PRIMER_GATE_MAX_WAIT_MS,
   PRIMER_SUBMIT_SETTLE_MS,
@@ -19,6 +20,11 @@ import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const agent = { name: 'Claude Code' } as any
+const IDLE_SCREEN = '>_ OpenAI Codex\r\n\r\n› \r\n  ? for shortcuts'
+/** Codex's folder-trust prompt, as it sits on screen right after launch. */
+const TRUST_SCREEN =
+  'Do you trust the contents of this directory?\r\n\r\n' +
+  '› 1. Yes, continue\r\n  2. No, quit\r\n\r\n  Press enter to continue'
 
 /** A gate that is already open: an agent Termpolis PROVED is running, on an idle input line. */
 const openGate = (): PrimerGate => ({ launchedAgent: () => agent, draft: () => '' })
@@ -35,6 +41,8 @@ function mockApi(overrides: Record<string, unknown> = {}) {
   ;(window as any).termpolis = {
     memoryBuildPrimer: vi.fn(async () => ({ success: true, data: 'RECALLED CONTEXT' })),
     writeToTerminal: vi.fn(),
+    // An agent's idle composer: nothing on screen waiting for an answer.
+    readTerminalBuffer: vi.fn(async () => ({ success: true, data: { output: IDLE_SCREEN } })),
     ...overrides,
   }
 }
@@ -590,6 +598,7 @@ describe('the launch pointer is submitted, once', () => {
     ;(window as any).termpolis = {
       memoryBuildPrimer: vi.fn(async () => ({ success: true, data: 'MEMORY DIGEST' })),
       writeToTerminal: vi.fn(),
+      readTerminalBuffer: vi.fn(async () => ({ success: true, data: { output: IDLE_SCREEN } })),
     }
   })
   afterEach(() => {
@@ -658,5 +667,201 @@ describe('the launch pointer is submitted, once', () => {
     renderHook(() => useAutoPrimer('term-ghost', agent, '/home/me/proj', openGate()))
     await vi.advanceTimersByTimeAsync(2000)
     expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+  })
+})
+
+// The pointer goes in with an Enter, and an Enter on a trust or approval prompt answers it.
+// A paste 1.5 s into a Codex launch used to accept its folder-trust prompt that way, so
+// every path that types the pointer looks at the screen first.
+describe('the pointer never answers a prompt', () => {
+  const screen = (output: string) => vi.fn(async () => ({ success: true, data: { output } }))
+
+  describe('promptShowing', () => {
+    it('is false for an idle composer', async () => {
+      expect(await promptShowing('t1')).toBe(false)
+    })
+
+    it('is true while a trust prompt is on screen', async () => {
+      mockApi({ readTerminalBuffer: screen(TRUST_SCREEN) })
+      expect(await promptShowing('t1')).toBe(true)
+    })
+
+    it('reads a buffer with no output as an empty screen', async () => {
+      mockApi({ readTerminalBuffer: vi.fn(async () => ({ success: true, data: {} })) })
+      expect(await promptShowing('t1')).toBe(false)
+    })
+
+    it('counts a screen it cannot read as a prompt', async () => {
+      // A false alarm only holds a paste back; a wrong all-clear types into a prompt.
+      mockApi({ readTerminalBuffer: undefined })
+      expect(await promptShowing('t1')).toBe(true)
+      mockApi({ readTerminalBuffer: vi.fn(async () => ({ success: false })) })
+      expect(await promptShowing('t1')).toBe(true)
+      mockApi({ readTerminalBuffer: vi.fn(async () => ({ success: true, data: null })) })
+      expect(await promptShowing('t1')).toBe(true)
+      mockApi({ readTerminalBuffer: vi.fn(async () => { throw new Error('gone') }) })
+      expect(await promptShowing('t1')).toBe(true)
+      ;(window as any).termpolis = undefined
+      expect(await promptShowing('t1')).toBe(true)
+    })
+  })
+
+  describe('injectAutoPrimer', () => {
+    it('types nothing while a prompt is showing', async () => {
+      mockApi({ readTerminalBuffer: screen(TRUST_SCREEN) })
+      useTerminalStore.setState({ memoryNotice: null })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, async () => {})).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('holds the Enter back when a prompt comes up after the paste', async () => {
+      const read = vi.fn()
+        .mockResolvedValueOnce({ success: true, data: { output: IDLE_SCREEN } })
+        .mockResolvedValue({ success: true, data: { output: TRUST_SCREEN } })
+      mockApi({ readTerminalBuffer: read })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, async () => {})).toBe(false)
+      const w = (window as any).termpolis.writeToTerminal
+      expect(w).toHaveBeenCalledTimes(1) // the paste went in; the Enter did not
+      expect(w.mock.calls[0][1]).not.toContain('\r')
+      expect(read).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('primeOnLaunch', () => {
+    /** A prompt that is still up for the first `polls` looks, then answered. */
+    const answeredAfter = (polls: number) => {
+      let left = polls
+      return async () => left-- > 0
+    }
+
+    it('waits the prompt out, then primes', async () => {
+      const inject = vi.fn(async () => true)
+      const slept: number[] = []
+      const ok = await primeOnLaunch('t1', '/p', openGate(), {
+        inject, awaiting: answeredAfter(2), sleep: async (ms) => { slept.push(ms) }, pollMs: 10, delayMs: 5,
+      })
+      expect(ok).toBe(true)
+      expect(inject).toHaveBeenCalledTimes(1)
+      expect(slept).toEqual([5, 10, 10])
+    })
+
+    it('gives up if the prompt is still there when the wait runs out', async () => {
+      const inject = vi.fn(async () => true)
+      const ok = await primeOnLaunch('t1', '/p', openGate(), {
+        inject, awaiting: async () => true, sleep: async () => {}, pollMs: 10, maxWaitMs: 30, delayMs: 0,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+    })
+
+    it('shares one wait budget between the launch gate and the prompt', async () => {
+      // Two polls waiting for the launch plus two on a prompt need 40 ms; 30 are allowed.
+      let closedPolls = 2
+      const gate: PrimerGate = { launchedAgent: () => (closedPolls > 0 ? null : agent), draft: () => '' }
+      const inject = vi.fn(async () => true)
+      const ok = await primeOnLaunch('t1', '/p', gate, {
+        inject, awaiting: answeredAfter(2), sleep: async () => { closedPolls-- }, pollMs: 10, maxWaitMs: 30, delayMs: 0,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+    })
+
+    it('stops waiting when the terminal goes away', async () => {
+      const inject = vi.fn(async () => true)
+      let polls = 0
+      const ok = await primeOnLaunch('t1', '/p', openGate(), {
+        inject, awaiting: async () => true, sleep: async () => { polls++ }, stopped: () => polls > 1, pollMs: 10, delayMs: 0,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+    })
+
+    it('does not paste over a draft typed while it waited', async () => {
+      let typed = false
+      const gate: PrimerGate = { launchedAgent: () => agent, draft: () => (typed ? 'fix the' : '') }
+      const inject = vi.fn(async () => true)
+      const ok = await primeOnLaunch('t1', '/p', gate, {
+        inject,
+        awaiting: async () => { const up = !typed; typed = true; return up },
+        sleep: async () => {}, pollMs: 10, delayMs: 0,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+    })
+
+    it('reads the screen when no check is passed in', async () => {
+      mockApi({ readTerminalBuffer: screen(TRUST_SCREEN) })
+      const inject = vi.fn(async () => true)
+      const ok = await primeOnLaunch('t1', '/p', openGate(), {
+        inject, sleep: async () => {}, pollMs: 10, maxWaitMs: 20, delayMs: 0,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+      expect((window as any).termpolis.readTerminalBuffer).toHaveBeenCalledWith('t1')
+    })
+  })
+
+  describe('reprimeAfterCompaction', () => {
+    it('waits for the prompt to be answered before re-priming', async () => {
+      let left = 2
+      const slept: number[] = []
+      const inject = vi.fn(async () => true)
+      const ok = await reprimeAfterCompaction('t1', '/p', {
+        isLaunchPrimed: () => false,
+        pending: async () => false,
+        awaiting: async () => left-- > 0,
+        inject, sleep: async (ms) => { slept.push(ms) }, pollMs: 10,
+      })
+      expect(ok).toBe(true)
+      expect(inject).toHaveBeenCalledTimes(1)
+      expect(slept).toEqual([10, 10])
+    })
+
+    it('skips the re-prime when the prompt outlasts the wait', async () => {
+      const inject = vi.fn(async () => true)
+      const ok = await reprimeAfterCompaction('t1', '/p', {
+        isLaunchPrimed: () => false,
+        pending: async () => false,
+        awaiting: async () => true,
+        inject, sleep: async () => {}, pollMs: 10, maxWaitMs: 30,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+    })
+
+    it('reads the screen when no check is passed in', async () => {
+      mockApi({ readTerminalBuffer: screen(TRUST_SCREEN) })
+      const inject = vi.fn(async () => true)
+      const ok = await reprimeAfterCompaction('t1', '/p', {
+        isLaunchPrimed: () => false, pending: async () => false, inject, sleep: async () => {}, pollMs: 10, maxWaitMs: 20,
+      })
+      expect(ok).toBe(false)
+      expect(inject).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('when a bridge call fails', () => {
+  it('treats unreadable storage as the default, enabled', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
+    try {
+      expect(isAutoPrimerEnabled()).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('re-primes when the draft check itself throws', async () => {
+    const before = (window as any).aiSecurity
+    ;(window as any).aiSecurity = { inputPending: vi.fn(async () => { throw new Error('bridge gone') }) }
+    try {
+      const inject = vi.fn(async () => true)
+      const ok = await reprimeAfterCompaction('t1', '/p', { isLaunchPrimed: () => false, awaiting: async () => false, inject })
+      expect(ok).toBe(true)
+      expect(inject).toHaveBeenCalledTimes(1)
+    } finally {
+      ;(window as any).aiSecurity = before
+    }
   })
 })

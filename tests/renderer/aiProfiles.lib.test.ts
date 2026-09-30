@@ -9,13 +9,16 @@ vi.mock('../../src/renderer/src/lib/terminalDefaults', () => ({
   getTerminalDefaults: () => ({ fontSize: 14, theme: 'dark', fontFamily: 'monospace' }),
   agentTerminalName: (profileName: string) => profileName,
 }))
+// The "load memory at launch" setting, flipped per test (the real one reads localStorage).
+const primerSetting = vi.hoisted(() => ({ enabled: true }))
 vi.mock('../../src/renderer/src/hooks/useAutoPrimer', () => ({
-  isAutoPrimerEnabled: () => true,
+  isAutoPrimerEnabled: () => primerSetting.enabled,
 }))
 
 import { DEFAULT_AI_PROFILES, resolveShellType, launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
-import type { ShellInfo } from '../../src/renderer/src/types'
+import { CODEX_INSTRUCTION_MAX_CHARS } from '../../src/shared/agentIntegration'
+import type { AIProfile, ShellInfo } from '../../src/renderer/src/types'
 
 const shells: ShellInfo[] = [
   { type: 'bash', label: 'Bash', executable: '/bin/bash' },
@@ -30,8 +33,20 @@ function deps() {
   return { availableShells: shells, addTerminal, setLaunchingAgent }
 }
 
+/** What main hands back for a Codex launch (CodexLaunchContext), merged over "nothing to add". */
+function codexContext(data: Record<string, unknown> = {}) {
+  return vi.fn().mockResolvedValue({ success: true, data: { developerInstructions: null, approvals: 0, ...data } })
+}
+
+/** Every string typed into the terminal so far, in order. */
+const typed = (): string[] => (window as any).termpolis.writeToTerminal.mock.calls.map((c: unknown[]) => String(c[1]))
+
+/** Let the launch's post-command timers run (testDelay is 0 here, so they are all due now). */
+const flushLaunchTimers = () => new Promise((r) => setTimeout(r, 25))
+
 beforeEach(() => {
   vi.clearAllMocks()
+  primerSetting.enabled = true
   addTerminal = vi.fn()
   setLaunchingAgent = vi.fn()
   ;(window as any).termpolis = {
@@ -39,7 +54,7 @@ beforeEach(() => {
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
     memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
-    memoryPrepareCodexContext: vi.fn().mockResolvedValue({ success: true, data: { file: 'AGENTS.md', changed: true, approvals: 13 } }),
+    memoryPrepareCodexContext: codexContext(),
   }
   useTerminalStore.getState().setMemoryNotice(null)
 })
@@ -131,17 +146,30 @@ describe('launchAgentProfile', () => {
     alertSpy.mockRestore()
   })
 
-  it('gives Codex the same context via AGENTS.md, and never a system-prompt flag', async () => {
+  it('gives Codex its memory instruction on the command line, and never a system-prompt flag', async () => {
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ developerInstructions: 'Recall project memory first.' })
     await launchAgentProfile(codex, deps())
-    const api = (window as any).termpolis
-    expect(api.memoryPrepareCodexContext).toHaveBeenCalledWith('/test/project')
+    expect((window as any).termpolis.memoryPrepareCodexContext).toHaveBeenCalledWith('/test/project')
+    expect(typed()).toEqual(['\r', `codex -c "developer_instructions='Recall project memory first.'"\r`])
     // Codex has no --append-system-prompt-file; passing one would abort the launch outright.
-    expect(api.writeToTerminal.mock.calls.flat().join(' ')).not.toContain('append-system-prompt')
+    expect(typed().join(' ')).not.toContain('append-system-prompt')
   })
 
-  it('does not touch AGENTS.md when launching Claude', async () => {
+  it('never asks main for Codex context, or adds a Codex flag, when launching Claude', async () => {
     await launchAgentProfile(claude, deps())
     expect((window as any).termpolis.memoryPrepareCodexContext).not.toHaveBeenCalled()
+    expect(typed()).toEqual(['\r', 'claude\r'])
+  })
+
+  it('skips the recall entirely when loading memory at launch is switched off', async () => {
+    primerSetting.enabled = false
+    ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
+      success: true, data: { file: 'C:/p/primer.md', count: 3 },
+    })
+    await launchAgentProfile(claude, deps())
+    expect((window as any).termpolis.memoryPreparePrimerFile).not.toHaveBeenCalled()
+    expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: false }))
+    expect(typed()).toEqual(['\r', 'claude\r'])
   })
 
   it('seeds the Claude launch with --append-system-prompt-file when memory exists', async () => {
@@ -203,5 +231,130 @@ describe('launchAgentProfile — memory notice wording', () => {
     // ...and the recall query drops the project clause rather than interpolating an empty name.
     const query = (window as any).termpolis.memoryPreparePrimerFile.mock.calls[0][0]
     expect(query).toBe('recent work, key decisions, and conventions')
+  })
+})
+
+// Codex has no system-prompt file flag. It used to get its memory instruction by main writing a
+// note into <project>/AGENTS.md, and a blind `1⏎` typed 9 s later to accept its folder-trust
+// prompt. Now the instruction rides on the command line for this one session, nothing is written
+// into the project, and the trust prompt is left to the user.
+describe('launchAgentProfile — Codex gets its instruction for this session only', () => {
+  const codex = DEFAULT_AI_PROFILES[1]
+  const INSTRUCTION = 'Before you start, call memory_search (Termpolis MCP) for this project; save decisions with memory_write.'
+
+  it('types the instruction as a -c developer_instructions override on the codex command', async () => {
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ developerInstructions: INSTRUCTION, approvals: 14 })
+    await launchAgentProfile(codex, deps())
+    expect(typed()).toEqual(['\r', `codex -c "developer_instructions='${INSTRUCTION}'"\r`])
+  })
+
+  it('launches Codex bare rather than type an instruction a shell could act on', async () => {
+    const unsafe = [
+      "Don't skip recall", // ' ends both the TOML literal and the shell quote
+      'Recall $(whoami) first', // command substitution
+      'Recall `id` first', // backticks
+      'Recall "first"', // ends the outer double quote
+      'Recall %USERPROFILE% first', // cmd.exe expansion
+      'Recall first\nrm -rf ~', // a second command line
+      'Recall ‘first’', // PowerShell treats typographic quotes as quotes
+      'x'.repeat(CODEX_INSTRUCTION_MAX_CHARS + 1),
+    ]
+    for (const text of unsafe) {
+      ;(window as any).termpolis.writeToTerminal.mockClear()
+      ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ developerInstructions: text })
+      await launchAgentProfile(codex, deps())
+      expect(typed(), JSON.stringify(text.slice(0, 40))).toEqual(['\r', 'codex\r'])
+    }
+  })
+
+  it('launches Codex bare when main has nothing for it, fails, or throws', async () => {
+    const replies = [
+      () => codexContext(), // nothing to add
+      () => codexContext({ developerInstructions: '' }),
+      () => vi.fn().mockResolvedValue({ success: false, error: 'brain down' }),
+      () => vi.fn().mockResolvedValue({ success: true, data: null }),
+      () => vi.fn().mockResolvedValue(undefined),
+      () => vi.fn().mockRejectedValue(new Error('ipc boom')),
+    ]
+    for (const reply of replies) {
+      ;(window as any).termpolis.writeToTerminal.mockClear()
+      addTerminal.mockClear()
+      ;(window as any).termpolis.memoryPrepareCodexContext = reply()
+      await launchAgentProfile(codex, deps())
+      expect(typed()).toEqual(['\r', 'codex\r'])
+      expect(addTerminal).toHaveBeenCalledTimes(1)
+    }
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+
+  it('leaves the instruction off when loading memory at launch is switched off', async () => {
+    primerSetting.enabled = false
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ developerInstructions: INSTRUCTION })
+    await launchAgentProfile(codex, deps())
+    expect(typed()).toEqual(['\r', 'codex\r'])
+  })
+
+  it('still cleans up AGENTS.md, and says so, with memory at launch switched off', async () => {
+    primerSetting.enabled = false
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ agentsMdCleaned: 'block-removed' })
+    await launchAgentProfile(codex, deps())
+    expect((window as any).termpolis.memoryPrepareCodexContext).toHaveBeenCalledWith('/test/project')
+    expect(useTerminalStore.getState().memoryNotice).toBe(
+      '🧹 Removed the memory note older Termpolis versions wrote into AGENTS.md in "project"',
+    )
+  })
+
+  it('says it deleted AGENTS.md when the file held only the old memory note', async () => {
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({
+      developerInstructions: INSTRUCTION, agentsMdCleaned: 'file-deleted',
+    })
+    await launchAgentProfile(codex, deps())
+    expect(useTerminalStore.getState().memoryNotice).toBe(
+      '🧹 Deleted AGENTS.md in "project": it held only the memory note older Termpolis versions wrote',
+    )
+    // The cleanup does not cost the session its instruction.
+    expect(typed()[1]).toBe(`codex -c "developer_instructions='${INSTRUCTION}'"\r`)
+  })
+
+  it('says nothing about AGENTS.md when there was nothing to clean up', async () => {
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ developerInstructions: INSTRUCTION })
+    await launchAgentProfile(codex, deps())
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+
+  it('treats a custom profile whose command runs codex as Codex', async () => {
+    ;(window as any).termpolis.memoryPrepareCodexContext = codexContext({ developerInstructions: INSTRUCTION })
+    const custom: AIProfile = {
+      id: 'custom-codex', name: 'Codex (fast)', icon: 'fa-solid fa-bolt', command: 'Codex --model o4-mini', shell: 'bash', color: '#000000',
+    }
+    await launchAgentProfile(custom, deps())
+    expect((window as any).termpolis.memoryPrepareCodexContext).toHaveBeenCalledWith('/test/project')
+    expect(typed()[1]).toBe(`Codex --model o4-mini -c "developer_instructions='${INSTRUCTION}'"\r`)
+  })
+
+  it('never writes AGENTS.md: main gets only the folder, and nothing sent or typed names the file', async () => {
+    const bridge = (window as any).termpolis
+    bridge.memoryPrepareCodexContext = codexContext({ developerInstructions: INSTRUCTION, agentsMdCleaned: 'block-removed' })
+    const touched = new Set<string>()
+    ;(window as any).termpolis = new Proxy(bridge, {
+      get: (target, key) => { touched.add(String(key)); return target[key as string] },
+    })
+    await launchAgentProfile(codex, deps())
+    await flushLaunchTimers()
+    expect(bridge.memoryPrepareCodexContext.mock.calls).toEqual([['/test/project']])
+    const sent = Object.values(bridge).filter((v) => vi.isMockFunction(v)).flatMap((fn: any) => fn.mock.calls)
+    expect(JSON.stringify(sent)).not.toMatch(/agents\.md/i)
+    // Keystrokes are the only thing the launch writes through the bridge.
+    expect([...touched].filter((k) => k !== 'writeToTerminal' && /write|save|append/i.test(k))).toEqual([])
+  })
+
+  it('never types "1" at the Codex folder-trust prompt, or anything else after the command', async () => {
+    await launchAgentProfile(codex, deps())
+    await flushLaunchTimers()
+    // Every post-command timer is due at once here (testDelay is 0). The spinner dismissal has
+    // fired, so the old "1" confirmation would have been typed by now too.
+    expect(setLaunchingAgent).toHaveBeenLastCalledWith(null)
+    expect(typed()).toEqual(['\r', 'codex\r'])
+    expect(typed()).not.toContain('1\r')
   })
 })

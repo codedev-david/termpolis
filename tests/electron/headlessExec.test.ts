@@ -6,6 +6,7 @@ import {
   runHeadless,
   EXEC_DEFAULT_TIMEOUT_MS,
   EXEC_MAX_PRIMER_CHARS,
+  EXEC_READ_ONLY_CLAUDE_TOOLS,
   PROMPT_TOKEN,
   type ExecDeps,
 } from '../../src/main/headlessExec'
@@ -60,15 +61,42 @@ describe('headlessExec/buildExecPrompt', () => {
 })
 
 describe('headlessExec/execCommand', () => {
-  it('drops skip-permissions for a read-only claude run', () => {
+  const DENY = 'Bash,PowerShell,Edit,Write,NotebookEdit'
+
+  it('runs a read-only claude run in plan mode with only the read/search built-ins and no MCP servers', () => {
+    // Dropping skip-permissions alone would inherit the settings file's defaultMode (which
+    // may be bypassPermissions) and every MCP tool the user has.
     const ro = execCommand('claude', undefined, false)
     expect(ro.bin).toBe('claude')
-    expect(ro.args).toEqual(['-p', PROMPT_TOKEN])
-    expect(execCommand('claude', undefined, true).args).toContain('--dangerously-skip-permissions')
+    expect(ro.args).toEqual(['--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', DENY, '--strict-mcp-config', '-p', PROMPT_TOKEN])
+    expect(EXEC_READ_ONLY_CLAUDE_TOOLS).toBe('Read,Grep,Glob')
   })
 
-  it('keeps a valid model alias through the read-only rewrite', () => {
-    expect(execCommand('claude', 'opus', false).args).toEqual(['-p', PROMPT_TOKEN, '--model', 'opus'])
+  it('keeps a valid model alias through the read-only launch, ahead of the prompt', () => {
+    expect(execCommand('claude', 'opus', false).args)
+      .toEqual(['--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', DENY, '--strict-mcp-config', '--model', 'opus', '-p', PROMPT_TOKEN])
+  })
+
+  it('keeps the skip-permissions launch only for an explicit claude write run', () => {
+    expect(execCommand('claude', undefined, true).args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions'])
+    expect(execCommand('claude', 'opus', true).args).toEqual(['-p', PROMPT_TOKEN, '--model', 'opus', '--dangerously-skip-permissions'])
+  })
+
+  it('never launches a read-only run with a bypass flag, whatever model is asked for', () => {
+    const models = [undefined, 'opus', 'gpt-5.6-sol', 'gemini-3.8-flash-high', '--dangerously-skip-permissions', '--yolo', '--full-auto', '-y', '--approve-for-me']
+    // Every value of a mode flag, not the first: a CLI keeps the last one it is given.
+    const valuesOf = (args: string[], ...flags: string[]): string[] =>
+      args.flatMap((a, i) => flags.flatMap((f) => (a === f ? [args[i + 1]] : a.startsWith(`${f}=`) ? [a.slice(f.length + 1)] : [])))
+    for (const agent of ['claude', 'codex', 'gemini'] as const) {
+      for (const model of models) {
+        const args = execCommand(agent, model, false).args
+        for (const a of args) expect(a).not.toMatch(/dangerously|yolo|bypass|skip-permissions|full-auto|approve-for-me|danger-full-access|workspace-write|accept-?edits|auto[-_]?edit|dont-?ask/i)
+        expect(args).not.toContain('-y')
+        if (agent === 'claude') expect(valuesOf(args, '--permission-mode')).toEqual(['plan'])
+        if (agent === 'codex') expect(valuesOf(args, '--sandbox', '-s')).toEqual(['read-only'])
+        if (agent === 'gemini') expect(valuesOf(args, '--mode')).toEqual(['plan'])
+      }
+    }
   })
 
   it('uses codex native sandbox modes rather than dropping a flag', () => {
@@ -78,9 +106,11 @@ describe('headlessExec/execCommand', () => {
     expect(rw.args).not.toContain('read-only')
   })
 
-  it('drops skip-permissions for a read-only gemini run', () => {
-    expect(execCommand('gemini', undefined, false).args).toEqual(['-p', PROMPT_TOKEN])
-    expect(execCommand('gemini', undefined, true).args).toContain('--dangerously-skip-permissions')
+  it('runs a read-only gemini run in agy plan mode, bounded by its own time limit', () => {
+    expect(execCommand('gemini', undefined, false).args).toEqual(['--mode', 'plan', '--print-timeout', '900s', '-p', PROMPT_TOKEN])
+    expect(execCommand('gemini', 'gemini-3.8-flash-high', false, 1234).args)
+      .toEqual(['--mode', 'plan', '--print-timeout', '2s', '--model', 'gemini-3.8-flash-high', '-p', PROMPT_TOKEN])
+    expect(execCommand('gemini', undefined, true).args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions'])
   })
 
   it('flips the VALUE after --sandbox, not every token that happens to equal it', () => {
@@ -133,20 +163,30 @@ describe('headlessExec/runHeadless', () => {
   it('skips the primer when asked, leaving the prompt exactly the task', async () => {
     const primer = vi.fn(async () => 'never used')
     const deliver = okDeliver('ok')
-    const res = await runHeadless({ task: 'bare', noPrimer: true }, { deliver, primer })
+    const res = await runHeadless({ task: 'bare task', noPrimer: true }, { deliver, primer })
     expect(primer).not.toHaveBeenCalled()
-    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('bare')
+    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('bare task')
     expect(res.primerChars).toBe(0)
+  })
+
+  it('never lets a bare task reach the CLI as a flag or a subcommand', async () => {
+    // With no primer the task IS the prompt argv entry, and every agent CLI would parse a
+    // leading `-` as an option and a lone word as a subcommand. A leading space defuses both.
+    for (const task of ['--settings={"hooks":{}} x', '--dangerously-skip-permissions', 'update', 'review']) {
+      const deliver = okDeliver('ok')
+      await runHeadless({ task, noPrimer: true }, { deliver })
+      expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(` ${task}`)
+    }
   })
 
   it('runs cold rather than failing when the primer throws', async () => {
     const deliver = okDeliver('ok')
     const res = await runHeadless(
-      { task: 'go' },
+      { task: 'go on' },
       { deliver, primer: async () => { throw new Error('brain offline') } },
     )
     expect(res.ok).toBe(true)
-    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('go')
+    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('go on')
   })
 
   it('remembers a successful run so the next one starts warmer', async () => {
@@ -210,5 +250,27 @@ describe('headlessExec/runHeadless', () => {
 
   it('bounds a run so a wedged agent cannot hold a CI runner forever', () => {
     expect(EXEC_DEFAULT_TIMEOUT_MS).toBe(15 * 60_000)
+  })
+
+  it("hands the run's timeout to agy's own time limit as well as to deliver", async () => {
+    const deliver = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'gemini', timeoutMs: 30_000 }, { deliver })
+    const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(bin).toBe('agy')
+    expect(args).toEqual(['--mode', 'plan', '--print-timeout', '30s', '-p', PROMPT_TOKEN])
+    expect(opts).toEqual({ timeoutMs: 30_000 })
+  })
+
+  it('abandons an agent that never returns at its deadline, failing closed', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = runHeadless({ task: 't' }, { deliver: () => new Promise<never>(() => {}), now: () => 0 })
+      await vi.advanceTimersByTimeAsync(EXEC_DEFAULT_TIMEOUT_MS + 5_000)
+      await expect(pending).resolves.toEqual({
+        ok: false, agent: 'claude', output: '', error: 'claude did not finish within 900s', code: -1, durationMs: 0, primerChars: 0,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

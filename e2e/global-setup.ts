@@ -7,6 +7,12 @@ import os from 'os'
 import { execSync } from 'child_process'
 
 export default function globalSetup() {
+  // Agent configs the app writes (MCP registration, folder trust, one-time migrations) land
+  // in a scratch home. Workers inherit this, and every Electron launch inherits its worker's
+  // env, so no spec can rewrite the developer's real ~/.claude*, ~/.codex or ~/.gemini.
+  // resolveAgentIntegrationPaths() honors it over homedir(), CLAUDE_CONFIG_DIR and CODEX_HOME.
+  process.env.TERMPOLIS_TEST_AGENT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-agent-home-'))
+
   // Kill any lingering Electron processes
   try {
     if (process.platform === 'win32') {

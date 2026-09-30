@@ -51,24 +51,17 @@
 
 import crypto from 'crypto'
 import { isExempt } from '../headroom/router'
-import { TOOL_USE_SKIP, TOOL_USE_VERBATIM } from './wireCompress'
+import { mapOutsideReminders } from './reminders'
 
 /** Messages before which decay starts applying at all. Below this a break can't repay itself. */
 export const DECAY_FIRST_THRESHOLD = 128
 /** Blocks smaller than this are left alone: the stub itself costs ~30 tokens. */
 export const DECAY_MIN_CHARS = 600
 /**
- * The tool_use exclusions are IMPORTED from the live compressor rather than restated here.
- *
- * They used to be a local copy of TOOL_USE_SKIP alone, under a comment claiming it was "the same
- * exclusion the live compressor makes". It was not. The compressor applies three rules — skip the
- * naming keys, skip exempt tools, and never touch TOOL_USE_VERBATIM — and decay applied only the
- * first, so a Write `content`, a Bash `command` or an Edit `old_string` old enough to age out was
- * replaced wholesale by a 134-char stub. That is not a shorter history, it is a REWRITTEN one: the
- * model replays its own prior tool input byte-for-byte, so the stub text lands in a real file or a
- * real shell. See the failure transcript at wireCompress.ts:412-420.
- *
- * Sharing the sets is the point. Two lists that must agree will drift; one list cannot.
+ * Decay never touches a tool_use input, at any age — the same invariant the live compressor keeps
+ * (see TOOL_USE_VERBATIM in wireCompress.ts). The model replays its own prior tool input as a
+ * template, so a stub aged into one is copied into a real file, shell command or subagent prompt;
+ * only tool_result text, which the model knows it can re-fetch, is aged out.
  */
 
 /** Effective-cost weights, from Anthropic's published multipliers. */
@@ -108,18 +101,39 @@ function stubFor(text: string, stashes: Array<{ token: string; original: string 
 
 export interface DecayCounts {
   blocks: number; origChars: number; compChars: number
-  /** tool_use input bytes, counted apart from tool_result so each bucket is billed its own work. */
+  /** Always 0 — decay never touches tool_use input; kept for schema compatibility with WireStats. */
   tuBlocks: number; tuOrigChars: number; tuCompChars: number
 }
 
 /**
- * Replace large text in messages older than the cutoff with a retrievable stub, in place.
+ * Stub every stretch of `text` outside a harness `<system-reminder>` that is big enough to be
+ * worth it. A reminder is an instruction to the model riding inside the result, so age is no
+ * reason to hide it; without one this is exactly the old whole-text stub.
+ */
+function decayText(text: string, stashes: Array<{ token: string; original: string }>, counts: DecayCounts): string {
+  return mapOutsideReminders(text, (seg) => {
+    if (seg.length < DECAY_MIN_CHARS) return { text: seg, changed: false }
+    counts.blocks++; counts.origChars += seg.length
+    const stub = stubFor(seg, stashes)
+    counts.compChars += stub.length
+    return { text: stub, changed: true }
+  }).text
+}
+
+/**
+ * Replace large tool_result text in messages older than the cutoff with a retrievable stub, in place.
  * Returns what was removed. Pure with respect to the body: the same messages array always decays
  * the same way, because the cutoff is derived from its own length.
+ *
+ * `resultToolName` names the tool a tool_result answers (the name lives on the tool_use, in an
+ * earlier message). Results of exempt tools are never aged out — above all retrieve_full, whose
+ * whole job is to hand back what compression took away: decaying it re-hid the content the model
+ * had just asked for, and the model's only move was to ask again.
  */
 export function applyPrefixDecay(
   messages: Array<{ content?: unknown }>,
   stashes: Array<{ token: string; original: string }>,
+  resultToolName?: (toolUseId: string) => string | undefined,
 ): DecayCounts {
   const counts: DecayCounts = {
     blocks: 0, origChars: 0, compChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
@@ -130,34 +144,18 @@ export function applyPrefixDecay(
     if (!m || !Array.isArray(m.content)) continue
     for (const b of m.content as Array<Record<string, unknown>>) {
       if (!b || typeof b !== 'object') continue
-      // thinking blocks carry a signature Anthropic validates — never touched, at any age.
+      // Only tool_result text ages out. thinking blocks carry a signature Anthropic validates and
+      // tool_use input is replayed by the model (see the note above) — neither is touched, at any age.
       if (b.type === 'tool_result') {
+        const tool = typeof b.tool_use_id === 'string' ? resultToolName?.(b.tool_use_id) : undefined
+        if (tool && isExempt(tool)) continue
         if (typeof b.content === 'string' && b.content.length >= DECAY_MIN_CHARS) {
-          counts.blocks++; counts.origChars += b.content.length
-          b.content = stubFor(b.content, stashes)
-          counts.compChars += (b.content as string).length
+          b.content = decayText(b.content, stashes, counts)
         } else if (Array.isArray(b.content)) {
           for (const item of b.content as Array<Record<string, unknown>>) {
             if (item && item.type === 'text' && typeof item.text === 'string' && item.text.length >= DECAY_MIN_CHARS) {
-              counts.blocks++; counts.origChars += item.text.length
-              item.text = stubFor(item.text, stashes)
-              counts.compChars += (item.text as string).length
+              item.text = decayText(item.text, stashes, counts)
             }
-          }
-        }
-      } else if (b.type === 'tool_use' && b.input && typeof b.input === 'object' && !Array.isArray(b.input)) {
-        // An exempt tool's input is never touched, at any age. memory_*/swarm_* carry the brain's
-        // own full-fidelity record; aging it out would corrupt what the app learns from.
-        if (isExempt(typeof b.name === 'string' ? b.name : '')) continue
-        const rec = b.input as Record<string, unknown>
-        for (const k of Object.keys(rec)) {
-          // Age is no defence for an artifact-bearing field: see the note above the imports.
-          if (TOOL_USE_SKIP.has(k) || TOOL_USE_VERBATIM.has(k)) continue
-          const v = rec[k]
-          if (typeof v === 'string' && v.length >= DECAY_MIN_CHARS) {
-            counts.tuBlocks++; counts.tuOrigChars += v.length
-            rec[k] = stubFor(v, stashes)
-            counts.tuCompChars += (rec[k] as string).length
           }
         }
       }

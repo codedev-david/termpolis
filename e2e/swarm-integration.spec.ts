@@ -169,7 +169,7 @@ async function activateTerminal(name: string) {
  * mode-dependent (normal vs application cursor keys, ConPTY on Windows) — fine
  * for typing text, useless for asserting that a specific escape sequence works.
  * This writes the exact bytes instead, which is also exactly how the app answers
- * a trust dialog (see promptAutoDismiss.trustDialogReply).
+ * a trust dialog where the user has allowed it (see promptAutoDismiss.trustDialogReply).
  */
 async function sendRawToTerminal(name: string, data: string) {
   await page.evaluate(
@@ -255,8 +255,10 @@ test.describe.serial('Swarm Integration', () => {
 
   // Claude Code 2.1.x opens this dialog with the cursor on "No, exit", so a bare
   // Enter QUITS — which is what made auto-launched sessions look cut off. The mock
-  // reproduces that, and the bytes below are exactly what the app now sends
-  // (promptAutoDismiss.trustDialogReply): arrow down onto "Yes", then confirm.
+  // reproduces that, and the bytes below are exactly what the app sends where the
+  // user connected the agents (promptAutoDismiss.trustDialogReply): arrow down onto
+  // "Yes", then confirm. These terminals were opened by hand (no agentCommand), so the
+  // app's prompt pollers never watch them and the spec answers the dialog itself.
   test('2. Down+Enter accepts the trust prompt -- startup banner appears', async () => {
     await sendRawToTerminal('Claude Agent', '\x1b[B\r')
     await page.waitForTimeout(2000)

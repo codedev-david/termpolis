@@ -24,3 +24,19 @@
   Exec '"$SYSDIR\ie4uinit.exe" -show'
   ${EnableX64FSRedirection}
 !macroend
+
+; Uninstall removes what Termpolis wrote into Claude Code, Codex and Gemini CLI configs
+; (MCP server entries, tool permissions, the SessionStart memory hook, folder trust it
+; added). The app does the work itself - `--disconnect-agents` runs the same Disconnect as
+; Settings > Agent integration and exits without opening a window - because only the app
+; knows which entries are its own.
+;
+; customUnInit, not customUnInstall: customUnInstall runs after $INSTDIR is deleted, when
+; there is no exe left to run. un.onInit has already closed any running Termpolis.
+; Skipped on updates: the installer runs the previous version's uninstaller with --updated,
+; and an update must leave the user's agent configs connected.
+!macro customUnInit
+  ${ifNot} ${isUpdated}
+    ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --disconnect-agents'
+  ${endIf}
+!macroend

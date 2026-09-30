@@ -56,8 +56,8 @@ const M = vi.hoisted(() => ({
   sensitiveCount: vi.fn(() => 0),
   sensitiveRecent: vi.fn(() => [] as unknown[]),
   // telemetry
-  setTelemetryOptIn: vi.fn(),
-  isTelemetryEnabled: vi.fn(() => false),
+  setTelemetryConsent: vi.fn(),
+  getTelemetryConsent: vi.fn(() => ({ crash: false, usage: false, consentVersion: 0, needsReview: true })),
   recordTelemetryEvent: vi.fn(),
   recordUncleanExit: vi.fn(),
   // diagnostics (dynamic import inside the handler)
@@ -86,11 +86,23 @@ const M = vi.hoisted(() => ({
   updatePin: vi.fn<(...a: unknown[]) => unknown>(() => ({ id: 'pin-1' })),
   removePin: vi.fn(() => true),
   clearPins: vi.fn(),
-  // codex parity
-  writeAgentsMd: vi.fn(() => ({ path: '/repo/AGENTS.md', changed: true })),
-  ensureCodexMemoryAutoApproved: vi.fn(() => ({ tools: ['memory_primer', 'memory_search'] })),
-  // claude trust
-  trustClaudeWorkspace: vi.fn(() => ({ trusted: true })),
+  // agent integration (v1.49.0): every write into an agent's config goes through the consent-gated
+  // manager, so index.ts only WIRES it. These stubs stand in for the manager wholesale; its own
+  // suites prove what it does with the arguments, this file proves which arguments it is handed.
+  agentPaths: {
+    home: '/scratch/home', userData: '/scratch/ud', claudeDir: '/scratch/home/.claude',
+    claudeJson: '/scratch/home/.claude.json', codexHome: '/scratch/home/.codex', geminiDir: '/scratch/home/.gemini',
+  },
+  resolveAgentIntegrationPaths: vi.fn<(...a: unknown[]) => any>(() => M.agentPaths),
+  bootAgentIntegration: vi.fn<(...a: unknown[]) => any>(() => ({ status: {}, changes: [] })),
+  disconnectAgentIntegration: vi.fn<(...a: unknown[]) => any>(() => []),
+  getAgentIntegrationStatus: vi.fn<(...a: unknown[]) => any>(() => ({ connected: true })),
+  setAgentIntegration: vi.fn<(...a: unknown[]) => any>(() => ({ status: {}, changes: [] })),
+  isFolderTrustAllowed: vi.fn<(...a: unknown[]) => boolean>(() => true),
+  trustFolderForAgents: vi.fn<(...a: unknown[]) => any>(() => ({ changed: true, keys: ['/repo'] })),
+  prepareCodexLaunch: vi.fn<(...a: unknown[]) => any>(() => ({ developerInstructions: 'DEV', approvals: 2 })),
+  removeCodexHomeTrust: vi.fn<(...a: unknown[]) => any>(() => ({ changed: true })),
+  conductorMcpConfig: vi.fn<(...a: unknown[]) => any>(() => ({ mcpServers: { termpolis: { type: 'stdio' } } })),
   // workspace trust
   isWorkspaceTrusted: vi.fn(() => true),
   // headroom
@@ -110,6 +122,7 @@ const M = vi.hoisted(() => ({
   renderReceiptJson: vi.fn(() => '{"receipt":true}'),
   armForSession: vi.fn(() => 'control'),
   adaptSteeringMode: vi.fn((mode: any) => mode),
+  steeringDirective: vi.fn((mode?: string) => `STEER:${mode}`),
   flushOutputEconomy: vi.fn(),
   buildInjectedInstruction: vi.fn(() => 'INSTRUCTION'),
   headroomRetrieveFull: vi.fn(() => ({ ok: true, text: 'full' })),
@@ -136,6 +149,13 @@ const M = vi.hoisted(() => ({
   setProxyMode: vi.fn(),
   setProxyThinkingCap: vi.fn(),
   setProxyDecay: vi.fn(),
+  setProxyEnabled: vi.fn(),
+  setAgentEnvReader: vi.fn(),
+  isProxyEnabled: vi.fn(() => true),
+  isProxyStarted: vi.fn(() => false),
+  isProxyHealthy: vi.fn(() => true),
+  userRoutingVar: vi.fn((): string | null => null),
+  getProxyMode: vi.fn(() => 'aggressive'),
   // mcp gateway
   setGatewayPrompt: vi.fn(),
   getGatewayPolicy: vi.fn(() => ({ rules: [] })),
@@ -291,8 +311,8 @@ vi.mock('../../src/main/sensitiveFileWatcher', async (importOriginal) => {
 })
 vi.mock('../../src/main/telemetry', () => ({
   initTelemetry: vi.fn(),
-  setOptIn: M.setTelemetryOptIn,
-  isEnabled: M.isTelemetryEnabled,
+  setConsent: M.setTelemetryConsent,
+  getConsentForRenderer: M.getTelemetryConsent,
   dailyLaunchPing: vi.fn(),
   recordEvent: M.recordTelemetryEvent,
   recordUncleanExit: M.recordUncleanExit,
@@ -322,10 +342,20 @@ vi.mock('../../src/main/contextPinStore', () => ({
   listPins: M.listPins, addPin: M.addPin, removePin: M.removePin,
   updatePin: M.updatePin, clearPins: M.clearPins,
 }))
-vi.mock('../../src/main/codexParity', () => ({
-  writeAgentsMd: M.writeAgentsMd, ensureCodexMemoryAutoApproved: M.ensureCodexMemoryAutoApproved,
+// The consent-gated manager is replaced wholesale: nothing below may reach a real agent config
+// (codexParity / claudeTrust are only ever loaded through it, so they drop out with it).
+vi.mock('../../src/main/agentIntegrationManager', () => ({
+  resolveAgentIntegrationPaths: M.resolveAgentIntegrationPaths,
+  bootAgentIntegration: M.bootAgentIntegration,
+  disconnectAgentIntegration: M.disconnectAgentIntegration,
+  getAgentIntegrationStatus: M.getAgentIntegrationStatus,
+  setAgentIntegration: M.setAgentIntegration,
+  isFolderTrustAllowed: M.isFolderTrustAllowed,
+  trustFolderForAgents: M.trustFolderForAgents,
+  prepareCodexLaunch: M.prepareCodexLaunch,
+  removeCodexHomeTrust: M.removeCodexHomeTrust,
+  conductorMcpConfig: M.conductorMcpConfig,
 }))
-vi.mock('../../src/main/claudeTrust', () => ({ trustClaudeWorkspace: M.trustClaudeWorkspace }))
 vi.mock('../../src/main/workspaceTrust', () => ({
   initWorkspaceTrust: vi.fn(),
   isWorkspaceTrusted: M.isWorkspaceTrusted,
@@ -435,7 +465,9 @@ vi.mock('../../src/main/headroom/outputEconomyStore', () => ({
   initOutputEconomy: vi.fn(), armForSession: M.armForSession,
   flushOutputEconomy: M.flushOutputEconomy, outputEconomyReport: M.outputEconomyReport,
 }))
-vi.mock('../../src/main/headroom/outputSteering', () => ({ adaptSteeringMode: M.adaptSteeringMode }))
+vi.mock('../../src/main/headroom/outputSteering', () => ({
+  adaptSteeringMode: M.adaptSteeringMode, steeringDirective: M.steeringDirective,
+}))
 vi.mock('../../src/main/headroom/savingsFloor', () => ({ resolveWireMode: M.resolveWireMode }))
 vi.mock('../../src/main/headroom/ccrStore', () => ({ setCcrDir: M.setCcrDir, ccrPut: M.ccrPut }))
 vi.mock('../../src/main/headroom/compressToolResult', () => ({ retrieveFull: M.headroomRetrieveFull }))
@@ -460,6 +492,9 @@ vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   setProxySpawner: M.setProxySpawner, createProxyTransport: M.createProxyTransport,
   pickFreePort: M.pickFreePort, setProxyMode: M.setProxyMode,
   setProxyThinkingCap: M.setProxyThinkingCap, setProxyDecay: M.setProxyDecay,
+  setProxyEnabled: M.setProxyEnabled, isProxyEnabled: M.isProxyEnabled, isProxyStarted: M.isProxyStarted,
+  isProxyHealthy: M.isProxyHealthy, userRoutingVar: M.userRoutingVar, getProxyMode: M.getProxyMode,
+  setAgentEnvReader: M.setAgentEnvReader,
 }))
 
 // ---- workflow ----
@@ -621,7 +656,7 @@ async function withPlatform(platform: NodeJS.Platform, fn: () => Promise<void> |
 }
 
 const BASE_HR = {
-  enabled: true, steering: true, mode: 'balanced', adaptiveSteering: false,
+  enabled: true, wireProxy: true, steering: true, mode: 'balanced', adaptiveSteering: false,
   thinkingCap: 0, prefixDecay: false, floorControl: true,
 }
 
@@ -646,38 +681,51 @@ beforeEach(() => {
   M.adaptSteeringMode.mockImplementation((mode: any) => mode)
   M.loadSession.mockReturnValue({ terminals: [] })
   mockWebContents.send.mockClear()
-  M.writeAgentsMd.mockClear()
+  // mockReset puts each manager stub back to its factory default AND drops any unconsumed
+  // once-queue, so a verdict queued by one test can never answer the next test's call.
+  for (const spy of [
+    M.resolveAgentIntegrationPaths, M.getAgentIntegrationStatus, M.setAgentIntegration,
+    M.isFolderTrustAllowed, M.trustFolderForAgents, M.prepareCodexLaunch, M.removeCodexHomeTrust,
+  ]) spy.mockReset()
+  M.steeringDirective.mockClear()
   M.writeFileSync.mockClear()
   M.appendAudit.mockClear()
 })
 
 // ===========================================================================
 // memory:prepare-codex-context — the Codex half of the parity pair.
-// Nothing in the repo had ever invoked it: the entire handler, both steering
-// experiments and the guard were unexecuted code.
+// Since v1.49.0 every write (the AGENTS.md cleanup, the tool approvals) happens inside the
+// consent-gated manager's prepareCodexLaunch. What is left in index.ts is the steering decision
+// and the wiring, so that is what these tests pin: the exact arguments the manager is handed.
 // ===========================================================================
 describe('memory:prepare-codex-context', () => {
-  it('refuses without a cwd BEFORE writing anything', async () => {
-    const r = await invoke('memory:prepare-codex-context', {})
-    expect(r).toEqual({ success: false, error: 'cwd required' })
-    // The guard is only worth having if it runs first: AGENTS.md is written into a directory,
-    // and `undefined` as that directory is how you scribble into the process cwd.
-    expect(M.writeAgentsMd).not.toHaveBeenCalled()
+  it('refuses without a cwd BEFORE reaching the manager', async () => {
+    expect(await invoke('memory:prepare-codex-context', {})).toEqual({ success: false, error: 'cwd required' })
+    // A null payload must land on the same guard (`opts?.cwd`), not on a TypeError.
+    expect(await invoke('memory:prepare-codex-context', null)).toEqual({ success: false, error: 'cwd required' })
+    // The guard is only worth having if it runs first: `undefined` as the folder is how a
+    // cleanup scribbles into the process cwd.
+    expect(M.prepareCodexLaunch).not.toHaveBeenCalled()
   })
 
-  it('reports the file, whether it changed, and how many tools were auto-approved', async () => {
-    M.writeAgentsMd.mockReturnValueOnce({ path: '/repo/AGENTS.md', changed: false } as never)
-    M.ensureCodexMemoryAutoApproved.mockReturnValueOnce({ tools: ['memory_primer', 'memory_search', 'memory_write'] } as never)
+  it('hands the manager the resolved agent paths and the cwd, and returns its verdict as ok()', async () => {
+    const verdict = { developerInstructions: 'use memory_primer first', approvals: 3, agentsMdCleaned: '/repo/AGENTS.md' }
+    M.prepareCodexLaunch.mockReturnValueOnce(verdict)
     const r = await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    // `approvals` is a COUNT, not the array — shipping the array would leak tool names the UI
-    // then renders as a number anyway.
-    expect(r).toEqual({ success: true, data: { file: '/repo/AGENTS.md', changed: false, approvals: 3 } })
+    // Paths are resolved per call from the real home, userData and env (CODEX_HOME is read the
+    // way Codex reads it), never from a cached or hard-coded ~/.codex.
+    expect(M.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), tmpdir(), process.env)
+    expect(M.prepareCodexLaunch).toHaveBeenCalledTimes(1)
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:balanced' })
+    // Passed through untouched: the renderer builds the launch command from developerInstructions.
+    expect(r).toEqual({ success: true, data: verdict })
   })
 
-  it('carries the user steering setting and mode into the written AGENTS.md', async () => {
+  it('turns the user steering setting and mode into the directive', async () => {
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, enabled: true, steering: true, mode: 'aggressive' })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    expect(M.writeAgentsMd).toHaveBeenCalledWith('/repo', { cwd: '/repo', steering: true, mode: 'aggressive' })
+    expect(M.steeringDirective).toHaveBeenCalledWith('aggressive')
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:aggressive' })
   })
 
   it('leaves steering off when headroom is disabled, even with steering ticked', async () => {
@@ -685,13 +733,16 @@ describe('memory:prepare-codex-context', () => {
     // headroom off would still steer Codex.
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, enabled: false, steering: true })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    expect(M.writeAgentsMd).toHaveBeenCalledWith('/repo', expect.objectContaining({ steering: false }))
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null })
+    // null, not an empty directive: the manager treats null as "add no steering paragraph".
+    expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
   it('leaves steering off when steering alone is unticked', async () => {
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, enabled: true, steering: false })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    expect(M.writeAgentsMd).toHaveBeenCalledWith('/repo', expect.objectContaining({ steering: false }))
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null })
+    expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
   it('adapts the mode from measured proxy output when adaptiveSteering is on', async () => {
@@ -702,7 +753,9 @@ describe('memory:prepare-codex-context', () => {
     // The adapter is fed the CUMULATIVE numbers, not the per-request ones — a single big response
     // must not be able to re-tier the whole session.
     expect(M.adaptSteeringMode).toHaveBeenCalledWith('balanced', 5000, 40)
-    expect(M.writeAgentsMd).toHaveBeenCalledWith('/repo', expect.objectContaining({ mode: 'aggressive' }))
+    // The ADAPTED mode is the one that reaches the directive, not the configured one.
+    expect(M.steeringDirective).toHaveBeenCalledWith('aggressive')
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:aggressive' })
   })
 
   it('does not consult the adapter when adaptiveSteering is off', async () => {
@@ -710,6 +763,7 @@ describe('memory:prepare-codex-context', () => {
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, adaptiveSteering: false })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
     expect(M.adaptSteeringMode).not.toHaveBeenCalled()
+    expect(M.steeringDirective).toHaveBeenCalledWith('balanced')
   })
 
   it('drops steering for a cwd in the holdout arm, keyed by that cwd', async () => {
@@ -717,7 +771,8 @@ describe('memory:prepare-codex-context', () => {
     await invoke('memory:prepare-codex-context', { cwd: '/repo/holdout-project' })
     expect(M.armForSession).toHaveBeenCalledWith('/repo/holdout-project')
     // The holdout only means anything if it actually unsteers the run it selected.
-    expect(M.writeAgentsMd).toHaveBeenCalledWith('/repo/holdout-project', expect.objectContaining({ steering: false }))
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo/holdout-project', { steering: null })
+    expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
   it('does not consult the holdout at all when steering is already off', async () => {
@@ -730,53 +785,72 @@ describe('memory:prepare-codex-context', () => {
     expect(M.armForSession).not.toHaveBeenCalled()
   })
 
-  it('still writes AGENTS.md when the steering settings are unreadable', async () => {
-    // Steering is an optimisation; the memory context is the point. A broken settings file must
-    // cost the user their steering, not their primer.
+  it('still prepares the launch, unsteered, when the steering settings are unreadable', async () => {
+    // Steering is an optimisation; the memory approvals are the point. A broken settings file
+    // must cost the user their steering, not their launch.
     M.getHeadroomSettings.mockImplementation(() => { throw new Error('settings.json is corrupt') })
     const r = await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    expect(r.success).toBe(true)
-    expect(M.writeAgentsMd).toHaveBeenCalledWith('/repo', { cwd: '/repo', steering: false, mode: undefined })
+    expect(r).toEqual({ success: true, data: { developerInstructions: 'DEV', approvals: 2 } })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null })
+    expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
-  it('returns the failure as err() when the file cannot be written', async () => {
-    M.writeAgentsMd.mockImplementationOnce(() => { throw new Error('EACCES: /repo/AGENTS.md') })
+  it('returns a manager failure as err() instead of rejecting the IPC promise', async () => {
+    M.prepareCodexLaunch.mockImplementationOnce(() => { throw new Error('EACCES: /repo/AGENTS.md') })
     expect(await invoke('memory:prepare-codex-context', { cwd: '/repo' }))
       .toEqual({ success: false, error: 'EACCES: /repo/AGENTS.md' })
   })
 })
 
 // ===========================================================================
-// claude:trust-workspace — pre-approves the folder in Claude Code's own config.
+// claude:trust-workspace — pre-approves the folder in Claude Code's own config, now through the
+// consent-gated manager. index.ts decides whether a git spawn is worth it and which root to seed.
 // ===========================================================================
 describe('claude:trust-workspace', () => {
-  it('also seeds the git ROOT, trimmed, so a launch from a subdir is covered', async () => {
+  it('also seeds the git ROOT, trimmed, when the folder is allowed', async () => {
     M.safeGitAsync.mockResolvedValueOnce('/repo\n' as never)
     const r = await invoke('claude:trust-workspace', { cwd: '/repo/packages/app' })
+    // The consent / unsafe-folder gate runs on the folder alone, before any git spawn.
+    expect(M.isFolderTrustAllowed).toHaveBeenCalledWith(M.agentPaths, '/repo/packages/app')
+    expect(M.isFolderTrustAllowed.mock.calls[0]).toHaveLength(2)
     expect(M.safeGitAsync).toHaveBeenCalledWith(['rev-parse', '--show-toplevel'], { cwd: '/repo/packages/app', timeout: 2000 })
     // Untrimmed, the key would be "/repo\n" — never equal to the key Claude itself writes.
-    expect(M.trustClaudeWorkspace).toHaveBeenCalledWith('/repo/packages/app', { alsoTrust: ['/repo'] })
-    expect(r).toEqual({ success: true, data: { trusted: true } })
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/repo/packages/app', '/repo')
+    expect(r).toEqual({ success: true, data: { changed: true, keys: ['/repo'] } })
   })
 
-  it('still trusts the cwd when the folder is not a git repo', async () => {
+  it('asks the manager for its verdict WITHOUT spawning git when the folder is not allowed', async () => {
+    // No consent yet, or the home folder / a drive root. The manager still answers (with the
+    // skip reason the renderer shows), but a rev-parse would be a wasted spawn on every launch.
+    M.isFolderTrustAllowed.mockReturnValueOnce(false)
+    M.trustFolderForAgents.mockReturnValueOnce({ changed: false, keys: [], skipped: 'no-consent' })
+    M.safeGitAsync.mockClear()
+    const r = await invoke('claude:trust-workspace', { cwd: '/home/me' })
+    expect(M.safeGitAsync).not.toHaveBeenCalled()
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/home/me')
+    // No git root argument at all — not even null — on the refused path.
+    expect(M.trustFolderForAgents.mock.calls[0]).toHaveLength(2)
+    expect(r).toEqual({ success: true, data: { changed: false, keys: [], skipped: 'no-consent' } })
+  })
+
+  it('still trusts the cwd, with a null root, when the folder is not a git repo', async () => {
     // The rev-parse rejection is EXPECTED for a plain directory. Letting it propagate would turn
     // "not a repo" into "trust failed", and the dialog Termpolis exists to suppress comes back.
     M.safeGitAsync.mockRejectedValueOnce(new Error('not a git repository'))
     const r = await invoke('claude:trust-workspace', { cwd: '/plain/dir' })
-    expect(M.trustClaudeWorkspace).toHaveBeenCalledWith('/plain/dir', { alsoTrust: [] })
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/plain/dir', null)
     expect(r.success).toBe(true)
   })
 
-  it('does not add an empty-string key when rev-parse returns only whitespace', async () => {
+  it('passes a null root, not an empty-string key, when rev-parse returns only whitespace', async () => {
     M.safeGitAsync.mockResolvedValueOnce('   \n' as never)
     await invoke('claude:trust-workspace', { cwd: '/repo' })
-    expect(M.trustClaudeWorkspace).toHaveBeenCalledWith('/repo', { alsoTrust: [] })
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/repo', null)
   })
 
-  it('surfaces a config-write failure as err()', async () => {
+  it('surfaces a manager failure as err()', async () => {
     M.safeGitAsync.mockResolvedValueOnce('' as never)
-    M.trustClaudeWorkspace.mockImplementationOnce(() => { throw new Error('~/.claude.json is read-only') })
+    M.trustFolderForAgents.mockImplementationOnce(() => { throw new Error('~/.claude.json is read-only') })
     expect(await invoke('claude:trust-workspace', { cwd: '/repo' }))
       .toEqual({ success: false, error: '~/.claude.json is read-only' })
   })
@@ -802,6 +876,95 @@ describe('tokenSavings IPC', () => {
     expect(M.setProxyDecay).toHaveBeenCalledWith(true)
     expect(M.setProxyThinkingCap).toHaveBeenCalledWith(4096)
     expect(r).toEqual({ success: true, data: { mode: 'aggressive', prefixDecay: true, thinkingCap: 4096 } })
+  })
+
+  it('set-settings with the proxy switched off stops routing new launches and starts nothing', async () => {
+    M.pickFreePort.mockClear(); M.startProxy.mockClear(); M.setProxyEnabled.mockClear()
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, wireProxy: false } as never)
+    expect((await invoke('tokenSavings:set-settings', { wireProxy: false })).success).toBe(true)
+    expect(M.setProxyEnabled).toHaveBeenCalledWith(false)
+    expect(M.pickFreePort).not.toHaveBeenCalled()
+  })
+
+  it('set-settings switching the proxy back on starts the child when none is running', async () => {
+    M.pickFreePort.mockClear(); M.startProxy.mockClear()
+    M.pickFreePort.mockResolvedValueOnce(51234)
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, wireProxy: true } as never)
+    await invoke('tokenSavings:set-settings', { wireProxy: true })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(M.setProxyEnabled).toHaveBeenCalledWith(true)
+    expect(M.startProxy).toHaveBeenCalledWith({ port: 51234 })
+  })
+
+  it('set-settings never starts a second child over a running one', async () => {
+    M.pickFreePort.mockClear(); M.startProxy.mockClear()
+    M.isProxyStarted.mockReturnValueOnce(true)
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, wireProxy: true } as never)
+    await invoke('tokenSavings:set-settings', { wireProxy: true })
+    expect(M.pickFreePort).not.toHaveBeenCalled()
+  })
+
+  it('set-settings re-checks after the port lookup: started meanwhile, switched off, or no port', async () => {
+    const flip = async () => { await invoke('tokenSavings:set-settings', { wireProxy: true }); await new Promise((r) => setTimeout(r, 0)) }
+    M.startProxy.mockClear()
+    // a second flip won the race
+    M.pickFreePort.mockResolvedValueOnce(51235); M.isProxyStarted.mockReturnValueOnce(false).mockReturnValueOnce(true)
+    await flip()
+    // the user switched it straight back off
+    M.pickFreePort.mockResolvedValueOnce(51236); M.isProxyEnabled.mockReturnValueOnce(false)
+    await flip()
+    // no free port
+    M.pickFreePort.mockResolvedValueOnce(0)
+    await flip()
+    expect(M.startProxy).not.toHaveBeenCalled()
+  })
+
+  it('set-settings still returns ok when the switch itself throws', async () => {
+    M.setProxyEnabled.mockImplementationOnce(() => { throw new Error('proxy down') })
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, wireProxy: true } as never)
+    expect((await invoke('tokenSavings:set-settings', { wireProxy: true })).success).toBe(true)
+  })
+
+  it('set-settings re-tiers through the floor when the tier or the floor changes', async () => {
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
+    M.resolveWireMode.mockReturnValueOnce('max')
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'aggressive', floorControl: true } as never)
+    await invoke('tokenSavings:set-settings', { mode: 'aggressive' })
+    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything())
+    expect(M.setProxyMode).toHaveBeenCalledWith('max')
+    // Turning the floor off drops straight to the selector's tier, no ledger consulted.
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'aggressive', floorControl: false } as never)
+    await invoke('tokenSavings:set-settings', { floorControl: false })
+    expect(M.resolveWireMode).not.toHaveBeenCalled()
+    expect(M.setProxyMode).toHaveBeenCalledWith('aggressive')
+  })
+
+  it('set-settings leaves a floor-raised tier alone when an unrelated box changes', async () => {
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, steering: false } as never)
+    await invoke('tokenSavings:set-settings', { steering: false })
+    expect(M.setProxyMode).not.toHaveBeenCalled()
+    expect(M.resolveWireMode).not.toHaveBeenCalled()
+  })
+
+  it('set-settings still returns ok when the floor lookup throws', async () => {
+    M.setProxyMode.mockClear()
+    M.resolveWireMode.mockImplementationOnce(() => { throw new Error('ledger unreadable') })
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'max', floorControl: true } as never)
+    expect((await invoke('tokenSavings:set-settings', { mode: 'max' })).success).toBe(true)
+    expect(M.setProxyMode).not.toHaveBeenCalled()
+  })
+
+  it('get-proxy-status reports the switch, the child, any bypass var and the tier actually in force', async () => {
+    M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, mode: 'aggressive' })
+    M.isProxyEnabled.mockReturnValueOnce(true); M.isProxyStarted.mockReturnValueOnce(true)
+    M.isProxyHealthy.mockReturnValueOnce(false); M.userRoutingVar.mockReturnValueOnce('HTTPS_PROXY')
+    M.getProxyMode.mockReturnValueOnce('max')
+    expect(await invoke('tokenSavings:get-proxy-status')).toEqual({
+      success: true,
+      data: { enabled: true, running: true, healthy: false, bypassVar: 'HTTPS_PROXY', selectedMode: 'aggressive', effectiveMode: 'max' },
+    })
   })
 
   it('set-settings treats a missing payload as an empty patch, not undefined', async () => {
@@ -920,6 +1083,32 @@ describe('headroom ledger flush debounce', () => {
 // floor-control decision.
 // ===========================================================================
 describe('headroom proxy wiring', () => {
+  it('reads the env block of Claude Code settings.json for the routing check', () => {
+    const read = cbOf(M.setAgentEnvReader) as () => Record<string, unknown> | null
+    const isSettings = (p: unknown) => String(p).replace(/\\/g, '/').endsWith('/scratch/home/.claude/settings.json')
+    const [exists0, read0] = [M.existsSync.getMockImplementation(), M.readFileSync.getMockImplementation()]
+    const serve = (text: string | null) => {
+      M.existsSync.mockImplementation(((p: unknown) => (isSettings(p) ? text !== null : false)) as never)
+      M.readFileSync.mockImplementation(((p: unknown) => (isSettings(p) ? text : '')) as never)
+    }
+    try {
+      serve(JSON.stringify({ env: { HTTPS_PROXY: 'http://corp:8080' } }))
+      expect(read()).toEqual({ HTTPS_PROXY: 'http://corp:8080' })
+      serve(JSON.stringify({ env: ['HTTPS_PROXY'] }))
+      expect(read()).toBeNull()
+      serve(JSON.stringify({ env: 'HTTPS_PROXY=x' }))
+      expect(read()).toBeNull()
+      serve(JSON.stringify({ model: 'opus' }))
+      expect(read()).toBeNull()
+      serve('{ not json')
+      expect(read()).toBeNull()
+      serve(null)
+      expect(read()).toBeNull()
+    } finally {
+      M.existsSync.mockImplementation(exists0 as never); M.readFileSync.mockImplementation(read0 as never)
+    }
+  })
+
   it('forwards a proxy result to the ledger and swallows a ledger fault', async () => {
     const onResult = cbOf(M.onProxyResult)
     onResult({ savedTokens: 5 })
@@ -1639,17 +1828,42 @@ describe('aiSecurity + telemetry error arms', () => {
     expect(await invoke('telemetry:record-event', { name: 'x' })).toEqual({ success: false, error: 'telemetry.json locked' })
   })
 
-  it('telemetry:set-opt-in coerces to a strict boolean and echoes the persisted state', async () => {
-    M.isTelemetryEnabled.mockReturnValueOnce(true as never)
-    expect(await invoke('telemetry:set-opt-in', { value: true })).toEqual({ success: true, data: { optIn: true } })
-    // `value === true`: a truthy string from a renderer must not opt the user in.
-    await invoke('telemetry:set-opt-in', { value: 'yes' })
-    expect(M.setTelemetryOptIn).toHaveBeenLastCalledWith(false)
+  it('telemetry:get-consent returns what main holds, and err() when it cannot be read', async () => {
+    expect(await invoke('telemetry:get-consent')).toEqual({
+      success: true,
+      data: { crash: false, usage: false, consentVersion: 0, needsReview: true },
+    })
+    M.getTelemetryConsent.mockImplementationOnce(() => { throw new Error('telemetry.json locked') })
+    expect(await invoke('telemetry:get-consent')).toEqual({ success: false, error: 'telemetry.json locked' })
   })
 
-  it('telemetry:set-opt-in', async () => {
-    M.setTelemetryOptIn.mockImplementationOnce(() => { throw new Error('read-only profile') })
-    expect(await invoke('telemetry:set-opt-in', { value: true })).toEqual({ success: false, error: 'read-only profile' })
+  it('telemetry:set-consent records each tier given, and echoes the new consent', async () => {
+    const on = { crash: true, usage: false, consentVersion: 2, needsReview: false }
+    M.setTelemetryConsent.mockClear()
+    M.getTelemetryConsent.mockReturnValueOnce(on)
+    expect(await invoke('telemetry:set-consent', { crash: true, usage: false })).toEqual({ success: true, data: on })
+    expect(M.setTelemetryConsent).toHaveBeenLastCalledWith({ crash: true, usage: false })
+    // A tier left out is passed as undefined — telemetry keeps its value.
+    await invoke('telemetry:set-consent', { usage: true })
+    expect(M.setTelemetryConsent).toHaveBeenLastCalledWith({ crash: undefined, usage: true })
+    // No payload at all changes nothing, but still stamps the answer.
+    await invoke('telemetry:set-consent')
+    expect(M.setTelemetryConsent).toHaveBeenLastCalledWith({ crash: undefined, usage: undefined })
+    await invoke('telemetry:set-consent', null)
+    expect(M.setTelemetryConsent).toHaveBeenCalledTimes(4)
+  })
+
+  it('telemetry:set-consent refuses anything but a boolean, recording nothing', async () => {
+    M.setTelemetryConsent.mockClear()
+    // A truthy string from a renderer must never turn a tier on.
+    expect(await invoke('telemetry:set-consent', { crash: 'yes' })).toEqual({ success: false, error: 'crash and usage must be booleans' })
+    expect(await invoke('telemetry:set-consent', { crash: false, usage: 1 })).toEqual({ success: false, error: 'crash and usage must be booleans' })
+    expect(M.setTelemetryConsent).not.toHaveBeenCalled()
+  })
+
+  it('telemetry:set-consent', async () => {
+    M.setTelemetryConsent.mockImplementationOnce(() => { throw new Error('read-only profile') })
+    expect(await invoke('telemetry:set-consent', { crash: true })).toEqual({ success: false, error: 'read-only profile' })
   })
 
   it('diagnostics:collect returns the report, and err() when collection throws', async () => {

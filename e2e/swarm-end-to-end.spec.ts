@@ -452,26 +452,25 @@ test.describe.serial('Swarm End-to-End', () => {
     await ss('14-final')
   })
 
-  // Regression guard: Claude Code silently fails to register MCP servers when
-  // the plugin's .mcp.json lacks the `mcpServers` wrapper. Symptom: conductor
-  // posts "analyzing..." then does nothing because it has no tool access.
-  // Both the marketplace source AND the cache copy must have the wrapper —
-  // Claude reads from cache at startup.
-  test('15. Plugin .mcp.json files have the required mcpServers wrapper', async () => {
-    const homeDir = os.homedir()
-    const pluginPaths = [
-      path.join(homeDir, '.claude', 'local-marketplace', 'plugins', 'termpolis', '.mcp.json'),
-      path.join(homeDir, '.claude', 'plugins', 'cache', 'local-plugins', 'termpolis', '1.0.0', '.mcp.json'),
-    ]
+  // Regression guard: the conductor gets its tools only from the `--mcp-config` file
+  // Termpolis writes under userData, and Claude Code silently registers nothing when
+  // that file lacks the `mcpServers` wrapper. Symptom: the conductor posts
+  // "analyzing..." and then does nothing. The file is written whether or not the user
+  // connected their agents, and nothing in it depends on a plugin (v1.49 removed the
+  // plugin, and must never write one again).
+  test('15. The conductor --mcp-config file has the mcpServers wrapper', async () => {
+    const res = await page.evaluate(() => (window as any).termpolis.getMcpConfigPath())
+    const file: string = res.data
+    expect(fs.existsSync(file), `missing: ${file}`).toBeTruthy()
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    expect(parsed.mcpServers, `no mcpServers wrapper in ${file}`).toBeTruthy()
+    expect(parsed.mcpServers.termpolis, `no termpolis entry in ${file}`).toBeTruthy()
+    expect(parsed.mcpServers.termpolis.command).toBe('node')
+    expect(Array.isArray(parsed.mcpServers.termpolis.args)).toBeTruthy()
+    expect(parsed.mcpServers.termpolis.args[0]).toMatch(/stdio-adapter\.cjs$/)
 
-    for (const p of pluginPaths) {
-      expect(fs.existsSync(p), `missing: ${p}`).toBeTruthy()
-      const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'))
-      expect(parsed.mcpServers, `no mcpServers wrapper in ${p}`).toBeTruthy()
-      expect(parsed.mcpServers.termpolis, `no termpolis entry in ${p}`).toBeTruthy()
-      expect(parsed.mcpServers.termpolis.command).toBe('node')
-      expect(Array.isArray(parsed.mcpServers.termpolis.args)).toBeTruthy()
-      expect(parsed.mcpServers.termpolis.args[0]).toMatch(/stdio-adapter\.cjs$/)
-    }
+    const agentHome = process.env.TERMPOLIS_TEST_AGENT_HOME ?? ''
+    expect(agentHome, 'global-setup must isolate agent configs').not.toBe('')
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'local-marketplace', 'plugins', 'termpolis'))).toBe(false)
   })
 })

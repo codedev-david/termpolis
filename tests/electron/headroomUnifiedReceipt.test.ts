@@ -109,17 +109,18 @@ describe('unified savings receipt', () => {
 })
 
 /**
- * The wire has two compressible surfaces, and until v1.34.0 the unified headline counted only
- * one of them. Reporting tool_result alone was accurate about a slice while implying it described
- * the wire — the same category of error the unified receipt was built to end.
+ * The ledger schema carries two wire surfaces. The live proxy no longer rewrites tool_use input, so
+ * it now reports that pair as 0, but the counters stay in the schema and persisted totals from
+ * earlier versions still hold tool_use savings. These pin the ledger arithmetic: the headline must
+ * keep summing both, or those historical totals would silently drop out of the receipt.
  */
-describe('unified receipt — both wire surfaces', () => {
+describe('unified receipt — both wire surfaces (tool_use pair is retained schema)', () => {
   beforeEach(() => { resetLedger(); resetProxyLedger() })
 
   const bothSurfaces = (trOrig: number, trComp: number, tuOrig: number, tuComp: number): ProxyResultMsg =>
     ({ stats: { trOrigChars: trOrig, trCompChars: trComp, trBlocks: 1, tuOrigChars: tuOrig, tuCompChars: tuComp, tuBlocks: 1, images: 0, imgOrigBytes: 0, imgCompBytes: 0 } } as unknown as ProxyResultMsg)
 
-  it('counts tool_use savings in the headline, not just tool_result', () => {
+  it('counts recorded tool_use savings in the headline, not just tool_result', () => {
     recordProxyResult(bothSurfaces(4000, 1000, 8000, 2000)) // 1000+2000 orig tokens, 750+1500 saved
     const { cumulative } = summarizeUnifiedSavings()
     expect(cumulative.wireOrigTokens).toBe(3000)
@@ -128,7 +129,7 @@ describe('unified receipt — both wire surfaces', () => {
     expect(cumulative.savedPct).toBe(75)
   })
 
-  it('breaks the tool_use half out so the dashboard can show which surface earned what', () => {
+  it('breaks the recorded tool_use half out so the dashboard can show which surface earned what', () => {
     recordProxyResult(bothSurfaces(4000, 1000, 8000, 2000))
     const { cumulative } = summarizeUnifiedSavings()
     expect(cumulative.toolUseOrigTokens).toBe(2000)

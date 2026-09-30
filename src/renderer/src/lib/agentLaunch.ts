@@ -2,9 +2,9 @@ import { resolveAgentCommand, testDelay } from './testAgents'
 
 /**
  * Launching an agent in a terminal is a timed sequence, not a single write: the
- * shell has to finish printing its prompt, the command has to land, and Claude
- * and Codex then put up a trust prompt that needs an answer before the agent is
- * usable.
+ * shell has to finish printing its prompt, then the command has to land. Nothing
+ * is typed after it — a folder-trust prompt the agent puts up is the user's to
+ * answer (see the end of launchAgents).
  *
  * That sequence used to be copy-pasted at every launch site, and the
  * workspace-restore path simply never got a copy — activating a saved workspace
@@ -17,8 +17,6 @@ import { resolveAgentCommand, testDelay } from './testAgents'
 export const SHELL_SETTLE_MS = 4000
 /** Gap between the flush newline and the real command. */
 export const COMMAND_DELAY_MS = 500
-/** When Claude's / Codex's own trust prompt is answered. */
-export const AUTO_TRUST_MS = 10000
 /** How long the "Launching …" overlay stays up. */
 export const DISMISS_MS = 8000
 /** Gemini takes noticeably longer to come up than the others. */
@@ -36,7 +34,7 @@ export interface AgentLaunchOptions {
   write?: (id: string, data: string) => void
   /** Pre-approves a folder in Claude Code's config. Defaults to the preload bridge. */
   trustClaudeWorkspace?: (cwd: string) => Promise<unknown>
-  /** Called once every agent has been typed and its trust prompt answered. */
+  /** Called once every agent has been typed and has had time to come up. */
   onSettled?: () => void
 }
 
@@ -62,8 +60,10 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   }
 
   // Pre-approve every Claude folder in Claude Code's own config so its workspace-trust
-  // dialog never renders. Fire-and-forget is safe here: the shell settle below is seconds
-  // long and this is a local file write, so the seed is on disk well before Claude reads it.
+  // dialog never renders — only once the user connected the agents, and never for the home
+  // folder or a drive root (main decides, and otherwise writes nothing). Fire-and-forget is
+  // safe here: the shell settle below is seconds long and this is a local file write, so the
+  // seed is on disk well before Claude reads it.
   for (const t of agents) {
     if (t.cwd && t.agentCommand!.startsWith('claude')) {
       void Promise.resolve(trustClaude(t.cwd)).catch(() => { /* dialog handler covers it */ })
@@ -78,14 +78,12 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
     }, COMMAND_DELAY_MS)
   }, testDelay(SHELL_SETTLE_MS))
 
-  // Auto-trust: Codex wants option 1. Claude gets NOTHING typed at it any more — since
-  // Claude Code 2.1.x the trust dialog opens focused on "No, exit", so the bare Enter that
-  // used to live here quit the session instead of trusting it. Trust is seeded in config
-  // above; if the dialog still appears, App.tsx's poller answers the highlighted row.
-  for (const t of agents) {
-    const reply = t.agentCommand!.startsWith('codex') ? '1\r' : null
-    if (reply) setTimeout(() => write(t.id, reply), testDelay(AUTO_TRUST_MS))
-  }
+  // Nothing is typed after the command. Codex used to get a blind `1⏎` on a timer, which
+  // accepted its folder-trust prompt whether or not the user wanted that folder trusted (and
+  // became a chat message when no prompt showed), and Claude a blind Enter, which since its
+  // dialog opens on "No, exit" quit the session instead. Only once the user connected the
+  // agents does App.tsx's poller answer a trust prompt, on the row that is actually
+  // highlighted, and never for the home folder or a drive root.
 
   const hasSlowAgent = agents.some(t => t.agentCommand === 'gemini')
   setTimeout(() => options.onSettled?.(), testDelay(hasSlowAgent ? SLOW_DISMISS_MS : DISMISS_MS))

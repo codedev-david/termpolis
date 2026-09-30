@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-const { setProxySpawner, onProxyResult, onProxyStash, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest } =
+const { setProxySpawner, onProxyResult, onProxyStash, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest, setProxyEnabled, isProxyEnabled, isProxyStarted, userRoutingVar, setAgentEnvReader, USER_ROUTING_ENV, PROVIDER_SWITCH_ENV, getProxyMode } =
   await import('../../src/main/headroomProxy/proxySupervisor')
 
 interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; fireStash: (stashes: Array<{ token: string; original: string }>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
@@ -35,6 +35,7 @@ describe('proxy supervisor', () => {
     expect(isProxyHealthy()).toBe(true)
     expect(getProxyEnv()).toEqual({
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999',
+      TERMPOLIS_HEADROOM_PROXY: 'http://127.0.0.1:9999',
       CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: '1',
       ENABLE_TOOL_SEARCH: 'true',
     })
@@ -124,5 +125,115 @@ describe('proxy supervisor', () => {
     expect(() => setProxyMode('balanced')).not.toThrow() // no transport yet
     startProxy({ port: 5000 })
     expect(fakes[0].posted.find((m) => m.kind === 'init')).toMatchObject({ mode: 'balanced' })
+  })
+})
+
+describe('proxy supervisor — the user decides where Claude traffic goes', () => {
+  it('launches direct while the master switch is off, and resumes the moment it is back on', () => {
+    startProxy({ port: 9999 })
+    expect(isProxyEnabled()).toBe(true)
+    setProxyEnabled(false)
+    expect(isProxyEnabled()).toBe(false)
+    expect(getProxyEnv({})).toBeNull()
+    expect(isProxyHealthy()).toBe(true) // a live session pinned to the port is not cut off
+    setProxyEnabled(true)
+    expect(getProxyEnv({})?.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:9999')
+  })
+
+  it('never replaces a base URL or outbound proxy the user configured', () => {
+    startProxy({ port: 9999 })
+    for (const k of USER_ROUTING_ENV) {
+      expect(getProxyEnv({ [k]: 'http://gateway.corp.example:4000' })).toBeNull()
+      expect(userRoutingVar({ [k]: 'http://gateway.corp.example:4000' })).toBe(k)
+    }
+  })
+
+  it('steps aside for a Bedrock, Vertex or Foundry switch — those never talk to api.anthropic.com', () => {
+    startProxy({ port: 9999 })
+    for (const k of PROVIDER_SWITCH_ENV) {
+      for (const on of ['1', 'true', 'TRUE', ' yes ']) {
+        expect(userRoutingVar({ [k]: on })).toBe(k)
+        expect(getProxyEnv({ [k]: on })).toBeNull()
+      }
+      for (const off of ['', '  ', '0', 'false', 'False']) {
+        expect(userRoutingVar({ [k]: off })).toBeNull()
+        expect(getProxyEnv({ [k]: off })).not.toBeNull()
+      }
+    }
+  })
+
+  it('ignores blank values — an empty variable routes nothing', () => {
+    startProxy({ port: 9999 })
+    expect(userRoutingVar({ ANTHROPIC_BASE_URL: '   ', HTTPS_PROXY: '' })).toBeNull()
+    expect(getProxyEnv({ ANTHROPIC_BASE_URL: '' })).not.toBeNull()
+  })
+
+  it('is not fooled by the proxy URL a parent Termpolis handed down', () => {
+    startProxy({ port: 9999 })
+    const inherited = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:61586', TERMPOLIS_HEADROOM_PROXY: 'http://127.0.0.1:61586' }
+    expect(userRoutingVar(inherited)).toBeNull()
+    expect(getProxyEnv(inherited)?.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:9999')
+    // ...but a user base URL that merely sits next to a stale marker is still the user's.
+    expect(userRoutingVar({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:4000', TERMPOLIS_HEADROOM_PROXY: 'http://127.0.0.1:61586' })).toBe('ANTHROPIC_BASE_URL')
+  })
+
+  it('reads the real process env by default', () => {
+    startProxy({ port: 9999 })
+    process.env.HTTPS_PROXY = 'http://egress.corp.example:3128'
+    try { expect(getProxyEnv()).toBeNull() } finally { delete process.env.HTTPS_PROXY }
+    expect(getProxyEnv()).not.toBeNull()
+  })
+
+  it('reports the tier it will run — aggressive until told otherwise', () => {
+    expect(getProxyMode()).toBe('aggressive')
+    setProxyMode('max')
+    expect(getProxyMode()).toBe('max')
+  })
+
+  it('tracks whether it has been started, so a Settings flip can start it lazily', () => {
+    expect(isProxyStarted()).toBe(false)
+    startProxy({ port: 9999 })
+    expect(isProxyStarted()).toBe(true)
+    stopProxy()
+    expect(isProxyStarted()).toBe(false)
+  })
+
+  it('steps aside for a route set only in Claude Code settings.json', () => {
+    startProxy({ port: 9999 })
+    for (const k of USER_ROUTING_ENV) {
+      setAgentEnvReader(() => ({ [k]: 'http://corp:8080' }))
+      expect(userRoutingVar({})).toBe(k)
+      expect(getProxyEnv({})).toBeNull()
+    }
+    setAgentEnvReader(() => ({ CLAUDE_CODE_USE_BEDROCK: '1' }))
+    expect(userRoutingVar({})).toBe('CLAUDE_CODE_USE_BEDROCK')
+  })
+
+  it('lets settings.json override the launch env, as Claude Code applies it', () => {
+    // The inherited base URL is ours (the marker matches) — but settings.json sets its own.
+    const inherited = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:61586', TERMPOLIS_HEADROOM_PROXY: 'http://127.0.0.1:61586' }
+    expect(userRoutingVar(inherited)).toBeNull()
+    setAgentEnvReader(() => ({ ANTHROPIC_BASE_URL: 'https://gateway.corp.example' }))
+    expect(userRoutingVar(inherited)).toBe('ANTHROPIC_BASE_URL')
+    // …and a switch turned off there beats one left on in the env.
+    setAgentEnvReader(() => ({ CLAUDE_CODE_USE_VERTEX: '0' }))
+    expect(userRoutingVar({ CLAUDE_CODE_USE_VERTEX: '1' })).toBeNull()
+  })
+
+  it('ignores a settings env block it cannot use', () => {
+    startProxy({ port: 9999 })
+    const ours = 'http://127.0.0.1:9999'
+    for (const read of [
+      () => null,
+      () => { throw new Error('EACCES') },
+      () => 'HTTPS_PROXY=http://corp:8080' as unknown as Record<string, unknown>,
+      () => ({ HTTPS_PROXY: 8080, ALL_PROXY: null, HTTP_PROXY: { url: 'x' }, ANTHROPIC_BASE_URL: '  ' }),
+    ]) {
+      setAgentEnvReader(read)
+      expect(userRoutingVar({})).toBeNull()
+      expect(getProxyEnv({})?.ANTHROPIC_BASE_URL).toBe(ours)
+    }
+    setAgentEnvReader(null)
+    expect(getProxyEnv({})?.ANTHROPIC_BASE_URL).toBe(ours)
   })
 })

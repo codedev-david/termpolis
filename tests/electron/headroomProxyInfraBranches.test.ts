@@ -155,6 +155,7 @@ describe('proxy supervisor — degraded child + lifecycle edges', () => {
     expect(getProxyPort()).toBe(7105)
     expect(getProxyEnv()).toEqual({
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:7105',
+      TERMPOLIS_HEADROOM_PROXY: 'http://127.0.0.1:7105',
       CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: '1',
       ENABLE_TOOL_SEARCH: 'true',
     })

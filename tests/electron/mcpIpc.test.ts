@@ -211,12 +211,20 @@ describe('mcpIpc', () => {
   })
 
   describe('defaultInventoryPaths', () => {
-    it('resolves the four configs Termpolis already writes to', () => {
-      const p = defaultInventoryPaths('/home/me')
-      expect(p.claude).toBe(join('/home/me', '.claude', 'settings.json'))
+    it('resolves the configs each agent reads its MCP servers from', () => {
+      const p = defaultInventoryPaths('/home/me', {})
+      // Claude Code keeps user-scope servers in .claude.json; settings.json has none.
+      expect(p.claude).toBe(join('/home/me', '.claude.json'))
       expect(p.globalMcp).toBe(join('/home/me', '.mcp.json'))
       expect(p.codex).toBe(join('/home/me', '.codex', 'config.toml'))
       expect(p.gemini).toBe(join('/home/me', '.gemini', 'settings.json'))
+    })
+
+    it('follows CLAUDE_CONFIG_DIR and CODEX_HOME when they are set', () => {
+      const p = defaultInventoryPaths('/home/me', { CLAUDE_CONFIG_DIR: ' /profiles/work ', CODEX_HOME: '/codex' })
+      expect(p.claude).toBe(join('/profiles/work', '.claude.json'))
+      expect(p.codex).toBe(join('/codex', 'config.toml'))
+      expect(p.globalMcp).toBe(join('/home/me', '.mcp.json'))
     })
 
     it('defaults to the real home directory', () => {
@@ -291,15 +299,17 @@ describe('mcpIpc', () => {
 
     it('mcp:inventory reads the four configs and folds in the gateway', () => {
       const home = join(dir, 'home')
-      mkdirSync(join(home, '.claude'), { recursive: true })
+      mkdirSync(home, { recursive: true })
+      // Claude Code keeps its user-level servers in .claude.json, not settings.json.
       writeFileSync(
-        join(home, '.claude', 'settings.json'),
+        join(home, '.claude.json'),
         JSON.stringify({ mcpServers: { github: { command: 'npx', env: { TOKEN: 'ghp_secret' } } } }),
       )
       addGatewayServer({ id: 'local', command: 'npx' })
 
       const { ipc, call } = fakeIpc()
-      registerMcpIpc(ipc, () => defaultInventoryPaths(home))
+      // An empty env, so a developer's own CLAUDE_CONFIG_DIR or CODEX_HOME can't redirect the read.
+      registerMcpIpc(ipc, () => defaultInventoryPaths(home, {}))
       const res = call('mcp:inventory')
 
       expect(res.success).toBe(true)

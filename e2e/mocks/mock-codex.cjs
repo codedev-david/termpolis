@@ -11,9 +11,18 @@ const rl = readline.createInterface({
 
 rl.on('close', () => process.exit(0));
 
-// Startup and trust prompt
+// Startup and the workspace-trust screen, worded the way Codex 0.153.x draws it: the
+// cursor opens on "Yes, continue", so Enter trusts. promptAutoDismiss answers this only
+// where the user connected the agents and the folder is not home or a root.
 console.log('OpenAI Codex v0.1 (mock)');
-console.log('Do you trust this directory? [Y/n]');
+console.log(`> You are in ${process.cwd()}`);
+console.log('');
+console.log('Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection.');
+console.log('');
+console.log('› 1. Yes, continue');
+console.log('  2. No, quit');
+console.log('');
+console.log('Press enter to continue');
 
 // Wait for trust confirmation
 rl.once('line', () => {

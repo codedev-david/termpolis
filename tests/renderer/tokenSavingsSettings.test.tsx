@@ -39,7 +39,7 @@ beforeEach(() => {
 })
 
 describe('TokenSavingsSettings', () => {
-  it('shows the always-on Claude proxy compression headline (% saved + tokens + cache health)', async () => {
+  it('shows the Claude proxy compression headline (% saved + tokens + cache health)', async () => {
     render(<TokenSavingsSettings />)
     await waitFor(() => expect(screen.getByTestId('hr-proxy-session-pct')).toHaveTextContent('50%'))
     expect(screen.getByTestId('hr-proxy-cumulative-pct')).toHaveTextContent('47%')
@@ -231,6 +231,23 @@ describe('TokenSavingsSettings — honest reporting', () => {
     render(<TokenSavingsSettings />)
     await screen.findByTestId('hr-denominators')
     expect(screen.queryByTestId('hr-floor-evidence')).toBeNull()
+  })
+
+  it('drops the tool-input row when no earlier version compressed a tool call', async () => {
+    // Since v1.49 tool_use inputs are never rewritten, so a fresh ledger has no tool-input
+    // savings; a row reading "0 of 0" would suggest the proxy is still trying.
+    withData({ textOrigTokens: 200000, textSavedTokens: 100000, toolUseOrigTokens: 0, toolUseSavedTokens: 0 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-surface-tr')).toHaveTextContent('100,000')
+    expect(screen.getByTestId('hr-surface-split')).not.toHaveTextContent(/Tool inputs/)
+    expect(screen.queryByTestId('hr-surface-tu')).toBeNull()
+  })
+
+  it('labels tool-input savings as history from before v1.49', async () => {
+    withData({ textOrigTokens: 200000, textSavedTokens: 100000, toolUseOrigTokens: 80000, toolUseSavedTokens: 60000 })
+    render(<TokenSavingsSettings />)
+    const split = await screen.findByTestId('hr-surface-split')
+    expect(split).toHaveTextContent('Tool inputs, before v1.49 (no longer compressed): 60,000 of 80,000 tokens removed')
   })
 
   it('breaks the two wire surfaces apart so neither can hide behind the other', async () => {
@@ -565,8 +582,8 @@ describe('TokenSavingsSettings — counters an older receipt never wrote', () =>
   })
 
   it('still splits the two wire surfaces when only the tool-input columns exist', async () => {
-    // tool_result counters absent, tool_use present: the split has to keep showing the half it
-    // has rather than hiding both, because that half is the one billed on every later turn.
+    // tool_result counters absent, tool_use present (a ledger from before v1.49): the split has
+    // to keep showing the half it has rather than hiding both.
     withReceipts({
       proxyCumulative: {
         textOrigTokens: undefined, textSavedTokens: undefined,
@@ -584,3 +601,83 @@ describe('TokenSavingsSettings — counters an older receipt never wrote', () =>
   })
 })
 
+
+describe('TokenSavingsSettings — the proxy master switch and what it reports', () => {
+  const status = (over: Record<string, unknown>) => ({ success: true, data: { enabled: true, running: true, healthy: true, bypassVar: null, selectedMode: 'balanced', effectiveMode: 'balanced', ...over } })
+
+  it('turns the proxy off with a one-key patch, then shows it off', async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn()
+      .mockResolvedValueOnce(status({}))
+      .mockResolvedValueOnce(status({ enabled: false }))
+    tpApi().tokenSavingsSetSettings = vi.fn().mockResolvedValue({ success: true, data: { enabled: true, wireProxy: false, mode: 'balanced', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false } })
+    render(<TokenSavingsSettings />)
+    const sw = (await screen.findByTestId('hr-toggle-proxy')) as HTMLInputElement
+    await waitFor(() => expect(sw.disabled).toBe(false))
+    expect(sw.checked).toBe(true)
+    fireEvent.click(sw)
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalledWith({ wireProxy: false }))
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Off — new Claude Code sessions go straight to Anthropic.'))
+    expect((screen.getByTestId('hr-toggle-proxy') as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('turns it back on when it is off', async () => {
+    tpApi().tokenSavingsGetSettings = vi.fn().mockResolvedValue({ success: true, data: { enabled: true, wireProxy: false, mode: 'balanced', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: false } })
+    render(<TokenSavingsSettings />)
+    const sw = (await screen.findByTestId('hr-toggle-proxy')) as HTMLInputElement
+    await waitFor(() => expect(sw.checked).toBe(false))
+    fireEvent.click(sw)
+    await waitFor(() => expect(tpApi().tokenSavingsSetSettings).toHaveBeenCalledWith({ wireProxy: true }))
+  })
+
+  it("says when it has stepped aside for the user's own routing, naming the variable", async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status({ bypassVar: 'ANTHROPIC_BASE_URL' }))
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Stepping aside — ANTHROPIC_BASE_URL is set'))
+  })
+
+  it('shows the tier actually in force, and says when the floor raised it', async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status({ selectedMode: 'aggressive', effectiveMode: 'max' }))
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Running at the Maximum tier (raised from Aggressive by the savings floor).'))
+  })
+
+  it('shows a plain running line when nothing raised the tier', async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status({}))
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Running at the Balanced tier.'))
+    expect(screen.getByTestId('hr-proxy-status')).not.toHaveTextContent('raised')
+  })
+
+  it('falls back to the raw tier name for a tier it has no label for', async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status({ selectedMode: 'turbo', effectiveMode: 'hyper' }))
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Running at the hyper tier (raised from turbo by the savings floor).'))
+  })
+
+  it('says it is not running when the child is down or unhealthy', async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status({ healthy: false }))
+    const { unmount } = render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Not running right now'))
+    unmount()
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status({ running: false }))
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Not running right now'))
+  })
+
+  it('shows no status line when the status call fails or is missing', async () => {
+    tpApi().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue({ success: false, error: 'x' })
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-toggle-proxy')
+    await waitFor(() => expect(tpApi().tokenSavingsGetProxyStatus).toHaveBeenCalled())
+    expect(screen.queryByTestId('hr-proxy-status')).toBeNull()
+  })
+
+  it('no longer claims the proxy is always on or rewrites what the agent writes', async () => {
+    render(<TokenSavingsSettings />)
+    const sw = await screen.findByTestId('hr-toggle-proxy')
+    const card = sw.closest('.hr-proxy-receipt') as HTMLElement
+    expect(card).not.toHaveTextContent('always on')
+    expect(card).toHaveTextContent('forwarded byte-for-byte')
+    expect(card).toHaveTextContent('api.anthropic.com and nowhere else')
+  })
+})

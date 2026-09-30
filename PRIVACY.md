@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: September 8, 2026 (Termpolis Remote: one phone, several desktops)
+Last updated: September 29, 2026 (crash reports and usage statistics are separate opt-ins; connecting your coding agents is asked, not assumed; the Claude Code compression proxy)
 
 ## Overview
 
@@ -20,9 +20,18 @@ to keep your data local.
   Relay](#termpolis-remote-and-the-pairing-relay).
 - Termpolis does **not** collect terminal contents, file contents, command
   history, file paths, usernames, or any data that would identify you.
-- **Optional**, opt-in crash reporting sends anonymous error stack traces and
-  the app version to our error-tracking service (Sentry). It is off by default
-  and can be turned on or off at any time in Settings.
+- **Optional**, opt-in crash reports and anonymous usage statistics go to our
+  error-tracking service (Sentry). They are two separate choices, both off
+  until you tick them, and either can be turned on or off at any time in
+  Settings → General → Privacy; a change applies at once.
+- By default, Claude Code sessions that Termpolis launches send their API
+  requests through a **compression proxy on your own machine** (`127.0.0.1`),
+  which forwards them only to `api.anthropic.com`. You can turn it off in
+  Settings → Token Savings — see [The Claude Code compression
+  proxy](#the-claude-code-compression-proxy).
+- Termpolis changes Claude Code, Codex and Gemini CLI settings **only if you
+  connect them**, and Disconnect removes everything it wrote — see [Your
+  coding agents' settings](#your-coding-agents-settings).
 
 ## Data Stored Locally
 
@@ -39,6 +48,14 @@ upload it.
   pinned context snippets, and swarm memory.
 - The MCP auth token and port (written to `userData/mcp-token` and
   `userData/mcp-port` with `0600` permissions).
+- Your privacy choices (`userData/telemetry.json`), and your answer about
+  connecting your coding agents with a record of the folders Termpolis marked
+  trusted for them (`userData/agent-integration.json`).
+- Token Headroom's originals: the full text of each block Termpolis
+  compressed, on the Claude Code proxy or in its own MCP tool output, so an
+  agent can ask for it back with `retrieve_full` (`userData/headroom/ccr`, one
+  file per block, capped at 200 MB, **not encrypted**), plus running counts of
+  what was saved.
 - If you turn on **Termpolis Remote**: this desktop's X25519 identity key
   (`userData/remote-identity-key`, encrypted at rest through the OS keystore —
   DPAPI on Windows, Keychain on macOS, libsecret on Linux), one record per
@@ -64,24 +81,69 @@ Termpolis itself only makes network requests for:
    signed installer in the background. The only data sent in this request is
    what every HTTPS client sends (user agent, your IP address to GitHub's
    servers).
-2. **Crash reports** (opt-in only) — if you opted in during onboarding or via
-   Settings, anonymous error stack traces are sent to our error-tracking
-   service. The payload contains: the error message, the JavaScript call
-   stack, the app version, the platform, and a random non-reversible session
-   ID. Before the report is sent, any Windows user-folder paths in
-   breadcrumbs are redacted to `C:\Users\<redacted>`.
+2. **Crash reports** (opt-in only) — if you ticked _Send crash reports_ on the
+   tour's last step or in Settings → General → Privacy, a report goes to our
+   error-tracking service (Sentry) when something goes wrong: the error with
+   its stack trace and the app events just before it, the app version, and
+   basic system details (OS, Electron version, CPU, memory, screen size).
+   Before it is sent, your home-folder paths become `<home>`, your user name
+   becomes `<user>`, and the machine name, locale, time zone, cookies and URL
+   query strings are removed. A report never includes a memory dump
+   (minidump), a screenshot, local variables, the source code around the
+   error, or console output. The same choice covers unclean exits, swarm
+   errors, and update failures other than a lost connection, a full disk or a
+   read-only install location (one report per kind of failure per version).
+   Nothing is sent before you tick it, and nothing saved up is sent after you
+   untick it.
+3. **Usage statistics** (opt-in only) — if you ticked _Send anonymous usage
+   statistics_, once a day the app sends a one-line "launched" event carrying
+   only the Termpolis version (with the event's timestamp and a random event
+   ID), so we can count active installs. Nothing about you, your files or your
+   terminals. Short app events (for example, that a swarm started) are
+   recorded only while this is on, and they leave the machine only inside a
+   crash report.
 
-3. **The pairing relay** (only if you turn on Termpolis Remote) — a WebSocket
+4. **The pairing relay** (only if you turn on Termpolis Remote) — a WebSocket
    connection to the relay address in Settings, `wss://relay.termpolis.com` by
    default. Everything sent over it is encrypted end to end between your
    desktop and your phone; the relay sees an opaque room id, a frame size and a
    timestamp. Details in the next section. When Remote is off, this connection
    is never opened.
 
+5. **Claude Code's own API requests** (while the compression proxy is on) —
+   forwarded to `api.anthropic.com` and nowhere else. See [The Claude Code
+   compression proxy](#the-claude-code-compression-proxy).
+
 Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini
 CLI, your own shells) make their own network requests according
-to their own privacy policies. Termpolis does not proxy or intercept that
-traffic.
+to their own privacy policies. Termpolis does not intercept that traffic, with
+one exception you can turn off: the Claude Code compression proxy.
+
+### The Claude Code compression proxy
+
+By default, each Claude Code session Termpolis launches sends its API
+requests to a small proxy on your own machine (`127.0.0.1`). The proxy shrinks
+tool-result text (large file reads, command output, search results, MCP
+results) and pasted images, then forwards the request to `api.anthropic.com`
+and nowhere else. It never rewrites a tool call's input: what Claude asked a
+tool to do — a command, a file edit, a subagent prompt — is forwarded
+byte-for-byte, however old it is. The full text of each compressed block stays
+on your machine (see [Data Stored Locally](#data-stored-locally)) so the agent
+can ask for it back; none of it is sent to Termpolis.
+
+- **Turn it off** in Settings → Token Savings (the tour's last step and the
+  one-time privacy review offer the same switch). New Claude Code sessions
+  then talk to Anthropic directly; a session that is already running keeps
+  its route until it ends.
+- **Your own route wins.** If `ANTHROPIC_BASE_URL`, `HTTPS_PROXY`,
+  `HTTP_PROXY` or `ALL_PROXY` (upper- or lower-case) is set, or Claude Code is
+  switched to Bedrock, Vertex or Foundry (`CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`) — in Termpolis's
+  environment or in the `env` block of Claude Code's own `settings.json`
+  (`~/.claude/settings.json`) — the proxy steps aside. Claude Code keeps the
+  route you configured, nothing is compressed, and Settings → Token Savings
+  shows which variable it found.
+- Codex, Gemini CLI and your shells never go through it.
 
 ## What We Never Collect
 
@@ -155,7 +217,7 @@ paired with are unaffected.
 The combined policy covering the desktop app, the phone app and the relay
 together is published at <https://termpolis.com/privacy.html>.
 
-## AI Security Center (Settings → Security)
+## AI Security Center (Settings → AI Security)
 
 Starting in v1.11.43, Termpolis ships an in-app **AI Security Center** that
 gives administrators verifiable controls over outbound AI traffic. None of
@@ -191,7 +253,7 @@ locally and every log stays on the machine.
   secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database
   connection strings (Postgres, MySQL, MongoDB, Redis), HTTP basic-auth
   URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all.
-- **Manual pre-paste scanner.** The Settings → Security panel includes
+- **Manual pre-paste scanner.** The Settings → AI Security panel includes
   a paste-and-scan box and a "Scan clipboard" button for one-off checks.
 - **Local audit log** (`ai-security-audit.jsonl` in `userData`) — every
   AI-agent terminal launch, optionally with byte counts and hit counts.
@@ -208,8 +270,10 @@ Termpolis integrates with third-party AI tools (such as Claude Code, OpenAI
 Codex, Gemini CLI) that you choose to install and run
 independently. These tools have their own privacy policies and may
 communicate with their respective cloud services. Termpolis does not control
-or intercept these communications — it simply provides a terminal environment
-in which these tools run.
+these communications and intercepts none of them, apart from the optional
+Claude Code compression proxy described above, which only shrinks what is
+sent and forwards it to Anthropic. Otherwise it simply provides a terminal
+environment in which these tools run.
 
 Any data exchanged between AI tools and their cloud services is governed by
 the respective provider's privacy policy:
@@ -218,14 +282,60 @@ the respective provider's privacy policy:
 - [OpenAI (Codex)](https://openai.com/privacy)
 - [Google (Gemini)](https://policies.google.com/privacy)
 
+## Your coding agents' settings
+
+Termpolis can connect Claude Code, Codex and Gemini CLI to its memory and code
+search. It asks first — on the first step of the first-run tour, or in
+Settings → Agent Integration — and shows exactly what it would change for each
+agent installed on this machine. Nothing is written until you finish or skip
+the tour; both boxes start ticked, and skipping keeps what is shown.
+Connected, Termpolis:
+
+- **Claude Code** — adds the Termpolis MCP server to your user config
+  (`.claude.json`); lets 27 read-only and memory tools run without asking
+  (`settings.json`), while tools that run commands or type into terminals
+  still ask; and marks folders you open agents in as trusted, never your home
+  folder or a drive root. Optionally, it adds a SessionStart hook to
+  `settings.json` that loads your project memory whenever a Claude Code
+  session starts, including sessions started outside Termpolis.
+- **Codex** — adds the Termpolis MCP server to `config.toml`, pre-approves
+  the 14 memory tools unless you already chose a setting for them, and
+  answers the folder-trust prompt for folders you open agents in, never your
+  home folder or a drive root. Its memory instruction is passed on the launch
+  command, for that session only; nothing is written into your projects.
+- **Gemini CLI** — adds the Termpolis MCP server to `settings.json`.
+
+All of this stays on your machine. **Disconnect** in Settings → Agent
+Integration removes everything Termpolis wrote, and so does uninstalling on
+Windows; on any platform, `Termpolis --disconnect-agents` does the same from
+the command line. One limit: Disconnect un-trusts only the folders this
+version marked trusted. Trust an older Termpolis version added can't be told
+apart from trust you accepted yourself, so it stays.
+
+Whatever you choose, this version also cleaned up once after older versions:
+it removed a permission that let every Termpolis tool run without asking,
+Termpolis's duplicate Claude Code plugin, its entry in `~/.mcp.json`, and trust
+for your home folder or a drive root. Older versions also wrote a memory note
+into `AGENTS.md` in project folders; Termpolis removes that note (and the file,
+if the note was all it held) the next time you launch Codex from Termpolis in
+that folder.
+
 ## Your Choices
 
-- **Turn crash reporting off** — open Settings and toggle _Send anonymous
-  crash reports_ off. The change takes effect on the next launch.
+- **Turn crash reports or usage statistics on or off** — Settings → General →
+  Privacy has a switch for each. Both are off unless you turn them on, and a
+  change applies at once.
+- **Turn the compression proxy off** — Settings → Token Savings. New Claude
+  Code sessions then go straight to Anthropic.
+- **Disconnect your coding agents** — Disconnect in Settings → Agent
+  Integration removes everything Termpolis wrote into their settings. Folders
+  trusted before v1.49 stay trusted (see above).
 - **Delete local data** — quit Termpolis and delete the `userData` directory
   listed above.
 - **Uninstall** — remove Termpolis through your OS's normal application
-  uninstall flow.
+  uninstall flow. On Windows the uninstaller disconnects your coding agents
+  first; on macOS and Linux, use Disconnect (or run
+  `Termpolis --disconnect-agents`) before you remove the app.
 - **Turn Termpolis Remote off** — it is off to begin with. Once on, unticking
   it in Settings → Remote stops the bridge and closes the relay connection.
 - **Cut a phone off** — revoke the device in Settings → Remote, or unpair from

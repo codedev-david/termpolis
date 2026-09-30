@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, truncateSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildInventory } from '../../src/main/mcpInventory'
+import { MAX_CONFIG_BYTES } from '../../src/main/agentConfigIO'
 
 let dir: string
 const paths = (): { claude: string; globalMcp: string; codex: string; gemini: string } => ({
@@ -82,6 +83,26 @@ describe('buildInventory', () => {
     expect(inv.sources.find(s => s.id === 'codex')!.error).toBeTruthy()
   })
 
+  it('reports an oversized config as corrupt without reading it, for JSON and TOML alike', () => {
+    // .claude.json also holds Claude Code's per-project state and can grow without bound;
+    // the inventory reads on the main thread, so a huge file is refused, not parsed.
+    for (const p of [paths().claude, paths().codex]) {
+      writeFileSync(p, '{}')
+      truncateSync(p, MAX_CONFIG_BYTES + 1)
+    }
+    writeFileSync(paths().gemini, JSON.stringify({ mcpServers: { ok: { command: 'x' } } }))
+
+    const inv = buildInventory(paths(), [])
+    for (const id of ['claude', 'codex'] as const) {
+      const source = inv.sources.find(s => s.id === id)!
+      expect(source.status, id).toBe('corrupt')
+      expect(source.error, id).toMatch(/larger than/)
+    }
+    expect(inv.servers.map(s => s.name)).toEqual(['ok'])
+    // Reported, never repaired.
+    expect(statSync(paths().claude).size).toBe(MAX_CONFIG_BYTES + 1)
+  })
+
   it('accepts valid JSON that carries no usable mcpServers table', () => {
     writeFileSync(paths().claude, JSON.stringify({ other: 1 }))
     writeFileSync(paths().globalMcp, JSON.stringify([1, 2, 3]))
@@ -142,6 +163,17 @@ describe('buildInventory', () => {
     expect(buildInventory(paths(), []).servers.find(s => s.name === 'remote')!.transport).toBe('http')
   })
 
+  it('reclassifies as http when a later source adds only a url to a server with no command', () => {
+    // Claude names the server with nothing to run; Gemini knows it as a remote endpoint.
+    writeFileSync(paths().claude, JSON.stringify({ mcpServers: { remote: {} } }))
+    writeFileSync(paths().gemini, JSON.stringify({ mcpServers: { remote: { url: 'https://x.test' } } }))
+    const remote = buildInventory(paths(), []).servers.find(s => s.name === 'remote')!
+    expect(remote.transport).toBe('http')
+    expect(remote.url).toBe('https://x.test')
+    expect(remote.sources.claude).toBe(true)
+    expect(remote.sources.gemini).toBe(true)
+  })
+
   it('back-fills details from a later source when the first one omits them', () => {
     // Claude names the server but records nothing about how to run it; Codex does.
     writeFileSync(paths().claude, JSON.stringify({ mcpServers: { p: {} } }))
@@ -151,6 +183,8 @@ describe('buildInventory', () => {
     expect(p.command).toBe('run')
     expect(p.args).toEqual(['--flag'])
     expect(p.url).toBe('https://later.test')
+    // A command from any source keeps it a stdio server, even once a url turns up too.
+    expect(p.transport).toBe('stdio')
   })
 
   it('sorts servers by name so the panel does not reshuffle between reads', () => {

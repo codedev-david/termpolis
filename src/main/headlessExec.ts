@@ -17,8 +17,9 @@
 //      largest lever on the bill (-19.2% at cap 50) and the only reason people avoid
 //      them is that a fresh session is cold. Priming is what makes short affordable.
 //   2. It comes back and WRITES what it learned, so the next run is warmer still.
-//   3. It fails closed. Unattended means nobody can answer a permission prompt, so
-//      `strict` is the default for exec and the gateway denies rather than hangs.
+//   3. It fails closed. Unattended means nobody can answer a permission prompt, so a
+//      read-only run is launched in each CLI's own read-only shape (see execCommand) and
+//      a hung agent is abandoned at its deadline rather than holding the caller forever.
 //
 // The one-shot mechanics (per-agent argv, the Windows spawn plan, the PROMPT_TOKEN
 // indirection that keeps a prompt off the command line) are NOT re-implemented here —
@@ -27,6 +28,10 @@
 import {
   secondOpinionCommand,
   secondOpinionSpawnPlan,
+  claudeReadOnlyArgs,
+  agyReadOnlyArgs,
+  modelArgs,
+  deliverWithDeadline,
   PROMPT_TOKEN,
   type SecondOpinionAgent,
   type DeliverFn,
@@ -97,15 +102,23 @@ export function buildExecPrompt(task: string, primer?: string | null): string {
   ].join('\n')
 }
 
+/** The built-ins a read-only Claude run keeps: enough to read and search the repo, and
+ *  nothing that writes, runs a command or reaches the network. */
+export const EXEC_READ_ONLY_CLAUDE_TOOLS = 'Read,Grep,Glob'
+
 /** Per-agent argv for a headless run.
  *
  *  Read-only is the default and is expressed per CLI: Codex takes `--sandbox
- *  read-only` natively; Claude and the Antigravity CLI have no read-only headless
- *  flag, so a read-only run drops the skip-permissions flag instead — the run then
- *  refuses writes rather than silently performing them. */
-export function execCommand(agent: ExecAgent, model: string | undefined, write: boolean): { bin: string; args: string[] } {
-  const base = secondOpinionCommand(agent, model)
+ *  read-only` natively; Claude runs in plan mode with only the read/search built-ins and
+ *  no MCP servers (claudeReadOnlyArgs), and agy in its plan mode, bounded by its own
+ *  time limit (agyReadOnlyArgs). Merely dropping the skip-permissions flag was not
+ *  enough: Claude then inherits the settings file's `defaultMode`, which can itself be
+ *  bypassPermissions, along with every MCP tool the user has. `write` is the explicit
+ *  opt-in to an unattended agent that edits and runs commands, and keeps the
+ *  skip-permissions launch. `timeoutMs` only shapes agy's own time limit. */
+export function execCommand(agent: ExecAgent, model: string | undefined, write: boolean, timeoutMs: number = EXEC_DEFAULT_TIMEOUT_MS): { bin: string; args: string[] } {
   if (agent === 'codex') {
+    const base = secondOpinionCommand(agent, model)
     // Flip the VALUE that follows `--sandbox`, not every token equal to 'read-only' — a
     // discovered model id may legitimately be any [A-Za-z0-9._-] string, including one
     // that collides with the sandbox value, and rewriting it would corrupt the argv.
@@ -115,7 +128,9 @@ export function execCommand(agent: ExecAgent, model: string | undefined, write: 
     if (i >= 0 && args[i + 1] === 'read-only') args[i + 1] = 'workspace-write'
     return { bin: base.bin, args }
   }
-  return write ? base : { bin: base.bin, args: base.args.filter(a => a !== '--dangerously-skip-permissions') }
+  const bin = agent === 'claude' ? 'claude' : 'agy'
+  if (write) return { bin, args: ['-p', PROMPT_TOKEN, ...modelArgs(agent, model), '--dangerously-skip-permissions'] }
+  return { bin, args: agent === 'claude' ? claudeReadOnlyArgs(model, EXEC_READ_ONLY_CLAUDE_TOOLS) : agyReadOnlyArgs(model, timeoutMs) }
 }
 
 export interface ExecDeps {
@@ -145,12 +160,11 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
 
   const prompt = buildExecPrompt(req.task, primer)
   const primerChars = prompt.length - req.task.length
-  const { bin, args } = execCommand(agent, req.model, req.write === true)
+  const timeoutMs = req.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS
+  const { bin, args } = execCommand(agent, req.model, req.write === true, timeoutMs)
 
   try {
-    const { stdout, stderr, code } = await deps.deliver(bin, args, prompt, PROMPT_TOKEN, {
-      timeoutMs: req.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS,
-    })
+    const { stdout, stderr, code } = await deliverWithDeadline(deps.deliver, bin, args, prompt, timeoutMs)
     const ok = code === 0
     const output = stdout.trim()
 

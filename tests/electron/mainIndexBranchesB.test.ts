@@ -1,23 +1,22 @@
 // Branch backfill for the BACK HALF of src/main/index.ts (line ~1400 and below) — the defensive
-// arms nothing else exercises: the "already registered / registration failed" logs, the packaged
-// vs. dev adapter paths, the Claude-plugin marketplace bookkeeping, and the OS-owns-that-hotkey
-// fallback.
+// arms nothing else exercises: the packaged vs. dev adapter and memory-hook paths (and the runtime
+// they become for the agent-integration boot), the MCP token ACL warning, and the
+// OS-owns-that-hotkey fallback.
 //
 // Harness note — this file deliberately does NOT mock `fs`, unlike the other main-process suites.
-// Almost every branch down here is a *decision about what is already on disk* ("is plugin.json
-// there?", "does .mcp.json already say the right thing?", "did the marketplace manifest already
-// list us?"), and a boolean-returning existsSync stub cannot tell those apart. Instead `os.homedir`
-// and `app.getPath` are pointed at a throwaway temp tree, so the real code does real reads and
-// writes and the assertions are about REAL FILES. That also means every write index.ts performs at
-// boot is contained: nothing here can touch the developer's own ~/.claude.
+// Several branches down here are *decisions about what is on disk* ("is the adapter next to the
+// sources?", "did the token file land?"), and a boolean-returning existsSync stub cannot tell those
+// apart. Instead `os.homedir` and `app.getPath` are pointed at a throwaway temp tree, so the real
+// code does real reads and writes and the assertions are about REAL FILES. Agent configs are not
+// in that tree at all: since v1.49.0 every write into Claude Code / Codex / Gemini CLI goes through
+// agentIntegrationManager, which tests/setup.ts points at its own scratch TERMPOLIS_TEST_AGENT_HOME.
+// Nothing here can touch the developer's own ~/.claude, ~/.codex or ~/.gemini.
 //
 // Each test re-imports index.ts with a fresh module registry, because everything in
-// `app.whenReady()` runs exactly once per module instance. `boot()` seeds the temp home first, so
-// the same code path can be observed on a pristine machine and on a machine that already has
-// Termpolis registered.
+// `app.whenReady()` runs exactly once per module instance, so each observation needs its own boot.
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createZip } from '../../src/main/zipArchive'
@@ -56,19 +55,9 @@ const M = vi.hoisted(() => ({
   writeToTerminal: vi.fn(),
   killTerminal: vi.fn(),
   killAll: vi.fn(),
-  // MCP client registries (index.ts only reacts to their VERDICT, so it is the verdict we drive)
-  registerInClaudeSettings: vi.fn<(...a: unknown[]) => { changed: boolean; skipped?: string; error?: string }>(
-    () => ({ changed: true }),
-  ),
-  registerInGlobalMcp: vi.fn<(...a: unknown[]) => { changed: boolean; skipped?: string; error?: string }>(
-    () => ({ changed: true }),
-  ),
-  registerInCodex: vi.fn<(...a: unknown[]) => { changed: boolean; skipped?: string; error?: string }>(
-    () => ({ changed: true }),
-  ),
-  registerInGemini: vi.fn<(...a: unknown[]) => { changed: boolean; skipped?: string; error?: string }>(
-    () => ({ changed: true }),
-  ),
+  // agent integration: the REAL manager runs (against the scratch agent home); this only records
+  // the runtime index.ts assembled for its boot, which is where the adapter/hook preflight lands.
+  recordBootRuntime: vi.fn<(rt: Record<string, any>) => void>(),
   // sensitive-read watcher: index.ts hands it a callback we can only reach through the mock
   sensitiveReadCb: null as ((ev: unknown) => void) | null,
   // second opinion
@@ -135,8 +124,9 @@ vi.mock('electron', () => ({
   },
 }))
 
-// The ONE reason this suite can run against real fs: every `~/...` path index.ts builds goes
-// through homedir(), so redirecting it sandboxes the whole registration block.
+// The ONE reason this suite can run against real fs: every `~/...` path index.ts builds itself
+// goes through homedir(), so redirecting it sandboxes them. (Agent configs resolve through the
+// manager's TERMPOLIS_TEST_AGENT_HOME instead — see the header.)
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>()
   const patched = { ...actual, homedir: () => M.home }
@@ -212,14 +202,17 @@ vi.mock('../../src/main/secondOpinion', async (importOriginal) => {
   return { ...actual, runSecondOpinion: M.runSecondOpinion }
 })
 
-vi.mock('../../src/main/agentMcpRegistry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/main/agentMcpRegistry')>()
+// Agent-config writes run through the consent-gated manager (v1.49.0). It stays REAL here —
+// tests/setup.ts points it at a scratch TERMPOLIS_TEST_AGENT_HOME — and the passthrough only
+// records the runtime index.ts hands its boot, so the preflight's decisions can be read back.
+vi.mock('../../src/main/agentIntegrationManager', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/agentIntegrationManager')>()
   return {
     ...actual,
-    registerInClaudeSettings: M.registerInClaudeSettings,
-    registerInGlobalMcp: M.registerInGlobalMcp,
-    registerInCodex: M.registerInCodex,
-    registerInGemini: M.registerInGemini,
+    bootAgentIntegration: (rt: Parameters<typeof actual.bootAgentIntegration>[0]) => {
+      M.recordBootRuntime(rt as unknown as Record<string, any>)
+      return actual.bootAgentIntegration(rt)
+    },
   }
 })
 
@@ -388,12 +381,8 @@ vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))
 // ---------------------------------------------------------------------------
 const SANDBOX = mkdtempSync(join(tmpdir(), 'tp-main-branches-b-'))
 let bootSeq = 0
-/** mtime of every file seeded for the current boot, captured BEFORE index.ts ran. */
-let seededMtimes: Record<string, number> = {}
 
 interface BootOptions {
-  /** Files to lay down under the fake home BEFORE index.ts boots, relative to it. */
-  seed?: Record<string, string>
   packaged?: boolean
   /** Value globalShortcut.register reports; `false` = the OS already owns the combo. */
   hotkeysAvailable?: boolean
@@ -402,7 +391,7 @@ interface BootOptions {
 }
 
 /**
- * Fresh temp home + userData, seeded, then a fresh import of index.ts. Everything in
+ * Fresh temp home + userData (plus any userData seed), then a fresh import of index.ts. Everything in
  * `app.whenReady()` runs once per module instance, so each observation needs its own boot.
  */
 async function boot(opts: BootOptions = {}): Promise<void> {
@@ -411,15 +400,6 @@ async function boot(opts: BootOptions = {}): Promise<void> {
   M.userData = join(root, 'userData')
   mkdirSync(M.home, { recursive: true })
   mkdirSync(M.userData, { recursive: true })
-  seededMtimes = {}
-  for (const [rel, content] of Object.entries(opts.seed ?? {})) {
-    const abs = join(M.home, rel)
-    mkdirSync(join(abs, '..'), { recursive: true })
-    writeFileSync(abs, content, 'utf8')
-    // Backdate before the boot so "did index.ts rewrite this?" is a deterministic mtime
-    // comparison instead of a same-millisecond coin flip.
-    seededMtimes[rel] = backdate(abs)
-  }
   for (const [rel, content] of Object.entries(opts.seedUserData ?? {})) {
     const abs = join(M.userData, rel)
     mkdirSync(join(abs, '..'), { recursive: true })
@@ -439,25 +419,16 @@ function invoke(channel: string, args: unknown = {}): any {
   return handler({}, args)
 }
 
-/** Backdate a file so "was it rewritten during boot?" is a deterministic mtime comparison. */
-function backdate(abs: string): number {
-  const past = new Date(Date.now() - 60_000)
-  utimesSync(abs, past, past)
-  return statSync(abs).mtimeMs
-}
-
-const PLUGIN_DIR = join('.claude', 'local-marketplace', 'plugins', 'termpolis')
-const PLUGIN_MANIFEST = join(PLUGIN_DIR, '.claude-plugin', 'plugin.json')
-const PLUGIN_MCP = join(PLUGIN_DIR, '.mcp.json')
-const MARKETPLACE_JSON = join('.claude', 'local-marketplace', '.claude-plugin', 'marketplace.json')
-
-/** The exact bytes index.ts writes into the plugin's .mcp.json for a given adapter path. */
-function expectedPluginMcp(adapterPath: string): string {
-  return JSON.stringify({ mcpServers: { termpolis: { command: 'node', args: [adapterPath] } } }, null, 2)
-}
-
-/** Dev-mode adapter path — the same join index.ts performs from src/main. */
+/** Dev-mode adapter and hook paths — the same joins index.ts performs from src/main. */
 const DEV_ADAPTER = join(__dirname, '..', '..', 'src', 'mcp-adapter', 'stdio-adapter.cjs')
+const DEV_HOOK = join(__dirname, '..', '..', 'src', 'mcp-adapter', 'memory-primer-hook.cjs')
+
+/** The runtime index.ts handed the agent-integration boot during THIS test's boot(). */
+function bootRuntime(): Record<string, any> {
+  const calls = M.recordBootRuntime.mock.calls
+  if (calls.length !== 1) throw new Error(`expected exactly one agent-integration boot, saw ${calls.length}`)
+  return calls[0][0]
+}
 
 let logs: string[] = []
 let warns: string[] = []
@@ -476,12 +447,9 @@ beforeEach(() => {
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
   M.sensitiveReadCb = null
   M.terminalRunnerDeps = null
-  // Every boot re-runs the whole registration block, so the call log has to start empty or an
-  // assertion about "the FIRST call" would read the previous test's boot.
-  M.registerInClaudeSettings.mockClear().mockReturnValue({ changed: true })
-  M.registerInGlobalMcp.mockClear().mockReturnValue({ changed: true })
-  M.registerInCodex.mockClear().mockReturnValue({ changed: true })
-  M.registerInGemini.mockClear().mockReturnValue({ changed: true })
+  // Every boot re-runs the agent-integration boot, so the recorder has to start empty or "the
+  // runtime of this boot" would read the previous test's.
+  M.recordBootRuntime.mockClear()
   M.registerHotkey.mockClear()
   M.startMcpServer.mockClear()
   M.appendAudit.mockClear()
@@ -521,6 +489,11 @@ describe('MCP adapter + memory-primer hook preflight', () => {
       expect(fatal).toContain(join(fakeResources, 'mcp-adapter', 'stdio-adapter.cjs'))
       expect(warns.some((w) => w.includes('[memory-primer] SessionStart hook not found')
         && w.includes(join(fakeResources, 'mcp-adapter', 'memory-primer-hook.cjs')))).toBe(true)
+      // The agent-integration boot gets the packaged adapter path and NO hook: a SessionStart
+      // command pointing at a missing script would fail every new Claude session.
+      const rt = bootRuntime()
+      expect(rt.adapterPath).toBe(join(fakeResources, 'mcp-adapter', 'stdio-adapter.cjs'))
+      expect(rt.hookScriptPath).toBeNull()
     } finally {
       if (original) Object.defineProperty(process, 'resourcesPath', original)
       else delete (process as unknown as Record<string, unknown>).resourcesPath
@@ -537,26 +510,31 @@ describe('MCP adapter + memory-primer hook preflight', () => {
 
     expect(errors.some((e) => e.includes('[FATAL] MCP stdio adapter not found'))).toBe(false)
     expect(warns.some((w) => w.includes('[memory-primer] SessionStart hook not found'))).toBe(false)
-    // …and the path it decided on is the one it hands to the client registries.
-    expect(M.registerInClaudeSettings).toHaveBeenCalledWith(
-      join(M.home, '.claude', 'settings.json'),
-      DEV_ADAPTER,
-      expect.any(String),
-      // The interpreter is resolved once for all three agents now, so this is a
-      // runner object ({ command, env? }), not the bare string 'node' it used to be.
-      expect.objectContaining({ command: expect.any(String) }),
-    )
+    // …and the path it decided on is the one the agents are pointed at. The agent-integration
+    // boot gets it in its runtime, with ONE interpreter decision for all three agents: a runner
+    // object ({ command, env? }), not a bare 'node' that is ENOENT under a GUI launcher's PATH.
+    const rt = bootRuntime()
+    expect(rt.adapterPath).toBe(DEV_ADAPTER)
+    expect(rt.node).toEqual(expect.objectContaining({ command: expect.any(String) }))
+    expect(rt.paths).toEqual(expect.objectContaining({ userData: M.userData }))
+    // …and the REAL manager this suite runs was aimed at the scratch agent home from
+    // tests/setup.ts: not the developer's home, and not even this suite's own fake home.
+    expect(rt.paths.home).toBe(process.env.TERMPOLIS_TEST_AGENT_HOME)
+    // The swarm conductor's own --mcp-config is a REAL file under userData, written whatever the
+    // consent, and it launches the same adapter through the same interpreter.
+    const conductor = JSON.parse(readFileSync(join(M.userData, 'claude-mcp-config.json'), 'utf8'))
+    expect(conductor.mcpServers.termpolis).toMatchObject({ type: 'stdio', command: rt.node.command, args: [DEV_ADAPTER] })
   })
 
-  it('normalises the hook path to forward slashes before embedding it in a settings command', async () => {
+  it('normalises the hook path to forward slashes before handing it to the agent-integration boot', async () => {
     // The hook path is spliced into a shell command string inside Claude's settings.json. On
     // Windows a raw backslash path would be re-escaped by whatever reads it, so index.ts
     // normalises first — node accepts forward slashes on every OS.
     await boot()
 
-    const hookArg = M.registerInClaudeSettings.mock.calls[0][2] as string
-    expect(hookArg).not.toContain('\\')
-    expect(hookArg.endsWith('/src/mcp-adapter/memory-primer-hook.cjs')).toBe(true)
+    const hook = bootRuntime().hookScriptPath as string
+    expect(hook).not.toContain('\\')
+    expect(hook).toBe(DEV_HOOK.replace(/\\/g, '/'))
   })
 })
 
@@ -584,167 +562,6 @@ describe('MCP token file', () => {
     expect(warns.some((w) => w.includes('[mcp-token] ACL not applied'))).toBe(false)
     expect(logs.some((l) => l.includes('MCP token written to'))).toBe(true)
     expect(readFileSync(join(M.userData, 'mcp-token'), 'utf8')).toBe('fake-token')
-  })
-})
-
-// ===========================================================================
-// The four client registries. index.ts owns none of the file formats — it only
-// reports the verdict — so the three verdicts are what get pinned here.
-// ===========================================================================
-describe('agent client registration verdicts', () => {
-  it('announces each client it actually changed', async () => {
-    await boot()
-
-    expect(logs).toContain('Auto-registered Termpolis MCP server, tool permissions, and memory hook in Claude Code settings')
-    expect(logs).toContain('Auto-registered Termpolis in global ~/.mcp.json')
-    expect(logs).toContain('Auto-registered Termpolis MCP server in Codex CLI config')
-    expect(logs).toContain('Auto-registered Termpolis MCP server in Gemini CLI settings')
-  })
-
-  it('reports a registration failure as non-fatal, with the skip reason, and keeps booting', async () => {
-    // Every one of these files belongs to another product. A malformed or read-only settings.json
-    // must never stop Termpolis from starting — it degrades to "no auto-registration" plus a log.
-    M.registerInClaudeSettings.mockReturnValue({ changed: false, skipped: 'claude', error: 'EACCES' })
-    M.registerInGlobalMcp.mockReturnValue({ changed: false, skipped: 'mcp', error: 'EPERM' })
-    M.registerInCodex.mockReturnValue({ changed: false, skipped: 'codex', error: 'ENOSPC' })
-    M.registerInGemini.mockReturnValue({ changed: false, skipped: 'gemini', error: 'EROFS' })
-    await boot()
-
-    expect(logs.some((l) => l.startsWith('Could not auto-register in Claude Code settings (non-fatal): claude EACCES'))).toBe(true)
-    expect(logs.some((l) => l.startsWith('Could not write ~/.mcp.json (non-fatal): mcp EPERM'))).toBe(true)
-    expect(logs.some((l) => l.startsWith('Could not register in Codex config (non-fatal): codex ENOSPC'))).toBe(true)
-    expect(logs.some((l) => l.startsWith('Could not register in Gemini settings (non-fatal): gemini EROFS'))).toBe(true)
-    // Boot continued past all four.
-    expect(M.startMcpServer).toHaveBeenCalled()
-  })
-
-  it('says nothing at all when a client was already registered correctly', async () => {
-    // The common case: second launch onwards. Neither "registered" nor "could not register" is
-    // true, so the log must stay silent rather than claim work it did not do.
-    M.registerInClaudeSettings.mockReturnValue({ changed: false })
-    M.registerInGlobalMcp.mockReturnValue({ changed: false })
-    M.registerInCodex.mockReturnValue({ changed: false })
-    M.registerInGemini.mockReturnValue({ changed: false })
-    await boot()
-
-    expect(logs.some((l) => l.includes('Auto-registered Termpolis'))).toBe(false)
-    expect(logs.some((l) => l.includes('non-fatal'))).toBe(false)
-    // All four were still consulted — the silence is a verdict, not a skipped block.
-    for (const reg of [M.registerInClaudeSettings, M.registerInGlobalMcp, M.registerInCodex, M.registerInGemini]) {
-      expect(reg).toHaveBeenCalledTimes(1)
-    }
-  })
-})
-
-// ===========================================================================
-// Claude Code local-plugin registration — all of it is "what is already on disk".
-// ===========================================================================
-describe('Claude Code local plugin registration', () => {
-  it('creates the manifest, the plugin .mcp.json and the cache on a machine that has none', async () => {
-    await boot()
-
-    const manifest = JSON.parse(readFileSync(join(M.home, PLUGIN_MANIFEST), 'utf8'))
-    expect(manifest.name).toBe('termpolis')
-    expect(JSON.parse(readFileSync(join(M.home, PLUGIN_MCP), 'utf8'))
-      .mcpServers.termpolis.args).toEqual([DEV_ADAPTER])
-    // With no settings.json to read a marketplace name out of, the cache lands under the default.
-    expect(existsSync(join(M.home, '.claude', 'plugins', 'cache', 'local-plugins', 'termpolis', '1.0.0', '.mcp.json'))).toBe(true)
-    expect(logs.some((l) => l.startsWith('Termpolis plugin cached at:'))).toBe(true)
-    // Nothing else on disk to react to, so neither the settings nor the manifest branch ran.
-    expect(existsSync(join(M.home, '.claude', 'settings.json'))).toBe(false)
-    expect(existsSync(join(M.home, MARKETPLACE_JSON))).toBe(false)
-  })
-
-  it('leaves an existing manifest and an already-correct .mcp.json untouched', async () => {
-    // Rewriting identical bytes every launch would churn the file's mtime, and Claude Code watches
-    // this directory. "Already correct" must mean "no write".
-    const customManifest = JSON.stringify({ name: 'termpolis', description: 'hand-edited' })
-    await boot({ seed: {
-      [PLUGIN_MANIFEST]: customManifest,
-      [PLUGIN_MCP]: expectedPluginMcp(DEV_ADAPTER),
-    } })
-
-    expect(readFileSync(join(M.home, PLUGIN_MANIFEST), 'utf8')).toBe(customManifest)
-    expect(statSync(join(M.home, PLUGIN_MCP)).mtimeMs).toBe(seededMtimes[PLUGIN_MCP])
-    // …and it skipped those two writes by DECIDING to, not by falling into the outer catch: the
-    // cache write that comes after them still happened.
-    expect(logs.some((l) => l.startsWith('Termpolis plugin cached at:'))).toBe(true)
-  })
-
-  it('rewrites the plugin .mcp.json when it points at a stale adapter path', async () => {
-    await boot({ seed: { [PLUGIN_MCP]: expectedPluginMcp('/old/install/stdio-adapter.cjs') } })
-
-    expect(JSON.parse(readFileSync(join(M.home, PLUGIN_MCP), 'utf8'))
-      .mcpServers.termpolis.args).toEqual([DEV_ADAPTER])
-    expect(statSync(join(M.home, PLUGIN_MCP)).mtimeMs).toBeGreaterThan(seededMtimes[PLUGIN_MCP])
-  })
-
-  it('enables the plugin in an existing settings.json that has no enabledPlugins map yet', async () => {
-    await boot({ seed: { [join('.claude', 'settings.json')]: JSON.stringify({ model: 'opus' }) } })
-
-    const settings = JSON.parse(readFileSync(join(M.home, '.claude', 'settings.json'), 'utf8'))
-    expect(settings.enabledPlugins).toEqual({ 'termpolis@local-plugins': true })
-    expect(settings.model).toBe('opus')   // the rest of the user's settings survive
-    expect(logs).toContain('Enabled Termpolis plugin as termpolis@local-plugins')
-  })
-
-  it('adopts the user\'s own local-marketplace name and skips the write when already enabled', async () => {
-    // Claude Code lets the user name their local marketplace. The plugin key and the cache
-    // directory must both follow that name, or Claude looks for the plugin under a name that
-    // does not exist. The non-local marketplace listed first must be ignored.
-    await boot({ seed: {
-      [join('.claude', 'settings.json')]: JSON.stringify({
-        extraKnownMarketplaces: {
-          'community': { source: { path: '/somewhere/else/community' } },
-          'my-local': { source: { path: '/home/dev/.claude/local-marketplace' } },
-        },
-        enabledPlugins: { 'termpolis@my-local': true },
-      }),
-    } })
-
-    expect(statSync(join(M.home, '.claude', 'settings.json')).mtimeMs)
-      .toBe(seededMtimes[join('.claude', 'settings.json')])
-    expect(logs.some((l) => l.startsWith('Enabled Termpolis plugin as'))).toBe(false)
-    expect(existsSync(join(M.home, '.claude', 'plugins', 'cache', 'my-local', 'termpolis', '1.0.0', '.mcp.json'))).toBe(true)
-  })
-
-  it('adds itself to an existing marketplace manifest exactly once', async () => {
-    await boot({ seed: { [MARKETPLACE_JSON]: JSON.stringify({ name: 'local-plugins', plugins: [] }) } })
-
-    const manifest = JSON.parse(readFileSync(join(M.home, MARKETPLACE_JSON), 'utf8'))
-    expect(manifest.plugins.map((p: { name: string }) => p.name)).toEqual(['termpolis'])
-    expect(manifest.plugins[0].source).toBe('./plugins/termpolis')
-    expect(logs).toContain('Registered Termpolis in marketplace.json manifest')
-  })
-
-  it('does not touch a marketplace manifest that already lists it', async () => {
-    await boot({ seed: {
-      [MARKETPLACE_JSON]: JSON.stringify({ plugins: [{ name: 'termpolis', version: '0.9.0' }] }),
-    } })
-
-    // Still the ORIGINAL entry — a second push would have duplicated the plugin and bumped it.
-    const manifest = JSON.parse(readFileSync(join(M.home, MARKETPLACE_JSON), 'utf8'))
-    expect(manifest.plugins).toEqual([{ name: 'termpolis', version: '0.9.0' }])
-    expect(statSync(join(M.home, MARKETPLACE_JSON)).mtimeMs).toBe(seededMtimes[MARKETPLACE_JSON])
-    expect(logs.some((l) => l.includes('Registered Termpolis in marketplace.json'))).toBe(false)
-  })
-
-  it('survives a marketplace manifest with no plugins array', async () => {
-    // Hand-edited or half-written manifests exist in the wild; index.ts must skip the push rather
-    // than throw into the outer catch and abandon the rest of registration.
-    await boot({ seed: { [MARKETPLACE_JSON]: JSON.stringify({ name: 'local-plugins' }) } })
-
-    expect(JSON.parse(readFileSync(join(M.home, MARKETPLACE_JSON), 'utf8')).plugins).toBeUndefined()
-    expect(logs.some((l) => l.includes('Could not register Claude Code plugin (non-fatal)'))).toBe(false)
-    expect(existsSync(join(M.home, PLUGIN_MANIFEST))).toBe(true)   // the rest of the block still ran
-  })
-
-  it('logs a corrupt settings.json as non-fatal instead of failing the boot', async () => {
-    await boot({ seed: { [join('.claude', 'settings.json')]: '{ this is not json' } })
-
-    expect(logs.some((l) => l.startsWith('Could not register Claude Code plugin (non-fatal):'))).toBe(true)
-    // Boot carried on to the hotkeys, which are registered after this block.
-    expect(M.registerHotkey).toHaveBeenCalled()
   })
 })
 

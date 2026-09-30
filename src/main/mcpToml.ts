@@ -2,12 +2,13 @@
 //
 // Enumerates `[mcp_servers.NAME]` sections out of a Codex config.
 //
-// WHY A TEXT SCAN AND NOT A TOML PARSER: the same reason agentMcpRegistry.ts:313-315
-// gives for writing one — a real parser refuses the whole file over an unrelated
-// syntax error somewhere else in it, and this file is hand-edited. A listing that
+// WHY A TEXT SCAN AND NOT A TOML PARSER: the same reason codexConfigEdit.ts edits the
+// file line by line — a real parser refuses the whole file over an unrelated syntax
+// error somewhere else in it, and this file is hand-edited. A listing that
 // shows four of five servers beats a listing that shows none.
 //
-// Read-only. Registration still belongs to agentMcpRegistry.ts; nothing here writes.
+// Read-only. Termpolis's own registration lives in agentIntegrationManager.ts; nothing
+// here writes.
 
 export interface TomlMcpServer {
   name: string

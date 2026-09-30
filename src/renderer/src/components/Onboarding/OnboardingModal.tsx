@@ -1,21 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { AgentIntegrationStatus } from '../../../../shared/agentIntegration'
+import { readConsentMirror, saveConsent } from '../../lib/sentry'
+import { AgentConnectStep, type AgentChoice } from '../AgentIntegration/AgentConnectStep'
+import { PrivacyChoices } from './PrivacyChoices'
 
-// Shown once on first launch. Walks new users through a 4-step orientation tour
-// (welcome → API keys → first agent or swarm → security + crash-report opt-in)
-// and persists the seen flag + telemetry choice to localStorage. The Help drawer
-// has a "Show tour again" link that flips the seen flag back off so the user
-// can revisit it without clearing app data.
+// Shown once on first launch. Walks new users through a 6-step orientation tour
+// (connect your coding agents → welcome → API keys → first agent or swarm → security →
+// privacy choices) and persists the seen flag to localStorage. Leaving the tour, from
+// any step, saves the choices exactly as shown: the agent choice from the first step
+// (sent to main only when there is no answer on record or it changed; nothing is written
+// to an agent's config before then) and the privacy choices from the last. So "Skip tour"
+// (and Escape) closes it at once, and skipping a first run saves telemetry off and the
+// agent choice shown on the first step. The Help drawer has a "Show tour again" link that
+// flips the seen flag back off so the user can revisit it without clearing app data.
 const SEEN_KEY = 'termpolis.onboarding.seen.v1'
-export const TELEMETRY_KEY = 'termpolis.telemetry.optIn'
 
-const TOTAL_STEPS = 4
+const TOTAL_STEPS = 6
+const PRIVACY_STEP = TOTAL_STEPS
 
 export function hasSeenOnboarding(): boolean {
   try { return localStorage.getItem(SEEN_KEY) === '1' } catch { return false }
-}
-
-export function getTelemetryOptIn(): boolean {
-  try { return localStorage.getItem(TELEMETRY_KEY) === '1' } catch { return false }
 }
 
 /** Reset the seen flag so the tour reopens on next mount. Used by the Help drawer. */
@@ -23,39 +27,77 @@ export function resetOnboarding(): void {
   try { localStorage.removeItem(SEEN_KEY) } catch {}
 }
 
+/** The agent answer main has on record: null when there is none, or main can't be asked. */
+async function readAgentStatus(): Promise<AgentIntegrationStatus | null> {
+  try {
+    const res = await window.termpolis.agentIntegrationStatus()
+    return res.success && res.data.consent !== null ? res.data : null
+  } catch {
+    return null
+  }
+}
+
+function sameChoice(choice: AgentChoice, status: AgentIntegrationStatus): boolean {
+  return choice.connect === status.connected && (!choice.connect || choice.primerHook === status.primerHook)
+}
+
+/** Sends the first step's choice to main unless it is the answer already on record. Never
+ *  throws: the tour has closed by then, and an answer main didn't take is asked at next launch. */
+async function applyAgentChoice(
+  choice: AgentChoice,
+  edited: boolean,
+  recorded: Promise<AgentIntegrationStatus | null> | null,
+): Promise<void> {
+  try {
+    const status = await recorded
+    // Left untouched, the step shows the answer on record (or would have, had main answered in time).
+    if (status && (!edited || sameChoice(choice, status))) return
+    await window.termpolis.agentIntegrationSet({ connect: choice.connect, primerHook: choice.primerHook })
+  } catch {}
+}
+
 export function OnboardingModal({ onDone }: { onDone: () => void }) {
-  const [telemetry, setTelemetry] = useState(true)
+  // A first run shows both tiers off; "Show tour again" shows the choices already made.
+  const [crash, setCrash] = useState(() => readConsentMirror().crash)
+  const [usage, setUsage] = useState(() => readConsentMirror().usage)
+  // Connected with the hook on, unless main has another answer on record. The step can be
+  // answered before main replies, so a late reply never overwrites the user's own ticks.
+  const [agents, setAgents] = useState<AgentChoice>({ connect: true, primerHook: true })
+  const recorded = useRef<Promise<AgentIntegrationStatus | null> | null>(null)
+  const edited = useRef(false)
   const [step, setStep] = useState(1)
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(TELEMETRY_KEY)
-      if (stored !== null) setTelemetry(stored === '1')
-    } catch {}
+    const read = readAgentStatus()
+    recorded.current = read
+    void read.then(status => {
+      if (status && !edited.current) setAgents({ connect: status.connected, primerHook: status.primerHook })
+    })
   }, [])
 
+  const editAgents = (next: AgentChoice) => {
+    edited.current = true
+    setAgents(next)
+  }
+
   const finish = () => {
-    try {
-      localStorage.setItem(SEEN_KEY, '1')
-      localStorage.setItem(TELEMETRY_KEY, telemetry ? '1' : '0')
-    } catch {}
-    try { window.termpolis?.setTelemetryOptIn?.(telemetry) } catch {}
+    void saveConsent({ crash, usage })
+    void applyAgentChoice(agents, edited.current, recorded.current)
+    try { localStorage.setItem(SEEN_KEY, '1') } catch {}
     onDone()
   }
 
-  const skip = () => {
-    try {
-      localStorage.setItem(SEEN_KEY, '1')
-      localStorage.setItem(TELEMETRY_KEY, telemetry ? '1' : '0')
-    } catch {}
-    try { window.termpolis?.setTelemetryOptIn?.(telemetry) } catch {}
-    onDone()
-  }
+  // Re-bound every render so Escape (like Skip tour) saves the current choices.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') finish() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80">
       <div
-        className="bg-[#252526] border border-[#3c3c3c] rounded-xl shadow-2xl w-[600px] p-7 flex flex-col gap-5"
+        className="bg-[#252526] border border-[#3c3c3c] rounded-xl shadow-2xl w-[600px] max-h-[95vh] overflow-y-auto p-7 flex flex-col gap-5"
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-labelledby="onboarding-title"
@@ -76,7 +118,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
 
         {/* Progress dots */}
         <div className="flex items-center gap-1.5" role="tablist" aria-label="Onboarding progress">
-          {[1, 2, 3, 4].map(n => (
+          {Array.from({ length: TOTAL_STEPS }, (_, i) => i + 1).map(n => (
             <button
               key={n}
               role="tab"
@@ -93,6 +135,10 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
         {/* Step content */}
         <div className="min-h-[260px] flex flex-col gap-3 text-sm text-[#d4d4d4] leading-relaxed">
           {step === 1 && (
+            <AgentConnectStep connect={agents.connect} primerHook={agents.primerHook} onChange={editAgents} />
+          )}
+
+          {step === 2 && (
             <div className="flex flex-col gap-3">
               <h3 className="text-base font-medium text-[#22D3EE]">What Termpolis is</h3>
               <p>
@@ -102,9 +148,9 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
                 them.
               </p>
               <p>
-                Termpolis itself doesn't talk to any cloud — there's no Termpolis account,
-                no telemetry by default, no data leaving your machine until you ask an agent
-                to do something.
+                There's no Termpolis account. Out of the box, Termpolis itself only checks
+                GitHub for updates; each agent talks to its own provider, and crash reports
+                and usage statistics stay off unless you turn them on at the end of this tour.
               </p>
               <ul className="text-xs text-[#9ca3af] list-disc pl-5 space-y-1">
                 <li>Press <kbd className="bg-[#3c3c3c] px-1 py-0.5 rounded text-[10px] text-[#999]">Ctrl+K</kbd> to open the command palette.</li>
@@ -114,7 +160,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
             </div>
           )}
 
-          {step === 2 && (
+          {step === 3 && (
             <div className="flex flex-col gap-3">
               <h3 className="text-base font-medium text-[#22D3EE]">Set an API key (one-time)</h3>
               <p>
@@ -141,7 +187,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
             </div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <div className="flex flex-col gap-3">
               <h3 className="text-base font-medium text-[#22D3EE]">Launch your first agent (or swarm)</h3>
               <p>
@@ -160,33 +206,33 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
             </div>
           )}
 
-          {step === 4 && (
-            <div className="flex flex-col gap-4">
-              <h3 className="text-base font-medium text-[#22D3EE]">Security &amp; crash reports</h3>
-              <p className="text-xs text-[#bbb] leading-relaxed">
+          {step === 5 && (
+            <div className="flex flex-col gap-3">
+              <h3 className="text-base font-medium text-[#22D3EE]">Security</h3>
+              <p>
                 Open <strong>Settings → Security</strong> for the AI Security Center:
                 pre-paste secret scanner, sensitive-file watcher, per-agent egress audit,
                 and Strict Mode for Gemini's free OAuth tier. Everything in there runs
                 locally.
               </p>
+            </div>
+          )}
 
-              <label className="flex items-start gap-3 p-3 rounded-lg border border-[#3c3c3c] bg-[#1e1e1e] cursor-pointer hover:border-[#22D3EE]/40">
-                <input
-                  type="checkbox"
-                  checked={telemetry}
-                  onChange={e => setTelemetry(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 accent-[#22D3EE]"
-                  aria-label="Send anonymous crash reports"
-                />
-                <span className="flex flex-col gap-1">
-                  <span className="text-xs font-medium text-[#d4d4d4]">Send anonymous crash reports</span>
-                  <span className="text-[11px] text-[#9ca3af]">
-                    Helps us fix the bugs we can't see. No terminal contents, file paths, or
-                    personal data are collected — only error stack traces and the app version.
-                    Change this any time in Settings.
-                  </span>
-                </span>
-              </label>
+          {step === PRIVACY_STEP && (
+            <div className="flex flex-col gap-3">
+              <h3 className="text-base font-medium text-[#22D3EE]">Your privacy choices</h3>
+              <p className="text-xs text-[#bbb]">
+                Both are off unless you tick them. Change either one any time in
+                <strong> Settings → General → Privacy</strong>.
+              </p>
+
+              <PrivacyChoices
+                crash={crash}
+                usage={usage}
+                onCrashChange={setCrash}
+                onUsageChange={setUsage}
+                slotTestId="onboarding-agent-integrations-slot"
+              />
 
               <div className="flex items-center justify-between text-[11px] text-[#9ca3af]">
                 <a
@@ -221,7 +267,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
         {/* Footer nav */}
         <div className="flex items-center justify-between border-t border-[#3c3c3c] pt-4">
           <button
-            onClick={skip}
+            onClick={finish}
             className="text-xs text-[#9ca3af] hover:text-[#d4d4d4] underline"
             aria-label="Skip the tour"
           >

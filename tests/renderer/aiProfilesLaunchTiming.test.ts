@@ -51,7 +51,7 @@ beforeEach(() => {
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
     memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
-    memoryPrepareCodexContext: vi.fn().mockResolvedValue({ success: true, data: { file: 'AGENTS.md' } }),
+    memoryPrepareCodexContext: vi.fn().mockResolvedValue({ success: true, data: { developerInstructions: null, approvals: 0 } }),
     claudeTrustWorkspace: vi.fn().mockResolvedValue({ success: true, data: { changed: true, keys: [] } }),
     onTerminalData: vi.fn((cb: (id: string, data: string) => void) => {
       ptyListeners.push(cb)
@@ -232,12 +232,31 @@ describe('launchAgentProfile — downstream timers are re-based onto the command
     await p
   })
 
-  it('sends the Codex "1" confirmation on the same re-based schedule', async () => {
+  // Codex USED to get a blind `1⏎` here, 9 s after the old fixed launch point. That accepted its
+  // folder-trust prompt whether or not the user wanted the folder trusted. The prompt is theirs.
+  it('never types "1" (or anything else) at Codex after the command', async () => {
     const { done: p } = await startLaunch(codex)
     await shellSpeaksAndEchoes() // command is typed exactly now
-    const afterCommand = typed().length
-    await vi.advanceTimersByTimeAsync(9000 - LEGACY_COMMAND_AT_MS)
-    expect(typed().slice(afterCommand)).toEqual(['1\r'])
+    expect(typed()).toEqual(['\r', 'codex\r'])
+    await vi.advanceTimersByTimeAsync(30_000) // far past where the "1" used to land
+    expect(typed()).toEqual(['\r', 'codex\r'])
+    expect(typed()).not.toContain('1\r')
+    await p
+  })
+
+  it('waits for a slow Codex context before typing, so the instruction is never dropped', async () => {
+    let release!: (v: unknown) => void
+    api().memoryPrepareCodexContext = vi.fn(() => new Promise((r) => { release = r }))
+    const p = launchAgentProfile(codex, deps())
+    await vi.advanceTimersByTimeAsync(0)
+    emit(createdId(), '$ ')
+    await vi.advanceTimersByTimeAsync(1000) // shell ready long ago; the context is still outstanding
+    expect(typed()).toEqual([])
+    release({ success: true, data: { developerInstructions: 'Recall project memory first.', approvals: 0 } })
+    await vi.advanceTimersByTimeAsync(0)
+    emit(createdId(), '\r\n$ ')
+    await vi.advanceTimersByTimeAsync(SHELL_QUIET_MS)
+    expect(typed()).toEqual(['\r', `codex -c "developer_instructions='Recall project memory first.'"\r`])
     await vi.advanceTimersByTimeAsync(20_000)
     await p
   })
@@ -273,18 +292,16 @@ describe('launchAgentProfile — downstream timers are re-based onto the command
   })
 })
 
-describe('launchAgentProfile — timers outlive the window they were scheduled from', () => {
-  it('drops a queued write instead of throwing when the bridge is gone', async () => {
-    // The trust confirmation fires seconds after launch. Under jsdom teardown — and in the real app
-    // if the window closes first — `window.termpolis` can be gone by then, and an unguarded write
-    // would raise an unhandled exception out of a bare timer callback.
+describe('launchAgentProfile — the launch can outlive the window it started in', () => {
+  it('drops its keystrokes instead of throwing when the bridge goes away mid-launch', async () => {
+    // The launch waits seconds on the shell before typing anything. If the window closes in that
+    // time — or jsdom tears down — `window.termpolis` is gone when the newline and the command are
+    // due, and an unguarded write would reject the launch with a TypeError.
     const { done: p } = await startLaunch(codex)
-    await shellSpeaksAndEchoes()
     const writeToTerminal = api().writeToTerminal
-    const before = writeToTerminal.mock.calls.length
     ;(window as never as { termpolis: unknown }).termpolis = {} // bridge torn down mid-flight
-    await expect(vi.advanceTimersByTimeAsync(20_000)).resolves.not.toThrow()
-    expect(writeToTerminal.mock.calls.length).toBe(before) // the "1" confirmation was dropped, not thrown
-    await p
+    await vi.advanceTimersByTimeAsync(SHELL_READY_CEILING_MS + PROMPT_ECHO_CEILING_MS + 20_000)
+    await expect(p).resolves.toBeUndefined()
+    expect(writeToTerminal).not.toHaveBeenCalled() // both writes were dropped, not thrown
   })
 })

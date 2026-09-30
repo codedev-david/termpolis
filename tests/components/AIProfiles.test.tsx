@@ -75,6 +75,7 @@ beforeEach(() => {
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
     memoryPreparePrimerFile: vi.fn().mockResolvedValue({ success: true, data: { file: null, count: 0 } }),
+    memoryPrepareCodexContext: vi.fn().mockResolvedValue({ success: true, data: { developerInstructions: null, approvals: 0 } }),
   }
 })
 
@@ -436,24 +437,40 @@ describe('AIProfiles', () => {
       })
     })
 
-    it('auto-trusts codex by sending "1\\r" after launch (codex branch)', async () => {
+    it('never answers Codex\'s folder-trust prompt with a blind "1\\r" after launch (codex branch)', async () => {
       mockInstalledAgents = { claude: true, codex: true, gemini: true }
-      ;(window as any).termpolis.detectAgents = vi.fn().mockResolvedValue({
-        success: true, data: mockInstalledAgents,
-      })
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-check').length).toBe(3)
       }, { timeout: 3000 })
       fireEvent.click(screen.getByText('OpenAI Codex'))
-      await waitFor(() => {
-        expect((window as any).termpolis.createTerminal).toHaveBeenCalled()
+      const typed = (): string[] => (window as any).termpolis.writeToTerminal.mock.calls.map((c: any[]) => c[1])
+      await waitFor(() => expect(typed()).toContain('codex\r'), { timeout: 3000 })
+      // testDelay is 0 here, so every post-command timer is due at once. The spinner dismissal has
+      // fired, so the "1" that used to follow the command would have been typed by now too.
+      await waitFor(() => expect(mockSetLaunchingAgent).toHaveBeenLastCalledWith(null), { timeout: 3000 })
+      expect(typed()).toEqual(['\r', 'codex\r'])
+      expect(typed()).not.toContain('1\r')
+    }, 10000)
+
+    it('launches Codex with its memory instruction on the command line and reports the AGENTS.md cleanup', async () => {
+      ;(window as any).termpolis.memoryPrepareCodexContext = vi.fn().mockResolvedValue({
+        success: true,
+        data: { developerInstructions: 'Recall project memory first.', approvals: 0, agentsMdCleaned: 'file-deleted' },
       })
+      render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => {
-        const calls = (window as any).termpolis.writeToTerminal.mock.calls
-        const hasCodexTrust = calls.some((c: any[]) => c[1] === '1\r')
-        expect(hasCodexTrust).toBe(true)
+        expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0)
+      })
+      fireEvent.click(screen.getByText('OpenAI Codex'))
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls.map((c: any[]) => c[1])
+        expect(calls).toContain(`codex -c "developer_instructions='Recall project memory first.'"\r`)
       }, { timeout: 3000 })
+      expect((window as any).termpolis.memoryPrepareCodexContext).toHaveBeenCalledWith('/test/project')
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith(
+        '🧹 Deleted AGENTS.md in "project": it held only the memory note older Termpolis versions wrote',
+      )
     }, 10000)
   })
 

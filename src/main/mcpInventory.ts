@@ -15,7 +15,7 @@
 // Everything returned has been through `mask()`, so the renderer receives `••••` and never
 // the plaintext — masking happens here, in main, not in the component.
 
-import { existsSync, readFileSync } from 'fs'
+import { errorText, readTextFile } from './agentConfigIO'
 import { parseCodexMcpServers } from './mcpToml'
 import { redactArgs } from './mcpGateway/guard'
 import { scanText } from './aiSecurity'
@@ -85,12 +85,13 @@ type ReadOutcome =
   | { status: 'missing' }
   | { status: 'corrupt'; error: string }
 
-/** `mcpServers` out of a JSON agent config. Mirrors safeReadJson's contract in
- *  agentMcpRegistry.ts: a broken file is reported, never thrown and never repaired. */
+/** `mcpServers` out of a JSON agent config. A broken or oversized file is reported, never
+ *  thrown and never repaired. (.claude.json also carries Claude Code's per-project state,
+ *  so readTextFile's size cap keeps a pathological one off the main thread.) */
 function readJsonSource(path: string): ReadOutcome {
-  if (!existsSync(path)) return { status: 'missing' }
   try {
-    const raw = readFileSync(path, 'utf-8')
+    const raw = readTextFile(path)
+    if (raw === null) return { status: 'missing' }
     if (!raw.trim()) return { status: 'corrupt', error: 'empty file' }
     const parsed = JSON.parse(raw)
     const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
@@ -115,17 +116,18 @@ function readJsonSource(path: string): ReadOutcome {
       })
     }
     return { status: 'ok', servers }
-  } catch (e: any) {
-    return { status: 'corrupt', error: e?.message || String(e) }
+  } catch (e) {
+    return { status: 'corrupt', error: errorText(e) }
   }
 }
 
 function readCodexSource(path: string): ReadOutcome {
-  if (!existsSync(path)) return { status: 'missing' }
   try {
-    return { status: 'ok', servers: parseCodexMcpServers(readFileSync(path, 'utf-8')) }
-  } catch (e: any) {
-    return { status: 'corrupt', error: e?.message || String(e) }
+    const raw = readTextFile(path)
+    if (raw === null) return { status: 'missing' }
+    return { status: 'ok', servers: parseCodexMcpServers(raw) }
+  } catch (e) {
+    return { status: 'corrupt', error: errorText(e) }
   }
 }
 

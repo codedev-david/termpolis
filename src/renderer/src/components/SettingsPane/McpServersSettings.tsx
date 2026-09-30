@@ -181,7 +181,8 @@ export function McpServersSettings(): JSX.Element {
       <p className="text-xs text-[#9ca3af] mb-4">
         Tools your agents reach through Termpolis, and what every agent on this machine has configured
         for itself. Add a server once here and every connected agent can call it — no editing three
-        config files by hand. Credentials are never sent to this screen.
+        config files by hand. Agents reach Termpolis only while they are connected in Settings ▸ Agent
+        integration. Credentials are never sent to this screen.
       </p>
 
       {error && (
@@ -259,7 +260,8 @@ export function McpServersSettings(): JSX.Element {
           </h3>
           <p className="text-xs text-[#9ca3af] mb-2">
             Servers Termpolis connects to on your agents&apos; behalf. One entry is reachable from Claude
-            Code, Codex and Gemini alike, because each of them only ever talks to Termpolis.
+            Code, Codex and Gemini alike once they are connected, because each of them reaches it
+            through Termpolis.
           </p>
           {servers.length === 0 && (
             <p className="text-xs text-[#9ca3af] mb-2" data-testid="mcp-gateway-empty">
@@ -359,9 +361,10 @@ export function McpServersSettings(): JSX.Element {
                 config file, merged into the one view no single CLI can give you.
               </p>
               <p>
-                A ⚠ marks a server some agents have and others do not. Termpolis reads these files and
-                never writes them, so close the gap by adding the server above — through Termpolis it
-                reaches all of them at once — or by editing that agent&apos;s config yourself.
+                A ⚠ marks a server some agents have and others do not. Apart from its own entry, added
+                only while agents are connected in Settings ▸ Agent Integration, Termpolis reads these
+                files and never writes them, so close the gap by adding the server above — through
+                Termpolis it reaches all of them at once — or by editing that agent&apos;s config yourself.
               </p>
             </InfoTip>
           </h3>
@@ -417,7 +420,8 @@ export function McpServersSettings(): JSX.Element {
             ))}
           </div>
           <p className="text-xs text-[#6b7280] mt-2">
-            These files belong to the agents themselves, so Termpolis reads them but does not change them.
+            These files belong to the agents themselves. Termpolis only reads them, apart from its own
+            entry, which it adds only while agents are connected in Settings ▸ Agent Integration.
           </p>
         </div>
       )}

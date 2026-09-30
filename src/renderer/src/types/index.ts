@@ -1,4 +1,7 @@
 import type { AppLogEntry, AppLogLevel } from '../../../shared/appLog'
+import type {
+  AgentIntegrationSetRequest, AgentIntegrationSetResult, AgentIntegrationStatus, CodexLaunchContext,
+} from '../../../shared/agentIntegration'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -130,6 +133,18 @@ export type IpcResponse<T = undefined> =
   | { success: true; data: T; error?: undefined }
   | { success: false; error: string; data?: undefined }
 
+/** Telemetry consent as main holds it (telemetry:get-consent / telemetry:set-consent). */
+export interface TelemetryConsentView {
+  /** Crash reports: errors and stack traces, scrubbed of the user's paths and name. */
+  crash: boolean
+  /** Usage statistics: the once-a-day launch ping and feature events. */
+  usage: boolean
+  /** The consent version the answer was given under; 0 when never asked. */
+  consentVersion: number
+  /** The user has not answered under the current consent version and should be asked. */
+  needsReview: boolean
+}
+
 export interface PlatformInfo {
   /** process.platform of the host (e.g. 'win32', 'darwin', 'linux'). */
   platform: string
@@ -186,8 +201,21 @@ export interface ProxyTotalsView {
   floorEligibleRequests: number
 }
 
+/** What the wire proxy is really doing, as opposed to what Settings asked for. */
+export interface ProxyStatusView {
+  enabled: boolean
+  running: boolean
+  healthy: boolean
+  /** The variable that made the proxy step aside for the user's own routing, or null. */
+  bypassVar: string | null
+  selectedMode: HeadroomSettingsView['mode']
+  /** The tier actually in force — floor control can raise it above selectedMode. */
+  effectiveMode: HeadroomSettingsView['mode']
+}
 export interface HeadroomSettingsView {
   enabled: boolean
+  /** Route new Claude Code launches through the local compression proxy. On by default. */
+  wireProxy: boolean
   mode: 'conservative' | 'balanced' | 'aggressive' | 'max'
   steering: boolean
   /** Ceiling on extended-thinking budget, in tokens. 0 = off (default). */
@@ -196,7 +224,7 @@ export interface HeadroomSettingsView {
   adaptiveSteering: boolean
   /** Let the launch-time wire tier escalate when the measured 50% savings floor isn't holding. */
   floorControl: boolean
-  /** Age the oldest half of a long conversation down to retrievable stubs. Off by default. */
+  /** Age the oldest half of a long conversation down to retrievable stubs. On by default since v1.36.0. */
   prefixDecay: boolean
 }
 
@@ -443,14 +471,25 @@ export interface TermpolisAPI {
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
-  /** Codex parity: Codex takes no system-prompt flag, so the same instruction lands in the file
-   *  it reads natively (`<cwd>/AGENTS.md`), and the memory tools are cleared of approval prompts. */
-  memoryPrepareCodexContext: (cwd: string) => Promise<IpcResponse<{ file: string; changed: boolean; approvals: number }>>
+  /** Codex parity: the memory instruction Codex gets at launch via `-c developer_instructions=…`
+   *  (never written into the repo), plus pre-approval of any memory tools not yet decided. */
+  memoryPrepareCodexContext: (cwd: string) => Promise<IpcResponse<CodexLaunchContext>>
+  /** Agent integration: what Termpolis writes into agent configs, and the consent gating it. */
+  agentIntegrationStatus: () => Promise<IpcResponse<AgentIntegrationStatus>>
+  agentIntegrationSet: (req: AgentIntegrationSetRequest) => Promise<IpcResponse<AgentIntegrationSetResult>>
+  /**
+   * Whether Termpolis may answer an agent's folder-trust prompt in this terminal's live
+   * directory (`fallbackCwd` when it can't be probed): consent given, and not home, above
+   * home, or a root.
+   */
+  agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) => Promise<IpcResponse<boolean>>
+  agentRemoveCodexHomeTrust: () => Promise<IpcResponse<{ changed: boolean; error?: string }>>
   /** Token Headroom: compression settings + measured savings receipt. */
   tokenSavingsGetSettings: () => Promise<IpcResponse<HeadroomSettingsView>>
   tokenSavingsSetSettings: (p: Partial<HeadroomSettingsView>) => Promise<IpcResponse<HeadroomSettingsView>>
   tokenSavingsGetReceipt: () => Promise<IpcResponse<{ session: { netSaved: number; events: number; byTool: Record<string, number> }; cumulative: { netSaved: number; events: number; byTool: Record<string, number> } }>>
   tokenSavingsGetProxyReceipt: () => Promise<IpcResponse<{ session: ProxyTotalsView; cumulative: ProxyTotalsView }>>
+  tokenSavingsGetProxyStatus: () => Promise<IpcResponse<ProxyStatusView>>
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }>>
   /** Where the memory store is running. Two in-memory reads in main — no work, no disk. Read on tab
@@ -512,9 +551,9 @@ export interface TermpolisAPI {
   __testTerminalData?: (id: string, data: string) => Promise<IpcResponse<boolean>>
   __testTerminalWrites?: () => Promise<IpcResponse<Array<{ id: string; data: string }>>>
 
-  // Telemetry — opt-in mirror to main process
-  setTelemetryOptIn: (value: boolean) => Promise<IpcResponse<{ optIn: boolean }>>
-  getTelemetryOptIn: () => Promise<IpcResponse<boolean>>
+  // Telemetry consent, owned by main. A tier left out of telemetrySetConsent keeps its value.
+  telemetryGetConsent: () => Promise<IpcResponse<TelemetryConsentView>>
+  telemetrySetConsent: (choice: { crash?: boolean; usage?: boolean }) => Promise<IpcResponse<TelemetryConsentView>>
   recordTelemetryEvent: (name: string, props?: Record<string, unknown>) => Promise<IpcResponse>
 
   /** Static platform facts read synchronously at preload load. windowsPty tells

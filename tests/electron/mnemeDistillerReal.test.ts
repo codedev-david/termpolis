@@ -69,7 +69,7 @@ describe('mnemeDistiller - REAL defaultExec (spawns a real node subprocess)', ()
   it('full seam (nothing mocked): makeHeadlessDistiller over the real defaultExec returns null on a failing child', async () => {
     // No exec is injected at all - the completely un-mocked path. Pointing `bin`
     // at node makes it run
-    // `node -p <prompt> --model haiku --dangerously-skip-permissions`; node
+    // `node -p <prompt> --model haiku --tools "" --strict-mcp-config`; node
     // rejects the unknown `--model` option and exits non-zero, so the real
     // subprocess path must degrade to null. This proves a broken/absent model
     // spawned for real never breaks reflection.

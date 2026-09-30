@@ -102,6 +102,14 @@ export async function dismissOverlays(page: Page, attempts = 4): Promise<void> {
   const overlay = page.locator('div.fixed.inset-0:not(.pointer-events-none)').first()
   for (let i = 0; i < attempts; i++) {
     if (!(await overlay.isVisible({ timeout: 500 }).catch(() => false))) return
+    // The agent review's "Not now" / "Disconnect" would decline the agents, so answer it
+    // the way dismissOnboarding does rather than with the generic dismiss below.
+    const keepAgents = page.locator('[data-testid="agent-review-connect"]')
+    if (await keepAgents.isVisible({ timeout: 200 }).catch(() => false)) {
+      await keepAgents.click({ timeout: 2000 }).catch(() => {})
+      await page.waitForTimeout(300)
+      continue
+    }
     const dismiss = page
       .locator('div.fixed.inset-0 button')
       .filter({ hasText: /^(Cancel|Close|Dismiss|Not now|Skip tour)$/ })
@@ -134,6 +142,10 @@ export async function dismissOverlays(page: Page, attempts = 4): Promise<void> {
  * Writing the flag stops it coming back after a reload; clicking "Skip tour" clears the
  * instance that is already mounted. Both are needed, and both are safe to run when the
  * tour never appeared.
+ *
+ * Skipping the tour answers its first step as shown, which CONNECTS the agents — config
+ * writes that land in the global-setup scratch home, never the real one. A spec asserting
+ * the state before anyone answers must not call this (see mcp-registration.spec.ts).
  */
 export async function dismissOnboarding(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded').catch(() => {})
@@ -145,8 +157,25 @@ export async function dismissOnboarding(page: Page): Promise<void> {
   }).catch(() => {})
 
   const dialog = page.locator('[aria-labelledby="onboarding-title"]')
-  if (await dialog.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
-    await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+  if (await dialog.isVisible().catch(() => false)) {
+    // One click closes it; the loop only guards against a tour that someday needs two.
+    for (let i = 0; i < 3 && (await dialog.isVisible().catch(() => false)); i++) {
+      await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
+      await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+    }
+    return
+  }
+  // No tour means this userData dir has launched before — the only case where the one-time
+  // reviews can open (App.tsx decides at first render). Both wait on an IPC round trip.
+  const agentReview = page.locator('[aria-labelledby="agent-review-title"]')
+  if (await agentReview.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false)) {
+    // Answer the way the tour's defaults do, so a spec sees the same agents either way.
+    await page.locator('[data-testid="agent-review-connect"]').click({ force: true }).catch(() => {})
+    await agentReview.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+  }
+  const consentReview = page.locator('[data-testid="consent-review-modal"]')
+  if (await consentReview.isVisible().catch(() => false)) {
+    await consentReview.locator('button:has-text("Not now")').click({ force: true }).catch(() => {})
+    await consentReview.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
 }

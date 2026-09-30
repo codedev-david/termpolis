@@ -16,33 +16,30 @@ const inputOf = (body: string): Record<string, unknown> =>
   JSON.parse(body).messages[0].content[0].input
 
 /**
- * tool_use inputs are the agent's OWN output, and they ride in the cached prefix at full size, to be
- * re-read on every later turn. Generation cost is unavoidable (billed at 5x the moment it is
- * produced); the re-read cost is not — so the compressible ones are compressed here.
- *
- * "Compressible" excludes the artifact-bearing fields (TOOL_USE_VERBATIM): a file body, a shell
- * command, either side of an Edit. Those the agent copies FORWARD, so rewriting them corrupts real
- * files and real commands — see the regression block at the bottom of this file.
+ * tool_use inputs are the agent's OWN authored intent, which it replays as a template on later
+ * turns, so the proxy never rewrites one — any field, any size, any age (see TOOL_USE_VERBATIM in
+ * wireCompress.ts). The walk only indexes the artifact fields as dedup keys for the tool_results
+ * that follow; the regression block at the bottom of this file is where the rule came from.
  */
 describe('rewriteMessagesBody — tool_use inputs', () => {
-  it('compresses a large NON-artifact field — a subagent prompt is never replayed onto disk', () => {
+  it('never compresses a large NON-artifact field — a subagent prompt is replayed too', () => {
     const prompt = lines(400)
-    const r = rewriteMessagesBody(bodyWithToolUse('Task', { description: 'go', prompt }))
-    expect(r.changed).toBe(true)
+    const raw = bodyWithToolUse('Task', { description: 'go', prompt })
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(false)
+    expect(r.body).toBe(raw)
     const out = inputOf(r.body)
-    expect((out.prompt as string).length).toBeLessThan(prompt.length)
-    expect(out.description).toBe('go') // identifier survives verbatim
+    expect(out.prompt).toBe(prompt)
+    expect(out.description).toBe('go')
   })
 
-  it('stashes the TRUE original so retrieve_full gives a compressed field back', () => {
-    const prompt = lines(400)
-    const r = rewriteMessagesBody(bodyWithToolUse('Task', { description: 'go', prompt }))
-    const token = /token "(hr_[a-z0-9]+)"/.exec(inputOf(r.body).prompt as string)?.[1]
-    expect(token).toBeTruthy()
-    expect(r.stashes.find((s) => s.token === token)?.original).toBe(prompt)
+  it('stashes nothing and leaves no marker — there is no compressed field to give back', () => {
+    const r = rewriteMessagesBody(bodyWithToolUse('Task', { description: 'go', prompt: lines(400) }))
+    expect(r.stashes).toEqual([])
+    expect(r.body).not.toContain('[headroom]')
   })
 
-  it('is BYTE-STABLE across turns — the same history compresses identically (cache safety)', () => {
+  it('is BYTE-STABLE across turns — the same history rewrites identically (cache safety)', () => {
     const body = bodyWithToolUse('Task', { description: 'go', prompt: lines(400) })
     expect(rewriteMessagesBody(body).body).toBe(rewriteMessagesBody(body).body)
   })
@@ -62,7 +59,7 @@ describe('rewriteMessagesBody — tool_use inputs', () => {
     const [think, use] = parsed.messages[0].content
     expect(think.thinking).toBe(lines(400, 'th')) // untouched, byte for byte
     expect(think.signature).toBe('sig-abc123')
-    expect((use.input.prompt as string).length).toBeLessThan(lines(400).length) // ...but tool_use still compressed
+    expect(use.input.prompt).toBe(lines(400)) // ...and neither is the tool_use beside it
   })
 
   it('leaves short fields and non-strings exactly as they were', () => {
@@ -73,8 +70,8 @@ describe('rewriteMessagesBody — tool_use inputs', () => {
   })
 
   it('refuses to truncate identifier-shaped keys even when they are long', () => {
-    // A pathological path longer than the floor must still arrive intact — a truncated path is
-    // actively misleading, unlike an elided file body which is merely shorter.
+    // A pathological path longer than the floor must still arrive intact, like every other
+    // tool_use field — a truncated path would be actively misleading.
     const longPath = '/repo/' + 'nested/'.repeat(120) + 'file.ts'
     expect(longPath.length).toBeGreaterThan(400)
     const r = rewriteMessagesBody(bodyWithToolUse('Read', { file_path: longPath }))
@@ -104,10 +101,21 @@ describe('rewriteMessagesBody — tool_use inputs', () => {
     }
   })
 
-  it('keeps the input JSON schema-valid — compressed fields are still strings', () => {
-    const r = rewriteMessagesBody(bodyWithToolUse('Task', { description: 'go', prompt: lines(400) }))
-    expect(typeof inputOf(r.body).prompt).toBe('string')
-    expect(() => JSON.parse(r.body)).not.toThrow()
+  it('leaves the input byte-identical even when the tool_result that answers it IS compressed', () => {
+    const input = { description: 'go', prompt: lines(400) }
+    const output = lines(400, 'out')
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu0', name: 'Task', input }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu0', content: output }] },
+      ],
+    })
+    const r = rewriteMessagesBody(raw)
+    expect(r.changed).toBe(true)
+    const parsed = JSON.parse(r.body)
+    expect(JSON.stringify(parsed.messages[0].content[0].input)).toBe(JSON.stringify(input))
+    expect((parsed.messages[1].content[0].content as string).length).toBeLessThan(output.length)
   })
 })
 
@@ -115,12 +123,12 @@ describe('rewriteMessagesBody — tool_use accounting', () => {
   beforeEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
   afterEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
 
-  it('bills tool_use to its OWN counters, never to the tool_result ones', () => {
-    // Blending them would hide which surface is actually earning, which is exactly the kind of
-    // flattering single number this release exists to get rid of.
+  it('books nothing for a tool_use — its counters stay 0 and nothing leaks into the tool_result ones', () => {
+    // The tu* counters survive only for schema compatibility; a large field must not move them.
     const r = rewriteMessagesBody(bodyWithToolUse('Task', { description: 'go', prompt: lines(400) }))
-    expect(r.stats.tuBlocks).toBe(1)
-    expect(r.stats.tuCompChars).toBeLessThan(r.stats.tuOrigChars)
+    expect(r.stats.tuBlocks).toBe(0)
+    expect(r.stats.tuOrigChars).toBe(0)
+    expect(r.stats.tuCompChars).toBe(0)
     expect(r.stats.trBlocks).toBe(0)
     expect(r.stats.trOrigChars).toBe(0)
   })
@@ -158,6 +166,7 @@ describe('rewriteMessagesBody — tool_use accounting', () => {
  *
  * The fields that become real artifacts must therefore survive byte-for-byte. This costs ~1.7% of
  * measured savings (tool_use was 22.5M of 1.34B saved tokens) and removes the whole failure class.
+ * The rule now covers every tool_use field, not just these — see headroomToolUseNeverRewritten.
  */
 describe('rewriteMessagesBody — tool_use inputs the agent copies forward stay VERBATIM', () => {
   beforeEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))

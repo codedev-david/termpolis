@@ -189,3 +189,77 @@ describe('prefix decay — wired into the compressor', () => {
     expect(JSON.stringify(c.slice(0, 80))).not.toBe(JSON.stringify(a))
   })
 })
+
+describe('prefix decay — what it must never hide', () => {
+  const REMINDER = '<system-reminder>\nEnd commit messages with the attribution line.\n</system-reminder>'
+
+  it('never ages out a retrieve_full result — that is the content the model just asked for', () => {
+    const msgs = convo(DECAY_DEEP)
+    msgs[0] = { role: 'assistant', content: [{ type: 'tool_use', id: 'rf', name: 'mcp__termpolis__retrieve_full', input: { token: 'hr_0123456789abcdef' } }] }
+    msgs[1] = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'rf', content: lines(40, 'recovered') }] }
+    const names = new Map([['rf', 'mcp__termpolis__retrieve_full']])
+    const before = JSON.stringify(msgs[1])
+    const d = applyPrefixDecay(msgs, [], (id) => names.get(id))
+    expect(JSON.stringify(msgs[1])).toBe(before)
+    expect(d.blocks).toBeGreaterThan(0) // the rest of the old half still decays
+  })
+
+  it('still ages out an ordinary result when no tool name is known for it', () => {
+    const msgs = convo(DECAY_DEEP)
+    applyPrefixDecay(msgs, [], () => undefined)
+    const tr = (msgs[1].content as Array<Record<string, unknown>>)[0]
+    expect(String(tr.content)).toContain('Aged out')
+  })
+
+  it('keeps a harness <system-reminder> inside an aged-out result, byte for byte', () => {
+    const msgs = convo(DECAY_DEEP)
+    const body = lines(40, 'out')
+    ;(msgs[1].content as Array<Record<string, unknown>>)[0].content = `${body}\n\n${REMINDER}`
+    const stashes: Array<{ token: string; original: string }> = []
+    applyPrefixDecay(msgs, stashes)
+    const text = String((msgs[1].content as Array<Record<string, unknown>>)[0].content)
+    expect(text).toContain(REMINDER)
+    expect(text).toContain('Aged out')
+    expect(text).not.toContain('out0 =')
+    // The stub still recovers the output it replaced, and only that.
+    expect(stashes.some((s) => s.original === `${body}\n\n`)).toBe(true)
+  })
+
+  it('protects a reminder in an array-form result too', () => {
+    const msgs = convo(DECAY_DEEP)
+    ;(msgs[1].content as Array<Record<string, unknown>>)[0].content = [{ type: 'text', text: `${REMINDER}\n${lines(40, 'arr')}` }]
+    applyPrefixDecay(msgs, [])
+    const item = ((msgs[1].content as Array<Record<string, unknown>>)[0].content as Array<Record<string, unknown>>)[0]
+    expect(String(item.text).startsWith(REMINDER)).toBe(true)
+    expect(String(item.text)).toContain('Aged out')
+  })
+
+  it('leaves a result alone when only its reminder is big — the output around it is too small to stub', () => {
+    const msgs = convo(DECAY_DEEP)
+    const padded = `ok\n<system-reminder>${'r'.repeat(DECAY_MIN_CHARS)}</system-reminder>`
+    ;(msgs[1].content as Array<Record<string, unknown>>)[0].content = padded
+    applyPrefixDecay(msgs, [])
+    expect((msgs[1].content as Array<Record<string, unknown>>)[0].content).toBe(padded)
+  })
+
+  it('treats an unclosed reminder as running to the end of the text', () => {
+    const msgs = convo(DECAY_DEEP)
+    const open = `${lines(40, 'pre')}\n<system-reminder>${'r'.repeat(DECAY_MIN_CHARS)}`
+    ;(msgs[1].content as Array<Record<string, unknown>>)[0].content = open
+    applyPrefixDecay(msgs, [])
+    const text = String((msgs[1].content as Array<Record<string, unknown>>)[0].content)
+    expect(text).toContain('Aged out')
+    expect(text.endsWith(`<system-reminder>${'r'.repeat(DECAY_MIN_CHARS)}`)).toBe(true)
+  })
+
+  it('learns the tool name from the request itself when wired into the compressor', () => {
+    const msgs = convo(DECAY_DEEP)
+    msgs[0] = { role: 'assistant', content: [{ type: 'tool_use', id: 'rf', name: 'mcp__termpolis__retrieve_full', input: { token: 'hr_0123456789abcdef' } }] }
+    msgs[1] = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'rf', content: lines(40, 'recovered') }] }
+    const out = rewriteMessagesBody(JSON.stringify({ model: 'claude-x', messages: msgs }), { decay: true })
+    expect(out.body).toContain('Aged out') // decay did run on the rest of the old half
+    const parsed = JSON.parse(out.body)
+    expect(JSON.stringify(parsed.messages[1])).toContain('recovered0 =')
+    expect(JSON.stringify(parsed.messages[1])).not.toContain('Aged out')
+  })
+})

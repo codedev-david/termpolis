@@ -236,10 +236,18 @@ const api: TermpolisAPI = {
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
   memoryPrepareCodexContext: (cwd: string) => ipcRenderer.invoke('memory:prepare-codex-context', { cwd }),
+  // Agent integration: consent-gated writes into Claude Code / Codex / Gemini configs.
+  agentIntegrationStatus: () => ipcRenderer.invoke('agents:integration-status'),
+  agentIntegrationSet: (req) => ipcRenderer.invoke('agents:integration-set', req),
+  agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) =>
+    ipcRenderer.invoke('agents:folder-trust-allowed', { terminalId, fallbackCwd }),
+  agentRemoveCodexHomeTrust: () => ipcRenderer.invoke('agents:remove-codex-home-trust'),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
-  tokenSavingsSetSettings: (p: { enabled?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
+  tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
   tokenSavingsGetProxyReceipt: () => ipcRenderer.invoke('tokenSavings:get-proxy-receipt'),
+  /** Whether the wire proxy is on, running, stepped aside for the user's own routing, and at which tier. */
+  tokenSavingsGetProxyStatus: () => ipcRenderer.invoke('tokenSavings:get-proxy-status'),
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => ipcRenderer.invoke('tokenSavings:get-unified-receipt'),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
@@ -265,11 +273,12 @@ const api: TermpolisAPI = {
   __testTerminalData: (id: string, data: string) => ipcRenderer.invoke('terminal:__test_data', { id, data }),
   __testTerminalWrites: () => ipcRenderer.invoke('terminal:__test_writes'),
 
-  // Telemetry — push opt-in changes to main so Sentry/updater pings can gate.
-  setTelemetryOptIn: (value: boolean) =>
-    ipcRenderer.invoke('telemetry:set-opt-in', { value }),
-  getTelemetryOptIn: () =>
-    ipcRenderer.invoke('telemetry:get-opt-in'),
+  // Telemetry consent — main owns it (it gates Sentry, updater reports, events
+  // and the launch ping); the renderer reads it and sends the user's changes.
+  telemetryGetConsent: () =>
+    ipcRenderer.invoke('telemetry:get-consent'),
+  telemetrySetConsent: (choice: { crash?: boolean; usage?: boolean }) =>
+    ipcRenderer.invoke('telemetry:set-consent', choice),
   recordTelemetryEvent: (name: string, props?: Record<string, unknown>) =>
     ipcRenderer.invoke('telemetry:record-event', { name, props }),
 

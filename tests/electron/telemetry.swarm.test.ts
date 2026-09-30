@@ -21,6 +21,13 @@ async function loadFreshModule() {
   return mod
 }
 
+// Swarm errors are crash reports: they need the crash tier, and only that.
+async function loadWithCrashReports() {
+  const mod = await loadFreshModule()
+  mod.setConsent({ crash: true })
+  return mod
+}
+
 beforeEach(() => {
   mockAddBreadcrumb.mockReset()
   mockCaptureException.mockReset()
@@ -28,7 +35,7 @@ beforeEach(() => {
 })
 
 describe('recordSwarmError', () => {
-  it('is a no-op when opt-in is false', async () => {
+  it('is a no-op when nothing was ever answered', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
     const mod = await loadFreshModule()
     mod.recordSwarmError('swarm.test', new Error('boom'))
@@ -36,18 +43,25 @@ describe('recordSwarmError', () => {
     expect(mockCaptureException).not.toHaveBeenCalled()
   })
 
+  it('is a no-op with only usage statistics on', async () => {
+    process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
+    const mod = await loadFreshModule()
+    mod.setConsent({ crash: false, usage: true })
+    mod.recordSwarmError('swarm.test', new Error('boom'))
+    expect(mockAddBreadcrumb).not.toHaveBeenCalled()
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
   it('is a no-op when DSN is empty', async () => {
     delete process.env.SENTRY_DSN
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     mod.recordSwarmError('swarm.test', new Error('boom'))
     expect(mockAddBreadcrumb).not.toHaveBeenCalled()
   })
 
   it('emits a breadcrumb + captureException with stack trace', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     const err = new Error('thing exploded')
     mod.recordSwarmError('swarm.memory.persist.failed', err, { entryId: 'mem-1' })
 
@@ -66,10 +80,17 @@ describe('recordSwarmError', () => {
     expect(opts.extra).toEqual({ entryId: 'mem-1' })
   })
 
+  it('stops as soon as crash reports are turned off', async () => {
+    process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
+    const mod = await loadWithCrashReports()
+    mod.setConsent({ crash: false })
+    mod.recordSwarmError('swarm.test', new Error('boom'))
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
   it('coerces a string error into a real Error so we get a stack trace', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     mod.recordSwarmError('swarm.bridge.poll.failed', 'string-only error')
     const captured = mockCaptureException.mock.calls[0][0]
     expect(captured).toBeInstanceOf(Error)
@@ -79,8 +100,7 @@ describe('recordSwarmError', () => {
 
   it('coerces an object error and JSON-stringifies it', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     mod.recordSwarmError('swarm.test', { code: 42 })
     const crumb = mockAddBreadcrumb.mock.calls[0][0]
     expect(crumb.data.errorMessage).toBe('{"code":42}')
@@ -88,8 +108,7 @@ describe('recordSwarmError', () => {
 
   it('handles unstringifiable objects without crashing', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     const circular: any = {}
     circular.self = circular
     expect(() => mod.recordSwarmError('swarm.test', circular)).not.toThrow()
@@ -100,16 +119,14 @@ describe('recordSwarmError', () => {
 
   it('never throws even if the Sentry provider throws', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     mockAddBreadcrumb.mockImplementationOnce(() => { throw new Error('sentry blew up') })
     expect(() => mod.recordSwarmError('swarm.test', new Error('inner'))).not.toThrow()
   })
 
   it('handles undefined ctx without crashing', async () => {
     process.env.SENTRY_DSN = 'https://fake@sentry.io/1'
-    const mod = await loadFreshModule()
-    mod.setOptIn(true)
+    const mod = await loadWithCrashReports()
     mod.recordSwarmError('swarm.test', new Error('inner'))
     expect(mockAddBreadcrumb).toHaveBeenCalledTimes(1)
     const crumb = mockAddBreadcrumb.mock.calls[0][0]

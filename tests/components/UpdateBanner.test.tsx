@@ -3,8 +3,15 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { UpdateBanner } from '../../src/renderer/src/components/UpdateBanner/UpdateBanner'
 
-type UpdaterStatus =
-  | { status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'; version?: string; error?: string }
+type UpdaterStatus = {
+  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  version?: string
+  error?: string
+  reason?: 'read-only-location' | 'disk-full'
+}
+
+const READ_ONLY_HINT = "Termpolis is running from a read-only disk, so it can't update itself."
+const DISK_FULL_HINT = 'Not enough free disk space to download the update.'
 
 let listeners: Array<(s: UpdaterStatus) => void>
 let getStatusMock: ReturnType<typeof vi.fn>
@@ -135,5 +142,110 @@ describe('UpdateBanner', () => {
     await waitFor(() => expect(listeners.length).toBe(1))
     unmount()
     expect(listeners.length).toBe(0)
+  })
+
+  it('keeps a dismissed banner hidden when the same version is announced again', async () => {
+    installUpdaterBridge({ status: 'downloaded', version: '1.12.0' })
+    const { container } = render(<UpdateBanner />)
+    fireEvent.click(await screen.findByLabelText('Dismiss update banner'))
+
+    // A later check — or one that failed — ends with the same download announced again.
+    act(() => {
+      emit({ status: 'checking' })
+      emit({ status: 'downloaded', version: '1.12.0' })
+    })
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('keeps a dismissed version-less banner hidden when it is announced again', async () => {
+    installUpdaterBridge({ status: 'downloaded' })
+    const { container } = render(<UpdateBanner />)
+    fireEvent.click(await screen.findByLabelText('Dismiss update banner'))
+    act(() => {
+      emit({ status: 'downloaded' })
+    })
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('shows the read-only location hint, with an info icon and no Restart button', async () => {
+    installUpdaterBridge({ status: 'error', error: READ_ONLY_HINT, reason: 'read-only-location' })
+    render(<UpdateBanner />)
+    const hint = await screen.findByRole('status')
+    expect(hint).toHaveTextContent(READ_ONLY_HINT)
+    expect(hint.querySelector('i.fa-circle-info')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Restart now' })).not.toBeInTheDocument()
+  })
+
+  it('shows the disk-full hint with a disk icon', async () => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    render(<UpdateBanner />)
+    const hint = await screen.findByRole('status')
+    expect(hint).toHaveTextContent(DISK_FULL_HINT)
+    expect(hint.querySelector('i.fa-hard-drive')).not.toBeNull()
+  })
+
+  it('replaces a ready banner with the disk-full hint when unpacking the update fails', async () => {
+    installUpdaterBridge({ status: 'downloaded', version: '1.12.0' })
+    render(<UpdateBanner />)
+    await screen.findByRole('button', { name: 'Restart now' })
+    act(() => {
+      emit({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent(DISK_FULL_HINT)
+    expect(screen.queryByRole('button', { name: 'Restart now' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a dismissed hint hidden when announced again, but not a different one', async () => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    const { container } = render(<UpdateBanner />)
+    fireEvent.click(await screen.findByLabelText('Dismiss update hint'))
+    expect(container.firstChild).toBeNull()
+
+    act(() => {
+      emit({ status: 'checking' })
+      emit({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    })
+    expect(container.firstChild).toBeNull()
+
+    act(() => {
+      emit({ status: 'error', error: READ_ONLY_HINT, reason: 'read-only-location' })
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent(READ_ONLY_HINT)
+  })
+
+  it('never shows an error that is not a hint', async () => {
+    installUpdaterBridge({ status: 'error', error: 'Cannot download "https://example.invalid": 404 Not Found' })
+    const { container } = render(<UpdateBanner />)
+    await waitFor(() => expect(getStatusMock).toHaveBeenCalled())
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('shows nothing for a hint without its message', async () => {
+    installUpdaterBridge({ status: 'error', reason: 'disk-full' })
+    const { container } = render(<UpdateBanner />)
+    await waitFor(() => expect(getStatusMock).toHaveBeenCalled())
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('stays idle when the initial status comes back empty or fails', async () => {
+    installUpdaterBridge()
+    getStatusMock.mockResolvedValueOnce(undefined)
+    const first = render(<UpdateBanner />)
+    await waitFor(() => expect(getStatusMock).toHaveBeenCalledTimes(1))
+    expect(first.container.firstChild).toBeNull()
+    first.unmount()
+
+    getStatusMock.mockRejectedValueOnce(new Error('ipc gone'))
+    const second = render(<UpdateBanner />)
+    await waitFor(() => expect(getStatusMock).toHaveBeenCalledTimes(2))
+    expect(second.container.firstChild).toBeNull()
+  })
+
+  it('unmounts cleanly when the bridge hands back no unsubscribe', async () => {
+    installUpdaterBridge()
+    ;(window as any).updater.onState = () => undefined
+    const { unmount } = render(<UpdateBanner />)
+    await waitFor(() => expect(getStatusMock).toHaveBeenCalled())
+    expect(() => unmount()).not.toThrow()
   })
 })

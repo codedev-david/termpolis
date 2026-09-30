@@ -1,6 +1,17 @@
 export type Mode = 'conservative' | 'balanced' | 'aggressive' | 'max'
 export interface HeadroomSettings {
   enabled: boolean
+  /**
+   * Route Claude Code launches through the local compression proxy on 127.0.0.1. Off = Claude talks
+   * to Anthropic directly, and every wire-level control below (tiers, floor control, prefix decay,
+   * thinking cap) stops applying. It acts on NEW launches: a session already pinned to the proxy's
+   * port keeps it until that session exits, because pulling the port out from under a live
+   * conversation would fail its next request.
+   *
+   * Independently of this switch the proxy steps aside on its own when the user's environment
+   * already routes Anthropic traffic — see userRoutingVar in proxySupervisor.
+   */
+  wireProxy: boolean
   mode: Mode
   steering: boolean
   /**
@@ -53,7 +64,7 @@ const MODES: Mode[] = ['conservative', 'balanced', 'aggressive', 'max']
 // compresses the tool-output slice as hard as the profile allows (keeps the head + tail an
 // agent needs; the rest is recoverable via retrieve_full). Users who want more inline context
 // can dial to balanced/conservative — the selector now drives the live wire (see proxySupervisor).
-const DEFAULTS: HeadroomSettings = { enabled: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true }
+const DEFAULTS: HeadroomSettings = { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true }
 
 let current: HeadroomSettings = { ...DEFAULTS }
 
@@ -64,6 +75,7 @@ export function getSettings(): HeadroomSettings {
 export function setSettings(p: Partial<HeadroomSettings>): HeadroomSettings {
   const next: HeadroomSettings = { ...current }
   if (typeof p.enabled === 'boolean') next.enabled = p.enabled
+  if (typeof p.wireProxy === 'boolean') next.wireProxy = p.wireProxy
   if (typeof p.steering === 'boolean') next.steering = p.steering
   if (typeof p.adaptiveSteering === 'boolean') next.adaptiveSteering = p.adaptiveSteering
   if (typeof p.floorControl === 'boolean') next.floorControl = p.floorControl

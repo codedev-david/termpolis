@@ -8,7 +8,7 @@ describe('headroom config', () => {
   it('defaults to enabled + aggressive + steering on, thinking cap OFF', () => {
     // thinkingCap defaults to 0 on purpose: it is the one control that trades reasoning depth
     // rather than recoverable inline context, so it never turns itself on.
-    expect(getSettings()).toEqual({ enabled: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
+    expect(getSettings()).toEqual({ enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
   })
 
   it('accepts a thinking cap and adaptive-steering toggle, rejecting garbage caps', () => {
@@ -22,8 +22,8 @@ describe('headroom config', () => {
   })
 
   it('setSettings merges partials and returns the new state', () => {
-    expect(setSettings({ enabled: false })).toEqual({ enabled: false, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
-    expect(setSettings({ mode: 'conservative' })).toEqual({ enabled: false, mode: 'conservative', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
+    expect(setSettings({ enabled: false })).toEqual({ enabled: false, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
+    expect(setSettings({ mode: 'conservative' })).toEqual({ enabled: false, wireProxy: true, mode: 'conservative', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
     expect(getSettings().mode).toBe('conservative')
   })
 
@@ -79,5 +79,31 @@ describe('headroom config — floor control and prefix decay', () => {
     const s = setSettings({ floorControl: false, prefixDecay: true })
     expect(s.floorControl).toBe(false)
     expect(s.prefixDecay).toBe(true)
+  })
+})
+
+describe('headroom config — the wire proxy master switch', () => {
+  beforeEach(() => resetSettings())
+
+  it('ships on, turns off, and turns back on', () => {
+    expect(getSettings().wireProxy).toBe(true)
+    expect(setSettings({ wireProxy: false }).wireProxy).toBe(false)
+    expect(getSettings().wireProxy).toBe(false)
+    expect(setSettings({ wireProxy: true }).wireProxy).toBe(true)
+  })
+
+  it('a malformed value cannot flip it either way', () => {
+    setSettings({ wireProxy: false })
+    setSettings({ wireProxy: 'true' as unknown as boolean })
+    expect(getSettings().wireProxy).toBe(false)
+    setSettings({ wireProxy: true })
+    setSettings({ wireProxy: 0 as unknown as boolean })
+    expect(getSettings().wireProxy).toBe(true)
+  })
+
+  it('an unrelated partial leaves it alone', () => {
+    setSettings({ wireProxy: false })
+    setSettings({ mode: 'balanced' })
+    expect(getSettings().wireProxy).toBe(false)
   })
 })

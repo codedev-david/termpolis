@@ -13,7 +13,17 @@ describe('sanitizeAgentCommand', () => {
   })
 
   it('passes through correct codex command', () => {
-    expect(sanitizeAgentCommand('codex --full-auto')).toBe('codex --full-auto')
+    expect(sanitizeAgentCommand('codex -a never -s workspace-write')).toBe('codex -a never -s workspace-write')
+  })
+
+  // Codex 0.153 rejects --full-auto outright, so a conductor that still sends it gets the working command.
+  it('replaces the removed codex --full-auto flag', () => {
+    expect(sanitizeAgentCommand('codex --full-auto')).toBe('codex -a never -s workspace-write')
+  })
+
+  it('never lets codex out of its sandbox or past approvals by another route', () => {
+    expect(sanitizeAgentCommand('codex --dangerously-bypass-approvals-and-sandbox')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand('codex -a never -s danger-full-access')).toBe('codex -a never -s workspace-write')
   })
 
   // ---- Strips -p flag from all agents ----
@@ -27,11 +37,11 @@ describe('sanitizeAgentCommand', () => {
   })
 
   it('strips -p flag from codex', () => {
-    expect(sanitizeAgentCommand('codex -p "Fix tests"')).toBe('codex --full-auto')
+    expect(sanitizeAgentCommand('codex -p "Fix tests"')).toBe('codex -a never -s workspace-write')
   })
 
-  it('fixes bare codex to include --full-auto', () => {
-    expect(sanitizeAgentCommand('codex')).toBe('codex --full-auto')
+  it('fixes bare codex to include its approval and sandbox flags', () => {
+    expect(sanitizeAgentCommand('codex')).toBe('codex -a never -s workspace-write')
   })
 
   // ---- Strips --sandbox from gemini ----
@@ -143,7 +153,7 @@ describe('sanitizeAgentCommand', () => {
 
   it('does NOT honor --model on agents without model control (they keep their default)', () => {
     expect(sanitizeAgentCommand('gemini --model gemini-2.5-pro')).toBe('gemini')
-    expect(sanitizeAgentCommand('codex --full-auto --model o4')).toBe('codex --full-auto')
+    expect(sanitizeAgentCommand('codex -a never -s workspace-write --model o4')).toBe('codex -a never -s workspace-write')
   })
 
   it('still strips -p even when a valid model is also present', () => {

@@ -72,7 +72,7 @@ STEP 4 — Start agents in INTERACTIVE mode:
   For each terminal call run_command(terminalId='[id]', command='[agent command]')
   Use these commands — copy them verbatim (Claude may also choose a model; see below):
     Claude Code → 'claude --dangerously-skip-permissions'
-    Codex       → 'codex --full-auto'
+    Codex       → 'codex -a never -s workspace-write'
     Gemini CLI  → 'agy --dangerously-skip-permissions'
 ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
 

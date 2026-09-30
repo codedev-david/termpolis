@@ -1,72 +1,18 @@
-// Helpers for auto-registering the Termpolis MCP server into the
-// config files of Claude Code, Codex, and Gemini CLI.
+// What Termpolis's entries look like inside the agent CLIs' JSON configs, as pure transforms
+// over the parsed object (agentIntegrationManager does the file IO and the consent), plus the
+// node runner every one of those entries spawns the stdio adapter with.
 //
-// Extracted from index.ts so we can unit-test the "file is corrupt / empty
-// / missing / truncated" paths in isolation. Each function is defensive:
-// a broken config file should log-and-skip, never crash the main process.
-
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs'
+// Everything that removes an entry finds it by signature, never by the current adapter path:
+// a server whose first argument is Termpolis's stdio adapter, a hook whose command runs
+// memory-primer-hook.cjs, allow rules only Termpolis ever wrote. A `termpolis` server the
+// user configured themselves fails that check and is left alone.
+//
+// Claude Code reads MCP servers from `.claude.json` (user scope), never from settings.json.
+// Earlier versions wrote one into settings.json, where it did nothing; it is removed here.
+import { existsSync } from 'fs'
 import { join } from 'path'
 import { getAgentExtraPaths } from './agentPaths'
-
-export interface RegistryResult {
-  changed: boolean
-  skipped?: 'missing' | 'corrupt' | 'already-registered' | 'write-failed'
-  error?: string
-}
-
-function safeReadJson(path: string): { ok: true; value: any } | { ok: false; reason: 'missing' | 'corrupt'; error?: string } {
-  if (!existsSync(path)) return { ok: false, reason: 'missing' }
-  try {
-    const raw = readFileSync(path, 'utf-8')
-    // Empty / whitespace-only file → treat as corrupt (not a valid JSON doc).
-    if (!raw.trim()) return { ok: false, reason: 'corrupt', error: 'empty file' }
-    return { ok: true, value: JSON.parse(raw) }
-  } catch (e: any) {
-    return { ok: false, reason: 'corrupt', error: e?.message || String(e) }
-  }
-}
-
-function atomicWriteJson(path: string, value: any): void {
-  atomicWriteText(path, JSON.stringify(value, null, 2))
-}
-
-/** tmp+rename, so a crash mid-write leaves the original config intact rather than a
- *  truncated one. Claude and Gemini already got this through atomicWriteJson; Codex is
- *  TOML and so wrote straight to the live file until it was routed through here. */
-function atomicWriteText(path: string, content: string): void {
-  const tmp = path + '.tmp'
-  writeFileSync(tmp, content, 'utf-8')
-  renameSync(tmp, path)
-}
-
-// Scan a Claude `hooks.SessionStart` array (an array of hook groups, each with
-// a nested `hooks: [{ type, command }]`) and collect every command string we
-// can find. Used to detect an existing memory-primer registration without
-// assuming any particular shape — tolerates malformed groups/entries.
-function collectSessionStartCommands(sessionStart: unknown[]): string[] {
-  const cmds: string[] = []
-  const cmdOf = (x: unknown): string | undefined => {
-    if (x && typeof x === 'object') {
-      const c = (x as { command?: unknown }).command
-      if (typeof c === 'string') return c
-    }
-    return undefined
-  }
-  for (const group of sessionStart) {
-    if (!group || typeof group !== 'object') continue
-    const top = cmdOf(group)
-    if (top) cmds.push(top)
-    const hooks = (group as { hooks?: unknown }).hooks
-    if (Array.isArray(hooks)) {
-      for (const h of hooks) {
-        const c = cmdOf(h)
-        if (c) cmds.push(c)
-      }
-    }
-  }
-  return cmds
-}
+import { MCP_TOOLS_AUTO_ALLOWED } from '../shared/agentIntegration'
 
 /**
  * How an agent's MCP config should spawn the stdio adapter.
@@ -94,7 +40,7 @@ export interface NodeRunner {
 /** Accept either shape at a call site, so a plain 'node' string still works. */
 export type NodeSpec = string | NodeRunner
 
-function toRunner(spec: NodeSpec): NodeRunner {
+export function toRunner(spec: NodeSpec): NodeRunner {
   return typeof spec === 'string' ? { command: spec } : spec
 }
 
@@ -111,7 +57,7 @@ function toRunner(spec: NodeSpec): NodeRunner {
  * absolute path is quoted, with backslashes normalized, because Windows paths
  * contain spaces (`C:/Program Files/...`).
  */
-function hookCommand(runner: NodeRunner): string {
+export function hookCommand(runner: NodeRunner): string {
   const bin = runner.command === 'node' ? 'node' : `"${runner.command.replace(/\\/g, '/')}"`
   if (!runner.env) return bin
   const prefix = Object.entries(runner.env).map(([k, v]) => `${k}=${v}`).join(' ')
@@ -119,7 +65,7 @@ function hookCommand(runner: NodeRunner): string {
 }
 
 /** Same runner, compared the way a config file stores it. */
-function runnerMatches(existing: any, runner: NodeRunner): boolean {
+export function runnerMatches(existing: any, runner: NodeRunner): boolean {
   if (!existing || existing.command !== runner.command) return false
   const want = runner.env ?? null
   const have = existing.env && typeof existing.env === 'object' ? existing.env : null
@@ -195,218 +141,331 @@ export function resolveNodeRunner(
   return { command: 'node' }
 }
 
-// Register MCP server in Claude Code's global settings.json + auto-trust
-// the termpolis tool wildcard. When hookScriptPath is provided, ALSO register
-// the portable SessionStart memory-primer hook (deterministic memory recall).
-// Returns changed=true if anything was written.
-export function registerInClaudeSettings(settingsPath: string, adapterPath: string, hookScriptPath?: string, node: NodeSpec = 'node'): RegistryResult {
+// ── Entries, and how to recognise them ─────────────────────────────────────────────────
+
+type Json = Record<string, any>
+
+/** What a transform did to the object it was given. */
+export type EditAction = 'add' | 'update' | 'remove' | 'unchanged'
+
+/** A transform's outcome: an action, or why it refused to touch the file. */
+export type EntryEdit = EditAction | { skipped: string }
+
+function isObject(v: unknown): v is Json {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** How every Termpolis server entry ends: the adapter script, in both layouts it ships in. */
+export const ADAPTER_SIGNATURE = 'mcp-adapter/stdio-adapter.cjs'
+
+/** True for a path to Termpolis's stdio adapter, whichever install or checkout it is in. */
+export function isAdapterPath(arg: unknown): boolean {
+  return typeof arg === 'string' && arg.replace(/\\/g, '/').toLowerCase().endsWith(ADAPTER_SIGNATURE)
+}
+
+/** A server entry Termpolis wrote: its first argument is the stdio adapter. */
+export function isTermpolisServerEntry(entry: unknown): boolean {
+  return isObject(entry) && Array.isArray(entry.args) && isAdapterPath(entry.args[0])
+}
+
+/** A hook command Termpolis wrote: it runs the memory-primer hook script. */
+export function isPrimerHookCommand(command: unknown): boolean {
+  return typeof command === 'string' && /memory-primer-hook\.cjs/.test(command)
+}
+
+export interface ServerEntry {
+  command: string
+  args: string[]
+  env?: Record<string, string>
+}
+
+/** The entry every agent config gets: the runner, with the adapter as its only argument. */
+export function termpolisServerEntry(node: NodeSpec, adapterPath: string): ServerEntry {
   const runner = toRunner(node)
-  const read = safeReadJson(settingsPath)
-  if (!read.ok) {
-    if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
-    return { changed: false, skipped: 'corrupt', error: read.error }
-  }
-  // If the root parsed to a primitive / array / null, replace with {} —
-  // setting properties on a non-object throws in strict mode.
-  const settings: any = (read.value && typeof read.value === 'object' && !Array.isArray(read.value))
-    ? read.value
-    : {}
-  let changed = false
-
-  if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
-    settings.mcpServers = {}
-    changed = true
-  }
-  const existing = settings.mcpServers.termpolis
-  if (!existing || existing.args?.[0] !== adapterPath || !runnerMatches(existing, runner)) {
-    settings.mcpServers.termpolis = { ...runner, args: [adapterPath] }
-    changed = true
-  }
-
-  if (!settings.permissions || typeof settings.permissions !== 'object') {
-    settings.permissions = {}
-    changed = true
-  }
-  if (!Array.isArray(settings.permissions.allow)) {
-    settings.permissions.allow = []
-    changed = true
-  }
-
-  // Purge legacy (*) entries — no longer a valid Claude Code matcher
-  const legacy = settings.permissions.allow.filter(
-    (p: unknown) => typeof p === 'string' && p.startsWith('mcp__termpolis__') && p.endsWith('(*)'),
-  )
-  if (legacy.length > 0) {
-    settings.permissions.allow = settings.permissions.allow.filter((p: unknown) => !legacy.includes(p))
-    changed = true
-  }
-  if (!settings.permissions.allow.includes('mcp__termpolis__*')) {
-    settings.permissions.allow.push('mcp__termpolis__*')
-    changed = true
-  }
-
-  // Optionally register the portable SessionStart memory-primer hook so EVERY
-  // install gets deterministic memory recall — the digest is injected into
-  // session context at startup instead of relying on the agent to call a tool.
-  // Additive & idempotent: we never remove or reorder the user's own
-  // SessionStart hooks or other hook events, and we never add the hook twice.
-  if (hookScriptPath) {
-    if (!settings.hooks || typeof settings.hooks !== 'object' || Array.isArray(settings.hooks)) {
-      settings.hooks = {}
-      changed = true
-    }
-    if (!Array.isArray(settings.hooks.SessionStart)) {
-      settings.hooks.SessionStart = []
-      changed = true
-    }
-    const alreadyHooked = collectSessionStartCommands(settings.hooks.SessionStart)
-      .some((c) => c.includes('memory-primer-hook'))
-    if (!alreadyHooked) {
-      // Path normalized to forward slashes — node accepts them on Windows and
-      // they avoid backslash-escaping ambiguity in the JSON command string.
-      // The runner is an absolute node path when resolvable (so the hook runs even
-      // when the hook shell's PATH lacks node — nvm/fnm installs), else Termpolis's
-      // own Electron in node mode, else the bare `node`. See hookCommand.
-      const portableHookPath = hookScriptPath.replace(/\\/g, '/')
-      const nodeForHook = hookCommand(runner)
-      settings.hooks.SessionStart.push({
-        hooks: [{ type: 'command', command: `${nodeForHook} "${portableHookPath}"` }],
-      })
-      changed = true
-    }
-  }
-
-  if (!changed) return { changed: false, skipped: 'already-registered' }
-
-  try {
-    atomicWriteJson(settingsPath, settings)
-    return { changed: true }
-  } catch (e: any) {
-    return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
-  }
+  return { command: runner.command, args: [adapterPath], ...(runner.env ? { env: { ...runner.env } } : {}) }
 }
 
-// Write the global Claude MCP manifest at ~/.mcp.json. Unlike the
-// settings.json path this one is created if absent — Claude Code
-// honors it even when the user has no settings file.
-export function registerInGlobalMcp(mcpJsonPath: string, adapterPath: string, node: NodeSpec = 'node'): RegistryResult {
-  const runner = toRunner(node)
-  let globalMcp: any = {}
-  if (existsSync(mcpJsonPath)) {
-    const read = safeReadJson(mcpJsonPath)
-    if (read.ok) globalMcp = read.value ?? {}
-    // Corrupt file: we still overwrite with a clean manifest — better than
-    // leaving a broken config that prevents Claude from ever registering.
-  }
-  if (!globalMcp || typeof globalMcp !== 'object') globalMcp = {}
-  if (!globalMcp.mcpServers || typeof globalMcp.mcpServers !== 'object') globalMcp.mcpServers = {}
-
-  const existing = globalMcp.mcpServers.termpolis
-  if (existing && existing.args?.[0] === adapterPath && runnerMatches(existing, runner)) {
-    // Clean up older root-level entry once, but don't rewrite disk if nothing else changed.
-    if (!('termpolis' in globalMcp)) return { changed: false, skipped: 'already-registered' }
-  }
-
-  // The runner, not a bare `node`. Hardcoding it was the same ENOENT bug the comment
-  // blocks at :64-80 and :166-176 describe fixing for the other three agents: a machine
-  // with no `node` on PATH gets the Electron binary in ELECTRON_RUN_AS_NODE mode instead.
-  // `runnerMatches` above is load-bearing for the fix — without it an install whose file
-  // still says `command: "node"` would short-circuit as already-registered and stay broken.
-  globalMcp.mcpServers.termpolis = { ...runner, args: [adapterPath] }
-  delete globalMcp.termpolis
-
-  try {
-    atomicWriteJson(mcpJsonPath, globalMcp)
-    return { changed: true }
-  } catch (e: any) {
-    return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
-  }
+/** The SessionStart hook command for the memory primer. */
+export function primerHookCommand(node: NodeSpec, hookScriptPath: string): string {
+  return `${hookCommand(toRunner(node))} "${hookScriptPath.replace(/\\/g, '/')}"`
 }
 
-// Codex config is TOML — we append a section if it's not already present.
-// Treating the file as a text blob is deliberate: a proper TOML parser would
-// choke on any user-made syntax error and block registration.
-export function registerInCodex(codexTomlPath: string, adapterPath: string, node: NodeSpec = 'node'): RegistryResult {
-  if (!existsSync(codexTomlPath)) return { changed: false, skipped: 'missing' }
-  let content: string
-  try {
-    content = readFileSync(codexTomlPath, 'utf-8')
-  } catch (e: any) {
-    return { changed: false, skipped: 'corrupt', error: e?.message || String(e) }
-  }
-  const entry = codexEntry(adapterPath, toRunner(node))
-  const existing = extractCodexSection(content)
-  if (existing !== null) {
-    // An entry we already wrote, still naming the same interpreter and adapter:
-    // leave the file alone. Anything else is STALE and must be REPLACED, not
-    // skipped — the ENOENT this fixes comes from configs an older build wrote
-    // with `command = "node"` hardcoded, and those files already contain the
-    // section, so a plain already-registered short-circuit would leave every
-    // upgraded install broken forever.
-    if (existing.trim() === entry.trim()) return { changed: false, skipped: 'already-registered' }
-    try {
-      // split/join, not String.replace: a `$&` or `$'` inside the generated entry is a
-      // substitution pattern to `replace`, and a Windows adapter path can contain one.
-      atomicWriteText(codexTomlPath, content.split(existing).join(entry))
-      return { changed: true }
-    } catch (e: any) {
-      return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
-    }
-  }
-  try {
-    atomicWriteText(codexTomlPath, content + '\n' + entry)
-    return { changed: true }
-  } catch (e: any) {
-    return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
-  }
+const ELECTRON_FALLBACK_ENV = 'ELECTRON_RUN_AS_NODE'
+
+/** The env the Electron fallback wrote, which must go once a real node is found. */
+function isFallbackEnv(env: unknown): boolean {
+  return isObject(env) && Object.keys(env).length === 1 && env[ELECTRON_FALLBACK_ENV] === '1'
 }
 
-/** The `[mcp_servers.termpolis]` block as TOML. Backslashes are escaped because a
- *  Windows adapter path lands inside a basic (quoted) TOML string. */
-function codexEntry(adapterPath: string, runner: NodeRunner): string {
-  const q = (v: string): string => `"${v.replace(/\\/g, '\\\\')}"`
-  let out = `[mcp_servers.termpolis]\ncommand = ${q(runner.command)}\nargs = [${q(adapterPath)}]\n`
-  if (runner.env) {
-    const pairs = Object.entries(runner.env).map(([k, v]) => `${k} = ${q(v)}`).join(', ')
-    out += `env = { ${pairs} }\n`
+export const FOREIGN_SERVER = 'a `termpolis` MCP server that Termpolis did not add is already configured here, so it was left as it is'
+
+/**
+ * Put Termpolis's server in `root.mcpServers.termpolis`, or bring the one there up to date.
+ * Keys Termpolis doesn't manage (a timeout, `disabled`, the user's own env vars) survive;
+ * `fixed` sets keys an agent requires, such as Claude Code's `type`.
+ */
+export function upsertServerEntry(root: Json, entry: ServerEntry, fixed: Json = {}): EntryEdit {
+  if (root.mcpServers !== undefined && !isObject(root.mcpServers)) return { skipped: '`mcpServers` is not an object' }
+  const existing = root.mcpServers?.termpolis
+  if (existing !== undefined && !isTermpolisServerEntry(existing)) return { skipped: FOREIGN_SERVER }
+  const next: Json = { ...(existing ?? {}), ...fixed, command: entry.command, args: [...entry.args] }
+  if (entry.env) next.env = { ...(isObject(next.env) ? next.env : {}), ...entry.env }
+  else if (isFallbackEnv(next.env)) delete next.env
+  if (existing !== undefined && JSON.stringify(next) === JSON.stringify(existing)) return 'unchanged'
+  root.mcpServers = { ...(root.mcpServers ?? {}), termpolis: next }
+  return existing === undefined ? 'add' : 'update'
+}
+
+/** Claude Code's user-scope server in `.claude.json`, as `claude mcp add -s user` writes it. */
+export function upsertClaudeUserServer(root: Json, entry: ServerEntry): EntryEdit {
+  return upsertServerEntry(root, entry, { type: 'stdio' })
+}
+
+/** Remove Termpolis's `mcpServers.termpolis`, and an `mcpServers` that leaves empty. */
+export function removeServerEntry(root: Json): EditAction {
+  const servers = root.mcpServers
+  if (!isObject(servers) || !isTermpolisServerEntry(servers.termpolis)) return 'unchanged'
+  delete servers.termpolis
+  if (Object.keys(servers).length === 0) delete root.mcpServers
+  return 'remove'
+}
+
+/** The first ~/.mcp.json writer put the server at the top level, with no `mcpServers` wrapper. */
+export function removeRootServerEntry(root: Json): EditAction {
+  if (!isTermpolisServerEntry(root.termpolis)) return 'unchanged'
+  delete root.termpolis
+  return 'remove'
+}
+
+export function hasServerEntry(root: Json): boolean {
+  return isObject(root.mcpServers) && isTermpolisServerEntry(root.mcpServers.termpolis)
+}
+
+// ── Claude Code settings.json: tool permissions ────────────────────────────────────────
+
+const CLAUDE_TOOL_PREFIX = 'mcp__termpolis__'
+
+/** The blanket rule earlier versions wrote: every Termpolis tool, including run_command. */
+const WILDCARD_RULE = `${CLAUDE_TOOL_PREFIX}*`
+
+/** The explicit list the first version wrote. Its switch to the wildcard left these behind. */
+const FIRST_VERSION_TOOLS: readonly string[] = [
+  'list_terminals', 'create_terminal', 'run_command', 'read_output', 'close_terminal',
+  'write_to_terminal', 'get_file_tree', 'get_git_status', 'swarm_send_message',
+  'swarm_read_messages', 'swarm_create_task', 'swarm_list_tasks', 'swarm_update_task',
+  'swarm_list_agents',
+]
+
+export const CLAUDE_ALLOW_RULES: readonly string[] = MCP_TOOLS_AUTO_ALLOWED.map((t) => CLAUDE_TOOL_PREFIX + t)
+
+function allowArray(root: Json): string[] | null | { skipped: string } {
+  if (root.permissions === undefined) return null
+  if (!isObject(root.permissions)) return { skipped: '`permissions` is not an object' }
+  if (root.permissions.allow === undefined) return null
+  if (!Array.isArray(root.permissions.allow)) return { skipped: '`permissions.allow` is not an array' }
+  return root.permissions.allow
+}
+
+/**
+ * Rules only Termpolis wrote: the wildcard, the `(*)` forms an older Claude Code accepted, and
+ * the first version's list when all of it is still there. That list mixed in tools that run
+ * commands, and one or two such rules could be the user's own choice, but all 14 in a row are
+ * Termpolis's. The safe list's own rules are left to the caller.
+ */
+function legacyRules(allow: readonly unknown[]): Set<string> {
+  const out = new Set<string>()
+  for (const r of allow) {
+    if (typeof r !== 'string') continue
+    if (r === WILDCARD_RULE || (r.startsWith(CLAUDE_TOOL_PREFIX) && r.endsWith('(*)'))) out.add(r)
+  }
+  const first = FIRST_VERSION_TOOLS.map((t) => CLAUDE_TOOL_PREFIX + t)
+  if (first.every((r) => allow.includes(r))) {
+    for (const r of first) if (!CLAUDE_ALLOW_RULES.includes(r)) out.add(r)
   }
   return out
 }
 
-/** The existing termpolis section verbatim, or null when there is none. Text-blob
- *  editing, matching this file's reasoning about TOML: a real parser would refuse
- *  the whole config over an unrelated syntax error elsewhere in it. The section
- *  runs to the next table header or to end of file. */
-function extractCodexSection(content: string): string | null {
-  const start = content.indexOf('[mcp_servers.termpolis]')
-  if (start === -1) return null
-  const rest = content.slice(start + 1)
-  const nextHeader = rest.search(/^[ \t]*\[/m)
-  return nextHeader === -1 ? content.slice(start) : content.slice(start, start + 1 + nextHeader)
+function dropRules(root: Json, drop: Set<string>): EditAction {
+  if (drop.size === 0) return 'unchanged'
+  const allow: unknown[] = root.permissions.allow
+  root.permissions.allow = allow.filter((r) => !(typeof r === 'string' && drop.has(r)))
+  if (root.permissions.allow.length === 0) delete root.permissions.allow
+  if (Object.keys(root.permissions).length === 0) delete root.permissions
+  return 'remove'
 }
 
-export function registerInGemini(settingsPath: string, adapterPath: string, node: NodeSpec = 'node'): RegistryResult {
-  const runner = toRunner(node)
-  const read = safeReadJson(settingsPath)
-  if (!read.ok) {
-    if (read.reason === 'missing') return { changed: false, skipped: 'missing' }
-    return { changed: false, skipped: 'corrupt', error: read.error }
-  }
-  const settings: any = (read.value && typeof read.value === 'object' && !Array.isArray(read.value))
-    ? read.value
-    : {}
-  if (!settings.mcpServers || typeof settings.mcpServers !== 'object') settings.mcpServers = {}
+/** One-time migration: take away the blanket and legacy rules. */
+export function removeLegacyAllowRules(root: Json): EntryEdit {
+  const allow = allowArray(root)
+  if (!Array.isArray(allow)) return allow ?? 'unchanged'
+  return dropRules(root, legacyRules(allow))
+}
 
-  const existing = settings.mcpServers.termpolis
-  if (existing && existing.args?.[0] === adapterPath && runnerMatches(existing, runner)) {
-    return { changed: false, skipped: 'already-registered' }
-  }
+/** Allow the safe tools, appending only the rules that are missing. */
+export function applyAllowRules(root: Json): EntryEdit {
+  const allow = allowArray(root)
+  if (allow !== null && !Array.isArray(allow)) return allow
+  const have = allow ?? []
+  const missing = CLAUDE_ALLOW_RULES.filter((r) => !have.includes(r))
+  if (missing.length === 0) return 'unchanged'
+  root.permissions = { ...(root.permissions ?? {}), allow: [...have, ...missing] }
+  return missing.length === CLAUDE_ALLOW_RULES.length ? 'add' : 'update'
+}
 
-  settings.mcpServers.termpolis = { ...runner, args: [adapterPath] }
-  try {
-    atomicWriteJson(settingsPath, settings)
-    return { changed: true }
-  } catch (e: any) {
-    return { changed: false, skipped: 'write-failed', error: e?.message || String(e) }
+/** Disconnect: the safe list plus everything the migration removes. */
+export function removeAllowRules(root: Json): EntryEdit {
+  const allow = allowArray(root)
+  if (!Array.isArray(allow)) return allow ?? 'unchanged'
+  const drop = legacyRules(allow)
+  for (const r of CLAUDE_ALLOW_RULES) if (allow.includes(r)) drop.add(r)
+  return dropRules(root, drop)
+}
+
+export function hasTermpolisAllowRule(root: Json): boolean {
+  const allow = allowArray(root)
+  return Array.isArray(allow) && allow.some((r) => typeof r === 'string' && r.startsWith(CLAUDE_TOOL_PREFIX))
+}
+
+// ── Claude Code settings.json: the SessionStart memory hook ────────────────────────────
+
+function sessionStart(root: Json): unknown[] | null | { skipped: string } {
+  if (root.hooks === undefined) return null
+  if (!isObject(root.hooks)) return { skipped: '`hooks` is not an object' }
+  if (root.hooks.SessionStart === undefined) return null
+  if (!Array.isArray(root.hooks.SessionStart)) return { skipped: '`hooks.SessionStart` is not an array' }
+  return root.hooks.SessionStart
+}
+
+/** Where each Termpolis hook sits: a group's `hooks[i]`, or (item -1) a flat group that is one. */
+function primerHookSites(groups: unknown[]): Array<{ group: number; item: number }> {
+  const sites: Array<{ group: number; item: number }> = []
+  groups.forEach((g, group) => {
+    if (!isObject(g)) return
+    if (isPrimerHookCommand(g.command)) sites.push({ group, item: -1 })
+    if (Array.isArray(g.hooks)) {
+      g.hooks.forEach((h: unknown, item: number) => {
+        if (isObject(h) && isPrimerHookCommand(h.command)) sites.push({ group, item })
+      })
+    }
+  })
+  return sites
+}
+
+/** Remove these sites, then any group, SessionStart list or hooks object that leaves empty. */
+function removeSites(root: Json, sites: Array<{ group: number; item: number }>): void {
+  const groups: Json[] = root.hooks.SessionStart
+  const dropGroup = new Set<number>()
+  for (const s of [...sites].reverse()) {
+    const g = groups[s.group]
+    if (s.item === -1) dropGroup.add(s.group)
+    else {
+      g.hooks.splice(s.item, 1)
+      if (g.hooks.length === 0) dropGroup.add(s.group)
+    }
   }
+  root.hooks.SessionStart = groups.filter((_, i) => !dropGroup.has(i))
+  if (root.hooks.SessionStart.length === 0) delete root.hooks.SessionStart
+  if (Object.keys(root.hooks).length === 0) delete root.hooks
+}
+
+/** Exactly one Termpolis SessionStart hook, running `command`. */
+export function applyPrimerHook(root: Json, command: string): EntryEdit {
+  const groups = sessionStart(root)
+  if (groups !== null && !Array.isArray(groups)) return groups
+  const sites = primerHookSites(groups ?? [])
+  if (sites.length === 0) {
+    const entry = { hooks: [{ type: 'command', command }] }
+    root.hooks = { ...(root.hooks ?? {}), SessionStart: [...(groups ?? []), entry] }
+    return 'add'
+  }
+  const [keep, ...extra] = sites
+  const g = (groups as Json[])[keep.group]
+  const hook = keep.item === -1 ? g : g.hooks[keep.item]
+  let changed = false
+  if (hook.command !== command) {
+    hook.command = command
+    changed = true
+  }
+  if (extra.length) {
+    removeSites(root, extra)
+    changed = true
+  }
+  return changed ? 'update' : 'unchanged'
+}
+
+export function removePrimerHooks(root: Json): EntryEdit {
+  const groups = sessionStart(root)
+  if (!Array.isArray(groups)) return groups ?? 'unchanged'
+  const sites = primerHookSites(groups)
+  if (sites.length === 0) return 'unchanged'
+  removeSites(root, sites)
+  return 'remove'
+}
+
+export function hasPrimerHook(root: Json): boolean {
+  const groups = sessionStart(root)
+  return Array.isArray(groups) && primerHookSites(groups).length > 0
+}
+
+// ── The local plugin earlier versions installed ────────────────────────────────────────
+
+/** Marketplaces the local plugin was registered under: `local-plugins`, plus any whose
+ *  source is the `local-marketplace` folder Termpolis created. */
+export function localMarketplaceNames(settings: Json | null, knownMarketplaces: Json | null): string[] {
+  const names = new Set(['local-plugins'])
+  for (const table of [settings?.extraKnownMarketplaces, knownMarketplaces]) {
+    if (!isObject(table)) continue
+    for (const [name, value] of Object.entries(table)) {
+      const path = isObject(value) && isObject(value.source) ? value.source.path : undefined
+      if (typeof path === 'string' && path.replace(/\\/g, '/').includes('local-marketplace')) names.add(name)
+    }
+  }
+  return [...names]
+}
+
+function dropPluginKeys(table: unknown, marketplaces: readonly string[]): boolean {
+  if (!isObject(table)) return false
+  let removed = false
+  for (const m of marketplaces) {
+    if (Object.prototype.hasOwnProperty.call(table, `termpolis@${m}`)) {
+      delete table[`termpolis@${m}`]
+      removed = true
+    }
+  }
+  return removed
+}
+
+/** settings.json `enabledPlugins`. */
+export function removePluginEnablement(root: Json, marketplaces: readonly string[]): EditAction {
+  if (!dropPluginKeys(root.enabledPlugins, marketplaces)) return 'unchanged'
+  if (Object.keys(root.enabledPlugins).length === 0) delete root.enabledPlugins
+  return 'remove'
+}
+
+export function hasPluginEnablement(root: Json, marketplaces: readonly string[]): boolean {
+  return isObject(root.enabledPlugins) && marketplaces.some((m) => `termpolis@${m}` in root.enabledPlugins)
+}
+
+/** plugins/installed_plugins.json, which Claude Code keeps. */
+export function removeInstalledPlugin(root: Json, marketplaces: readonly string[]): EditAction {
+  return dropPluginKeys(root.plugins, marketplaces) ? 'remove' : 'unchanged'
+}
+
+/** local-marketplace/.claude-plugin/marketplace.json: the entry pointing at the plugin folder. */
+export function removeMarketplaceEntry(root: Json): EditAction {
+  if (!Array.isArray(root.plugins)) return 'unchanged'
+  const isOurs = (p: unknown): boolean =>
+    isObject(p) && p.name === 'termpolis' && typeof p.source === 'string' &&
+    p.source.replace(/\\/g, '/').replace(/\/+$/, '') === './plugins/termpolis'
+  const keep = root.plugins.filter((p: unknown) => !isOurs(p))
+  if (keep.length === root.plugins.length) return 'unchanged'
+  root.plugins = keep
+  return 'remove'
+}
+
+/** The plugin folder's own files: plugin.json names Termpolis as author, or .mcp.json runs the adapter. */
+export function isTermpolisPluginManifest(pluginJson: Json | null, mcpJson: Json | null): boolean {
+  const byManifest = !!pluginJson && pluginJson.name === 'termpolis' &&
+    isObject(pluginJson.author) && pluginJson.author.name === 'Termpolis'
+  return byManifest || (!!mcpJson && hasServerEntry(mcpJson))
 }

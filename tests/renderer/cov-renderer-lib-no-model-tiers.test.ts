@@ -43,7 +43,7 @@ describe('buildConductorPrompt — broker reports no Claude model tiers', () => 
   it('still emits the agent launch commands and the rest of the prompt', () => {
     const prompt = build()
     expect(prompt).toContain("Claude Code → 'claude --dangerously-skip-permissions'")
-    expect(prompt).toContain("Codex       → 'codex --full-auto'")
+    expect(prompt).toContain("Codex       → 'codex -a never -s workspace-write'")
     expect(prompt).toContain('ship the release')
     expect(prompt).toContain('/home/user/proj')
     expect(prompt).toContain('Begin now.')
