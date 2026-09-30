@@ -14,18 +14,27 @@
 
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import path from 'path'
+import fs from 'fs'
+import os from 'os'
 import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
+let agentHome = ''
 
 test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
+  // A scratch agent home of this spec's own, where Claude Code counts as installed (its
+  // config directory exists), so connecting the agents writes a registration for the
+  // inventory to list. The shared global-setup home is empty, and never the real ~/.claude.
+  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-mcpsettings-home-'))
+  fs.mkdirSync(path.join(agentHome, '.claude'))
+
   app = await electron.launch({
     args: e2eLaunchArgs('mcp-settings'),
-    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1' },
+    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_TEST_AGENT_HOME: agentHome },
   })
   page = await app.firstWindow()
   await dismissOnboarding(page)
@@ -35,6 +44,9 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (app) await app.close()
+  if (agentHome) {
+    try { fs.rmSync(agentHome, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
 })
 
 test.describe.serial('MCP settings', () => {
@@ -100,10 +112,13 @@ test.describe.serial('MCP settings', () => {
     await expect(page.locator('[data-testid="mcp-server-e2e-probe"]')).toBeVisible()
   })
 
-  test('7. the inventory lists Termpolis itself, registered at boot', async () => {
-    // Registration runs unconditionally in app.whenReady(), so a real profile
-    // always has at least this one server -- and it is the end-to-end proof that
-    // the inventory reader parses what agentMcpRegistry writes.
+  test('7. the inventory lists Termpolis itself once the agents are connected', async () => {
+    // Since v1.49 Termpolis registers itself only after the user connects their agents
+    // (dismissOnboarding's Skip tour keeps the tour's ticked "Connect agents"), and only
+    // for an agent that is installed -- hence the scratch ~/.claude in beforeAll. This is
+    // the end-to-end proof that the inventory reader parses what agentMcpRegistry writes.
+    // Refresh re-reads the configs, so a connect that landed after the last mount still counts.
+    await page.locator('[data-testid="mcp-refresh"]').click()
     await expect(page.locator('[data-testid="mcp-inv-termpolis"]')).toBeVisible({ timeout: 15000 })
   })
 

@@ -46,15 +46,19 @@ const MASK = '••••'
  *  `$CODEX_HOME/config.toml`, Gemini CLI from `~/.gemini/settings.json`, plus the
  *  `~/.mcp.json` older Termpolis versions wrote. Resolved at call time, not at import time,
  *  so a test can point HOME elsewhere and so a user who creates `~/.codex/config.toml`
- *  mid-session sees it on the next Refresh. */
+ *  mid-session sees it on the next Refresh. A test run's TERMPOLIS_TEST_AGENT_HOME wins over
+ *  all of these, exactly as in resolveAgentIntegrationPaths, so the inventory reads the
+ *  scratch configs the agent integration wrote rather than the developer's real ones. */
 export function defaultInventoryPaths(home: string = homedir(), env: NodeJS.ProcessEnv = process.env): InventoryPaths {
-  const claudeDir = (env.CLAUDE_CONFIG_DIR || '').trim()
-  const codexHome = (env.CODEX_HOME || '').trim()
+  const testHome = (env.TERMPOLIS_TEST_AGENT_HOME || '').trim()
+  const base = testHome || home
+  const claudeDir = testHome ? '' : (env.CLAUDE_CONFIG_DIR || '').trim()
+  const codexHome = testHome ? '' : (env.CODEX_HOME || '').trim()
   return {
-    claude: join(claudeDir || home, '.claude.json'),
-    globalMcp: join(home, '.mcp.json'),
-    codex: join(codexHome || join(home, '.codex'), 'config.toml'),
-    gemini: join(home, '.gemini', 'settings.json'),
+    claude: join(claudeDir || base, '.claude.json'),
+    globalMcp: join(base, '.mcp.json'),
+    codex: join(codexHome || join(base, '.codex'), 'config.toml'),
+    gemini: join(base, '.gemini', 'settings.json'),
   }
 }
 

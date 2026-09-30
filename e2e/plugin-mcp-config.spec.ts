@@ -38,7 +38,10 @@ const writeJson = (file: string, value: unknown) => {
 }
 const readJson = (file: string) => JSON.parse(fs.readFileSync(file, 'utf-8'))
 
-const SERVER = { mcpServers: { termpolis: { command: 'node', args: ['/opt/termpolis/stdio-adapter.cjs'] } } }
+// The entry an installed v1.48 wrote. Removal recognises it by the adapter's install path
+// (`…/mcp-adapter/stdio-adapter.cjs`, agentMcpRegistry's ADAPTER_SIGNATURE), so a bare
+// `stdio-adapter.cjs` would read as someone else's server and correctly be left alone.
+const SERVER = { mcpServers: { termpolis: { command: 'node', args: ['/opt/termpolis/resources/mcp-adapter/stdio-adapter.cjs'] } } }
 const MANIFEST = { name: 'termpolis', version: '1.0.0', author: { name: 'Termpolis' } }
 
 test.beforeAll(async () => {

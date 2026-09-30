@@ -227,8 +227,35 @@ describe('mcpIpc', () => {
       expect(p.globalMcp).toBe(join('/home/me', '.mcp.json'))
     })
 
-    it('defaults to the real home directory', () => {
-      expect(defaultInventoryPaths().claude).toContain('.claude')
+    it("reads a test run's scratch agent home instead of every other location", () => {
+      // The same override agentIntegrationManager honours, so an e2e run's inventory lists
+      // what the integration wrote into the scratch home, never the developer's real configs.
+      const p = defaultInventoryPaths('/home/me', {
+        TERMPOLIS_TEST_AGENT_HOME: ' /scratch ',
+        CLAUDE_CONFIG_DIR: '/profiles/work',
+        CODEX_HOME: '/codex',
+      })
+      expect(p).toEqual({
+        claude: join('/scratch', '.claude.json'),
+        globalMcp: join('/scratch', '.mcp.json'),
+        codex: join('/scratch', '.codex', 'config.toml'),
+        gemini: join('/scratch', '.gemini', 'settings.json'),
+      })
+    })
+
+    it('ignores a blank test agent home', () => {
+      const p = defaultInventoryPaths('/home/me', { TERMPOLIS_TEST_AGENT_HOME: '   ', CODEX_HOME: '/codex' })
+      expect(p.claude).toBe(join('/home/me', '.claude.json'))
+      expect(p.codex).toBe(join('/codex', 'config.toml'))
+    })
+
+    it('defaults to the process environment', () => {
+      vi.stubEnv('TERMPOLIS_TEST_AGENT_HOME', '/scratch-default')
+      try {
+        expect(defaultInventoryPaths().claude).toBe(join('/scratch-default', '.claude.json'))
+      } finally {
+        vi.unstubAllEnvs()
+      }
     })
   })
 

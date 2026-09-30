@@ -465,7 +465,12 @@ test.describe.serial('Swarm End-to-End', () => {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'))
     expect(parsed.mcpServers, `no mcpServers wrapper in ${file}`).toBeTruthy()
     expect(parsed.mcpServers.termpolis, `no termpolis entry in ${file}`).toBeTruthy()
-    expect(parsed.mcpServers.termpolis.command).toBe('node')
+    // The runner every agent config gets (resolveNodeRunner): an absolute node path, Electron's
+    // own binary with ELECTRON_RUN_AS_NODE=1, or bare `node` as the last resort. v1.48 hard-coded
+    // `node`, which is ENOENT from a desktop launcher whose PATH has no Node.
+    const { command, env } = parsed.mcpServers.termpolis
+    expect(command === 'node' || fs.existsSync(command), `runner not found: ${command}`).toBeTruthy()
+    if (env?.ELECTRON_RUN_AS_NODE !== undefined) expect(env.ELECTRON_RUN_AS_NODE).toBe('1')
     expect(Array.isArray(parsed.mcpServers.termpolis.args)).toBeTruthy()
     expect(parsed.mcpServers.termpolis.args[0]).toMatch(/stdio-adapter\.cjs$/)
 
