@@ -565,7 +565,7 @@ Termpolis doesn't register itself with an agent until you say so. The first step
 - **Codex** — adds the `termpolis` MCP server to its `config.toml` (a different server you already named `termpolis` is left alone), pre-approves the 14 `memory_*` tools unless you already chose a setting for them, and answers the folder-trust prompt for a folder you open it in, with the same exclusions. Its memory instruction is passed on the launch command (`-c developer_instructions`) for that session only, and not at all if you set your own; nothing is written into your projects.
 - **Gemini CLI** — adds the `termpolis` MCP server to its `settings.json`.
 
-When Termpolis answers a folder-trust prompt, it selects the trust option itself instead of pressing Enter on whatever is highlighted. It never answers a permission, approval or MCP prompt, a `[Y/n]` question or a numbered choice — those wait for you — and while your agents aren't connected it doesn't answer the folder-trust prompt either.
+When Termpolis answers a folder-trust prompt, it selects the trust option itself instead of pressing Enter on whatever is highlighted. It never answers a permission, approval or MCP prompt, a `[Y/n]` question or a numbered choice — those wait for you — and while your agents aren't connected it doesn't answer the folder-trust prompt either. On an agent's first-run screens it still presses Enter and takes the default: Claude Code's intro splash, its theme and login-method pickers, and Gemini CLI's terms and sign-in screens.
 
 **Disconnect** in Settings → Agent Integration removes everything Termpolis wrote. Uninstalling on Windows does the same (an update doesn't), and `Termpolis --disconnect-agents` does it from the command line on any platform.
 
