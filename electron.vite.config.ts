@@ -1,4 +1,5 @@
 import { resolve } from 'path'
+import { build as viteBuild, type Plugin } from 'vite'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import pkg from './package.json'
@@ -11,6 +12,49 @@ process.env.VITE_APP_VERSION = pkg.version
 // the literal string. Empty string when SENTRY_DSN isn't set in CI, which
 // makes Sentry init a no-op (see src/main/sentry.ts).
 const sentryDsn = JSON.stringify(process.env.SENTRY_DSN || '')
+
+// The Linux .deb's prerm (build/linux/before-remove.sh) disconnects the agents by running
+// resources/disconnect-agents.cjs in the app's own Electron in Node mode. That file has to
+// stand alone. It sits outside app.asar, next to the binary, and nothing resolves node_modules
+// or the main bundle's ESM chunks for it. So once main is written, this builds
+// src/main/disconnectAgentsEntry.ts again on its own, as one CommonJS file. It is an SSR (Node)
+// build with every dependency inlined, so only Node's builtins are left as requires. It lands
+// in out/linux/, next to out/main/, and package.json build.linux.extraResources ships it.
+function disconnectAgentsBundle(): Plugin {
+  let outDir = ''
+  let watching = false
+  return {
+    name: 'termpolis:disconnect-agents-bundle',
+    apply: 'build',
+    configResolved(config) {
+      outDir = resolve(config.root, config.build.outDir, '..', 'linux')
+      watching = !!config.build.watch
+    },
+    async closeBundle() {
+      // `electron-vite dev` rebuilds main on every save. Only a real build ships this file.
+      if (watching) return
+      await viteBuild({
+        configFile: false,
+        root: __dirname,
+        publicDir: false,
+        logLevel: 'warn',
+        build: {
+          ssr: resolve(__dirname, 'src/main/disconnectAgentsEntry.ts'),
+          outDir,
+          emptyOutDir: true,
+          target: 'node20',
+          minify: false,
+          sourcemap: false,
+          reportCompressedSize: false,
+          rollupOptions: {
+            output: { format: 'cjs', entryFileNames: 'disconnect-agents.cjs', inlineDynamicImports: true },
+          },
+        },
+        ssr: { noExternal: true, target: 'node' },
+      })
+    },
+  }
+}
 
 export default defineConfig({
   main: {
@@ -57,7 +101,7 @@ export default defineConfig({
     // unit suite can catch that: vitest interops the import happily, and only the built
     // child is ESM. Bundling it converts the require at build time and removes both the
     // resolution and the interop from the runtime.
-    plugins: [externalizeDepsPlugin({ exclude: ['pngjs', '@xterm/headless'] })]
+    plugins: [externalizeDepsPlugin({ exclude: ['pngjs', '@xterm/headless'] }), disconnectAgentsBundle()]
   },
   preload: {
     build: {

@@ -207,6 +207,46 @@ jobs:
         run: node scripts/verifyPackagedResources.cjs dist-electron-builder/linux-unpacked
       - name: Verify embedding model + onnxruntime-web WASM bundled
         run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
+      # `apt remove termpolis` runs the .deb's prerm (build/linux/before-remove.sh), which takes
+      # Termpolis back out of each user's Claude Code, Codex and Gemini CLI configs, as the
+      # Windows uninstaller does. Only a release builds a .deb, so this packs one from the
+      # unpacked app and checks what fpm made of it: the prerm is that script, the bundle it runs
+      # (resources/disconnect-agents.cjs) is in the package, and the packaged app does the work.
+      # Run as root, the way dpkg runs it, against a throwaway home: an upgrade (the in-app
+      # updater's too) must leave the agent connected, and a remove must take it out and leave
+      # the files it rewrote owned by the user.
+      - name: Verify the .deb prerm disconnects agents on remove, and only then
+        shell: bash
+        run: |
+          set -eu
+          npx electron-builder --linux deb --prepackaged dist-electron-builder/linux-unpacked --publish never
+          deb=$(ls dist-electron-builder/*.deb)
+          t=$RUNNER_TEMP/deb-prerm
+          me=$(id -un)
+          mkdir -p "$t/control" "$t/root/etc" "$t/home/.config/termpolis"
+          dpkg-deb -e "$deb" "$t/control"
+          if [ ! -x "$t/control/prerm" ] || ! cmp build/linux/before-remove.sh "$t/control/prerm"; then
+            echo "::error::The .deb's prerm is not build/linux/before-remove.sh"; exit 1
+          fi
+          dpkg-deb -x "$deb" "$t/root"
+          if [ ! -f "$t/root/opt/Termpolis/resources/disconnect-agents.cjs" ]; then
+            echo "::error::The .deb does not ship resources/disconnect-agents.cjs"; exit 1
+          fi
+          # The fake root's /etc/passwd lists only this runner's account, with the throwaway home,
+          # whose ~/.claude.json holds the MCP entry Termpolis writes.
+          printf '%s:x:%s:%s::%s:/bin/sh\n' "$me" "$(id -u)" "$(id -g)" "$t/home" >"$t/root/etc/passwd"
+          echo '{"mcpServers":{"termpolis":{"command":"node","args":["/opt/Termpolis/resources/mcp-adapter/stdio-adapter.cjs"]}}}' >"$t/home/.claude.json"
+          connected() {
+            node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit(c.mcpServers?.termpolis ? 0 : 1)' "$t/home/.claude.json"
+          }
+          sudo env TERMPOLIS_PRERM_ROOT="$t/root" "$t/control/prerm" upgrade 99.0.0
+          if ! connected; then echo "::error::The prerm disconnected the agents on an upgrade"; exit 1; fi
+          sudo env TERMPOLIS_PRERM_ROOT="$t/root" "$t/control/prerm" remove
+          if connected; then echo "::error::The prerm left the agents connected on remove"; exit 1; fi
+          for f in "$t/home/.claude.json" "$t/home/.config/termpolis/agent-integration.json"; do
+            owner=$(stat -c %U "$f")
+            if [ "$owner" != "$me" ]; then echo "::error::$f is owned by $owner, not $me"; exit 1; fi
+          done
       - name: Upload unpacked output on failure
         if: failure()
         uses: actions/upload-artifact@v4

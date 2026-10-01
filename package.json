@@ -134,6 +134,12 @@
       "maintainer": "Termpolis <support@termpolis.com>",
       "executableArgs": [
         "--no-sandbox"
+      ],
+      "extraResources": [
+        {
+          "from": "out/linux/disconnect-agents.cjs",
+          "to": "disconnect-agents.cjs"
+        }
       ]
     },
     "deb": {
@@ -150,7 +156,11 @@
         "libasound2",
         "libgbm1"
       ],
-      "afterInstall": "build/linux/after-install.sh"
+      "afterInstall": "build/linux/after-install.sh",
+      "fpm": [
+        "--before-remove",
+        "build/linux/before-remove.sh"
+      ]
     },
     "publish": [
       {
