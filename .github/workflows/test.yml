@@ -89,6 +89,10 @@ jobs:
       # here so that config cannot rot into something only Expo can load.
       - name: Typecheck the wire format standalone
         run: npm --prefix mobile run typecheck:wire
+      # src/net/ has one too, for remoteBlankTerminal.test.ts, which runs the
+      # phone's RemoteSession in that same job.
+      - name: Typecheck the network layer standalone
+        run: npm --prefix mobile run typecheck:net
       - name: Test mobile
         run: npm --prefix mobile run test:coverage
 

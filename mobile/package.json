@@ -11,7 +11,8 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "typecheck": "tsc --noEmit",
-    "typecheck:wire": "tsc --noEmit -p src/wire"
+    "typecheck:wire": "tsc --noEmit -p src/wire",
+    "typecheck:net": "tsc --noEmit -p src/net"
   },
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
