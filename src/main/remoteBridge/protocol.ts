@@ -136,7 +136,11 @@ export interface OutputChunk {
    *  of the screen: a status line ticking in place rewrites the same few dozen
    *  chars ten times a second, and without this the receiver keeps every frame
    *  as its own line. On the FIRST piece of a split chunk only -- the rest are
-   *  appends onto the piece before them. */
+   *  appends onto the piece before them.
+   *
+   *  An empty chunk anchored past the end of any copy (`FORGET_FROM`) goes ahead
+   *  of a whole screen. A phone keeps its copy for it and moves its end mark
+   *  there, so the screen after it replaces the copy outright. */
   replaceFrom: number | null
 }
 
@@ -214,7 +218,22 @@ export type HostToBridge =
   // wrap differently, they land on different cells. Optional because it is
   // unknown for a terminal that has already gone; the bridge keeps whatever size
   // it had rather than guessing a new one.
-  | { kind: 'terminalOutput'; terminalId: string; slice: OutputSlice; size?: TerminalSize }
+  //
+  // `reset` marks main's OPENING read of a terminal: the first since it joined
+  // the watched set, or since its id was dropped. The slice is then the whole
+  // window from its start, not the next part of a stream, so the bridge throws
+  // away any screen it was keeping for that id and builds a new one from these
+  // bytes -- and tells the phones to replace what they hold, even when the
+  // window is empty. Optional, and absent on every ordinary slice. This message
+  // never leaves the machine (the bridge ships with main), so no phone ever
+  // sees the field.
+  | {
+      kind: 'terminalOutput'
+      terminalId: string
+      slice: OutputSlice
+      size?: TerminalSize
+      reset?: boolean
+    }
   // Agent status, derived in main from the same rolling buffer the slices come
   // from. It is computed there rather than here because the detector needs the
   // WINDOW and the bridge is only ever handed increments -- and because the

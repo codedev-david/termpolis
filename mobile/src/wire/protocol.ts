@@ -223,7 +223,11 @@ export interface OutputChunk {
    *  ticking in place rewrites the same few dozen chars ten times a second, and
    *  appending each of those frames is what put sixty copies of "Compacting
    *  conversation..." on the screen. A desktop older than this field sends
-   *  nothing and the parser reads that as append, which is what it always was. */
+   *  nothing and the parser reads that as append, which is what it always was.
+   *
+   *  A desktop puts an empty chunk anchored past the end of any copy ahead of a
+   *  whole screen, and relies on the store clamping it -- keep everything, move
+   *  the end mark there -- so the screen after it replaces the copy outright. */
   replaceFrom: number | null
 }
 

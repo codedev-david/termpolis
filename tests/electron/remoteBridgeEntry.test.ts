@@ -30,6 +30,7 @@ import type {
   SessionRelayDeps,
 } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
+import { FORGET_FROM, formatGapMarker } from '../../src/main/remoteBridge/outputFanout'
 
 // A real curve point: the core mints a Handshake against every paired device's
 // key the moment it opens that device's room, so a placeholder string no longer
@@ -133,6 +134,47 @@ function core(
 function attach(room: ReturnType<typeof stubRoom>): void {
   room.state = 'attached'
   room.deps.onStateChange('attached')
+}
+
+/** A phone's copy of one terminal: the text it shows, and where that text ends
+ *  in the desktop's numbering. */
+interface PhoneCopy {
+  text: string
+  end: number
+}
+
+/** Apply chunks to a phone's copy exactly as the app does.
+ *
+ *  A line-for-line mirror of `onOutput` in mobile/src/state/remoteStore.ts,
+ *  which is also what the App Store build (1.1.0) runs. Asserting on the chunks
+ *  alone would test the bridge against itself: an edit is "truncate to here,
+ *  then append", and whether a screen survives that is a property of the two
+ *  ends together. The 200k display cap is left out; nothing here comes near it. */
+function onPhone(chunks: OutputPayload['chunks'], from: PhoneCopy = { text: '', end: 0 }): PhoneCopy {
+  let { text, end } = from
+  for (const c of chunks) {
+    const gap = c.missed > 0 && c.marker !== null ? c.marker : ''
+    const keep =
+      c.replaceFrom === null
+        ? text.length
+        : Math.min(text.length, Math.max(0, text.length - (end - c.replaceFrom)))
+    text = text.slice(0, keep) + gap + c.chunk
+    end = c.replaceFrom === null ? end + c.missed + c.chunk.length : c.replaceFrom + c.chunk.length
+  }
+  return { text, end }
+}
+
+/** Everything a stub room has sent, flattened out of its frames. */
+function chunksIn(room: ReturnType<typeof stubRoom>): OutputPayload['chunks'] {
+  return room.sent.flatMap((p) => p.chunks)
+}
+
+/** The chunks that draw something, without the forget the fan-out puts ahead of
+ *  every whole screen (see `FORGET_FROM`). For the tests about WHO is sent
+ *  output and what it says, where that empty chunk is bookkeeping between the
+ *  bridge and the phone's copy rather than anything a phone shows. */
+function drawing<T extends { replaceFrom: number | null }>(chunks: T[]): T[] {
+  return chunks.filter((c) => c.replaceFrom !== FORGET_FROM)
 }
 
 describe('bridge core', () => {
@@ -323,7 +365,7 @@ describe('bridge core', () => {
     await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
     await c.settled()
-    expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['hello'])
+    expect(drawing(c.drainOutput('d1')).map((x) => x.chunk)).toEqual(['hello'])
 
     await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'more', nextOffset: 9, missed: 0 } })
@@ -353,7 +395,7 @@ describe('bridge core', () => {
 
     c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'still here', nextOffset: 10, missed: 0 } })
     await c.settled()
-    expect(c.drainOutput('d1').map((x) => x.chunk)).toEqual(['still here'])
+    expect(drawing(c.drainOutput('d1')).map((x) => x.chunk)).toEqual(['still here'])
   })
 })
 
@@ -410,7 +452,7 @@ describe('capability enforcement precedes side effects', () => {
       slice: { output: 'still here\r\n', nextOffset: 12, missed: 0 },
     })
     await c.settled()
-    expect(c.drainOutput(granted.id)).toHaveLength(1)
+    expect(drawing(c.drainOutput(granted.id))).toHaveLength(1)
   })
 
   it('still subscribes a device that holds read', async () => {
@@ -427,7 +469,7 @@ describe('capability enforcement precedes side effects', () => {
       slice: { output: 'hello\r\n', nextOffset: 7, missed: 0 },
     })
     await c.settled()
-    expect(c.drainOutput(granted.id)).toHaveLength(1)
+    expect(drawing(c.drainOutput(granted.id))).toHaveLength(1)
   })
 })
 
@@ -580,7 +622,7 @@ describe('relay rooms', () => {
     await c.settled()
 
     expect(rooms[0].sent).toHaveLength(0)
-    expect(rooms[1].sent[0].chunks[0].chunk).toBe('only for d2')
+    expect(drawing(chunksIn(rooms[1]))[0].chunk).toBe('only for d2')
   })
 
   it('closes every room on shutdown', () => {
@@ -642,8 +684,14 @@ describe('output pump', () => {
     })
     await h.c.settled()
 
+    // One frame, and a whole screen in it -- the first thing a new grid draws is
+    // anchored at 0, so it goes out behind the forget that makes it the phone's
+    // whole copy.
     expect(h.rooms[0].sent).toHaveLength(1)
-    expect(h.rooms[0].sent[0].chunks[0].chunk).toBe('compiling...')
+    expect(h.rooms[0].sent[0].chunks).toMatchObject([
+      { chunk: '', replaceFrom: FORGET_FROM },
+      { chunk: 'compiling...', replaceFrom: 0 },
+    ])
   })
 
   it.each(['offline', 'connecting', 'online'] as const)(
@@ -700,6 +748,7 @@ describe('output pump', () => {
         seen.push(size)
         return real.feed(id, raw, size)
       },
+      snapshot: (id) => real.snapshot(id),
       forget: (id) => real.forget(id),
       forgetAll: () => real.forgetAll(),
     })
@@ -729,6 +778,7 @@ describe('output pump', () => {
         }
         return real.feed(id, raw)
       },
+      snapshot: (id) => real.snapshot(id),
       forget: (id) => real.forget(id),
       forgetAll: () => real.forgetAll(),
     })
@@ -748,7 +798,7 @@ describe('output pump', () => {
       slice: { output: 'next frame', nextOffset: 20, missed: 0 },
     })
     await h.c.settled()
-    expect(h.rooms[0].sent.flatMap((p) => p.chunks).map((x) => x.chunk)).toEqual(['next frame'])
+    expect(drawing(chunksIn(h.rooms[0])).map((x) => x.chunk)).toEqual(['next frame'])
   })
 
   it('keeps the emulator alive while another device is still watching', async () => {
@@ -785,6 +835,58 @@ describe('output pump', () => {
     const chunks = h.rooms[1].sent.flatMap((p) => p.chunks)
     expect(chunks.map((x) => x.chunk)).toEqual([' and two'])
     expect(chunks[0].replaceFrom).toBe(8)
+  })
+
+  it('shows a second phone the screen the first one is already watching', async () => {
+    // The reported bug, for a terminal that is already being watched. Main only
+    // reads a terminal when it JOINS the watched set, and a second phone joining
+    // does not change that set -- so without the bridge's own copy, the second
+    // phone got nothing until the terminal printed again, and then only edits
+    // against a screen it never had. The terminal here is idle: no terminalOutput
+    // follows the subscribe.
+    const h = core([device('d1'), device('d2')])
+    attach(h.rooms[0])
+    attach(h.rooms[1])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'Claude Code\r\n> waiting for input', nextOffset: 32, missed: 0 },
+      reset: true,
+    })
+    await h.c.settled()
+    const first = onPhone(chunksIn(h.rooms[0]))
+    expect(first.text).toContain('> waiting for input')
+    h.rooms[0].sent.length = 0
+    h.rooms[1].sent.length = 0
+
+    await h.c.handleRemoteRequest('d2', { id: 2, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    expect(onPhone(chunksIn(h.rooms[1]))).toEqual(first)
+    // And the phone that was already watching is left exactly as it was.
+    expect(h.rooms[0].sent).toHaveLength(0)
+  })
+
+  it('shows a phone that lost its copy the screen again when it reopens the terminal', async () => {
+    // The app was killed while a terminal was open, so it never unsubscribed and
+    // the bridge still counts it as watching. Relaunched, it opens the terminal
+    // again holding nothing -- and to the bridge that is a REPEAT subscribe, which
+    // changes nothing main can see. It still has to come back with the screen.
+    const h = subscribed()
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'Claude Code\r\n> waiting for input', nextOffset: 32, missed: 0 },
+      reset: true,
+    })
+    await h.c.settled()
+    const before = onPhone(chunksIn(h.rooms[0]))
+    h.rooms[0].sent.length = 0
+
+    await h.c.handleRemoteRequest('d1', { id: 2, request: { kind: 'subscribe', terminalId: 't1' } })
+
+    expect(onPhone(chunksIn(h.rooms[0]))).toEqual(before)
   })
 
   it('still reports dropped output when the surviving bytes change nothing', async () => {
@@ -854,6 +956,360 @@ describe('output pump', () => {
     expect(chunks[0].chunk.endsWith('.')).toBe(true)
     expect(chunks[0].chunk).toContain('line 2999')
     expect(chunks[0].marker).toContain('skipped')
+  })
+})
+
+/** `n` rows of ordinary output, each ending in a newline. 2,000 of them come to
+ *  about 48,000 chars flattened -- more than the 32,768 of history the bridge
+ *  keeps for a phone that opens a terminal late. */
+function rows(n: number, from = 0): string {
+  return Array.from({ length: n }, (_, i) => `row ${from + i} of output here\r\n`).join('')
+}
+
+// David's report, 2026-09-30: "when i click into a terminal it does not show the
+// output or what the agent is working on until I type any kind of message". An
+// agent parked at its prompt prints nothing, so anything that waited for the
+// terminal's NEXT output waited for the user. Every test here is a phone opening
+// a terminal that is not printing, and what it has to be shown regardless.
+describe('the screen for a phone opening a terminal', () => {
+  /** Two attached phones with nothing sent to either yet. */
+  function twoPhones(flattener?: FlattenerLike) {
+    const h = core([device('d1'), device('d2')], { flattener })
+    attach(h.rooms[0])
+    attach(h.rooms[1])
+    h.rooms[0].sent.length = 0
+    h.rooms[1].sent.length = 0
+    return h
+  }
+
+  type Harness = ReturnType<typeof twoPhones>
+
+  let requestId = 0
+
+  function open(h: Harness, deviceId: string, terminalId = 't1') {
+    requestId += 1
+    return h.c.handleRemoteRequest(deviceId, { id: requestId, request: { kind: 'subscribe', terminalId } })
+  }
+
+  function close(h: Harness, deviceId: string, terminalId = 't1') {
+    requestId += 1
+    return h.c.handleRemoteRequest(deviceId, { id: requestId, request: { kind: 'unsubscribe', terminalId } })
+  }
+
+  /** One slice from main, flattened and fanned out before this returns.
+   *  `reset` is main's opening read: the terminal's whole window, from its start. */
+  async function output(h: Harness, text: string, reset = false): Promise<void> {
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: text, nextOffset: text.length, missed: 0 },
+      ...(reset ? { reset: true } : {}),
+    })
+    await h.c.settled()
+  }
+
+  function announcements(h: Harness): number {
+    return h.sent.filter((m) => m.kind === 'subscriptionsChanged').length
+  }
+
+  it('shows a phone switching back the screen as it is now, not as it left it', async () => {
+    // Opening another terminal unsubscribes this one. With a second phone still
+    // watching, the set main pumps does not change -- so main reads nothing when
+    // the first phone comes back, and it used to come back to the screen it
+    // left, frozen, until the agent next printed.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await open(h, 'd2')
+    await output(h, 'Claude Code\r\n> ', true)
+    const left = onPhone(chunksIn(h.rooms[0]))
+    await close(h, 'd1')
+    await output(h, 'fix the tests\r\nWorking...')
+    const before = announcements(h)
+    h.rooms[0].sent.length = 0
+
+    await open(h, 'd1')
+
+    const back = onPhone(chunksIn(h.rooms[0]), left)
+    expect(back).toEqual(onPhone(chunksIn(h.rooms[1])))
+    expect(back.text).toBe('Claude Code\n> fix the tests\nWorking...')
+    // All of it from the bridge's own grid: main was not asked for anything.
+    expect(announcements(h)).toBe(before)
+  })
+
+  it('clears a copy from an earlier visit before drawing a long screen', async () => {
+    // A copy kept from before the desktop restarted is numbered in a stream that
+    // no longer exists. Drawn over rather than cleared, a screen that starts
+    // past the end of that copy would be appended to it.
+    const h = twoPhones()
+    await open(h, 'd2')
+    await output(h, rows(2000), true)
+
+    await open(h, 'd1')
+
+    const chunks = chunksIn(h.rooms[0])
+    expect(chunks[0]).toMatchObject({ chunk: '', replaceFrom: FORGET_FROM })
+    expect(chunks[1].replaceFrom).toBeGreaterThan(0)
+    const early = onPhone(chunksIn(h.rooms[1]))
+    // The second old copy had a gap notice drawn into it, so it runs a notice
+    // longer than its end mark says. A clear at 0 kept exactly that much of it.
+    for (const old of [
+      { text: 'old copy', end: 8 },
+      { text: formatGapMarker(4096) + 'old copy', end: 8 },
+    ]) {
+      const late = onPhone(chunks, old)
+      expect(late.end).toBe(early.end)
+      expect(early.text.endsWith(late.text)).toBe(true)
+      expect(late.text.startsWith('row ')).toBe(true)
+      expect(late.text.endsWith('row 1999 of output here')).toBe(true)
+    }
+  }, 60_000)
+
+  it('starts the screen over on a phone whose copy holds a gap notice', async () => {
+    // The phone draws a gap notice into its copy without counting it in the
+    // copy's end mark, so afterwards the copy runs a notice longer than the mark
+    // says. A whole screen anchored at 0 counted back from that mark kept the
+    // difference -- the top of the OLD screen, over the new one, for good.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, 'Claude Code\r\n> first prompt', true)
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: '\r\nlater', nextOffset: 99_000, missed: 40_000 },
+    })
+    await h.c.settled()
+    const gapped = onPhone(chunksIn(h.rooms[0]))
+    expect(gapped.text).toContain('output skipped')
+    expect(gapped.text.length).toBeGreaterThan(gapped.end)
+    h.rooms[0].sent.length = 0
+
+    // Main's opening read, as when the phone leaves and comes back as the only
+    // one watching.
+    await output(h, 'Claude Code\r\n> second prompt', true)
+
+    expect(onPhone(chunksIn(h.rooms[0]), gapped).text).toBe('Claude Code\n> second prompt')
+  })
+
+  it('keeps a phone that opened late in step with one that watched from the start', async () => {
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, rows(2000), true)
+    await open(h, 'd2')
+
+    await output(h, 'Thinking... (1s)')
+    await output(h, '\r\x1b[2KThinking... (2s)')
+    await output(h, `\r\x1b[2Kdone\r\n${rows(50, 2000)}`)
+    await output(h, '\x1b[A\x1b[2K')
+
+    const early = onPhone(chunksIn(h.rooms[0]))
+    const late = onPhone(chunksIn(h.rooms[1]))
+    expect(late.end).toBe(early.end)
+    expect(early.text.endsWith(late.text)).toBe(true)
+    expect(late.text).toContain('done\nrow 2000 of output here')
+    expect(late.text).not.toContain('Thinking')
+  }, 60_000)
+
+  it('leaves a phone that is already current exactly as it was', async () => {
+    // A phone back from a tunnel is sent what queued while it was away, and may
+    // then open the terminal again. It holds the whole stream -- clearing it
+    // for the screen would throw away the history above the screen.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, rows(2000), true)
+    h.rooms[0].state = 'offline'
+    await output(h, rows(20, 2000))
+    attach(h.rooms[0])
+    const current = onPhone(chunksIn(h.rooms[0]))
+    expect(current.text).toContain('row 0 of output here')
+
+    await open(h, 'd1')
+
+    expect(onPhone(chunksIn(h.rooms[0]))).toEqual(current)
+  }, 60_000)
+
+  it('queues the screen behind a backlog the phone has not been sent yet', async () => {
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, 'Claude Code\r\n> ', true)
+    const kept = onPhone(chunksIn(h.rooms[0]))
+    h.rooms[0].state = 'offline'
+    h.rooms[0].sent.length = 0
+    await output(h, 'fix the tests\r\nWorking...')
+
+    await open(h, 'd1')
+    expect(h.rooms[0].sent).toHaveLength(0)
+    attach(h.rooms[0])
+
+    expect(onPhone(chunksIn(h.rooms[0]), kept).text).toBe('Claude Code\n> fix the tests\nWorking...')
+  })
+
+  it('leaves the drawing to main while main has not read the terminal yet', async () => {
+    // No grid yet: main's opening read is on its way and draws the terminal for
+    // every phone watching it at once. Opening it twice before then is not two
+    // screens' worth of anything.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await open(h, 'd1')
+    await open(h, 'd2')
+    expect(chunksIn(h.rooms[0])).toEqual([])
+    expect(chunksIn(h.rooms[1])).toEqual([])
+
+    await output(h, 'Claude Code\r\n> ', true)
+
+    expect(onPhone(chunksIn(h.rooms[0])).text).toBe('Claude Code\n>')
+    expect(onPhone(chunksIn(h.rooms[1])).text).toBe('Claude Code\n>')
+  })
+
+  it('starts the screen over when main reads the terminal from the top again', async () => {
+    // Main's opening read is the whole window. Drawn on top of the grid already
+    // here, the terminal would appear twice, the second copy typed after the
+    // first one's cursor.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, 'Claude Code\r\n> first prompt', true)
+    await output(h, 'Claude Code\r\n> second prompt', true)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toBe('Claude Code\n> second prompt')
+  })
+
+  it('clears the phone when main reads a terminal and finds it empty', async () => {
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, 'old screen')
+    await output(h, '', true)
+    const chunks = chunksIn(h.rooms[0])
+    expect(chunks.at(-1)).toMatchObject({ chunk: '', replaceFrom: 0 })
+    expect(onPhone(chunks).text).toBe('')
+  })
+
+  it('tells a second phone that an empty terminal is empty', async () => {
+    // Not "there is no screen yet" -- that leaves a phone showing what it held
+    // for this terminal the last time it looked.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, '', true)
+    await open(h, 'd2')
+    expect(onPhone(chunksIn(h.rooms[1]), { text: 'what it showed last week', end: 24 }).text).toBe('')
+  })
+
+  it('takes lines off the phone when the screen gets shorter', async () => {
+    // A menu closing, a line erased: the edit carries no text, only the point to
+    // cut back to. It used to be dropped as empty, leaving the menu on the phone.
+    const h = twoPhones()
+    await open(h, 'd1')
+    await output(h, 'menu\r\n  option one', true)
+    await output(h, '\x1b[2K')
+    const chunks = chunksIn(h.rooms[0])
+    expect(chunks.at(-1)).toMatchObject({ chunk: '', replaceFrom: 4 })
+    expect(onPhone(chunks).text).toBe('menu')
+  })
+
+  it('plants no grid from a slice that arrives for a terminal nobody watches', async () => {
+    // Main read it just before hearing the last phone had gone. Fed, it would be
+    // a grid holding one stray slice -- and the next phone to open the terminal
+    // would be shown that as its screen instead of waiting for main's read.
+    const h = twoPhones()
+    await output(h, 'stray slice read just before the last phone left')
+    await open(h, 'd1')
+    expect(chunksIn(h.rooms[0])).toEqual([])
+    expect(h.sent.filter((m) => m.kind === 'subscriptionsChanged').at(-1)).toEqual({
+      kind: 'subscriptionsChanged',
+      terminalIds: ['t1'],
+    })
+  })
+})
+
+// A grid is only right while something feeds it. Once nobody watches a terminal
+// main stops reading it, and a grid kept past that point is a stale screen the
+// next phone to open the terminal would be drawn from.
+describe('letting a terminal grid go', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function recording() {
+    const real = new ScreenFlattener()
+    const forgot: string[] = []
+    const flattener: FlattenerLike = {
+      feed: (id, raw, size) => real.feed(id, raw, size),
+      snapshot: (id) => real.snapshot(id),
+      forget: (id) => {
+        forgot.push(id)
+        real.forget(id)
+      },
+      forgetAll: () => real.forgetAll(),
+    }
+    return { flattener, forgot }
+  }
+
+  /** d1 watching t1 with something on screen, and d2 paired but watching nothing. */
+  async function watched() {
+    const { flattener, forgot } = recording()
+    const h = core([device('d1'), device('d2')], { flattener })
+    attach(h.rooms[0])
+    attach(h.rooms[1])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.c.handleHostMessage({
+      kind: 'terminalOutput',
+      terminalId: 't1',
+      slice: { output: 'SECRET=hunter2', nextOffset: 14, missed: 0 },
+      reset: true,
+    })
+    await h.c.settled()
+    h.rooms[1].sent.length = 0
+    // The opening read starts its grid over, which is a forget of its own.
+    forgot.length = 0
+    return { h, forgot }
+  }
+
+  it('lets it go when the last phone closes the terminal', async () => {
+    const { h, forgot } = await watched()
+    await h.c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
+    expect(forgot).toEqual(['t1'])
+  })
+
+  it('keeps it while another phone is still watching', async () => {
+    const { h, forgot } = await watched()
+    await h.c.handleRemoteRequest('d2', { id: 2, request: { kind: 'subscribe', terminalId: 't1' } })
+    await h.c.handleRemoteRequest('d1', { id: 3, request: { kind: 'unsubscribe', terminalId: 't1' } })
+    expect(forgot).toEqual([])
+  })
+
+  it('lets go of only the terminal that stopped being watched', async () => {
+    const { h, forgot } = await watched()
+    await h.c.handleRemoteRequest('d1', { id: 2, request: { kind: 'subscribe', terminalId: 't2' } })
+    await h.c.handleRemoteRequest('d1', { id: 3, request: { kind: 'unsubscribe', terminalId: 't2' } })
+    expect(forgot).toEqual(['t2'])
+  })
+
+  it.each([
+    ['the phone is removed in Settings', (h: ReturnType<typeof core>) =>
+      h.c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })],
+    ['read is withdrawn from the phone', (h: ReturnType<typeof core>) =>
+      h.c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: { ...NO_CAPABILITIES } })],
+    ['the phone unpairs itself', (h: ReturnType<typeof core>) =>
+      h.c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unpair' } })],
+  ])('lets it go when %s', async (_, leave) => {
+    // Each of these empties a watch list without an unsubscribe. The grid used
+    // to survive all of them, and the next phone to open the terminal was
+    // drawn from it -- a screen from whenever that phone left.
+    const { h, forgot } = await watched()
+    await leave(h)
+    expect(forgot).toEqual(['t1'])
+
+    await h.c.handleRemoteRequest('d2', { id: 3, request: { kind: 'subscribe', terminalId: 't1' } })
+    expect(chunksIn(h.rooms[1])).toEqual([])
+  })
+
+  it('lets it go when a pairing expires', async () => {
+    // Only the sweep's clock is faked. xterm finishes a write off a real timer,
+    // so faking that would leave the feed below waiting for ever.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    const { h, forgot } = await watched()
+    vi.setSystemTime(Date.now() + DEVICE_IDLE_EXPIRY_MS + 1)
+    vi.advanceTimersByTime(DEVICE_EXPIRY_SWEEP_MS)
+    expect(h.sent.filter((m) => m.kind === 'devicesChanged').at(-1)?.devices).toEqual([])
+    expect(forgot).toEqual(['t1'])
+    h.c.handleHostMessage({ kind: 'shutdown' })
   })
 })
 

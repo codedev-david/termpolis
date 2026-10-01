@@ -84,7 +84,7 @@ export interface BridgeCoreDeps {
 /** The part of ScreenFlattener this file uses. Named so a test can stand in for
  *  a real emulator -- there is no input that makes xterm throw on demand, and the
  *  handler's promise chain has to survive one that does. */
-export type FlattenerLike = Pick<ScreenFlattener, 'feed' | 'forget' | 'forgetAll'>
+export type FlattenerLike = Pick<ScreenFlattener, 'feed' | 'snapshot' | 'forget' | 'forgetAll'>
 
 export interface BridgeCore {
   handleHostMessage(msg: HostToBridge): void
@@ -417,26 +417,68 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     announceSubscriptions()
   }
 
-  /** The last set main was told about, as a stable key. Starts as the empty set,
-   *  which is what main assumes before the first announcement -- so a core that
-   *  opens with nothing subscribed correctly says nothing. */
-  let announcedSubscriptions = ''
+  /** The last set main was told about, sorted. Starts as the empty set, which is
+   *  what main assumes before the first announcement -- so a core that opens
+   *  with nothing subscribed correctly says nothing. */
+  let announced: string[] = []
 
   /** Tell main which terminals are worth pumping, but only when that changes.
    *
    *  Main pumps PTY output for exactly this set. A phone re-subscribing on every
    *  reconnect is routine, and re-announcing an identical set would wake main and
    *  reset its pump for no reason -- so the comparison is on the SORTED ids
-   *  rather than on insertion order, which varies with who subscribed first. */
+   *  rather than on insertion order, which varies with who subscribed first.
+   *
+   *  It is also where a terminal's emulator is let go. A terminal leaving this
+   *  set has nobody left watching it, and main is about to stop reading it, so
+   *  its grid would never be fed again; when a phone opens it next, main's
+   *  opening read starts the screen over from the whole window anyway. Every
+   *  way a watch list can empty ends here -- an unsubscribe, a revoke, an
+   *  unpair, a withdrawn `read` grant, an expired pairing. Forgetting only on
+   *  unsubscribe, as this once did, left the other four keeping a grid alive
+   *  for a terminal nobody was watching, and the next phone to open it was sent
+   *  edits against that stale grid instead of the terminal's real screen. */
   function announceSubscriptions(): void {
     const terminalIds = fanout.subscribedTerminals().sort()
     // '\u0000' as an escape, never a literal NUL: a raw one makes the whole file
     // read as binary to grep and to the code indexer, which is how it hid before
     // (v1.25.6). The separator itself is right -- it cannot occur in a uuid.
-    const key = terminalIds.join('\u0000')
-    if (key === announcedSubscriptions) return
-    announcedSubscriptions = key
+    if (terminalIds.join('\u0000') === announced.join('\u0000')) return
+    for (const id of announced) if (!terminalIds.includes(id)) flattener.forget(id)
+    announced = terminalIds
     deps.send({ kind: 'subscriptionsChanged', terminalIds })
+  }
+
+  /** Queue one device the screen of one terminal as it stands right now.
+   *
+   *  Main reads a terminal when it prints, and once more when it joins the set
+   *  announced above. Neither happens when a phone opens a terminal that is
+   *  ALREADY being watched -- a second phone, or the same phone back without its
+   *  copy after the app was killed, re-subscribing into a subscription this
+   *  process never dropped. Such a phone was sent only the next edit, measured
+   *  against a screen it had never been given, so it sat blank until the
+   *  terminal happened to print -- which, for an agent parked at its prompt, is
+   *  when the user typed into it.
+   *
+   *  `fresh` is whether the device was not watching the terminal until now. It
+   *  may still hold a copy from an earlier visit, anchored in a numbering that
+   *  may not even exist any more, so that copy is cleared before the screen is
+   *  drawn. A device that WAS watching holds this stream or nothing, and its
+   *  queue still carries whatever it has not been sent; clearing would throw
+   *  away the history it kept across a dropped connection, so the screen is
+   *  drawn over the end of its copy instead -- which leaves a copy that is
+   *  already current exactly as it was. A screen that starts at 0 replaces the
+   *  copy either way (see `FORGET_FROM`): it is the whole stream, so there is no
+   *  history beyond it to keep.
+   *
+   *  Nothing when there is no grid: no output has been flattened for the
+   *  terminal since it joined the watched set, and main's opening read is
+   *  already on its way to draw it for every watcher at once. */
+  function resync(deviceId: string, terminalId: string, fresh: boolean): void {
+    const view = flattener.snapshot(terminalId)
+    if (view === null) return
+    fanout.seed(deviceId, terminalId, view, fresh)
+    pump(deviceId)
   }
 
   function handleHostMessage(msg: HostToBridge): void {
@@ -531,16 +573,32 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // into a grid of the wrong width lands on the wrong cells -- holes
         // punched through words, and a spinner frame settled as permanent text
         // while the real terminal is still painting over it.
-        const { terminalId, slice, size } = msg
+        const { terminalId, slice, size, reset } = msg
         flattening = flattening
           .then(async () => {
+            // Nobody is watching it. Main pumps only the announced set, but a
+            // slice it read just before hearing that a terminal left is still on
+            // its way here, and feeding it would plant a grid holding one stray
+            // slice for a terminal nobody watches -- the grid the next phone to
+            // open it would then be sent edits against. Asked when the slice's
+            // turn comes rather than when it arrived, because that is when it
+            // would be fed.
+            if (fanout.subscribersOf(terminalId).length === 0) return
+            // Main's opening read: the whole window again, from its start. Drawn
+            // on top of the grid already here it would show the terminal twice,
+            // so the grid starts over, and its first edit replaces everything a
+            // phone holds (`replaceFrom` 0, which the fan-out turns into the
+            // whole copy -- see `FORGET_FROM`).
+            if (reset === true) flattener.forget(terminalId)
             const edit = await flattener.feed(terminalId, slice.output, size)
-            if (edit === null && slice.missed === 0) return
+            if (edit === null && slice.missed === 0 && reset !== true) return
             fanout.ingest(terminalId, {
               output: edit?.text ?? '',
               nextOffset: slice.nextOffset,
               missed: slice.missed,
-              replaceFrom: edit?.replaceFrom ?? null,
+              // An opening read that draws nothing -- an empty terminal -- must
+              // still clear whatever an earlier screen left on the phone.
+              replaceFrom: edit?.replaceFrom ?? (reset === true ? 0 : null),
             })
             for (const deviceId of rooms.keys()) pump(deviceId)
           })
@@ -632,21 +690,20 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // response said no while the output stream said yes. A side effect applied
       // ahead of the check that authorises it is not a check.
       if (env.request.kind === 'subscribe') {
-        fanout.subscribe(deviceId, env.request.terminalId)
+        const { terminalId } = env.request
+        const fresh = !fanout.terminalsOf(deviceId).includes(terminalId)
+        fanout.subscribe(deviceId, terminalId)
+        // The screen as it stands, for a phone opening a terminal somebody is
+        // already watching -- main will not read it again until it prints.
+        resync(deviceId, terminalId, fresh)
         // Before the phone has waited for a change: main only sends a status
         // when the answer moves, so a terminal that has been idle for an hour
         // would otherwise open with a blank label and keep it.
-        sendStatus(deviceId, env.request.terminalId)
+        sendStatus(deviceId, terminalId)
       }
-      if (env.request.kind === 'unsubscribe') {
-        fanout.unsubscribe(deviceId, env.request.terminalId)
-        // Only once the last watcher is gone: an emulator kept for a terminal
-        // nobody reads is a grid maintained for no one, but dropping one that
-        // another phone is still watching would restart its scrollback.
-        if (fanout.subscribersOf(env.request.terminalId).length === 0) {
-          flattener.forget(env.request.terminalId)
-        }
-      }
+      // The emulator goes when the LAST watcher does, and that is decided in
+      // `announceSubscriptions` -- the one place every way of leaving ends up.
+      if (env.request.kind === 'unsubscribe') fanout.unsubscribe(deviceId, env.request.terminalId)
       // After the fan-out, never before: the announcement has to follow what the
       // fan-out actually holds, or main starts pumping a terminal for a device
       // that was refused. `announceSubscriptions` is a no-op when nothing moved.

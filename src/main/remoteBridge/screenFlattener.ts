@@ -33,9 +33,12 @@
 // The grid is split in two, and that split is what makes this cheap and exact.
 //
 //   settled  Lines that have scrolled above the viewport. A terminal cannot
-//            write there any more, so they are final: appended once, never
-//            looked at again, and never re-sent. Only their total length is
-//            kept, because nothing here ever needs to read them back.
+//            write there any more, so they are final: appended once and never
+//            re-sent to a phone that already has them. Their total length is
+//            kept, plus a bounded tail of the text itself (`TAIL_CHARS`) for
+//            the one reader that has to look back: a phone that opens the
+//            terminal after it was already being watched, and so was never
+//            sent any of it (see `snapshot`).
 //   live     The viewport. Rewritten in place by every redraw, so it is
 //            re-rendered on each feed and diffed against its previous form.
 //
@@ -84,6 +87,15 @@ const SEGMENT_LINES = 1000
 const DEFAULT_COLS = 120
 const DEFAULT_ROWS = 30
 
+/** How much settled text each screen keeps for a phone that opens it late.
+ *
+ *  The same figure as main's rolling window (terminalOutputBuffer.ts), so the
+ *  second phone to open a terminal gets about the history the first one did --
+ *  the first gets whatever that window flattens to. A bound rather than all of
+ *  it: this is per watched terminal, for as long as it is watched, and a
+ *  session runs all day. */
+const TAIL_CHARS = 32_768
+
 const RESET = '\x1b[0m'
 /** DECSC/DECRC. Used to mark a spot mid-replay and come back to it once
  *  the emulator has laid the rest of the text out for itself. */
@@ -112,6 +124,9 @@ interface Screen {
   /** Total length of everything settled so far. The offset the live region
    *  starts at, which is what every `replaceFrom` is measured against. */
   settledLen: number
+  /** The last `TAIL_CHARS` or fewer of the settled text, starting on a row.
+   *  It ends exactly at `settledLen`. */
+  tail: string
   /** Buffer row up to which the current buffer has been settled (exclusive). */
   settledCount: number
   /** Where `settledCount` stood in the normal buffer, kept across an excursion
@@ -133,6 +148,20 @@ interface Screen {
 function usable(size: TerminalSize | undefined): TerminalSize | undefined {
   if (size === undefined) return undefined
   return size.cols >= 1 && size.rows >= 1 ? size : undefined
+}
+
+/** A screen's settled tail once `settled` has been appended to it.
+ *
+ *  Cut on a row, never inside one. A row cut part-way would start the late
+ *  phone's copy mid-line -- and mid-colour, since the reset that makes each run
+ *  self-contained sits at the front of the run. Settled text is whole rows each
+ *  ending in a newline, so a newline always exists to cut after; a single row
+ *  longer than the whole budget leaves the tail empty, which costs that phone
+ *  some history and nothing else. */
+function keepTail(tail: string, settled: string): string {
+  const joined = tail + settled
+  if (joined.length <= TAIL_CHARS) return joined
+  return joined.slice(joined.indexOf('\n', joined.length - TAIL_CHARS - 1) + 1)
 }
 
 /** How many leading chars two strings share. */
@@ -227,9 +256,13 @@ export class ScreenFlattener {
    *  Returns null when nothing observable changed, which is the common case for
    *  a redraw that repaints the same frame -- the spinner between ticks, say. */
   async feed(terminalId: string, raw: string, size?: TerminalSize): Promise<FlatEdit | null> {
-    if (raw === '') return null
     const wanted = usable(size)
+    // Made even for no bytes at all. An opening read of a terminal that has
+    // printed nothing is still a screen -- an empty one -- and `snapshot` has to
+    // be able to say so: "no screen" there left the next phone to open it
+    // showing whatever it had held for that terminal before.
     const screen = this.screenFor(terminalId, wanted)
+    if (raw === '') return null
     // Before the bytes, never after: these bytes were drawn for this geometry,
     // and applying the resize afterwards would emulate them against the old one.
     if (wanted !== undefined) this.applySize(screen, wanted)
@@ -248,6 +281,7 @@ export class ScreenFlattener {
 
     const live = this.renderLive(screen)
     screen.settledLen = base + settled.length
+    screen.tail = keepTail(screen.tail, settled)
     screen.live = live
 
     // The phone holds `settled-so-far + before`; it should hold that same
@@ -257,6 +291,28 @@ export class ScreenFlattener {
     const shared = commonPrefix(before, after)
     if (shared === before.length && shared === after.length) return null
     return { replaceFrom: base + shared, text: after.slice(shared) }
+  }
+
+  /** The screen as it stands, for a phone that has none of it.
+   *
+   *  The kept settled tail plus the viewport, anchored where the tail starts in
+   *  the stream. A phone that applies it holds the end of exactly what a phone
+   *  watching from the start holds, in the same numbering, so every edit `feed`
+   *  returns afterwards applies to both alike. That is what lets a second phone
+   *  join a terminal without the first being sent anything at all.
+   *
+   *  It reads only what `feed` commits, and `feed` commits synchronously once
+   *  its bytes are through the emulator, so a snapshot taken while a feed is
+   *  still in flight is the screen from before it -- which is precisely the
+   *  screen that feed's own edit is measured against.
+   *
+   *  Null when there is no emulator for this terminal: nothing at all has been
+   *  fed for it since it was last forgotten, not even an empty read. That is
+   *  "no screen yet", which is not the same answer as an empty screen. */
+  snapshot(terminalId: string): FlatEdit | null {
+    const screen = this.screens.get(terminalId)
+    if (screen === undefined) return null
+    return { replaceFrom: screen.settledLen - screen.tail.length, text: screen.tail + screen.live }
   }
 
   /** Drop a terminal's emulator. Called when nobody is watching it any more:
@@ -284,6 +340,7 @@ export class ScreenFlattener {
       cols,
       rows,
       settledLen: 0,
+      tail: '',
       settledCount: 0,
       normalSettledCount: 0,
       inAlt: false,

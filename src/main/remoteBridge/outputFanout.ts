@@ -14,6 +14,31 @@ const DEFAULT_CAPACITY_CHARS = 262_144
  *  how a field gets added to one and not the other. */
 export type DrainedChunk = OutputChunk
 
+/** The anchor of a chunk that carries nothing and makes the NEXT anchored chunk
+ *  replace a phone's whole copy.
+ *
+ *  An anchor at 0 does not do that on its own. The phone keeps what sits before
+ *  an anchor by counting back from the end of its copy -- `held.length -
+ *  (outputEnd - replaceFrom)` -- and a gap notice it draws into its copy is not
+ *  counted in `outputEnd`. After one, the copy runs a notice longer than its
+ *  end mark says, so a screen anchored at 0 kept that much of the OLD copy's
+ *  head above itself: a stray "Claude Code" over the real one, or the stub of a
+ *  notice. For good, too -- every later anchor counts back the same way -- and
+ *  one notice longer with every gap.
+ *
+ *  An anchor past the end of any copy is the case the phone clamps: it keeps
+ *  everything, adds nothing and takes the anchor as its new end. Counted back
+ *  from there, the next anchor keeps nothing at all, so whatever comes next is
+ *  the whole copy, however far the copy had drifted. Every phone since 1.1.0
+ *  applies chunks that way and accepts any whole number here, so this needs no
+ *  new phone. A notice `trim` folds into one is wiped by the screen behind it,
+ *  which is right: what was lost came before a whole new screen, not out of it. */
+export const FORGET_FROM = Number.MAX_SAFE_INTEGER
+
+function forgetting(terminalId: string): QueuedChunk {
+  return { terminalId, chunk: '', missed: 0, replaceFrom: FORGET_FROM }
+}
+
 export class OutputFanout {
   /** One entry per device, holding BOTH what it watches and what is waiting for it.
    *
@@ -82,9 +107,19 @@ export class OutputFanout {
     terminalId: string,
     slice: { output: string; nextOffset: number; missed: number; replaceFrom?: number | null },
   ): void {
-    if (slice.output === '' && slice.missed === 0) return
+    // Nothing to add, nothing lost, and nothing to take away. An empty chunk
+    // WITH an anchor is not nothing: it truncates the phone's copy to that
+    // point. That is how a screen that got shorter -- a menu closing, a cleared
+    // terminal -- reaches the phone, and it used to be dropped right here, which
+    // left the old lines on the phone until something else happened to redraw
+    // over them.
+    if (slice.output === '' && slice.missed === 0 && (slice.replaceFrom ?? null) === null) return
     for (const d of this.devices.values()) {
       if (!d.terminals.has(terminalId)) continue
+      // Anchored at 0 is a whole screen -- main's opening read, a new grid's first
+      // edit, a screen redrawn from its first char -- and has to replace the
+      // whole copy, which the anchor alone does not (see `FORGET_FROM`).
+      if (slice.replaceFrom === 0) d.queue.push(forgetting(terminalId))
       d.queue.push({
         terminalId,
         chunk: slice.output,
@@ -93,6 +128,33 @@ export class OutputFanout {
       })
       this.trim(d.queue)
     }
+  }
+
+  /** Queue one terminal's whole screen for ONE device -- the one that has just
+   *  opened it, and no other.
+   *
+   *  `view` is the screen as a single edit (the flattener's `snapshot`), in the
+   *  same numbering as every edit `ingest` queues, so whatever arrives after it
+   *  applies on top of it. `clear` makes it replace the device's whole copy
+   *  rather than the end of it (see `FORGET_FROM`). So does a screen anchored at
+   *  0 whatever `clear` says: it is the whole screen, and drawn over the end of
+   *  a copy the phone has written a gap notice into, it would keep that much of
+   *  the copy's head above itself.
+   *
+   *  Refused for a terminal the device is not watching. The watch list is the
+   *  `read` check (see `subscribersOf`), and a queue is the one place output
+   *  leaves this process for a phone. */
+  seed(
+    deviceId: string,
+    terminalId: string,
+    view: { replaceFrom: number; text: string },
+    clear: boolean,
+  ): void {
+    const d = this.devices.get(deviceId)
+    if (!d?.terminals.has(terminalId)) return
+    if (clear || view.replaceFrom === 0) d.queue.push(forgetting(terminalId))
+    d.queue.push({ terminalId, chunk: view.text, missed: 0, replaceFrom: view.replaceFrom })
+    this.trim(d.queue)
   }
 
   /** Enforces the per-device ceiling, converting evicted chars into a missed count

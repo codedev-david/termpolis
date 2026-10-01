@@ -1201,6 +1201,38 @@ describe('an edit that replaces what the phone already showed', () => {
     expect(view()).toBe('joined late morX')
   })
 
+  it('makes the edit after an anchor past every copy the whole copy, however far it drifted', async () => {
+    // A gap notice goes into the copy but not into `outputEnd`, so after one the
+    // copy runs a notice longer than its end mark says, and a screen anchored at
+    // 0 keeps that much of the old copy above itself. The desktop starts a whole
+    // screen over with an empty chunk anchored past the end of any copy
+    // (`FORGET_FROM` in the desktop's outputFanout.ts) and relies on exactly
+    // this: clamped high, it keeps everything and moves the end mark there, so
+    // the edit after it keeps nothing. Desktops talking to 1.1.0 depend on it.
+    await attached()
+    feed({ chunk: 'Claude Code\n> first prompt', replaceFrom: 0 })
+    feed({
+      chunk: '\nlater',
+      replaceFrom: 26,
+      missed: 40_000,
+      marker: '\n--- 39.1 KB of output skipped ---\n',
+    })
+    const drifted = view()
+    expect(drifted).toContain('skipped')
+
+    feed({ chunk: '', replaceFrom: Number.MAX_SAFE_INTEGER })
+    expect(view()).toBe(drifted)
+    feed({ chunk: 'Claude Code\n> second prompt', replaceFrom: 0 })
+    expect(view()).toBe('Claude Code\n> second prompt')
+
+    // And a screen that starts further in, as one a phone opening late is sent.
+    feed(
+      { chunk: '', replaceFrom: Number.MAX_SAFE_INTEGER },
+      { chunk: 'row 1999', replaceFrom: 48_000 },
+    )
+    expect(view()).toBe('row 1999')
+  })
+
   it('splices the gap notice between what it keeps and the replacement', async () => {
     await attached()
     feed({ chunk: 'held' })

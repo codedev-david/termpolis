@@ -207,13 +207,15 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   function newPump(): OutputPump {
     return createOutputPump({
       read: (terminalId, fromOffset) => deps.readOutput(terminalId, fromOffset),
-      send: (terminalId, slice) => {
+      send: (terminalId, slice, reset) => {
         const size = deps.terminalSize(terminalId)
         deps.sendToBridge({
           kind: 'terminalOutput',
           terminalId,
           slice,
           ...(size === null ? {} : { size }),
+          // Only when set, so an ordinary slice is the same message it always was.
+          ...(reset ? { reset: true } : {}),
         })
       },
       setTimer: (fn, ms) => deps.setTimer(fn, ms),
@@ -245,6 +247,18 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       case 'subscriptionsChanged':
         pump?.setSubscriptions(m.terminalIds)
         statusPump?.setSubscriptions(m.terminalIds)
+        break
+      case 'ready':
+        // A bridge that has just started is watching nothing, so neither pump
+        // may think otherwise. After a first launch they are new and already
+        // agree. After a crash they do not: the supervisor respawns the child
+        // without `launch()`, and both pumps still hold the dead bridge's set.
+        // A phone that then opens its terminal again makes the new bridge
+        // announce that SAME set, nothing joins, and there is no opening read
+        // and no status -- a blank screen until the terminal prints, and then
+        // only the part it printed. Emptying the set here makes that a join.
+        pump?.setSubscriptions([])
+        statusPump?.setSubscriptions([])
         break
       default:
         break

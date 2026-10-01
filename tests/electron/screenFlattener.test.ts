@@ -425,3 +425,120 @@ describe('a full-screen program taking over', () => {
     expect(phone.text.split('before 0\n').length - 1).toBe(1)
   })
 })
+
+// A phone that opens a terminal somebody else is already watching has been sent
+// none of it, and main has no reason to read that terminal again. `snapshot` is
+// the screen for that phone: the end of what a phone watching from the start
+// holds, in the same numbering, so every later edit applies to both alike.
+describe('the screen for a phone that opens a terminal late', () => {
+  /** The late phone's view is a suffix of the early phone's -- the same text at
+   *  the same offsets -- and nothing on the early phone past it. */
+  function expectSuffixOf(phone: Phone, snap: FlatEdit | null): void {
+    expect(snap).not.toBeNull()
+    expect(phone.view.slice(snap?.replaceFrom)).toBe(snap?.text)
+  }
+
+  it('has no screen for a terminal nothing was drawn for', () => {
+    expect(new ScreenFlattener(80, 24).snapshot('t1')).toBeNull()
+  })
+
+  it('has an empty screen for a terminal that was read and had nothing in it', async () => {
+    // Not the same answer as no screen at all. The next phone to open it has to
+    // be told it is blank, not left showing what it held for it before.
+    const flat = new ScreenFlattener(80, 24)
+    expect(await flat.feed('t1', '')).toBeNull()
+    expect(flat.snapshot('t1')).toEqual({ replaceFrom: 0, text: '' })
+  })
+
+  it('is everything so far while the output is short', async () => {
+    const flat = new ScreenFlattener(80, 24)
+    const phone = new Phone(flat)
+    await phone.feed('$ npm test\r\n')
+    await phone.feed(frame('Running... (1s)'))
+    await phone.feed(frame('Running... (2s)'))
+    expect(flat.snapshot('t1')).toEqual({ replaceFrom: 0, text: phone.view })
+    expect(phone.text).toBe('$ npm test\nRunning... (2s)')
+  })
+
+  it('keeps a bounded tail of long history, cut on a row', async () => {
+    const flat = new ScreenFlattener(80, 24)
+    const phone = new Phone(flat)
+    await phone.feed(lines('row', 2000, 'of output here'))
+    const snap = flat.snapshot('t1')
+    expectSuffixOf(phone, snap)
+    // Bounded: the history alone is ~48,000 chars, and the tail keeps 32,768.
+    expect(phone.view.length).toBeGreaterThan(40_000)
+    expect(snap?.replaceFrom).toBeGreaterThan(0)
+    expect(snap?.text.length).toBeLessThanOrEqual(32_768 + 80 * 24)
+    // On a row: the late phone's first line is a whole line, not the back end
+    // of one -- which could also be the back end of an escape sequence.
+    expect(phone.view[(snap?.replaceFrom ?? 0) - 1]).toBe('\n')
+    expect(plain(snap?.text ?? '')).toMatch(/^row \d+ of output here\n/)
+    expect(plain(snap?.text ?? '').endsWith('row 1999 of output here')).toBe(true)
+  }, 60_000)
+
+  it('stays in step with the early phone through every kind of change', async () => {
+    const flat = new ScreenFlattener(40, 8)
+    const phone = new Phone(flat)
+    const steps: Array<[string, TerminalSize?]> = [
+      [lines('line', 1500)],
+      [frame('Thinking... (1s)')],
+      [frame('Thinking... (2s)')],
+      ['\x1b[?1049h\x1b[2J\x1b[Hpager view'],
+      ['\x1b[?1049l'],
+      ['more\r\n', { cols: 60, rows: 10 }],
+      ['\x1b[3J\x1b[2J\x1b[Hfresh start'],
+      ['\x1b[2K\r'],
+    ]
+    for (const [raw, size] of steps) {
+      await phone.feed(raw, size)
+      expectSuffixOf(phone, flat.snapshot('t1'))
+    }
+  }, 60_000)
+
+  it('keeps every later edit applicable to the late phone', async () => {
+    const flat = new ScreenFlattener(40, 8)
+    const early = new Phone(flat)
+    await early.feed(lines('line', 1500))
+    const snap = flat.snapshot('t1')
+    let late = snap?.text ?? ''
+    const at = snap?.replaceFrom ?? 0
+    for (const raw of [frame('Thinking... (1s)'), 'done\r\n', lines('after', 30), '\x1b[A\x1b[2K']) {
+      const edit = await early.feed(raw)
+      // The late phone applies the same edit to its shorter copy. Offsets are
+      // shared, so it lands in the same place.
+      late = edit === null ? late : late.slice(0, edit.replaceFrom - at) + edit.text
+    }
+    expect(early.view.slice(at)).toBe(late)
+  }, 60_000)
+
+  it('is the screen from before a feed that is still in flight', async () => {
+    // What a feed commits, it commits in one step once its bytes are through
+    // the emulator. A snapshot taken before that is the screen the in-flight
+    // feed's own edit is measured against, so applying that edit to it is right.
+    const flat = new ScreenFlattener(80, 24)
+    await flat.feed('t1', 'first')
+    const pending = flat.feed('t1', frame('second'))
+    const snap = flat.snapshot('t1')
+    expect(snap).toEqual({ replaceFrom: 0, text: 'first' })
+    expect(apply(snap?.text ?? '', await pending)).toBe('second')
+    expect(flat.snapshot('t1')).toEqual({ replaceFrom: 0, text: 'second' })
+  })
+
+  it('leaves the tail empty rather than cut a row longer than the whole budget', async () => {
+    // Every cell a different colour from the one before, so the row encodes to
+    // about 36,000 chars -- more than the tail may hold on its own.
+    const flat = new ScreenFlattener(3000, 2)
+    const phone = new Phone(flat)
+    await phone.feed(`${'\x1b[31mx\x1b[32mx'.repeat(1500)}\x1b[0m\r\n\r\n`)
+    expect(phone.view.length).toBeGreaterThan(32_768)
+    expect(flat.snapshot('t1')).toEqual({ replaceFrom: phone.view.length, text: '' })
+  }, 60_000)
+
+  it('has no screen once the terminal is forgotten', async () => {
+    const flat = new ScreenFlattener(80, 24)
+    await flat.feed('t1', 'something')
+    flat.forget('t1')
+    expect(flat.snapshot('t1')).toBeNull()
+  })
+})

@@ -29,6 +29,7 @@ import {
   sanitizeDeviceLabel as desktopSanitizeLabel,
   MAX_DEVICE_LABEL as DESKTOP_MAX_LABEL,
 } from '../../src/main/remoteBridge/deviceLabel'
+import { FORGET_FROM, OutputFanout } from '../../src/main/remoteBridge/outputFanout'
 
 // The phone, from a tree that shares no code with the above.
 import * as phonePairing from '../../mobile/src/wire/pairing'
@@ -392,6 +393,28 @@ describe('stage 6: a request round trip', () => {
       { terminalId: 't1', chunk: 'npm test\r\n', missed: 0, marker: null, replaceFrom: null },
       { terminalId: 't1', chunk: 'thinking (2s)', missed: 0, marker: null, replaceFrom: 10 },
     ]
+    const frame = desktop.seal(
+      Uint8Array.from([FRAME_SESSION]),
+      utf8Encode(JSON.stringify({ kind: 'output', chunks })),
+    )
+    expect(parseRemoteMessage(phone.open(frame, SESSION_HEADER_BYTES)!)).toEqual({
+      kind: 'output',
+      chunks,
+    })
+  })
+
+  it('carries the empty chunk that starts a whole screen over, anchor intact', () => {
+    // The fan-out puts an empty chunk anchored past the end of any copy ahead of
+    // every whole screen (`FORGET_FROM`), so that the screen replaces the phone's
+    // copy rather than being drawn over the end of it. That only works if the
+    // anchor arrives as sent and the phone's parser takes it: a refused chunk
+    // blanks the terminal, and a rounded one is an ordinary anchor.
+    const { desktop, phone } = connect()
+    const fanout = new OutputFanout()
+    fanout.subscribe('d1', 't1')
+    fanout.ingest('t1', { output: 'Claude Code\n> ', nextOffset: 14, missed: 0, replaceFrom: 0 })
+    const chunks = fanout.drain('d1')
+    expect(chunks[0]).toMatchObject({ chunk: '', replaceFrom: FORGET_FROM })
     const frame = desktop.seal(
       Uint8Array.from([FRAME_SESSION]),
       utf8Encode(JSON.stringify({ kind: 'output', chunks })),

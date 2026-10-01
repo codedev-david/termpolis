@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { OutputFanout, formatGapMarker } from '../../src/main/remoteBridge/outputFanout'
+import { FORGET_FROM, OutputFanout, formatGapMarker } from '../../src/main/remoteBridge/outputFanout'
 
 describe('OutputFanout', () => {
   it('delivers nothing to a device that never subscribed', () => {
@@ -149,6 +149,19 @@ describe('outputFanout — gap markers', () => {
     expect(chunk.marker).toContain('40 chars')
   })
 
+  // An empty chunk WITH an anchor is not nothing: the phone truncates its copy
+  // to the anchor. It is how a screen that got shorter -- a menu closing, a
+  // cleared line -- reaches the phone, and dropping it here left the old lines
+  // showing under the new screen until something happened to draw over them.
+  it('delivers an empty slice that takes text away', () => {
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: '', nextOffset: 9, missed: 0, replaceFrom: 4 })
+    expect(f.drain('phone')).toEqual([
+      { terminalId: 't1', chunk: '', missed: 0, replaceFrom: 4, marker: null },
+    ])
+  })
+
   it('keeps one queue per device across repeated subscribes', () => {
     const f = new OutputFanout()
     f.subscribe('phone', 't1')
@@ -256,5 +269,205 @@ describe('who is watching what', () => {
     f.unsubscribe('a', 't1')
     expect(f.subscribersOf('t1')).toEqual(['b'])
     expect(f.terminalsOf('a')).toEqual([])
+  })
+})
+
+// The screen for a phone that opens a terminal somebody else is already
+// watching. Main has no reason to read that terminal again, so the whole screen
+// has to go to that one device from here -- and to no other.
+describe('seeding one device with a whole screen', () => {
+  /** The two fields a phone acts on, in queue order. */
+  function shapes(f: OutputFanout, deviceId: string) {
+    return f.drain(deviceId).map(({ chunk, replaceFrom }) => ({ chunk, replaceFrom }))
+  }
+
+  it('queues the screen for the device that asked and for no other', () => {
+    const f = new OutputFanout()
+    f.subscribe('late', 't1')
+    f.subscribe('early', 't1')
+    f.seed('late', 't1', { replaceFrom: 0, text: 'the screen' }, false)
+    expect(f.drain('late')).toEqual([
+      { terminalId: 't1', chunk: '', missed: 0, replaceFrom: FORGET_FROM, marker: null },
+      { terminalId: 't1', chunk: 'the screen', missed: 0, replaceFrom: 0, marker: null },
+    ])
+    expect(f.drain('early')).toEqual([])
+  })
+
+  it('replaces a whole copy with a screen that does not start at the beginning', () => {
+    // Whatever numbering an old copy was kept in, and however many gap notices
+    // the phone wrote into it: the screen behind a forget counts back to nothing.
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.seed('phone', 't1', { replaceFrom: 100, text: 'the screen' }, true)
+    expect(shapes(f, 'phone')).toEqual([
+      { chunk: '', replaceFrom: FORGET_FROM },
+      { chunk: 'the screen', replaceFrom: 100 },
+    ])
+  })
+
+  it('replaces a whole copy with a screen that starts at the beginning, too', () => {
+    // Anchored at 0 it used to be left to truncate on its own, which kept a gap
+    // notice's worth of the old copy's head for every notice the copy held --
+    // asked to clear or not, since a screen from 0 is the whole screen.
+    for (const clear of [true, false]) {
+      const f = new OutputFanout()
+      f.subscribe('phone', 't1')
+      f.seed('phone', 't1', { replaceFrom: 0, text: 'the screen' }, clear)
+      expect(shapes(f, 'phone')).toEqual([
+        { chunk: '', replaceFrom: FORGET_FROM },
+        { chunk: 'the screen', replaceFrom: 0 },
+      ])
+    }
+  })
+
+  it('draws over the end of a copy it was told to keep', () => {
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.seed('phone', 't1', { replaceFrom: 100, text: 'the screen' }, false)
+    expect(shapes(f, 'phone')).toEqual([{ chunk: 'the screen', replaceFrom: 100 }])
+  })
+
+  it('queues behind output the device has not been sent yet', () => {
+    // The backlog is what carries a kept copy across a dropped connection, so a
+    // seed goes after it rather than in place of it.
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'backlog', nextOffset: 7, missed: 0, replaceFrom: 40 })
+    f.seed('phone', 't1', { replaceFrom: 100, text: 'the screen' }, false)
+    expect(shapes(f, 'phone')).toEqual([
+      { chunk: 'backlog', replaceFrom: 40 },
+      { chunk: 'the screen', replaceFrom: 100 },
+    ])
+  })
+
+  it('seeds nothing for a device that is not watching the terminal', () => {
+    // The watch list is the `read` check. A seed that skipped it would be a way
+    // to be sent a terminal's screen without the grant to read it.
+    const f = new OutputFanout()
+    f.subscribe('phone', 't2')
+    f.seed('phone', 't1', { replaceFrom: 0, text: 'SECRET=hunter2' }, true)
+    f.seed('stranger', 't1', { replaceFrom: 0, text: 'SECRET=hunter2' }, true)
+    expect(f.drain('phone')).toEqual([])
+    expect(f.drain('stranger')).toEqual([])
+  })
+
+  it('holds a seed to the same ceiling as everything else', () => {
+    const f = new OutputFanout(10)
+    f.subscribe('phone', 't1')
+    f.seed('phone', 't1', { replaceFrom: 0, text: 'abcdefghijklmn' }, false)
+    const drained = f.drain('phone')
+    // The forget went first, with the head of the screen it was for.
+    expect(drained).toHaveLength(1)
+    const [chunk] = drained
+    expect(chunk.chunk).toBe('efghijklmn')
+    expect(chunk.missed).toBe(4)
+    expect(chunk.marker).toContain('4 chars')
+  })
+})
+
+// The phone draws a gap notice into its copy without counting it in the end
+// mark it measures every anchor back from, so an anchor at 0 does not reach the
+// start of a copy that holds one. A forget -- anchored past the end of any copy
+// -- is what makes the next anchor replace all of it.
+describe('starting a copy over', () => {
+  function shapes(f: OutputFanout, deviceId: string) {
+    return f.drain(deviceId).map(({ chunk, replaceFrom }) => ({ chunk, replaceFrom }))
+  }
+
+  it('anchors a forget where no copy reaches, in a number JSON carries exactly', () => {
+    // The phone holds 200,000 chars at most; the anchor has to clear that by
+    // more than any terminal will ever print, and arrive as the same number.
+    expect(FORGET_FROM).toBe(Number.MAX_SAFE_INTEGER)
+    expect(JSON.parse(JSON.stringify({ replaceFrom: FORGET_FROM })).replaceFrom).toBe(FORGET_FROM)
+  })
+
+  it('forgets the copy before an edit anchored at 0, on every device watching', () => {
+    const f = new OutputFanout()
+    f.subscribe('a', 't1')
+    f.subscribe('b', 't1')
+    f.subscribe('c', 't2')
+    f.ingest('t1', { output: 'the screen', nextOffset: 10, missed: 0, replaceFrom: 0 })
+    for (const id of ['a', 'b']) {
+      expect(f.drain(id)).toEqual([
+        { terminalId: 't1', chunk: '', missed: 0, replaceFrom: FORGET_FROM, marker: null },
+        { terminalId: 't1', chunk: 'the screen', missed: 0, replaceFrom: 0, marker: null },
+      ])
+    }
+    expect(f.drain('c')).toEqual([])
+  })
+
+  it('forgets the copy before an opening read that found the terminal empty', () => {
+    // Clearing the phone is the whole point of that empty chunk, and an anchor
+    // at 0 alone left a gap notice's worth of the old screen behind.
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: '', nextOffset: 0, missed: 0, replaceFrom: 0 })
+    expect(shapes(f, 'phone')).toEqual([
+      { chunk: '', replaceFrom: FORGET_FROM },
+      { chunk: '', replaceFrom: 0 },
+    ])
+  })
+
+  it('forgets nothing before an edit further in, or before plain output', () => {
+    // Those are measured against the copy the phone holds, which is the point.
+    const f = new OutputFanout()
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'tail', nextOffset: 4, missed: 0, replaceFrom: 7 })
+    f.ingest('t1', { output: 'more', nextOffset: 8, missed: 0 })
+    f.ingest('t1', { output: 'again', nextOffset: 13, missed: 0, replaceFrom: null })
+    expect(shapes(f, 'phone')).toEqual([
+      { chunk: 'tail', replaceFrom: 7 },
+      { chunk: 'more', replaceFrom: null },
+      { chunk: 'again', replaceFrom: null },
+    ])
+  })
+
+  it('keeps a forget only while the screen behind it is whole', () => {
+    // Eviction takes the queue from its head. A forget that is still queued has
+    // its screen intact behind it -- trimming stopped before reaching either.
+    const f = new OutputFanout(10)
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'abcdefgh', nextOffset: 8, missed: 0 })
+    f.ingest('t1', { output: 'ijklmnop', nextOffset: 16, missed: 0, replaceFrom: 0 })
+    expect(shapes(f, 'phone')).toEqual([
+      { chunk: 'gh', replaceFrom: null },
+      { chunk: '', replaceFrom: FORGET_FROM },
+      { chunk: 'ijklmnop', replaceFrom: 0 },
+    ])
+  })
+
+  it('never leaves a forget queued without the screen it was for', () => {
+    // Trimming that reaches a forget cuts into its screen next, which then has
+    // nothing to anchor and is sent as plain output -- the forget went with it,
+    // rather than staying behind to wipe the copy for a screen that is gone.
+    const f = new OutputFanout(10)
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'abcdefgh', nextOffset: 8, missed: 0 })
+    f.ingest('t1', { output: 'ijklmnopqrst', nextOffset: 20, missed: 0, replaceFrom: 0 })
+    const drained = f.drain('phone')
+    expect(drained.map(({ chunk, replaceFrom }) => ({ chunk, replaceFrom }))).toEqual([
+      { chunk: 'klmnopqrst', replaceFrom: null },
+    ])
+    expect(drained[0].missed).toBe(10)
+  })
+
+  it('carries a loss from before a forget on the forget itself', () => {
+    // Drawn into the copy and then wiped by the screen behind it: what was lost
+    // came before a whole new screen, not out of it.
+    const f = new OutputFanout(10)
+    f.subscribe('phone', 't1')
+    f.ingest('t1', { output: 'abcd', nextOffset: 4, missed: 0 })
+    f.ingest('t1', { output: 'efghijklmn', nextOffset: 14, missed: 0, replaceFrom: 0 })
+    const drained = f.drain('phone')
+    expect(drained).toEqual([
+      {
+        terminalId: 't1',
+        chunk: '',
+        missed: 4,
+        replaceFrom: FORGET_FROM,
+        marker: formatGapMarker(4),
+      },
+      { terminalId: 't1', chunk: 'efghijklmn', missed: 0, replaceFrom: 0, marker: null },
+    ])
   })
 })

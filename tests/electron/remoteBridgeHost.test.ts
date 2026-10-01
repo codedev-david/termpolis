@@ -377,6 +377,29 @@ describe('remote bridge host', () => {
     expect(harness.running).toBe(true)
   })
 
+  it('hands the bridge an idle terminal the moment a phone opens it', () => {
+    // The reported bug, one layer up from the pump. The terminal printed its
+    // screen before anyone watched it and has been quiet since -- a TUI at its
+    // prompt. Nothing will call noteTerminalOutput for it until the user types,
+    // so the subscription itself has to carry the screen across. No
+    // noteTerminalOutput and no tick here: either would hide the bug.
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    harness.write('t1', 'Claude Code\n> waiting for input')
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+    expect(harness.posted.filter((m) => m.kind === 'terminalOutput')).toEqual([
+      {
+        kind: 'terminalOutput',
+        terminalId: 't1',
+        slice: { output: 'Claude Code\n> waiting for input', nextOffset: 31, missed: 0 },
+        size: { cols: 80, rows: 24 },
+        // The bridge restarts its emulator from this, rather than feeding a
+        // whole window into one that may already hold an older screen.
+        reset: true,
+      },
+    ])
+  })
+
   it('pumps output only for the terminals the bridge subscribed to', () => {
     // The whole point of the subscription message: main pays the serialisation
     // cost for watched terminals and no others.
@@ -389,6 +412,15 @@ describe('remote bridge host', () => {
     harness.host.noteTerminalOutput('t2')
     harness.tick()
     expect(harness.posted.filter((m) => m.kind === 'terminalOutput')).toEqual([
+      // The opening read, taken as the bridge subscribed -- nothing printed yet.
+      {
+        kind: 'terminalOutput',
+        terminalId: 't1',
+        slice: { output: '', nextOffset: 0, missed: 0 },
+        size: { cols: 80, rows: 24 },
+        reset: true,
+      },
+      // And then the stream, as an ordinary slice: no `reset` key at all.
       {
         kind: 'terminalOutput',
         terminalId: 't1',
@@ -410,8 +442,8 @@ describe('remote bridge host', () => {
     // than guessed at.
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
-    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
     harness.setSize({ cols: 203, rows: 51 })
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
     harness.write('t1', 'wide')
     harness.host.noteTerminalOutput('t1')
     harness.tick()
@@ -422,7 +454,8 @@ describe('remote bridge host', () => {
     const sizes = harness.posted
       .filter((m): m is Extract<HostToBridge, { kind: 'terminalOutput' }> => m.kind === 'terminalOutput')
       .map((m) => m.size)
-    expect(sizes).toEqual([{ cols: 203, rows: 51 }, undefined])
+    // The opening read carries it too: it is the first thing the emulator draws.
+    expect(sizes).toEqual([{ cols: 203, rows: 51 }, { cols: 203, rows: 51 }, undefined])
   })
 
   it('does not read terminals at all while remote is off', () => {
@@ -466,11 +499,49 @@ describe('remote bridge host', () => {
     harness.host.noteTerminalClosed('t1')
     harness.host.noteTerminalOutput('t1')
     harness.tick()
+    // The read after the close is an opening read again -- from the top, and
+    // marked, so the bridge rebuilds its screen instead of drawing the new
+    // terminal over what the old one left.
     expect(
       harness.posted
-        .filter((m) => m.kind === 'terminalOutput')
-        .map((m) => (m as { slice: { output: string } }).slice.output),
-    ).toEqual(['first', 'first'])
+        .filter((m): m is Extract<HostToBridge, { kind: 'terminalOutput' }> => m.kind === 'terminalOutput')
+        .map((m) => [m.slice.output, m.reset === true]),
+    ).toEqual([
+      ['', true],
+      ['first', false],
+      ['first', true],
+    ])
+  })
+
+  it('reads a terminal afresh when a respawned bridge watches it again', () => {
+    // The supervisor restarts a crashed bridge by itself, with no `launch()`
+    // here, so both pumps outlive the child that told them what to watch. The
+    // new child holds no screen and no status until the phone subscribes
+    // again -- and what it then announces is the set the dead one announced.
+    // Unless `ready` empties the pumps first, that announcement joins nothing:
+    // no opening read, no status, and a blank phone until the terminal prints.
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    harness.write('t1', 'Claude Code\n> waiting for input')
+    harness.fromBridge({ kind: 'ready' })
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+    // The crash. Nothing reports it: the next word main hears is the new
+    // child's `ready`, and then its subscription, once the phone re-opens.
+    harness.fromBridge({ kind: 'ready' })
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+    expect(
+      harness.posted
+        .filter((m): m is Extract<HostToBridge, { kind: 'terminalOutput' }> => m.kind === 'terminalOutput')
+        .map((m) => [m.slice.output, m.reset === true]),
+    ).toEqual([
+      ['Claude Code\n> waiting for input', true],
+      ['Claude Code\n> waiting for input', true],
+    ])
+    // Status only crosses when it changes, so the new bridge would otherwise
+    // never be told the answer the dead one was holding.
+    expect(harness.posted.filter((m) => m.kind === 'terminalStatus')).toHaveLength(2)
+    // A restart behind main's back, not a relaunch: one spawn from here.
+    expect(harness.started).toHaveLength(1)
   })
 
   it('sends pairing, capability and relay changes down to the bridge', () => {
@@ -576,6 +647,9 @@ describe('remote bridge host', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
     harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+    // The opening read goes as the subscription lands; what is under test is
+    // everything after it.
+    harness.posted.length = 0
     harness.write('t1', 'in flight')
     harness.host.noteTerminalOutput('t1')
     harness.host.stop()
