@@ -29,16 +29,15 @@
 //     there is one) and exits 0 even when the disconnect throws: an uninstaller must never be
 //     blocked, or failed, by a config it could not clean.
 //
-// Why this file pins `@vitest-environment node` (line 1) when no sibling does: Vitest 4 dropped
-// `environmentMatchGlobs`, so vitest.config.ts's ['tests/electron/**', 'node'] is silently ignored
-// and the rest of tests/electron runs under the config's default, jsdom. There 'os' resolves to
-// Vite's browser-external shim: the module load is hoisted, but `import { homedir } from 'os'` is
-// left where it was written as `const homedir = <shim>.default["homedir"]`. The --disconnect-agents
-// block sits ABOVE that import, so under jsdom it dies with "Cannot access 'homedir' before
-// initialization" before it disconnects anything. That is the test transform, not the app: a
-// Rollup build (what electron-vite ships) hoists `const os = require("os")` to the top, as ESM
-// hoists every import. Under node the named imports are hoisted here too, so the block runs as it
-// does for real.
+// Why this file pins `@vitest-environment node` (line 1): Vitest 4 dropped `environmentMatchGlobs`,
+// so vitest.config.ts's ['tests/electron/**', 'node'] is silently ignored and every file in
+// tests/electron without a pragma runs under the config's default, jsdom. The app runs index.ts in
+// Node, so this file does too. It once had to: under jsdom 'os' is Vite's browser-external shim
+// and a builtin's names are bound where its import is written, so while index.ts imported `os`
+// below the --disconnect-agents block, the block died with "Cannot access 'homedir' before
+// initialization" before it disconnected anything. index.ts now imports `os` above the block, and
+// mainDisconnectAgentsExit.test.ts runs the block under jsdom ON PURPOSE to keep it there. Between
+// the two files the block runs under both environments.
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, type MockInstance } from 'vitest'
 import { join } from 'node:path'

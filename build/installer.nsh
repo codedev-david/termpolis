@@ -34,9 +34,22 @@
 ; customUnInit, not customUnInstall: customUnInstall runs after $INSTDIR is deleted, when
 ; there is no exe left to run. un.onInit has already closed any running Termpolis.
 ; Skipped on updates: the installer runs the previous version's uninstaller with --updated,
-; and an update must leave the user's agent configs connected.
+; and an update must leave the user's agent configs connected. (A reinstall started with
+; --delete-app-data passes that instead of --updated, so it does disconnect: it also deletes
+; Termpolis's record of what it wrote, and nothing could take those entries out later.)
+;
+; nsExec with a time limit, not ExecWait: ExecWait waits for as long as the app runs, so an
+; app that hung (a config file on a drive that stopped answering, a startup error box nobody
+; can see) would hang the uninstall with it. nsExec ends the app after 30 seconds without
+; output and the uninstall goes on. Its result - the exit code, "error" or "timeout" - is
+; dropped and the error flag cleared, so nothing that happens here can stop an uninstall.
+; $0 is saved and restored around it.
 !macro customUnInit
   ${ifNot} ${isUpdated}
-    ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --disconnect-agents'
+    Push $0
+    nsExec::Exec /TIMEOUT=30000 '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --disconnect-agents'
+    Pop $0
+    Pop $0
+    ClearErrors
   ${endIf}
 !macroend

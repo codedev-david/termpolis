@@ -5,6 +5,7 @@ import type { AgentIntegrationStatus } from '../../src/shared/agentIntegration'
 import {
   AgentReviewModal,
   agentReviewNeeded,
+  noteAgentAnswerSaved,
 } from '../../src/renderer/src/components/AgentIntegration/AgentReviewModal'
 
 function status(over: Partial<AgentIntegrationStatus> = {}): AgentIntegrationStatus {
@@ -48,6 +49,7 @@ const hookBox = () => screen.getByTestId('agent-review-primer-hook') as HTMLInpu
 afterEach(() => {
   vi.restoreAllMocks()
   delete (window as any).termpolis
+  localStorage.clear()
 })
 
 describe('agentReviewNeeded', () => {
@@ -83,6 +85,27 @@ describe('agentReviewNeeded', () => {
     expect(await agentReviewNeeded(true)).toBeNull()
     delete (window as any).termpolis
     expect(await agentReviewNeeded(true)).toBeNull()
+  })
+
+  it('asks again, over any answer on record, after one main could not save, until one is saved', async () => {
+    const granted = status({ consent: 'granted', connected: true })
+    const declined = status({ consent: 'declined' })
+    noteAgentAnswerSaved(false)
+    expect(await needed(granted, true)).toBe(granted)
+    expect(await needed(declined, false)).toBe(declined)
+    noteAgentAnswerSaved(true)
+    expect(await needed(granted, true)).toBeNull()
+    expect(await needed(declined, false)).toBeNull()
+  })
+
+  it('counts storage it cannot use as nothing unsaved, and never throws noting it', async () => {
+    noteAgentAnswerSaved(false)
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('denied') })
+    expect(() => noteAgentAnswerSaved(false)).not.toThrow()
+    expect(() => noteAgentAnswerSaved(true)).not.toThrow()
+    expect(await needed(status({ consent: 'granted', connected: true }), true)).toBeNull()
   })
 })
 
@@ -189,6 +212,36 @@ describe('AgentReviewModal', () => {
     fireEvent.click(screen.getByTestId('agent-review-close'))
     expect(screen.getByTestId('agent-review-close')).toHaveTextContent('Close')
     expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['connect', connectButton],
+    ['disconnect', disconnectButton],
+  ])('stays open when main took the %s answer but could not save it', async (_label, button) => {
+    const saveError = 'EACCES: permission denied'
+    bridge({ agentIntegrationSet: vi.fn(async () => ({ success: true, data: { status: status(), changes: [], saveError } })) })
+    const onDone = vi.fn()
+    render(<AgentReviewModal status={status({ legacyDetected: true, connected: true })} onDone={onDone} />)
+    fireEvent.click(button())
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't save your answer, so you'll be asked again next launch.")
+    expect(alert).toHaveTextContent(saveError)
+    expect(onDone).not.toHaveBeenCalled()
+    expect(connectButton()).toBeEnabled()
+    fireEvent.click(screen.getByTestId('agent-review-close'))
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it('once an answer is saved, stops asking for one that was not', async () => {
+    const granted = status({ consent: 'granted', connected: true })
+    bridge({ agentIntegrationStatus: vi.fn(async () => ({ success: true, data: granted })) })
+    noteAgentAnswerSaved(false)
+    expect(await agentReviewNeeded(true)).toBe(granted)
+    const onDone = vi.fn()
+    render(<AgentReviewModal status={granted} onDone={onDone} />)
+    fireEvent.click(connectButton())
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+    expect(await agentReviewNeeded(true)).toBeNull()
   })
 
   it('shows a thrown error, whatever was thrown', async () => {

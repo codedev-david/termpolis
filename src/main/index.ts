@@ -10,6 +10,11 @@ import {
   recordUncleanExit,
 } from './telemetry'
 import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit, installCleanExitGuards } from './crashWatch'
+// Up here, above the `--disconnect-agents` block that calls homedir(), and not with the other
+// builtins further down: under Vitest's jsdom environment a builtin's names are bound where its
+// import is written, so from down there the block failed with "Cannot access 'homedir' before
+// initialization" and disconnected nothing (tests/electron/mainDisconnectAgentsExit.test.ts).
+import { homedir, release } from 'os'
 
 // Force a stable app name. When launched via `electron out/main/index.js`
 // (dev, E2E tests) Electron defaults to "Electron" for app.getName() and
@@ -35,7 +40,11 @@ app.setAppUserModelId?.('com.termpolis.app')
 // Windows uninstaller runs it before deleting the app (build/installer.nsh). It sits above
 // telemetry, Sentry and the single-instance lock because it must report nothing, must not hand
 // off to a running window, and must end on its own; app.exit before ready stops this file at
-// once, so nothing below it runs.
+// once, so nothing below it runs, and no window or child process has started that could keep
+// the app's files open. It always exits 0, even when the disconnect throws: an uninstall must not
+// fail over this. The uninstaller also caps the run at 30 seconds and ignores the exit code,
+// which covers a hang here (a blocked file read, say); a timer in this file could not, because
+// the disconnect is synchronous and a timer never fires while it runs.
 if (process.argv.includes('--disconnect-agents')) {
   try {
     const rows = disconnectAgentIntegration(resolveAgentIntegrationPaths(homedir(), app.getPath('userData'), process.env))
@@ -72,11 +81,10 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
   if (gpu.disableHardwareAcceleration) app.disableHardwareAcceleration()
   if (gpu.disableGpuSwitch) app.commandLine.appendSwitch('disable-gpu')
 }
-import { join, dirname } from 'path'
-import { homedir, release } from 'os'
+import { join, dirname, isAbsolute } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
-import { execSync, spawn } from 'child_process'
-import { runSecondOpinion, secondOpinionSpawnPlan, type SecondOpinionAgent } from './secondOpinion'
+import { runSecondOpinion, type SecondOpinionAgent } from './secondOpinion'
+import { createSecondOpinionDeliver } from './secondOpinionDeliver'
 import {
   builtinCatalog,
   catalogIsStale,
@@ -2583,12 +2591,24 @@ ipcMain.handle('memory:disable-encryption', async () => {
 // Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
 // with zero shell metacharacters, so a compromised renderer or MCP client
 // can't turn this into arbitrary RCE. 10 minute cap.
-ipcMain.handle('workspace:is-trusted', async (_, { cwd }: { cwd: string }) => {
-  try { return ok(isWorkspaceTrusted(cwd)) } catch (e: any) { return err(e.message) }
+ipcMain.handle('workspace:is-trusted', async (_, req: { cwd?: unknown }) => {
+  try {
+    // Checked in here, as in claude:trust-workspace: destructured in the parameter list, a null
+    // payload threw before this try and rejected the call instead of answering it.
+    const cwd = req?.cwd
+    if (typeof cwd !== 'string' || !cwd) return err('cwd required')
+    return ok(isWorkspaceTrusted(cwd))
+  } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('workspace:trust', async (_, { cwd }: { cwd: string }) => {
-  try { trustWorkspace(cwd); return ok() } catch (e: any) { return err(e.message) }
+ipcMain.handle('workspace:trust', async (_, req: { cwd?: unknown }) => {
+  try {
+    // Checked in here for the reason workspace:is-trusted gives.
+    const cwd = req?.cwd
+    if (typeof cwd !== 'string' || !cwd) return err('cwd required')
+    trustWorkspace(cwd)
+    return ok()
+  } catch (e: any) { return err(e.message) }
 })
 
 // The stdio adapter each agent runs to reach this app's MCP server, and the SessionStart hook
@@ -2645,8 +2665,12 @@ function writeConductorMcpConfig(): void {
 // is what used to kill launches — since Claude Code 2.1.x it opens focused on "No, exit".
 // Only once the user connected the agents, and never for the home folder or a filesystem
 // root: there Claude asks, as it would anywhere else. See agentIntegrationManager.ts.
-ipcMain.handle('claude:trust-workspace', async (_, { cwd }: { cwd: string }) => {
+ipcMain.handle('claude:trust-workspace', async (_, req: { cwd?: unknown }) => {
   try {
+    // Checked in here, not destructured in the parameter list: a null payload threw there, before
+    // this try, and rejected the call instead of answering it.
+    const cwd = req?.cwd
+    if (typeof cwd !== 'string' || !cwd) return err('cwd required')
     const paths = agentIntegrationPaths()
     if (!isFolderTrustAllowed(paths, cwd)) return ok(trustFolderForAgents(paths, cwd))
     // Claude keys a git repo by its ROOT, so seed that too when there is one — it is
@@ -2695,8 +2719,14 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.removeCodexHomeTrust, async () => {
   try { return ok(removeCodexHomeTrust(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('workspace:revoke-trust', async (_, { cwd }: { cwd: string }) => {
-  try { revokeWorkspaceTrust(cwd); return ok() } catch (e: any) { return err(e.message) }
+ipcMain.handle('workspace:revoke-trust', async (_, req: { cwd?: unknown }) => {
+  try {
+    // Checked in here for the reason workspace:is-trusted gives.
+    const cwd = req?.cwd
+    if (typeof cwd !== 'string' || !cwd) return err('cwd required')
+    revokeWorkspaceTrust(cwd)
+    return ok()
+  } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('workspace:list-trusted', async () => {
@@ -2977,47 +3007,17 @@ ipcMain.on('app-log:append', (_e, payload) => {
 // call time and answers "not running" until then.
 registerRemoteIpc(ipcMain)
 
-// Second Opinion: run a chosen agent headless over captured terminal output and return its
-// review text. `args` carries a PROMPT_TOKEN placeholder where the (UNTRUSTED, terminal-
-// scraped) prompt goes — the prompt is NEVER placed on a shell command line: on Windows the
-// .cmd shims run through PowerShell with the prompt read from a temp file into a $p variable
-// (the token position becomes $p); on unix the binary is exec'd directly (no shell) with the
-// token swapped for the prompt. Only the validated argv tokens are ever interpolated.
-const deliverSecondOpinion = (bin: string, args: string[], prompt: string, promptToken: string, opts: { timeoutMs: number }): Promise<{ stdout: string; stderr?: string; code: number }> =>
-  new Promise((resolve) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, PATH: getExtendedPath() }
-    const isWin = process.platform === 'win32'
-    let tmp: string | null = null
-    if (isWin) {
-      // .cmd/.ps1 shims run through PowerShell; the prompt is read from a temp file into $p
-      // (never on the command line — see secondOpinionSpawnPlan for the argv shaping).
-      tmp = join(app.getPath('temp'), `termpolis-so-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`)
-      try { writeFileSync(tmp, prompt, 'utf8') } catch { resolve({ stdout: '', code: 1 }); return }
-      env.TP_SO_FILE = tmp
-    }
-    const { cmd, cmdArgs } = secondOpinionSpawnPlan(isWin, bin, args, promptToken, prompt)
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    const finish = (r: { stdout: string; stderr?: string; code: number }): void => {
-      if (settled) return
-      settled = true
-      if (tmp) { try { unlinkSync(tmp) } catch { /* best effort */ } }
-      resolve(r)
-    }
-    try {
-      // stdin:'ignore' gives the child an immediately-closed stdin — agents that read it
-      // (e.g. `codex exec` logs "Reading additional input from stdin…") won't block. The
-      // `timeout` kills a runaway review; stderr is captured so failures stay legible.
-      const child = spawn(cmd, cmdArgs, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: opts.timeoutMs })
-      child.stdout?.on('data', (d) => { stdout += d.toString() })
-      child.stderr?.on('data', (d) => { stderr += d.toString() })
-      child.on('error', (e) => finish({ stdout: '', stderr: (e as Error).message, code: 1 }))
-      child.on('close', (code) => finish({ stdout, stderr, code: code ?? 1 }))
-    } catch (e) {
-      finish({ stdout: '', stderr: (e as Error)?.message, code: 1 })
-    }
-  })
+// Second Opinion and `termpolis exec`: run a chosen agent headless and return what it printed.
+// `args` carries a PROMPT_TOKEN placeholder where the (UNTRUSTED, terminal-scraped) prompt goes,
+// and the prompt is NEVER placed on a shell command line: on Windows PowerShell reads it from a
+// temp file into $p (a .cmd/.bat shim is refused), and elsewhere the binary is exec'd directly
+// with the token swapped for the prompt. secondOpinionDeliver.ts owns the process side,
+// including ending the agent's whole process tree at its deadline and at quit (will-quit).
+const secondOpinionRuns = createSecondOpinionDeliver({
+  tempDir: () => app.getPath('temp'),
+  env: () => ({ ...process.env, PATH: getExtendedPath() }),
+})
+const deliverSecondOpinion = secondOpinionRuns.deliver
 
 ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?: string; content: string }) => {
   try {
@@ -3838,7 +3838,11 @@ async function semanticPoolOptions(
       onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } } })
       // A route set in Claude Code's own settings.json `env` block counts like one in our env.
       setAgentEnvReader(() => {
-        const read = readJsonObject(join(agentIntegrationPaths().claudeDir, 'settings.json'))
+        // A blank home leaves claudeDir '', and joined that would read a settings.json
+        // relative to wherever Termpolis was started from.
+        const { claudeDir } = agentIntegrationPaths()
+        if (!isAbsolute(claudeDir)) return null
+        const read = readJsonObject(join(claudeDir, 'settings.json'))
         const env = read.kind === 'ok' ? read.value.env : null
         return env && typeof env === 'object' && !Array.isArray(env) ? env : null
       })
@@ -4441,6 +4445,13 @@ async function semanticPoolOptions(
   // with no window left to show for it. `will-quit` is the right place rather than `before-quit`:
   // it only fires once the quit is really happening, so a close the user cancels never arms this.
   app.on('will-quit', () => {
+    // A Second Opinion or `termpolis exec` run still going would outlive the app and keep
+    // spending tokens: on Windows the agent runs under a PowerShell wrapper, outside the job
+    // that takes our direct children down with us. End each run's whole tree now. stopAll is
+    // synchronous and bounded, because the app exits right after this handler returns. It goes
+    // before the watchdog: a timer can't interrupt it anyway, and it shouldn't use up the
+    // watchdog's 5s.
+    try { secondOpinionRuns.stopAll() } catch { /* shutting down anyway */ }
     const watchdog = setTimeout(() => {
       console.error(`[shutdown] stalled after "${shutdownStage}" — forcing exit`)
       // A forced exit is still a deliberate one: without this the next boot files it as a crash.

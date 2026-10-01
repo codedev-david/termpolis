@@ -24,8 +24,9 @@ export const CLAUDE_MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku'] as cons
  *  real prompt out-of-band (temp file / env) so it never touches a shell command line. */
 export const PROMPT_TOKEN = '\u0000TP_SECOND_OPINION_PROMPT\u0000'
 
-/** Default review budget. agy's own print limit and the deadline backstop are derived from
- *  the same number as the spawn timeout, so the three can't drift apart. */
+/** Default review budget. `deliver` stops the agent when it runs out. agy's own print limit
+ *  and the deadline backstop are derived from the same number, so the three can't drift
+ *  apart. */
 export const SECOND_OPINION_TIMEOUT_MS = 90_000
 
 /** Claude's mutating built-ins. Denied by name as well as left out of `--tools`: a deny rule
@@ -97,10 +98,10 @@ export function claudeReadOnlyArgs(model: string | undefined, tools: string): st
 /**
  * The Antigravity CLI (`agy`) in its non-editing mode (flags verified against `agy --help`,
  * 1.2.x): `--mode` takes accept-edits or plan, and plan is the one that doesn't edit.
- * `--print-timeout` makes agy end its own turn at the same budget as the spawn timeout — on
- * Windows that timeout only kills the PowerShell wrapper, so an agy stuck on an approval it
- * can never get would otherwise outlive it. `0s` is agy's own "no limit", used when the
- * caller set none. `extra` flags go after the mode; every flag precedes `-p <prompt>`. Pure.
+ * `--print-timeout` makes agy end its own turn at the same budget `deliver` enforces. That
+ * covers a run Termpolis can't stop, such as one orphaned by a crash, where an agy stuck on an
+ * approval it can never get would otherwise run on. `0s` is agy's own "no limit", used when
+ * the caller set none. `extra` flags go after the mode; every flag precedes `-p <prompt>`. Pure.
  */
 export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number, extra: readonly string[] = []): string[] {
   const secs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0
@@ -177,10 +178,12 @@ export function secondOpinionSpawnPlan(isWindows: boolean, bin: string, args: st
 
 /** Injected spawn seam. Runs the resolved argv (with `promptToken` swapped for the real
  *  prompt, out-of-band) with the child's STDIN closed (some agents, e.g. `codex exec`, read
- *  stdin and would otherwise block), and resolves (never rejects) with stdout/stderr/code. */
+ *  stdin and would otherwise block), and resolves (never rejects) with stdout/stderr/code.
+ *  It stops the run itself once `opts.timeoutMs` is up. The app's deliver
+ *  (secondOpinionDeliver.ts) ends the agent's whole process tree when it does. */
 export type DeliverFn = (bin: string, args: string[], prompt: string, promptToken: string, opts: { timeoutMs: number }) => Promise<{ stdout: string; stderr?: string; code: number }>
 
-/** How long `deliver` gets past its own spawn timeout before the call is abandoned. */
+/** How long `deliver` gets past its own timeout before the call is abandoned. */
 export const DELIVER_GRACE_MS = 5_000
 
 // setTimeout fires at once for a delay past 2^31-1 ms, which would fail a legitimately long run.
@@ -195,12 +198,13 @@ export function positionalPrompt(prompt: string): string {
   return /^-|^\S*$/.test(prompt) ? ` ${prompt}` : prompt
 }
 
-/** `deliver`, bounded. The spawn timeout only kills the process `deliver` started — on Windows
- *  that is the PowerShell wrapper, and an orphaned agent still holding the output pipes keeps
- *  `close` from firing until it exits on its own — so this settles the call itself at
+/** `deliver`, bounded. `deliver` stops its own run at `timeoutMs`; the app's deliver ends the
+ *  agent's whole process tree and settles soon after, even if `close` never fires. This is
+ *  the backstop for a `deliver` that still hasn't settled. It settles the call itself at
  *  `timeoutMs + graceMs`, rejecting with a legible error, whatever the child is doing. A
- *  zero/negative/non-finite `timeoutMs` means "no timeout" to spawn and gets no deadline here.
- *  Every one-shot prompt passes through here, so this is also where it is made positional. */
+ *  zero, negative or non-finite `timeoutMs` means "no timeout" to `deliver` and gets no
+ *  deadline here. Every one-shot prompt passes through here, so this is also where it is
+ *  made positional. */
 export function deliverWithDeadline(
   deliver: DeliverFn,
   bin: string,

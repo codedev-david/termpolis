@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { AgentIntegrationChange, AgentIntegrationStatus } from '../../src/shared/agentIntegration'
 import { AgentIntegrationSettings } from '../../src/renderer/src/components/SettingsPane/AgentIntegrationSettings'
+import { agentReviewNeeded } from '../../src/renderer/src/components/AgentIntegration/AgentReviewModal'
 
 const HOME = '/home/me'
 
@@ -60,6 +61,7 @@ const hookBox = () => screen.getByTestId('agent-integration-primer-hook') as HTM
 afterEach(() => {
   vi.restoreAllMocks()
   delete (window as any).termpolis
+  localStorage.clear()
 })
 
 describe('AgentIntegrationSettings: reading the status', () => {
@@ -218,6 +220,56 @@ describe('AgentIntegrationSettings: connecting and disconnecting', () => {
     api.agentIntegrationSet.mockImplementationOnce(() => Promise.reject('plain string'))
     fireEvent.click(toggle())
     await waitFor(() => expect(screen.getByTestId('agent-integration-error')).toHaveTextContent('plain string'))
+    fireEvent.click(toggle())
+    await waitFor(() => expect(screen.queryByTestId('agent-integration-error')).toBeNull())
+  })
+
+  it('says a connect whose choice main could not save changed nothing', async () => {
+    const unchanged = status({ consent: 'declined', connected: false })
+    const api = bridge(unchanged)
+    api.agentIntegrationSet.mockImplementationOnce(async () => ({
+      success: true,
+      data: { status: unchanged, changes: [] as AgentIntegrationChange[], saveError: 'EACCES: permission denied' },
+    }))
+    await renderLoaded()
+    fireEvent.click(toggle())
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't save your choice, so nothing was changed: EACCES: permission denied",
+    )
+    expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: true, primerHook: true })
+    expect(screen.queryByTestId('agent-integration-changes')).toBeNull()
+    expect(screen.getByTestId('agent-integration-status').textContent).toBe('Not connected')
+    expect(toggle()).toBeEnabled()
+    // The agent review asks again at the next launch, over the answer on record, until one is saved.
+    expect(await agentReviewNeeded(true)).toEqual(unchanged)
+    fireEvent.click(toggle())
+    await waitFor(() => expect(screen.getByTestId('agent-integration-status').textContent).toBe('Connected'))
+    expect(await agentReviewNeeded(true)).toBeNull()
+  })
+
+  it('shows a disconnect whose choice main could not save, and what it removed', async () => {
+    const api = bridge()
+    api.agentIntegrationSet.mockImplementationOnce(async () => ({
+      success: true,
+      data: {
+        // The saved answer is still the old one.
+        status: status(),
+        changes: [
+          { agent: 'gemini', file: `${HOME}/.gemini/settings.json`, action: 'remove', what: 'MCP server' },
+        ] as AgentIntegrationChange[],
+        saveError: 'EACCES: permission denied',
+      },
+    }))
+    await renderLoaded()
+    fireEvent.click(screen.getByTestId('agent-integration-disconnect'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't save your choice, so Termpolis may connect the agents again at its next start: EACCES: permission denied",
+    )
+    const rows = screen.getAllByTestId('agent-integration-change')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].textContent).toContain('~/.gemini/settings.json')
+    expect(await agentReviewNeeded(true)).not.toBeNull()
+    // The next action starts clean.
     fireEvent.click(toggle())
     await waitFor(() => expect(screen.queryByTestId('agent-integration-error')).toBeNull())
   })

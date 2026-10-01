@@ -55,6 +55,8 @@ export interface AgentIntegrationSetRequest {
 export interface AgentIntegrationSetResult {
   status: AgentIntegrationStatus
   changes: AgentIntegrationChange[]
+  /** Set when the answer could not be saved: a connect then changed nothing; a disconnect still ran. */
+  saveError?: string
 }
 
 /** What `memory:prepare-codex-context` hands the Codex launcher. */

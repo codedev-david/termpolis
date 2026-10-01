@@ -1,12 +1,30 @@
 import { useState } from 'react'
-import type { AgentIntegrationStatus } from '../../../../shared/agentIntegration'
+import type { AgentIntegrationSetResult, AgentIntegrationStatus } from '../../../../shared/agentIntegration'
 import { AgentWritesList, PRIMER_HOOK_LABEL } from './AgentWritesList'
 
 // Asked once, at launch, of someone with no agent-integration answer on record: an upgrade from
 // a version that changed the agents' configs without asking (legacy), or someone who saw the tour
-// before it had an agent step. Never in the session the tour shows, whose first step answers it.
-// Either button records an answer; one that could not be saved is asked again next launch. There
-// is no Escape: for a legacy install the second button disconnects, which is too much for a key.
+// before it had an agent step. Asked too when the tour's answer could not be saved, even over an
+// answer on record (the one a re-run tour meant to change): the tour has closed before main
+// replies, so it can't say so itself. Never in the session the tour shows, whose first step
+// answers it. Either button records an answer; one that could not be saved is asked again next
+// launch. There is no Escape: for a legacy install the second button disconnects, which is too
+// much for a key.
+
+const UNSAVED_KEY = 'termpolis.agentIntegration.unsaved.v1'
+
+/** Note whether main saved the agent answer just sent: one it didn't is asked again at the next
+ *  launch. Never throws. */
+export function noteAgentAnswerSaved(saved: boolean): void {
+  try {
+    if (saved) localStorage.removeItem(UNSAVED_KEY)
+    else localStorage.setItem(UNSAVED_KEY, '1')
+  } catch {}
+}
+
+function answerUnsaved(): boolean {
+  try { return localStorage.getItem(UNSAVED_KEY) === '1' } catch { return false }
+}
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -19,6 +37,7 @@ export async function agentReviewNeeded(onboardingSeen: boolean): Promise<AgentI
     const res = await window.termpolis.agentIntegrationStatus()
     if (!res.success) return null
     const status = res.data
+    if (answerUnsaved()) return status
     return status.consent === null && (status.legacyDetected || onboardingSeen) ? status : null
   } catch {
     return null
@@ -37,11 +56,18 @@ export function AgentReviewModal({ status, onDone }: { status: AgentIntegrationS
     setError(null)
     try {
       const res = await window.termpolis.agentIntegrationSet(connect ? { connect: true, primerHook } : { connect: false })
-      if (res.success) {
-        onDone()
-        return
+      if (!res.success) {
+        setError(res.error)
+      } else {
+        // Main can act on an answer it then fails to save; unsaved, it is asked again next launch.
+        const data: AgentIntegrationSetResult = res.data
+        if (!data.saveError) {
+          noteAgentAnswerSaved(true)
+          onDone()
+          return
+        }
+        setError(data.saveError)
       }
-      setError(res.error)
     } catch (e) {
       setError(errorText(e))
     }

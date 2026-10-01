@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import type {
   AgentIntegrationChange,
   AgentIntegrationSetRequest,
+  AgentIntegrationSetResult,
   AgentIntegrationStatus,
 } from '../../../../shared/agentIntegration'
+import { noteAgentAnswerSaved } from '../AgentIntegration/AgentReviewModal'
 import { AgentWritesList, PRIMER_HOOK_LABEL, homeFromStatus, tildify } from '../AgentIntegration/AgentWritesList'
 
 // Settings ▸ Agent Integration: what Termpolis has written into the Claude Code, Codex and
@@ -99,8 +101,15 @@ export function AgentIntegrationSettings() {
   const apply = (req: AgentIntegrationSetRequest) => act(async () => {
     const res = await window.termpolis.agentIntegrationSet(req)
     if (!res.success) throw new Error(res.error)
-    setStatus(res.data.status)
-    return res.data.changes
+    const data: AgentIntegrationSetResult = res.data
+    setStatus(data.status)
+    // A choice main could not save: a connect changes nothing, and a disconnect still happens
+    // but, unrecorded, may be undone when Termpolis next starts. Either way the agent review
+    // asks again at next launch.
+    noteAgentAnswerSaved(!data.saveError)
+    if (data.saveError && req.connect) throw new Error(`Couldn't save your choice, so nothing was changed: ${data.saveError}`)
+    if (data.saveError) setError(`Couldn't save your choice, so Termpolis may connect the agents again at its next start: ${data.saveError}`)
+    return data.changes
   })
 
   const removeHomeTrust = (codexConfig: string) => act(async () => {

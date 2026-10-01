@@ -47,9 +47,11 @@ export function toRunner(spec: NodeSpec): NodeRunner {
 /**
  * The runner rendered as a shell command prefix for a Claude Code hook.
  *
- * Hooks are `command` strings run through a shell — POSIX sh everywhere,
- * including Windows, where Claude Code shells out to Git Bash — so `K=V cmd`
- * is the portable way to hand the process an environment variable. That matters
+ * This is the POSIX sh form, which Claude Code runs everywhere it has a sh: on
+ * Windows that is Git Bash. Without one it runs hooks in PowerShell, and the
+ * manager writes a PowerShell form instead (guardedHookCommand, claudeHookShell
+ * in agentIntegrationManager.ts). In sh, `K=V cmd` is the portable way to hand
+ * the process an environment variable. That matters
  * for the Electron fallback: without ELECTRON_RUN_AS_NODE the same binary opens
  * a second Termpolis window instead of running the hook script.
  *

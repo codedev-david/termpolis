@@ -9,21 +9,23 @@
 //
 // Versions from before consent existed wrote at fixed paths under the home folder, whatever
 // CLAUDE_CONFIG_DIR or CODEX_HOME said, so detection and every cleanup look in both places.
-// Nothing here throws: a config it cannot read or safely edit becomes a 'skipped' row.
+// Nothing here throws: a config it cannot read or safely edit becomes a 'skipped' row. So does
+// every agent config when there is no full home folder to find them in: a relative path would
+// land in whatever folder Termpolis was started from.
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from 'fs'
-import { dirname, join, resolve, sep } from 'path'
+import { dirname, isAbsolute, join, resolve, sep, win32 } from 'path'
 import { CODEX_AUTO_APPROVED_TOOLS, MCP_TOOLS_AUTO_ALLOWED, isUnsafeTrustRoot } from '../shared/agentIntegration'
 import type {
-  AgentId, AgentIntegrationChange, AgentIntegrationConsent, AgentIntegrationSetRequest,
-  AgentIntegrationSetResult, AgentIntegrationStatus, CodexLaunchContext,
+  AgentId, AgentIntegrationAgentStatus, AgentIntegrationChange, AgentIntegrationConsent,
+  AgentIntegrationSetRequest, AgentIntegrationSetResult, AgentIntegrationStatus, CodexLaunchContext,
 } from '../shared/agentIntegration'
 import { atomicWriteText, editJsonObject, errorText, readJsonObject, readTextFile } from './agentConfigIO'
 import {
   FOREIGN_SERVER, applyAllowRules, applyPrimerHook, hasPluginEnablement, hasPrimerHook,
-  hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isTermpolisPluginManifest,
+  hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
   isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAllowRules,
   removeInstalledPlugin, removeLegacyAllowRules, removeMarketplaceEntry, removePluginEnablement,
-  removePrimerHooks, removeRootServerEntry, removeServerEntry, termpolisServerEntry,
+  removePrimerHooks, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
   upsertClaudeUserServer, upsertServerEntry,
 } from './agentMcpRegistry'
 import type { EntryEdit, NodeSpec, ServerEntry } from './agentMcpRegistry'
@@ -35,6 +37,8 @@ import { claudeProjectKey, revertClaudeTrust, trustClaudeWorkspace, untrustUnsaf
 import { buildCodexInstruction, cleanAgentsMd } from './codexParity'
 
 export interface AgentIntegrationPaths {
+  /** The user's home folder as a full path, or '' when none is known. With '' no agent config
+   *  is read or written: see agentPaths(). */
   home: string
   /** Termpolis's own userData folder; the ledger lives here. */
   userData: string
@@ -57,15 +61,30 @@ export interface AgentIntegrationRuntime {
   hookScriptPath: string | null
   /** How agent configs spawn node: resolveNodeRunner(). */
   node: NodeSpec
+  /** The shell to write the SessionStart hook for. Left out, claudeHookShell() works it out
+   *  the way Claude Code does. */
+  hookShell?: HookShell
 }
+
+/** The shell Claude Code runs a hook's command in: 'sh', its default (`/bin/sh`, or Git Bash on
+ *  Windows), or 'powershell', which it uses instead on Windows when it finds no Git Bash. */
+export type HookShell = 'sh' | 'powershell'
 
 /** Result of `claude:trust-workspace`, unchanged in shape for the renderer. */
 export interface TrustFolderResult {
   changed: boolean
   keys: string[]
-  skipped?: 'no-consent' | 'unsafe-root' | string
+  skipped?: 'no-consent' | 'no-home' | 'unsafe-root' | string
 }
 
+/** `p` when it is a full path, else ''. */
+function fullPath(p: string | undefined): string {
+  return typeof p === 'string' && isAbsolute(p) ? p : ''
+}
+
+/** Where each agent keeps its config. A home folder or override that is blank or relative
+ *  (HOME='' makes os.homedir() return '' on macOS and Linux) counts as unknown: joined as it
+ *  is, `.claude` would be a folder under the working directory. */
 export function resolveAgentIntegrationPaths(
   osHome: string,
   userData: string,
@@ -73,17 +92,49 @@ export function resolveAgentIntegrationPaths(
 ): AgentIntegrationPaths {
   // Test runs (vitest setup, e2e launch) point every agent config at a scratch home, so a
   // spec that boots the app can never rewrite the developer's real ~/.claude* / ~/.codex.
+  // One that is set but unusable gives no home at all, never the real one.
   const testHome = env.TERMPOLIS_TEST_AGENT_HOME?.trim()
-  const home = testHome || osHome
-  const claudeConfigDir = testHome ? undefined : env.CLAUDE_CONFIG_DIR?.trim()
-  const codexHome = testHome ? undefined : env.CODEX_HOME?.trim()
+  const home = fullPath(testHome || osHome)
+  const claudeConfigDir = testHome ? '' : fullPath(env.CLAUDE_CONFIG_DIR?.trim())
+  const codexHome = testHome ? '' : fullPath(env.CODEX_HOME?.trim())
+  const inHome = (name: string): string => (home ? join(home, name) : '')
   return {
     home,
     userData,
-    claudeDir: claudeConfigDir || join(home, '.claude'),
-    claudeJson: claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(home, '.claude.json'),
-    codexHome: codexHome || join(home, '.codex'),
-    geminiDir: join(home, '.gemini'),
+    claudeDir: claudeConfigDir || inHome('.claude'),
+    claudeJson: claudeConfigDir ? join(claudeConfigDir, '.claude.json') : inHome('.claude.json'),
+    codexHome: codexHome || inHome('.codex'),
+    geminiDir: inHome('.gemini'),
+  }
+}
+
+type AgentPathSet = Omit<AgentIntegrationPaths, 'userData'>
+
+/** The agent paths, when every one is a full path; null when the home folder is unknown (or a
+ *  caller's paths cannot even be read). Callers then leave agent configs alone. */
+function agentPaths(paths: AgentIntegrationPaths): AgentPathSet | null {
+  try {
+    const { home, claudeDir, claudeJson, codexHome, geminiDir } = paths
+    const set = { home, claudeDir, claudeJson, codexHome, geminiDir }
+    return Object.values(set).every((p) => fullPath(p) !== '') ? set : null
+  } catch {
+    return null
+  }
+}
+
+const NO_HOME = 'Your home folder is unknown or not a full path (check HOME, or USERPROFILE on Windows), so no agent config was read or changed'
+
+function noHomeRow(): AgentIntegrationChange {
+  return change('claude', '~', 'skipped', 'Agent configs', NO_HOME)
+}
+
+/** errorText for any thrown value. One with no usable message or string form (a null-prototype
+ *  object, say) still gives a line, so an error path cannot throw in turn. */
+function errorTextSafe(e: unknown): string {
+  try {
+    return String(errorText(e))
+  } catch {
+    return 'unknown error'
   }
 }
 
@@ -103,8 +154,19 @@ interface Ledger {
   trustedByTermpolis: string[]
 }
 
-function ledgerPath(paths: AgentIntegrationPaths): string {
-  return join(paths.userData, LEDGER_FILE)
+/** The ledger's full path, or null when userData is not a full path (the ledger would land in
+ *  the working directory). Throws when userData is not a string; ledgerFileFor never does. */
+function ledgerPath(paths: AgentIntegrationPaths): string | null {
+  return isAbsolute(paths.userData) ? join(paths.userData, LEDGER_FILE) : null
+}
+
+/** The ledger's path for a row that reports on it, from any `paths` at all. */
+function ledgerFileFor(paths: AgentIntegrationPaths | undefined): string {
+  try {
+    return (paths && ledgerPath(paths)) || LEDGER_FILE
+  } catch {
+    return LEDGER_FILE
+  }
 }
 
 function stringList(v: unknown): string[] {
@@ -113,7 +175,9 @@ function stringList(v: unknown): string[] {
 
 /** The saved ledger, or null when there is none this version can read. */
 function readLedger(paths: AgentIntegrationPaths): Ledger | null {
-  const r = readJsonObject(ledgerPath(paths))
+  const file = ledgerPath(paths)
+  if (file === null) return null
+  const r = readJsonObject(file)
   if (r.kind !== 'ok' || r.value.version !== 1) return null
   const v = r.value
   return {
@@ -126,21 +190,30 @@ function readLedger(paths: AgentIntegrationPaths): Ledger | null {
   }
 }
 
-function writeLedger(paths: AgentIntegrationPaths, ledger: Ledger): void {
+/** Save the ledger. Returns why it could not be saved, or null. Never throws: a caller whose
+ *  save carries the user's answer reports the failure, and the others just go on. */
+function writeLedger(paths: AgentIntegrationPaths, ledger: Ledger): string | null {
   try {
+    const file = ledgerPath(paths)
+    if (file === null) throw new Error('the folder Termpolis keeps its settings in is not a full path')
     mkdirSync(paths.userData, { recursive: true })
-    atomicWriteText(ledgerPath(paths), JSON.stringify(ledger, null, 2) + '\n')
+    atomicWriteText(file, JSON.stringify(ledger, null, 2) + '\n')
+    return null
   } catch (e) {
-    console.warn(`[agent-integration] could not save ${LEDGER_FILE}: ${errorText(e)}`)
+    const error = errorTextSafe(e)
+    console.warn(`[agent-integration] could not save ${LEDGER_FILE}: ${error}`)
+    return error
   }
 }
 
 /** The ledger, created on first use with a note of whether an older Termpolis had already
- *  connected the agents (detected before any migration touches those configs). */
+ *  connected the agents (detected before any migration touches those configs). With no home
+ *  folder nothing can be detected, so that first ledger waits, unsaved, for a start that has one. */
 function loadLedger(paths: AgentIntegrationPaths): Ledger {
   const saved = readLedger(paths)
   if (saved) return saved
-  const legacy = detectLegacy(paths)
+  const known = agentPaths(paths) !== null
+  const legacy = known ? detectLegacy(paths) : { found: false, primerHook: false }
   const ledger: Ledger = {
     version: 1,
     consent: null,
@@ -149,7 +222,7 @@ function loadLedger(paths: AgentIntegrationPaths): Ledger {
     migrations: [],
     trustedByTermpolis: [],
   }
-  writeLedger(paths, ledger)
+  if (known) writeLedger(paths, ledger)
   return ledger
 }
 
@@ -482,10 +555,124 @@ const MIGRATIONS: readonly Migration[] = [
 
 // ── Apply ───────────────────────────────────────────────────────────────────────────────
 
+/** Where Claude Code looks for Git Bash after CLAUDE_CODE_GIT_BASH_PATH, before PATH. */
+const GIT_BASH_DEFAULTS = ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe']
+
+/** The file names Claude Code takes CLAUDE_CODE_GIT_BASH_PATH to be a shell by. */
+const GIT_BASH_NAMES = ['bash.exe', 'sh.exe', 'bash', 'sh']
+
+/**
+ * The shell Claude Code will run the SessionStart hook in, found the way Claude Code 2.1 finds
+ * it: sh everywhere but Windows, and on Windows too when there is a Git Bash; PowerShell when
+ * there is none. Its Git Bash is CLAUDE_CODE_GIT_BASH_PATH when that names a bash or sh that
+ * exists, else either default Git folder's, else the bin\bash.exe two folders above the first
+ * git on PATH. Claude Code sets the `env` of its settings.json over its own environment first,
+ * which is how its docs say to point it at a Git Bash it cannot find, so `settingsEnv` wins too.
+ */
+export function claudeHookShell(
+  platform: NodeJS.Platform,
+  settingsEnv: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (p: string) => boolean = existsSync,
+): HookShell {
+  if (platform !== 'win32') return 'sh'
+  // Windows reads variable names in any case.
+  const vars = new Map<string, string>()
+  for (const source of [env, settingsEnv]) {
+    if (!source || typeof source !== 'object') continue
+    for (const [k, v] of Object.entries(source)) {
+      if (typeof v === 'string') vars.set(k.toUpperCase(), v)
+    }
+  }
+  const pinned = vars.get('CLAUDE_CODE_GIT_BASH_PATH')
+  if (pinned && GIT_BASH_NAMES.includes(win32.basename(pinned).toLowerCase()) && fileExists(pinned)) return 'sh'
+  if (GIT_BASH_DEFAULTS.some((p) => fileExists(p))) return 'sh'
+  const git = firstOnPath('git', vars, fileExists)
+  return git && fileExists(win32.join(git, '..', '..', 'bin', 'bash.exe')) ? 'sh' : 'powershell'
+}
+
+/** The first `name` on PATH as `where.exe` finds it: each full folder in turn, and in each,
+ *  each PATHEXT extension in turn. */
+function firstOnPath(name: string, vars: Map<string, string>, fileExists: (p: string) => boolean): string | null {
+  const extensions = (vars.get('PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+  for (const dir of (vars.get('PATH') ?? '').replace(/"/g, '').split(';')) {
+    if (!win32.isAbsolute(dir)) continue
+    const found = extensions.map((ext) => win32.join(dir, name + ext)).find((p) => fileExists(p))
+    if (found) return found
+  }
+  return null
+}
+
+/** `s` as a PowerShell string literal, which takes it as it is. Within single quotes a quote
+ *  is doubled, and PowerShell counts the curly single quotes as quotes as well. */
+function psQuote(s: string): string {
+  return `'${s.replace(/['\u2018\u2019\u201A\u201B]/g, '$&$&')}'`
+}
+
+/**
+ * The SessionStart hook command: primerHookCommand, run only while both its runner and its
+ * script are still there, written for the shell Claude Code runs it in (claudeHookShell) at
+ * the start of every session. Claude Code shows each non-zero exit as a hook error. Termpolis
+ * removed some other way than its uninstaller leaves the hook behind; this way the hook then
+ * does nothing, silently, where it would otherwise fail in every session. Entries in an older
+ * form are rewritten on the next connected start by applyHook, and the removal matches every
+ * form by the script's name.
+ */
+function guardedHookCommand(node: NodeSpec, script: string, shell: HookShell): string {
+  const runner = toRunner(node)
+  const bin = runner.command.replace(/\\/g, '/')
+  const file = script.replace(/\\/g, '/')
+  // A bare name is looked up on PATH, as the shell will when it runs it.
+  const bare = !bin.includes('/')
+  if (shell === 'powershell') {
+    const hasRunner = bare
+      ? `(Get-Command ${psQuote(bin)} -CommandType Application -ErrorAction SilentlyContinue)`
+      : `(Test-Path -LiteralPath ${psQuote(bin)} -PathType Leaf)`
+    const env = Object.entries(runner.env ?? {}).map(([k, v]) => `$env:${k} = ${psQuote(v)}; `).join('')
+    // `&` does not wait for a Windows app, as Termpolis.exe and electron.exe are: the shell
+    // would exit 0 at once, and the primer print after Claude Code stopped reading. Start-Process
+    // waits for any runner, hands it the shell's own stdin and stdout, and passes on its exit
+    // code, as sh does. It joins -ArgumentList as it is, so the script goes in double quotes,
+    // which a Windows path never holds.
+    return `if ((Test-Path -LiteralPath ${psQuote(file)} -PathType Leaf) -and ${hasRunner}) `
+      + `{ ${env}$p = Start-Process -FilePath ${psQuote(bin)} -ArgumentList ${psQuote(`"${file}"`)} `
+      + '-NoNewWindow -Wait -PassThru; exit $p.ExitCode }'
+  }
+  const hasRunner = bare ? `command -v "${bin}" >/dev/null 2>&1` : `[ -f "${bin}" ]`
+  return `if [ -f "${file}" ] && ${hasRunner}; then ${primerHookCommand(node, script)}; fi`
+}
+
+/** The one Termpolis hook applyPrimerHook leaves: in a group's `hooks`, or a flat group. */
+function keptPrimerHook(root: Json): Json | undefined {
+  const groups: Json[] = root.hooks?.SessionStart ?? []
+  const hooks = groups.flatMap((g) => [g, ...(Array.isArray(g?.hooks) ? g.hooks : [])])
+  return hooks.find((h) => isPrimerHookCommand(h?.command))
+}
+
+/**
+ * applyPrimerHook with the command for the shell Claude Code will run it in. The PowerShell
+ * form says so in the hook's `shell`, so that it is never handed to Git Bash; the sh form has
+ * none, so that Claude Code's default runs it, in every version, as it always has. The `shell`
+ * is compared as the command is, so a hook in any older form is rewritten once.
+ */
+function applyHook(root: Json, rt: AgentIntegrationRuntime, script: string): EntryEdit {
+  const shell = rt.hookShell ?? claudeHookShell(process.platform, root.env)
+  const edit = applyPrimerHook(root, guardedHookCommand(rt.node, script, shell))
+  // None is left when the hook kept was a flat group whose own `hooks` held only copies of it:
+  // dropping the copies drops the group. The next start adds it back.
+  const hook = typeof edit === 'string' ? keptPrimerHook(root) : undefined
+  if (!hook) return edit
+  const was = hook.shell
+  if (shell === 'powershell') hook.shell = 'powershell'
+  else delete hook.shell
+  return edit === 'unchanged' && hook.shell !== was ? 'update' : edit
+}
+
 /** Connect every agent that is installed (its config folder exists). Idempotent: a second
- *  run writes nothing. */
+ *  run writes nothing. With no home folder, touches nothing and says so. */
 function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean): AgentIntegrationChange[] {
   const { paths } = rt
+  if (!agentPaths(paths)) return [noHomeRow()]
   const entry = termpolisServerEntry(rt.node, rt.adapterPath)
   const rows: AgentIntegrationChange[] = []
   if (existsSync(paths.claudeDir)) {
@@ -499,7 +686,7 @@ function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean): AgentIntegr
         what: 'SessionStart memory hook',
         run: (root) => {
           if (!primerHook) return removePrimerHooks(root)
-          return hookScript ? applyPrimerHook(root, primerHookCommand(rt.node, hookScript)) : 'unchanged'
+          return hookScript ? applyHook(root, rt, hookScript) : 'unchanged'
         },
       },
       // Older versions put the server here, where Claude Code never looks for one.
@@ -515,7 +702,21 @@ function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean): AgentIntegr
   return rows
 }
 
+const noAgent = (): AgentIntegrationAgentStatus => ({ installed: false, configPath: '', registered: false })
+
 function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegrationStatus {
+  const status = (agents: AgentIntegrationStatus['agents'], codexHomeTrusted: boolean): AgentIntegrationStatus => ({
+    consent: ledger.consent,
+    legacyDetected: ledger.legacy,
+    connected: isConnected(ledger),
+    primerHook: ledger.primerHook,
+    agents,
+    autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED],
+    trustedFolders: [...ledger.trustedByTermpolis],
+    codexHomeTrusted,
+  })
+  // With no home folder no config is read, so no agent shows as installed.
+  if (!agentPaths(paths)) return status({ claude: noAgent(), codex: noAgent(), gemini: noAgent() }, false)
   const claudeJson = readJson(paths.claudeJson)
   const codexFile = join(paths.codexHome, 'config.toml')
   const read = readText(codexFile)
@@ -523,20 +724,11 @@ function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegratio
   const geminiFile = join(paths.geminiDir, 'settings.json')
   const gemini = readJson(geminiFile)
   const codexTrusted = codex === null ? [] : codexTrustedProjects(codex)
-  return {
-    consent: ledger.consent,
-    legacyDetected: ledger.legacy,
-    connected: isConnected(ledger),
-    primerHook: ledger.primerHook,
-    agents: {
-      claude: { installed: existsSync(paths.claudeDir), configPath: paths.claudeJson, registered: !!claudeJson && hasServerEntry(claudeJson) },
-      codex: { installed: existsSync(paths.codexHome), configPath: codexFile, registered: codex !== null && codexOwner(codex) === 'ours' },
-      gemini: { installed: existsSync(paths.geminiDir), configPath: geminiFile, registered: !!gemini && hasServerEntry(gemini) },
-    },
-    autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED],
-    trustedFolders: [...ledger.trustedByTermpolis],
-    codexHomeTrusted: Array.isArray(codexTrusted) && codexTrusted.some((f) => isUnsafeTrustRoot(f, paths.home)),
-  }
+  return status({
+    claude: { installed: existsSync(paths.claudeDir), configPath: paths.claudeJson, registered: !!claudeJson && hasServerEntry(claudeJson) },
+    codex: { installed: existsSync(paths.codexHome), configPath: codexFile, registered: codex !== null && codexOwner(codex) === 'ours' },
+    gemini: { installed: existsSync(paths.geminiDir), configPath: geminiFile, registered: !!gemini && hasServerEntry(gemini) },
+  }, Array.isArray(codexTrusted) && codexTrusted.some((f) => isUnsafeTrustRoot(f, paths.home)))
 }
 
 /** App start: run each one-time migration not yet in the ledger, then re-apply the
@@ -545,6 +737,10 @@ export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrat
   const changes: AgentIntegrationChange[] = []
   try {
     const ledger = loadLedger(rt.paths)
+    // No migration can find the configs without a home folder, so none runs or counts as done:
+    // the next start that has one runs them.
+    const at = agentPaths(rt.paths)
+    if (!at) return { status: statusOf(rt.paths, ledger), changes: [noHomeRow()] }
     const before = JSON.stringify(ledger)
     for (const m of MIGRATIONS) {
       if (ledger.migrations.includes(m.id)) continue
@@ -552,7 +748,7 @@ export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrat
       try {
         rows = m.run(rt.paths)
       } catch (e) {
-        rows = [change('claude', rt.paths.home, 'skipped', m.id, errorText(e))]
+        rows = [change('claude', at.home, 'skipped', m.id, errorTextSafe(e))]
       }
       changes.push(...rows)
       // A migration that could not finish runs again next start.
@@ -562,9 +758,21 @@ export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrat
     if (JSON.stringify(ledger) !== before) writeLedger(rt.paths, ledger)
     return { status: statusOf(rt.paths, ledger), changes: changes.filter(isChange) }
   } catch (e) {
-    changes.push(change('claude', ledgerPath(rt.paths), 'skipped', 'Agent integration', errorText(e)))
-    return { status: getAgentIntegrationStatus(rt.paths), changes: changes.filter(isChange) }
+    return failed(rt, e, changes)
   }
+}
+
+/** A call that failed part-way: the rows it had, one more saying why it stopped, and the status
+ *  as saved. Built from nothing that can throw in turn, even when `rt` or its paths are unusable. */
+function failed(rt: AgentIntegrationRuntime, e: unknown, changes: AgentIntegrationChange[]): AgentIntegrationSetResult {
+  let paths: AgentIntegrationPaths | undefined
+  try {
+    paths = rt.paths
+  } catch {
+    // Left undefined: the row names the ledger file alone, and the status falls back to disconnected.
+  }
+  const row = change('claude', ledgerFileFor(paths), 'skipped', 'Agent integration', errorTextSafe(e))
+  return { status: getAgentIntegrationStatus(paths as AgentIntegrationPaths), changes: [...changes.filter(isChange), row] }
 }
 
 /** Read-only snapshot for the renderer. Creates the ledger on first call (detecting legacy). */
@@ -581,79 +789,104 @@ export function getAgentIntegrationStatus(paths: AgentIntegrationPaths): AgentIn
   }
 }
 
-/** Onboarding, the review and Settings: record the answer, then apply or disconnect. Never throws. */
-export function setAgentIntegration(rt: AgentIntegrationRuntime, req: AgentIntegrationSetRequest): AgentIntegrationSetResult {
+/** Onboarding, the review and Settings: record the answer, then apply or disconnect. Never throws.
+ *  `saveError` says the answer could not be saved, so the next start would not know it. A connect
+ *  then writes nothing into agent configs; a disconnect still takes everything out. */
+export function setAgentIntegration(
+  rt: AgentIntegrationRuntime,
+  req: AgentIntegrationSetRequest,
+): AgentIntegrationSetResult {
   try {
     if (!req.connect) {
-      const changes = disconnectAgentIntegration(rt.paths, { recordDecline: true })
-      return { status: getAgentIntegrationStatus(rt.paths), changes }
+      const { rows, saveError } = disconnect(rt.paths, true)
+      return { status: getAgentIntegrationStatus(rt.paths), changes: rows, ...(saveError === null ? {} : { saveError }) }
     }
     const ledger = loadLedger(rt.paths)
     ledger.consent = 'granted'
     if (typeof req.primerHook === 'boolean') ledger.primerHook = req.primerHook
-    writeLedger(rt.paths, ledger)
+    // Connected without the answer on record, the agents would stay connected at the next start
+    // with no consent saved for it. Nothing is written until the answer can be kept.
+    const saveError = writeLedger(rt.paths, ledger)
+    if (saveError !== null) return { status: getAgentIntegrationStatus(rt.paths), changes: [], saveError }
     const changes = applyAll(rt, ledger.primerHook).filter(isChange)
     return { status: statusOf(rt.paths, ledger), changes }
   } catch (e) {
-    return {
-      status: getAgentIntegrationStatus(rt.paths),
-      changes: [change('claude', ledgerPath(rt.paths), 'skipped', 'Agent integration', errorText(e))],
-    }
+    return failed(rt, e, [])
   }
 }
 
 /** Remove everything Termpolis wrote into agent configs, by signature. Settings uses it via
- *  setAgentIntegration; `--disconnect-agents` (uninstall) calls it directly. Never throws. */
+ *  setAgentIntegration; `--disconnect-agents` (uninstall) calls it directly. Never throws: a step
+ *  that fails is a 'skipped' row and every other step still runs, so one agent's broken config
+ *  cannot leave the others connected. */
 export function disconnectAgentIntegration(
   paths: AgentIntegrationPaths,
   opts: { recordDecline?: boolean } = {},
 ): AgentIntegrationChange[] {
+  const { rows, saveError } = disconnect(paths, !!opts?.recordDecline)
+  if (saveError === null) return rows
+  return [...rows, change('claude', ledgerFileFor(paths), 'skipped', 'Record of the disconnect', saveError)]
+}
+
+function disconnect(paths: AgentIntegrationPaths, recordDecline: boolean): { rows: AgentIntegrationChange[]; saveError: string | null } {
   const rows: AgentIntegrationChange[] = []
-  const run = (file: string, fn: () => AgentIntegrationChange[]): void => {
+  const attempt = <T>(agent: AgentId, file: string, fn: () => T, fallback: T): T => {
     try {
-      rows.push(...fn())
+      return fn()
     } catch (e) {
-      rows.push(change('claude', file, 'skipped', 'Disconnect', errorText(e)))
+      rows.push(change(agent, file, 'skipped', 'Disconnect', errorTextSafe(e)))
+      return fallback
     }
   }
-  const saved = readLedger(paths)
-  for (const dir of claudeDirs(paths)) {
-    const settings = join(dir, 'settings.json')
-    run(settings, () => editConfig('claude', settings, [
-      { what: 'Tool permissions', run: removeAllowRules },
-      { what: 'SessionStart memory hook', run: removePrimerHooks },
-      { what: 'Unused MCP server entry', run: removeServerEntry },
-    ], false))
-    run(dir, () => removeLocalPlugin(dir))
+  const run = (agent: AgentId, file: string, fn: () => AgentIntegrationChange[]): void => {
+    rows.push(...attempt(agent, file, fn, []))
   }
-  for (const file of claudeJsonFiles(paths)) {
-    run(file, () => editConfig('claude', file, [{ what: 'MCP server', run: removeServerEntry }], false))
-  }
-  run(join(paths.home, '.mcp.json'), () => removeGlobalMcpJson(paths))
-  for (const home of codexHomes(paths)) {
-    const file = join(home, 'config.toml')
-    run(file, () => stripCodex(file))
-  }
-  const gemini = join(paths.geminiDir, 'settings.json')
-  run(gemini, () => editConfig('gemini', gemini, [{ what: 'MCP server', run: removeServerEntry }], false))
-
+  const saved = attempt('claude', ledgerFileFor(paths), () => readLedger(paths), null)
   const trusted = saved?.trustedByTermpolis ?? []
-  const trustRows: AgentIntegrationChange[] = []
-  for (const file of claudeJsonFiles(paths)) {
-    trustRows.push(revertTrust(file, trusted), untrustRoots(file, paths.home))
-  }
-  rows.push(...trustRows)
+  // Keep the keys when a revert failed, so the next disconnect can try again.
+  let trustKept = true
+  const at = agentPaths(paths)
+  if (!at) {
+    rows.push(noHomeRow())
+  } else {
+    for (const dir of attempt('claude', at.claudeDir, () => claudeDirs(paths), [])) {
+      const settings = join(dir, 'settings.json')
+      run('claude', settings, () => editConfig('claude', settings, [
+        { what: 'Tool permissions', run: removeAllowRules },
+        { what: 'SessionStart memory hook', run: removePrimerHooks },
+        { what: 'Unused MCP server entry', run: removeServerEntry },
+      ], false))
+      run('claude', dir, () => removeLocalPlugin(dir))
+    }
+    const claudeJsons = attempt('claude', at.claudeJson, () => claudeJsonFiles(paths), [])
+    for (const file of claudeJsons) {
+      run('claude', file, () => editConfig('claude', file, [{ what: 'MCP server', run: removeServerEntry }], false))
+    }
+    run('claude', join(at.home, '.mcp.json'), () => removeGlobalMcpJson(paths))
+    for (const home of attempt('codex', at.codexHome, () => codexHomes(paths), [])) {
+      const file = join(home, 'config.toml')
+      run('codex', file, () => stripCodex(file))
+    }
+    const gemini = join(at.geminiDir, 'settings.json')
+    run('gemini', gemini, () => editConfig('gemini', gemini, [{ what: 'MCP server', run: removeServerEntry }], false))
 
-  writeLedger(paths, {
+    const trustFrom = rows.length
+    for (const file of claudeJsons) {
+      run('claude', file, () => [revertTrust(file, trusted)])
+      run('claude', file, () => [untrustRoots(file, at.home)])
+    }
+    trustKept = claudeJsons.length === 0 || rows.slice(trustFrom).some((r) => r.action === 'skipped')
+  }
+
+  const saveError = writeLedger(paths, {
     version: 1,
-    consent: opts.recordDecline ? 'declined' : null,
+    consent: recordDecline ? 'declined' : null,
     primerHook: saved?.primerHook ?? true,
     legacy: false,
     migrations: saved?.migrations ?? [],
-    // Keep the keys when a revert failed, so the next disconnect can try again.
-    trustedByTermpolis: trustRows.some((r) => r.action === 'skipped') ? trusted : [],
+    trustedByTermpolis: trustKept ? trusted : [],
   })
-  return rows.filter(isChange)
+  return { rows: rows.filter(isChange), saveError }
 }
 
 // ── Folder trust and the Codex launch ───────────────────────────────────────────────────
@@ -670,6 +903,8 @@ function isUnsafeFolder(folder: string, home: string): boolean {
 export function isFolderTrustAllowed(paths: AgentIntegrationPaths, cwd: string, gitRoot?: string | null): boolean {
   try {
     if (!cwd || !cwd.trim() || !isConnected(loadLedger(paths))) return false
+    // With no home folder known, the home folder could not be told from any other.
+    if (!agentPaths(paths)) return false
     if (gitRoot && gitRoot.trim() && isUnsafeFolder(gitRoot, paths.home)) return false
     return !isUnsafeFolder(cwd, paths.home)
   } catch {
@@ -683,6 +918,8 @@ export function trustFolderForAgents(paths: AgentIntegrationPaths, cwd: string, 
   try {
     const ledger = loadLedger(paths)
     if (!isConnected(ledger)) return { changed: false, keys: [], skipped: 'no-consent' }
+    // With no home folder to find .claude.json in, or to refuse trust for, change nothing.
+    if (!agentPaths(paths)) return { changed: false, keys: [], skipped: 'no-home' }
     const r = trustClaudeWorkspace(cwd, { configPath: paths.claudeJson, home: paths.home, alsoTrust: gitRoot ? [gitRoot] : [] })
     if (r.newlySet.length) {
       ledger.trustedByTermpolis = Array.from(new Set([...ledger.trustedByTermpolis, ...r.newlySet]))
@@ -690,7 +927,7 @@ export function trustFolderForAgents(paths: AgentIntegrationPaths, cwd: string, 
     }
     return r.skipped ? { changed: r.changed, keys: r.keys, skipped: r.skipped } : { changed: r.changed, keys: r.keys }
   } catch (e) {
-    return { changed: false, keys: [], skipped: errorText(e) }
+    return { changed: false, keys: [], skipped: errorTextSafe(e) }
   }
 }
 
@@ -714,6 +951,8 @@ export function prepareCodexLaunch(
   const base = cleaned ? { agentsMdCleaned: cleaned } : {}
   try {
     if (!isConnected(loadLedger(paths))) return { developerInstructions: null, skipped: 'no-consent', approvals: 0, ...base }
+    // No home folder: Codex's config.toml can't be found, so Codex counts as not connected.
+    if (!agentPaths(paths)) return { developerInstructions: null, skipped: 'disabled', approvals: 0, ...base }
     const file = join(paths.codexHome, 'config.toml')
     const text = readTextFile(file)
     if (text === null || codexOwner(text) !== 'ours') return { developerInstructions: null, skipped: 'disabled', approvals: 0, ...base }
@@ -738,8 +977,9 @@ export function prepareCodexLaunch(
 
 /** Remove Codex's trust entry for the home folder (and any folder above it or a drive root). */
 export function removeCodexHomeTrust(paths: AgentIntegrationPaths): { changed: boolean; error?: string } {
-  const file = join(paths.codexHome, 'config.toml')
   try {
+    if (!agentPaths(paths)) return { changed: false, error: NO_HOME }
+    const file = join(paths.codexHome, 'config.toml')
     const text = readTextFile(file)
     if (text === null) return { changed: false }
     const r = stripCodexProjectTrust(text, (folder) => isUnsafeTrustRoot(folder, paths.home))
@@ -748,7 +988,7 @@ export function removeCodexHomeTrust(paths: AgentIntegrationPaths): { changed: b
     atomicWriteText(file, r.text)
     return { changed: true }
   } catch (e) {
-    return { changed: false, error: errorText(e) }
+    return { changed: false, error: errorTextSafe(e) }
   }
 }
 

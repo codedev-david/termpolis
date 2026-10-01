@@ -1398,8 +1398,8 @@ describe('agent:second-opinion — the scraped prompt never reaches a shell', ()
   })
 
   it('reports a killed review (null exit code) as a failure, never as empty success', async () => {
-    // spawn's `timeout` kills a runaway agent and closes with code null. Coercing that to 0 would
-    // hand the user an empty "review" and claim it succeeded.
+    // An agent killed by a signal from outside (the OOM killer, a user's kill) closes with code
+    // null. Coercing that to 0 would hand the user an empty "review" and claim it succeeded.
     armSpawn((c) => { c.emit('close', null) })
 
     let r: any

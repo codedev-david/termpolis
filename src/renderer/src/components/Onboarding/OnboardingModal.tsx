@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentIntegrationStatus } from '../../../../shared/agentIntegration'
+import type { AgentIntegrationSetResult, AgentIntegrationStatus } from '../../../../shared/agentIntegration'
 import { readConsentMirror, saveConsent } from '../../lib/sentry'
 import { AgentConnectStep, type AgentChoice } from '../AgentIntegration/AgentConnectStep'
+import { noteAgentAnswerSaved } from '../AgentIntegration/AgentReviewModal'
 import { PrivacyChoices } from './PrivacyChoices'
 
 // Shown once on first launch. Walks new users through a 6-step orientation tour
@@ -42,18 +43,26 @@ function sameChoice(choice: AgentChoice, status: AgentIntegrationStatus): boolea
 }
 
 /** Sends the first step's choice to main unless it is the answer already on record. Never
- *  throws: the tour has closed by then, and an answer main didn't take is asked at next launch. */
+ *  throws: the tour has closed by then, so an answer main didn't take, or took but couldn't
+ *  save, is noted for the agent review, which asks it again at next launch. */
 async function applyAgentChoice(
   choice: AgentChoice,
   edited: boolean,
   recorded: Promise<AgentIntegrationStatus | null> | null,
 ): Promise<void> {
+  let saved = false
   try {
     const status = await recorded
     // Left untouched, the step shows the answer on record (or would have, had main answered in time).
-    if (status && (!edited || sameChoice(choice, status))) return
-    await window.termpolis.agentIntegrationSet({ connect: choice.connect, primerHook: choice.primerHook })
+    if (status && (!edited || sameChoice(choice, status))) {
+      saved = true
+    } else {
+      const res = await window.termpolis.agentIntegrationSet({ connect: choice.connect, primerHook: choice.primerHook })
+      const data: AgentIntegrationSetResult | null = res.success ? res.data : null
+      saved = !!data && !data.saveError
+    }
   } catch {}
+  noteAgentAnswerSaved(saved)
 }
 
 export function OnboardingModal({ onDone }: { onDone: () => void }) {

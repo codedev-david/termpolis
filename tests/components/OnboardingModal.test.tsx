@@ -17,6 +17,7 @@ import {
   hasSeenOnboarding,
   resetOnboarding,
 } from '../../src/renderer/src/components/Onboarding/OnboardingModal'
+import { agentReviewNeeded, noteAgentAnswerSaved } from '../../src/renderer/src/components/AgentIntegration/AgentReviewModal'
 
 const SEEN_KEY = 'termpolis.onboarding.seen.v1'
 
@@ -441,6 +442,47 @@ describe('OnboardingModal', () => {
       expect(onDone).toHaveBeenCalledTimes(2)
       await waitFor(() => expect(thrown.agentIntegrationSet).toHaveBeenCalledTimes(1))
       await settle()
+    })
+
+    // The tour has closed before main replies, so the agent review at the next launch asks
+    // again, even over the answer on record that a re-run tour meant to change.
+    it.each<[string, () => Promise<unknown>]>([
+      ['took the answer but could not save it', async () => ({
+        success: true,
+        data: { status: agentStatus({ consent: 'granted', connected: true }), changes: [], saveError: 'EACCES: permission denied' },
+      })],
+      ['refused the answer', async () => ({ success: false, error: 'locked' })],
+      ['failed', async () => { throw new Error('ipc gone') }],
+    ])('has the agent review ask again at next launch when main %s', async (_label, reply) => {
+      const api = bridge({ agentIntegrationStatus: onRecord({ consent: 'granted', connected: true }), agentIntegrationSet: vi.fn(reply) })
+      render(<OnboardingModal onDone={() => {}} />)
+      await waitFor(() => expect(connectBox().checked).toBe(true))
+      fireEvent.click(connectBox())
+      skip()
+      await waitFor(() => expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: false, primerHook: true }))
+      await settle()
+      expect(await agentReviewNeeded(true)).not.toBeNull()
+    })
+
+    it('clears that once an answer is saved, or kept as it is on record', async () => {
+      const api = bridge({ agentIntegrationStatus: onRecord({ consent: 'granted', connected: true }) })
+      noteAgentAnswerSaved(false)
+      const first = render(<OnboardingModal onDone={() => {}} />)
+      await waitFor(() => expect(connectBox().checked).toBe(true))
+      skip()
+      await settle()
+      expect(api.agentIntegrationSet).not.toHaveBeenCalled()
+      expect(await agentReviewNeeded(true)).toBeNull()
+      first.unmount()
+
+      noteAgentAnswerSaved(false)
+      render(<OnboardingModal onDone={() => {}} />)
+      await waitFor(() => expect(connectBox().checked).toBe(true))
+      fireEvent.click(connectBox())
+      skip()
+      await waitFor(() => expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: false, primerHook: true }))
+      await settle()
+      expect(await agentReviewNeeded(true)).toBeNull()
     })
   })
 

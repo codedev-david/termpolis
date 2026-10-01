@@ -105,6 +105,8 @@ const M = vi.hoisted(() => ({
   conductorMcpConfig: vi.fn<(...a: unknown[]) => any>(() => ({ mcpServers: { termpolis: { type: 'stdio' } } })),
   // workspace trust
   isWorkspaceTrusted: vi.fn(() => true),
+  trustWorkspace: vi.fn(),
+  revokeWorkspaceTrust: vi.fn(),
   // headroom
   getHeadroomSettings: vi.fn<() => any>(),
   setHeadroomSettings: vi.fn((p: any) => ({ mode: 'balanced', prefixDecay: false, thinkingCap: 0, ...p })),
@@ -359,8 +361,8 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
 vi.mock('../../src/main/workspaceTrust', () => ({
   initWorkspaceTrust: vi.fn(),
   isWorkspaceTrusted: M.isWorkspaceTrusted,
-  trustWorkspace: vi.fn(),
-  revokeWorkspaceTrust: vi.fn(),
+  trustWorkspace: M.trustWorkspace,
+  revokeWorkspaceTrust: M.revokeWorkspaceTrust,
   listTrustedWorkspaces: vi.fn(() => []),
   ensureWorkspaceTrust: vi.fn(() => true),
 }))
@@ -854,6 +856,62 @@ describe('claude:trust-workspace', () => {
     expect(await invoke('claude:trust-workspace', { cwd: '/repo' }))
       .toEqual({ success: false, error: '~/.claude.json is read-only' })
   })
+
+  it('answers a missing or malformed payload with err(), before the manager or git is touched', async () => {
+    // A null payload used to throw while the parameter list destructured it, before the handler's
+    // try, so the call REJECTED instead of answering. A cwd that was not a non-empty string went on
+    // to the manager and came back as a success with an odd skip reason.
+    M.safeGitAsync.mockClear()
+    // Straight to the handler: invoke() would turn an undefined payload into {}.
+    const handler = ipcHandlers.get('claude:trust-workspace')!
+    for (const payload of [null, undefined, {}, { cwd: 42 }, { cwd: '' }, { cwd: ['/repo'] }]) {
+      await expect(Promise.resolve(handler({}, payload)), `payload ${JSON.stringify(payload)}`)
+        .resolves.toEqual({ success: false, error: 'cwd required' })
+    }
+    expect(M.resolveAgentIntegrationPaths).not.toHaveBeenCalled()
+    expect(M.isFolderTrustAllowed).not.toHaveBeenCalled()
+    expect(M.trustFolderForAgents).not.toHaveBeenCalled()
+    expect(M.safeGitAsync).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// workspace:is-trusted / workspace:trust / workspace:revoke-trust — Termpolis's own trust store
+// (workspaceTrust.ts), which gates project scripts. The store is mocked here; mainIpcGit.test.ts
+// pins its failures. These pin the payload check the three handlers share with
+// claude:trust-workspace above.
+// ===========================================================================
+describe('workspace trust handlers', () => {
+  const CHANNELS = ['workspace:is-trusted', 'workspace:trust', 'workspace:revoke-trust'] as const
+
+  beforeEach(() => {
+    for (const spy of [M.isWorkspaceTrusted, M.trustWorkspace, M.revokeWorkspaceTrust]) spy.mockReset()
+  })
+
+  it('hand a valid cwd to the store and answer with ok()', async () => {
+    M.isWorkspaceTrusted.mockReturnValueOnce(false)
+    expect(await invoke('workspace:is-trusted', { cwd: '/repo' })).toEqual({ success: true, data: false })
+    expect(M.isWorkspaceTrusted).toHaveBeenCalledWith('/repo')
+    expect(await invoke('workspace:trust', { cwd: '/repo' })).toEqual({ success: true, data: undefined })
+    expect(M.trustWorkspace).toHaveBeenCalledWith('/repo')
+    expect(await invoke('workspace:revoke-trust', { cwd: '/repo' })).toEqual({ success: true, data: undefined })
+    expect(M.revokeWorkspaceTrust).toHaveBeenCalledWith('/repo')
+  })
+
+  it.each(CHANNELS)('%s answers a missing or malformed payload with err(), before the store is touched', async (channel) => {
+    // A null payload used to throw while the parameter list destructured it, before the handler's
+    // try, so the call REJECTED instead of answering. A cwd that was not a non-empty string went
+    // on to the store, which ignored it, and came back as a success.
+    // Straight to the handler: invoke() would turn an undefined payload into {}.
+    const handler = ipcHandlers.get(channel)!
+    for (const payload of [null, undefined, {}, { cwd: 42 }, { cwd: '' }, { cwd: ['/repo'] }]) {
+      await expect(Promise.resolve(handler({}, payload)), `payload ${JSON.stringify(payload)}`)
+        .resolves.toEqual({ success: false, error: 'cwd required' })
+    }
+    expect(M.isWorkspaceTrusted).not.toHaveBeenCalled()
+    expect(M.trustWorkspace).not.toHaveBeenCalled()
+    expect(M.revokeWorkspaceTrust).not.toHaveBeenCalled()
+  })
 })
 
 // ===========================================================================
@@ -1104,6 +1162,12 @@ describe('headroom proxy wiring', () => {
       expect(read()).toBeNull()
       serve(null)
       expect(read()).toBeNull()
+      // A blank home leaves claudeDir '', and joined that is a settings.json in the cwd.
+      serve(JSON.stringify({ env: { HTTPS_PROXY: 'http://corp:8080' } }))
+      M.resolveAgentIntegrationPaths.mockReturnValueOnce({ ...M.agentPaths, home: '', claudeDir: '', claudeJson: '' })
+      const reads = M.readFileSync.mock.calls.length
+      expect(read()).toBeNull()
+      expect(M.readFileSync.mock.calls.length).toBe(reads)
     } finally {
       M.existsSync.mockImplementation(exists0 as never); M.readFileSync.mockImplementation(read0 as never)
     }
@@ -1561,7 +1625,8 @@ describe('agent:second-opinion', () => {
   })
 
   describe('deliver', () => {
-    /** The delivery fn index.ts hands runSecondOpinion — never exported, only reachable here. */
+    /** The delivery fn index.ts hands runSecondOpinion. secondOpinionDeliver.ts builds it and has
+     *  suites of its own; what is checked here is the one index.ts wires up. */
     async function deliver(...args: unknown[]): Promise<any> {
       let captured: Function | null = null
       M.runSecondOpinion.mockImplementationOnce(async (_req: any, d: any) => { captured = d; return { ok: true, feedback: '' } })

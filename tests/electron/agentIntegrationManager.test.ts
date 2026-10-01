@@ -27,6 +27,8 @@ let sb: Sandbox
 
 beforeEach(() => {
   sb = createSandbox()
+  // The hook as sh runs it, on any machine; the robustness tests cover each shell.
+  sb.rt.hookShell = 'sh'
 })
 
 afterEach(() => {
@@ -47,8 +49,10 @@ function ourClaudeServer(): Record<string, unknown> {
   return { type: 'stdio', ...ourEntry(sb) }
 }
 
+/** The hook as connecting writes it: runs only while its script and runner are still there. */
 function ourHookGroup(): Record<string, unknown> {
-  return { hooks: [{ type: 'command', command: `node "${sb.hookScript}"` }] }
+  const command = `if [ -f "${sb.hookScript}" ] && command -v "node" >/dev/null 2>&1; then node "${sb.hookScript}"; fi`
+  return { hooks: [{ type: 'command', command }] }
 }
 
 /** Every config file's text (null when missing), to prove a call wrote nothing. */
@@ -717,10 +721,11 @@ describe('isFolderTrustAllowed', () => {
     expect(isFolderTrustAllowed(sb.paths, sb.home, repo)).toBe(false)
   })
 
-  it('with no home folder known, refuses only roots', () => {
+  it('with no home folder known, refuses every folder: the home folder could not be told from any other', () => {
     writeLedger(sb, { consent: 'granted' })
     const noHome: AgentIntegrationPaths = { ...sb.paths, home: '' }
-    expect(isFolderTrustAllowed(noHome, proj)).toBe(true)
+    expect(isFolderTrustAllowed(sb.paths, proj)).toBe(true)
+    expect(isFolderTrustAllowed(noHome, proj)).toBe(false)
     expect(isFolderTrustAllowed(noHome, parse(sb.root).root)).toBe(false)
   })
 

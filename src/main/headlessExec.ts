@@ -19,7 +19,9 @@
 //   2. It comes back and WRITES what it learned, so the next run is warmer still.
 //   3. It fails closed. Unattended means nobody can answer a permission prompt, so a
 //      read-only run is launched in each CLI's own read-only shape (see execCommand) and
-//      a hung agent is abandoned at its deadline rather than holding the caller forever.
+//      a hung agent is stopped at its deadline, with its whole process tree, rather than
+//      holding the caller forever (the app's deliver, secondOpinionDeliver.ts, does the
+//      stopping, and deliverWithDeadline is the backstop).
 //
 // The one-shot mechanics (per-agent argv, the Windows spawn plan, the PROMPT_TOKEN
 // indirection that keeps a prompt off the command line) are NOT re-implemented here —
