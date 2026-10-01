@@ -297,7 +297,8 @@ Connected, Termpolis:
   still ask; and marks folders you open agents in as trusted, never your home
   folder or a drive root. Optionally, it adds a SessionStart hook to
   `settings.json` that loads your project memory whenever a Claude Code
-  session starts, including sessions started outside Termpolis.
+  session starts, including sessions started outside Termpolis. The hook
+  does nothing once Termpolis is gone.
 - **Codex** — adds the Termpolis MCP server to `config.toml`, pre-approves
   the 14 memory tools unless you already chose a setting for them, and
   answers the folder-trust prompt for folders you open agents in, never your
@@ -307,10 +308,11 @@ Connected, Termpolis:
 
 All of this stays on your machine. **Disconnect** in Settings → Agent
 Integration removes everything Termpolis wrote, and so does uninstalling on
-Windows; on any platform, `Termpolis --disconnect-agents` does the same from
-the command line. One limit: Disconnect un-trusts only the folders this
-version marked trusted. Trust an older Termpolis version added can't be told
-apart from trust you accepted yourself, so it stays.
+Windows or removing the Linux .deb (`sudo apt remove termpolis`); on any
+platform, `Termpolis --disconnect-agents` does the same from the command line.
+One limit: Disconnect un-trusts only the folders this version marked trusted.
+Trust an older Termpolis version added can't be told apart from trust you
+accepted yourself, so it stays.
 
 Whatever you choose, this version also cleaned up once after older versions:
 it removed a permission that let every Termpolis tool run without asking,
@@ -334,8 +336,9 @@ that folder.
   listed above.
 - **Uninstall** — remove Termpolis through your OS's normal application
   uninstall flow. On Windows the uninstaller disconnects your coding agents
-  first; on macOS and Linux, use Disconnect (or run
-  `Termpolis --disconnect-agents`) before you remove the app.
+  first, and so does removing the Linux .deb; on macOS and with the Linux
+  AppImage, use Disconnect (or run `Termpolis --disconnect-agents`) before you
+  remove the app.
 - **Turn Termpolis Remote off** — it is off to begin with. Once on, unticking
   it in Settings → Remote stops the bridge and closes the relay connection.
 - **Cut a phone off** — revoke the device in Settings → Remote, or unpair from

@@ -13,7 +13,7 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 3. [First Launch & Welcome Screen](#3-first-launch--welcome-screen)
 4. [The Sidebar](#4-the-sidebar)
 5. [Terminals](#5-terminals)
-6. [Tab, Split & Grid Views](#6-tab-split--grid-views)
+6. [Tab & Split Views](#6-tab--split-views)
 7. [Settings](#7-settings)
 8. [Themes](#8-themes)
 9. [Keybindings](#9-keybindings)
@@ -50,7 +50,7 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 
 **What makes it different:**
 
-- **Secure AI-Assisted Development**: a built-in AI Security Center (Settings → AI Security) auto-scans every AI prompt against 70+ secret patterns (AWS, GitHub, Azure, GCP, Stripe, Slack, JWT, PEM, …), enforces Gemini paid-tier mode, keeps a local JSONL audit log, and surfaces per-provider training-disposition facts sourced from live ToS pages. See the [Security](#security-center) section.
+- **Secure AI-Assisted Development**: a built-in AI Security Center (Settings → AI Security) auto-scans every AI prompt against 90+ secret patterns (AWS, GitHub, Azure, GCP, Stripe, Slack, JWT, PEM, …), can block free-tier Gemini launches (Strict Mode, off by default), keeps a local JSONL audit log, and surfaces per-provider training-disposition facts sourced from live ToS pages. See the [Security](#security-center) section.
 - **Multi-agent swarm**: Claude Code, Codex, and Gemini CLI work together on a task. A dedicated Claude Code instance acts as the conductor.
 - **MCP server** baked in: AI agents can control Termpolis via Model Context Protocol — open terminals, run commands, send messages.
 - **Transparent routing**: every subtask shows *which* agent got it, *why*, and *what it cost*.
@@ -58,7 +58,7 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 - **Intervention controls**: pause, cancel, or steer any agent mid-task without leaving the feed.
 - **Shared memory**: a RAG-backed memory store that any agent can read and write via MCP.
 - **MCP-native end to end**: all three agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
-- **Share-ready output**: a four-way Copy submenu (`Ctrl+Shift+M`) — Copy as Code Block, Plain Text, With Command, or PNG Image — turns any terminal selection into a Slack/Teams/PR-ready paste. See [Copy for Slack / Teams / PRs](#copy-for-slack--teams--prs).
+- **Share-ready output**: three fixed copy shortcuts turn any terminal selection into plain text, a Slack/Teams-ready message, or a code block for a PR. See [Copy for Slack / Teams / PRs](#copy-for-slack--teams--prs).
 
 Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well, securely.
 
@@ -67,20 +67,19 @@ Everything is built around the idea that **you're not writing code alone anymore
 The **AI Security Center** at Settings → AI Security is the security backbone of Termpolis. Every check runs on the local machine. None of these features send data to Termpolis or any third party.
 
 - **Per-provider training-disposition facts.** Live ToS-sourced summaries: Claude (default off), Codex (default off), Gemini paid (excluded), Gemini free OAuth (Google may use prompts, flagged yellow).
-- **Auto-scan on every prompt.** Once you launch `claude`, `codex`, or `gemini` in a terminal, every Enter and every paste-sized chunk (≥32 bytes) is scanned in main-process memory against 70+ regex rules before it reaches the PTY. Hits are redacted in place, audited as `redaction_hit` events, and surfaced via a dismissable banner. Catalog covers AWS (access/secret/session), GitHub (classic/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage, SAS, conn-string, AD client secret, DevOps PAT), GCP (SA JSON, OAuth client), AI providers (OpenAI, Anthropic, Google, HuggingFace, Cohere, Replicate), payments (Stripe, PayPal Braintree, Square), comms (Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark), cloud (Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi), CI/CD (CircleCI, Travis, Codecov), observability (Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Mapbox, Okta, Auth0), package registries (npm, PyPI, Docker Hub), secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database connection strings (Postgres/MySQL/MongoDB/Redis), HTTP basic-auth URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead). A manual paste-and-scan box is also available in the Settings panel.
+- **Prompt watching (always on).** Once you launch `claude`, `codex`, or `gemini` in a terminal, every Enter and every paste-sized chunk (32+ characters) is scanned in main-process memory against the same secret rules Commit Shield uses. The scan works on a copy: your text reaches the agent unchanged, never modified, delayed or held back. A hit is recorded in the audit log as a `prompt_secret_sent` event (the rule and the variable name, never the value) and shown in a dismissable banner that names what was sent, so you know what to rotate. The catalog covers AWS (access/secret/session), GitHub (classic/fine-grained/OAuth/runner), GitLab, Bitbucket, Azure (Storage, SAS, conn-string, AD client secret, DevOps PAT), GCP (SA JSON, OAuth client), AI providers (OpenAI, Anthropic, Google, HuggingFace, Cohere, Replicate), payments (Stripe, PayPal Braintree, Square), comms (Slack, Discord, Telegram, Twilio, SendGrid, Mailgun, Mailchimp, Postmark), cloud (Cloudflare, DigitalOcean, Heroku, Netlify, Vercel, Fly.io, Render, Pulumi), CI/CD (CircleCI, Travis, Codecov), observability (Sentry DSN, Datadog, New Relic, Rollbar, Honeycomb, Mapbox, Okta, Auth0), package registries (npm, PyPI, Docker Hub), secrets vaults (HashiCorp Vault, Doppler, 1Password Connect), database connection strings (Postgres/MySQL/MongoDB/Redis), HTTP basic-auth URLs, JWTs, PEM/GPG private key blocks, and the `.env`-style catch-all. Non-AI terminals are not scanned (zero overhead). A manual paste-and-scan box is also available in the Settings panel.
 - **Gemini account-mode auto-detection.** Reads `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_GCA`, and `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT` to identify which tier the Gemini CLI will hit (Vertex / Code Assist / Paid API key / Free OAuth).
 - **Strict Mode — block free-tier Gemini.** When ON, Termpolis intercepts shell-level `gemini` invocations and refuses to forward them unless paid-tier credentials are detected. Blocked launches are recorded in the audit log as `BLOCKED: strict-mode + free-tier`.
-- **Local JSONL audit log.** Every AI-agent terminal launch can be appended to `ai-security-audit.jsonl` in userData. Append-only, 10 MB rotated. Wipeable from Settings.
+- **Local JSONL audit log.** On by default: AI-agent terminal launches and closes, secrets sent in a prompt, Commit Shield results and other security events are appended to `ai-security-audit.jsonl` in the data directory. Append-only, rotated at 10 MB. You can turn it off or wipe it in Settings → AI Security.
 - **Legal disclaimer.** Apache 2.0 "AS IS". Full disclaimer in `TERMS.md` §5a and inline in Settings → AI Security.
 
 ## Copy for Slack / Teams / PRs
 
-The terminal right-click menu has a **Copy →** submenu with four share-ready actions, plus the `Ctrl+Shift+M` keybinding (rebindable).
+Copying is keyboard-driven: select text in a terminal, then press one of three shortcuts. They are fixed (they can't be remapped), and the terminal's right-click menu lists them as a reminder.
 
-- **Copy as Code Block** — wraps the selection (or the visible buffer) in triple-backtick fences. Drop into Slack, Teams, GitHub, GitLab, Notion — any markdown surface.
-- **Copy as Plain Text** — strips ANSI color escapes and copies clean text. Email-, Jira-, doc-ready.
-- **Copy with Command** — prepends the last shell command before fencing. Reproducer-ready snippets for bug reports.
-- **Copy as Image (PNG)** — renders the xterm.js canvas to a PNG with `canvas.toBlob`, writes via `ClipboardItem`. Pastes into Slack/Teams/Loom with colors, glyphs, and layout intact.
+- **Copy** (`Ctrl+Shift+C`) — the selection as plain text.
+- **Copy for Teams/Slack** (`Ctrl+Shift+K`) — the selection as a chat message: tight line breaks, emoji kept, no code box.
+- **Copy as Code Block** (`Ctrl+Shift+Q`) — the selection as a code block: formatted HTML plus a fenced markdown copy, so it pastes cleanly into Slack, Teams, GitHub, GitLab or Notion.
 
 ---
 
@@ -125,11 +124,12 @@ Inside you'll find `session.json` (your workspaces, tabs, and open terminals) an
 
 The welcome screen is where you start from when no terminals are open. It shows:
 
-- **Quick launch buttons** for PowerShell, Bash, Zsh, WSL, plus any AI agent profiles you have.
-- **Recent workspaces** on the left sidebar.
-- **Tips and shortcuts** — an at-a-glance primer on the command palette, splits, and the swarm.
+- **New Terminal** — opens the new-terminal modal, where you pick the shell and theme.
+- **Launch AI Agent** — a picker for Claude Code, OpenAI Codex and Gemini CLI. Agents that aren't installed are marked **Install**; click one to see how to install it.
+- **Start Swarm** — coordinate several agents on a new or existing project (see [Swarm Dashboard](#20-swarm-dashboard)).
+- **Tips and shortcuts** — a line of highlights (the command palette, split panes, smart routing, the MCP server, session recording) and the shortcuts for the observability panels: activity feed, redundancy, efficiency and swarm.
 
-Press **`Ctrl+T`** (`⌘T` on macOS) to open the new-terminal modal, or click any launch button to spawn one immediately.
+Press **`Ctrl+Shift+T`** (`⌘⇧T` on macOS) to open the new-terminal modal from anywhere, or **`Ctrl+K`** for the command palette.
 
 ### The first-run tour
 
@@ -149,40 +149,25 @@ Reopen it any time with **Show tour again** in the Help drawer. If you updated f
 
 The sidebar is the navigation spine of the app. From top to bottom:
 
-1. **Termpolis logo / brand** — click to return to the welcome view.
-2. **Workspaces** — one row per open workspace. Each workspace is a named container of terminals, preserved across restarts.
-3. **Tool buttons** — Settings, Git Panel, Workflows, Activity, Swarm — each toggleable.
-4. **Collapse / expand** — click the chevron at the bottom to hide labels and save space.
+1. **Toolbar** — **Settings**, **Split View** / **Tab View** (switches between the two), **Git Panel**, **Swarm Dashboard** and **Collapse sidebar**. A collapsed sidebar shows only an **Expand sidebar** button.
+2. **AI Agents** — launch Claude Code, Codex or Gemini CLI, or add a custom profile with **+**.
+3. **Workspaces** — one row per saved workspace. Click one to reopen its set of terminals (see [Workspaces](#workspaces)).
+4. **Workflows** — your saved workflows, with **Start Workflow** to create one (see [§13](#13-workflow-orchestrator)).
+5. **Terminals** — one row per open terminal, with **+ Add Terminal** below the list.
 
 ### Workspaces
 
-Workspaces are the **project-level container** in Termpolis — think of them as the tabs in a browser, except each one holds a full set of terminals, a split/grid layout, an active agent, a scrollback history, per-workspace settings, and any panels you've left pinned (activity, context, git, swarm). You can run many workspaces side-by-side and switch between them without losing state.
+Workspaces are **saved sets of terminals**: snapshots of your terminal layout that you can bring back with one click. They're handy for switching between projects, say a "Frontend" workspace with Node and build terminals and a "Backend" one with API and database terminals.
 
-**What a workspace owns:**
+**What a workspace saves:** each terminal's name, shell, working directory, color, theme and font, and the AI agent it was running, if any. It doesn't save output or running processes, so restoring a workspace starts fresh sessions.
 
-- **Terminals** — every open pty in that workspace, with its shell, working directory, label, color, and scrollback buffer.
-- **Layout** — tab view, split view (the full pane tree), or grid view. Restored exactly on relaunch.
-- **Focus** — which terminal was active, cursor position, selection.
-- **Agent sessions** — any Claude Code, Codex, or Gemini runs tied to terminals in the workspace.
-- **Panel state** — which side panels are open and their size.
-- **Per-workspace overrides** — if you've changed a setting scoped to this workspace (shell default, font size, etc.).
+**Saving a workspace.** With at least one terminal open, click **+ Save Workspace** in the sidebar's Workspaces section, give it a name, and press **Save**.
 
-**How workspaces persist.** Everything above is written to `session.json` in the Termpolis data directory (see [§2](#2-installation) for the per-platform path) as soon as it changes — so an unclean shutdown still leaves you with last-known-good state. Re-opening the app restores the workspaces in the same order with the same terminals, split layouts, and focus.
+**Restoring a workspace.** Click a workspace to close the terminals you have open and reopen its saved set. Each terminal starts in its saved working directory, and a terminal that was running an AI agent starts that agent again.
 
-**Creating a workspace.** Use the **+ Workspace** button at the top of the sidebar or the `Ctrl+Shift+N` shortcut. Each new workspace starts empty; pick a shell to open the first terminal.
+**Managing workspaces.** Each workspace row has buttons to **update** it with your current terminals, **rename** it, and **delete** it. Workspaces are kept in `session.json` in the Termpolis data directory (see [§2](#2-installation) for the per-platform path), with the rest of your session.
 
-**Managing workspaces.** Right-click any workspace row in the sidebar for:
-
-- **Rename** — changes the label in the sidebar and the window title when the workspace is active.
-- **Duplicate** — creates a new workspace with the same terminal configuration (shell, cwd, label) but fresh, empty pty sessions. Handy when you want to mirror a setup for a second feature branch.
-- **Close** — removes the workspace. If any terminals in it have live child processes, you'll get a confirmation dialog listing what's still running.
-- **Show in file explorer** — opens the workspace's working directory in Finder / Explorer / your Linux file manager.
-
-**Switching between workspaces.** Click a workspace row to activate it. Keyboard users can cycle with `Ctrl+Alt+[` / `Ctrl+Alt+]`. Unsaved terminal output in background workspaces keeps streaming — nothing is paused just because it's not visible.
-
-**Workspace root directory.** Each workspace has a default working directory that new terminals start in. Set it when you create the workspace, or change it later from Settings → Workspace. Terminals started with the agent launcher or by a workflow step inherit this unless they override it per-terminal.
-
-**How workspaces differ from workflows.** Workspaces are *long-lived containers* that own state across restarts; workflows are *pipelines of steps* the app executes for you. A workspace is the room you're working in; a workflow is a job that runs inside it. A workflow never rearranges your terminals — it runs its steps, streams their output, and records the result. See [§13](#13-workflow-orchestrator).
+**How workspaces differ from workflows.** A workspace is a saved set of terminals; a workflow is a *pipeline of steps* the app executes for you. A workflow never rearranges your terminals — it runs its steps, streams their output, and records the result. See [§13](#13-workflow-orchestrator).
 
 ---
 
@@ -194,12 +179,14 @@ Every pane in Termpolis is a full pty-backed terminal powered by `node-pty`. Tha
 
 ### Creating a terminal
 
-`Ctrl+T` opens the new-terminal modal (shown above). Pick:
+`Ctrl+Shift+T` opens the New Terminal dialog (shown above). Fill in:
 
-- **Shell**: PowerShell 7, Windows PowerShell, CMD, Bash, Zsh, Fish, WSL — whatever your system has.
-- **Working directory**: defaults to the workspace root; override per-terminal.
-- **Agent profile** (optional): launches with an AI CLI already running. See [AI Agent Profiles](#18-ai-agent-profiles).
-- **Label + color**: helps you tell terminals apart in split view.
+- **Name + color**: help you tell terminals apart in split view.
+- **Folder**: where the terminal starts. It begins as the active terminal's folder. If you leave it empty, or the folder doesn't exist, the terminal starts in your home folder.
+- **Shell**: whichever your system has of PowerShell, Command Prompt and Git Bash on Windows, or Zsh, Bash and PowerShell on macOS and Linux. It begins as your default shell.
+- **Font size, theme and font family**: begin as the terminal defaults from Settings → General.
+
+To open a terminal with an AI CLI already running, use **Launch AI Agent** instead. See [AI Agent Profiles](#18-ai-agent-profiles).
 
 ### Running terminal
 
@@ -207,46 +194,36 @@ Every pane in Termpolis is a full pty-backed terminal powered by `node-pty`. Tha
 
 Once running, the terminal supports:
 
-- Copy on selection (configurable), paste via `Ctrl+Shift+V` / `⌘V`.
-- Mouse scroll, link clicks (`Ctrl+Click` to open), image rendering via Sixel when the shell emits it.
+- Copy with `Ctrl+Shift+C`, or with `Ctrl+C` while text is selected, and paste with `Ctrl+V` or `Ctrl+Shift+V`. On macOS, `⌘C` and `⌘V`.
+- Mouse scroll, and links you can click to open.
 - Full 256-color + truecolor palettes.
-- Right-click for a context menu: copy, paste, clear, split, close.
+- Right-click for a context menu: the three copy shortcuts, **Paste**, **Select All**, **Find...**, **Export Full Scrollback...** and **Export Visible Output...**, **Start Recording**, **Pin Selection** (keeps the selected text pinned above the terminal until you unpin it), **View as Diff**, and in split view **Split Right** and **Split Down**.
 
 ### Close confirmation
 
-Closing a terminal that has an active process prompts for confirmation. This protects against accidental loss of long-running tasks like model downloads, build jobs, or agent sessions.
+Closing a single terminal doesn't ask first: it ends whatever is running in it. Closing Termpolis while AI agents are running shows **AI Agents Running**, where you choose **Cancel** or **Close Anyway**.
 
 ---
 
-## 6. Tab, Split & Grid Views
+## 6. Tab & Split Views
 
 ![Tab view with multiple terminals](../e2e/screenshots/docs/05-tab-view-multiple.png)
 
-Terminals are arranged inside a workspace in one of three view modes:
+Terminals are shown in one of two view modes.
 
 ### Tab view (default)
 
-![Split view](../e2e/screenshots/docs/06-split-view.png)
-
-Each terminal gets a tab. Click a tab to focus, drag to reorder, middle-click to close. `Ctrl+1`…`Ctrl+9` jumps to the Nth tab.
+The active terminal fills the window. Switch terminals by clicking one in the sidebar's **Terminals** list, with `Alt+1`…`Alt+9`, or with `Ctrl+Tab` / `Ctrl+Shift+Tab`.
 
 ### Split view
 
-Splits are horizontal or vertical — recursive, so you can split a split. Drag the divider to resize.
+![Split view](../e2e/screenshots/docs/06-split-view.png)
 
-Keyboard shortcuts:
-- `Ctrl+\` — split horizontally
-- `Ctrl+Shift+\` — split vertically
-- `Alt+Arrow` — focus adjacent pane
-- `Ctrl+Shift+W` — close focused pane
+Every open terminal gets its own pane, sized evenly. Each pane's header has **Split Right** and **Split Down**, which open a new terminal with the same shell and folder beside or below it; the terminal's right-click menu has them too. Splits nest, so you can split a split. Drag a divider to resize. Click a pane to make it the active terminal, and use the close button in its header (or `Ctrl+Shift+W`) to close it.
 
-### Grid view
+### Switching views
 
-Turns open terminals into a grid — great for watching 4 or 6 agents at once. Sizes auto-fit the window.
-
-### View mode toggle
-
-The top-right toolbar has three buttons: **Tab View**, **Split View**, **Grid View**. Your choice is remembered per workspace.
+Click **Split View** / **Tab View** in the sidebar toolbar, press `Ctrl+Shift+G`, or run **Toggle Split View** from the command palette (`Ctrl+K`). Termpolis remembers the view when you restart it, and lays split panes out evenly again.
 
 ---
 
@@ -254,19 +231,22 @@ The top-right toolbar has three buttons: **Tab View**, **Split View**, **Grid Vi
 
 ![Settings panel](../e2e/screenshots/docs/07-settings-panel.png)
 
-Open with the gear icon in the sidebar, or press `Ctrl+,`. The settings panel slides in from the right. Tabs across the top group the settings:
+Open with the gear icon at the top of the sidebar, or choose **Open Settings** in the command palette (`Ctrl+K`). `Ctrl+/` opens it straight on the Keybindings tab. Settings takes the place of the terminals in the main area until you close it, and the installed version and a **Check for updates** button sit at the top. Tabs across the top group the settings:
 
-- **Themes** — color palette, syntax, and terminal colors.
-- **Keybindings** — every shortcut is rebindable.
-- **Agent Capability** — score each AI model across 10 capability categories, influencing swarm routing.
-- **Shells** — default shell per OS, custom shell commands, startup arguments.
-- **Behavior** — confirm on close, copy on select, scrollback size, cursor style, font.
-- **General** — default shell, terminal defaults, memory recall, and **Privacy**: crash reports and anonymous usage statistics are two separate switches, both off unless you turn them on, and a change applies at once (details in `PRIVACY.md`).
+- **General** — Safe Import (scan a third-party skill, plugin or MCP server before you install it), the default shell, terminal defaults (theme, font size, font family), naming agent terminals after their folder, whether terminal apps may capture the mouse, memory recall on agent launch, **Import / Export Memory**, and **Privacy**: crash reports and anonymous usage statistics are two separate switches, both off unless you turn them on, and a change applies at once (details in `PRIVACY.md`).
+- **Memory & Learning** — the memory dashboard: what is stored and where it came from, the knowledge graph, learning over time, self-competence by domain, receipts, and every recent memory operation. It also shows whether memory runs in its own process, and can store vectors as int8 to use 4× less RAM.
+- **AI Security** — Strict Mode, the Gemini account mode, what each agent does with your data, always-on prompt watching (it records a secret you send to an agent but never changes or holds back what you type), Commit Shield and its git hooks (block a commit or push that carries a secret), Egress Guard (flags agent traffic to unexpected hosts), memory scrub (redacts secrets before they are stored), the always-on background watchers, the cloud-bound audit log, and a manual pre-paste secret scan.
+- **Voice** — voice dictation: the on/off switch, your Groq API key, hold or tap activation, and auto-submit (see [Voice Dictation](#voice-dictation)).
+- **Keybindings** — rebind the core shortcuts, and add custom shortcuts that type a snippet into the active terminal (see [§9](#9-keybindings)).
+- **Agent Ratings** — score each agent from 1 to 5 in 10 categories; the swarm conductor uses the scores when it hands out work (see [§10](#10-agent-capability-ratings)).
+- **Shell Config** — edit your shell profiles in a built-in editor: the PowerShell 7 and 5 profiles on Windows, plus `.bashrc`, `.bash_profile` and `.zshrc`.
 - **Token Savings** — Token Headroom, including the switch for the Claude Code compression proxy (see [below](#token-savings--the-claude-code-compression-proxy)).
-- **Agent Integration** — whether Claude Code, Codex and Gemini CLI are connected to Termpolis, every change that made to their settings, and **Disconnect** (see [Connecting your coding agents](#connecting-your-coding-agents)).
+- **Remote** — let the Termpolis Remote phone app connect, set the relay address, and pair a phone (see [§29](#29-termpolis-remote-phone-app)).
+- **Agent Integration** — whether Claude Code, Codex and Gemini CLI are connected to Termpolis, every change Termpolis made to their settings, and **Disconnect** (see [Connecting your coding agents](#connecting-your-coding-agents)).
+- **MCP Servers** — the MCP servers your agents reach through Termpolis, what each agent on this machine has configured for itself, and the gateway policy for a tool call that no rule covers.
 - **Processes** — find and end what is quietly slowing the machine down (see below).
 
-Changes save immediately. There is no "apply" button — edits are persisted to `settings.json` in your data directory.
+Changes save immediately. There is no "apply" button, except in the Shell Config editor, which writes a profile only when you press **Save**.
 
 ### Token Savings — the Claude Code compression proxy
 
@@ -323,13 +303,10 @@ Talk instead of type. Transcription uses **Groq's cloud Whisper API** — your r
 
 ![Themes picker](../e2e/screenshots/docs/08-themes-picker.png)
 
-Termpolis ships with a curated set of dark themes tuned for long coding sessions: **Termpolis Dark** (default), Dracula, Solarized Dark, Nord, Gruvbox Dark, Tokyo Night, Monokai. Each applies to:
+Termpolis ships seven terminal themes: **Dark** (default), Light, Solarized Dark, Solarized Light, Monokai, Dracula and Nord. A theme sets the terminal's background, foreground, cursor, selection and 16-color ANSI palette; the app chrome around the terminals keeps its own colors.
 
-- The terminal background, foreground, and ANSI palette.
-- The app chrome (sidebar, status bar, title bar).
-- Syntax highlighting inside AI conversation panels.
-
-You can import any VS Code theme JSON via the **Import theme** button. The parser maps VS Code tokenColors to xterm colors automatically.
+- **Default for new terminals:** Settings → General → Terminal Defaults.
+- **One terminal:** pick a theme in the New Terminal dialog, or change it later from that terminal's edit menu (right-click the terminal in the sidebar).
 
 ---
 
@@ -337,13 +314,17 @@ You can import any VS Code theme JSON via the **Import theme** button. The parse
 
 ![Keybindings settings](../e2e/screenshots/docs/09-keybindings.png)
 
-Every user-facing action has a keybinding. The Keybindings tab lists them grouped by category (Navigation, Terminals, View, Agents, Swarm, Git). To rebind:
+Settings → Keybindings lists the core actions and their shortcuts: copy and paste, history search, find in terminal, new, close, next and previous terminal, the sidebar, split view, the app log, clearing the terminal, and launching agents 1–3. To rebind one:
 
-1. Click the current binding.
-2. Press the new combo. The modal shows conflicts inline.
-3. Press **Save** or **Reset** to restore default.
+1. Click its shortcut.
+2. Press the new combo. Press Escape, or click anywhere outside, to cancel.
+3. The new binding takes effect at once. If another shortcut already uses that combo, the row says **Conflicts with …**.
 
-Bindings are platform-aware — `Ctrl` becomes `⌘` on macOS automatically. Conflicts across OS are flagged.
+Each row's reset button restores its default, and **Reset All** restores them all. The three copy shortcuts (`Ctrl+Shift+C`, `Ctrl+Shift+K`, `Ctrl+Shift+Q`) are reserved and cannot be changed. The panel shortcuts, such as `Ctrl+K` for the command palette and `Ctrl+Shift+S` for the swarm dashboard, are fixed.
+
+**Custom Shortcuts**, below the table, bind a key (with Ctrl or Alt) to a snippet that is typed into the active terminal; turn on **Run** to press Enter after it. They are saved unencrypted in your app data, so don't store passwords or tokens in them.
+
+On macOS, `⌘` works wherever a binding says `Ctrl`.
 
 See [§31](#31-keyboard-shortcut-reference) for the complete default list.
 
@@ -353,22 +334,22 @@ See [§31](#31-keyboard-shortcut-reference) for the complete default list.
 
 ![Agent capability ratings](../e2e/screenshots/docs/10-agent-capability-ratings.png)
 
-The heart of smart swarm routing. This tab lets you score each agent (Claude Code, Codex, Gemini CLI) across 10 categories:
+The heart of smart swarm routing. **Settings → Agent Ratings** lets you score each agent (Claude Code, OpenAI Codex, Gemini CLI) from 1 to 5 in 10 categories:
 
 1. Refactoring
-2. Testing
-3. Documentation
-4. Code review
-5. DevOps / Infra
+2. Architecture
+3. Testing
+4. Documentation
+5. Code Review
 6. Debugging
 7. Frontend
-8. Backend / API
-9. Data / SQL
-10. Bulk / long-running
+8. DevOps
+9. Data Analysis
+10. Bulk Tasks
 
-Scores are 0–100. Defaults reflect model-family strengths as of release. You can tune them to match your own experience — the conductor uses these weights when it decides who gets what subtask.
+Defaults reflect model-family strengths as of release. You can tune them to match your own experience: each score has its own reset button, and **Reset All** restores the defaults. The conductor and the smart router treat the scores as hints (the conductor is told which categories each agent scores 4 or 5 in) and still make their own call.
 
-The **Token Cost** column is a relative indicator ($, $$, $$$) used for cost-aware routing.
+Each agent also carries a relative token cost (high, medium or low) that the conductor weighs for cost-aware routing.
 
 ---
 
@@ -458,15 +439,13 @@ The run view streams each step's output live, marks it succeeded, failed, or ski
 
 ![Context panel](../e2e/screenshots/docs/14-context-panel.png)
 
-`Ctrl+Shift+E` toggles the context panel. It shows what's "in scope" right now:
+`Ctrl+Shift+E` toggles the context panel, as does **Show Context Panel** in the command palette. It shows the active terminal's folder:
 
-- Current git branch, ahead/behind counts, dirty state.
-- Focused terminal, working directory, running command.
-- Active agent session (if any) with a live token count.
-- Recent files edited in the workspace.
-- Pins — anything you've pinned from the activity feed or the memory store.
+- **File Tree** — the files and folders in it.
+- **Git Status** — the changed files, or "Clean working tree" ("Not a git repo" outside a repository).
+- **Recent Commits** — the latest commits, each with its hash and message.
 
-The context panel is also the pane agents read from when you ask "what am I looking at?" — it's explicit context sharing, not implicit slurp.
+The folder's path is at the bottom. Click a section's header to collapse it. Snippets and notes you want to keep for a project go in the separate pinned context panel (`Ctrl+Shift+B`).
 
 ---
 
@@ -505,13 +484,12 @@ Each hit deep-links into the original session so you can reopen it, re-prompt, o
 
 ![Git panel](../e2e/screenshots/docs/17-git-panel.png)
 
-Sidebar button or `Ctrl+Shift+G`. The Git panel is a lightweight GUI for what you usually do at the CLI:
+Open it with the **Git Panel** button in the sidebar toolbar. It opens on the repository that holds the active terminal's folder; otherwise click **Open Folder** to pick one, and click the folder path in the header to switch to another. The Git panel is a lightweight GUI for what you usually do at the CLI:
 
-- **Current branch**, ahead / behind counts.
-- **Staged** and **unstaged** sections with file-by-file diff inline.
-- **Commits** — graph view of the last 50 commits on the current branch.
-- **Actions** — stage/unstage, commit (with message input), push, pull, fetch, stash, create branch, switch branch.
-- **AI-assisted commit message** — click the ✨ next to the message input, and an agent drafts a message from the staged diff.
+- **Current branch** in the header, with **Pull**, **Push** and **Refresh** buttons.
+- **Staged Changes** and **Changes** — each file shows its status. Click a file to see its diff.
+- **Stage and unstage** — the **+** / **−** next to a file, or **Stage All** / **Unstage All**.
+- **Commit** — type a message in **Commit message...** and press Enter or click **Commit**.
 
 Every action runs as a real git command in a spawned process — no reimplementation — so you can always drop to the CLI and see the same state.
 
@@ -526,7 +504,25 @@ Launch any AI CLI as a profiled terminal: Claude Code, Codex, Gemini CLI. Profil
 - An MCP bootstrap so the agent can control Termpolis.
 - A distinct working directory if you want one.
 
-Custom profiles take any command — if it's in your PATH, you can profile it. Add them in Settings → Agents.
+Custom profiles take any command — if it's in your PATH, you can profile it. Add one with the **+** button on the sidebar's **AI Agents** section.
+
+### Second Opinion
+
+Want another model to check what your agent just did? Every AI terminal has a **Second Opinion…** menu in its header. Pick a provider, or one of its models, from the agents you have installed (Claude Code, Codex, Gemini). Termpolis sends the last 160 lines of the terminal's output to that agent for review, and the menu reads **Reviewing…** until the answer comes back.
+
+The feedback is pasted into the terminal between a `=== Second Opinion (…) ===` line and an `=== end second opinion … ===` line, but not sent, so you can read it first. Press Enter to pass it on to your agent, or clear it.
+
+Since v1.49 the reviewing agent is **read-only**. It runs headless and can't change anything:
+
+- **Claude Code** runs in plan mode with no tools. `Bash`, `PowerShell`, `Edit`, `Write` and `NotebookEdit` are also explicitly disallowed, and none of your MCP servers are loaded.
+- **Codex** runs as `codex exec --sandbox read-only`.
+- **Gemini** runs through the Antigravity CLI in plan mode (`agy --mode plan`).
+
+A review gets 90 seconds. Termpolis stops one that runs longer, and any still running when you quit, and since v1.49.1 it ends the agent's whole process tree, so on Windows nothing the agent started keeps running in the background.
+
+The terminal output never passes through a shell's command line (on Windows it travels in a temporary file), so text in your terminal can't become a command.
+
+A review gets 90 seconds. If it runs out of time, or is still running when you quit Termpolis, Termpolis ends the reviewing agent and everything it started, so nothing is left running in the background.
 
 ---
 
@@ -534,26 +530,18 @@ Custom profiles take any command — if it's in your PATH, you can profile it. A
 
 Termpolis ships an **MCP (Model Context Protocol) server** so AI agents can control the app from inside a conversation. It listens on `http://127.0.0.1:9315` — reachable from this machine only — and moves up to the next free port, as far as 9319, if that one is taken.
 
-### Available tools (17 total)
+### Available tools
 
-| Tool                | Description                                           |
-|---------------------|-------------------------------------------------------|
-| `list_terminals`    | Enumerate open terminals with IDs, labels, cwd        |
-| `open_terminal`     | Spawn a new terminal with a given shell + cwd         |
-| `close_terminal`    | Close a terminal by ID                                |
-| `focus_terminal`    | Bring a terminal to the foreground                    |
-| `send_input`        | Send raw text + control chars to a terminal           |
-| `read_buffer`       | Read the last N lines of a terminal's output          |
-| `wait_for_prompt`   | Wait until a terminal emits a regex match             |
-| `list_workspaces`   | Enumerate workspaces                                  |
-| `switch_workspace`  | Change active workspace                               |
-| `git_status`        | JSON summary of the current repo                      |
-| `broadcast_message` | Send a swarm-wide notification                        |
-| `get_session_id`    | Returns the calling session's opaque ID               |
-| `post_activity`     | Push an AgentActivity event into the feed             |
-| `memory_write`      | Persist a labeled memory entry into the shared store  |
-| `memory_search`     | RAG search across shared memory (semantic + keyword)  |
-| `memory_list`       | List recent memory entries                            |
+The tools come in six groups. The authoritative list is the one your agent shows for the `termpolis` server (for example `/mcp` in Claude Code), because it comes straight from the running app.
+
+| Group | Tools | What they're for |
+|-------|-------|------------------|
+| Terminals and files | `list_terminals`, `create_terminal`, `run_command`, `run_and_wait`, `read_output`, `write_to_terminal`, `close_terminal`, `get_file_tree`, `get_git_status` | Open, drive and read terminals, run a command to completion and get its exit code, list files, and read git status and recent commits |
+| Swarm | `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents` | Message other agents, keep the shared task queue, and see which agents are running |
+| Memory | `memory_write`, `memory_search`, `memory_list`, `memory_primer`, `memory_related`, `memory_graph`, `memory_link`, `memory_audit`, `memory_anticipate`, `memory_feedback`, `memory_selfcheck`, `memory_pool`, `memory_conflicts`, `memory_correct` | Read and write the shared memory, follow its knowledge graph, and rate, correct or audit what it recalls |
+| Code intelligence | `code_search`, `code_locate`, `code_explore`, `code_callers`, `code_callees`, `code_impact`, `test_coverage` | Find symbols, predict where a bug lives, trace callers and callees, size the blast radius of a change, and read which lines the project's last coverage run covered |
+| Gateway | `gateway_list_tools`, `gateway_call` | Reach tools on the MCP servers you add in Settings → MCP Servers, under its gateway policy |
+| Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
 
 The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
 
@@ -561,13 +549,13 @@ The server is authenticated via a token generated at each launch, which Termpoli
 
 Termpolis doesn't register itself with an agent until you say so. The first step of the first-run tour, or **Settings → Agent Integration** at any time, lists exactly what it would change for each of Claude Code, Codex and Gemini CLI installed on this machine. Connected, Termpolis:
 
-- **Claude Code** — adds the `termpolis` MCP server at user scope in `~/.claude.json`, as `claude mcp add -s user` would (under your `CLAUDE_CONFIG_DIR` if you set one). It allows 27 read-only and memory tools in `settings.json` so they run without asking; tools that run commands or type into terminals still ask. It marks each folder you open an agent in as trusted — never your home folder, a folder above it, a drive root or a network share root. Optionally, it adds a **SessionStart hook** that loads your project memory whenever a Claude Code session starts, including sessions started outside Termpolis.
+- **Claude Code** — adds the `termpolis` MCP server at user scope in `~/.claude.json`, as `claude mcp add -s user` would (under your `CLAUDE_CONFIG_DIR` if you set one). It allows 27 read-only and memory tools in `settings.json` so they run without asking; tools that run commands or type into terminals still ask. It marks each folder you open an agent in as trusted — never your home folder, a folder above it, a drive root or a network share root. Optionally, it adds a **SessionStart hook** that loads your project memory whenever a Claude Code session starts, including sessions started outside Termpolis. Since v1.49.1 the hook does nothing once Termpolis is gone, so removing the app without disconnecting first doesn't leave Claude Code with a failing hook (an existing hook is upgraded the first time v1.49.1 starts).
 - **Codex** — adds the `termpolis` MCP server to its `config.toml` (a different server you already named `termpolis` is left alone), pre-approves the 14 `memory_*` tools unless you already chose a setting for them, and answers the folder-trust prompt for a folder you open it in, with the same exclusions. Its memory instruction is passed on the launch command (`-c developer_instructions`) for that session only, and not at all if you set your own; nothing is written into your projects.
 - **Gemini CLI** — adds the `termpolis` MCP server to its `settings.json`.
 
 When Termpolis answers a folder-trust prompt, it selects the trust option itself instead of pressing Enter on whatever is highlighted. It never answers a permission, approval or MCP prompt, a `[Y/n]` question or a numbered choice — those wait for you — and while your agents aren't connected it doesn't answer the folder-trust prompt either. On an agent's first-run screens it still presses Enter and takes the default: Claude Code's intro splash, its theme and login-method pickers, and Gemini CLI's terms and sign-in screens.
 
-**Disconnect** in Settings → Agent Integration removes everything Termpolis wrote. Uninstalling on Windows does the same (an update doesn't), and `Termpolis --disconnect-agents` does it from the command line on any platform.
+**Disconnect** in Settings → Agent Integration removes everything Termpolis wrote. Uninstalling on Windows or removing the Linux .deb does the same (an update doesn't), and `Termpolis --disconnect-agents` does it from the command line on any platform.
 
 Whatever you choose, v1.49 also cleans up once after older versions: it removes a permission that let every Termpolis tool run without asking, the duplicate Termpolis plugin for Claude Code, Termpolis's entry in `~/.mcp.json`, and any trust for your home folder or a drive root.
 
@@ -582,68 +570,78 @@ Whatever you choose, v1.49 also cleans up once after older versions: it removes 
 
 ![Swarm dashboard](../e2e/screenshots/docs/18-swarm-dashboard.png)
 
-`Ctrl+Shift+S` opens the swarm dashboard — the nerve center for multi-agent work.
-
-### Agents tab
-
-![Swarm agents tab](../e2e/screenshots/docs/19-swarm-agents-tab.png)
-
-Shows every agent currently registered with the swarm:
-
-- **Status** — idle, working, blocked, error.
-- **Active task** — what it's doing right now.
-- **Token usage** — running total per agent.
-- **Capability chips** — the categories this agent was chosen for.
-
-Click an agent row to jump to its terminal.
+`Ctrl+Shift+S` opens the swarm dashboard — the nerve center for multi-agent work. It has three tabs: Tasks, Messages and Trace. A fourth, **Review**, appears once a swarm has recorded the commit it started from.
 
 ### Tasks tab
 
-![Swarm tasks tab](../e2e/screenshots/docs/20-swarm-tasks-tab.png)
+![Swarm tasks tab](../e2e/screenshots/docs/19-swarm-tasks-tab.png)
 
-The complete task DAG for the current swarm run. Each task shows:
+Every task in the current swarm run, in three columns: **Pending**, **In Progress** and **Completed** (failed tasks land there too). Each card shows the task's title and description, the agent it's assigned to, and, once it's finished, a summary of the result.
 
-- Title, assignee, depends-on, blocks.
-- Status (queued, running, waiting for review, done, failed).
-- Duration + estimated token cost.
-- A one-line summary of what was produced when complete.
-
-Dependency arrows let you see at a glance which tasks are parallelizable and which are on the critical path.
+You can also move a task along by hand: **Start** or **Cancel** a pending task, and mark one in progress **Done** or **Fail**. A cancelled task counts as failed.
 
 ### Messages tab
 
-![Swarm messages tab](../e2e/screenshots/docs/21-swarm-messages-tab.png)
+![Swarm messages tab](../e2e/screenshots/docs/20-swarm-messages-tab.png)
 
 A live stream of every message the conductor sends, every broadcast, every handoff. Think of it as the "Slack channel" for your agent team — useful for debugging, reviewing, or understanding exactly how a decision was made.
+
+### Trace tab
+
+![Swarm trace tab](../e2e/screenshots/docs/21-swarm-trace-tab.png)
+
+A timeline of what the conductor is doing: every tool call it makes, the tasks it assigns and sees completed, what it writes as it works, and any errors.
+
+### Review tab
+
+The changes the swarm has made since it started, file by file. Accept or reject each hunk and run a test command, then commit the changes you accepted, or revert everything the swarm changed. See [Swarm Review Panel](#24-swarm-review-panel).
 
 ---
 
 ## 21. AI Conductor
 
-The conductor is a **dedicated Claude Code instance** that runs as a separate agent with a system prompt purpose-built for orchestration. It:
+The conductor is a **dedicated Claude Code instance** that runs headless in a hidden terminal (while a swarm runs, a button in the dashboard reveals it), with instructions purpose-built for orchestration. It:
 
-1. Reads your initial task description.
-2. Calls `memory_search` on shared memory to find relevant prior work.
-3. Decomposes the task into subtasks.
-4. For each subtask, picks the best-fit agent using capability scores, current load, and cost.
-5. Delegates via MCP `post_activity` + `send_input`.
-6. Watches the activity feed for progress, errors, and completion signals.
-7. Decides when to merge partial results, when to re-plan, and when to declare done.
+1. Reads your task, the project folder, and the installed agents, with each one's strongest categories and relative cost.
+2. Posts its plan to the swarm's messages.
+3. Creates a task record for every subtask, so the plan shows up on the dashboard.
+4. Opens a terminal for each subtask and starts an agent in it (see [Swarm permission flags](#swarm-permission-flags)).
+5. Types each agent's task prompt into its terminal.
+6. Checks the task list, the messages and each agent's output every 15–20 seconds, and sends guidance to an agent that looks stuck.
+7. Marks each task completed as its agent finishes, then posts a final summary.
 
-The conductor is **not keyword matching** — it reasons with the same capability as any frontier model, because it *is* one. You can open its terminal and see its thinking live.
+The conductor is **not keyword matching** — it reasons with the same capability as any frontier model, because it *is* one. Follow what it's doing in the dashboard's [Trace tab](#trace-tab).
 
 ### Starting a swarm
 
 ![Start swarm wizard](../e2e/screenshots/docs/22-start-swarm-wizard.png)
 
-Click **Start Swarm** in the dashboard. The wizard asks for:
+Click **Start Swarm** on the welcome screen, or in the swarm dashboard's header while no swarm is running, and pick the folder the swarm should work in. The wizard asks for:
 
-- **Task description** — natural language, as detailed as you want.
-- **Agents to include** — defaults to all three.
-- **Budget** — optional soft cap on token spend.
-- **Working directory** — defaults to current workspace.
+- **Goal** — what you want built, in plain language. It's the only required field.
+- **Constraints** — platforms, languages, or anything else to avoid or insist on.
+- **Expected Output** — what "done" looks like.
+- **Failure Conditions** — what would count as a failed result.
 
-Click **Start**. The conductor spins up, reads the task, and the dashboard populates with subtasks within seconds.
+Click **Launch Swarm**. The conductor spins up, reads the task, and the dashboard populates with subtasks within seconds. The conductor itself runs on Claude Code, so a swarm needs the `claude` CLI installed.
+
+### Swarm permission flags
+
+Swarm agents run unattended, so the conductor starts each one with flags that keep it from stopping to ask for approval. These are the only agent launch commands a swarm terminal accepts:
+
+| Agent | Command |
+|-------|---------|
+| Claude Code | `claude --dangerously-skip-permissions`, optionally with `--model fable`, `opus`, `sonnet` or `haiku` |
+| Codex | `codex -a never -s workspace-write` |
+| Gemini | `agy --dangerously-skip-permissions` (the Antigravity CLI) |
+
+If the conductor starts one of these agents any other way — with a prompt, `-p`, a sandbox flag or anything else added — Termpolis rewrites the command to the one in the table before it runs, keeping only a valid `--model` for Claude. The older `gemini` CLI is still accepted as a fallback, but only as a plain `gemini` with nothing after it.
+
+- **Claude Code workers keep `--dangerously-skip-permissions` by design.** No one is watching a worker, so a single approval prompt would stall the whole swarm. The conductor runs Claude Code the same way.
+- **Codex workers run with `-a never -s workspace-write`.** `-a never` means Codex never stops to ask: a command that would need approval goes back to the model as failed. `-s workspace-write` keeps Codex's sandbox, so it writes only inside the project and, by default, has no network access. Codex 0.153 rejects the old `--full-auto` flag.
+- Start a swarm only in a folder you're happy for agents to change. The [Review tab](#review-tab) lets you accept, reject or revert what they did.
+
+Outside a swarm, Termpolis starts an agent without permission prompts only when you ask for it: a headless run from the Termpolis CLI with `--write` (`termpolis-cli exec "<task>" --write`). Headless runs are read-only otherwise, and [Second Opinion](#second-opinion) is always read-only.
 
 ---
 
@@ -651,7 +649,7 @@ Click **Start**. The conductor spins up, reads the task, and the dashboard popul
 
 ![Activity feed](../e2e/screenshots/docs/23-activity-feed.png)
 
-The activity feed is the observability layer for every agent, every session. Open it from the sidebar (`Ctrl+Shift+A`) or from any terminal's context menu.
+The activity feed is the observability layer for every agent, every session. Press `Ctrl+Shift+A` to open it.
 
 ### Event types
 
@@ -670,11 +668,7 @@ Three filter rows: **search** (full-text), **kind** (dropdown), **agent type** (
 
 ### Scoped vs global
 
-Open the feed from a terminal and it's scoped to that terminal's session. Open it from the sidebar and it shows every agent across every session. Scope is visible in the header: "Agent Activity (terminal)" or "Agent Activity".
-
-### Pinning
-
-Right-click any event → **Pin**. Pinned events appear at the top of the [Context Panel](#14-context-panel) until you unpin them. Great for "this tool call is the thing I'm tracking".
+With a terminal active, the feed shows that terminal's session, with the [intervention controls](#23-intervention-controls) above the events. With no terminal active, it shows every agent across every session. The header tells you which: "Agent Activity (terminal)" or "Agent Activity".
 
 ---
 
@@ -689,22 +683,19 @@ Every scoped Activity Feed includes a row of intervention controls above the eve
 
 The rationale: every agent is a pty, so writing control characters or text to its stdin is the fastest, most reliable way to take over. No new IPC surface — just the pty API we already have.
 
-Each intervention is also logged as an event in the feed (`status_change`), so you have an audit trail of every mid-flight correction you made.
+The controls show the last action you sent, for example "Hard interrupt (Ctrl-C x2)". Interventions aren't added to the event list.
 
 ---
 
 ## 24. Swarm Review Panel
 
-When a task is configured to require review before handing off (default for code-review tasks, optionally enabled for others), the conductor pauses and opens the **Swarm Review Panel**.
+When a swarm starts in a git repository, Termpolis records the commit it started from. Once the swarm finishes, the **Swarm Review Panel** shows everything it changed since that commit, so you decide what to keep. It's the dashboard's **Review** tab; **Review Changes** in the Swarm Complete dialog opens the dashboard for you. A folder that isn't a git repository has no starting commit to compare against, so it gets no Review tab.
 
-The panel shows:
-
-- The task title and assignee's output.
-- A diff (if the task produced file changes).
-- Three buttons: **Approve**, **Request Changes**, **Reject**.
-- An optional comment field.
-
-**Approve** hands off to the downstream task. **Request Changes** reassigns to the same agent with your comment appended. **Reject** drops the output and re-plans.
+- **Files and hunks.** Select a changed file to see its hunks, then **Accept** or **Reject** each one. **Accept all** and **Reject all** decide every hunk at once. **Reject entire file** puts that file back the way it was before the swarm, straight away. The list covers files git already tracks; a new file the swarm hasn't added to git doesn't appear in it.
+- **Tests.** The test command is filled in for you (from the project's `package.json` and lockfile, falling back to `npm test`). Edit it if you need to, then click **Run tests**. The command must start with a known runner such as `npm`, `pnpm`, `pytest`, `cargo`, `go` or `make`, and can't use shell operators like `&&` or pipes. While the tests are failing, **Commit** stays disabled.
+- **Commit.** Termpolis suggests a commit message. **Commit** undoes the hunks you rejected, then commits everything that's left in the folder, including new files the panel doesn't list.
+- **Revert all.** After you confirm, resets every file git tracks to the commit the swarm started from. Any uncommitted change to those files is lost, yours included. A new file that was never added to git stays where it is.
+- **Refine.** Not happy with the result? Describe what to fix and click **Refine**. The Start Swarm wizard opens with your note and the previous swarm's summary filled in, ready to launch a follow-up swarm.
 
 ---
 
@@ -721,7 +712,7 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 
 - **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
 - **Shared across all three agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`), once you connect them (see [Connecting your coding agents](#connecting-your-coding-agents)). One store backs Claude/Codex/Gemini, so a fact one learns is instantly available to the others.
-- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\Termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/Termpolis/` on macOS, `~/.config/Termpolis/` on Linux (plain text, hand-editable) — and reloaded with embeddings at startup. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A ~100k-chunk hot window is kept in RAM for vector search; the on-disk log retains everything written.
+- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with embeddings at startup. When an OS keychain is available, each line is encrypted at rest (AES-256-GCM) with a random per-device key that the keychain protects; without one, the file stays plain text. Aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`, in the same folder) are currently written there in plain text either way. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A hot window of up to 500k chunks is kept in RAM for vector search; the on-disk log retains everything written.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
 - **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver). With **Auto-recall context on agent launch** on (Settings → General; on by default), every agent you launch is pointed at it: Claude through its system prompt, Codex and Gemini through a one-line pointer typed into their input. The pointer waits while the agent's screen shows something waiting for an answer, such as a trust or approval prompt, or can't be read, so its Enter never answers a prompt for you. If you connected Claude Code with the optional SessionStart hook, sessions you start outside Termpolis load your project memory too.
 - **Current-directory precedence.** The primer leads with context for the project you're standing in — past conversations from this repo first, then its code/notes — and anything from other projects is appended under a "may NOT apply" label. Ingested chunks are tagged with their project (derived from the transcript cwd / repo root), legacy chunks get back-tagged on the next indexer pass, and `memory_search` accepts a `project` filter so agents can scope recall themselves.
@@ -736,7 +727,7 @@ Open the panel with **Ctrl+Shift+M**, or from **Settings → General → Open th
 - **Index this repo's code** — pull the current project's git-tracked files into memory on demand (`.env`/keys are always skipped). Conversations index themselves automatically; code indexing is opt-in per repo so you decide what's searchable.
 - **Cross-machine sync** — click **Choose a synced folder…** and point it at a folder you already sync (**OneDrive, Google Drive, Dropbox, iCloud, Syncthing…**). Each device writes its own shard and the union becomes one shared brain — no Termpolis server involved. Optionally set a **passphrase** to encrypt the synced data at rest (AES-256-GCM) so the cloud provider only ever sees ciphertext; use the **same passphrase on every device**. (For Google Drive, use "mirror" mode so the files stay on local disk.)
 
-**Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session. The store is plain-text JSONL in your app-data folder (see above), readable and hand-editable.
+**Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session. The store is JSONL in your app-data folder (see above); without an OS keychain it stays plain text, readable and hand-editable.
 
 ---
 
@@ -772,7 +763,7 @@ The bottom strip shows, left to right:
 
 ## 28. Troubleshooting
 
-> **Found a bug that isn't here?** **[Open an issue on GitHub →](https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md)** Include your OS + version, Termpolis version (Settings → About), and the most recent entries from `~/.termpolis/logs/` — that's usually enough to reproduce the problem.
+> **Found a bug that isn't here?** **[Open an issue on GitHub →](https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md)** Include your OS + version, the Termpolis version (shown at the top of Settings), and the most recent entries from the app log (`Ctrl+Shift+O`, or `app.log` in your data directory) — that's usually enough to reproduce the problem.
 
 ### Installation & first-run
 
@@ -788,27 +779,27 @@ The bottom strip shows, left to right:
 
 ### Terminals
 
-**Terminal won't start.** Check the shell path in Settings → Shells. On Windows, PowerShell 7 lives at `C:\Program Files\PowerShell\7\pwsh.exe`; WSL needs `wsl.exe` on PATH. On macOS, if `/bin/zsh` gives "permission denied", re-grant Termpolis Full Disk Access (above) — launchd blocks unsigned/unapproved apps from spawning shells by default.
+**Terminal won't start.** Check which shell it uses: **Settings → General → Default Shell** for new terminals, or the **Shell** field in the New Terminal dialog. Termpolis offers only the shells it finds at their standard install paths; on Windows, PowerShell 7 lives at `C:\Program Files\PowerShell\7\pwsh.exe`. **Press `Ctrl+Shift+O`** to open the app log and see why the terminal failed to spawn. On macOS, if `/bin/zsh` gives "permission denied", re-grant Termpolis Full Disk Access (above) — launchd blocks unsigned/unapproved apps from spawning shells by default.
 
 **Terminal hangs on first prompt.** Your shell's startup files (`.bashrc`, `.zshrc`, `powershell $PROFILE`) may be waiting on input or hitting a slow network check. Open the shell outside Termpolis to confirm; the fix is in your dotfiles, not the app.
 
-**Output looks garbled / escape codes show as text.** The shell detected a non-TTY environment. Make sure the **Agent profile** field is empty if you're launching a plain shell (some agent launchers set `TERM=dumb`). Resetting via Settings → Shells → Reset defaults fixes most cases.
+**Output looks garbled / escape codes show as text.** On macOS and Linux, Termpolis starts every terminal with `TERM=xterm-256color`, so a program that prints raw escape codes has usually been told otherwise. Check whether your shell's startup files (`.bashrc`, `.zshrc`, PowerShell `$PROFILE`) set `TERM` to something like `dumb`, and open a fresh terminal from the New Terminal dialog to confirm.
 
-**Copy/paste shortcuts don't work.** On Windows/Linux, use `Ctrl+Shift+C` / `Ctrl+Shift+V` inside terminals (bare `Ctrl+C` sends SIGINT). On macOS, `⌘C`/`⌘V` work as expected everywhere.
+**Copy/paste shortcuts don't work.** On Windows/Linux, `Ctrl+C` copies only when text is selected; with nothing selected it interrupts the running program. `Ctrl+Shift+C` always copies, and `Ctrl+V` or `Ctrl+Shift+V` pastes. On macOS, `⌘C`/`⌘V` copy and paste, and `Ctrl+C` always interrupts.
 
-**Font looks wrong / icons are boxes.** The app ships with its own icon font, but if it failed to load (usually due to an override in Settings → Themes), re-select a built-in theme or run **Reset theme** from Settings → Themes.
+**Font looks wrong / icons are boxes.** The app ships with its own icon font. If a terminal's text looks wrong, check the font family and size in **Settings → General → Terminal Defaults**, or right-click a terminal in the sidebar to change them for that terminal alone. If the icons in the app itself show as boxes, the bundled font failed to load: restart Termpolis, and reinstall if it keeps happening.
 
 ### Agents & CLI tools
 
 **Agent launch button fails silently.** The CLI isn't on your PATH. Open any shell in Termpolis and run `claude --version` (or `codex`, `gemini`) to confirm. On macOS, GUI-launched apps don't always inherit `$PATH` from your shell — restart Termpolis after updating `~/.zprofile` (not just `~/.zshrc`), or relaunch from Terminal with `open -a Termpolis` so the shell PATH is inherited.
 
-**Wrong `claude` / `codex` binary runs.** If you've installed the CLI via multiple package managers (Homebrew, npm, cargo), PATH order decides the winner. Use `which claude` to see which one Termpolis will launch. Override per-agent in Settings → Agents.
+**Wrong `claude` / `codex` binary runs.** If you've installed the CLI via multiple package managers (Homebrew, npm, cargo), PATH order decides the winner. Use `which claude` to see which one Termpolis will launch. To pin a specific one, add a custom profile with the **+** on the sidebar's **AI Agents** section and give it the full path as its command.
 
 **Agent exits with "API key not set".** Each agent's env vars come from the login shell, not from a `.env` file in your workspace. `export ANTHROPIC_API_KEY=...` in `~/.zprofile` / `~/.bash_profile` / PowerShell `$PROFILE`, then relaunch Termpolis.
 
 ### Swarm, MCP, and memory
 
-**MCP indicator in status bar is red.** The MCP server failed to start. Look at `~/.termpolis/logs/mcp.log`. Common causes:
+**Agents can't reach the MCP server.** The server may have failed to start. Open the app log (`Ctrl+Shift+O`) and look for the lines about the MCP server's port. Common causes:
 
 - **No free port.** The server tries port 9315, then the next four (up to 9319). If all five are taken — usually by stray Termpolis processes left behind by a crash — it can't start. Kill any stray `termpolis` processes and relaunch.
 - **Firewall blocking localhost.** Rare but possible. Add an exception for `termpolis.exe` / the Termpolis binary.
@@ -816,9 +807,9 @@ The bottom strip shows, left to right:
 
 **An agent doesn't see Termpolis's tools or memory.** Since v1.49, Termpolis registers itself with Claude Code, Codex and Gemini CLI only after you connect them. Check **Settings → Agent Integration**, connect if needed, then start a new agent session.
 
-**Swarm conductor doesn't launch.** The conductor spawns a Claude Code child process that needs `claude` on PATH (see agent troubleshooting above). Watch `~/.termpolis/logs/conductor.log` for its startup output.
+**Swarm conductor doesn't launch.** The conductor runs Claude Code in a hidden terminal, so it needs `claude` on PATH (see agent troubleshooting above). While a swarm is active, press **Debug** in the Swarm Dashboard header to show that terminal and its startup output.
 
-**Swarm hangs mid-task / agents stop posting activity.** Open Activity Feed — if the agent is still running but not emitting events, its MCP connection may have dropped. Use **Pause → Reset session** in the Swarm Dashboard to recover. If a specific agent repeatedly drops, its MCP token probably expired — restart Termpolis to issue fresh tokens.
+**Swarm hangs mid-task / agents stop posting activity.** Open Activity Feed — if the agent is still running but not emitting events, its MCP connection may have dropped. Use the intervention controls in that agent's Activity Feed to recover: **Interrupt** stops what it is doing, and **Steer** gives it a new instruction (see [§23](#23-intervention-controls)). If a specific agent keeps dropping, restart Termpolis; the MCP server gets a fresh token at each launch.
 
 **Memory search returns nothing.** Embeddings now run in-process via a bundled offline model (`bge-small-en-v1.5`) — no Ollama or any server required. If semantic results are missing, the embedding model failed to load on this machine; keyword-only matching still works as a fallback, and writes always succeed.
 
@@ -828,7 +819,7 @@ The bottom strip shows, left to right:
 
 **App is slow to start / very high memory.** A corrupted session file occasionally causes runaway restoration. Back up `session.json` in your data directory, then delete it and relaunch — you lose restored workspace state but the app is back to a clean baseline.
 
-**Terminal scrollback is sluggish.** The default xterm scrollback is 10,000 lines. If you've pasted very large logs, scrolling slows down. Settings → Terminals → Clear scrollback resets without restarting.
+**Terminal scrollback is sluggish.** The default xterm scrollback is 10,000 lines. If you've pasted very large logs, scrolling slows down. Press `Ctrl+Shift+X` (Clear Terminal) to wipe the active terminal's screen and scrollback without restarting it.
 
 ### Session corruption & reset
 
@@ -841,9 +832,9 @@ The bottom strip shows, left to right:
 If none of the above fixes your problem, **[open an issue](https://github.com/codedev-david/termpolis/issues/new?template=bug_report.md)**. Please include:
 
 1. OS + version (e.g., Windows 11 23H2, macOS 14.3, Ubuntu 22.04).
-2. Termpolis version (Settings → About).
+2. Termpolis version (shown at the top of Settings).
 3. Steps to reproduce — as minimal as you can make them.
-4. Relevant log tail from `~/.termpolis/logs/` (the main log, plus `mcp.log` or `conductor.log` if the issue involves swarm/MCP).
+4. The relevant tail of the app log: press `Ctrl+Shift+O`, or open `app.log` in the data directory (`%APPDATA%\termpolis\` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux). Swarm and MCP problems land in the same log.
 5. A screenshot or short screen recording if it's a UI bug.
 
 ---
@@ -937,7 +928,7 @@ the phone app and the relay is at <https://termpolis.com/privacy.html>.
 │  ├── Terminal manager (node-pty)                    │
 │  ├── Session persistence (session.json)             │
 │  ├── Git adapter                                    │
-│  ├── MCP server (HTTP, 18 tools)                    │
+│  ├── MCP server (HTTP, 127.0.0.1 only)              │
 │  ├── Swarm memory (JSONL + embeddings)              │
 │  ├── AI conductor (spawns Claude Code as a child)   │
 │  └── Watchers (event bus + alerts)                  │
@@ -960,34 +951,53 @@ the phone app and the relay is at <https://termpolis.com/privacy.html>.
 
 ## 31. Keyboard Shortcut Reference
 
-All shortcuts are rebindable in Settings → Keybindings. Defaults:
+Everything listed in Settings → Keybindings can be rebound there, except the three copy shortcuts. The panel shortcuts (the command palette, the Swarm dashboard and so on) are fixed. Defaults:
 
-| Action                     | Windows / Linux     | macOS              |
-|----------------------------|----------------------|---------------------|
-| New terminal               | `Ctrl+T`             | `⌘T`                |
-| Close focused terminal     | `Ctrl+W`             | `⌘W`                |
-| Next tab                   | `Ctrl+Tab`           | `⌘]`                |
-| Previous tab               | `Ctrl+Shift+Tab`     | `⌘[`                |
-| Jump to tab N              | `Ctrl+1…9`           | `⌘1…9`              |
-| Split horizontal           | `Ctrl+\`             | `⌘\`                |
-| Split vertical             | `Ctrl+Shift+\`       | `⌘⇧\`               |
-| Focus adjacent pane        | `Alt+Arrow`          | `⌥Arrow`            |
-| Command palette            | `Ctrl+K`             | `⌘K`                |
-| Settings                   | `Ctrl+,`             | `⌘,`                |
-| Prompt templates           | `Ctrl+Shift+P`       | `⌘⇧P`               |
-| Workflow templates         | Sidebar → Workflows  | Sidebar → Workflows |
-| Context panel              | `Ctrl+Shift+E`       | `⌘⇧E`               |
-| History search             | `Ctrl+Shift+H`       | `⌘⇧H`               |
-| Conversation search        | `Ctrl+Shift+I`       | `⌘⇧I`               |
-| Git panel                  | `Ctrl+Shift+G`       | `⌘⇧G`               |
-| Activity feed              | `Ctrl+Shift+A`       | `⌘⇧A`               |
-| Swarm dashboard            | `Ctrl+Shift+S`       | `⌘⇧S`               |
-| New workspace              | `Ctrl+Shift+N`       | `⌘⇧N`               |
-| Copy                       | `Ctrl+C` (selection) | `⌘C`                |
-| Paste                      | `Ctrl+Shift+V`       | `⌘V`                |
-| Clear terminal             | `Ctrl+L`             | `⌘K`* in shell      |
-| Zoom in / out              | `Ctrl+=` / `Ctrl+-`  | `⌘=` / `⌘-`         |
-| Reset zoom                 | `Ctrl+0`             | `⌘0`                |
+| Action                                  | Windows / Linux                | macOS               |
+|-----------------------------------------|--------------------------------|---------------------|
+| New terminal                            | `Ctrl+Shift+T`                 | `⌘⇧T`               |
+| Close terminal                          | `Ctrl+Shift+W`                 | `⌘⇧W`               |
+| Next terminal                           | `Ctrl+Tab`                     | `⌃Tab`              |
+| Previous terminal                       | `Ctrl+Shift+Tab`               | `⌃⇧Tab`             |
+| Jump to terminal 1–9                    | `Alt+1…9`                      | —                   |
+| Launch Claude Code / Codex / Gemini CLI | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | `⌘1` / `⌘2` / `⌘3`  |
+| Toggle split view                       | `Ctrl+Shift+G`                 | `⌘⇧G`               |
+| Toggle sidebar                          | `Ctrl+B`                       | `⌘B`                |
+| Find in terminal                        | `Ctrl+Shift+F`                 | `⌘⇧F`               |
+| History search                          | `Ctrl+Shift+H`                 | `⌘⇧H`               |
+| Clear terminal and scrollback           | `Ctrl+Shift+X`                 | `⌘⇧X`               |
+| Keyboard select mode                    | `Ctrl+Shift+Space`             | `⌘⇧Space`           |
+| Anchor select (click start, click end)  | `Alt+Shift+Click`              | `⌥⇧Click`           |
+| Copy (when text is selected)            | `Ctrl+C`                       | `⌘C`                |
+| Copy as plain text                      | `Ctrl+Shift+C`                 | `⌘⇧C`               |
+| Copy for Teams/Slack                    | `Ctrl+Shift+K`                 | `⌘⇧K`               |
+| Copy as code block                      | `Ctrl+Shift+Q`                 | `⌃⇧Q`               |
+| Paste                                   | `Ctrl+V` or `Ctrl+Shift+V`     | `⌘V`                |
+| Voice dictation (when enabled)          | `Ctrl+Shift+L`                 | `⌘⇧L`               |
+| Command palette                         | `Ctrl+K`                       | `⌘K`                |
+| Settings → Keybindings                  | `Ctrl+/`                       | `⌘/`                |
+| Prompt templates                        | `Ctrl+Shift+P`                 | `⌘⇧P`               |
+| Context panel                           | `Ctrl+Shift+E`                 | `⌘⇧E`               |
+| Pinned context panel                    | `Ctrl+Shift+B`                 | `⌘⇧B`               |
+| Changes panel                           | `Ctrl+Shift+J`                 | `⌘⇧J`               |
+| Conversation search                     | `Ctrl+Shift+I`                 | `⌘⇧I`               |
+| Activity feed                           | `Ctrl+Shift+A`                 | `⌘⇧A`               |
+| Redundancy panel                        | `Ctrl+Shift+D`                 | `⌘⇧D`               |
+| Efficiency panel                        | `Ctrl+Shift+Y`                 | `⌘⇧Y`               |
+| Memory panel                            | `Ctrl+Shift+M`                 | `⌘⇧M`               |
+| Swarm dashboard                         | `Ctrl+Shift+S`                 | `⌘⇧S`               |
+| App log                                 | `Ctrl+Shift+O`                 | `⌘⇧O`               |
+| New terminal, system-wide               | `Win+Shift+T`                  | `⌃⌥T`               |
+| Swarm dashboard, system-wide            | `Win+Shift+S`                  | `⌃⌥S`               |
+| Settings                                | Sidebar gear icon              | Sidebar gear icon   |
+| Git panel                               | Sidebar → Git Panel            | Sidebar → Git Panel |
+| Workflow Orchestrator                   | Sidebar → Workflows            | Sidebar → Workflows |
+
+`Ctrl+C` copies only when text is selected; with nothing selected it reaches the shell as the usual interrupt. On macOS, `⌃C` always interrupts and `⌘C` copies.
+
+The system-wide shortcuts work even while Termpolis is minimized, but only when no other program already owns the combo. If one does, Termpolis skips it and notes that in the app log. On Windows, `Win+Shift+S` is normally taken by the Snipping Tool.
+
+On macOS, `⌘⇧Q` is the system Log Out shortcut, so use `⌃⇧Q` for Copy as Code Block.
 
 ---
 
