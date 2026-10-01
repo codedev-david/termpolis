@@ -183,6 +183,11 @@ export function SettingsPane() {
         case 'error':
           setUpdateStatus(`Update error: ${s.error || 'unknown'}`)
           break
+        case 'idle':
+          // A check that got no answer (offline, the update host down) with nothing settled before
+          // it: there is nothing to report, so neither "Checking…" nor an older error stays up.
+          setUpdateStatus('')
+          break
       }
     })
     return () => { try { unsub?.() } catch {} }

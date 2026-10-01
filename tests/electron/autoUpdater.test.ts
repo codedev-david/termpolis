@@ -564,6 +564,90 @@ describe('initAutoUpdater — a GitHub 5xx and a full disk (Sentry ELECTRON-Y, E
   })
 })
 
+describe('initAutoUpdater — a failure is news of its own attempt, never where to go back to (the stale error banner)', () => {
+  const DISK_FULL_HINT = { status: 'error', error: DISK_FULL_MESSAGE, reason: 'disk-full' }
+  const noSpace = () => new Error('ENOSPC: no space left on device, write')
+
+  it.each<[string, () => Error]>([
+    ['offline', () => new Error('net::ERR_INTERNET_DISCONNECTED')],
+    ['GitHub timing out', gatewayTimeout],
+    ['no app-update.yml', missingConfigErr],
+  ])('does not bring a full-disk hint back when the next check fails through nobody’s fault (%s)', async (_why, failure) => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['update-available']?.({ version: '9.9.9' })
+    eventHandlers['download-progress']?.({ transferred: 1, total: 10 })
+    eventHandlers['error']?.(noSpace())
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', DISK_FULL_HINT)
+    // The user frees some space. Four hours later the next check never gets an answer.
+    eventHandlers['checking-for-update']?.()
+    mockRecordUpdaterEvent.mockReset()
+    eventHandlers['error']?.(failure())
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', { status: 'idle' })
+    expect(await ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle' })
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalled()
+  })
+
+  it('does not bring back, or report again, a genuine failure from an earlier check', async () => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['checking-for-update']?.()
+    eventHandlers['error']?.(new Error('sha512 checksum mismatch'))
+    eventHandlers['checking-for-update']?.()
+    mockRecordUpdaterEvent.mockReset()
+    eventHandlers['error']?.(new Error('read ECONNRESET'))
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', { status: 'idle' })
+    expect(await ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle' })
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalled()
+  })
+
+  it('brings back neither the hint nor "Restart" for an update Squirrel could not unpack', async () => {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const { fakeWindow } = await loadAutoUpdater()
+    // macOS: the disk fills up while Squirrel unpacks what electron-updater downloaded (#29–#31).
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    eventHandlers['error']?.(diskFull())
+    eventHandlers['checking-for-update']?.()
+    eventHandlers['error']?.(gatewayTimeout())
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', { status: 'idle' })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: 'no update ready' })
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it.each<[string, string, unknown, Record<string, unknown>]>([
+    ['a later check starts', 'checking-for-update', undefined, { status: 'checking' }],
+    ['a check finds nothing newer', 'update-not-available', { version: '1.2.3' }, { status: 'not-available', version: '1.2.3' }],
+    ['a check finds the update', 'update-available', { version: '9.9.9' }, { status: 'available', version: '9.9.9' }],
+    ['the download resumes', 'download-progress', { transferred: 5, total: 10 }, { status: 'downloading', downloadedBytes: 5, totalBytes: 10 }],
+    ['the update arrives', 'update-downloaded', { version: '9.9.9' }, { status: 'downloaded', version: '9.9.9' }],
+  ])('clears a failure as soon as %s', async (_when, event, info, next) => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['error']?.(noSpace())
+    eventHandlers[event]?.(info)
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', next)
+    expect(await ipcHandlers.get('updater:status')!()).toEqual(next)
+  })
+
+  it('still shows a full disk that the next attempt runs into again', async () => {
+    const { fakeWindow } = await loadAutoUpdater()
+    eventHandlers['error']?.(noSpace())
+    eventHandlers['checking-for-update']?.()
+    eventHandlers['update-available']?.({ version: '9.9.9' })
+    eventHandlers['download-progress']?.({ transferred: 1, total: 10 })
+    eventHandlers['error']?.(noSpace())
+    expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith('updater:state', DISK_FULL_HINT)
+    expect(await ipcHandlers.get('updater:status')!()).toEqual(DISK_FULL_HINT)
+  })
+
+  it('starts every launch clean: nothing about a failure in the last run is kept', async () => {
+    await loadAutoUpdater()
+    eventHandlers['error']?.(noSpace())
+    expect(await ipcHandlers.get('updater:status')!()).toEqual(DISK_FULL_HINT)
+    // Relaunched, or relaunched into the update: a new main process.
+    const { fakeWindow } = await loadAutoUpdater()
+    expect(await ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle' })
+    expect(fakeWindow.webContents.send).not.toHaveBeenCalled()
+  })
+})
+
 describe('initAutoUpdater — nothing leaks: download rejections, cookies and home paths in the log', () => {
   // A download that dies on a full disk: electron-updater emits 'error' AND rejects the
   // downloadPromise that checkForUpdates() resolved with.

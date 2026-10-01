@@ -195,6 +195,62 @@ describe('UpdateBanner', () => {
     expect(screen.queryByRole('button', { name: 'Restart now' })).not.toBeInTheDocument()
   })
 
+  // A hint is news of the attempt that hit it: whatever main says next replaces it.
+  it.each<[string, UpdaterStatus]>([
+    ['a later check starts', { status: 'checking' }],
+    ['a check finds the update', { status: 'available', version: '1.13.0' }],
+    ['the download resumes', { status: 'downloading', version: '1.13.0' }],
+    ['a check finds nothing newer', { status: 'not-available', version: '1.12.0' }],
+    ['a check gets no answer, with nothing settled before it', { status: 'idle' }],
+  ])('takes a hint down as soon as %s', async (_when, next) => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    const { container } = render(<UpdateBanner />)
+    expect(await screen.findByRole('status')).toHaveTextContent(DISK_FULL_HINT)
+    act(() => {
+      emit(next)
+    })
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('swaps a hint for the ready banner once the update arrives after all', async () => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    render(<UpdateBanner />)
+    await screen.findByRole('status')
+    act(() => {
+      emit({ status: 'downloaded', version: '1.13.0' })
+    })
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Restart now' })).toBeInTheDocument()
+    expect(screen.getByText(/v1\.13\.0/)).toBeInTheDocument()
+  })
+
+  it('shows a hint again, undismissed, when the next attempt runs into the same thing', async () => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    const { container } = render(<UpdateBanner />)
+    await screen.findByRole('status')
+    act(() => {
+      emit({ status: 'checking' })
+    })
+    expect(container.firstChild).toBeNull()
+    act(() => {
+      emit({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent(DISK_FULL_HINT)
+  })
+
+  it('keeps nothing of its own across a reload or restart: it shows what main says now', async () => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
+    const first = render(<UpdateBanner />)
+    await screen.findByRole('status')
+    first.unmount()
+
+    // In between, main went back to rest: a later check, or a fresh launch.
+    getStatusMock.mockResolvedValueOnce({ status: 'idle' })
+    const second = render(<UpdateBanner />)
+    await waitFor(() => expect(getStatusMock).toHaveBeenCalledTimes(2))
+    expect(second.container.firstChild).toBeNull()
+  })
+
   it('keeps a dismissed hint hidden when announced again, but not a different one', async () => {
     installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full' })
     const { container } = render(<UpdateBanner />)

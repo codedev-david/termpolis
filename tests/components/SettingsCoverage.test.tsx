@@ -809,6 +809,41 @@ describe('SettingsPane — updater', () => {
     expect(screen.getByTestId('settings-update-status')).toHaveTextContent('Update error: unknown')
   })
 
+  it('clears the line when a check ends with nothing to report, leaving neither "Checking…" nor an older error up', async () => {
+    let cb: (s: unknown) => void = () => {}
+    up().onState.mockImplementation((fn: (s: unknown) => void) => { cb = fn; return () => {} })
+    render(<SettingsPane />)
+
+    // An earlier attempt ran into a full disk. A later check starts and gets no answer (offline,
+    // GitHub down), with nothing settled before it: main goes back to rest.
+    act(() => cb({ status: 'error', error: 'Not enough free disk space to download the update.', reason: 'disk-full' }))
+    expect(screen.getByTestId('settings-update-status')).toHaveTextContent('Update error: Not enough free disk space')
+    act(() => cb({ status: 'checking' }))
+    expect(screen.getByTestId('settings-update-status')).toHaveTextContent('Checking…')
+    act(() => cb({ status: 'idle' }))
+    expect(screen.queryByTestId('settings-update-status')).toBeNull()
+
+    // A failure that is happening now still shows.
+    act(() => cb({ status: 'error', error: 'signature mismatch' }))
+    expect(screen.getByTestId('settings-update-status')).toHaveTextContent('Update error: signature mismatch')
+  })
+
+  it('still says why a check the user asked for failed, after main has gone back to rest', async () => {
+    let cb: (s: unknown) => void = () => {}
+    up().onState.mockImplementation((fn: (s: unknown) => void) => { cb = fn; return () => {} })
+    // Main's order: 'checking', then back to rest when the check gets no answer, then the reply.
+    up().check.mockImplementation(async () => {
+      cb({ status: 'checking' })
+      cb({ status: 'idle' })
+      return { success: false, error: "Couldn't reach the update server right now." }
+    })
+    render(<SettingsPane />)
+    fireEvent.click(screen.getByTestId('settings-check-updates'))
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-update-status')).toHaveTextContent("Failed: Couldn't reach the update server right now."),
+    )
+  })
+
   it('does not subscribe when the updater cannot report state', async () => {
     delete (w.updater as Record<string, unknown>).onState
     render(<SettingsPane />)

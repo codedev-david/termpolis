@@ -226,13 +226,19 @@ export function initAutoUpdater(
 
   // Where the updater last came to rest (not mid-check or mid-download). A check that fails through
   // nobody's fault goes back here: it neither buries an update that is ready to install nor invents
-  // an answer the check never got.
+  // an answer the check never got. It is never a failure, though: a failure is news of the attempt
+  // that hit it, and brought back it showed a full disk the user had since cleared, or a check that
+  // failed hours ago, as if it were happening now.
   let lastSettled: UpdateState = { status: 'idle' }
   let interval: ReturnType<typeof setInterval> | undefined
 
   const setState = (s: UpdateState, { record = true }: { record?: boolean } = {}) => {
     currentState = s
-    if (s.status !== 'checking' && s.status !== 'available' && s.status !== 'downloading') lastSettled = s
+    // A failure settles nothing, and may have taken a ready update with it (a failed download
+    // empties electron-updater's cache; Squirrel.Mac failing to unpack stages nothing). Standing
+    // down is the exception: it stays true for as long as this copy runs.
+    if (s.status === 'error' && s.reason !== 'read-only-location') lastSettled = { status: 'idle' }
+    else if (s.status !== 'checking' && s.status !== 'available' && s.status !== 'downloading') lastSettled = s
     const win = getMainWindow()
     win?.webContents.send('updater:state', s)
     // Tier 2: forward to telemetry as a breadcrumb (or captureMessage on a
