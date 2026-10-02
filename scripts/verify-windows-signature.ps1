@@ -30,6 +30,12 @@ if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     exit 1
 }
 
+# Load the cmdlet from this PowerShell's own copy of the module. Windows
+# PowerShell started by a process that itself runs under PowerShell 7 (vitest
+# on the CI runner) inherits 7's PSModulePath, and autoloading then fails with
+# "the module could not be loaded".
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security')
+
 $sig = Get-AuthenticodeSignature -LiteralPath $Path
 $status = [string]$sig.Status
 $fatal = @('NotSigned', 'HashMismatch', 'NotSupportedFileFormat')

@@ -75,7 +75,7 @@ describe.skipIf(process.platform !== 'win32')('verify-windows-signature.ps1', ()
   it('passes a binary with an embedded Authenticode signature', () => {
     // Official Node builds are signed the same way eSigner signs Termpolis.exe.
     const r = verify(process.execPath)
-    expect(r.stdout).toContain('Test binary is signed by')
+    expect(r.stdout, r.stderr).toContain('Test binary is signed by')
     expect(r.status).toBe(0)
   })
 
@@ -85,7 +85,7 @@ describe.skipIf(process.platform !== 'win32')('verify-windows-signature.ps1', ()
     fs.writeFileSync(unsigned, Buffer.alloc(64, 1))
     try {
       const r = verify(unsigned)
-      expect(r.stdout).toContain('::error::Test binary is NOT signed')
+      expect(r.stdout, r.stderr).toContain('::error::Test binary is NOT signed')
       expect(r.status).toBe(1)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -94,7 +94,7 @@ describe.skipIf(process.platform !== 'win32')('verify-windows-signature.ps1', ()
 
   it('fails when the file is missing rather than passing vacuously', () => {
     const r = verify(nodePath.join(os.tmpdir(), 'verify-sig-missing', 'Termpolis.exe'))
-    expect(r.stdout).toContain('::error::Test binary not found')
+    expect(r.stdout, r.stderr).toContain('::error::Test binary not found')
     expect(r.status).toBe(1)
   })
 })
