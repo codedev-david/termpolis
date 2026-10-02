@@ -191,10 +191,41 @@ jobs:
         shell: bash
         run: node scripts/writeAppUpdateYml.cjs dist-electron-builder/win-unpacked/resources
 
-      # Non-fatal by design — same rationale as the installer-signing step:
-      # an eSigner hiccup (SSL.com quota/OAuth/TOTP/outage) must NEVER abort
-      # the release. If this fails we pack the UNSIGNED inner exe (exactly
-      # today's behaviour) rather than stranding the whole Windows build.
+      # SSL.com's CodeSignTool.bat (the action's signing_method v1) ignores
+      # JAVA_HOME and always runs the JDK 11.0.2 bundled in its zip. That JDK
+      # dates from January 2019, so its trust store has no "SSL.com TLS RSA
+      # Root CA 2022": it can only reach SSL.com through whatever cross-signed
+      # certificates their servers happen to send. On 2026-10-01, the day after
+      # login.ssl.com renewed its certificate, they didn't. The OAuth login died
+      # with "PKIX path building failed" before anything was signed, and v1.49.1
+      # shipped unsigned. JAVA_TOOL_OPTIONS hands that old JVM the runner's
+      # current trust store instead. The copy lives at a space-free path
+      # because the JVM splits JAVA_TOOL_OPTIONS on whitespace.
+      - name: Give eSigner's bundled JDK a current trust store (Windows)
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $jdk = @($env:JAVA_HOME, $env:JAVA_HOME_21_X64, $env:JAVA_HOME_17_X64) |
+            Where-Object { $_ -and (Test-Path (Join-Path $_ 'bin\keytool.exe')) } |
+            Select-Object -First 1
+          if (-not $jdk) {
+            Write-Host "::error::No JDK on this runner to take a trust store from (checked JAVA_HOME, JAVA_HOME_21_X64, JAVA_HOME_17_X64)."
+            exit 1
+          }
+          $store = Join-Path $env:RUNNER_TEMP 'esigner-cacerts'
+          Copy-Item -LiteralPath (Join-Path $jdk 'lib\security\cacerts') -Destination $store -Force
+          $root = & (Join-Path $jdk 'bin\keytool.exe') -list -v -keystore $store -storepass changeit |
+            Select-String -SimpleMatch 'Owner: CN=SSL.com TLS RSA Root CA 2022'
+          if (-not $root) {
+            Write-Host "::error::The trust store from $jdk has no 'SSL.com TLS RSA Root CA 2022', so eSigner's bundled JDK would still fail TLS against SSL.com."
+            exit 1
+          }
+          "JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=$store -Djavax.net.ssl.trustStorePassword=changeit" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "eSigner's JDK will use the trust store from $jdk."
+
+      # continue-on-error so the verify step below can report what went wrong;
+      # that step, not this one, decides whether the build goes on.
       # malware_block:false so SSL.com's own pre-sign scan won't refuse to sign
       # the very AI-agent network→shell pattern Defender flags.
       - name: Sign inner Termpolis.exe (Windows)
@@ -212,15 +243,15 @@ jobs:
           malware_block: false
           override: true
 
-      - name: Note inner-exe signing result (Windows)
+      # Fail closed. Defender quarantines an unsigned Termpolis.exe as
+      # Trojan:Win32/Cinjo.O!cl on install, so a missing signature stops this
+      # leg here, before the NSIS pack and before the installer uses up an
+      # eSigner signature. validate-draft needs every build leg, so the
+      # release stays an unpublished draft until this leg is re-run.
+      - name: Verify inner Termpolis.exe is signed (Windows)
         if: matrix.platform == 'win'
         shell: bash
-        run: |
-          if [ "${{ steps.sign-inner-win.outcome }}" = "success" ]; then
-            echo "Inner Termpolis.exe signed successfully."
-          else
-            echo "::warning::Inner Termpolis.exe was NOT signed (eSigner outcome: ${{ steps.sign-inner-win.outcome }}). Packing it unsigned (status quo); the outer installer is still signed below. Defender may keep flagging the unpacked exe until inner-exe signing succeeds on a later release."
-          fi
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-windows-signature.ps1 -Path dist-electron-builder/win-unpacked/Termpolis.exe -Label "Inner Termpolis.exe"
 
       - name: Package — NSIS installer from signed dir (Windows)
         if: matrix.platform == 'win'
@@ -356,13 +387,12 @@ jobs:
           echo "EXE_PATH=$($exe.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
           echo "Found installer: $($exe.FullName)"
 
-      # Non-fatal by design: a signing hiccup (SSL.com eSigner quota exhaustion,
-      # OAuth/TOTP blip, service outage) must NEVER abort the whole release —
-      # that strands the macOS/Linux artifacts and skips the aggregate jobs.
-      # If this step fails we publish the functional UNSIGNED installer below
-      # (with a consistent latest.yml) and signing resumes on the next release.
-      # Defender pass-through is reputation-based, not EV-dependent, so an
-      # occasional unsigned build still installs and runs.
+      # This used to publish the installer unsigned when eSigner failed, on the
+      # theory that an occasional unsigned build still installs and runs. It
+      # doesn't. v1.49.1 went out unsigned and Defender quarantined
+      # Termpolis.exe on install. continue-on-error only lets the verify step
+      # below name the failure, and that step fails the leg. The draft gate
+      # then holds every platform's artifacts back until it is re-run.
       - name: Sign Windows installer
         id: sign-win
         if: matrix.platform == 'win'
@@ -378,15 +408,10 @@ jobs:
           malware_block: false
           override: true
 
-      - name: Note Windows signing result
+      - name: Verify Windows installer is signed
         if: matrix.platform == 'win'
         shell: bash
-        run: |
-          if [ "${{ steps.sign-win.outcome }}" = "success" ]; then
-            echo "Windows installer signed successfully."
-          else
-            echo "::warning::Windows installer was NOT signed (eSigner outcome: ${{ steps.sign-win.outcome }}). Publishing the functional unsigned installer so the release is not blocked. This is almost certainly the SSL.com signing quota being exhausted; signing resumes automatically on the next release once the quota resets."
-          fi
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-windows-signature.ps1 -Path "${{ steps.find-exe.outputs.EXE_PATH }}" -Label "Windows installer"
 
       # Code-signing modifies the .exe in place, so the SHA512 in latest.yml
       # (written by electron-builder before signing) is now stale. Recompute
