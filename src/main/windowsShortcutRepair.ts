@@ -220,6 +220,11 @@ export function parseRegBinary(stdout: string, valueName: string): Buffer | null
  * Whether Explorer's pin record names `fileName`. Each pin is stored as a shell item ID list whose
  * long file name is UTF-16LE at whatever offset the structure before it leaves, odd as often as
  * even, so the record is read at both byte alignments. Case-insensitive, as NTFS names are.
+ *
+ * Deliberately no boundary check before the name: the bytes in front of it are structure fields that
+ * can decode as a letter (a real record had 'B' there), so a check would miss real pins, and missing
+ * a pin is the bug this exists for. The price is that a longer pinned name ending in this one
+ * ('MyTermpolis.lnk') also matches, which at worst writes a shortcut Explorer does not list.
  */
 export function pinRecordNames(record: Buffer, fileName: string): boolean {
   const want = fileName.toLowerCase()
