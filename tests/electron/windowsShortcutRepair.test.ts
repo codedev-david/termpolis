@@ -1,12 +1,20 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
 import {
   repairWindowsShortcuts,
   isShortcutDamaged,
   defaultShortcutPaths,
+  taskbarPinPath,
+  parseRegBinary,
+  pinRecordNames,
+  readTaskbarPinRecord,
+  restoreVanishedTaskbarPin,
+  TASKBAND_KEY,
   MAX_LNK_STRING,
   SAFE_DESCRIPTION_LIMIT,
   type ShortcutLinkDetails,
   type ShortcutRepairDeps,
+  type PinRestoreDeps,
 } from '../../src/main/windowsShortcutRepair'
 
 // Regression cover for the recurring generic-taskbar-icon bug. package.json's
@@ -224,5 +232,238 @@ describe('defaultShortcutPaths', () => {
   it('honours a custom shortcut name', () => {
     const paths = defaultShortcutPaths({ USERPROFILE: 'C:\\User' }, join, 'Custom')
     expect(paths).toEqual(['C:\\User\\Desktop\\Custom.lnk'])
+  })
+})
+
+describe('taskbarPinPath', () => {
+  const join = (...parts: string[]) => parts.join('\\')
+
+  it('is the shortcut under User Pinned\\TaskBar in APPDATA', () => {
+    expect(taskbarPinPath({ APPDATA: 'C:\\AppData' }, join)).toBe(
+      'C:\\AppData\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar\\Termpolis.lnk',
+    )
+  })
+
+  it('is null without APPDATA', () => {
+    expect(taskbarPinPath({}, join)).toBeNull()
+  })
+
+  it('honours a custom shortcut name', () => {
+    expect(taskbarPinPath({ APPDATA: 'C:\\AppData' }, join, 'Custom')).toMatch(/\\TaskBar\\Custom\.lnk$/)
+  })
+})
+
+// The v1.49.1 quarantine. Defender removed the unsigned build's Termpolis.exe AND every shortcut
+// pointing at it, the pinned taskbar one included. Reinstalling writes the Start-menu and desktop
+// shortcuts again but never the pinned one, so Explorer kept a pin whose shortcut was gone and drew
+// it with no icon, and the running window (same AppUserModelID) merged into that blank pin.
+
+/**
+ * A stand-in for Explorer's Taskband `Favorites` value. Each pin's file name sits in it as UTF-16LE
+ * inside a shell item ID list, at whatever offset the bytes before it leave: odd as often as even.
+ */
+function pinRecord(names: string[], pad = 3): Buffer {
+  const parts: Buffer[] = []
+  for (const name of names) parts.push(Buffer.alloc(pad, 0x42), Buffer.from(name, 'utf16le'), Buffer.alloc(2))
+  return Buffer.concat(parts)
+}
+
+/** What `reg query <key> /v <value>` prints for a REG_BINARY value. */
+const regOutput = (line: string) =>
+  `\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Taskband\r\n${line}\r\n\r\n`
+
+describe('parseRegBinary', () => {
+  it('decodes the hex reg.exe prints for a REG_BINARY value', () => {
+    expect(parseRegBinary(regOutput('    Favorites    REG_BINARY    00A4FF10'), 'Favorites')).toEqual(
+      Buffer.from([0x00, 0xa4, 0xff, 0x10]),
+    )
+  })
+
+  it('matches the value name case-insensitively, as the registry does', () => {
+    expect(parseRegBinary(regOutput('    Favorites    REG_BINARY    01'), 'favorites')).toEqual(Buffer.from([1]))
+  })
+
+  it('reads an empty REG_BINARY (reg.exe leaves only trailing spaces) as an empty record', () => {
+    expect(parseRegBinary(regOutput('    Favorites    REG_BINARY    '), 'Favorites')).toEqual(Buffer.alloc(0))
+  })
+
+  it('reads an empty REG_BINARY whose trailing spaces were trimmed away the same way', () => {
+    expect(parseRegBinary(regOutput('    Favorites    REG_BINARY'), 'Favorites')).toEqual(Buffer.alloc(0))
+  })
+
+  it('does not mistake a value whose name merely starts the same for the one asked about', () => {
+    expect(parseRegBinary(regOutput('    FavoritesResolve    REG_BINARY    0102'), 'Favorites')).toBeNull()
+  })
+
+  it('returns null when reg.exe printed nothing (the value does not exist)', () => {
+    expect(parseRegBinary('', 'Favorites')).toBeNull()
+  })
+
+  it('returns null for a value that is not REG_BINARY', () => {
+    expect(parseRegBinary(regOutput('    Favorites    REG_SZ    hello'), 'Favorites')).toBeNull()
+  })
+
+  it('rejects odd-length hex rather than guessing at a truncated byte', () => {
+    expect(parseRegBinary(regOutput('    Favorites    REG_BINARY    ABC'), 'Favorites')).toBeNull()
+  })
+})
+
+describe('pinRecordNames', () => {
+  it('finds a pinned file name stored at an even byte offset', () => {
+    expect(pinRecordNames(pinRecord(['Termpolis.lnk'], 2), 'Termpolis.lnk')).toBe(true)
+  })
+
+  it('finds one stored at an ODD byte offset, where a plain UTF-16 decode misses it', () => {
+    const record = pinRecord(['Termpolis.lnk'], 3)
+    expect(record.toString('utf16le')).not.toContain('Termpolis.lnk')
+    expect(pinRecordNames(record, 'Termpolis.lnk')).toBe(true)
+  })
+
+  it('matches case-insensitively, as NTFS file names do', () => {
+    expect(pinRecordNames(pinRecord(['TERMPOLIS.LNK']), 'Termpolis.lnk')).toBe(true)
+  })
+
+  it('is false when only other apps are pinned', () => {
+    expect(pinRecordNames(pinRecord(['Firefox.lnk', 'Slack.lnk']), 'Termpolis.lnk')).toBe(false)
+  })
+
+  it('is false for an empty record', () => {
+    expect(pinRecordNames(Buffer.alloc(0), 'Termpolis.lnk')).toBe(false)
+  })
+})
+
+describe('readTaskbarPinRecord', () => {
+  it("asks reg.exe, by its absolute System32 path, for the Taskband key's Favorites value", async () => {
+    const run = vi.fn(async () => ({ stdout: regOutput('    Favorites    REG_BINARY    0102') }))
+    const record = await readTaskbarPinRecord(run, { SystemRoot: 'D:\\Win' })
+    expect(run).toHaveBeenCalledWith('D:\\Win\\System32\\reg.exe', ['query', TASKBAND_KEY, '/v', 'Favorites'])
+    expect(record).toEqual(Buffer.from([1, 2]))
+  })
+
+  it('falls back to windir, then C:\\Windows, for the System32 root', async () => {
+    const run = vi.fn(async () => ({ stdout: '' }))
+    await readTaskbarPinRecord(run, { windir: 'E:\\Win' })
+    await readTaskbarPinRecord(run, {})
+    expect(run.mock.calls.map((c) => (c as unknown[])[0])).toEqual([
+      'E:\\Win\\System32\\reg.exe',
+      'C:\\Windows\\System32\\reg.exe',
+    ])
+  })
+
+  it("reads the System32 root from this process's environment by default", async () => {
+    const run = vi.fn(async () => ({ stdout: '' }))
+    await readTaskbarPinRecord(run)
+    expect((run.mock.calls[0] as unknown[])[0]).toMatch(/[\\/]System32[\\/]reg\.exe$/)
+  })
+
+  it('returns null when reg.exe fails (nothing has ever been pinned)', async () => {
+    const run = async () => ({ stdout: '', error: { message: 'exit 1' } })
+    expect(await readTaskbarPinRecord(run, {})).toBeNull()
+  })
+
+  it('returns null instead of rejecting when the runner itself rejects', async () => {
+    const run = async () => { throw new Error('proc host down') }
+    expect(await readTaskbarPinRecord(run, {})).toBeNull()
+  })
+})
+
+describe('restoreVanishedTaskbarPin', () => {
+  const PIN = 'C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar\\Termpolis.lnk'
+
+  function pinDeps(over: Partial<PinRestoreDeps> = {}): PinRestoreDeps {
+    return {
+      platform: 'win32',
+      exePath: EXE,
+      exeDir: EXE_DIR,
+      appUserModelId: AUMID,
+      description: 'Secure AI-assisted development terminal.',
+      pinPath: PIN,
+      // The exe is installed; the pinned shortcut is the thing that is gone.
+      fileExists: (p) => p === EXE,
+      readPinRecord: async () => pinRecord(['Windows PowerShell.lnk', 'Termpolis.lnk', 'Firefox.lnk']),
+      writeShortcutLink: () => true,
+      ...over,
+    }
+  }
+
+  it('puts back a pin Explorer still lists but whose shortcut is gone', async () => {
+    const write = vi.fn().mockReturnValue(true)
+    expect(await restoreVanishedTaskbarPin(pinDeps({ writeShortcutLink: write }))).toBe('restored')
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledWith(PIN, 'create', {
+      target: EXE,
+      cwd: EXE_DIR,
+      icon: EXE,
+      iconIndex: 0,
+      appUserModelId: AUMID,
+      description: 'Secure AI-assisted development terminal.',
+    })
+  })
+
+  it('leaves an existing pin to repairWindowsShortcuts, without reading the registry', async () => {
+    const read = vi.fn(async () => pinRecord(['Termpolis.lnk']))
+    const write = vi.fn()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({ fileExists: () => true, readPinRecord: read, writeShortcutLink: write }))
+    expect(outcome).toBe('present')
+    expect(read).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('does not re-pin an app the user unpinned: unpinning drops it from the record too', async () => {
+    const write = vi.fn()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({
+      readPinRecord: async () => pinRecord(['Firefox.lnk', 'Slack.lnk']),
+      writeShortcutLink: write,
+    }))
+    expect(outcome).toBe('not-pinned')
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the pin record cannot be read', async () => {
+    const write = vi.fn()
+    expect(await restoreVanishedTaskbarPin(pinDeps({ readPinRecord: async () => null, writeShortcutLink: write }))).toBe('not-pinned')
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('does nothing at all off Windows', async () => {
+    const read = vi.fn(async () => null)
+    const write = vi.fn()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({ platform: 'darwin', readPinRecord: read, writeShortcutLink: write }))
+    expect(outcome).toBe('skipped')
+    expect(read).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('does nothing without a pin path (APPDATA unset)', async () => {
+    const read = vi.fn(async () => null)
+    expect(await restoreVanishedTaskbarPin(pinDeps({ pinPath: null, readPinRecord: read }))).toBe('skipped')
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('writes a SHORT description, as the repair does', async () => {
+    const write = vi.fn().mockReturnValue(true)
+    await restoreVanishedTaskbarPin(pinDeps({ description: 'y'.repeat(400), writeShortcutLink: write }))
+    const written = write.mock.calls[0][2] as ShortcutLinkDetails
+    expect(written.description!.length).toBe(SAFE_DESCRIPTION_LIMIT)
+  })
+
+  it('reports failed when the shortcut cannot be written', async () => {
+    expect(await restoreVanishedTaskbarPin(pinDeps({ writeShortcutLink: () => false }))).toBe('failed')
+  })
+
+  it('never rejects: a write that throws is reported as failed', async () => {
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({ writeShortcutLink: () => { throw new Error('locked') } }))
+    expect(outcome).toBe('failed')
+  })
+
+  it('never rejects: a pin-record read that rejects is reported as failed', async () => {
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({ readPinRecord: async () => { throw new Error('reg.exe gone') } }))
+    expect(outcome).toBe('failed')
+  })
+
+  it('logs the restore when a logger is supplied', async () => {
+    const log = vi.fn()
+    await restoreVanishedTaskbarPin(pinDeps({ log }))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(PIN))
   })
 })

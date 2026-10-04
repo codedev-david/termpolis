@@ -564,7 +564,14 @@ import {
   type AgentIntegrationRuntime,
 } from './agentIntegrationManager'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
-import { repairWindowsShortcuts, defaultShortcutPaths } from './windowsShortcutRepair'
+import {
+  repairWindowsShortcuts,
+  defaultShortcutPaths,
+  restoreVanishedTaskbarPin,
+  taskbarPinPath,
+  readTaskbarPinRecord,
+  type ShortcutWriteDetails,
+} from './windowsShortcutRepair'
 
 /** Start the Headroom proxy child unless it is already running — at boot, or when the user
  *  switches it back on. Both are re-checked after the port lookup: a second flip may have started
@@ -3208,20 +3215,31 @@ if (!gotTheLock) {
     // it — without this, existing users keep a generic taskbar icon forever.
     // Best-effort and fully guarded: an icon must never be able to break startup.
     if (process.platform === 'win32' && app.isPackaged) {
+      const shortcuts = {
+        platform: process.platform,
+        exePath: process.execPath,
+        exeDir: dirname(process.execPath),
+        appUserModelId: 'com.termpolis.app',
+        description: 'Secure AI-assisted development terminal.',
+        fileExists: existsSync,
+        writeShortcutLink: (p: string, op: 'create' | 'update', details: ShortcutWriteDetails) => shell.writeShortcutLink(p, op, details),
+        log: (m: string) => console.log(m),
+      }
       try {
         repairWindowsShortcuts({
-          platform: process.platform,
-          exePath: process.execPath,
-          exeDir: dirname(process.execPath),
-          appUserModelId: 'com.termpolis.app',
-          description: 'Secure AI-assisted development terminal.',
+          ...shortcuts,
           candidatePaths: defaultShortcutPaths(process.env, join),
-          fileExists: existsSync,
           readShortcutLink: (p) => shell.readShortcutLink(p),
-          writeShortcutLink: (p, op, details) => shell.writeShortcutLink(p, op, details),
-          log: (m) => console.log(m),
         })
       } catch { /* never block startup on shortcut cosmetics */ }
+      // …and put back a pinned shortcut that was DELETED while the pin stayed (Defender's
+      // quarantine of the unsigned v1.49.1 took it): the taskbar draws that pin blank, and no
+      // reinstall writes it back. Never rejects.
+      void restoreVanishedTaskbarPin({
+        ...shortcuts,
+        pinPath: taskbarPinPath(process.env, join),
+        readPinRecord: () => readTaskbarPinRecord(execCaptureOffThread),
+      })
     }
 
     // Move ALL embedding onto a worker_thread so the memory brain's one-time model

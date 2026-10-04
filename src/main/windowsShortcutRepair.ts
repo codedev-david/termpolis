@@ -21,9 +21,16 @@
  * the installer — so existing users would stay broken forever. This module repairs
  * the shortcuts in place at startup.
  *
+ * The same blank pin has a second cause: the pinned shortcut DELETED while the pin
+ * stays. Defender's quarantine of the unsigned v1.49.1 took Termpolis.exe and every
+ * shortcut to it; reinstalling writes the Start-menu and desktop shortcuts again, but
+ * never the pinned one. restoreVanishedTaskbarPin writes it back.
+ *
  * Everything is injected so the logic is testable without touching a real registry,
  * filesystem, or Electron shell.
  */
+
+import path from 'path'
 
 /** Max characters in a Shell Link StringData field (MAX_PATH). */
 export const MAX_LNK_STRING = 260
@@ -171,13 +178,131 @@ export function defaultShortcutPaths(
   const userProfile = env['USERPROFILE']
   const file = `${shortcutName}.lnk`
 
-  if (appData) {
-    paths.push(joinPath(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', file))
-    paths.push(
-      joinPath(appData, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned', 'TaskBar', file),
-    )
-  }
+  if (appData) paths.push(joinPath(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', file))
+  const pin = taskbarPinPath(env, joinPath, shortcutName)
+  if (pin) paths.push(pin)
   if (userProfile) paths.push(joinPath(userProfile, 'Desktop', file))
 
   return paths
+}
+
+/** The pinned-taskbar shortcut, or null without APPDATA. */
+export function taskbarPinPath(
+  env: Record<string, string | undefined>,
+  joinPath: (...parts: string[]) => string,
+  shortcutName = 'Termpolis',
+): string | null {
+  const appData = env['APPDATA']
+  if (!appData) return null
+  return joinPath(appData, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned', 'TaskBar', `${shortcutName}.lnk`)
+}
+
+/** Where Explorer records the taskbar pins. Its `Favorites` value names each pinned shortcut. */
+export const TASKBAND_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Taskband'
+
+/**
+ * The bytes of `valueName` in `reg query <key> /v <valueName>` output, or null when the output
+ * holds no such REG_BINARY value. reg.exe prints the value as one line of hex, and an empty value
+ * as nothing after the type.
+ */
+export function parseRegBinary(stdout: string, valueName: string): Buffer | null {
+  const want = valueName.toLowerCase()
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s+(.+?)\s+REG_BINARY(?:\s+([0-9A-Fa-f]*))?\s*$/.exec(line)
+    if (!m || m[1].toLowerCase() !== want) continue
+    const hex = m[2] ?? ''
+    return hex.length % 2 === 0 ? Buffer.from(hex, 'hex') : null
+  }
+  return null
+}
+
+/**
+ * Whether Explorer's pin record names `fileName`. Each pin is stored as a shell item ID list whose
+ * long file name is UTF-16LE at whatever offset the structure before it leaves, odd as often as
+ * even, so the record is read at both byte alignments. Case-insensitive, as NTFS names are.
+ */
+export function pinRecordNames(record: Buffer, fileName: string): boolean {
+  const want = fileName.toLowerCase()
+  return [record, record.subarray(1)].some((bytes) => bytes.toString('utf16le').toLowerCase().includes(want))
+}
+
+/** Runs a binary without a shell; production passes procClient's execCaptureOffThread. */
+export type CaptureRunner = (bin: string, args: string[]) => Promise<{ stdout: string; error?: unknown }>
+
+/**
+ * Explorer's record of the taskbar pins (the Taskband `Favorites` value), or null when it cannot be
+ * read; reg.exe fails when nothing has ever been pinned. reg.exe by absolute path, so a reg.exe
+ * planted on PATH or in the cwd can't stand in. Never rejects.
+ */
+export async function readTaskbarPinRecord(
+  run: CaptureRunner,
+  env: Record<string, string | undefined> = process.env,
+): Promise<Buffer | null> {
+  const reg = path.win32.join(env['SystemRoot'] || env['windir'] || 'C:\\Windows', 'System32', 'reg.exe')
+  try {
+    const r = await run(reg, ['query', TASKBAND_KEY, '/v', 'Favorites'])
+    return r.error ? null : parseRegBinary(r.stdout, 'Favorites')
+  } catch {
+    return null
+  }
+}
+
+export interface PinRestoreDeps {
+  platform: string
+  /** Absolute path to the running Termpolis.exe. */
+  exePath: string
+  /** Directory of the exe, used as the shortcut's working directory. */
+  exeDir: string
+  /** The AppUserModelID the app declares; the pin must carry it for the window to merge into it. */
+  appUserModelId: string
+  /** Description to write; clamped to SAFE_DESCRIPTION_LIMIT before use. */
+  description: string
+  /** The pinned-taskbar shortcut (taskbarPinPath), or null when it cannot be located. */
+  pinPath: string | null
+  fileExists: (path: string) => boolean
+  /** Explorer's record of the taskbar pins (readTaskbarPinRecord), or null when unreadable. */
+  readPinRecord: () => Promise<Buffer | null>
+  writeShortcutLink: (path: string, operation: 'create', details: ShortcutWriteDetails) => boolean
+  log?: (message: string) => void
+}
+
+export type PinRestoreOutcome = 'skipped' | 'present' | 'not-pinned' | 'restored' | 'failed'
+
+/**
+ * Write the pinned-taskbar shortcut back when Explorer still lists the pin but the file is gone.
+ *
+ * repairWindowsShortcuts mends only shortcuts that exist. A pinned shortcut deleted out from under
+ * Explorer leaves the pin on the taskbar with nothing to draw its icon from, and the running window
+ * merges into that blank pin because they share the AppUserModelID. No reinstall fixes it: the
+ * installer writes the Start-menu and desktop shortcuts, never the pinned one.
+ *
+ * Explorer's own pin record is the guard. Unpinning removes the shortcut AND its entry in the
+ * record, so a shortcut that is missing while the record still names it was removed by something
+ * else (Defender, a cleanup tool), and writing it back cannot undo a choice the user made.
+ * writeShortcutLink announces the new file to the shell (SHCNE_CREATE), and the taskbar redraws
+ * the pin from it without an Explorer restart.
+ *
+ * Never rejects: an icon must never be able to break startup.
+ */
+export async function restoreVanishedTaskbarPin(deps: PinRestoreDeps): Promise<PinRestoreOutcome> {
+  const pinPath = deps.pinPath
+  if (deps.platform !== 'win32' || !pinPath) return 'skipped'
+  try {
+    if (deps.fileExists(pinPath)) return 'present'
+    const record = await deps.readPinRecord()
+    if (!record || !pinRecordNames(record, path.win32.basename(pinPath))) return 'not-pinned'
+    const ok = deps.writeShortcutLink(pinPath, 'create', {
+      target: deps.exePath,
+      cwd: deps.exeDir,
+      icon: deps.exePath,
+      iconIndex: 0,
+      appUserModelId: deps.appUserModelId,
+      description: deps.description.slice(0, SAFE_DESCRIPTION_LIMIT),
+    })
+    if (!ok) return 'failed'
+    deps.log?.(`Restored the vanished Windows taskbar pin: ${pinPath}`)
+    return 'restored'
+  } catch {
+    return 'failed'
+  }
 }
