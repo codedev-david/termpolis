@@ -9,6 +9,8 @@ import {
   pinRecordNames,
   readTaskbarPinRecord,
   restoreVanishedTaskbarPin,
+  exeInstallStamp,
+  stampFile,
   TASKBAND_KEY,
   MAX_LNK_STRING,
   SAFE_DESCRIPTION_LIMIT,
@@ -351,9 +353,15 @@ describe('readTaskbarPinRecord', () => {
   })
 
   it("reads the System32 root from this process's environment by default", async () => {
-    const run = vi.fn(async () => ({ stdout: '' }))
-    await readTaskbarPinRecord(run)
-    expect((run.mock.calls[0] as unknown[])[0]).toMatch(/[\\/]System32[\\/]reg\.exe$/)
+    // A root no fallback could produce, so a default of `{}` (which falls back to C:\Windows) fails.
+    vi.stubEnv('SystemRoot', 'Q:\\Root')
+    try {
+      const run = vi.fn(async () => ({ stdout: '' }))
+      await readTaskbarPinRecord(run)
+      expect((run.mock.calls[0] as unknown[])[0]).toBe('Q:\\Root\\System32\\reg.exe')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('returns null when reg.exe fails (nothing has ever been pinned)', async () => {
@@ -380,11 +388,81 @@ describe('restoreVanishedTaskbarPin', () => {
       pinPath: PIN,
       // The exe is installed; the pinned shortcut is the thing that is gone.
       fileExists: (p) => p === EXE,
+      installStamp: 'install-2',
+      readCheckedStamp: () => 'install-1',
+      writeCheckedStamp: () => {},
       readPinRecord: async () => pinRecord(['Windows PowerShell.lnk', 'Termpolis.lnk', 'Firefox.lnk']),
       writeShortcutLink: () => true,
       ...over,
     }
   }
+
+  it('looks the pin up by the shortcut name it was given, not a hardcoded Termpolis.lnk', async () => {
+    const custom = PIN.replace('Termpolis.lnk', 'Custom.lnk')
+    const write = vi.fn().mockReturnValue(true)
+    expect(await restoreVanishedTaskbarPin(pinDeps({ pinPath: custom, writeShortcutLink: write }))).toBe('not-pinned')
+    expect(write).not.toHaveBeenCalled()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({
+      pinPath: custom,
+      readPinRecord: async () => pinRecord(['Custom.lnk']),
+      writeShortcutLink: write,
+    }))
+    expect(outcome).toBe('restored')
+    expect(write).toHaveBeenCalledWith(custom, 'create', expect.anything())
+  })
+
+  // reg.exe runs at most once per install for someone who never pinned Termpolis: their answer never
+  // changes, and a registry read on every launch is exactly the behaviour Defender scores. A
+  // quarantine deletes the exe, so the reinstall it forces is a new install and is checked again.
+  it('skips the registry when this install was already checked and Termpolis was not pinned', async () => {
+    const read = vi.fn(async () => pinRecord(['Termpolis.lnk']))
+    const write = vi.fn()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({
+      installStamp: 'install-2',
+      readCheckedStamp: () => 'install-2',
+      readPinRecord: read,
+      writeShortcutLink: write,
+    }))
+    expect(outcome).toBe('checked')
+    expect(read).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('remembers the install once a readable record says Termpolis is not pinned', async () => {
+    const remember = vi.fn()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({
+      readPinRecord: async () => pinRecord(['Firefox.lnk']),
+      writeCheckedStamp: remember,
+    }))
+    expect(outcome).toBe('not-pinned')
+    expect(remember).toHaveBeenCalledWith('install-2')
+  })
+
+  it('does not remember an install whose record could not be read, so the next launch asks again', async () => {
+    const remember = vi.fn()
+    await restoreVanishedTaskbarPin(pinDeps({ readPinRecord: async () => null, writeCheckedStamp: remember }))
+    expect(remember).not.toHaveBeenCalled()
+  })
+
+  it('does not remember a restore, so a pin deleted again during this install comes back again', async () => {
+    const remember = vi.fn()
+    expect(await restoreVanishedTaskbarPin(pinDeps({ writeCheckedStamp: remember }))).toBe('restored')
+    expect(remember).not.toHaveBeenCalled()
+  })
+
+  it('reads the record every launch, and remembers nothing, when the install cannot be identified', async () => {
+    const read = vi.fn(async () => pinRecord(['Firefox.lnk']))
+    const remember = vi.fn()
+    const outcome = await restoreVanishedTaskbarPin(pinDeps({
+      installStamp: null,
+      readCheckedStamp: () => null,
+      readPinRecord: read,
+      writeCheckedStamp: remember,
+    }))
+    expect(outcome).toBe('not-pinned')
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(remember).not.toHaveBeenCalled()
+  })
 
   it('puts back a pin Explorer still lists but whose shortcut is gone', async () => {
     const write = vi.fn().mockReturnValue(true)
@@ -465,5 +543,43 @@ describe('restoreVanishedTaskbarPin', () => {
     const log = vi.fn()
     await restoreVanishedTaskbarPin(pinDeps({ log }))
     expect(log).toHaveBeenCalledWith(expect.stringContaining(PIN))
+  })
+})
+
+describe('exeInstallStamp', () => {
+  it("is the exe's creation and modification times: an update moves one, a reinstall the other", () => {
+    const stat = vi.fn(() => ({ birthtimeMs: 1000.5, mtimeMs: 2000 }))
+    expect(exeInstallStamp(EXE, stat)).toBe('1000.5|2000')
+    expect(stat).toHaveBeenCalledWith(EXE)
+  })
+
+  it('is null when the exe cannot be read', () => {
+    expect(exeInstallStamp(EXE, () => { throw new Error('ENOENT') })).toBeNull()
+  })
+})
+
+describe('stampFile', () => {
+  const FILE = 'C:\\Users\\dev\\AppData\\Roaming\\termpolis\\taskbar-pin-check'
+
+  it('reads back what it wrote', () => {
+    const files = new Map<string, string>()
+    const fs = {
+      readFileSync: (p: string) => { const v = files.get(p); if (v === undefined) throw new Error('ENOENT'); return v },
+      writeFileSync: (p: string, data: string) => { files.set(p, data) },
+    }
+    const stamp = stampFile(FILE, fs)
+    expect(stamp.read()).toBeNull()
+    stamp.write('1000.5|2000')
+    expect(files.get(FILE)).toBe('1000.5|2000')
+    expect(stamp.read()).toBe('1000.5|2000')
+  })
+
+  it('never throws: a failed write is simply asked about again next launch', () => {
+    const stamp = stampFile(FILE, {
+      readFileSync: () => { throw new Error('EACCES') },
+      writeFileSync: () => { throw new Error('EACCES') },
+    })
+    expect(stamp.read()).toBeNull()
+    expect(() => stamp.write('x')).not.toThrow()
   })
 })

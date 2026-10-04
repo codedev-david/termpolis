@@ -570,6 +570,8 @@ import {
   restoreVanishedTaskbarPin,
   taskbarPinPath,
   readTaskbarPinRecord,
+  exeInstallStamp,
+  stampFile,
   type ShortcutWriteDetails,
 } from './windowsShortcutRepair'
 
@@ -3235,9 +3237,13 @@ if (!gotTheLock) {
       // …and put back a pinned shortcut that was DELETED while the pin stayed (Defender's
       // quarantine of the unsigned v1.49.1 took it): the taskbar draws that pin blank, and no
       // reinstall writes it back. Never rejects.
+      const pinChecked = stampFile(join(app.getPath('userData'), 'taskbar-pin-check'), { readFileSync, writeFileSync })
       void restoreVanishedTaskbarPin({
         ...shortcuts,
         pinPath: taskbarPinPath(process.env, join),
+        installStamp: exeInstallStamp(process.execPath, statSync),
+        readCheckedStamp: pinChecked.read,
+        writeCheckedStamp: pinChecked.write,
         readPinRecord: () => readTaskbarPinRecord(execCaptureOffThread),
       })
     }

@@ -260,13 +260,22 @@ export interface PinRestoreDeps {
   /** The pinned-taskbar shortcut (taskbarPinPath), or null when it cannot be located. */
   pinPath: string | null
   fileExists: (path: string) => boolean
+  /** This install (exeInstallStamp), or null when it cannot be identified. */
+  installStamp: string | null
+  /** The install whose pin record was last read and named no pin here (stampFile), or null. */
+  readCheckedStamp: () => string | null
+  writeCheckedStamp: (stamp: string) => void
   /** Explorer's record of the taskbar pins (readTaskbarPinRecord), or null when unreadable. */
   readPinRecord: () => Promise<Buffer | null>
   writeShortcutLink: (path: string, operation: 'create', details: ShortcutWriteDetails) => boolean
   log?: (message: string) => void
 }
 
-export type PinRestoreOutcome = 'skipped' | 'present' | 'not-pinned' | 'restored' | 'failed'
+/**
+ * 'checked': this install's pin record was already read and named no pin, so it was not read again.
+ * 'skipped': not Windows, or no pin path.
+ */
+export type PinRestoreOutcome = 'skipped' | 'present' | 'checked' | 'not-pinned' | 'restored' | 'failed'
 
 /**
  * Write the pinned-taskbar shortcut back when Explorer still lists the pin but the file is gone.
@@ -282,6 +291,13 @@ export type PinRestoreOutcome = 'skipped' | 'present' | 'not-pinned' | 'restored
  * writeShortcutLink announces the new file to the shell (SHCNE_CREATE), and the taskbar redraws
  * the pin from it without an Explorer restart.
  *
+ * Reading the record runs reg.exe, so it happens once per install for anyone who never pinned
+ * Termpolis: their answer does not change, and a registry read on every launch is the kind of
+ * behaviour Defender scores. A quarantine deletes the exe, and the reinstall it forces is a new
+ * install, so the record is still read exactly when a pin can have vanished. Only a readable record
+ * that names no pin is remembered; an unreadable one is asked again, and a restore is not
+ * remembered, so a pin deleted again during the same install comes back again.
+ *
  * Never rejects: an icon must never be able to break startup.
  */
 export async function restoreVanishedTaskbarPin(deps: PinRestoreDeps): Promise<PinRestoreOutcome> {
@@ -289,8 +305,14 @@ export async function restoreVanishedTaskbarPin(deps: PinRestoreDeps): Promise<P
   if (deps.platform !== 'win32' || !pinPath) return 'skipped'
   try {
     if (deps.fileExists(pinPath)) return 'present'
+    const stamp = deps.installStamp
+    if (stamp && deps.readCheckedStamp() === stamp) return 'checked'
     const record = await deps.readPinRecord()
-    if (!record || !pinRecordNames(record, path.win32.basename(pinPath))) return 'not-pinned'
+    if (!record) return 'not-pinned'
+    if (!pinRecordNames(record, path.win32.basename(pinPath))) {
+      if (stamp) deps.writeCheckedStamp(stamp)
+      return 'not-pinned'
+    }
     const ok = deps.writeShortcutLink(pinPath, 'create', {
       target: deps.exePath,
       cwd: deps.exeDir,
@@ -304,5 +326,37 @@ export async function restoreVanishedTaskbarPin(deps: PinRestoreDeps): Promise<P
     return 'restored'
   } catch {
     return 'failed'
+  }
+}
+
+/**
+ * Identifies one install of the exe by its creation and modification times. An update rewrites the
+ * exe with the new build's modification time; a reinstall after a quarantine creates the file anew,
+ * even for the same version. Null when the exe cannot be read.
+ */
+export function exeInstallStamp(
+  exePath: string,
+  stat: (path: string) => { birthtimeMs: number; mtimeMs: number },
+): string | null {
+  try {
+    const s = stat(exePath)
+    return `${s.birthtimeMs}|${s.mtimeMs}`
+  } catch {
+    return null
+  }
+}
+
+/** A one-line file holding an install stamp. Never throws: a stamp that can't be kept is asked again. */
+export function stampFile(
+  file: string,
+  fs: { readFileSync: (path: string, encoding: 'utf8') => string; writeFileSync: (path: string, data: string) => void },
+): { read: () => string | null; write: (stamp: string) => void } {
+  return {
+    read: () => {
+      try { return fs.readFileSync(file, 'utf8') } catch { return null }
+    },
+    write: (stamp) => {
+      try { fs.writeFileSync(file, stamp) } catch { /* asked again next launch */ }
+    },
   }
 }
